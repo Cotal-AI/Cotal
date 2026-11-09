@@ -17,7 +17,7 @@ const snapshot = {
   channels: [{ channel: "general", messages: 3 }, { channel: "review", messages: 1 }],
 } as unknown as MeshSnapshot;
 const readManaged = async (): Promise<PsReply> => ({ ok: true,
-  rows: [{ name: "managed_only", id: "managed-id", agent: "opencode", mode: "pty", status: "running", mesh: "offline", uptimeMs: 0 }],
+  rows: [{ name: "managed_only", id: "managed-id", agent: "opencode", mode: "pty", status: "running", mesh: "offline", uptimeMs: 0, lifecycleUid: "uid-managed" }],
   silent: [], failed: [], answered: [],
 });
 const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
@@ -122,8 +122,8 @@ await scenario("status ", async () => {
   assert.ok(row.includes("mesh working · progress unknown") && !/mesh working(?! · progress unknown)/.test(row), `A working managed seat's suggestion says progress unknown; saw: ${row}`);
   assert.ok(frame.split("\n").some((line) => line.includes("managed_only") && line.includes("mesh offline") && !line.includes("progress unknown")), "Every other presence word passes through unqualified");
 }, async () => ({ ok: true, silent: [], failed: [], answered: [], rows: [
-  { name: "managed_only", id: "managed-id", agent: "opencode", mode: "pty", status: "running", mesh: "offline", uptimeMs: 0 },
-  { name: "busy_seat", id: "busy-id", agent: "claude", mode: "pty", status: "running", mesh: "working", uptimeMs: 0 },
+  { name: "managed_only", id: "managed-id", agent: "opencode", mode: "pty", status: "running", mesh: "offline", uptimeMs: 0, lifecycleUid: "uid-managed" },
+  { name: "busy_seat", id: "busy-id", agent: "claude", mode: "pty", status: "running", mesh: "working", uptimeMs: 0, lifecycleUid: "uid-busy" },
 ] }));
 await scenario("attach ", async () => {
   await screen("manager unavailable");

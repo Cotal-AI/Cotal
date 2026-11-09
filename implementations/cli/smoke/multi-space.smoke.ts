@@ -53,7 +53,7 @@ const { createBrokerAuth, createSpaceAccountAuth, createSpaceAuth, composeSpaceA
 const {
   accountInventory, assertSingleSpaceBroker, authDir, agentCredsRoot, brokerAuthPath, hasUserAuthState,
   isWorkspaceTargetError, listSpaceAccounts, loadMeshes, loadSpaceAccountAuth, loadSpaceAuth, localProcessPath,
-  recordMesh, removeMesh, resolveMeshTarget, saveBrokerAuth, saveSpaceAccountAuth, soleSpaceOf, spaceAccountPath,
+  reclaimDeadPreUpgradeRecord, recordMesh, removeMesh, resolveMeshTarget, saveBrokerAuth, saveSpaceAccountAuth, soleSpaceOf, spaceAccountPath,
   spaceKey, userAuthSpacesOnDisk, userAuthStateDir, workspaceErrorParts,
 } = await import("@cotal-ai/workspace");
 const { down } = await import("../src/commands/down.js");
@@ -681,16 +681,14 @@ try {
     check(`…and the refused ${file} is left as it was`, readFileSync(record, "utf8") === "not json");
   }
 
-  console.log("\n24) the REAL reclaimDeadLegacyPid: dead/empty reclaimed, but garbled or LIVE legacy fails loud (never orphan an unattributable signer)");
-  // A pre-upgrade crash leaves `auth-service.<encoded>.pid`. readPidPath admits it, so a fresh start
-  // that claimed canonical WITHOUT reclaiming a dead legacy would leave BOTH files → every later
-  // authServiceUp/down throws ambiguous. reclaimDeadLegacyPid runs at the top of the start; it must
-  // reclaim only what the canonical claim would (empty, or a positive PID proven dead) and NEVER
-  // steal an unattributable record (garbled content, or a still-live legacy) - that is the live
-  // pre-hex signer this path exists not to orphan. Exercises the PRODUCTION helper directly.
-  const { authServiceUp: authUp, claimAuthPidSlot, reclaimDeadLegacyPid } = await import("../src/lib/auth-proc.js");
+  console.log("\n24) the shared auth-record reclaim: dead/empty reclaimed, but garbled or LIVE legacy fails loud");
+  // A pre-upgrade crash leaves `auth-service.<encoded>.pid`. The start uses the shared reclaim on
+  // the registered auth template before claiming the canonical slot. Only an empty or proven-dead
+  // record may be removed; an unattributable or live holder must survive the refusal.
+  const { AUTH_PROCESS, authServiceUp: authUp, claimAuthPidSlot } = await import("../src/lib/auth-proc.js");
   const wedge = await makeRoot("wedge", []);
   roots.push(wedge);
+  const reclaim = (space: string) => reclaimDeadPreUpgradeRecord(AUTH_PROCESS.pidFile, { root: wedge, space });
   const prevCwd = process.cwd();
   process.chdir(wedge); // cotalPath resolves under findCotalRoot(cwd)
   try {
@@ -707,21 +705,21 @@ try {
     check("authServiceUp reads an EMPTY pre-hex pidfile as DOWN (0 is not a positive pid), so it reaches the reclaimer",
       authUp("emptyup") === false);
     rmSync(legacyPidPath("emptyup"), { force: true });
-    reclaimDeadLegacyPid("dead"); // the real production call
-    check("reclaimDeadLegacyPid removed the DEAD legacy pidfile", !existsSync(legacyPidPath("dead")));
+    reclaim("dead"); // the real production call
+    check("reclaim removed the DEAD legacy pidfile", !existsSync(legacyPidPath("dead")));
     const slot = claimAuthPidSlot("dead");
     check("…so the canonical claim yields exactly ONE record, no wedge", slot !== undefined && "fd" in slot && authPids().length === 1 && authPids()[0] === `auth-service.${spaceKey("dead")}.pid`, authPids());
     rmSync(join(dot, `auth-service.${spaceKey("dead")}.pid`), { force: true });
 
     // (b) EMPTY legacy (pre-protocol husk) → reclaimed.
     writeFileSync(legacyPidPath("empty"), "");
-    reclaimDeadLegacyPid("empty");
+    reclaim("empty");
     check("an EMPTY legacy pidfile is reclaimed (pre-protocol husk)", !existsSync(legacyPidPath("empty")));
 
     // (c) GARBLED legacy → NEVER stolen; reclaim throws, the file survives (start aborts loud).
     writeFileSync(legacyPidPath("garbled"), "not-a-pid");
     check("a GARBLED legacy pidfile makes reclaim THROW (unattributable, never stolen)",
-      (await refusal(() => reclaimDeadLegacyPid("garbled"))).includes("unattributable"));
+      (await refusal(() => reclaim("garbled"))).includes("unattributable"));
     check("…and the garbled record is LEFT in place (no delete, no competing start)", existsSync(legacyPidPath("garbled")));
     // Every value the kernel cannot map to a signalable process must REFUSE, never be misread as
     // "proven dead" and reclaimed: non-positive, fractional, and syntactic garbage are caught by the
@@ -730,7 +728,7 @@ try {
     // UNKNOWN and reclaim refuses ("cannot determine"). Only a clean ESRCH is dead.
     for (const bad of ["0", "-5", "1.5", "9007199254740992", " 12 x", "abc", "2147483648"]) {
       writeFileSync(legacyPidPath("garbled"), bad);
-      const msg = await refusal(() => reclaimDeadLegacyPid("garbled"));
+      const msg = await refusal(() => reclaim("garbled"));
       check(`a kernel-unsignalable legacy pid ${JSON.stringify(bad)} → reclaim REFUSES, file kept (never misread as dead)`,
         msg !== "" && (msg.includes("unattributable") || msg.includes("cannot determine")) && existsSync(legacyPidPath("garbled")), msg);
     }
@@ -739,7 +737,7 @@ try {
     // (d) LIVE legacy (our own pid) → reclaim refuses to start a second, and does NOT delete it.
     writeFileSync(legacyPidPath("live"), String(process.pid));
     check("a LIVE pre-hex legacy makes reclaim THROW (refuse to start a second signer)",
-      (await refusal(() => reclaimDeadLegacyPid("live"))).includes("already running"));
+      (await refusal(() => reclaim("live"))).includes("already running"));
     check("…and the live record is LEFT untouched (never orphan the running signer)", existsSync(legacyPidPath("live")));
     rmSync(legacyPidPath("live"), { force: true });
 
@@ -751,7 +749,7 @@ try {
     if (initIsEperm) {
       writeFileSync(legacyPidPath("eperm"), "1");
       check("an EPERM (live-but-unsignalable) legacy pid reads ALIVE → reclaim THROWS, record kept (no orphan)",
-        (await refusal(() => reclaimDeadLegacyPid("eperm"))).includes("already running") && existsSync(legacyPidPath("eperm")));
+        (await refusal(() => reclaim("eperm"))).includes("already running") && existsSync(legacyPidPath("eperm")));
       rmSync(legacyPidPath("eperm"), { force: true });
     } else {
       check("EPERM-live-pid reclaim check skipped (pid 1 is not EPERM on this runner)", true);
@@ -781,14 +779,13 @@ try {
   // also runs, so the same attribution contract must hold there or a real `down` orphans a live
   // signer behind a torn pidfile at exit 0. Drive stopLocalProcess directly on the auth descriptor.
   const { stopLocalProcess } = await import("../src/lib/local-process-stop.js");
-  const authComponent = { kind: "local-process" as const, name: "auth", label: "user-auth service", pidFile: "auth-service.{space}.pid" };
   const dpRoot = await makeRoot("downpath", []);
   roots.push(dpRoot);
   const dpCtx = { root: dpRoot, space: "dp25", userAuth: true };
   const dpPid = join(authDir(dpRoot), "..", `auth-service.${spaceKey("dp25")}.pid`);
   for (const bad of ["not-a-pid", "1.5", "2147483648", "0", "-5"]) {
     writeFileSync(dpPid, bad);
-    const msg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+    const msg = await refusal(() => stopLocalProcess(AUTH_PROCESS, dpCtx));
     check(`down/stopLocalProcess REFUSES an unattributable auth pidfile ${JSON.stringify(bad)} and PRESERVES it (no clean-report orphan)`,
       msg.includes("names no process") && existsSync(dpPid), { msg, kept: existsSync(dpPid) });
   }
@@ -805,7 +802,7 @@ try {
       if (p === UNKNOWN_PID) { const err = new Error("EIO") as NodeJS.ErrnoException; err.code = "EIO"; throw err; }
       return realKill(p, sig as never);
     }) as typeof process.kill;
-    unkMsg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+    unkMsg = await refusal(() => stopLocalProcess(AUTH_PROCESS, dpCtx));
   } finally {
     (process as unknown as { kill: typeof process.kill }).kill = realKill;
   }
@@ -819,13 +816,13 @@ try {
   rmSync(dpPid, { force: true });
 
   writeFileSync(dpPid, ""); // empty husk: safe to clear
-  await stopLocalProcess(authComponent as never, dpCtx as never);
+  await stopLocalProcess(AUTH_PROCESS, dpCtx);
   check("down/stopLocalProcess CLEARS an empty husk (no process behind it)", !existsSync(dpPid));
   // Over-refusal negative: a valid pid PROVEN dead (ESRCH) still clears normally - the contract
   // refuses UNATTRIBUTABLE/UNKNOWN records, it does not break the ordinary stop of a gone process.
   writeFileSync(dpPid, "999999");
   check("down/stopLocalProcess still CLEARS a valid ESRCH-dead pid (normal stop, no over-refusal)",
-    (await stopLocalProcess(authComponent as never, dpCtx as never)) === true && !existsSync(dpPid));
+    (await stopLocalProcess(AUTH_PROCESS, dpCtx)) === true && !existsSync(dpPid));
 
   // The stop-MARKER (`.stopping`) mutual-exclusion reservation. The ATOMIC publish (temp+link) means
   // a LIVE `down` holding the marker always wrote its own POSITIVE pid - a live holder is never
@@ -837,7 +834,7 @@ try {
   const marker = `${dpPid}.stopping`;
   writeFileSync(dpPid, "999999");
   writeFileSync(marker, String(process.pid)); // a LIVE holder's reservation
-  const liveMarkerMsg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+  const liveMarkerMsg = await refusal(() => stopLocalProcess(AUTH_PROCESS, dpCtx));
   check("stop-marker with a LIVE owner is NOT reclaimed (mutual exclusion holds)",
     liveMarkerMsg.includes("already being stopped") && existsSync(marker) && existsSync(dpPid), { liveMarkerMsg });
   rmSync(marker, { force: true });
@@ -845,7 +842,7 @@ try {
     writeFileSync(dpPid, "999999");
     writeFileSync(marker, stale); // stale/unattributable reservation, cannot be a live holder
     check(`a stale ${stale === "999999" ? "ESRCH-dead" : stale === "" ? "EMPTY" : JSON.stringify(stale)} marker is reclaimed and the stop proceeds (crashed `+"`down`"+` never wedges the next)`,
-      (await stopLocalProcess(authComponent as never, dpCtx as never)) === true && !existsSync(marker) && !existsSync(dpPid));
+      (await stopLocalProcess(AUTH_PROCESS, dpCtx)) === true && !existsSync(marker) && !existsSync(dpPid));
   }
 
   // An extension-removal reservation (`removing:<pid>`): `ext remove` always records its own
@@ -853,7 +850,7 @@ try {
   // and an owner whose liveness the kernel will not confirm (`unknown`) refuses without calling the
   // reservation stale or advising deletion (#3352).
   writeFileSync(dpPid, `removing:${process.pid}`);
-  const liveRemovalMsg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+  const liveRemovalMsg = await refusal(() => stopLocalProcess(AUTH_PROCESS, dpCtx));
   check("removing:<live pid> refuses as an extension removal in progress and preserves the reservation",
     liveRemovalMsg === `auth extension removal is in progress (pid ${process.pid})` && readFileSync(dpPid, "utf8") === `removing:${process.pid}`,
     { liveRemovalMsg });
@@ -864,7 +861,7 @@ try {
       if (p === UNKNOWN_PID) { const err = new Error("EACCES") as NodeJS.ErrnoException; err.code = "EACCES"; throw err; }
       return realKill(p, sig as never);
     }) as typeof process.kill;
-    unkRemovalMsg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+    unkRemovalMsg = await refusal(() => stopLocalProcess(AUTH_PROCESS, dpCtx));
   } finally {
     (process as unknown as { kill: typeof process.kill }).kill = realKill;
   }
@@ -876,7 +873,7 @@ try {
     { unkRemovalMsg });
   for (const staleRemoval of ["removing:999999", "removing:", "removing:not-a-pid", "removing:0", "removing:-5"]) {
     writeFileSync(dpPid, staleRemoval);
-    const staleRemovalMsg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+    const staleRemovalMsg = await refusal(() => stopLocalProcess(AUTH_PROCESS, dpCtx));
     check(`${JSON.stringify(staleRemoval)} is reported as a stale extension-removal reservation and preserved`,
       staleRemovalMsg.includes("has a stale extension-removal reservation") && readFileSync(dpPid, "utf8") === staleRemoval,
       { staleRemoval, staleRemovalMsg });
@@ -892,21 +889,20 @@ try {
   const guardRoot = await makeRoot("stoplast", ["downtenant"]);
   roots.push(guardRoot);
   const guardSpace = resolveDpSpace(guardRoot);
-  const authComp = { kind: "local-process" as const, name: "auth", label: "user-auth service", pidFile: "auth-service.{space}.pid" };
   const guardCtx = { root: guardRoot, space: guardSpace, userAuth: true };
   const authPidAt = join(guardRoot, ".cotal", `auth-service.${spaceKey(guardSpace)}.pid`);
   // mayBeRunning contract, directly:
-  check("mayBeRunning: absent pidfile ⇒ false", mayBeRunning(authComp as never, guardCtx as never) === false);
+  check("mayBeRunning: absent pidfile ⇒ false", mayBeRunning(AUTH_PROCESS, guardCtx) === false);
   for (const bad of ["not-a-pid", "1.5", "2147483648"]) {
     writeFileSync(authPidAt, bad);
-    check(`mayBeRunning: unattributable ${JSON.stringify(bad)} ⇒ TRUE (fail-closed, may be running)`, mayBeRunning(authComp as never, guardCtx as never) === true);
+    check(`mayBeRunning: unattributable ${JSON.stringify(bad)} ⇒ TRUE (fail-closed, may be running)`, mayBeRunning(AUTH_PROCESS, guardCtx) === true);
   }
   writeFileSync(authPidAt, "999999");
-  check("mayBeRunning: ESRCH-dead pid ⇒ false (provably gone)", mayBeRunning(authComp as never, guardCtx as never) === false);
+  check("mayBeRunning: ESRCH-dead pid ⇒ false (provably gone)", mayBeRunning(AUTH_PROCESS, guardCtx) === false);
   writeFileSync(authPidAt, "");
-  check("mayBeRunning: empty husk ⇒ false", mayBeRunning(authComp as never, guardCtx as never) === false);
+  check("mayBeRunning: empty husk ⇒ false", mayBeRunning(AUTH_PROCESS, guardCtx) === false);
   writeFileSync(authPidAt, String(process.pid));
-  check("mayBeRunning: a LIVE pid ⇒ true", mayBeRunning(authComp as never, guardCtx as never) === true);
+  check("mayBeRunning: a LIVE pid ⇒ true", mayBeRunning(AUTH_PROCESS, guardCtx) === true);
   // The REAL command path: `cotal down nats` is a named down, so a service stop. It resolves a saved
   // service definition and never a component's pidfile (docs/cli.mdx, `down`), so with none saved it
   // refuses before any teardown and leaves the unattributable auth record as it was.

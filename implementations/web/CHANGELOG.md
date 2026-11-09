@@ -1,5 +1,135 @@
 # @cotal-ai/web
 
+## 0.151.0
+
+No changes in this release.
+
+## 0.150.0
+
+No changes in this release.
+
+## 0.149.0
+
+No changes in this release.
+
+## 0.148.2
+
+No changes in this release.
+
+## 0.148.1
+
+No changes in this release.
+
+## 0.148.0
+
+No changes in this release.
+
+## 0.147.8
+
+No changes in this release.
+
+## 0.147.7
+
+No changes in this release.
+
+## 0.147.6
+
+No changes in this release.
+
+## 0.147.5
+
+No changes in this release.
+
+## 0.147.4
+
+No changes in this release.
+
+## 0.147.3
+
+### Patch Changes
+
+- ab7e979: The web dashboard has a new look built on shadcn components, with the same views and controls. Hover text is a tooltip, the Activity and Agents filters are toggle groups, the theme menu is a dropdown, and deleting a channel asks in an alert dialog. The left side is a sidebar that collapses to its icon rail from the button at the start of each view's header or with Ctrl+B (Cmd+B on a Mac); on a phone that button opens the places as a sheet, and the details panel and a message's long-press actions open as sheets too. Channels and direct messages open at the newest message, follow new ones while you are at the bottom, and offer a button to jump back to it. Messages are bubbles with your own on the end side, a run from one sender is grouped, and a long message opens with Show more.
+
+## 0.147.2
+
+No changes in this release.
+
+## 0.147.1
+
+No changes in this release.
+
+## 0.147.0
+
+No changes in this release.
+
+## 0.146.0
+
+### Minor Changes
+
+- e3cfcdb: `cotal up` mints a read-only dashboard credential for a static space, its `web.creds`, and the `web` service preset uses it as the `--creds` default, so `cotal service start web` starts with no flags. `doctor auth` reports the file, and `clean` and a space reset remove it.
+
+## 0.145.1
+
+No changes in this release.
+
+## 0.145.0
+
+No changes in this release.
+
+## 0.144.0
+
+No changes in this release.
+
+## 0.143.0
+
+No changes in this release.
+
+## 0.142.0
+
+No changes in this release.
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+
+## 0.141.10
+
+No changes in this release.
+
+## 0.141.9
+
+No changes in this release.
+
+## 0.141.8
+
+No changes in this release.
+
+## 0.141.7
+
+No changes in this release.
+
+## 0.141.6
+
+No changes in this release.
+
+## 0.141.5
+
+No changes in this release.
+
+## 0.141.4
+
+No changes in this release.
+
+## 0.141.3
+
+No changes in this release.
+
+## 0.141.2
+
+No changes in this release.
+
 ## 0.141.1
 
 No changes in this release.

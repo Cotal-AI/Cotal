@@ -1,3 +1,4 @@
+/** @module index */
 export * from "./advisory-lock.js";
 export * from "./extension-mutation.js";
 export * from "./auth-paths.js";
@@ -27,6 +28,7 @@ export * from "./flags.js";
 export { boundedValue, oneLine } from "@cotal-ai/core";
 export * from "./output.js";
 export * from "./preferences.js";
+export * from "./chat-name.js";
 export * from "./present.js";
 export * from "./space-streams.js";
 export * from "./prompt-input.js";
@@ -40,6 +42,7 @@ export * from "./broker-policy.js";
 export * from "./idp-url.js";
 export * from "./broker-display.js";
 export * from "./mesh-target.js";
+export * from "./messaging.js";
 export * from "./preflight.js";
 export * from "./render.js";
 export * from "./renewal.js";

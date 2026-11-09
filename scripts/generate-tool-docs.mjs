@@ -110,7 +110,8 @@ const ANNOTATIONS = {
   cotal_feedback: {
     effect: "sends data to an external HTTPS intake (network egress)",
     availability: "always",
-    notes: "Keyless submissions need a contact email; never include secrets.",
+    notes:
+      "Keyless submissions need a contact email; never include secrets. A send is confirmed only by the intake's HTTP 202 receipt (`ok`, `id`, and `published`). Any other 2xx is an unconfirmed outcome and is not retried. A redirect is not followed.",
   },
   cotal_despawn: {
     effect: "stops a teammate (or yourself)",
@@ -218,6 +219,10 @@ lines.push(
 );
 lines.push("");
 lines.push(
+  "Hosted HTTP gateways can also implement the draft MCP Events methods through an optional `GatewayRequest.events` adapter. Only an endpoint with that adapter advertises `events` and serves `events/list`, `events/subscribe`, and `events/unsubscribe`. The gateway resolves the account from transport authentication before calling the adapter. Subscription validation, consent, callback verification, delivery, expiry, and revocation belong to the embedding service; the stock gateway does not deliver events by itself.",
+);
+lines.push("");
+lines.push(
   "`cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`, `cotal_personas`) are injected only for personas declaring `capabilities: [spawn]`, and `cotal_run` only for `capabilities: [run]` ([identity & auth](identity-and-auth.md)).",
 );
 lines.push("");
@@ -301,7 +306,7 @@ const metadata = [
   "---",
   "title: MCP tool catalog",
   "description: Arguments, availability, and effects of the Cotal tools exposed to agent sessions.",
-  "kind: Reference",
+  "kind: \"Reference: the `cotal_*` tool surface every connected agent gets.\"",
   "audience: agents and operators",
   "---",
   "",

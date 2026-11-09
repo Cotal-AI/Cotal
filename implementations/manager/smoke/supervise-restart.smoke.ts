@@ -1,7 +1,7 @@
 /**
- * A spawn carrying `supervise` restarts the process in place until the budget is spent.
+ * Stock PTY refuses supervise; a childless fixture exercises the restart budget and turn relay.
  *
- * Live: a JWT-auth scratch broker, the real Manager, a real stub process that joins presence.
+ * Live: a JWT-auth scratch broker, the real Manager, a real childless stub process that joins presence.
  * SIGKILL is the crash. Identity and lifecycle stay. A pending turn is still pullable after the
  * first restart and yieldable from the replacement process. Spending the budget retires the seat
  * (supervise-crash-loop). A relaunch that never joins presence retires (supervise-recovery-failed).
@@ -25,6 +25,7 @@ import {
   authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, recordMesh, removeMesh, userAuthStateDir, workspaceSecretStore,
 } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
+import { childlessRuntime } from "./_childless-runtime.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { bootBroker } from "./_boot-broker.js";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
@@ -143,6 +144,19 @@ try {
   const missing = await call("spawn", { name: "seat", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 1 } }).then((r) => r.reply, asValue);
   c("opStart refuses a policy without windowMs",
     /windowMs/i.test(JSON.stringify(missing)), missing);
+
+  // The stock PTY owns only the seat process, not detached tool sessions. Its policy must refuse
+  // before connector build/provisioning. Recovery mechanics below use an explicitly bounded fixture.
+  const refused = await call("spawn", {
+    name: "seat", agent: "supervise-stub", cwd: repoRoot, events: false, supervise: { restarts: 1, windowMs: 60_000 },
+  }, { id: "uncontained-seat".padEnd(43, "u") }).then((r) => r.reply, asValue);
+  c("stock PTY refuses supervise without local-work closure", /cannot prove prior local work ended/.test(JSON.stringify(refused)), refused);
+  c("refused supervise creates no seat and builds no connector", M.agents.size === 0 && spawnedOpts.length === 0);
+  // e2e-stub.mjs starts no child processes. Only this test's fixed stub can use process exit as
+  // closure. This is not a containment implementation or a claim about real connector tools.
+  const runtime = (manager as unknown as { runtime: import("@cotal-ai/core").Runtime }).runtime;
+  childlessRuntime(runtime, join(workspaceRoot, "childless-runtime"),
+    (spec) => spec.command === "node" && spec.args.length === 1 && spec.args[0] === STUB);
 
   const spawnGoal = "spawn-seat".padEnd(43, "s");
   const spawned = await call("spawn", {
@@ -285,6 +299,8 @@ try {
   // store-identity challenge. Unbind it first so start sees an absent rail, which
   // is not a named store, and the cell can still grade the user-mode accept
   // refusal. Later cells do not need the daemon.
+  await waitFor(() => (manager as unknown as { retiring: Map<string, unknown> }).retiring.size === 0,
+    "fixture retirements completed before delivery teardown");
   await delivery?.stop().catch(() => {});
   delivery = undefined;
   userMgr = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot: userRoot });
@@ -316,7 +332,7 @@ try {
   else process.env.COTAL_HOME = prevHome;
 }
 
-const EXPECTED = 28;
+const EXPECTED = 31;
 const ran = ok + fail;
 console.log(`supervise restart smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED) {

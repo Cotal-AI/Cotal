@@ -4,7 +4,7 @@ import { loadAgentFile, registry, writeLaunchArtifact, type Connector, type Laun
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
-import { claudeUserMcpEnvKeys } from "./user-mcp.js";
+import { assertChannelServerDeclared, claudeUserMcpEnvKeys } from "./user-mcp.js";
 import { HOST_EXE_ENV, resolveHostExe } from "./once-exit.js";
 import { HOOK_CONTEXT_CHARS } from "./hooks.js";
 
@@ -99,10 +99,14 @@ export const CLAUDE_PROVIDER_KEYS = [
   "ANTHROPIC_IDENTITY_TOKEN_FILE",
 ] as const;
 /** Channel ref for `--dangerously-load-development-channels`, which turns on the cotal MCP server's
- *  `claude/channel` capability so an idle session wakes the instant a peer message arrives. Because
- *  cotal is supplied explicitly through --mcp-config, the ref is the configured server tagged
- *  `server:<name>` (the CLI rejects a plugin ref or a bare name here). The plugin stays installed
- *  for its hooks, which do message delivery independent of this wake nudge. */
+ *  `claude/channel` capability so an idle session wakes the instant a peer message arrives. The ref
+ *  is the server tagged `server:<name>` (the CLI rejects a plugin ref or a bare name here), and
+ *  Claude Code accepts it only when a server of that name is declared in its own configuration,
+ *  the user config or the project's `.mcp.json`; the `--mcp-config` entry alone does not count
+ *  (measured on 2.1.295). `cotal setup` registers that entry at user scope, a carried home gets
+ *  its own, and a managed launch without one is refused (see assertChannelServerDeclared) rather
+ *  than started as a seat that never wakes. The plugin stays installed for its hooks, which do
+ *  message delivery independent of this wake nudge. */
 const CHANNEL_REF = `server:${MCP_SERVER_NAME}`;
 
 /** Package root (parent of dist/), which doubles as the installable plugin dir: it carries
@@ -173,6 +177,8 @@ export const claudeConnector: Connector = {
   // both; the hooks hand it over at most once (hooks.ts).
   supportsTurnRelay: true,
   onceNeedsConfirmed: "its startup did not show channels on (Claude's development-channels prompt and its notice that server:cotal messages reach the session)",
+  // A plain spawn starts anyway. Its reply and the seat's ps row say that nothing wakes the seat.
+  idleWakeNeedsConfirmed: "channels are off for this session (Claude showed no development-channels prompt), so mesh traffic does not wake it while idle; type into its pane to start a turn, or enable channels for the organization",
   turnFrameLimit: HOOK_CONTEXT_CHARS,
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
   // `--opt resume=` renders a bare `--resume`, which opens Claude's session picker; the session joins
@@ -255,6 +261,10 @@ export const claudeConnector: Connector = {
     const prompt = opts.prompt === undefined ? undefined : opts.prompt.trim();
     if (prompt === "")
       throw new Error("claude connector: an initial prompt was given but it is empty, there is no first turn to submit");
+    // A managed seat (the manager marks one with its `cwd`) has nobody at its terminal to notice a
+    // channel that did not bind. A carried home declares the server itself (placeCarried); a
+    // foreground launch keeps Claude's own notice.
+    if (opts.cwd !== undefined && !opts.carried) assertChannelServerDeclared(MCP_SERVER_NAME, opts.cwd);
     // BOTH loaders, deliberately. The dev-channels ref binds the wake CHANNEL, but on current
     // claude (measured on 2.1.246) it no longer loads the plugin's HOOKS — the MCP server came up
     // and every lifecycle hook was simply never invoked. That silence took out everything the
@@ -336,7 +346,7 @@ export const claudeConnector: Connector = {
     // token (no shell), so a hostile-looking id can't inject. The persona prompt-file flag
     // above still applies, so the forked context runs under the current mesh persona.
     if (opts.resume) args.push("--resume", opts.resume, "--fork-session");
-    if (opts.carried) Object.assign(env, placeCarried(opts.carried.home, opts.carried.transcript, opts.resume, opts.carried.cwd));
+    if (opts.carried) Object.assign(env, placeCarried(opts.carried.home, opts.carried.transcript, opts.resume, opts.carried.cwd, mcpServers[MCP_SERVER_NAME]!));
 
     // Opaque connector options → native `claude` flags, RAW passthrough: `key=value` renders
     // `--key value`, and an empty value (`--opt foo=`) renders a bare boolean `--foo`. No allow-list,

@@ -149,7 +149,7 @@ function interruptedStart(name: string, space: string, selected: string | undefi
 /** The next step for a name that resolves to no saved definition and to no member of the space's
  *  controller stack. */
 export function unsavedServiceStep(name: string, mode: string): string {
-  return name === "web" ? "the web dashboard is an extension: add it with `cotal ext add @cotal-ai/web`, then start it with `cotal service start web --creds <file>`" : mode === "stop" ? "list this space's saved definitions with `cotal service`" : "add a supported service definition explicitly before starting it";
+  return name === "web" ? "the web dashboard is an extension: add it with `cotal ext add @cotal-ai/web`, then start it with `cotal service start web`" : mode === "stop" ? "list this space's saved definitions with `cotal service`" : "add a supported service definition explicitly before starting it";
 }
 
 /** `root` is the selected space's root, where a definition must have been added to launch. */

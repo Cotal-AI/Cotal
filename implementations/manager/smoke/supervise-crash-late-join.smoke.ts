@@ -2,10 +2,11 @@
  * A supervised seat restarted after a manager crash stays supervised when it joins late (#4144).
  *
  * Live, the shape of supervise-manager-crash.smoke.ts: a JWT-auth scratch broker, the real Manager in
- * a child process, the real pty runtime and a stub seat that joins presence. The first manager spawns
+ * a child process, a PTY fixture with durable childless-work closure and a stub seat that joins presence. The first manager spawns
  * `worker` with supervise { restarts: 2 } and is SIGKILLed. The successor restarts the seat. Its stub
  * connector has a 3 s readiness timeout, and in the late cases the restarted seat waits 8 s before it
- * joins, so the restart's readiness ends uncertain.
+ * joins, so the restart's readiness ends uncertain. Stock PTY refuses this policy; this suite
+ * allows only a fixed stub that starts no tools and records its process birth.
  *
  * - control: the restarted seat joins at once. The record counts the manager crash, and killing the
  *   seat restarts it in place.

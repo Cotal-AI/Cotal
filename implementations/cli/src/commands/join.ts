@@ -5,7 +5,6 @@ import {
   parseJoinLink,
   resolvePeer,
   AmbiguousPeerError,
-  mintCreds,
   mintLifecycleUid,
   assertLifecycleToken,
   newIdentity,
@@ -20,10 +19,10 @@ import {
   type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry } from "@cotal-ai/workspace";
+import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
+import { withProvisioner } from "../lib/provisioner.js";
 import { resolveSpace } from "../lib/status.js";
-import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 import { activityDetail, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
 
 // The plan's stale-cred fail-fast gate: an unprovisioned / auth-rejected join is ONE classified
@@ -198,55 +197,40 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     if (expiresAt !== undefined && (target.mode === "user" || !target.auth))
       throw expiryRefusal(`mesh "${space}" ${target.mode === "user" ? "is a user-auth mesh, where the session's bearer comes from your login" : "is open and mints no credential"}`);
     if (target.mode !== "user" && target.auth) {
+      const spaceAuth = target.auth;
       const identity = newIdentity();
       // One lifecycle per join session (SPEC 13.1): the provisioned dm/dlv footprint, the minted
       // grants, and the endpoint's binds all carry this uid; the session's exit orphans only its own
       // lifecycle-keyed names (self-retired by the open-mode inactive threshold on the broker side).
       // A launcher-supplied uid (flag/env, resolved above) wins; the session mints only when bare.
       lifecycleUid ??= mintLifecycleUid();
-      const prov = new CotalEndpoint({
-        space,
-        servers: server,
-        creds: await mintCreds(target.auth, newIdentity(), "provisioner"),
-        channels: [],
-        consume: false,
-        registerPresence: false,
-        watchPresence: false,
-        watchChannels: false,
-        card: { name: "join-provisioner", role: "provisioner", kind: "endpoint" },
-      });
-      // Swallow provisioner errors: this ephemeral endpoint's failures surface through the try/catch
-      // below as one legible sentence, not a raw `! provisioner: …` side channel.
-      prov.on("error", () => {});
-      const ignoreProvisionerWarning = () => {};
-      prov.on("warning", ignoreProvisionerWarning); // same deliberate one-shot policy; the awaited operation owns the verdict
       // The session's credential is an issuance (SPEC 13.15) whose evidence names this lifecycle's
-      // gate, which leaving retires.
-      const seatTarget = { server, space, tlsRequired: target.tlsRequired, auth: target.auth };
+      // gate, which leaving retires. The provisioner's own errors stay inside withProvisioner: a
+      // failed stop never becomes this join's provisioning failure.
+      const seatTarget = { server, space, tlsRequired: target.tlsRequired, auth: spaceAuth };
       const thisSeat = { actor: identity.id, alias: identity.id, lifecycleUid };
       try {
-        await prov.start();
-        await activateTerminalSeat(seatTarget, thisSeat);
-        retireSeat = () => retireTerminalSeat(seatTarget, thisSeat);
-        // Live-only: a bare join isn't under a manager, so no durable Plane-3 backstop
-        // (durableMembership:false) — the console reads live via its core-sub + receives DMs on its dm_<id>.
-        const spaceAuth = target.auth;
-        auth.creds = await issueTerminalSeat(seatTarget, thisSeat, expiresAt, (issue) => {
-          acceptedToken = issue.issued.acceptedToken;
-          return provisionAgent(prov, spaceAuth, identity, {
-            subscribe: [channel],
-            allowSubscribe: [channel],
-            allowPublish: [channel],
-            role: values.role,
-            durableMembership: false,
-            lifecycleUid,
-            expiresAt: issue.expiresAt,
-            issued: issue.issued,
-            issuance: issue.issuance,
+        await withProvisioner({ space, servers: server, auth: spaceAuth }, "join-provisioner", async (prov) => {
+          await activateTerminalSeat(seatTarget, thisSeat);
+          retireSeat = () => retireTerminalSeat(seatTarget, thisSeat);
+          // Live-only: a bare join isn't under a manager, so no durable Plane-3 backstop
+          // (durableMembership:false) — the console reads live via its core-sub + receives DMs on its dm_<id>.
+          auth.creds = await issueTerminalSeat(seatTarget, thisSeat, expiresAt, (issue) => {
+            acceptedToken = issue.issued.acceptedToken;
+            return provisionAgent(prov, spaceAuth, identity, {
+              subscribe: [channel],
+              allowSubscribe: [channel],
+              allowPublish: [channel],
+              role: values.role,
+              durableMembership: false,
+              lifecycleUid,
+              expiresAt: issue.expiresAt,
+              issued: issue.issued,
+              issuance: issue.issuance,
+            });
           });
+          mintedFrom = spaceAuth;
         });
-        mintedFrom = target.auth;
-        await prov.stop();
       } catch (e) {
         await leaveSeat();
         // The self-mint step runs BEFORE ep.start(), so its auth/provisioning failure must render

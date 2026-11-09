@@ -102,8 +102,8 @@ import {
   type RunStatusValue,
   type RunStatusView,
   type SpaceAuth,
+  rejectionText,
 } from "@cotal-ai/core";
-import { rejectionText } from "./rejection-text.js";
 
 /** What the host needs from the manager: its coordinates and its trust material. */
 export interface RunHostingContext {

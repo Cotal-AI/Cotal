@@ -1,0 +1,41 @@
+{
+  "suite": [
+    "implementations/cli/smoke/chat-static-live.smoke.ts"
+  ],
+  "guard": "a cotal chat session with no --name appears as the OS login with no suffix, so a peer's mention of that login reaches it; a second session under the name is warned with both remedies; a saved name replaces the login",
+  "command": "pnpm --filter @cotal-ai/workspace --filter @cotal-ai/cli build && pnpm smoke:chat-static:live",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/chat-name-live.json",
+  "why": [
+    "The acceptance for a mentionable human: an agent's @name reaches a session opened with no --name, and two holders of one name are warned. The suite runs bin/cotal.ts, which loads @cotal-ai/workspace and @cotal-ai/cli from dist, so the command builds both and each mutation rebuilds in afterRestore."
+  ],
+  "mutations": [
+    {
+      "name": "the resolver appends a host suffix to the OS login",
+      "file": "packages/workspace/src/chat/name.ts",
+      "find": "found = { name: (opts.login ?? osLogin)(), source: \"login\"",
+      "replace": "found = { name: `${(opts.login ?? osLogin)()}-host-1a2b`, source: \"login\"",
+      "expectRed": "a session opened without --name is on the roster as the OS login, with no suffix",
+      "cell": "a session opened without --name is on the roster as the OS login, with no suffix",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the resolver ignores the saved name",
+      "file": "packages/workspace/src/chat/name.ts",
+      "find": "  else if (chosen) found = { name: chosen.value, source: \"preference\", from: \"your saved name\" };\n",
+      "replace": "",
+      "expectRed": "a name saved with cotal config set name replaces the OS login",
+      "cell": "a name saved with cotal config set name replaces the OS login",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "cotal chat drops the name-in-use warning",
+      "file": "implementations/cli/src/commands/chat.ts",
+      "find": "  const shared = found && nameInUseText(found, NAME_REMEDY);",
+      "replace": "  const shared = found && undefined;",
+      "expectRed": "a second session under the same name is warned at join, naming both ways to change it",
+      "cell": "a second session under the same name is warned at join, naming both ways to change it",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace --filter @cotal-ai/cli build"
+    }
+  ]
+}

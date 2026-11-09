@@ -57,6 +57,13 @@ primitives throw that it is missing. There is no `binding.gyp` in the package, s
 without a C compiler installs the prebuilt helpers; a missing helper, an unsupported
 `linux-<arch>`, or a load failure throws rather than compiling in place.
 
+`pnpm smoke:seat-installed-dist` requires a built tree with the qualified seat and workspace
+artifacts assembled by `scripts/seat-assemble-natives.mjs` and
+`scripts/workspace-assemble-natives.mjs`, as the CI smoke job does. It runs both native guards
+before packing. The fixture keeps the real binaries, compiles seat entrypoints from a copy without
+`dist`, and stops if any local closure member fails to pack. The installed checks compare all native
+binaries and workspace receipts with the assembled inputs and load the host seat binding.
+
 The package.json has no `os` / `cpu` / libc fields. Manager depends on this package on every
 platform: off Linux it still loads, and custody adoption, reaping and `cotal seats` throw the named
 custody-transport error.

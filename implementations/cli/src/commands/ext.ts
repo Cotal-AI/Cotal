@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
+import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionPackage, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type InstalledExtensionPackage, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { assertExtensionServiceInstancesStopped } from "../lib/service-instances.js";
@@ -142,7 +142,7 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
  * the one that drops its entry, and the entry stays in the manifest. The reinstall command names a
  * third-party package's spec as a placeholder, because a recorded spec can be a URL that carries a
  * credential. */
-function linkExtensionPeers(recorded: readonly InstalledExtension[], operationPkg: string, note: (line: string) => void, candidate = false): void {
+function linkExtensionPeers(recorded: readonly InstalledExtension[], operationPkg: string, note: (line: string) => void, candidate = false, operationMetadata?: InstalledExtensionPackage): void {
   const onAbsent = (owner: string): void => {
     // Only a recorded package is skipped: the binder never skips the operation's own.
     const entry = recorded.find((e) => e.pkg === owner)!;
@@ -151,7 +151,7 @@ function linkExtensionPeers(recorded: readonly InstalledExtension[], operationPk
       c.dim(` - \`${reinstall}\` reinstalls it, or \`cotal ext remove ${shellWord(owner)}\` drops the entry`));
   };
   const owners = [...recorded.map((entry) => entry.pkg), ...(candidate ? [operationPkg] : [])];
-  for (const link of bindExtensionPeers(owners, operationPkg, { force: true, onAbsent }))
+  for (const link of bindExtensionPeers(owners, operationPkg, { force: true, onAbsent, operationMetadata }))
     provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
 }
 
@@ -330,7 +330,7 @@ async function installCandidate(pkg: string, resolved: string, dir: string, reco
   // realpath would escape the prefix and Node could no longer resolve the linked core from it.
   const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps", "--install-links", resolved], dir);
   if (r.status !== 0) {
-    fail(pkg, `npm install failed:\n${r.output.split("\n").slice(-8).join("\n")}`);
+    fail(pkg, `npm install failed: ${npmInstallFailure(r.output)}`);
   }
 
   // The spec's package must now be a prefix dependency — anything else is a failed install.
@@ -343,20 +343,8 @@ async function installCandidate(pkg: string, resolved: string, dir: string, reco
   if (!deps[pkg]) {
     fail(pkg, `npm install succeeded but it is not among the prefix dependencies - remove and retry`);
   }
-  const pkgDir = join(dir, "node_modules", ...pkg.split("/"));
-  let pkgMeta: {
-    version?: string;
-    dependencies?: Record<string, string>;
-    peerDependencies?: Record<string, string>;
-  };
-  try {
-    pkgMeta = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
-  } catch (e) {
-    fail(pkg, `has unreadable package metadata: ${(e as Error).message}`);
-  }
-  if (typeof pkgMeta.version !== "string" || !pkgMeta.version) {
-    fail(pkg, `declares no "version" - the manifest pins an extension's version and every load checks the installed package against it`);
-  }
+  const pkgMeta = installedExtensionPackage(pkg);
+  if (!pkgMeta) fail(pkg, `npm install left no package.json at ${extensionPackageDir(pkg)} - remove and retry`);
 
   // Shared @cotal-ai/* packages must be PEER dependencies — a regular dependency vendors a second
   // copy: core's would swallow the extension's registrations into its own registry singleton, and
@@ -371,7 +359,7 @@ async function installCandidate(pkg: string, resolved: string, dir: string, reco
   // npm mutates the shared prefix, so restore every package's private shared-peer links, not only
   // the candidate's. All extensions resolve the exact same host package instances.
   try {
-    linkExtensionPeers(staged ? [] : recorded.filter((entry) => entry.pkg !== pkg), pkg, note, true);
+    linkExtensionPeers(staged ? [] : recorded.filter((entry) => entry.pkg !== pkg), pkg, note, true, pkgMeta);
   } catch (e) {
     fail(pkg, (e as Error).message);
   }
@@ -380,7 +368,7 @@ async function installCandidate(pkg: string, resolved: string, dir: string, reco
   // packages are first-class extensions too; commands are only the display/dispatch subset.
   const before = new Set(registry.all().map((ext) => `${ext.kind}:${ext.name}`));
   const version = pkgMeta.version;
-  await importExtensionEntry(pkg, version, "the add was rolled back; replace this build");
+  await importExtensionEntry(pkg, version, "the add was rolled back; replace this build", pkgMeta);
   const contributed = registry.all().filter((ext) => !before.has(`${ext.kind}:${ext.name}`));
   if (!contributed.length) {
     fail(pkg, `imported cleanly but registered no extensions in THIS CLI's registry - if it bundles its own @cotal-ai/core, make core a peerDependency`);
@@ -435,6 +423,15 @@ async function installCandidate(pkg: string, resolved: string, dir: string, reco
       ? [c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`)]
       : []),
   ];
+}
+
+/** Why `npm install` did not finish, as one line. A spawn that cannot find npm says so. Any other
+ *  output keeps its last lines, joined, so a stored seed reason never carries a newline. */
+function npmInstallFailure(output: string): string {
+  const lines = output.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+  if (lines.some((line) => /^spawn error: spawn npm ENOENT\b/.test(line))) return "npm is not on PATH";
+  const tail = lines.slice(-8).join(" ");
+  return tail || "npm install produced no output";
 }
 
 function fail(p: string, why: string): never {

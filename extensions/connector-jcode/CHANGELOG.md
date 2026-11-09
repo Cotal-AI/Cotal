@@ -1,5 +1,131 @@
 # @cotal-ai/connector-jcode
 
+## 0.151.0
+
+No changes in this release.
+
+## 0.150.0
+
+No changes in this release.
+
+## 0.149.0
+
+No changes in this release.
+
+## 0.148.2
+
+No changes in this release.
+
+## 0.148.1
+
+No changes in this release.
+
+## 0.148.0
+
+No changes in this release.
+
+## 0.147.8
+
+No changes in this release.
+
+## 0.147.7
+
+No changes in this release.
+
+## 0.147.6
+
+No changes in this release.
+
+## 0.147.5
+
+No changes in this release.
+
+## 0.147.4
+
+No changes in this release.
+
+## 0.147.3
+
+No changes in this release.
+
+## 0.147.2
+
+No changes in this release.
+
+## 0.147.1
+
+No changes in this release.
+
+## 0.147.0
+
+No changes in this release.
+
+## 0.146.0
+
+No changes in this release.
+
+## 0.145.1
+
+No changes in this release.
+
+## 0.145.0
+
+No changes in this release.
+
+## 0.144.0
+
+No changes in this release.
+
+## 0.143.0
+
+No changes in this release.
+
+## 0.142.0
+
+No changes in this release.
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+
+## 0.141.10
+
+No changes in this release.
+
+## 0.141.9
+
+No changes in this release.
+
+## 0.141.8
+
+No changes in this release.
+
+## 0.141.7
+
+No changes in this release.
+
+## 0.141.6
+
+No changes in this release.
+
+## 0.141.5
+
+No changes in this release.
+
+## 0.141.4
+
+No changes in this release.
+
+## 0.141.3
+
+No changes in this release.
+
+## 0.141.2
+
+No changes in this release.
+
 ## 0.141.1
 
 No changes in this release.

@@ -122,6 +122,7 @@ async function listCodexModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalo
 export const codexConnector: Connector = {
   kind: "connector",
   name: "codex",
+  setup: { kind: "connector-setup", name: "codex" },
   supportsFreshStart: true,
   requires: ["codex"],
   supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)

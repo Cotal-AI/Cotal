@@ -3331,7 +3331,11 @@ action command's submissions are `class: journal` (§13.3).
    spawn whose agent application waits for the operator before its session joins, as its
    connector declares for the launch's options (a session picker, for one), has its running
    process as the success signal: the owner records `succeeded` once that process has run
-   briefly without exiting, and the result's `waitingFor` names the screen. When
+   briefly without exiting, and the result's `waitingFor` names the screen. A spawn
+   whose connector declares that an idle seat is woken only after a confirmed startup, and
+   whose startup watch ended `ready` (the input screen without the confirmation), succeeds
+   with the result's `startupNotice` carrying the connector's clause; a reader that does not
+   read it sees an ordinary success. When
    the deadline passes without the signal, the owner records the goal's terminal **result
    fact** (`goal….result`, §13.2) with the outcome
    `uncertain`, and the goal IS terminal: `uncertain` is a terminal outcome like
@@ -5499,7 +5503,7 @@ on a generation by a static issuer (a static incarnation's credential, an operat
 expires no later than the horizon. A static incarnation's generation has a horizon 30 days after
 its issuance; each renewal of its credential is capped at it, none is minted at or after it, and
 the incarnation is respawned to continue. An agent seat a terminal starts on a static space (a
-foreground spawn, a bare join) is issued against its own §13.1 lifecycle, activated before the mint
+foreground spawn, a bare join, a personal conversation's connection) is issued against its own §13.1 lifecycle, activated before the mint
 with `terminal` as its minting authority. Its generation's horizon is the expiry the person set, or
 the furthest a generation can name (`0xffffffff`, 2106-02-07); its credential expires with it and is
 never renewed. When the seat leaves cleanly the terminal retires the lifecycle, retiring its
@@ -6347,6 +6351,11 @@ split, mediated, written by the driver's commit path only.
   journal's tail, which nothing inside the journal can see, and the driver MUST refuse to resume it.
   Interior loss is the journal's own ordinal chain's.
 
+**Inventory reads.** The list-only run-operator credential additionally permits
+`$JS.API.DIRECT.GET.KV_cotal_records_<space>` for non-fencing inventory reads. This permission
+MUST NOT be added to single-run read or checkpoint-answer credentials. It grants no consumer
+creation or record writes. Admission and revocation reads MUST remain leader-served.
+
 **Native personal participation.** An approved personal native lifecycle MAY opt into workflow
 turns through the manager's self-mode `turn-participate` command. The request body is empty. The
 broker-authenticated caller triple is the lifecycle being authorized. The manager MUST fresh-check
@@ -7024,7 +7033,10 @@ The profile holds no other `CONSUMER.DELETE`. Its watch consumers are client-nam
 stream-wide, and a stream-wide grant lets one holder delete another principal's watch cursors and
 the delivery daemon's `fanout` durable. The broker removes these consumers at their inactive
 threshold (five minutes after the last interest), and a client MUST treat a refused delete of its
-own watch consumer as that outcome rather than as a failure.
+own watch consumer as that outcome rather than as a failure. A client MAY skip publishing that
+delete when it recorded the consumer as its own watch and the authenticated connection's known
+publish claims exclude the subject. Unknown claims or an unrecorded consumer do not establish this
+exception. A skipped delete does not prove the consumer is gone and grants no additional authority.
 
 ### Admin
 
@@ -7199,7 +7211,12 @@ expiry; `supervisor`/`delivery`/`membership-rw` carry a 24h expiry with the mana
 renewal owner (self-remint for its own credential; same-nkey re-sign + explicit `reloadCreds`
 adoption for the seed-less daemons); the two system-account credentials (`membership-observer`,
 `connection-evictor`) carry a 30d expiry and are renewable ONLY by a system-account rotation +
-broker restart; no persisted system-account minting secret exists, by design. On per-user-auth
+broker restart. The broker root retains the system-account signing seed in its own secret store,
+for own-broker caller issuance and for the multi-space delivery host; it never enters a client
+bundle, a registration or a message. KICK is broker-wide, so on a broker with several spaces no
+space daemon holds the evictor: the host is the one process that kicks, with a kick-only user it
+mints per kick, and only a connection its own complete census of the asking lane's account lists.
+On per-user-auth
 spaces, static `agent`/`observer`/`admin` minting is retired entirely (the flip): agent identities
 exist only as owner+actor principals under a logged-in user, and the elevated profiles of this
 appendix are reached per-connection via the exchange-authored view claim instead (§10). The flip is
@@ -7244,6 +7261,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-09 | **A spawn result says when its seat is not woken by mesh traffic (§13.6 item 6), additive.** A connector MAY declare that an idle seat is woken only after a confirmed startup. A plain spawn of such a seat whose startup watch ended `ready` succeeds, and its result's `startupNotice` carries the connector's clause; the seat's `ps` row carries the same field. A `once` spawn of such a seat is refused as before. A reader that does not read `startupNotice` sees an ordinary success. |
 | 2026-11-03 | **History limits for DMs and the backstop, and none (§4, §8).** `DM_<space>` gets a history limit like the chat stream's, with no age limit and no count limit by default, and unicast is at-least-once within it. Either part of a limit may be none (`max_age` 0, `max_msgs_per_subject` -1), and a reader MUST accept any limit an operator may set. In the reference the INBOX and DLV streams share an operator-set limit with a 2-hour age floor and 1000 per lifecycle by default, the trusted writer stamps each DLV copy with the count it wrote under (`Cotal-Delivery-Limit`, 1000 when absent), and the stored-copies notice compares against that stamp. |
 | 2026-11-03 | **A participant that reads presence on demand reads the channel registry on demand (§7, Appendix B), additive.** It reads with batched Direct Gets, which bind no consumer, before it shows the registry and before it resolves a join's or leave's delivery class. The agent's `$JS.API.DIRECT.GET.<CHKV>` row now also serves this read. |
 | 2026-11-02 | **The chat history limit has no age by default (§8).** A new space starts with no age limit and 1000 per sender, the pair every stream held before the limit was configurable, and setting up an existing space MUST NOT change its limit. The reference implementation no longer moves a stream to 30 days when `cotal up` starts its broker, so an upgrade deletes no post. The rule that the limit MUST NOT be set to no age is removed. |

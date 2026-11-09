@@ -571,7 +571,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("the hidden legacy actor command completes nothing", !/^(grant|revoke|label|list)$/m.test(actor.stdout), shown(actor));
   for (const sub of ["get", "set", "unset"]) {
     const keys = offered(["config", sub]);
-    check(`config ${sub} offers the keys`, exactly(keys, ["harness", "persona", "detach-key", "color", "editor"]), shown(keys));
+    check(`config ${sub} offers the keys`, exactly(keys, ["harness", "persona", "detach-key", "color", "editor", "name"]), shown(keys));
   }
   const colors = offered(["config", "set", "color"]);
   check("config set color offers the values it accepts", exactly(colors, ["auto", "always", "never"]), shown(colors));

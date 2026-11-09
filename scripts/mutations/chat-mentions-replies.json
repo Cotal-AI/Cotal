@@ -1,0 +1,123 @@
+{
+  "suite": [
+    "packages/workspace/smoke/chat-compose.smoke.ts",
+    "packages/workspace/smoke/chat-open-live.smoke.ts",
+    "implementations/cli/smoke/chat-pure.smoke.ts",
+    "implementations/cli/smoke/chat-static-live.smoke.ts"
+  ],
+  "grades": "suite",
+  "guard": "a human chat post carries the @names in its text, a reply to a channel message is answered on its channel with replyTo, and a grant refusal names the reopen step",
+  "command": "pnpm smoke:chat-compose",
+  "progressPattern": "✓",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/chat-mentions-replies.json",
+  "why": [
+    "The workspace smokes import `../src`, so their mutations need no build. `chat-pure` and",
+    "`chat-static:live` reach the chat rules through `@cotal-ai/workspace/chat`, which resolves to",
+    "`dist/`, so those commands build workspace first and every one of them rebuilds on restore."
+  ],
+  "mutations": [
+    {
+      "name": "publish sends no mentions on a channel post",
+      "file": "packages/workspace/src/chat/compose.ts",
+      "find": "      return session.send(text, to.channel, mentionsIn(text), to.replyTo);\n",
+      "replace": "      return session.send(text, to.channel, mentionsIn(\"\"), to.replyTo);\n",
+      "expectRed": "a channel post carries the @names its text holds as mentions",
+      "cell": "a channel post carries the @names its text holds as mentions"
+    },
+    {
+      "name": "publish drops a channel reply's replyTo",
+      "file": "packages/workspace/src/chat/compose.ts",
+      "find": "      return session.send(text, to.channel, mentionsIn(text), to.replyTo);\n",
+      "replace": "      return session.send(text, to.channel, mentionsIn(text));\n",
+      "expectRed": "a channel reply carries its replyTo to the session",
+      "cell": "a channel reply carries its replyTo to the session"
+    },
+    {
+      "name": "publish drops a peer reply's replyTo",
+      "file": "packages/workspace/src/chat/compose.ts",
+      "find": "      return session.dm({ principal: to.principal }, text, to.replyTo);\n",
+      "replace": "      return session.dm({ principal: to.principal }, text);\n",
+      "expectRed": "a peer reply goes by principal with its replyTo",
+      "cell": "a peer reply goes by principal with its replyTo"
+    },
+    {
+      "name": "replyRecipient DMs a channel message's sender",
+      "file": "packages/workspace/src/chat/compose.ts",
+      "find": "  if (m.kind === \"channel\") {\n",
+      "replace": "  if (m.kind === \"channel\" && m.id === \"\") {\n",
+      "expectRed": "a reply to a channel message is answered on its channel, quoting its id",
+      "cell": "a reply to a channel message is answered on its channel, quoting its id"
+    },
+    {
+      "name": "replyRecipient stops refusing your own DM or role task",
+      "file": "packages/workspace/src/chat/compose.ts",
+      "find": "  if (m.from.id === self) return { refused: \"that is your own message\" };\n",
+      "replace": "",
+      "expectRed": "a reply to your own DM or role task refuses",
+      "cell": "a reply to your own DM or role task refuses"
+    },
+    {
+      "name": "a channel reply loses its reply mark",
+      "file": "packages/workspace/src/chat/compose.ts",
+      "find": "  if (r.kind === \"channel\") return `#${oneLine(r.channel)}${r.replyTo ? \" (reply)\" : \"\"}`;\n",
+      "replace": "  if (r.kind === \"channel\") return `#${oneLine(r.channel)}`;\n",
+      "expectRed": "a channel reply reads as a reply",
+      "cell": "a channel reply reads as a reply"
+    },
+    {
+      "name": "settlePublish keeps a stored channel reply's replyTo",
+      "file": "packages/workspace/src/chat/compose.ts",
+      "find": "(to.kind === \"channel\" || to.kind === \"peer\") && to.replyTo",
+      "replace": "to.kind === \"peer\" && to.replyTo",
+      "expectRed": "a stored channel reply drops its replyTo and stays on the channel",
+      "cell": "a stored channel reply drops its replyTo and stays on the channel"
+    },
+    {
+      "name": "send drops replyTo",
+      "file": "packages/workspace/src/chat/native-session.ts",
+      "find": ", ...(replyTo !== undefined ? { replyTo } : {}) });",
+      "replace": " });",
+      "expectRed": "send with mentions and replyTo reaches the agent with both",
+      "cell": "send with mentions and replyTo reaches the agent with both",
+      "command": "pnpm smoke:chat-open:live"
+    },
+    {
+      "name": "publish sends no mentions, on a real broker",
+      "file": "packages/workspace/src/chat/compose.ts",
+      "find": "      return session.send(text, to.channel, mentionsIn(text), to.replyTo);\n",
+      "replace": "      return session.send(text, to.channel, mentionsIn(\"\"), to.replyTo);\n",
+      "expectRed": "the reply lands on #general with the @names in its text and the question's id",
+      "cell": "the reply lands on #general with the @names in its text and the question's id",
+      "command": "pnpm smoke:chat-open:live"
+    },
+    {
+      "name": "replyRecipient DMs a channel message's sender, on a real broker",
+      "file": "packages/workspace/src/chat/compose.ts",
+      "find": "  if (m.kind === \"channel\") {\n",
+      "replace": "  if (m.kind === \"channel\" && m.id === \"\") {\n",
+      "expectRed": "the agent's channel message is answered on its channel",
+      "cell": "the agent's channel message is answered on its channel",
+      "command": "pnpm smoke:chat-open:live"
+    },
+    {
+      "name": "a post outside a non-empty grant drops the reopen step",
+      "file": "packages/workspace/src/chat/native-session.ts",
+      "find": "grant. ${words.reopen(channel)}`;",
+      "replace": "grant`;",
+      "expectRed": "a post outside a non-empty grant names the reopen step too",
+      "cell": "a post outside a non-empty grant names the reopen step too",
+      "command": "pnpm --filter @cotal-ai/workspace build >/dev/null && pnpm --filter @cotal-ai/cli smoke:chat-pure",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "cotal chat --plain sends no mentions",
+      "file": "packages/workspace/src/chat/compose.ts",
+      "find": "      return session.send(text, to.channel, mentionsIn(text), to.replyTo);\n",
+      "replace": "      return session.send(text, to.channel, mentionsIn(\"\"), to.replyTo);\n",
+      "expectRed": "a --plain line `hi @peer` reaches a --stdio session named peer as a message that mentions it",
+      "cell": "a --plain line `hi @peer` reaches a --stdio session named peer as a message that mentions it",
+      "command": "pnpm --filter @cotal-ai/workspace build >/dev/null && pnpm smoke:chat-static:live",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    }
+  ]
+}

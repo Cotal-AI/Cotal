@@ -21,10 +21,9 @@
  */
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
-  EpEnvelopeError, openSessionRail, encodeTerminalData, terminalFrameBytes, decodeTerminalFrame,
+  EpEnvelopeError, openSessionRail, encodeTerminalData, terminalFrameBytes, decodeTerminalFrame, rejectionText,
   type SessionGrant, type SessionRail, type AttachSession, type TerminalFrame,
 } from "@cotal-ai/core";
-import { rejectionText } from "../rejection-text.js";
 
 /** The reference manager's terminal-cause vocabulary (the `end.reason` tokens it surfaces — a
  *  bounded subset of the generic §13.6 terminal-session `end` reason). `process-exit` = the child

@@ -10,12 +10,17 @@ const scratch = mkdtempSync(join(tmpdir(), 'cd-check-'));
 const staged = join(root, 'runtime'), relocated = join(scratch, 'runtime');
 const manifest = JSON.parse(readFileSync(join(staged, 'desktop-runtime.json'), 'utf8'));
 assert.match(manifest.target, /^[a-z0-9_-]+$/);
-const node = join(root, 'binaries', `cotal-node-${manifest.target}${process.platform === 'win32' ? '.exe' : ''}`);
+const sidecar = process.platform === 'win32' ? 'node' : 'cotal-node';
+const suffix = process.platform === 'win32' ? '.exe' : '';
+const stagedNode = join(root, 'binaries', `${sidecar}-${manifest.target}${suffix}`);
+const node = join(scratch, `${sidecar}${suffix}`);
 const home = join(scratch, 'home'); mkdirSync(home, { mode: 0o700 });
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH'].includes(key)));
 Object.assign(env, { HOME: home, USERPROFILE: home, APPDATA: join(home, 'appdata'), LOCALAPPDATA: join(home, 'localappdata'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, 'data'), XDG_CACHE_HOME: join(home, 'cache'), XDG_RUNTIME_DIR: join(home, 'run'), DO_NOT_TRACK: '1' });
 mkdirSync(env.XDG_RUNTIME_DIR, { mode: 0o700 });
 cpSync(staged, relocated, { recursive: true, verbatimSymlinks: true });
+// Exercise the installed basename, after Tauri removes the target suffix.
+cpSync(stagedNode, node, { errorOnExist: true, force: false });
 try {
   const cli = join(relocated, 'dist/cotal.js');
   const run = (args, input) => spawnSync(node, [cli, ...args], { cwd: scratch, env, input, encoding: 'utf8', timeout: 30000 });

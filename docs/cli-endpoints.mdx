@@ -36,7 +36,12 @@ cotal who [--waiting] [--all] [--json | --plain] [--space <s>] [--server <url>] 
 | `--plain` | off | The same report without color or marks |
 
 Reads the live presence roster of the selected space. Each row has the participant's name, role, kind, status and condition,
-activity, attention mode, harness, model and host, as its presence reports them. Infrastructure
+activity, attention mode, harness, model and host, as its presence reports them. A name that two or
+more live participants share is not an address, so each of those rows appends its instance id in
+brackets. A lone offline participant beside a live one of the same name does not, because a direct
+message by that name reaches the live one. `cotal_roster` marks the same rows, leaving out the
+session's own, since a direct message to its name reaches the other participant.
+Infrastructure
 endpoints are hidden unless `--all` asks for them; the report says how many it hid. A `cotal chat`
 session is a participant a person drives, so it is listed with the agents and never counted as
 infrastructure. The report adds a Kind column that names it `chat session`, and its JSON row carries

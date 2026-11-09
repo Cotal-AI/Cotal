@@ -11,13 +11,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import type { Key as InkKey } from "ink";
-import type { AdmittedChatSession, SessionEvent } from "@cotal-ai/workspace/chat";
+import { discloseChoice, endingNotice, parseRecipient, type AdmittedChatSession, type ChatWords, type Recipient, type SessionEvent } from "@cotal-ai/workspace/chat";
 import {
   addNotice,
   applyEvent,
   applyKey,
   composerRows,
-  endingNotice,
   headerRows,
   heardFrom,
   initialState,
@@ -25,12 +24,11 @@ import {
   transcriptRows,
   type ChatState,
   type Key,
-  type Recipient,
   type Row,
   type Tone,
 } from "./view.js";
 import { closeSession, runPublish, runSlash } from "./controller.js";
-import { discloseChoice, listChoices, parseRecipient, refusedDm, type Choice } from "./picker.js";
+import { listChoices, refusedDm, type Choice } from "./picker.js";
 
 const TONE_COLOR: Record<Tone, string | undefined> = {
   ok: "green",
@@ -66,6 +64,8 @@ export interface ChatViewProps {
   initialRecipient?: Recipient;
   /** A disclosure about the initial recipient, shown before anything else. */
   notice?: string;
+  /** The clauses the session's refusals end with, which a chosen recipient's warning ends with too. */
+  words: ChatWords;
   /** Whether the terminal reports Shift+Enter distinctly. Measured by the caller, never assumed. */
   shiftEnterDistinct: boolean;
   /** Called once with the final state after the session has been closed. */
@@ -74,7 +74,7 @@ export interface ChatViewProps {
 
 type Picker = { readonly choices: readonly Choice[]; readonly typed: string };
 
-export function ChatView({ session, initialRecipient, notice, shiftEnterDistinct, onDone }: ChatViewProps) {
+export function ChatView({ session, initialRecipient, notice, words, shiftEnterDistinct, onDone }: ChatViewProps) {
   const { stdout } = useStdout();
   const [size, setSize] = useState(() => ({ width: Math.max(20, stdout.columns ?? 80), height: Math.max(8, stdout.rows ?? 24) }));
   const [state, setState] = useState<ChatState>(() => {
@@ -150,11 +150,11 @@ export function ChatView({ session, initialRecipient, notice, shiftEnterDistinct
     const refused = await refusedDm(session, recipient);
     if (refused) return update(addNotice(latest.current, "failed", refused));
     setPicker(undefined);
-    const warning = await discloseChoice(session, recipient);
+    const warning = await discloseChoice(session, recipient, words);
     let s = setRecipient(latest.current, recipient);
     if (warning) s = addNotice(s, "waiting", warning);
     update(s);
-  }, [session, update]);
+  }, [session, words, update]);
 
   useInput((input, inkKey) => {
     const key = toKey(input, inkKey);
@@ -168,7 +168,7 @@ export function ChatView({ session, initialRecipient, notice, shiftEnterDistinct
       if (inkKey.return) {
         const n = Number(picker.typed);
         if (Number.isInteger(n) && n >= 1 && n <= picker.choices.length) return void choose(picker.choices[n - 1]!.recipient);
-        const parsed = parseRecipient(picker.typed);
+        const parsed = parseRecipient(picker.typed, "pick a number");
         if (!parsed.ok) return update(addNotice(latest.current, "failed", parsed.error));
         return void choose(parsed.recipient);
       }

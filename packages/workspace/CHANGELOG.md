@@ -1,5 +1,251 @@
 # @cotal-ai/workspace
 
+## 0.151.0
+
+### Minor Changes
+
+- dacb515: `cotal login` no longer warns that chat refuses when you have saved a chat name, and a refused chat name now names the remedy the surface you use offers. When no handle is recorded and no name is saved, `cotal login` names both `--name` and `cotal config set name`; with a saved name it says chat sessions use it. `resolveChatName` now requires the caller's own `remedy` option, so `cotal chat` still offers `--name` and the terminal app offers Change your name (ctrl+p). A sign-in with no handle on record now also lists that remedy.
+
+### Patch Changes
+
+- 143a69e: A plain spawn of a Claude seat whose startup showed no development-channels prompt now says that mesh traffic does not wake the seat while idle: the spawn result carries `startupNotice`, `cotal spawn` prints a `STARTUP_NOTICE` warning, the `cotal_spawn` result ends with the notice, and `cotal ps` marks the seat `no idle wake`. A connector declares this with `idleWakeNeedsConfirmed`.
+- e7cb990: A stop sent through `control` can now name the run it means, so a run that replaced it under the same name is never stopped instead. `control` takes an optional `expectedTarget` (the row's `id` and `lifecycleUid`) that it passes to the manager request, which sends nothing when the name now resolves to another run. `ManagedRow` now carries the `lifecycleUid` every manager already reports, and the refusal no longer speaks only of attaching.
+- Updated dependencies [c986cc1]
+- Updated dependencies [143a69e]
+- Updated dependencies [38f5bb2]
+- Updated dependencies [7350dcc]
+- Updated dependencies [6661f53]
+  - @cotal-ai/core@0.151.0
+
+## 0.150.0
+
+### Patch Changes
+
+- Updated dependencies [8e2ba65]
+  - @cotal-ai/core@0.150.0
+
+## 0.149.0
+
+### Minor Changes
+
+- 2d497ad: `createManagerInstanceIdentity` and `createAuthInstanceIdentity` take a function that returns the identity, and call it only when the root has no record. A caller that already holds an identity passes it back from that function. The manager and the auth service no longer read the record themselves before asking for one.
+
+### Patch Changes
+
+- Updated dependencies [7068f2b]
+- Updated dependencies [441ed3b]
+- Updated dependencies [dd76ef4]
+  - @cotal-ai/core@0.149.0
+
+## 0.148.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.2
+
+## 0.148.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.1
+
+## 0.148.0
+
+### Patch Changes
+
+- Updated dependencies [c8cf718]
+  - @cotal-ai/core@0.148.0
+
+## 0.147.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.8
+
+## 0.147.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.7
+
+## 0.147.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.6
+
+## 0.147.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.5
+
+## 0.147.4
+
+### Patch Changes
+
+- Updated dependencies [49e8694]
+  - @cotal-ai/core@0.147.4
+
+## 0.147.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.3
+
+## 0.147.2
+
+### Patch Changes
+
+- 30d8538: An @mention at the end of a sentence, such as `thanks @ops-lead.`, now reaches the person it names. `mentionsIn` ends each name on a letter, digit or `_`, because a chat name cannot end in `.` or `-`, so `cotal send`, `cotal chat`, the console and the dashboard no longer store the mention as `ops-lead.`. When a chat session's default name breaks the chat name rule, such as an OS login of `John Doe`, the refusal prints on its own and names `--name` and `cotal config set name`, and for a handle an older cotal recorded, signing in again. `cotal login` prints the chat name it recorded, or `none` with how to save one.
+- Updated dependencies [30d8538]
+  - @cotal-ai/core@0.147.2
+
+## 0.147.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.1
+
+## 0.147.0
+
+### Minor Changes
+
+- b8b0ff4: `cotal chat` opens a session under one stable name that agents can mention, with no random suffix. Without `--name`, it takes the new `name` preference (`cotal config set name <name>`), else your handle on a user-auth space, else your OS login on an open or static space. Every chat name is 1 to 128 letters, digits, `_`, `.` or `-`, starting and ending with a letter, digit or `_`, so an `@name` reaches it. Breaking: `--name` no longer accepts a name outside that rule, such as one with a space or an `@`. `cotal login` now records a handle, the IdP's preferred user name, else its email's local part, else its name, the first that is a valid chat name, and `userStatus` returns it as `login.name`. The email is never the handle, so it does not appear in the roster. A user-auth sign-in made by an older cotal, or one whose IdP gives no valid chat name, has no handle on record, so `cotal chat` refuses with `AUTH_REQUIRED` until you sign in again or save a name. Once a `name` preference is saved, an older cotal refuses every preferences read with `defaults has an unknown key "name"` until it is upgraded or this version removes the name with `cotal config unset name`. The workspace exports `resolveChatName`, `chatNameProblem`, `nameInUse` and `nameInUseText`, and a second session under a name in use is warned with both ways to change it.
+
+### Patch Changes
+
+- Updated dependencies [b8b0ff4]
+  - @cotal-ai/core@0.147.0
+
+## 0.146.0
+
+### Minor Changes
+
+- d312807: The shared listener proof type is `ListenerProof`, and its `target` is the store the attempt binds.
+- e3cfcdb: `cotal up` mints a read-only dashboard credential for a static space, its `web.creds`, and the `web` service preset uses it as the `--creds` default, so `cotal service start web` starts with no flags. `doctor auth` reports the file, and `clean` and a space reset remove it.
+
+### Patch Changes
+
+- Updated dependencies [4536cfe]
+- Updated dependencies [6cd9b65]
+  - @cotal-ai/core@0.146.0
+
+## 0.145.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.145.1
+
+## 0.145.0
+
+### Minor Changes
+
+- d7b0be0: Report a TCP listener that does not offer required TLS as `tls-unsupported`, rather than unreachable. Preserve the registration and show the transport mismatch in raw connection, registration and status diagnostics. Consumers of `ProbeResult` must handle the new failure reason.
+
+### Patch Changes
+
+- Updated dependencies [d7b0be0]
+  - @cotal-ai/core@0.145.0
+
+## 0.144.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.144.0
+
+## 0.143.0
+
+### Minor Changes
+
+- 3651b42: Refuse plaintext ws:// targets when TLS is required, both during mesh registration and when dialing existing records. Use wss:// for TLS-protected WebSocket connections. Keep ordinary plaintext loopback connections and WSS certificate and hostname verification unchanged.
+
+### Patch Changes
+
+- Updated dependencies [3651b42]
+  - @cotal-ai/core@0.143.0
+
+## 0.142.0
+
+### Minor Changes
+
+- 3ad82f7: `@cotal-ai/workspace/chat` now holds the rules `cotal chat` applies to a draft, so another terminal front end can follow them: typed recipients and their labels, the reply recipient, the Enter rule, how a publish outcome settles, slash commands and their outcome words, shared names, the ending notice and the close summary. `shownTime`, `concreteChannelProblem` and `offlineRecipientNotice` move to the `@cotal-ai/workspace` root. Breaking: `openChatSession` takes the front end's `words` (`ChatWords`) in place of `reopen`, so a session's refusals end with that front end's own steps; `grantRefusal` and `resolveDmTarget` take them too, and `parseRecipient` takes the front end's other way to choose a recipient. `cotal chat`, `--plain` and `--stdio` print the same output as before, except that a reply to a name only gone senders carry now calls them one-shot senders rather than `cotal send` commands.
+- e16b8d9: A `cotal chat` post on a channel, in the terminal view and in `--plain`, now carries the `@names` its text holds as mentions, as `cotal send -c` and the console do, so it wakes the agents it names. The shared chat reply rule, `replyRecipient`, takes the session's principal and answers a channel message on its channel with `replyTo`; replying to your own DM or role task refuses. `AdmittedChatSession.send` takes an optional `replyTo`. A send, join or channel mode outside a session's grant now always names the step that opens a session on that channel, and so does the warning when you choose such a channel as the recipient.
+
+### Patch Changes
+
+- Updated dependencies [32f93ed]
+  - @cotal-ai/core@0.142.0
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+- Updated dependencies [d389b22]
+- Updated dependencies [28b2628]
+  - @cotal-ai/core@0.141.11
+
+## 0.141.10
+
+### Patch Changes
+
+- 392b738: Read installed extension metadata through one parser and pass the operation's parsed result through version checks, peer binding, entry selection and import diagnosis. Missing packages remain distinct from damaged metadata and unreadable files. A package that changes its own metadata during import no longer changes the declared peer floor used to diagnose that import.
+- @cotal-ai/core@0.141.10
+
+## 0.141.9
+
+### Patch Changes
+
+- f6ec096: A missing-export import failure no longer drops an extension's declared `@cotal-ai/*` peer range when its `package.json` is corrupt or unreadable at diagnosis time. Before, the unreadable file was read as declaring no range, so `cotal ext add` or a later load ranked the pair without the floor (for a third-party package, "neither side can be named as behind ... is not a @cotal-ai/* package") and never mentioned the damaged file. The error now names that `package.json` by path, keeps the original import error, claims no ranking, and ends with the reinstall remedy.
+- Updated dependencies [8d5f0d5]
+  - @cotal-ai/core@0.141.9
+
+## 0.141.8
+
+### Patch Changes
+
+- Updated dependencies [29b229c]
+  - @cotal-ai/core@0.141.8
+
+## 0.141.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.7
+
+## 0.141.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.6
+
+## 0.141.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.5
+
+## 0.141.4
+
+### Patch Changes
+
+- d53d362: Component status now keeps the auth-service recovery hint when an exchanged bearer has an unreadable principal. It uses the workspace principal decoder instead of a separate copy, preserving the caller's owner, actor and lifecycle binding. The decoder is available from the workspace package for client-side inspection, not signature verification or authorization.
+- @cotal-ai/core@0.141.4
+
+## 0.141.3
+
+### Patch Changes
+
+- Updated dependencies [a77ee62]
+  - @cotal-ai/core@0.141.3
+
+## 0.141.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.2
+
 ## 0.141.1
 
 ### Patch Changes

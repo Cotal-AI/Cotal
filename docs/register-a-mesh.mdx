@@ -105,14 +105,17 @@ Registration determines where this machine may send agent credentials.
 NATS sends its first announcement before authentication, so an unprotected peer can impersonate the broker and collect those credentials.
 Choose one of these connection policies:
 
-- **Required TLS.** Set `--tls` or use a `tls://` URL. Hostnames and public addresses are accepted when the certificate chain and hostname identify the peer.
-  The TLS requirement is recorded and enforced on later connections.
+- **Required TLS.** Set `--tls` for TCP or use a `tls://` or `wss://` URL. A `ws://` address is refused when TLS is required, at registration and when an existing record is dialed. Use `wss://` instead; `--force` cannot waive this restriction.
+  Hostnames and public addresses are accepted when the certificate chain and hostname identify the peer. The TLS requirement is recorded and enforced on later connections.
 - **Loopback without TLS.** Use a loopback literal such as `127.0.0.0/8` or `::1`. A hostname is not accepted as a substitute.
 - **Private overlay without TLS.** Use a literal in `100.64.0.0/10` or `fd7a:115c:a1e0::/48` and pass `--allow-unencrypted-overlay`.
   The tunnel provides protection; Cotal cannot check that it is active.
 
 If the overlay tunnel is down, its address can be ordinary carrier-grade NAT and whoever answers may receive your credentials.
 The guided form asks you to accept that dependency too.
+When a TCP listener answers but does not offer the required TLS, Cotal reports that mismatch and keeps an existing registration.
+Check the broker address and configure TLS on the broker before retrying.
+
 Required TLS removes the need for that consent flag.
 For example, `cotal meshes add <space> --server nats://100.64.0.1 --tls` records required TLS without an overlay-consent prompt.
 
@@ -140,6 +143,12 @@ Registration checks `/health` and `/jwks` against the pinned issuer.
 It also checks that the broker refuses a bare connection.
 That refusal is the expected result.
 The bundle's deny-all sentinel credential goes into a private `0600` file under the entry's root, not the registry.
+
+To copy an existing remote user-auth registration to a connection file, run
+`cotal space export <name> --out <private-file>`. This also works for a discovered space whose
+project root has been bound elsewhere. The file contains its recorded pins and sentinel,
+not your sign-in session or account signer. Keep it private; existing output files are refused.
+See [Connection bundle export](cli-selection.mdx#connection-bundle-export) for the supported scope.
 
 ## Maintain mesh entries
 

@@ -9,7 +9,8 @@
  *      browser-origin requests and requests without the file-ACL capability.
  *   C. a real device-code login (auto-approved) + `cotal actor grant cli --sub …` → a plain
  *      `cotal send -c` connects USER-MODE (login → exchange → bearer → callout) and the message
- *      lands on the wire as the derived `u_….cli` principal (witnessed on a static admin tap);
+ *      lands on the wire as the derived `u_….cli` principal (witnessed on a static admin tap); a
+ *      `cotal chat --stdio` session connects as its own `u_….chat_…` principal and its send lands too;
  *      the ported operator surfaces: `channel` on the plain grant, `history clear --yes`
  *      refused without scope "admin" (naming the purger view + the ADD re-grant) then passing after it.
  *   D. the deny matrix at the operator surface: revoked actor → refused exchange with the reason;
@@ -120,7 +121,7 @@ const CLAUDE = join(import.meta.dirname, "..", "..", "..", "extensions", "connec
 /** Run the REAL binary (built dist through bin/cotal.ts) in the sandboxed workspace. ASYNC on
  *  purpose: a sync child would block this process's event loop — and the in-process IdP with it —
  *  deadlocking any subprocess step that calls back into the IdP (the user-mode send does). */
-function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string | undefined>; sandbox?: SmokeSandboxAnchor } = {}): Promise<{ status: number | null; out: string }> {
+function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string | undefined>; sandbox?: SmokeSandboxAnchor; input?: string } = {}): Promise<{ status: number | null; out: string }> {
   return new Promise((resolvePromise) => {
     const options = {
       cwd: opts.cwd ?? root,
@@ -131,6 +132,7 @@ function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: R
     let out = "";
     child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
     child.stderr.on("data", (d: Buffer) => { out += d.toString(); });
+    if (opts.input !== undefined) child.stdin.end(opts.input);
     const t = setTimeout(() => child.kill("SIGKILL"), opts.timeoutMs ?? 120_000);
     child.on("close", (status) => { clearTimeout(t); resolvePromise({ status, out }); });
   });
@@ -271,7 +273,7 @@ try {
   check("browser-origin exchange is rejected (403)", browser.status === 403);
 
   // ---------- C. login + grant + USER-MODE send ----------
-  console.log("C) device login + actor grant + user-mode `cotal send`");
+  console.log("C) device login + actor grant + user-mode `cotal send` and `cotal chat`");
   const { sub } = await establishIdpSession({
     dir: home, idpUrl: base, clientId: CLIENT_ID,
     onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode),
@@ -374,6 +376,26 @@ try {
   const arrived = await until(() => got.some((g) => hasText(g, "hello from user mode")));
   const frame = got.find((g) => hasText(g, "hello from user mode"));
   check("the witness receives it AS the derived u_….cli principal", arrived && /^u_[a-z2-7]{26}\.cli$/.test(frame?.from.id ?? ""), frame?.from);
+  // A user-mode chat session connects as its own `chat_` principal. No caller policy can name a
+  // chat session, so the callout mints it the agent leaf with no endpoint capability and never
+  // looks for an actor grant it does not have.
+  const request = (fields: Record<string, unknown>) => `${JSON.stringify({ schemaVersion: 1, ...fields })}\n`;
+  const chat = await cotal(["chat", "general", "--stdio", "--space", SPACE], {
+    input: request({ type: "connection", id: "c0" }) + request({ type: "send", id: "s1", channel: "general", text: "hello from a chat session" }),
+  });
+  type ChatRecord = { type?: string; id?: string; outcome?: string; result?: { state?: string; identity?: { mode?: string; principal?: string } } };
+  const chatRecords = chat.out.split("\n").filter((line) => line.startsWith("{")).flatMap((line): ChatRecord[] => {
+    try { return [JSON.parse(line) as ChatRecord]; } catch { return []; }
+  });
+  const connected = chatRecords.find((r) => r.type === "result" && r.id === "c0");
+  const chatPrincipal = connected?.result?.identity?.principal ?? "";
+  check("a user-mode `cotal chat --stdio` session connects as its own chat principal",
+    chat.status === 0 && connected?.outcome === "ok" && connected.result?.state === "connected" && connected.result.identity?.mode === "user"
+      && /^u_[a-z2-7]{26}\.chat_[a-z2-7]{26}$/.test(chatPrincipal), chat.out);
+  const chatArrived = await until(() => got.some((g) => hasText(g, "hello from a chat session")));
+  const chatFrame = got.find((g) => hasText(g, "hello from a chat session"));
+  check("…and its send reaches the witness as that chat principal",
+    chatRecords.some((r) => r.type === "result" && r.id === "s1" && r.outcome === "stored") && chatArrived && chatFrame?.from.id === chatPrincipal, chatFrame?.from);
   // Own-agent control TIER ROUTING: on a user mesh, `cotal stop`/`attach` ride the operator's own
   // bearer on the SPAWN (privileged) tier — a spawn-scoped grant (no admin) must REACH the manager
   // and get ITS decision back. Before this routing, the CLI published on ctl.admin and the broker

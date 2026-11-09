@@ -2,6 +2,9 @@ import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { useMemo, useState } from "react";
 import type { ActivityEntry, FeedMessage } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
+import { Alert, AlertDescription, AlertTitle } from "#client/ui/shadcn/alert.tsx";
+import { ToggleGroup, ToggleGroupItem } from "#client/ui/shadcn/toggle-group.tsx";
+import { Tooltip, TooltipContent, TooltipTrigger } from "#client/ui/shadcn/tooltip.tsx";
 import { claimedBy } from "../../lib/claims.js";
 import { displayNameOf, nameIndex, type NameIndex } from "../../lib/names.js";
 import { rosterRows } from "../../lib/roster.js";
@@ -10,17 +13,21 @@ import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
 import { MessageRow } from "../MessageRow.tsx";
+import { SidebarToggle } from "../SidebarToggle.tsx";
 import { StaleMarker } from "../StaleMarker.tsx";
 import { EmptySpace, hasAgents } from "./EmptySpace.tsx";
 
 type Entry = ActivityEntry | FeedMessage;
 
+/** What the Show filter keeps: everything, or one delivery mode. */
+type Filter = "all" | Entry["mode"];
+
 /** The filter chips: everything, or one delivery mode (channel posts, direct messages, role requests). */
-const FILTERS: { label: string; mode?: Entry["mode"] }[] = [
-  { label: "All" },
-  { label: "Channels", mode: "chat" },
-  { label: "Direct", mode: "unicast" },
-  { label: "Roles", mode: "anycast" },
+const FILTERS: { label: string; value: Filter }[] = [
+  { label: "All", value: "all" },
+  { label: "Channels", value: "chat" },
+  { label: "Direct", value: "unicast" },
+  { label: "Roles", value: "anycast" },
 ];
 
 /** Where a message went, from the field the wire sets for its mode. A channel is the one the server
@@ -33,17 +40,26 @@ function placeOf(e: Entry, idx: NameIndex): string | null {
 }
 
 /** The banner over a partial page (mock section B, Partial): the marker, how many sources answered,
- *  which half of the feed the page holds, and the server's reasons on hover. */
+ *  which half of the feed the page holds, and the server's reasons as its Tooltip and its screen reader
+ *  text. */
 function PartialBanner({ banner }: { banner: NonNullable<ReturnType<typeof partialBanner>> }) {
   return (
-    <div className="s-banner" role="status" title={banner.title}>
-      <Icon icon={Alert02Icon} size={18} className="ui-ic" />
-      <div>
-        <b>{banner.label}</b>
-        {banner.count && <> <span>{banner.count}</span></>}
-        {banner.body && <><br /><span>{banner.body}</span></>}
-      </div>
-    </div>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Alert role="status">
+          <Icon icon={Alert02Icon} />
+          <AlertTitle>{banner.label}</AlertTitle>
+          {(banner.count || banner.body) && (
+            <AlertDescription>
+              {banner.count && <div>{banner.count}</div>}
+              {banner.body && <div>{banner.body}</div>}
+            </AlertDescription>
+          )}
+          <div className="ui-sr">{banner.title}</div>
+        </Alert>
+      </TooltipTrigger>
+      <TooltipContent>{banner.title}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -57,9 +73,10 @@ export function ActivityView({ store }: { store: Store<DashboardState> }) {
   const activity = useStore(store, (s) => s.activity);
   const roster = useStore(store, (s) => s.roster);
   const space = useStore(store, (s) => s.space);
+  const self = useStore(store, (s) => s.operatorId);
   const stale = useStore(store, (s) => s.stale);
   const partial = partialBanner(stale);
-  const [filter, setFilter] = useState<Entry["mode"] | undefined>(undefined);
+  const [filter, setFilter] = useState<Filter>("all");
   const idx = useMemo(() => nameIndex(roster), [roster]);
   const rows = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
   const peers = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
@@ -71,22 +88,26 @@ export function ActivityView({ store }: { store: Store<DashboardState> }) {
       .map((e, i) => ({ e, claim: e.mode === "anycast" ? claimedBy(e.msg.id, later.slice(i + 1)) : undefined }))
       .reverse();
   }, [activity]);
-  const shown = filter === undefined ? listed : listed.filter(({ e }) => e.mode === filter);
+  const shown = filter === "all" ? listed : listed.filter(({ e }) => e.mode === filter);
   return (
     <>
       <header className="ui-bar">
+        <SidebarToggle />
         <h1>Activity</h1>
-        {!partial && <StaleMarker store={store} id={null} />}
+        {!partial && <StaleMarker store={store} inHeader />}
         <span className="ui-sp" />
-        <span className="v3-toggle" role="group" aria-label="Show">
+        <ToggleGroup type="single" size="sm" aria-label="Show" value={filter} onValueChange={(next) => {
+          const picked = FILTERS.find((f) => f.value === next);
+          if (picked) setFilter(picked.value);
+        }}>
           {FILTERS.map((f) => (
-            <button key={f.label} type="button" aria-pressed={filter === f.mode} onClick={() => setFilter(f.mode)}>{f.label}</button>
+            <ToggleGroupItem key={f.value} value={f.value}>{f.label}</ToggleGroupItem>
           ))}
-        </span>
+        </ToggleGroup>
       </header>
       <div className="ui-scroll">
         {!hasAgents(roster) && <EmptySpace space={space} />}
-        <div className="ui-col">
+        <div className="ui-col flex flex-col gap-8">
           {partial && <PartialBanner banner={partial} />}
           {shown.map(({ e, claim }) => {
             const senderId = (e as FeedMessage).senderId;
@@ -98,6 +119,7 @@ export function ActivityView({ store }: { store: Store<DashboardState> }) {
                 mode={e.mode}
                 idx={idx}
                 peers={peers}
+                own={senderId !== undefined && senderId === self}
                 mention="operator"
                 claim={claim}
                 place={placeOf(e, idx)}

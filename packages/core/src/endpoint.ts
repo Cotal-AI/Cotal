@@ -15,6 +15,7 @@ import {
   RequestError,
   TimeoutError,
   ClosedConnectionError,
+  ConnectionError,
   type NatsConnection,
   type Msg,
   type Subscription,
@@ -862,6 +863,8 @@ export class CotalEndpoint extends EventEmitter {
    *  refusal to the refused subscription's callback and then dispatches that same instance on the
    *  connection status, so the callback owns it (see {@link subscribeChat}) and watchStatus skips it. */
   private readonly chatSubRefusals = new WeakSet<PermissionViolationError>();
+  /** Service iterators and connection status can receive the same subscription denial. */
+  private readonly reportedSubRefusals = new WeakSet<PermissionViolationError>();
   /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches and
    *  running membership scans (see {@link recordOwnWatchConsumer}). */
   private readonly ownWatchDeletePrefixes = new Set<string>();
@@ -1703,8 +1706,12 @@ export class CotalEndpoint extends EventEmitter {
     if (this.stopped) return;
     clearTimeout(this.credsTimer);
     // 1s floor (vs the bearer's 5s): standing-renewal smokes exercise second-scale TTLs; production
-    // lifetimes are hours+ so the floor never engages there.
-    this.credsTimer = setTimeout(() => void this.renewCredsOnTimer(), Math.max(1_000, delayMs));
+    // lifetimes are hours+ so the floor never engages there. Node fires a delay above 2^31-1 ms after
+    // 1 ms, and a terminal seat's credential can run to 2106, so a later renewal waits in steps of
+    // that bound.
+    this.credsTimer = delayMs > MAX_TIMER_MS
+      ? setTimeout(() => this.armCredsRefresh(delayMs - MAX_TIMER_MS), MAX_TIMER_MS)
+      : setTimeout(() => void this.renewCredsOnTimer(), Math.max(1_000, delayMs));
     this.credsTimer.unref?.();
   }
 
@@ -2849,7 +2856,9 @@ export class CotalEndpoint extends EventEmitter {
         if (own) void answer().catch((e) => this.emit("error", e as Error));
         else inOrder = inOrder.then(answer).catch((e) => { this.emit("error", e as Error); });
       }
-    })().catch((e) => this.emit("error", e as Error));
+    })().catch((e) => {
+      if (!this.reportSubscriptionDenial(e)) this.emit("error", e as Error);
+    });
     return sub;
   }
 
@@ -2999,7 +3008,7 @@ export class CotalEndpoint extends EventEmitter {
         const q = await this.invokeService(endpoint, "goal-result", { goalId }, {
           deadlineMs: Math.min(deadlineMs, context.deadlineMs), signal: context.signal,
         });
-        if (q.reply.ok !== true) throw new Error(q.reply.error?.message ?? "goal-result query refused");
+        if (q.reply.ok !== true) throw new Error(q.reply.error.message);
         return q.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
       });
       return await submitAndFollowGoal(this.nc, this.space, endpoint, this.serviceCaller(), deadlineMs, submit, {
@@ -3197,7 +3206,7 @@ export class CotalEndpoint extends EventEmitter {
           // class that is churning.
           this.emit("split-recovered", {
             endpoint, command, servedBy: r.responder, splitsRecovered: this.splitsRecovered,
-            boundTo: (r.reply.error?.details ?? []).find(
+            boundTo: (r.reply.error.details ?? []).find(
               (d): d is EpBindRefusedDetail => d.kind === EP_BIND_REFUSED,
             )?.boundTo,
           });
@@ -3212,11 +3221,11 @@ export class CotalEndpoint extends EventEmitter {
           // `expired` for the same instance at ANY other epoch — the fence does not compare
           // direction, so a superseded incarnation still answering produces it too); the marker on
           // any other code is incoherent, so it is rejected rather than trusted (§13.3).
-          const raw = r.reply.error?.code;
+          const raw = r.reply.error.code;
           const refusalCode = raw === "expired" ? ("expired" as const)
             : raw === "failed-precondition" ? ("failed-precondition" as const) : undefined;
           if (refusalCode === undefined)
-            throw new EpEnvelopeError("internal", `${endpoint}.${command} came back marked as refused before it ran, but with code ${String(raw)}; the fence produces only failed-precondition or expired (SPEC 13.2)`, r.reply.error?.details);
+            throw new EpEnvelopeError("internal", `${endpoint}.${command} came back marked as refused before it ran, but with code ${String(raw)}; the fence produces only failed-precondition or expired (SPEC 13.2)`, r.reply.error.details);
           // ONLY THE RESOLVE IS WRAPPED — do not widen this `try` to cover the re-issue. A re-issue
           // that PUBLISHED AND RAN can still throw (an unfenced responder answers and the post-reply
           // currency check raises `respondedButUnbound`); wrapping that as the first hop's refusal
@@ -3228,12 +3237,12 @@ export class CotalEndpoint extends EventEmitter {
           try {
             reissueTarget = await resolve(signal);
             const unfollowable = opts.follow ? goalFollowRefusal(reissueTarget) : undefined;
-            if (unfollowable) throw new Error(unfollowable.reply.error!.message);
+            if (unfollowable) throw new Error(unfollowable.reply.error.message);
           } catch (reissue) {
             throw new EpEnvelopeError(
               refusalCode,
               `${endpoint}.${command} WAS NOT RUN - the incarnation that received it refused it before any effect, and the re-issue could not be resolved: ${reissue instanceof Error ? reissue.message : String(reissue)}. Re-resolve and re-issue when the endpoint is reachable (SPEC 13.2)`,
-              r.reply.error?.details,
+              r.reply.error.details,
               // §13.3: the message asserts the command did not run, so the FIELD a caller keys on
               // must assert it too. Omitted, it MUST be read as `unknown`, which is the opposite of
               // what this path knows: the responder fenced the call before any effect and the
@@ -4861,7 +4870,7 @@ export class CotalEndpoint extends EventEmitter {
         if (s.error instanceof PermissionViolationError && s.error.operation === "publish"
           && this.isOwnWatchDelete(s.error.subject))
           continue;
-        this.emit("error", describeStatusError(s.error));
+        if (!this.reportSubscriptionDenial(s.error)) this.emit("error", describeStatusError(s.error));
       }
     })().catch((e) => {
       // Defensive symmetry with the reachable in-loop epoch guard above. Measured against five real
@@ -4882,20 +4891,46 @@ export class CotalEndpoint extends EventEmitter {
     this.emit("transport", { connected: true, server: nc.getServer() } satisfies TransportState);
   }
 
+  /** Report a subscription denial once by error identity, whichever reporting path receives it first. */
+  private reportSubscriptionDenial(error: unknown): boolean {
+    if (!(error instanceof PermissionViolationError) || error.operation !== "subscription") return false;
+    if (!this.reportedSubRefusals.has(error)) {
+      this.reportedSubRefusals.add(error);
+      this.emit("error", describeStatusError(error));
+    }
+    return true;
+  }
+
   /** Wrap `nc.request` to record each publish denial nats.js rejects one of this connection's requests
-   *  with. nats.js rejects the pending request on the denied subject with the denial and then dispatches
-   *  that same error instance on the connection status, so the caller that received it (an empty history
-   *  read, a refused consumer delete, nats.js's own delete of a rebuilt watch's predecessor) owns it and
-   *  the status loop skips it. nats.js settles the request before it dispatches the status and this
+   *  with, and to keep one class of request off the wire. nats.js rejects the pending request on the
+   *  denied subject with the denial and then dispatches that same error instance on the connection
+   *  status, so the caller that received it (an empty history read, a refused consumer delete) owns it
+   *  and the status loop skips it. nats.js settles the request before it dispatches the status and this
    *  reaction sits directly on the promise it returns, so it runs before the status loop body, which is
    *  further microtasks away behind the status iterator. Any other denial is a different instance and is
    *  not recorded, including one on the same subject and one that arrives after its request timed out.
    *  A refused request inbox is rejected into every pending request but breaks every later one, so it
-   *  is not recorded either. */
+   *  is not recorded either.
+   *
+   *  The request that never reaches the broker is a delete of this connection's own watch consumer
+   *  whose subject the credential's publish claims exclude (#4123). nats.js rebuilds an ordered
+   *  consumer after a stall or a delivery gap by deleting its predecessor itself, with no hook before
+   *  the send and the refusal ignored, so the endpoint's own cleanup checks never see it. The claims
+   *  that exclude the subject are the same ones {@link watchConsumerDeleteDenied} reads, and unknown
+   *  claims still send: the broker remains the authority for every request that leaves. The rejection
+   *  handed back is the one a broker refusal produces, so the caller that ignores a refusal ignores
+   *  this one and the status loop treats it as a refusal it already owns. */
   private trackRequestDenials(nc: NatsConnection): WeakSet<PermissionViolationError> {
     const handed = new WeakSet<PermissionViolationError>();
     const request = nc.request.bind(nc);
     nc.request = (subject, payload, opts) => {
+      if (typeof subject === "string" && this.ungrantedOwnWatchDelete(subject)) {
+        const violation = new PermissionViolationError(
+          `Permissions Violation for Publish to "${subject}"`, "publish", subject,
+        );
+        handed.add(violation);
+        return Promise.reject(new RequestError("permissions violation", { cause: violation }));
+      }
       const reply = request(subject, payload, opts);
       reply.catch(({ cause }: Error) => {
         if (cause instanceof PermissionViolationError && cause.operation === "publish") handed.add(cause);
@@ -4903,6 +4938,14 @@ export class CotalEndpoint extends EventEmitter {
       return reply;
     };
     return handed;
+  }
+
+  /** A delete of one of this connection's own recorded watch consumers that its publish claims
+   *  exclude. Any other subject, and a delete whose claims are unknown, is sent. */
+  private ungrantedOwnWatchDelete(subject: string): boolean {
+    if (!this.isOwnWatchDelete(subject)) return false;
+    const permission = this.watchDeletePermissions.get(this.nc!)?.();
+    return Boolean(permission && !issuedPermitsSubject(permission, subject));
   }
 
   /** The error message for a guard that finds the endpoint unbound: "reconnecting" during a
@@ -8916,15 +8959,18 @@ export function defaultProbeTimeoutMs(servers: string): number {
 /** Pick the dial function by SCHEME: `ws://`/`wss://` servers go through nats-core's
  *  `wsconnect` (the websocket transport - e.g. a broker published through an HTTPS edge at
  *  `wss://host/path`), everything else through the TCP transport. The websocket dial OWNS its
- *  transport options: the URL scheme already decides TLS there, and the w3c transport refuses a
- *  `tls` block outright ("'tls' is not configurable"), so it is stripped here — at the one point
- *  that knows which transport is dialing — rather than at every caller composing auth options.
+ *  transport options: a required TLS connection refuses any `ws://` target before dialing.
+ *  `wss://` performs TLS itself, and the w3c transport refuses a `tls` block outright
+ *  ("'tls' is not configurable"), so the block is removed after that check.
  *  A TCP dial that requires TLS to one IP address names that address as the host its certificate
  *  must cover (see {@link withDialedTlsHost}). */
 export function dialerFor(servers: string): typeof connect {
   if (!wsServers(servers)) return ((opts?: Parameters<typeof connect>[0]) => connect(withDialedTlsHost(servers, opts))) as typeof connect;
   return ((opts: Parameters<typeof connect>[0]) => {
-    const { tls: _tls, ...rest } = (opts ?? {}) as Record<string, unknown>;
+    const { tls, ...rest } = (opts ?? {}) as Record<string, unknown>;
+    const targets = Array.isArray(rest.servers) ? rest.servers : String(rest.servers ?? servers).split(",");
+    if (tls && targets.some((target) => !/^wss:\/\//i.test(String(target).trim())))
+      return Promise.reject(new Error("TLS-required WebSocket connections must use wss:// for every server"));
     return (wsconnect as unknown as typeof connect)(rest as Parameters<typeof connect>[0]);
   }) as typeof connect;
 }
@@ -9132,6 +9178,7 @@ export type ProbeResult =
   | { ok: false; reason: "auth-required"; inferred?: true }
   | { ok: false; reason: "stale-auth" }
   | { ok: false; reason: "unreachable" }
+  | { ok: false; reason: "tls-unsupported" }
   | { ok: false; reason: "timeout" };
 
 /** Like {@link isReachable}, but distinguishes "up but won't take these creds" from "nothing there".
@@ -9207,6 +9254,10 @@ function classifyProbeFailure(e: unknown, opts: AuthOpts, authRequired = false, 
   // and grading it `unreachable` made a TLS-required target read as a trust failure (#851). Only
   // nats-core's TimeoutError means that: a peer's `-ERR` that mentions a timeout answered at once.
   if (e instanceof TimeoutError) return { ok: false, reason: "timeout" };
+  // The native client read a greeting without TLS support and refused the TLS requirement.
+  // That is a transport mismatch, not an unreachable listener or proof of mesh identity.
+  if (e instanceof ConnectionError && e.message === "server does not support 'tls'")
+    return { ok: false, reason: "tls-unsupported" };
   // A broker that greeted us asking for auth and then reset the handshake most likely refused it.
   // Windows can discard its `-ERR 'Authorization Violation'` when the reset lands, so the client
   // sees only ECONNRESET, and a running auth broker used to read as gone. No rejection was read, so

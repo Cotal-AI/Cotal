@@ -30,7 +30,11 @@
 import { spawn } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { compileContract, VOID_SCHEMA } from "@cotal-ai/core";
+import {
+  compileContract, VOID_SCHEMA, SPAWN_INPUT_SCHEMA, SPAWN_OUTPUT_SCHEMA,
+  GRACEFUL_INPUT_SCHEMA, STOP_OUTPUT_SCHEMA, INSPECT_INPUT_SCHEMA, AGENT_ROW_SCHEMA,
+  CANCEL_INPUT_SCHEMA, TURN_YIELD_OUTPUT_SCHEMA,
+} from "@cotal-ai/core";
 import { managerClusterDocument, managerContractArtifactValues } from "../src/manager-service-contract.js";
 
 let checked = 0;
@@ -137,6 +141,30 @@ let digestOk = false;
     refused++;
     console.log(`  FAIL  cluster document digest != compiled closure digest (${first.name}): ${first.inputDigest} vs ${pair.input.closureDigest}`);
   }
+}
+
+// Runtime stand-ins and the manager must compile the same immutable command shapes.
+const shared = [
+  ["spawn", "input", SPAWN_INPUT_SCHEMA], ["spawn", "output", SPAWN_OUTPUT_SCHEMA],
+  ["despawn", "input", GRACEFUL_INPUT_SCHEMA], ["despawn", "output", STOP_OUTPUT_SCHEMA],
+  ["inspect", "input", INSPECT_INPUT_SCHEMA], ["inspect", "output", AGENT_ROW_SCHEMA],
+  ["cancel", "input", CANCEL_INPUT_SCHEMA], ["cancel", "output", TURN_YIELD_OUTPUT_SCHEMA],
+] as const;
+const deeplyFrozen = (value: unknown): boolean => value === null || typeof value !== "object" ||
+  (Object.isFrozen(value) && Object.values(value).every(deeplyFrozen));
+const { MANAGER_CONTRACTS } = await import("../src/manager-service-contract.js");
+let sharedChecked = 0;
+for (const [command, direction, root] of shared) {
+  const actual = compileContract({ root }).closureDigest;
+  const valid = actual === MANAGER_CONTRACTS[command][direction].closureDigest && deeplyFrozen(root);
+  sharedChecked++;
+  checked++;
+  if (!valid) refused++;
+  console.log(`  ${valid ? "ok  " : "FAIL"}  shared ${command} ${direction} is frozen and matches the manager`);
+}
+if (sharedChecked !== 8) {
+  refused++;
+  console.log(`  FAIL  checked ${sharedChecked} shared command schemas, expected 8`);
 }
 
 const pass = refused === 0 && enough && lazyOk;

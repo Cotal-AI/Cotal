@@ -1,5 +1,139 @@
 # @cotal-ai/connector-claude-code
 
+## 0.151.0
+
+### Patch Changes
+
+- 143a69e: A plain spawn of a Claude seat whose startup showed no development-channels prompt now says that mesh traffic does not wake the seat while idle: the spawn result carries `startupNotice`, `cotal spawn` prints a `STARTUP_NOTICE` warning, the `cotal_spawn` result ends with the notice, and `cotal ps` marks the seat `no idle wake`. A connector declares this with `idleWakeNeedsConfirmed`.
+
+## 0.150.0
+
+No changes in this release.
+
+## 0.149.0
+
+No changes in this release.
+
+## 0.148.2
+
+No changes in this release.
+
+## 0.148.1
+
+No changes in this release.
+
+## 0.148.0
+
+### Patch Changes
+
+- c8cf718: Your own Claude Code and Codex conversations can now join an open or static mesh this computer runs with `cotal up`, not only a signed-in space. A natively bound conversation's `cotal_connect` opens its identity at once with the grant a bare `cotal spawn` gets on that mesh: the default persona's channels, role and capabilities, or the part of them a selection names. Concurrent requests for the same native session are serialized so they cannot create two identities. On a static mesh the space's local signing authority issues it as a terminal seat under its own lifecycle, and disconnecting, ending the session, or the next connection after a killed plugin server retires it with its issuance and broker footprint. A call without a native session, and a static mesh whose signing authority this account does not hold, open nothing. Signed-in spaces still require a person's approval. An endpoint whose credential expires more than about 24.8 days out, such as a terminal seat's with no expiry, no longer refreshes in a 1 ms loop and fails to connect.
+
+## 0.147.8
+
+No changes in this release.
+
+## 0.147.7
+
+No changes in this release.
+
+## 0.147.6
+
+No changes in this release.
+
+## 0.147.5
+
+No changes in this release.
+
+## 0.147.4
+
+No changes in this release.
+
+## 0.147.3
+
+No changes in this release.
+
+## 0.147.2
+
+No changes in this release.
+
+## 0.147.1
+
+No changes in this release.
+
+## 0.147.0
+
+No changes in this release.
+
+## 0.146.0
+
+No changes in this release.
+
+## 0.145.1
+
+No changes in this release.
+
+## 0.145.0
+
+### Minor Changes
+
+- 20f8ff2: A managed Claude Code seat wakes on peer messages again. Claude Code binds the `server:cotal` wake channel only to a server its own configuration declares, the user config or the project's `.mcp.json`, and never to the launch's `--mcp-config` entry alone; a seat launched without one joined the mesh, reported idle and let every turn and direct message expire. `cotal setup` and `cotal update` now register the plugin's server as the user-scope MCP entry `cotal` (`claude mcp add --scope user`, the same command and arguments as the plugin's own server, so a plain session runs one process), a carried seat's private home declares it, `cotal status` reports it under `Claude wake channel`, and a managed launch whose user config and project `.mcp.json` declare no `cotal` server is refused with a message naming `cotal setup`. Run `cotal update` on each machine that spawns Claude seats; `docs/UPGRADING.md` has the details.
+
+## 0.144.0
+
+### Minor Changes
+
+- f792696: Refuse MCP environment references to reserved per-seat COTAL names before launch, preventing a spawned agent from inheriting its parent's role or model. Keep non-COTAL references and machine-wide operator variables available.
+
+## 0.143.0
+
+No changes in this release.
+
+## 0.142.0
+
+No changes in this release.
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+
+## 0.141.10
+
+No changes in this release.
+
+## 0.141.9
+
+No changes in this release.
+
+## 0.141.8
+
+No changes in this release.
+
+## 0.141.7
+
+No changes in this release.
+
+## 0.141.6
+
+No changes in this release.
+
+## 0.141.5
+
+No changes in this release.
+
+## 0.141.4
+
+No changes in this release.
+
+## 0.141.3
+
+No changes in this release.
+
+## 0.141.2
+
+No changes in this release.
+
 ## 0.141.1
 
 No changes in this release.

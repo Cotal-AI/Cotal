@@ -9,6 +9,7 @@ import { clock as hhmm } from "../../lib/time.js";
 import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
+import { Badge } from "#client/ui/shadcn/badge.tsx";
 import { AttentionMark } from "../Attention.tsx";
 import { Avatar } from "../Avatar.tsx";
 import { CopyCommand } from "../CopyCommand.tsx";
@@ -95,7 +96,7 @@ export function AgentProfile({ store, id, clock = Date.now }: { store: Store<Das
         {skills.length > 0 && (
           <>
             <h5 style={{ marginTop: 10 }}>Skills</h5>
-            <div className="ui-tags">{skills.map((s) => <span key={s} className="ui-chip">{s}</span>)}</div>
+            <div className="ui-tags">{skills.map((s) => <Badge key={s} variant="secondary">{s}</Badge>)}</div>
           </>
         )}
       </div>

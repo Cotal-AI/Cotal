@@ -233,14 +233,15 @@ for (const named of SPARE_COVERAGE) {
 }
 
 const managerSrc = readFileSync(join(ROOT, "implementations/manager/src/manager.ts"), "utf8");
-const detach = managerSrc.match(/private releaseManagedAgents\(\): string\[\] \{([\s\S]*?)\n  \}/)?.[1] ?? "";
-check("releaseManagedAgents is present in manager.ts", detach.includes("const managed = [...this.agents.values()]"));
+const detach = managerSrc.match(/private releaseManagedAgents\(\): \{ failures: string\[\]; stop: ManagedAgent\[\] \} \{([\s\S]*?)\n  \}/)?.[1] ?? "";
+check("releaseManagedAgents is present in manager.ts", detach.includes("for (const a of [...this.agents.values()])"));
 check("releaseManagedAgents does not optional-chain close", !/close\?\./.test(detach), detach);
-// The PTY-release predicate lives in isProcessBoundSeat, which releaseManagedAgents filters by.
+// The PTY-release predicate lives in isProcessBoundSeat; releaseManagedAgents leaves such a seat for
+// the caller to stop before it releases anything.
 const processBound = managerSrc.match(/private isProcessBoundSeat\(agent: ManagedAgent\): boolean \{([\s\S]*?)\n  \}/)?.[1] ?? "";
 check(
   "releaseManagedAgents validates PTY release before invoking handles",
-  /\.filter\(\(a\) => !this\.isProcessBoundSeat\(a\)\)/.test(detach)
+  /if \(this\.isProcessBoundSeat\(a\)\) \{\s*stop\.push\(a\);\s*continue;/.test(detach)
     && /agent\.handle\.kind === "pty"/.test(processBound) && /typeof agent\.handle\.release !== "function"/.test(processBound)
     && /a\.handle\.release\?\.\(\)/.test(detach),
   { detach, processBound },

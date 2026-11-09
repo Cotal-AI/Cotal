@@ -27,6 +27,7 @@ import { loadAgentPage, Shell } from "../client/src/Shell.tsx";
 import { Compose } from "../client/src/ui/Composer.tsx";
 import { AgentPage } from "../client/src/ui/views/AgentPage.tsx";
 import { mount } from "./mount.js";
+import { inShell } from "./providers.js";
 
 let n = 0;
 const ok = (name: string, cond: unknown, detail?: unknown) => {
@@ -117,10 +118,10 @@ const dmd = (id: string, body: string, ts = T, history = false): StoredMessage =
 const TEAM = { label: "#team", route: { view: "channel", channel: "team" } } as const;
 /** The page for engine on `tab`, with the fake controller as the composer's too. */
 const view = (store: Store<DashboardState>, ctl: Controller, opts: { at?: string; tab?: AgentTab; phone?: boolean } = {}) =>
-  createElement(Compose.Provider, { value: ctl }, createElement(AgentPage, {
+  inShell(createElement(Compose.Provider, { value: ctl }, createElement(AgentPage, {
     store, controller: ctl, id: ENGINE, tab: opts.tab ?? "work", back: TEAM, panelOpen: false, onTogglePanel: () => undefined,
     ...(opts.at === undefined ? {} : { at: opts.at }), ...(opts.phone ? { phone: true } : {}),
-  }));
+  })));
 /** Mount the page over `patch` and hand back its root, the recorder and the store. */
 const open = async (patch: Partial<DashboardState>, opts: { at?: string; tab?: AgentTab; phone?: boolean } = {}) => {
   const f = fake();
@@ -152,7 +153,7 @@ const work = (root: ParentNode) => root.querySelector('[role=tabpanel][data-stat
   const { root, m } = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({ load: "loading" }) } });
   const busy = root.querySelector('[aria-busy="true"]');
   ok("2.1 loading draws the skeleton rows, busy, under the real header and tabs",
-    busy !== null && all(busy, ".ui-skel").length === 6 && text(root.querySelector(".ox-head h1")) === "engine"
+    busy !== null && all(busy, "[data-slot=skeleton]").length === 6 && text(root.querySelector(".ox-head h1")) === "engine"
       && all(root, "[role=tab]").length === 3 && root.querySelector(".ox-work") === null,
     root.innerHTML.slice(0, 400));
   await m.unmount();
@@ -161,10 +162,10 @@ const work = (root: ParentNode) => root.querySelector('[role=tabpanel][data-stat
   const reason = "permissions violation for subscription to <b>events.mohamed.lead</b>";
   const grant = "cotal actor grant <reader> --owner mohamed --scope '' --allow-subscribe 'events.mohamed.lead' --allow-publish ''";
   const { root, m } = await open({ roster: [entry("idle", "on")], sessions: { [ENGINE]: session({ load: "refused", reason, grant }) } });
-  const empty = root.querySelector(".ui-sess-empty");
+  const empty = root.querySelector("[data-slot=empty]");
   same("2.2 refused names the agent's work, quotes the broker's reason as text and offers the grant to copy",
     {
-      title: text(empty?.querySelector("b")),
+      title: text(empty?.querySelector("[data-slot=empty-title]")),
       paras: all(empty ?? root, "p").map(text),
       markup: (empty?.querySelectorAll("p b").length ?? -1),
       grant: text(empty?.querySelector(".ui-cmd code")),
@@ -179,11 +180,11 @@ const work = (root: ParentNode) => root.querySelector('[role=tabpanel][data-stat
 }
 {
   const { root, f, m } = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({ load: "failed", reason: "engine events refused with HTTP 502" }) } });
-  const empty = root.querySelector(".ui-sess-empty");
+  const empty = root.querySelector("[data-slot=empty]");
   const retry = all(root, "button").find((b) => text(b) === "Try again");
   await m.run(() => click(retry));
   same("2.3 failed with nothing held says the work didn't load, gives the reason, and Try again reloads it",
-    { title: text(empty?.querySelector("b")), reason: text(empty?.querySelector("p")), calls: f.named("reloadSession") },
+    { title: text(empty?.querySelector("[data-slot=empty-title]")), reason: text(empty?.querySelector("p")), calls: f.named("reloadSession") },
     { title: "engine's work didn't load", reason: "engine events refused with HTTP 502", calls: [`reloadSession("${ENGINE}")`] });
   await m.unmount();
 }
@@ -191,10 +192,10 @@ const work = (root: ParentNode) => root.querySelector('[role=tabpanel][data-stat
   const { root, m } = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({ load: "failed", reason: "boom", frames: [said("f1", "Hello from before")] }) } });
   const col = work(root)?.querySelector(".ox-col");
   const kids = [...(col?.children ?? [])] as HTMLElement[];
-  const line = kids.findIndex((k) => k.classList.contains("ui-plane") && text(k).startsWith("engine's work didn't load. boom"));
+  const line = kids.findIndex((k) => k.getAttribute("role") === "note" && text(k).startsWith("engine's work didn't load. boom"));
   const list = kids.findIndex((k) => k.classList.contains("ox-work"));
   ok("2.4 failed with steps held keeps the list and says it didn't load above it",
-    line !== -1 && list > line && text(kids[list]).includes("Hello from before") && root.querySelector(".ui-sess-empty") === null,
+    line !== -1 && list > line && text(kids[list]).includes("Hello from before") && root.querySelector("[data-slot=empty]") === null,
     { line, list, html: col?.innerHTML.slice(0, 300) });
   await m.unmount();
 }
@@ -202,8 +203,8 @@ const work = (root: ParentNode) => root.querySelector('[role=tabpanel][data-stat
   const { root, m } = await open({ roster: [entry("idle", "off")], sessions: { [ENGINE]: session({ posts: [posted("m-1", "Plan: two-player chess")] }) } });
   same("2.5 with the plane off Work says so, how agents publish them, and shows only the agent's posts",
     {
-      notes: all(work(root) ?? root, ".ui-plane").map(text),
-      code: all(work(root) ?? root, ".ui-plane code").map(text),
+      notes: all(work(root) ?? root, "[role=note]").map(text),
+      code: all(work(root) ?? root, "[role=note] code").map(text),
       post: text(root.querySelector(".ox-post .ox-post-h span")),
       body: text(root.querySelector(".ox-post .ui-tx")),
     },
@@ -217,17 +218,17 @@ const work = (root: ParentNode) => root.querySelector('[role=tabpanel][data-stat
 }
 {
   const { root, m } = await open({ roster: [entry("idle", "on")], sessions: { [ENGINE]: session() } });
-  const empty = root.querySelector(".ui-sess-empty");
+  const empty = root.querySelector("[data-slot=empty]");
   same("2.6 with the plane on and no steps it says the agent hasn't started a turn yet",
-    { title: text(empty?.querySelector("b")), p: text(empty?.querySelector("p")) },
+    { title: text(empty?.querySelector("[data-slot=empty-title]")), p: text(empty?.querySelector("p")) },
     { title: "engine hasn't started a turn yet", p: "Its first turn shows here as soon as it starts." });
   await m.unmount();
 }
 {
   const { root, m } = await open({ roster: [entry("idle")], sessions: { [ENGINE]: session() } });
-  const empty = root.querySelector(".ui-sess-empty");
+  const empty = root.querySelector("[data-slot=empty]");
   same("2.7 with the card silent and no steps it says nothing has arrived, and why that may be",
-    { title: text(empty?.querySelector("b")), p: text(empty?.querySelector("p")), code: all(empty ?? root, "p code").map(text) },
+    { title: text(empty?.querySelector("[data-slot=empty-title]")), p: text(empty?.querySelector("p")), code: all(empty ?? root, "p code").map(text) },
     {
       title: "Nothing has arrived from engine yet",
       p: "Agents started with cotal spawn publish one unless started with --no-events. An agent you started yourself may not publish one at all.",
@@ -238,14 +239,14 @@ const work = (root: ParentNode) => root.querySelector('[role=tabpanel][data-stat
 {
   const { root, m } = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({ load: "loading", frames: [said("f1", "Held while it reloads")] }) } });
   ok("2.8 a reload that holds frames keeps them on screen with a quiet loading line, not skeleton rows",
-    root.querySelector('[aria-busy="true"]') === null && root.querySelector(".ui-skel") === null
-      && text(root.querySelector(".ox-work")).includes("Held while it reloads") && text(root.querySelector('.ui-cutoff[role="status"]')) === "Loading",
+    root.querySelector('[aria-busy="true"]') === null && root.querySelector("[data-slot=skeleton]") === null
+      && text(root.querySelector(".ox-work")).includes("Held while it reloads") && text(root.querySelector('[data-slot=marker][role="status"]')) === "Loading",
     root.innerHTML.slice(0, 400));
   await m.unmount();
 }
 {
   const on = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({ frames: [said("f1", "Hello")] }) } });
-  const notes = all(work(on.root) ?? on.root, ".ui-plane").length;
+  const notes = all(work(on.root) ?? on.root, "[role=note]").length;
   const list = text(on.root.querySelector(".ox-work")).includes("Hello");
   await on.m.unmount();
   same("2.9 with the plane on, Work holds no note about the plane, only the work", { notes, list }, { notes: 0, list: true });
@@ -263,7 +264,7 @@ const messagesSeed = (): Partial<DashboardState> => ({
   const panel = work(root);
   const markers = all(panel ?? root, "[data-slot=marker]").map(text);
   const rows = all(panel ?? root, ".ox-msg").map((r) => [
-    text(r.querySelector(".ui-mh b")), text(r.querySelector(".ui-role")), text(r.querySelector(".ui-tx")), text(r.querySelector(".ox-act")), r.querySelector(".ox-act")?.getAttribute("href"),
+    text(r.querySelector(".ui-mh b")), text(r.querySelector("[data-slot=badge]")), text(r.querySelector(".ui-tx")), text(r.querySelector(".ox-act")), r.querySelector(".ox-act")?.getAttribute("href"),
   ]);
   same("3.1 Messages lists the agent's verified posts and direct messages by place, newest first, each linking where it went, and no history row",
     { markers, rows, more: text(panel?.querySelector(".ox-msgs-more")) },
@@ -301,7 +302,7 @@ const messagesSeed = (): Partial<DashboardState> => ({
 {
   const { root, m } = await open({ roster: [entry("idle", "on")], sessions: { [ENGINE]: session() } }, { tab: "messages" });
   same("3.3 Messages with nothing sent says so, and the count is 0",
-    [text(work(root)?.querySelector(".ui-sess-empty b")), text(all(root, "[role=tab]")[1])],
+    [text(work(root)?.querySelector("[data-slot=empty-title]")), text(all(root, "[role=tab]")[1])],
     ["No messages from engine on this page yet", "Messages 0"]);
   await m.unmount();
 }
@@ -328,7 +329,7 @@ const messagesSeed = (): Partial<DashboardState> => ({
   same("3.6 Profile is the agent's card at reading width: the character at 88px, the status line and the commands to copy",
     {
       big: (panel?.querySelector(".ui-big .ui-av") as HTMLElement | null)?.style.getPropertyValue("--s") === "88px",
-      status: text(panel?.querySelector(".ui-sline .v3-spill")),
+      status: text(panel?.querySelector(".ui-sline [data-slot=badge]")),
       commands: all(panel ?? root, ".ui-actions .ui-cmd code").map(text),
     },
     { big: true, status: "Working", commands: ["cotal attach --name engine", "cotal stop --name engine"] });
@@ -363,7 +364,7 @@ const messagesSeed = (): Partial<DashboardState> => ({
   for (let i = 0; i < 1000; i++) events.push({ type: "TOOL_CALL_START", toolCallId: `c${i}`, toolCallName: "Bash", timestamp: T }, { type: "TOOL_CALL_END", toolCallId: `c${i}`, timestamp: T });
   const { root, m } = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({ more: true, limit: 400, frames: [{ id: "big", ts: T, live: false, events }] }) } });
   same("4.2 at 2,000 events the cap line replaces Load earlier",
-    { button: all(root, "button").some((b) => text(b) === "Load earlier"), cap: all(root, ".ui-cutoff").map(text).includes("Showing the newest 2,000 events") },
+    { button: all(root, "button").some((b) => text(b) === "Load earlier"), cap: all(root, "[data-slot=marker]").map(text).includes("Showing the newest 2,000 events") },
     { button: false, cap: true });
   await m.unmount();
 }
@@ -372,7 +373,7 @@ const messagesSeed = (): Partial<DashboardState> => ({
 {
   const { root, f, m } = await open({ roster: [entry("working", "on")], post: { mode: "participant" }, sessions: { [ENGINE]: session() } });
   const box = root.querySelector(".ui-dock textarea") as HTMLTextAreaElement | null;
-  const mode = text(root.querySelector(".ui-dock .ui-crow"));
+  const mode = text(root.querySelector(".ui-dock [data-slot=input-group]"));
   await m.run(() => box && type(box, "hi"));
   same("5.1 the dock is engine's direct message composer",
     { placeholder: box?.getAttribute("placeholder"), mode: mode.includes("to engine · direct message"), draft: f.named("draft") },
@@ -381,7 +382,7 @@ const messagesSeed = (): Partial<DashboardState> => ({
 }
 {
   const { root, m } = await open({ roster: [entry("working", "on")], post: { mode: "off", reason: "Posting is off on this mesh." }, sessions: { [ENGINE]: session() } }, { tab: "profile" });
-  const card = root.querySelector(".ui-dock .ui-composer");
+  const card = root.querySelector(".ui-dock [data-slot=input-group]");
   ok("5.2 with posting off the dock holds the read-only composer on every tab, as the DM view does",
     card?.getAttribute("aria-disabled") === "true" && root.querySelector(".ui-dock textarea") === null && text(card).includes("Posting is off on this mesh."),
     card?.outerHTML.slice(0, 300));
@@ -400,36 +401,36 @@ const messagesSeed = (): Partial<DashboardState> => ({
   const message = head?.querySelector("a[data-slot=button]");
   same("5.4 the header is the crumb, the name, role and harness, the status Badge and Message to the operator's conversation",
     {
-      crumb: [text(head?.querySelector(".ui-crumb")), head?.querySelector(".ui-crumb")?.getAttribute("title")],
+      crumb: [text(head?.querySelector(".ui-crumb")), head?.querySelector(".ui-crumb")?.getAttribute("aria-label")],
       name: text(head?.querySelector("h1")),
       topic: text(head?.querySelector(".ui-topic")),
-      badge: [text(head?.querySelector("[data-slot=badge]")), head?.querySelector("[data-slot=badge]")?.classList.contains("ox-badge-working")],
+      badge: [text(head?.querySelector("[data-slot=badge]")), head?.querySelector("[data-slot=badge]")?.getAttribute("data-variant"), head?.querySelector("[data-slot=badge] svg.ox-spin") != null],
       message: [text(message), message?.getAttribute("href")],
-      panel: head?.querySelector("button.ui-tool")?.getAttribute("title"),
+      panel: ["aria-label", "aria-pressed"].map((a) => head?.querySelector("button[aria-pressed]")?.getAttribute(a)),
     },
     {
       crumb: ["#team", "Back to #team"],
       name: "engine",
       topic: "engine · Claude Code",
-      badge: ["Working", true],
+      badge: ["Working", "secondary", true],
       message: ["Message", `#/dm/${ENGINE}/local.op`],
-      panel: "Open panel",
+      panel: ["Open panel", "false"],
     });
   await m.unmount();
 }
 {
   const { root, m } = await open({ roster: [entry("waiting", "on")], sessions: { [ENGINE]: session() } }, { phone: true });
   const head = root.querySelector("header.ox-head");
-  same("5.5 on a phone the crumb is the back tool, Message is a tool titled for the agent, the Badge stays and the tabs stay under the header",
+  same("5.5 on a phone the crumb is the back tool, Message is a tool named for the agent, the Badge stays and the tabs stay under the header",
     {
-      tools: all(head ?? root, "a.ui-tool").map((a) => [a.getAttribute("title"), a.getAttribute("aria-label")]),
+      tools: all(head ?? root, "a[aria-label]").map((a) => [a.getAttribute("aria-label"), a.getAttribute("href")]),
       crumb: head?.querySelector(".ui-crumb")?.outerHTML ?? null,
       topic: head?.querySelector(".ui-topic")?.outerHTML ?? null,
       badge: text(head?.querySelector("[data-slot=badge]")),
       tabs: head?.nextElementSibling?.querySelector("[role=tablist]") !== null,
     },
     {
-      tools: [["Back to #team", "Back to #team"], ["Message engine", "Message engine"]],
+      tools: [["Back to #team", "#/channel/team"], ["Message engine", `#/dm/${ENGINE}`]],
       crumb: null,
       topic: null,
       badge: "Waiting",
@@ -450,7 +451,7 @@ const withLayout = async (fn: (log: string[]) => Promise<void>, reduce = false) 
   const saved = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(proto, k)]));
   const savedMedia = g.matchMedia;
   Object.defineProperty(proto, "scrollIntoView", { configurable: true, writable: true, value(this: HTMLElement, opts?: { block?: string }) { log.push(`${this.getAttribute("data-post")}:${opts?.block}`); } });
-  Object.defineProperty(proto, "scrollTo", { configurable: true, writable: true, value(this: HTMLElement, opts?: { top?: number; behavior?: string }) { if (this.classList.contains("ox-viewport")) log.push(`end:${opts?.top}:${opts?.behavior}`); } });
+  Object.defineProperty(proto, "scrollTo", { configurable: true, writable: true, value(this: HTMLElement, opts?: { top?: number; behavior?: string }) { if (this.getAttribute("aria-label") === "Work") log.push(`end:${opts?.top}:${opts?.behavior}`); } });
   Object.defineProperty(proto, "scrollHeight", { configurable: true, get: () => 1000 });
   Object.defineProperty(proto, "clientHeight", { configurable: true, get: () => 100 });
   if (reduce) g.matchMedia = (media: string) => ({ matches: media.includes("reduce"), media, addEventListener: () => undefined, removeEventListener: () => undefined });
@@ -572,27 +573,27 @@ const rig = (hash: string) => {
 {
   const crumb = (root: HTMLElement) => {
     const a = root.querySelector(".ox-head .ui-crumb");
-    return { href: a?.getAttribute("href"), title: a?.getAttribute("title"), label: text(a) };
+    return { href: a?.getAttribute("href"), name: a?.getAttribute("aria-label"), label: text(a) };
   };
   const r = rig("#/channel/team");
   const m = await mount(createElement(App, { host: r.host, start: r.start }));
   await m.run(() => r.go(`#/agent/${ENGINE}`));
   same("8.1 the crumb links back to the channel the reader came from",
-    crumb(m.container), { href: "#/channel/team", title: "Back to #team", label: "#team" });
+    crumb(m.container), { href: "#/channel/team", name: "Back to #team", label: "#team" });
   same("8.2 the rail marks Agents current on an agent's page",
-    m.container.querySelector('.ui-rail [aria-current="page"]')?.getAttribute("aria-label"), "Agents");
+    text(m.container.querySelector('[role=navigation][aria-label="Views"] [aria-current="page"]')), "Agents");
   await m.unmount();
   const fresh = rig(`#/agent/${ENGINE}`);
   const m2 = await mount(createElement(App, { host: fresh.host, start: fresh.start }));
   same("8.3 with no place visited the crumb goes back to Agents, and the current address is left alone",
-    [crumb(m2.container), fresh.replaced], [{ href: "#/agents", title: "Back to Agents", label: "Agents" }, []]);
+    [crumb(m2.container), fresh.replaced], [{ href: "#/agents", name: "Back to Agents", label: "Agents" }, []]);
   await m2.unmount();
   const via = rig("#/channel/team");
   const m3 = await mount(createElement(App, { host: via.host, start: via.start }));
   await m3.run(() => via.go("#/activity"));
   await m3.run(() => via.go(`#/agent/${ENGINE}`));
   same("8.4 the crumb goes back to the last place that was not an agent's page, with its label, not to the last channel",
-    crumb(m3.container), { href: "#/activity", title: "Back to Activity", label: "Activity" });
+    crumb(m3.container), { href: "#/activity", name: "Back to Activity", label: "Activity" });
   await m3.unmount();
 }
 {
@@ -627,15 +628,15 @@ const rig = (hash: string) => {
   const m = await mount(createElement(Shell, { store, controller: f.ctl, route: { view: "channel", channel: "team" }, paneOpen: true, msgPerSecond: () => 0, clock: () => T }));
   const sessionCalls = () => f.calls.filter((c) => /^(open|close)Session\(/.test(c));
   const before = sessionCalls();
-  await m.run(() => click(all(m.container, "main .ui-msg .ui-mh button.ui-who").find((b) => text(b) === "engine")));
+  await m.run(() => click(all(m.container, "main [data-slot=message-header] button").find((b) => text(b) === "engine")));
   const picked = sessionCalls();
   await m.run(() => click(m.container.querySelector("section.ui-pane button[aria-label='Close panel']")));
   same("9.1 picking an agent opens its work once with the Agent tab, and closing the panel closes it, so a closed panel holds nothing",
     { before, picked, closed: sessionCalls(), pane: m.container.querySelector("section.ui-pane") === null },
     { before: [], picked: [`openSession("${ENGINE}")`], closed: [`openSession("${ENGINE}")`, `closeSession("${ENGINE}")`], pane: true });
-  await m.run(() => click(m.container.querySelector("header button[title='Toggle panel']")));
+  await m.run(() => click(m.container.querySelector("header button[aria-label='Toggle panel']")));
   const reopened = sessionCalls();
-  await m.run(() => click(all(m.container, "section.ui-pane [role=tab]").find((t) => text(t) === "Members")));
+  await m.run(() => press(all(m.container, "section.ui-pane [role=tab]").find((t) => text(t) === "Members")));
   same("9.2 the panel opened again on the Agent tab reads the work again, and moving to another tab closes it",
     { reopened, members: sessionCalls() },
     {

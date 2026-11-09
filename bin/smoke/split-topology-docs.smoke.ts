@@ -133,7 +133,7 @@ check(
     renderDetachedSummary({ ...detachedStatus, machineHome: true }).endsWith("stop with: `cotal down --preserve-state`") &&
     renderDetachedSummary({ ...detachedStatus, machineHome: true, manager: false }).endsWith("stop with: `cotal up` to start its manager, then `cotal down --preserve-state`") &&
     /if \(state === "alive"\) return \{\s*running: true,\s*started: false\b[^}]*\}/.test(managerProc) &&
-    /const pid = startManagerDetached\(o\);\s*await awaitManagerUp\(space, identityRecord\(pid\)\);\s*return \{\s*running: true,\s*started: true,\s*pid\b[^}]*\}/.test(managerProc) &&
+    /const pid = startManagerDetached\(o(?:, [^\n]+)?\);\s*await awaitManagerUp\(space, identityRecord\(pid\)(?:, logStart)?\);\s*return \{\s*running: true,\s*started: true,\s*pid\b[^}]*\}/.test(managerProc) &&
     supervise.includes('await mgr.start();') &&
     supervise.includes('c.green("✓ manager up")'),
 );

@@ -11,7 +11,7 @@ import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-h
  */
 import * as prompts from "@clack/prompts";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CommandFailure, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, resolvePreference, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, writeResult, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   deleteIdpSpaceCatalog,
@@ -182,10 +182,19 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       const owners = new Set(results.map((r) => r.account.ownerKey));
       discovered = loadMeshes().filter((m) => m.origin === "catalog" && owners.has(m.catalogOwner ?? "")).sort((a, b) => a.space.localeCompare(b.space));
     }
+    const saved = resolvePreference("name").value;
     // WHO signed in must be human-readable (per-user auth exists for operator-visible identity):
     // prefer the IdP's email/name claim; the raw `sub` stays as the stable id (dim when secondary).
     console.log(renderReport({ sections: [
-      { title: "Signed in", blocks: [{ kind: "fields", rows: [["Account", label || sub], ["Subject", sub], ["Provider", idp], ["Session expires", new Date(session.expiresAt * 1000).toISOString()]] }, { kind: "lines", lines: [{ text: "Account identity is verified. Each space's grants decide access separately. No session token is printed.", tone: "hint" }] }] },
+      { title: "Signed in", blocks: [
+        { kind: "fields", rows: [["Account", label || sub], ["Subject", sub], ["Provider", idp], ["Session expires", new Date(session.expiresAt * 1000).toISOString()], ["Chat name", session.name ?? "none"]] },
+        { kind: "lines", lines: [
+          ...(saved ? [{ text: `Chat sessions use your saved name "${saved}".`, tone: "hint" as const }]
+            : session.name ? []
+            : [{ text: "The provider gave no user name, email or name that can be a chat name, so a chat session on a user-auth space refuses unless you pass `--name <name>` to `cotal chat` or save a name with `cotal config set name <name>`.", tone: "failed" as const }]),
+          { text: "Account identity is verified. Each space's grants decide access separately. No session token is printed.", tone: "hint" },
+        ] },
+      ] },
       ...(discovered.length ? [{ title: "Your spaces", blocks: [{ kind: "fields" as const, rows: discovered.map((m): [string, string] => [m.space, [m.catalogName ?? m.space, m.catalogRole].filter(Boolean).join(" · ")]) }] }] : []),
       { title: "Next", blocks: [{ kind: "commands", items: discovered.length
         ? [{ command: "cotal use <name>", description: "Select one of your spaces for the commands that follow" }, { command: "cotal space", description: "See every registered space" }]

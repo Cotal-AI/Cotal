@@ -1,8 +1,10 @@
 import { chatWildcard, DEV_OWNER, parsePrincipalKey, principalKey } from "@cotal-ai/core"
-import { connectOrThrow, isCommandFailure, isConnectRefusal, oneLine, userViewAuth } from "@cotal-ai/workspace"
+import { connectTargetOrThrow, isCommandFailure, isConnectRefusal, resolveTargetOrThrow, userViewAuth } from "@cotal-ai/workspace"
 import { control, controlPs, type ControlClient, type ControlCtx, type ManagedRow } from "@cotal-ai/workspace/control"
 import { MeshView, openObserver, type MeshSnapshot } from "@cotal-ai/workspace/view"
 import { createSignal, type Accessor } from "solid-js"
+import { safe } from "./safe.js"
+import { openTalk, type Closed, type Talk } from "./talk.js"
 
 export type Mesh = MeshSnapshot
 export type Presence = Mesh["agents"][number]
@@ -31,10 +33,14 @@ export type StopResult = { ok: true } | { ok: false; error: string }
 export type Session = {
   conn: Accessor<Conn>
   managed: Accessor<Managed>
-  /** Asks the seat's manager to stop the agent by name. Graceful lets it shut down; otherwise the
-   *  manager kills the process. */
-  stop: (name: string, graceful: boolean) => Promise<StopResult>
-  close: () => Promise<void>
+  /** Asks the seat's manager to stop the run `row` reports. When the name now belongs to another
+   *  run, nothing is stopped. Graceful lets it shut down; otherwise the manager kills the process. */
+  stop: (row: ManagedRow, graceful: boolean) => Promise<StopResult>
+  /** The human's chat session owner, once the space is open. */
+  talk: Accessor<Talk | undefined>
+  /** Closes the chat session first, then the observer. Says how the chat session closed, when one
+   *  was open. */
+  close: () => Promise<Closed | undefined>
 }
 
 const OBSERVER_NAME = "tui"
@@ -44,34 +50,19 @@ const PS_POLL_MS = 10_000
 // the principal `local.<actor>`; a user-mode seat's id is already the principal.
 const principalOf = (row: ManagedRow) => (parsePrincipalKey(row.id) ? row.id : principalKey(DEV_OWNER, row.id).key)
 
-// MeshView hands out the same feed entry and presence objects until they change, so each is cleaned
-// once and keeps its identity, and Solid redraws only rows that changed.
-const clean = new WeakMap<object, unknown>()
-
-/** Peers write names, activities and message text, and a control character in a cell reaches the
- *  terminal as is. Every string keeps its line breaks and tabs and shows any other control character
- *  as an escape. */
-function safe<T>(value: T): T {
-  if (typeof value === "object" && value !== null && clean.has(value)) return clean.get(value) as T
-  if (typeof value === "string") return value.replace(/\r\n/g, "\n").split("\n").map((line) => line.split("\t").map(oneLine).join("\t")).join("\n") as T
-  if (typeof value === "function") return ((...args: unknown[]) => safe((value as (...a: unknown[]) => unknown)(...args))) as T
-  if (value === null || typeof value !== "object") return value
-  if (Array.isArray(value)) return value.map(safe) as T
-  const out = Object.fromEntries(Object.entries(value).map(([k, v]) => [k, safe(v)])) as T
-  clean.set(value, out)
-  return out
-}
-
 function failed(space: string | undefined, e: unknown): Conn {
   const f = isConnectRefusal(e) ? e.failure() : isCommandFailure(e) ? e : undefined
   return { phase: "failed", space, message: safe(f?.message ?? (e as Error).message), ...(f?.remedy ? { remedy: safe(f.remedy) } : {}) }
 }
 
 /** Opens one space read-only: the space named, or with none the one every command in this folder
- *  would pick. The observer is invisible to peers and nothing is written to the registry. */
-export function openSpace(space?: string): Session {
+ *  would pick. The observer is invisible to peers and nothing is written to the registry. A chat
+ *  session opens only when the human first writes. `afterPaint` resolves once the frame showing the
+ *  latest change is painted. */
+export function openSpace(space: string | undefined, afterPaint: () => Promise<void>): Session {
   const [conn, setConn] = createSignal<Conn>({ phase: "connecting", space })
   const [managed, setManaged] = createSignal<Managed>({ phase: "loading" })
+  const [talk, setTalk] = createSignal<Talk>()
   let view: MeshView | undefined
   let ctx: ControlCtx | undefined
   let timer: ReturnType<typeof setInterval> | undefined
@@ -116,7 +107,8 @@ export function openSpace(space?: string): Session {
 
   void (async () => {
     try {
-      const c = await connectOrThrow(space === undefined ? {} : { space }, "admin", { readOnly: true })
+      const target = await resolveTargetOrThrow({ space, readOnly: true })
+      const c = await connectTargetOrThrow(target, "admin", { readOnly: true })
       if (closed) return
       const user = c.bearer ? await userViewAuth(c, "admin") : undefined
       if (closed) return
@@ -135,6 +127,7 @@ export function openSpace(space?: string): Session {
       v.on("change", show)
       show(v.snapshot())
       ctx = { space: c.space, server: c.server }
+      setTalk(openTalk({ target, control: client, afterPaint }))
       poll()
     } catch (e) {
       if (!closed) setConn(failed(space, e))
@@ -144,19 +137,21 @@ export function openSpace(space?: string): Session {
   return {
     conn,
     managed,
-    stop: async (name, graceful) => {
+    stop: async (row, graceful) => {
       if (!ctx) return { ok: false, error: "the space is not open yet" }
-      const r = await control(client, ctx, "stop", { name, graceful })
-      if (!r.ok) return { ok: false, error: safe(r.error ?? "failed") }
+      const r = await control(client, ctx, "stop", { name: row.name, graceful }, { expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid } })
       void readManaged(true)
-      return { ok: true }
+      return r.ok ? { ok: true } : { ok: false, error: safe(r.error ?? "failed") }
     },
+    talk,
     close: async () => {
-      if (closed) return
+      if (closed) return undefined
       closed = true
       clearInterval(timer)
       setConn({ phase: "closed", space: conn().space })
+      const chat = await talk()?.close()
       await view?.stop()
+      return chat
     },
   }
 }

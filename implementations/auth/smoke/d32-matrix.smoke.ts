@@ -793,8 +793,8 @@ for (const [profile, rows] of Object.entries(untrusted)) {
 }
 // The agent's ep reach = its minted caller rows PLUS the normative Appendix-B baseline
 // (wildcard describe + delivery join/leave/list + the self-mode lifecycle set: stop, the native
-// participation opt-in (SPEC "Native personal participation"), the two seat halves of the turn relay,
-// and caller-bound run-answer), pinned EXACTLY here so a widened baseline (or a stray extra
+// participation opt-in (SPEC "Native personal participation"), the turn relay and its unconfirmed
+// handoff report, and caller-bound run-answer), pinned EXACTLY here so a widened baseline (or a stray extra
 // row) fails this audit, not just the grants smoke.
 const BASELINE_PUB = [
   `cotal.${S}.ep.one.*.describe.u_abc.cli.${UID}.*`,
@@ -805,6 +805,7 @@ const BASELINE_PUB = [
   `cotal.${S}.ep.one.manager.turn-participate.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.turn-pending.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`,
+  `cotal.${S}.ep.one.manager.turn-unconfirmed.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.run-answer.self.u_abc.cli.${UID}.*`,
 ];
 c("the agent's control-surface reach is exactly its caller rows + the Appendix-B baseline (request/journal publish + own reply rail)",
@@ -1052,8 +1053,13 @@ console.log("7. the run-operator profile (SPEC 14.3): a read form and an answeri
       subscribe: [`_INBOX_${CONN}.>`],
     }), read);
   const list = runOperatorGrants(S, { endpoint: EP, takeoverId: TK }, CONN);
-  c("a run-ps (no run named) holds the records point read + INFO alone: no replay durable of any run, since a durable name is one token no pattern spans",
-    JSON.stringify(list.publish) === JSON.stringify([`$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`, `$JS.API.STREAM.MSG.GET.KV_cotal_admission_${S}`, "$JS.API.INFO"]), list.publish);
+  c("a run-ps (no run named) holds the records point read, the batched records Direct Get and INFO: no replay durable of any run, since a durable name is one token no pattern spans",
+    JSON.stringify(list.publish) === JSON.stringify([
+      `$JS.API.STREAM.MSG.GET.KV_cotal_records_${S}`,
+      `$JS.API.DIRECT.GET.KV_cotal_records_${S}`,
+      `$JS.API.STREAM.MSG.GET.KV_cotal_admission_${S}`,
+      "$JS.API.INFO",
+    ]), list.publish);
   const ans = runOperatorGrants(S, { endpoint: EP, takeoverId: TK, answers: { token: TOKEN } }, CONN);
   c("an ANSWER of one pause is EXACTLY the records point read + THAT token's answer record, checkpoint status and settle fact + the EPF fact read + INFO: no replay row, and no row that spans a second token",
     JSON.stringify(ans.publish) === JSON.stringify([

@@ -19,8 +19,8 @@ stay registered. The reason argument and `PruneReason` type are removed. Callers
 
 ## Node connection signing
 
-Node endpoints and `standaloneConnectOpts` sign NATS authentication challenges with the existing
-native Ed25519 signer. Credentials are read on every connection attempt, including reconnects,
+Node endpoints, the Manager's standing service, goal-writer and session-ledger connections, and
+`standaloneConnectOpts` sign NATS authentication challenges with the existing native Ed25519 signer. Credentials are read on every connection attempt, including reconnects,
 and the temporary signer is cleared after each callback. JWT, public-key and signature fields
 use the NATS authenticator contract. Browser connections keep the NATS JavaScript implementation.
 
@@ -35,6 +35,21 @@ the bearer to reconstruct access.
 The field is optional for provider compatibility. Its absence means the caller has no
 authoritative grant answer. A status surface must preserve unknown or unavailable instead of
 inferring broad access from a bearer, successful exchange or broker ping.
+
+`@cotal-ai/workspace` exports `principalFromBearer(bearer)` for client-side decoding of
+`{ owner, actor, lifecycleUid }`. It checks that the three claims are non-empty strings and keeps
+the auth-service recovery hint on decoding failures. It does not verify a signature or authorize
+access; the broker and issuer remain responsible for those checks.
+
+## User-mode launch identity
+
+`@cotal-ai/core` exports `UserAuthLaunch` as a type. It names the `owner`, `actor`,
+`sentinelCredsPath` and `bearerCmd` fields carried by `LaunchOpts.userAuth`,
+`LaunchMaterial.userAuth`, connector launch options and the manager's provisioning and resume data.
+Import it with `import type`. The sentinel field is a path, not credential content.
+
+The material reader checks its reconstructed value against `Required<UserAuthLaunch>` at build
+time. Runtime field validation and the policy of ignoring unknown input fields are unchanged.
 
 ## Login confirmation
 
@@ -51,6 +66,12 @@ the manager `UNSUPPORTED` when the provider does not implement it.
 compiles on first access, is frozen, and is reused on later reads. Listing command names does not
 compile validators. Callers cannot replace a command or swap its compiled input/output contracts.
 `artifactValues()` still returns the schema roots and closure manifests used at registration.
+
+Core exports the manager's shared `SPAWN_INPUT_SCHEMA`, `SPAWN_OUTPUT_SCHEMA`,
+`GRACEFUL_INPUT_SCHEMA`, `STOP_OUTPUT_SCHEMA`, `INSPECT_INPUT_SCHEMA` and `AGENT_ROW_SCHEMA`,
+plus `CANCEL_INPUT_SCHEMA` and `TURN_YIELD_OUTPUT_SCHEMA` beside the turn pair. The manager and
+runtime test stand-ins compile these same deeply frozen objects. Moving these definitions does not
+change the manager's registered contract digests.
 
 `compileContract` keeps each closure's schemas, IDs and references in its own compiler. The default
 meta-schema and Ajv's built-in meta-schema keys share a lazily compiled validator. Other `$schema`

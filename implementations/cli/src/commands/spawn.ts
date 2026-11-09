@@ -32,7 +32,6 @@ import {
   resolveAuthProvider,
   resolveReadAcl,
   runAgentBearer,
-  CotalEndpoint,
   GOAL_ENTITY_RUNNING_DETAIL_KIND,
   EP_UNDECLARED_ARG,
   seatCapFrom,
@@ -57,6 +56,10 @@ import {
   type RuntimeProvider,
   type SecretStore,
   type SpaceAuth,
+  attemptCleanup,
+  describeCleanupFailures,
+  rejectionText,
+  type CleanupFailure,
 } from "@cotal-ai/core";
 import {
   parseCommaList,
@@ -129,6 +132,7 @@ import {
 import { readManagedLaunch, requestManagedLaunch, type ManagedLaunchResult } from "@cotal-ai/workspace/launch";
 import { c, stderrLine } from "../ui.js";
 import { liveMeshNames } from "../lib/live-names.js";
+import { withProvisioner } from "../lib/provisioner.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -411,11 +415,21 @@ class ForegroundActorCollision extends CommandFailure {
 async function provisionFreshForeground<T>(
   requested: string,
   autoName: boolean,
+  userMode: boolean,
   provision: (name: string) => Promise<T>,
 ): Promise<{ name: string; provisioned: T }> {
   const occupied = new Set<string>();
   for (;;) {
-    const name = firstFreeName(requested, (candidate) => occupied.has(candidate));
+    let name: string;
+    try {
+      // The cap belongs to user mode alone, where the numbered name is the actor. Static and open
+      // mode key the actor on the minted nkey, so a numbered name there has no length to fit.
+      name = firstFreeName(requested, (candidate) => occupied.has(candidate), userMode ? { actorBound: true } : undefined);
+    } catch (e) {
+      // The series stops at the actor bound, so a base whose every fitting candidate is taken is a
+      // refusal, not a crash: nothing has been launched, issued or redeemed yet.
+      throw new CommandFailure("refused", "CONFLICT", e instanceof Error ? e.message : String(e));
+    }
     try {
       return { name, provisioned: await provision(name) };
     } catch (e) {
@@ -692,7 +706,8 @@ export async function launchManagedPersona(
     // Without a flag the harness is the persona pin or a default, which only the target manager
     // can read: ask it, so the carry looks with the connector the launch runs (#2899).
     const agent = values.agent ?? await launchAgentOrExit(t, on, { name: ref, config: managerConfigRef, defaultAgent });
-    const claim = await carryTranscriptOrExit(flags, on, values.resume, agent);
+    // The carry and its transfer-writer view stay on the mesh selected for this launch.
+    const claim = await carryTranscriptOrExit({ ...flags, space: t.space, server: t.server }, on, values.resume, agent);
     if (claim !== undefined) resumeClaim = { claim, agent };
   }
   // The report that answers names the mesh in its heading, so this block names it once, in a field.
@@ -804,10 +819,13 @@ export async function launchManagedPersona(
     const unknown = reply.nativeOutcome !== "executed" || reply.unanswered;
     throw new CommandFailure(unknown ? "unknown" : "failed", unknown ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager did not confirm launch readiness", { target, native, remedy: "inspect `cotal ps` and the selected manager before retrying; this launch was not submitted again" });
   }
-  const { result, eventsNotice } = readManagedLaunch(reply, { space: t.space, requestedModel: values.model ?? null, detached: values.detach === true }, target);
+  const { result, eventsNotice, startupNotice } = readManagedLaunch(reply, { space: t.space, requestedModel: values.model ?? null, detached: values.detach === true }, target);
   const { streamsTerminal } = result;
   const presentation = presentationOf(values);
-  const warnings: OutputWarning[] = eventsNotice ? [{ code: "EVENT_PLANE_NOTICE", target, message: eventsNotice }] : [];
+  const warnings: OutputWarning[] = [
+    ...(eventsNotice ? [{ code: "EVENT_PLANE_NOTICE", target, message: eventsNotice }] : []),
+    ...(startupNotice ? [{ code: "STARTUP_NOTICE", target, message: `${result.name} joined, but ${startupNotice}` }] : []),
+  ];
   if (observer) {
     try { observer.ready(result, warnings); }
     catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but the composite command could not record its native readiness; no replacement was launched", { target, changed: [result], remedy: "inspect the original agent and manager before another launch" }); }
@@ -1404,6 +1422,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
 
   // User mode allocates during guarded provisioning below, without a static operator credential.
   // Static/open mode keeps its advisory roster check. Every launch field uses the allocated name.
+  // That numbering is uncapped: static and open mode key the actor on the minted nkey, so the name
+  // has no length to fit. The user-mode numbering, which stops at the actor bound, happens inside the
+  // guarded provisioning below.
   let name = target.mode === "user" ? requested : await uniqueMeshName(requested, { space, server, auth });
 
   const agentType = resolveAgentType({ flag: values.agent, pin: def.agent, callerDefault: callerHarness(space) });
@@ -1580,7 +1601,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     if (remote.material.allowPublish) allowPublish = remote.material.allowPublish;
     lifecycleUid = remote.material.lifecycleUid;
   } else if (remoteProvisioningUrl) {
-    const selected = await provisionFreshForeground(requested, values.name === undefined, (candidate) =>
+    const selected = await provisionFreshForeground(requested, values.name === undefined, target.mode === "user", (candidate) =>
       provisionRemoteUserForeground(target, candidate, { provisioningUrl: remoteProvisioningUrl }))
       .catch((e: unknown) => { if (e instanceof AgentAlreadyRunning) return e; throw e; });
     if (selected instanceof AgentAlreadyRunning) return reportAlreadyRunning(selected, values, target.space, target.server);
@@ -1606,7 +1627,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // preflight all happen BEFORE launch, so the spawned agent is never the first to discover a
     // dead auth plane.
     let eventGrant: string | undefined;
-    const selected = await provisionFreshForeground(requested, values.name === undefined, (candidate) =>
+    const selected = await provisionFreshForeground(requested, values.name === undefined, true, (candidate) =>
       provisionUserForeground(target, candidate, ref, {
         subscribe,
         allowSubscribe,
@@ -1637,49 +1658,36 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // the same connector function, so a foreground and a detached spawn of one persona land on one
     // channel rather than two.
     if (launchEvents) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: DEV_OWNER, actor: identity.id })];
-    const prov = new CotalEndpoint({
-      space,
-      servers: server,
-      creds: await mintCreds(auth, newIdentity(), "provisioner"),
-      channels: [],
-      consume: false,
-      registerPresence: false,
-      watchPresence: false,
-      watchChannels: false,
-      card: { name: "spawn-provisioner", role: "provisioner", kind: "endpoint" },
-    });
-    const reportStaticProvisioner = (e: Error) => console.error(`! provisioner: ${e.message}`);
-    prov.on("error", reportStaticProvisioner);
-    prov.on("warning", reportStaticProvisioner);
-    await prov.start();
     // Foreground provisions the SAME durable footprint as `--detach` (DM/DLV durables + read-ACL
     // row): the daemon authorizes durable joins off the ACL row and leave is agent self-service, so
     // no managing host is required — and a silently live-only foreground agent permanently loses
     // every channel message posted while its connection blips (reconnect deliberately re-opens the
     // core-subs without re-backfill). `--live-only` opts back out; on a mesh with no delivery
-    // daemon the boot join itself reports live-only, ACL row or not.
+    // daemon the boot join itself reports live-only, ACL row or not. A failed provisioner stop
+    // never reaches this catch, so it cannot retire a credential the provisioning already minted.
     try {
-      // The seat's lifecycle is activated first, so the issuance can name its gate as the source of
-      // the evidence a helper's spawn is bounded by.
-      const seatTarget = { server, space, tlsRequired: target.tlsRequired, auth };
-      seat = { actor: identity.id, alias: name, lifecycleUid };
-      await activateTerminalSeat(seatTarget, seat);
-      const creds = await issueTerminalSeat(seatTarget, seat, seatExpiry(values, true), (issue) => {
-        acceptedToken = issue.issued.acceptedToken;
-        return provisionAgent(prov, auth, identity, {
-          subscribe,
-          allowSubscribe,
-          allowPublish,
-          role,
-          capabilities: def.capabilities,
-          ...(values["live-only"] ? { durableMembership: false } : {}),
-          lifecycleUid,
-          expiresAt: issue.expiresAt,
-          issued: issue.issued,
-          issuance: issue.issuance,
+      const creds = await withProvisioner({ space, servers: server, auth }, "spawn-provisioner", async (prov) => {
+        // The seat's lifecycle is activated first, so the issuance can name its gate as the source of
+        // the evidence a helper's spawn is bounded by.
+        const seatTarget = { server, space, tlsRequired: target.tlsRequired, auth };
+        seat = { actor: identity.id, alias: name, lifecycleUid };
+        await activateTerminalSeat(seatTarget, seat);
+        return issueTerminalSeat(seatTarget, seat, seatExpiry(values, true), (issue) => {
+          acceptedToken = issue.issued.acceptedToken;
+          return provisionAgent(prov, auth, identity, {
+            subscribe,
+            allowSubscribe,
+            allowPublish,
+            role,
+            capabilities: def.capabilities,
+            ...(values["live-only"] ? { durableMembership: false } : {}),
+            lifecycleUid,
+            expiresAt: issue.expiresAt,
+            issued: issue.issued,
+            issuance: issue.issuance,
+          });
         });
       });
-      await prov.stop();
       // Store first (the source of truth), then materialize — the child's launch reads this FILE.
       // The CLI is the local FS composition (byte-identical), same posture as the manager's spawn.
       const secrets = workspaceSecretStore(target.root);
@@ -1849,35 +1857,6 @@ function checkRemoteAgentMaterial(v: unknown, actor: string): { ok: true; materi
       ...(list("allowPublish") ? { allowPublish: list("allowPublish") } : {}),
     },
   };
-}
-
-/** A caught value's text for a refusal. A provider or store may reject with any value, including null
- *  or one whose `message` getter or `toString` throws, and the refusal must still be printed, so the
- *  coercion to text runs inside the guard. */
-function rejectionText(e: unknown): string {
-  try {
-    return String((e as Error)?.message ?? e);
-  } catch {
-    return "an unreadable rejection";
-  }
-}
-
-/** A cleanup step that threw. `step` names it without quoting the agent's paths or secret keys. */
-type CleanupFailure = { step: string; err: unknown };
-
-/** Run one cleanup step, recording its failure in `failed`. A step that threw would otherwise skip
- *  every step after it, and a swallowed one would leave nothing to report. */
-async function attemptCleanup(failed: CleanupFailure[], step: string, run: () => unknown): Promise<void> {
-  try {
-    await run();
-  } catch (err) {
-    failed.push({ step, err });
-  }
-}
-
-/** `<step>: <reason>` for each failure. */
-function describeCleanupFailures(failed: CleanupFailure[]): string {
-  return failed.map(({ step, err }) => `${step}: ${rejectionText(err)}`).join("; ");
 }
 
 /** Shred a user-mode agent's local material: both secrets from the store, then their files and the
@@ -2135,33 +2114,15 @@ async function provisionUserForeground(
       custody: { kind: "foreground" },
     });
     ownedToken = grant.actorToken;
-    const prov = new CotalEndpoint({
-      space,
-      servers: server,
-      creds: await mintCreds(infra, newIdentity(), "provisioner"),
-      channels: [],
-      consume: false,
-      registerPresence: false,
-      watchPresence: false,
-      watchChannels: false,
-      card: { name: "spawn-provisioner", role: "provisioner", kind: "endpoint" },
-    });
-    const reportUserProvisioner = (e: Error) => console.error(`! provisioner: ${e.message}`);
-    prov.on("error", reportUserProvisioner);
-    prov.on("warning", reportUserProvisioner);
-    await prov.start();
-    try {
+    await withProvisioner({ space, servers: server, auth: infra }, "spawn-provisioner", (prov) =>
       // Full durable footprint, same as the static foreground path: the ACL row is what lets the
       // delivery daemon authorize this agent's durable joins. `--live-only` opts out.
-      await provisionAgentDurables(prov, { owner, actor: name, lifecycleUid: opts.lifecycleUid }, {
+      provisionAgentDurables(prov, { owner, actor: name, lifecycleUid: opts.lifecycleUid }, {
         subscribe: opts.subscribe,
         allowSubscribe: opts.allowSubscribe,
         role: opts.role,
         ...(opts.liveOnly ? { durableMembership: false } : {}),
-      });
-    } finally {
-      await prov.stop();
-    }
+      }));
     // The store holds the source of truth; the bearer re-exec (`--token-file`) and the launch's
     // sentinel handoff read FILES — materialize both at the canonical paths (byte-identical
     // rewrites under this, the local FS, composition).

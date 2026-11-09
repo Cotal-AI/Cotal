@@ -171,9 +171,12 @@ try {
   // and it wraps to 80 columns. Only a line that is one word, or one span in backticks, stays wider.
   const unbreakable = (line: string) => !/\S \S/.test(line.trim()) || /^[("']*`[^`]+`[)"',.;:]*$/.test(line.trim());
   const page = await helpAt(["docs", "cli"], 80);
-  check("cotal docs cli on an 80-column terminal is drawn, with no heading marks or table rules",
-    page.exitCode === 0 && page.all.includes("`cotal` CLI reference") && !page.all.some((line) => /^#{1,6} /.test(line) || /^\s*\|[\s:|-]+\|\s*$/.test(line)) && page.all.some((line) => /^ {2}field: +`schemaVersion`$/.test(line)), page.all.slice(0, 12));
-  check("cotal docs cli on an 80-column terminal fits every line that can break", page.exitCode === 0 && page.all.length > 1000 && fit(page.all.join("\n"), 80).every(unbreakable), fit(page.all.join("\n"), 80));
+  check("cotal docs cli on an 80-column terminal draws its heading and internal link destinations",
+    page.exitCode === 0 && page.all.includes("CLI reference") && !page.all.some((line) => /^#{1,6} /.test(line)) && page.all.some((line) => line.includes("<cli-processes.mdx#daemon>")), page.all.slice(0, 12));
+  check("cotal docs cli on an 80-column terminal fits every line that can break", page.exitCode === 0 && page.all.some((line) => line.includes("<cli-installation.mdx#telemetry>")) && fit(page.all.join("\n"), 80).every(unbreakable), fit(page.all.join("\n"), 80));
+  const usagePage = await helpAt(["docs", "cli-usage"], 80);
+  check("cotal docs cli-usage on an 80-column terminal draws a wide table as labeled records",
+    usagePage.exitCode === 0 && usagePage.all.includes("CLI usage") && !usagePage.all.some((line) => /^#{1,6} /.test(line) || /^\s*\|[\s:|-]+\|\s*$/.test(line)) && usagePage.all.some((line) => /^ {2}field: +`schemaVersion`$/.test(line)), usagePage.all.filter((line) => line.includes("schemaVersion")));
   // A search hit is drawn as its page is, so a span in backticks that crosses a line break in the
   // page's source stays whole, and `--plain` wraps the same text. A run of backticks closes at the
   // next run as long, as in Markdown.
@@ -182,7 +185,7 @@ try {
     const search = await helpAt(["docs", "--search", "manager", ...flags], 80);
     const name = ["cotal docs --search manager", ...flags].join(" ");
     check(`${name} on an 80-column terminal splits no span in backticks across lines`,
-      search.exitCode === 0 && search.all.some((line) => line.trim() === "read the full page: `cotal docs cli`") && search.all.every(spansClose), search.all.filter((line) => !spansClose(line)));
+      search.exitCode === 0 && search.all.some((line) => /^read the full page: `cotal docs [^\s`]+`$/.test(line.trim())) && search.all.every(spansClose), search.all.filter((line) => !spansClose(line)));
     check(`${name} on an 80-column terminal fits every line that can break`, search.exitCode === 0 && search.all.length > 20 && fit(search.all.join("\n"), 80).every(unbreakable), fit(search.all.join("\n"), 80));
   }
   // A hit's title, `Page › heading`, is a section title and wraps at its words as any title does.

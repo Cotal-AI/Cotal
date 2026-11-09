@@ -1,13 +1,10 @@
 /**
- * Recipient choice for one chat opening, shared by the Ink and `--plain` front ends. Pure apart from
- * the one `channelInfo` read that discloses an unregistered channel before it is used (spec line 295)
- * and the session's resolution of a typed DM name, which refuses one that reaches no one.
+ * Recipient choice for one chat opening, shared by the Ink and `--plain` front ends: the listed
+ * choices, and the session's resolution of a typed DM name, which refuses one that reaches no one.
  * It never widens anything: a choice only names a destination; the broker still decides.
  */
-import { assertValidRole, isConcreteChannel, oneLine } from "@cotal-ai/core";
-import type { AdmittedChatSession, ConnectionReport, RosterView } from "@cotal-ai/workspace/chat";
-import { personLabel, recipientLabel, sharedNames, type Person, type Recipient } from "./view.js";
-import { concreteChannelProblem } from "../lib/concrete-channel.js";
+import { isConcreteChannel, oneLine } from "@cotal-ai/core";
+import { personLabel, sharedNames, type AdmittedChatSession, type ConnectionReport, type Person, type Recipient, type RosterView } from "@cotal-ai/workspace/chat";
 
 /** Bound on listed choices; the rest stay reachable by typing an explicit name. Provisional. */
 export const MAX_CHOICES = 50;
@@ -46,55 +43,6 @@ export function listChoices(conn: ConnectionReport | undefined, roster: RosterVi
 }
 
 /**
- * Parse an explicitly typed recipient: `#channel`, `@name-or-id`, `role:<role>`. A bare word is not
- * guessed. Returns the refusal text instead of throwing.
- */
-export function parseRecipient(text: string): { ok: true; recipient: Recipient } | { ok: false; error: string } {
-  const t = text.trim();
-  if (t.startsWith("#")) {
-    const ch = t.slice(1);
-    const problem = concreteChannelProblem(ch);
-    if (problem) return { ok: false, error: oneLine(problem) };
-    return { ok: true, recipient: { kind: "channel", channel: ch } };
-  }
-  if (t.startsWith("@")) {
-    const to = t.slice(1);
-    if (!to || /\s/.test(to) || to.length > 512) return { ok: false, error: "usage: @<name or owner.actor>" };
-    return { ok: true, recipient: { kind: "dm", to } };
-  }
-  if (t.startsWith("role:")) {
-    const role = t.slice(5);
-    try {
-      assertValidRole(role);
-    } catch (e) {
-      return { ok: false, error: oneLine((e as Error).message) };
-    }
-    return { ok: true, recipient: { kind: "role", role } };
-  }
-  return { ok: false, error: "type #channel, @name or role:<role>, or pick a number" };
-}
-
-/**
- * Disclose what a chosen channel is before it is used: unregistered channels get a visible warning
- * (the native policy, not this UI, decides whether a send is allowed). A refused or failed read is
- * reported as such, never as "registered". Non-channel recipients need no read.
- */
-export async function discloseChoice(session: AdmittedChatSession, r: Recipient): Promise<string | undefined> {
-  if (r.kind !== "channel") return undefined;
-  let info;
-  try {
-    info = await session.channelInfo(r.channel);
-  } catch (e) {
-    return `could not read #${oneLine(r.channel)} registry metadata: ${oneLine((e as Error).message)}`;
-  }
-  if (info.outcome !== "ok") return `could not read #${oneLine(r.channel)} registry metadata (${info.outcome}): ${oneLine(info.message)}`;
-  const parts: string[] = [];
-  if (!info.value.registered) parts.push(`Unregistered channel #${oneLine(r.channel)}: sends follow the space's native policy`);
-  if (!info.value.postable) parts.push(`your grant does not allow posting to #${oneLine(r.channel)}`);
-  return parts.length ? parts.join("; ") : undefined;
-}
-
-/**
  * Why a chosen DM recipient reaches no one, resolved as a send to it would be, or undefined when it
  * does. Other recipients need no lookup.
  */
@@ -108,5 +56,3 @@ export async function refusedDm(session: AdmittedChatSession, r: Recipient): Pro
   }
   return resolved.outcome === "ok" ? undefined : oneLine(resolved.message);
 }
-
-export { recipientLabel };

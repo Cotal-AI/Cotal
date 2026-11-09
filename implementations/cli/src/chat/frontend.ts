@@ -7,8 +7,7 @@
 import { writeSync } from "node:fs";
 import { colorEnabled, inputDisabledByFlag, terminalWidth } from "@cotal-ai/workspace";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
-import type { AdmittedChatSession, CloseReport } from "@cotal-ai/workspace/chat";
-import type { Recipient } from "./view.js";
+import type { AdmittedChatSession, ChatWords, CloseReport, Recipient } from "@cotal-ai/workspace/chat";
 
 export type FrontEnd = "tui" | "plain" | "stdio";
 
@@ -51,7 +50,7 @@ async function loadTui() {
  *  are installed before its first await. */
 async function runTui(
   { render, createElement, ChatView }: Awaited<ReturnType<typeof loadTui>>,
-  session: AdmittedChatSession, initialRecipient: Recipient | undefined, notice: string | undefined,
+  session: AdmittedChatSession, initialRecipient: Recipient | undefined, notice: string | undefined, words: ChatWords,
 ): Promise<CloseReport | undefined> {
   let entered = false;
   const restore = (): void => {
@@ -83,6 +82,7 @@ async function runTui(
         session,
         initialRecipient,
         notice,
+        words,
         // Without a negotiated protocol Ink cannot tell the two apart; the hint and key map follow.
         shiftEnterDistinct: false,
         onDone: (s) => { close = s.ended; unmount?.(); },
@@ -163,6 +163,8 @@ export type StartChatFrontEnd = (opts: {
   initialRecipient?: Recipient;
   /** What the command disclosed about that channel before admission, shown again in the TUI. */
   notice?: string;
+  /** The clauses the session's refusals end with, which a chosen recipient's warning ends with too. */
+  words: ChatWords;
 }) => Promise<CloseReport | undefined>;
 
 /** Load the chosen front end's modules. Nothing runs until the returned function is called. */
@@ -173,8 +175,8 @@ export async function loadChatFrontEnd(frontEnd: FrontEnd): Promise<StartChatFro
   }
   if (frontEnd === "plain") {
     const { runPlain } = await import("./plain.js");
-    return async ({ session, initialRecipient }) => (await withLineSignals(() => withOwnedStdout(() => runPlain({ session, input: process.stdin, output: process.stdout, width: terminalWidth(process.stdout), initialRecipient })))).ended;
+    return async ({ session, initialRecipient, words }) => (await withLineSignals(() => withOwnedStdout(() => runPlain({ session, input: process.stdin, output: process.stdout, width: terminalWidth(process.stdout), initialRecipient, words })))).ended;
   }
   const tui = await loadTui();
-  return ({ session, initialRecipient, notice }) => runTui(tui, session, initialRecipient, notice);
+  return ({ session, initialRecipient, notice, words }) => runTui(tui, session, initialRecipient, notice, words);
 }

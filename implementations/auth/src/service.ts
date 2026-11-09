@@ -65,9 +65,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { resolve } from "node:path";
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
-import { Kvm, type KV } from "@nats-io/kv";
-import { VOID_SCHEMA, CotalEndpoint, isDerivedOwner, dialerFor, deprovisionAgent, fenceLifecycleAcl, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isChannelFamily, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, credentialIdOf, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, RECORD_KINDS, recordsBucket, remoteManagerActors, remoteManagerServePrincipal, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, holdIssuerSession, acceptedReadGrant, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
-import { findCotalRoot, loadManagerInstanceIdentity, parseSpaceManifest, runSpaceHost, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, type SpaceLane, type SpaceSettings, type SpaceSettingsManifest, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
+import { Kvm } from "@nats-io/kv";
+import { VOID_SCHEMA, CotalEndpoint, isDerivedOwner, dialerFor, deprovisionAgent, fenceLifecycleAcl, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isChannelFamily, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, credentialIdOf, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, RECORD_KINDS, recordsBucket, remoteManagerActors, remoteManagerServePrincipal, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, holdIssuerSession, acceptedReadGrant, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
+import { findCotalRoot, loadManagerInstanceIdentity, parseSpaceManifest, runSpaceHost, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, type SpaceLane, type SpaceSettings, type SpaceSettingsManifest, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
@@ -118,6 +118,9 @@ import { RunCancelObservations, type RunCancelLimits } from "./run-cancel-observ
 import { jitteredBackoffMs, readCancellationAdmission, resolveReadAcl, type RunDelegation } from "@cotal-ai/core";
 import type { DelegatedUserIntentIncarnation } from "./delegated-user-intent.js";
 import { joinOrStartRetirement, openAuthAdminListener, type RetirementFlights } from "./auth-admin.js";
+import { registerSelfAuthorizedInstance } from "./service-registration.js";
+import { openAuthRegistry } from "./registry-host.js";
+import { registry as extensionRegistry, type RegistryService } from "@cotal-ai/core";
 import { AUTH_SERVICE_ENDPOINT, authClusterArtifacts, authContractArtifactValues } from "./auth-service-contract.js";
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
 import {
@@ -415,59 +418,6 @@ export function authorizeRemoteManagerRetirement(args: {
   assertCurrentManagerGate(args.gate, args.instanceId, args.serveEpoch, args.owner, "manager-service retirement");
 }
 
-/** The §13.9 name authority in static mode: the plane holds the space signing seed, so it
- *  self-authorizes exactly one endpoint name for exactly DEV_OWNER, as the manager does for
- *  "manager". */
-function selfNameAuthority(endpoint: string): ServiceNameAuthority {
-  return { authorize: (name, owner) => ({ authorized: name === endpoint && owner === DEV_OWNER, revision: 0 }) };
-}
-
-/** Each contract artifact by its §13.7 content digest. */
-function contractArtifactReader(values: unknown[]): (digest: string) => unknown {
-  const store = new Map(values.map((v) => [contractDigest(v), v]));
-  return (digest) => store.get(digest);
-}
-
-/** The §13.7 registration ceremony for one instance of an endpoint this plane self-authorizes, on
- *  a connection scoped to that instance. The contract artifacts are published before the
- *  registration that advertises them. The issuance gate is provisioned open once, on first sight
- *  (§13.1); on a restart it already exists and `registerServiceInstance` freezes and re-registers
- *  it, which advances the process epoch and fences the predecessor. A first registration stays at
- *  epoch 0. `register` is {@link registerServiceInstance}, or {@link registerServingInstance} for an
- *  instance that serves. It returns what `register` committed, and refuses when its confirming read
- *  finds that a later registration of the same instance superseded it. */
-async function registerSelfAuthorizedInstance<R extends { registrationRevision: number; processEpoch: number }>(nc: NatsConnection, args: {
-  space: string;
-  endpoint: string;
-  instanceId: string;
-  principal: string;
-  clusterDigest: string;
-  artifacts: unknown[];
-}, register: (kv: KV, args: Parameters<typeof registerServiceInstance>[1]) => Promise<R>): Promise<R> {
-  const { space, endpoint, instanceId } = args;
-  const authKv = await new Kvm(nc).open(epAuthBucket(space));
-  const recordsKv = await new Kvm(nc).open(recordsBucket(space));
-  const storeCtx = await contractStoreContext(nc, space);
-  for (const value of args.artifacts) await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
-  if ((await serveIssuanceGateKv(authKv, space, { endpoint, instanceId }).observe()) === null)
-    await provisionEndpointGateOpen(authKv, { endpoint, instanceId, principal: args.principal });
-  const barrier = endpointRegistrationBarrier(authKv, space, { endpoint, instanceId, opId: mintLifecycleUid() });
-  const spec = { endpoint, owner: DEV_OWNER, clusterDigests: [args.clusterDigest], protocol: { v: 1 as const } };
-  const registered = await register(recordsKv, {
-    space, spec, instanceId, registrant: { owner: DEV_OWNER }, authority: selfNameAuthority(endpoint), barrier,
-    readClusterArtifact: contractArtifactReader(args.artifacts),
-  });
-  const { registrationRevision, processEpoch } = registered;
-  // A second start of the same instance can complete between this reopen and this read. Its epoch
-  // is not this start's to claim, and this start's epoch is already fenced. One that completes after
-  // the read leaves this start returning its own epoch, which the gate fences as it fences any
-  // restart's predecessor; no read can close that window.
-  const observed = await serveIssuanceGateKv(authKv, space, { endpoint, instanceId }).observe();
-  if (observed?.state !== "open" || observed.processEpoch !== processEpoch || observed.registrationRevision !== registrationRevision)
-    throw new EpEnvelopeError("conflict", `the issuance gate of ${endpoint}/${instanceId} is no longer open at this registration (process epoch ${processEpoch}, revision ${registrationRevision}); a later barrier fenced this start (SPEC 13.1)`);
-  return registered;
-}
-
 /** The accepted-row token one platform supervisor duty's issued generation is recorded under. */
 function supervisorAcceptedToken(owner: string, instanceId: string, lifecycleUid: string, duty: "supervisor" | "executor"): string {
   return connectionAcceptedToken(`platform-supervisor:${owner}:${instanceId}:${lifecycleUid}:${duty}`);
@@ -492,6 +442,10 @@ export interface AuthServiceRuntimeOptions {
   interactiveManagerSelection?: "local-primary";
   /** Process-lifetime cancellation custody quotas. No eviction or automatic restart on exhaustion. */
   runCancelLimits?: RunCancelLimits;
+  /** Default off. The composition root supplies the registry data plane; auth retains its authority. */
+  registry?: RegistryService;
+  /** Trusted-host only, 5..900 seconds. The native credential source owns renewal. */
+  registryCredentialTtlSeconds?: number;
 }
 
 function runtimeSelection(options: AuthServiceRuntimeOptions): AuthServiceRuntimeOptions["interactiveManagerSelection"] {
@@ -516,6 +470,8 @@ export interface OpenAuthAuthorityPlaneOptions extends AuthServiceRuntimeOptions
   /** A hosted context's injected store, which then keeps the restart identity with the other auth
    *  secret kinds: its serve seed is a private key. */
   identityStore?: SecretStore;
+  /** Required with registry. Explicit on both CLI and hosted paths; no ambient store is discovered. */
+  registryStore?: SecretStore;
   dataAccount: ServiceKeys["dataAccount"];
   log: (line: string) => void;
   /** SMOKE-ONLY eviction override for the barrier executor's boot resume. Production
@@ -610,6 +566,10 @@ async function openAuthAuthorityPlaneWithCustody(opts: OpenAuthAuthorityPlaneOpt
 /** The body of the plane opener, which owns the unwind of a failed construction. */
 async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwind: (() => Promise<unknown>)[], onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"]): Promise<AuthAuthorityPlane> {
   const interactiveManagerSelection = runtimeSelection(opts);
+  if (opts.registry !== undefined && opts.registryStore === undefined)
+    throw new Error("auth-service: registry requires an explicitly assigned secret store");
+  if (opts.registry === undefined && opts.registryCredentialTtlSeconds !== undefined)
+    throw new Error("auth-service: registryCredentialTtlSeconds requires a registry implementation");
   const { server, space, dataAccount, log } = opts;
   const cancelObservations = new RunCancelObservations(space, opts.runCancelLimits);
   const standingTtl = opts.standingRenewableTtlSeconds ?? STANDING_RENEWABLE_TTL_SEC;
@@ -639,7 +599,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     const mint = () => ({ instanceId: mintLifecycleUid(), serveIdentity: newIdentity() });
     const authIdentity = opts.identityStore
       ? await claimAuthInstanceIdentity(opts.identityStore, space, opts.identityRoot, mint)
-      : loadAuthInstanceIdentity(opts.identityRoot, space) ?? createAuthInstanceIdentity(opts.identityRoot, space, mint());
+      : createAuthInstanceIdentity(opts.identityRoot, space, mint);
     const iid = authIdentity.instanceId;
     const artifacts = authClusterArtifacts();
     const values = [...authContractArtifactValues(), artifacts.document, artifacts.manifest];
@@ -697,8 +657,15 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // fence resolves it, every authority operation refuses from then on, and the composition root
   // downs the daemon. A clean close never resolves it.
   let fatalReason: string | undefined;
-  let fireFatal!: (reason: string) => void;
-  const fenced = new Promise<string>((r) => { fireFatal = r; });
+  let registryHost: { refuse(): void; close(): Promise<void> } | undefined;
+  const registryFence = new AbortController();
+  let settleFatal!: (reason: string) => void;
+  const fenced = new Promise<string>((r) => { settleFatal = r; });
+  const fireFatal = (reason: string): void => {
+    registryFence.abort();
+    registryHost?.refuse();
+    settleFatal(reason);
+  };
   void fenced.then(() => issuer.close());
   const barrier = await openAuthorityClient({ onConnection, server, space, dataAccount, label: `cotal:auth-barrier:${space}`, grants: (id) => authorityBarrierGrants(space, id), log });
   unwind.push(() => barrier.close());
@@ -797,6 +764,23 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // the FRESH space-manager-lease holder check) and dispatches.
   const authAdmin = await openAuthAdminListener({ onConnection, server, space, dataAccount, reg: barrierReg, retirement, barrierFlight: retirementFlights, instanceId: authServeInstanceId, epoch: authServeGrant.epoch, grant: authServeGrant, log });
   unwind.push(() => authAdmin.close());
+  if (opts.registry !== undefined) {
+    unwind.push(async () => { await registryHost?.close(); });
+    await openAuthRegistry({
+      server, space, dataAccount, log, onConnection, store: opts.registryStore!,
+      implementation: opts.registry, signal: registryFence.signal,
+      ...(opts.registryCredentialTtlSeconds !== undefined ? { ttlSeconds: opts.registryCredentialTtlSeconds } : {}),
+      onCustody: (handle) => { registryHost = handle; },
+      onFailure: (reason) => {
+        if (closing) return;
+        hold?.fence(reason);
+        fatalReason ??= reason;
+        serviceHost?.trip(reason);
+        fireFatal(reason);
+        log(`auth-plane: ${reason}`);
+      },
+    });
+  }
   const recordToolResultConsent = makeToolResultConsentRecorder(registryStores(registry).authKv, () => refuseIfFenced(), space);
   // Expired evidence goes at boot and then on the plane's own timer. Corrupt evidence means the
   // store is inconsistent: it refuses the open, and mid-life it fences the plane like a scanner
@@ -956,7 +940,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       const { root } = verifyClusterManifest(closure, await read(closure));
       const raw = await read(root);
       const document = verifyClusterRoot(root, raw);
-      if (document.urn === "ai.cotal.manager") return { digest: root, document, raw };
+      if (document.urn === "ai.cotal.manager") return { closureDigest: closure, document, raw };
     }
     throw new EpEnvelopeError("failed-precondition", "the manager service spec registers no manager cluster");
   };
@@ -2179,6 +2163,8 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       closing = true;
       // Before the first await: no service host call enters once close has begun.
       serviceHost?.refuse();
+      registryHost?.refuse();
+      await registryHost?.close();
       await drainCallerPayload();
       await stopPrune();
       await stopChatSweep();
@@ -2298,6 +2284,8 @@ export function authServiceConfiguration(args: ParsedArgs) {
     // for every space. The manifest entry alone says it, and the flag refuses rather than defaulting.
     if (!calloutOnly && v["service-endpoints"] !== undefined)
       throw new Error('auth-service: --spaces takes service endpoints per space - set "serviceEndpoints": true on the manifest entry of each space that hosts them and drop --service-endpoints');
+    if (!calloutOnly && v.registry !== undefined)
+      throw new Error('auth-service: --spaces takes registry per space - set "registry": true on each intended manifest entry and drop --registry');
   } else if (!v.space) {
     throw new Error("auth-service: --space is required (or --spaces <manifest> to serve several spaces from this one process)");
   }
@@ -2305,7 +2293,7 @@ export function authServiceConfiguration(args: ParsedArgs) {
   const server = v.server;
   if (!server) throw new Error("auth-service: --server is required (the broker this callout serves)");
   if (calloutOnly) {
-    const http = ["port", "exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "service-endpoints"]
+    const http = ["port", "exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "service-endpoints", "registry"]
       .filter((name) => v[name] !== undefined);
     if (http.length > 0)
       throw new Error(`auth-service: --callout-only answers the callout alone and serves no HTTP or service endpoint - drop ${http.map((name) => `--${name}`).join(", ")}`);
@@ -2345,7 +2333,7 @@ export function authServiceConfiguration(args: ParsedArgs) {
   const limits: AuthCalloutLimits | undefined = authTimeout === undefined ? undefined : { authTimeoutMs: authTimeout * 1000 };
   if (limits !== undefined) calloutLimits(limits);
 
-  return { space, spaces, server, port, publicFace, serviceEndpoints, calloutOnly, calloutLimits: limits };
+  return { space, spaces, server, port, publicFace, serviceEndpoints, registry: v.registry !== undefined, calloutOnly, calloutLimits: limits };
 }
 
 /** Trusted local embedding hooks. They carry no prepared key material or loopback capability. */
@@ -2371,7 +2359,10 @@ export interface AuthDaemonLifecycle extends AuthServiceRuntimeOptions {
 export async function runAuthService(args: ParsedArgs, store?: SecretStore, options: AuthServiceRuntimeOptions | AuthDaemonLifecycle = {}): Promise<void> {
   const interactiveManagerSelection = runtimeSelection(options);
   const lifecycle = "root" in options ? options : undefined;
-  const { space, spaces, server, port, publicFace, serviceEndpoints, calloutOnly, calloutLimits: limits } = authServiceConfiguration(args);
+  const { space, spaces, server, port, publicFace, serviceEndpoints, registry: registryEnabled, calloutOnly, calloutLimits: limits } = authServiceConfiguration(args);
+  if (calloutOnly && (options.registry !== undefined || options.registryCredentialTtlSeconds !== undefined))
+    throw new Error("auth-service: a callout-only replica cannot host a registry");
+  const registry = options.registry ?? (registryEnabled ? await extensionRegistry.load<RegistryService>("registry-service", "builtin") : undefined);
   // The provider's space-scoped state dir for NON-SEAM material (ledger, IdP pin, discovery). The
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
   const root = lifecycle?.root ?? findCotalRoot();
@@ -2421,6 +2412,8 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
     localManager: () => loadManagerInstanceIdentity(root, space),
     ...(interactiveManagerSelection !== undefined ? { interactiveManagerSelection } : {}),
     ...(options.runCancelLimits !== undefined ? { runCancelLimits: options.runCancelLimits } : {}),
+    ...(registry !== undefined ? { registry } : {}),
+    ...(options.registryCredentialTtlSeconds !== undefined ? { registryCredentialTtlSeconds: options.registryCredentialTtlSeconds } : {}),
     ...(limits !== undefined ? { calloutLimits: limits } : {}),
   }).catch((e: unknown) => {
     // The launching `up` sees only this process exit. Leave a typed refusal (a plane-claim
@@ -2485,7 +2478,7 @@ const AUTH_HOST_FACE_FIELDS = ["exchangePublicPort", "exchangePublicUrl", "excha
 
 /** The fields of an `auth-service --spaces` manifest entry besides `space`: the public face, and
  *  `serviceEndpoints`, the per-space form of `--service-endpoints`. */
-const AUTH_HOST_ENTRY_FIELDS = [...AUTH_HOST_FACE_FIELDS, "serviceEndpoints"] as const;
+const AUTH_HOST_ENTRY_FIELDS = [...AUTH_HOST_FACE_FIELDS, "serviceEndpoints", "registry"] as const;
 
 /** One space's settings in an `auth-service --spaces` manifest, read from its entry. */
 export interface AuthHostEntry {
@@ -2494,6 +2487,8 @@ export interface AuthHostEntry {
   /** Whether the space's lane hosts service endpoints, as `--service-endpoints` does for one space.
    *  An absent field is `false`. */
   serviceEndpoints: boolean;
+  /** Default off; only this lane hosts the registry when true. */
+  registry?: boolean;
 }
 
 /** Reads one space's public face from its entry's public-face fields, under the rules the flags
@@ -2528,9 +2523,10 @@ const authHostSettings: SpaceSettings<AuthHostEntry> = {
     const unknown = Object.keys(fields).filter((k) => !(AUTH_HOST_ENTRY_FIELDS as readonly string[]).includes(k));
     if (unknown.length) throw new Error(`unknown field(s) ${unknown.join(", ")}; an entry takes space, ${AUTH_HOST_ENTRY_FIELDS.join(", ")}`);
     const publicFace = authHostPublicFace(fields);
-    const { serviceEndpoints } = fields;
+    const { serviceEndpoints, registry } = fields;
     if (serviceEndpoints !== undefined && typeof serviceEndpoints !== "boolean") throw new Error(`serviceEndpoints must be true or false, got ${JSON.stringify(serviceEndpoints)}`);
-    return { publicFace, serviceEndpoints: serviceEndpoints === true };
+    if (registry !== undefined && typeof registry !== "boolean") throw new Error("registry must be true or false");
+    return { publicFace, serviceEndpoints: serviceEndpoints === true, registry: registry === true };
   },
   across(settings) {
     const ports = new Map<number, string>();
@@ -2562,6 +2558,7 @@ async function openAuthServiceLane(o: {
   hostedStore: boolean;
   publicFace: PublicFaceInput | null;
   serviceEndpoints: boolean;
+  registry: boolean;
   limits?: AuthCalloutLimits;
   runtime: AuthServiceRuntimeOptions;
   log: (line: string) => void;
@@ -2573,6 +2570,7 @@ async function openAuthServiceLane(o: {
   const endpoints = await serviceEndpointsOption(o.secrets, space, o.serviceEndpoints);
   if (endpoints.log !== undefined) log(`auth-service: ${endpoints.log}`);
   const selection = runtimeSelection(o.runtime);
+  const registry = o.registry ? o.runtime.registry ?? await extensionRegistry.load<RegistryService>("registry-service", "builtin") : undefined;
   const started = await startAuthContext({
     space,
     server: o.server,
@@ -2586,6 +2584,7 @@ async function openAuthServiceLane(o: {
     localManager: () => loadManagerInstanceIdentity(root, space),
     ...(selection !== undefined ? { interactiveManagerSelection: selection } : {}),
     ...(o.runtime.runCancelLimits !== undefined ? { runCancelLimits: o.runtime.runCancelLimits } : {}),
+    ...(registry !== undefined ? { registry, ...(o.runtime.registryCredentialTtlSeconds !== undefined ? { registryCredentialTtlSeconds: o.runtime.registryCredentialTtlSeconds } : {}) } : {}),
     ...(o.limits !== undefined ? { calloutLimits: o.limits } : {}),
     log,
   });
@@ -2641,7 +2640,7 @@ async function runAuthServiceHost(args: { manifest: string; server: string; root
     startup: "servable",
     open: (space, entry) => openAuthServiceLane({
       space, server, root, secrets, hostedStore: store !== undefined, publicFace: entry.publicFace,
-      serviceEndpoints: entry.serviceEndpoints, runtime: args.runtime, log: (l) => log(`[${space}] ${l}`),
+      serviceEndpoints: entry.serviceEndpoints, registry: entry.registry === true, runtime: args.runtime, log: (l) => log(`[${space}] ${l}`),
       ...(args.limits !== undefined ? { limits: args.limits } : {}),
     }),
     label: "auth service host",
@@ -2781,6 +2780,10 @@ export async function startAuthService(inputs: HostedContextInputs & {
   toolResultConsents?: ToolResultConsentSignerOptions;
   /** Default off. Forwarded unchanged to {@link openAuthAuthorityPlane}. No CLI flag sets it. */
   serviceEndpoints?: OpenAuthAuthorityPlaneOptions["serviceEndpoints"];
+  /** Default off. Auth hosts this registry using this context's own assigned secret store. */
+  registry?: RegistryService;
+  /** Trusted-host-only credential lifetime for registry renewal rehearsal, 5..900 seconds. */
+  registryCredentialTtlSeconds?: number;
   /** This context's callout limits. `authTimeoutMs` must match the broker's `authorization
    *  { timeout }`. Absent: every default. No CLI flag sets it. */
   calloutLimits?: AuthCalloutLimits;
@@ -2829,6 +2832,8 @@ export async function startAuthService(inputs: HostedContextInputs & {
     ...(inputs.issuerSessionTtlSeconds !== undefined ? { issuerSessionTtlSeconds: inputs.issuerSessionTtlSeconds } : {}),
     ...(inputs.toolResultConsents !== undefined ? { toolResultConsents: inputs.toolResultConsents } : {}),
     ...(inputs.serviceEndpoints !== undefined ? { serviceEndpoints: inputs.serviceEndpoints } : {}),
+    ...(inputs.registry !== undefined ? { registry: inputs.registry } : {}),
+    ...(inputs.registryCredentialTtlSeconds !== undefined ? { registryCredentialTtlSeconds: inputs.registryCredentialTtlSeconds } : {}),
     ...(inputs.calloutLimits !== undefined ? { calloutLimits: inputs.calloutLimits } : {}),
     ...(inputs.connectLimits !== undefined ? { connectLimits: inputs.connectLimits } : {}),
   });
@@ -2912,6 +2917,8 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
     ...(o.issuerSessionTtlSeconds !== undefined ? { issuerSessionTtlSeconds: o.issuerSessionTtlSeconds } : {}),
     ...(o.serviceEndpoints !== undefined ? { serviceEndpoints: o.serviceEndpoints } : {}),
+    ...(o.registry !== undefined ? { registry: o.registry, registryStore: secrets } : {}),
+    ...(o.registryCredentialTtlSeconds !== undefined ? { registryCredentialTtlSeconds: o.registryCredentialTtlSeconds } : {}),
   }, onConnection);
   let nc: NatsConnection | undefined;
   let http: ReturnType<typeof createServer> | undefined;

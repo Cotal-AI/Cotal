@@ -30,6 +30,16 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
 # env: COTAL_SPACE, COTAL_NAME, COTAL_ROLE, COTAL_CHANNEL=1, plus claude's documented auth vars
 ```
 
+- **Wake channel.** Claude Code binds the `server:cotal` channel only to a server its own
+  configuration declares, the user config or the project's `.mcp.json`; the `--mcp-config` entry
+  alone does not count. `cotal setup` and `cotal update` register the plugin's server as the
+  user-scope entry `cotal`, the same command and arguments as the plugin's own server, so a plain
+  session runs one process and a managed launch's same-named entry replaces it. A carried seat's
+  private home declares it itself. A managed launch whose user config and project `.mcp.json`
+  declare no `cotal` server is refused with a message naming `cotal setup`, because a seat whose
+  channel did not bind joins the mesh, reports idle and never answers a turn or a direct message.
+  `cotal status` reports the entry under `Claude wake channel`.
+
 - **Tool permissions.** A managed seat has no human at its terminal, so it launches with
   `--permission-mode bypassPermissions`: a prompt under the default mode would stop its first mesh
   tool call until someone answered it, and nobody can. To get prompts back, pass
@@ -179,7 +189,9 @@ hosted connector offers: `cotal_connect`, `cotal_wait`, `cotal_disconnect` and t
 Nothing joins until the conversation calls `cotal_connect` with a name. The plugin's server then runs
 `cotal app-identity provision` with the CLI that `cotal setup` recorded beside the plugin
 (`dist/cli.json`), so it does not need `cotal` on `PATH`. Each conversation gets an identity of its
-own once a person approves it. To choose a registered mesh for this conversation, pass `space`:
+own, bound to its native session: on a signed-in mesh once a person approves it, and on an open or
+static mesh this computer runs as soon as it asks. To choose a registered mesh for this
+conversation, pass `space`:
 
 ```json
 {"name":"my-session","space":"cotal_cloud"}
@@ -204,9 +216,20 @@ host cannot replace a request while its original consumer is still alive.
 The hosted HTTPS connector chooses its space during browser authorization. Its OAuth grant is
 bound to that space; a native `space` argument cannot retarget a hosted grant.
 
-A static-auth or open mesh has no page where a person approves a connection, so the plugin
-opens no identity there. A plugin that `cotal setup` did not install has no record, and
-`cotal_connect` names that remedy.
+An open or static mesh this computer runs has no page where a person approves a connection. There
+the conversation connects with the grant a bare `cotal spawn` gets on that mesh: the channels, role
+and capabilities of its default persona, or the part of them that `cotal_connect` names. A selection
+that reaches beyond them is refused whole. On a static mesh the space's signing
+authority on this computer issues the conversation a terminal seat
+([SPEC 13.15](../SPEC.md#1315-issued-authority)) under its own lifecycle, scoped to that grant, with
+the durable inboxes a foreground spawn gets. The credential stays in an owner-only file the plugin's
+server reads and never reaches the conversation. A static mesh whose signing authority this account
+does not hold opens nothing. An open mesh issues nothing and enforces no post ACL. Each native session
+holds one local identity at a time, and a call without a bound native session opens none. Its
+disconnect, the end of its session or its server's exit retires the identity with its issuance and
+broker footprint. When the host ends the server without letting it retire, as Codex does when it
+exits, the next connection on this computer retires what that server held. A plugin that
+`cotal setup` did not install has no record, and `cotal_connect` names that remedy.
 
 Personal native Code sessions can join a signed-in mesh whose authority offers connection approval.
 The plugin binds the real native session and transcript before requesting an identity. Each
@@ -370,8 +393,9 @@ signed in, and the refusal names it. When the space advertises none, all three s
 server's instructions tell the model to use the hosted connector for a signed-in space. The hosted
 connector is a separate connection path; it does not supply autonomous chat wake.
 
-Desktop's working directory is not your project, so its mesh is the `cotal use` mesh, else the only
-one running. Desktop runs no monitor, so a Desktop conversation hears messages when it calls a tool,
+Desktop Chat opens no identity on an open or static mesh either, since every personal identity
+belongs to a native session. Desktop's working directory is not your project, so its mesh is the
+`cotal use` mesh, else the only one running. Desktop runs no monitor, so a Desktop conversation hears messages when it calls a tool,
 and keeps calling `cotal_wait` when you ask it to keep listening. A chat with no turn running cannot
 be woken by any server: Claude's chat surfaces start a turn only from the person.
 
@@ -875,8 +899,11 @@ Carried sessions also stay strict and keep their seat-private home; operator pro
 connected-account credentials are not copied into them. Native managed policy still applies.
 
 The child environment stays allowlisted. References in declared shared servers and the selected
-user-owned MCP configuration forward their named variables. Repository and plugin files cannot
-add ambient secret names merely by referencing them; supply such names through an explicit
+user-owned MCP configuration forward their named variables. References to per-seat `COTAL_` names,
+such as `COTAL_ROLE` and `COTAL_MODEL`, are refused before launch. The check is case-insensitive;
+machine-wide names such as `COTAL_HOME` remain allowed. Use a non-`COTAL_` name for a server input.
+Repository and plugin files cannot add ambient secret names merely by referencing them; supply
+such names through an explicit
 shared declaration or the existing `spawn.env` policy. Native files retain their own configured
 values. Documented native MCP switches, including the connected-account opt-out and tool-search
 choice, keep their explicit values. Cotal does not forward the entire parent environment or force

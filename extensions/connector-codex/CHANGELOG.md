@@ -1,5 +1,137 @@
 # @cotal-ai/connector-codex
 
+## 0.151.0
+
+No changes in this release.
+
+## 0.150.0
+
+No changes in this release.
+
+## 0.149.0
+
+No changes in this release.
+
+## 0.148.2
+
+No changes in this release.
+
+## 0.148.1
+
+### Patch Changes
+
+- 471f3d0: Keep Cotal upgrades working on computers without the Codex plugin installed.
+  
+  Refresh checks Codex's native plugin cache before invoking its executable. Cached installations still require a working Codex command, and unreadable caches refuse the upgrade rather than being treated as absent.
+
+## 0.148.0
+
+### Minor Changes
+
+- c8cf718: Your own Codex conversations can now join a Cotal mesh after you approve them: `cotal setup` installs a Cotal plugin into Codex, and a connected conversation is woken when messages arrive. The plugin's server binds to the conversation Codex names in each tool call's request metadata, opens and retires its identity through the existing `cotal app-identity` approval flow, queues at most one labelled notice per connection with Codex's `thread/queue/add` (the messages themselves are read with `cotal_inbox`), and publishes the conversation's own activity only from the moment of approval.
+
+## 0.147.8
+
+No changes in this release.
+
+## 0.147.7
+
+No changes in this release.
+
+## 0.147.6
+
+No changes in this release.
+
+## 0.147.5
+
+No changes in this release.
+
+## 0.147.4
+
+No changes in this release.
+
+## 0.147.3
+
+No changes in this release.
+
+## 0.147.2
+
+No changes in this release.
+
+## 0.147.1
+
+No changes in this release.
+
+## 0.147.0
+
+No changes in this release.
+
+## 0.146.0
+
+No changes in this release.
+
+## 0.145.1
+
+No changes in this release.
+
+## 0.145.0
+
+No changes in this release.
+
+## 0.144.0
+
+No changes in this release.
+
+## 0.143.0
+
+No changes in this release.
+
+## 0.142.0
+
+No changes in this release.
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+
+## 0.141.10
+
+No changes in this release.
+
+## 0.141.9
+
+No changes in this release.
+
+## 0.141.8
+
+No changes in this release.
+
+## 0.141.7
+
+No changes in this release.
+
+## 0.141.6
+
+No changes in this release.
+
+## 0.141.5
+
+No changes in this release.
+
+## 0.141.4
+
+No changes in this release.
+
+## 0.141.3
+
+No changes in this release.
+
+## 0.141.2
+
+No changes in this release.
+
 ## 0.141.1
 
 No changes in this release.

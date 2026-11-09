@@ -32,6 +32,7 @@ import {
   legacyRenewalRecord,
   MEMBERSHIP_OBSERVER_CREDS_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
+  WEB_CREDS_KIND,
   MeshTargetError,
   migrateLegacyCotalMaterial,
   preflightTarget,
@@ -376,16 +377,21 @@ function daemonRemintRepair(): string {
 
 /** The repair for the $SYS pair, which nothing re-signs in place. A plain `down` + `up` does NOT
  *  touch these: `up` mints them only on the branch that CREATES the trust record, so re-upping an
- *  existing space reuses the same files and reports success. The rotation must be asked for. */
-function systemRotationRepair(): string {
-  return `system-account rotation: \`${displayCmd()} down\` then \`${displayCmd()} up --rotate-sys\` re-mints the $SYS material (the space, its agents, its creds and its data are untouched)`;
+ *  existing space reuses the same files and reports success. The rotation must be asked for. A
+ *  missing connection evictor is the exception: the delivery daemon mints that one on its next start
+ *  when this root hosts one space and retained its system-account signing seed. */
+function systemRotationRepair(kind?: CredentialKind): string {
+  const rotation = `system-account rotation: \`${displayCmd()} down\` then \`${displayCmd()} up --rotate-sys\` re-mints the $SYS material (the space, its agents, its creds and its data are untouched)`;
+  if (kind !== "connection-evictor") return rotation;
+  return `the delivery daemon mints a missing connection evictor on its next start when this root hosts one space and retained its system-account signing seed. Otherwise ${rotation}`;
 }
 
 /** A credential file that is absent. Only the $SYS pair is a finding then, once the space has its
- *  trust: `up` mints the other two when they are missing, and nothing but a rotation mints these. */
+ *  trust: `up` mints the other two when they are missing. Nothing but a rotation mints the observer.
+ *  The delivery daemon mints a missing evictor on its next start when the root can sign one. */
 function missingReport(label: string, kind: CredentialKind, path: string, sysPub?: string): CredReport {
   if (sysPub === undefined || (kind !== "membership-observer" && kind !== "connection-evictor")) return { label, kind, path };
-  return { label, kind, path, problem: `missing - ${kind === "membership-observer" ? "the membership feed" : "live connection eviction"} cannot run without it`, repair: systemRotationRepair() };
+  return { label, kind, path, problem: `missing - ${kind === "membership-observer" ? "the membership feed" : "live connection eviction"} cannot run without it`, repair: systemRotationRepair(kind) };
 }
 
 /** Local filename/issued-at ordering only. No role here proves a connected or running successor. */
@@ -515,6 +521,7 @@ function inventory(root: string, space: string, sysPub?: string, readOnly = fals
     { label: MEMBERSHIP_RW_CREDS_KIND, kind: "membership-rw", path: at(MEMBERSHIP_RW_CREDS_KIND) },
     { label: MEMBERSHIP_OBSERVER_CREDS_KIND, kind: "membership-observer", path: at(MEMBERSHIP_OBSERVER_CREDS_KIND) },
     { label: CONNECTION_EVICTOR_CREDS_KIND, kind: "connection-evictor", path: at(CONNECTION_EVICTOR_CREDS_KIND) },
+    { label: WEB_CREDS_KIND, kind: "observer", path: at(WEB_CREDS_KIND) },
   ];
   // Ask the staleness question ONCE, through the same helper the boot path uses, so `doctor auth`
   // and `cotal up` can never disagree about which $SYS creds the trust record authorizes.
@@ -640,6 +647,9 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
         r.repair = agentUnboundedRepair(path, space!, noExpiryRecordPath(path), grants, claims?.name);
         break;
       }
+      // The dashboard cred is minted without an expiry by design (the dashboard reads it once at
+      // start and nothing reloads it), so its state is shown and is no finding.
+      if (label === WEB_CREDS_KIND) break;
       // A credential with no expiry claim stays valid until its signer rotates, whatever its kind,
       // so it is a finding even where no renewal owner bounds it.
       r.problem = standing

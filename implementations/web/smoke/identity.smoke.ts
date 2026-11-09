@@ -22,6 +22,7 @@ import { IdentityBadge } from "../client/src/ui/IdentityBadge.tsx";
 import { BadgeOf, badgeLookup } from "../client/src/ui/identity.js";
 import { TopologyTab } from "../client/src/ui/panel/TopologyTab.tsx";
 import { TopologyView } from "../client/src/ui/views/TopologyView.tsx";
+import { inShell } from "./providers.js";
 import { renderShell } from "./render-shell.js";
 
 let n = 0;
@@ -122,8 +123,11 @@ const seed: Partial<DashboardState> = { space: "main", roster: ROSTER, channels:
 const teamRoute: Route = { view: "channel", channel: "team" };
 {
   const shell = parse(renderShell(seed, teamRoute, true));
-  const rows = all(shell, "main.ui-center .ui-msg");
-  const rowBadge = (i: number) => badgeView(rows[i]?.querySelector(".ui-gut .ui-idb") ?? null);
+  const rows = all(shell, "main [data-slot=message]");
+  const rowBadge = (i: number) => badgeView(rows[i]?.querySelector("[data-slot=message-avatar] .ui-idb") ?? null);
+  /** Whether a row's header carries the unverified mark. */
+  const unverified = (row: HTMLElement | undefined) =>
+    [...(row?.querySelector("[data-slot=message-header]")?.children ?? [])].some((el) => el.textContent?.startsWith("unverified "));
   // lead and ui share slot 4 by hash; in name order ui moves to 5.
   same("5.1 the message rows draw a different slot for each Claude agent",
     [rowBadge(0), rowBadge(1)], [{ cls: "ui-idb", style: "--bf:var(--id-4)", text: "L" }, { cls: "ui-idb", style: "--bf:var(--id-5)", text: "U" }]);
@@ -131,7 +135,7 @@ const teamRoute: Route = { view: "channel", channel: "team" };
     all(shell, ".v3-mrow").map((r) => [r.dataset.member, badgeView(r.querySelector(".ui-idb"))]),
     [["local.ui", { cls: "ui-idb", style: "--bf:var(--id-5)", text: "U" }], ["local.lead", { cls: "ui-idb", style: "--bf:var(--id-4)", text: "L" }]]);
   ok("5.3 a live row with a verified sender has a badge and a history row has none",
-    rows.length === 3 && rowBadge(0) !== null && rowBadge(2) === null && rows[2].querySelector(".ui-unverified") !== null, rows.map((_, i) => rowBadge(i)));
+    rows.length === 3 && rowBadge(0) !== null && rowBadge(2) === null && unverified(rows[2]) && !unverified(rows[0]), rows.map((_, i) => rowBadge(i)));
 }
 
 // ── 6. The Topology tab ──────────────────────────────────────────────────────────────────────────
@@ -142,7 +146,7 @@ const teamRoute: Route = { view: "channel", channel: "team" };
   const members = { ...teamMembers, members: [...teamMembers.members, { id: "local.perf", live: ["team"], durable: [], observedAt: 1 }] } as MembershipSnapshot;
   const store = createStore<DashboardState>({ ...initialState, ...seed, roster, membership: { snapshot: members } });
   const lookup = badgeLookup(rosterRows(roster, { includeOffline: true }));
-  const under = (el: ReturnType<typeof createElement>) => parse(renderToString(createElement(BadgeOf.Provider, { value: lookup }, el)));
+  const under = (el: ReturnType<typeof createElement>) => parse(renderToString(inShell(createElement(BadgeOf.Provider, { value: lookup }, el))));
   /** Each agent node: its id, whether its badge sits inside the art group, the circle's style and the letter. */
   const nodes = (root: HTMLElement) => all(root, "g.ui-ta")
     .map((g) => [g.dataset.node, g.querySelector(".ui-ta-art .ui-tidb") !== null, g.querySelector(".ui-tidb circle")?.getAttribute("style") ?? null, g.querySelector(".ui-tidb text")?.textContent ?? null])

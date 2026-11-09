@@ -1,5 +1,259 @@
 # @cotal-ai/delivery
 
+## 0.151.0
+
+### Patch Changes
+
+- a50683c: A space created before live eviction gets its missing connection evictor the next time the delivery daemon starts, so a despawned seat's name is released without rotating the system account. The daemon mints it only on a root that hosts one space and retained its system-account signing seed, beside an observer that same system account signed; anywhere else, a root hosting several spaces included, the heal does nothing and the daemon starts as before. An evictor that is already present is left untouched.
+- 7350dcc: The multi-space delivery host (`cotal deliver --spaces`) is now the one process on a broker that kicks a live connection. When a space on its root retained the system-account signing seed, every lane evicts through the host's kick authority: the lane scans its own account, the host checks each connection against its own complete census of that account, mints a kick-only user that lives five minutes, kicks, and keeps no `$SYS` connection open between kicks. A lane opens no `connection-evictor` credential, so a space created before live eviction on a multi-space broker completes its eviction barrier without a system-account rotation, and no per-space process holds the broker-wide KICK. The host says which posture it runs at start. A single-space daemon is unchanged. Core exports the pieces the host uses: `KickTarget`, `kickConnection`, `accountHoldsConnection`, and a `kick` function the eviction sweep can delegate to.
+- Updated dependencies [c986cc1]
+- Updated dependencies [dacb515]
+- Updated dependencies [143a69e]
+- Updated dependencies [38f5bb2]
+- Updated dependencies [7350dcc]
+- Updated dependencies [e7cb990]
+- Updated dependencies [6661f53]
+  - @cotal-ai/core@0.151.0
+  - @cotal-ai/workspace@0.151.0
+
+## 0.150.0
+
+### Patch Changes
+
+- Updated dependencies [8e2ba65]
+  - @cotal-ai/core@0.150.0
+  - @cotal-ai/workspace@0.150.0
+
+## 0.149.0
+
+### Patch Changes
+
+- Updated dependencies [7068f2b]
+- Updated dependencies [2d497ad]
+- Updated dependencies [441ed3b]
+- Updated dependencies [dd76ef4]
+  - @cotal-ai/core@0.149.0
+  - @cotal-ai/workspace@0.149.0
+
+## 0.148.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.2
+  - @cotal-ai/workspace@0.148.2
+
+## 0.148.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.1
+  - @cotal-ai/workspace@0.148.1
+
+## 0.148.0
+
+### Patch Changes
+
+- Updated dependencies [c8cf718]
+  - @cotal-ai/core@0.148.0
+  - @cotal-ai/workspace@0.148.0
+
+## 0.147.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.8
+  - @cotal-ai/workspace@0.147.8
+
+## 0.147.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.7
+  - @cotal-ai/workspace@0.147.7
+
+## 0.147.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.6
+  - @cotal-ai/workspace@0.147.6
+
+## 0.147.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.5
+  - @cotal-ai/workspace@0.147.5
+
+## 0.147.4
+
+### Patch Changes
+
+- Updated dependencies [49e8694]
+  - @cotal-ai/core@0.147.4
+  - @cotal-ai/workspace@0.147.4
+
+## 0.147.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.3
+  - @cotal-ai/workspace@0.147.3
+
+## 0.147.2
+
+### Patch Changes
+
+- Updated dependencies [30d8538]
+  - @cotal-ai/core@0.147.2
+  - @cotal-ai/workspace@0.147.2
+
+## 0.147.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.1
+  - @cotal-ai/workspace@0.147.1
+
+## 0.147.0
+
+### Patch Changes
+
+- Updated dependencies [b8b0ff4]
+  - @cotal-ai/core@0.147.0
+  - @cotal-ai/workspace@0.147.0
+
+## 0.146.0
+
+### Patch Changes
+
+- Updated dependencies [d312807]
+- Updated dependencies [4536cfe]
+- Updated dependencies [6cd9b65]
+- Updated dependencies [e3cfcdb]
+  - @cotal-ai/workspace@0.146.0
+  - @cotal-ai/core@0.146.0
+
+## 0.145.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.145.1
+  - @cotal-ai/workspace@0.145.1
+
+## 0.145.0
+
+### Patch Changes
+
+- Updated dependencies [d7b0be0]
+  - @cotal-ai/core@0.145.0
+  - @cotal-ai/workspace@0.145.0
+
+## 0.144.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.144.0
+  - @cotal-ai/workspace@0.144.0
+
+## 0.143.0
+
+### Patch Changes
+
+- Updated dependencies [3651b42]
+  - @cotal-ai/core@0.143.0
+  - @cotal-ai/workspace@0.143.0
+
+## 0.142.0
+
+### Patch Changes
+
+- Updated dependencies [3ad82f7]
+- Updated dependencies [e16b8d9]
+- Updated dependencies [32f93ed]
+  - @cotal-ai/workspace@0.142.0
+  - @cotal-ai/core@0.142.0
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+- Updated dependencies [d389b22]
+- Updated dependencies [28b2628]
+  - @cotal-ai/core@0.141.11
+  - @cotal-ai/workspace@0.141.11
+
+## 0.141.10
+
+### Patch Changes
+
+- Updated dependencies [392b738]
+  - @cotal-ai/workspace@0.141.10
+  - @cotal-ai/core@0.141.10
+
+## 0.141.9
+
+### Patch Changes
+
+- Updated dependencies [8d5f0d5]
+- Updated dependencies [f6ec096]
+  - @cotal-ai/core@0.141.9
+  - @cotal-ai/workspace@0.141.9
+
+## 0.141.8
+
+### Patch Changes
+
+- Updated dependencies [29b229c]
+  - @cotal-ai/core@0.141.8
+  - @cotal-ai/workspace@0.141.8
+
+## 0.141.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.7
+  - @cotal-ai/workspace@0.141.7
+
+## 0.141.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.6
+  - @cotal-ai/workspace@0.141.6
+
+## 0.141.5
+
+### Patch Changes
+
+- e527ea8: Remove the unused probe-credit method and unbounded getter from the delivery loop-lag meter. Keep tick-only wall-clock interval accounting and its comparison bound unchanged, with updated comments and regression coverage.
+- @cotal-ai/core@0.141.5
+  - @cotal-ai/workspace@0.141.5
+
+## 0.141.4
+
+### Patch Changes
+
+- Updated dependencies [d53d362]
+  - @cotal-ai/workspace@0.141.4
+  - @cotal-ai/core@0.141.4
+
+## 0.141.3
+
+### Patch Changes
+
+- Updated dependencies [a77ee62]
+  - @cotal-ai/core@0.141.3
+  - @cotal-ai/workspace@0.141.3
+
+## 0.141.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.2
+  - @cotal-ai/workspace@0.141.2
+
 ## 0.141.1
 
 ### Patch Changes

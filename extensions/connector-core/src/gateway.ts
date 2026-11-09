@@ -19,7 +19,7 @@ import type { Readable, Writable } from "node:stream";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { McpError, ErrorCode, type ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
@@ -63,8 +63,10 @@ export interface GatewayConnection {
  *  value a tool argument chose. */
 export interface GatewayHost {
   /** The account the request authenticated as. Throw when the request carries no valid
-   *  authentication; the tool then runs nothing. */
-  account(auth: AuthInfo | undefined): string;
+   *  authentication; the tool then runs nothing. `meta` is the tool call's request `_meta`, which
+   *  the MCP client sets and the model's arguments cannot reach. Only a host whose client is the
+   *  native harness itself, over stdio, may bind to it. */
+  account(auth: AuthInfo | undefined, meta?: Readonly<Record<string, unknown>>): string;
   /** Open a fresh connection for `account` named exactly `name`. Throw {@link NameTaken} only for
    *  an authoritative name collision. The collision check and the issue must be one atomic step per
    *  account: an `open` racing another for the same name throws `NameTaken` rather than also
@@ -171,7 +173,7 @@ function gatewayAnnotations(name: string): ToolAnnotations {
 /** What `cotal_connect` says about selection when the embedder enables it. */
 const SELECTION_TEXT =
   "Ask for what this conversation already knows it needs, in this call: the channels the person named or the " +
-  "task needs, a role it should answer, and spawn or run if it will start agents or workflow runs. The person " +
+  "task needs, a role it should answer, and spawn or run if it will start agents or workflow runs. On a signed-in mesh, the person " +
   "then approves one request instead of a second one later. " +
   "Channels, role and capabilities are a proposal for the person to review, edit and approve in Cotal, " +
   "not permission to connect. Without them the proposal has no ordinary channel access or role, but still " +
@@ -466,21 +468,24 @@ export function registerCotalGatewayTools(
       title: "Cotal: connect this conversation",
       annotations: gatewayAnnotations("cotal_connect"),
       description:
-        "Request a Cotal connection for THIS conversation. The person must review, edit and approve its " +
-        "permissions in Cotal before it receives a connection_id. When approval is pending, show them the " +
+        "Request a Cotal connection for THIS conversation. " +
+        (options.space ? "On a signed-in mesh, the person must " : "The person must ") +
+        "review, edit and approve its permissions in Cotal before it receives a connection_id. When approval is pending, show them the " +
         "approval link and stop; never approve for them or poll. After their decision, retry the same request " +
         "as the pending result directs. Keep the returned connection_id and pass it on every other cotal_* " +
         "call. If a new name is taken, the next free name is chosen (name_2, name_3, ...) and reported. " +
         "Never reuse another conversation's connection_id or approval_id." +
         (options.selection ? ` ${SELECTION_TEXT}` : "") +
         (options.space
-          ? " Optional space names one mesh already registered and signed in on this computer, overriding the default target without changing configuration. Omit it to use the CLI's default target."
+          ? " Optional space names one mesh registered on this computer, and signed in when it is a signed-in space, overriding the default target without changing configuration. Omit it to use the CLI's default target. " +
+            "An open or static mesh this computer runs needs no browser approval: the connection holds the channels, role and capabilities of that mesh's default persona, " +
+            "or the part of them it asks for. Connecting shares this native conversation's activity from that point onward, including user and assistant messages and tool inputs and results; earlier history is not shared."
           : ""),
       inputSchema: z.strictObject({
         name: z.string().min(1).describe("The agent name to request, for example claude_web."),
         ...(options.connectContext ? { context: z.string().min(1).max(128).optional().describe("Conversation binding supplied by the native host.") } : {}),
         ...(options.space ? { space: z.string().min(1).max(64).optional()
-          .describe("Registered signed-in mesh to join for this conversation. Overrides the default target without changing configuration. A blank name is refused.") } : {}),
+          .describe("Registered mesh to join for this conversation. Overrides the default target without changing configuration. A blank name is refused.") } : {}),
         ...(options.selection ? SELECTION_SHAPE : {}),
         ...(options.approvalResume ? { approval_id: z.string().regex(/^[a-z2-7]{26}$/).optional()
           .describe("The approval.id from THIS conversation's pending result. Resumes only that unchanged request; it does not approve it.") } : {}),
@@ -489,7 +494,7 @@ export function registerCotalGatewayTools(
     async ({ name, ...input }, extra) => {
       let account: string;
       try {
-        account = host.account(extra.authInfo);
+        account = host.account(extra.authInfo, extra._meta);
       } catch (e) {
         return refuse(`not authenticated: ${errorText(e)}`);
       }
@@ -571,7 +576,7 @@ export function registerCotalGatewayTools(
     async ({ connection_id }, extra) => {
       let account: string;
       try {
-        account = host.account(extra.authInfo);
+        account = host.account(extra.authInfo, extra._meta);
       } catch (e) {
         return refuse(`not authenticated: ${errorText(e)}`);
       }
@@ -591,7 +596,7 @@ export function registerCotalGatewayTools(
     },
     async ({ connection_id }, extra) => {
       let account: string;
-      try { account = host.account(extra.authInfo); }
+      try { account = host.account(extra.authInfo, extra._meta); }
       catch (e) { return refuse(`not authenticated: ${errorText(e)}`); }
       const connection = await host.find(account, connection_id);
       if (!connection) return refuse(CONNECTION_REQUIRED);
@@ -630,7 +635,7 @@ export function registerCotalGatewayTools(
     async ({ connection_id, seconds }, extra) => {
       let account: string;
       try {
-        account = host.account(extra.authInfo);
+        account = host.account(extra.authInfo, extra._meta);
       } catch (e) {
         return refuse(`not authenticated: ${errorText(e)}`);
       }
@@ -669,7 +674,7 @@ export function registerCotalGatewayTools(
         const { connection_id, ...rest } = args as { connection_id: string } & Record<string, unknown>;
         let account: string;
         try {
-          account = host.account(extra.authInfo);
+          account = host.account(extra.authInfo, extra._meta);
         } catch (e) {
           return refuse(`not authenticated: ${errorText(e)}`);
         }
@@ -712,6 +717,22 @@ export const GATEWAY_CONNECTING =
 /** The server instructions {@link handleGatewayRequest} sends when the embedder gives none. */
 export const GATEWAY_INSTRUCTIONS = `${GATEWAY_CONNECTING} ${GATEWAY_LISTENING}`;
 
+/** Optional MCP Events methods. The host owns validation, subscription storage, callback verification
+ * and delivery. The account is resolved from transport authentication, never from method parameters. */
+export interface GatewayEvents {
+  list(account: string, params: Record<string, unknown>): Promise<Record<string, unknown>>;
+  subscribe(account: string, params: Record<string, unknown>): Promise<Record<string, unknown>>;
+  unsubscribe(account: string, params: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+
+/** A public, secret-free MCP Events error supplied by the host without importing the gateway's SDK. */
+export class GatewayEventError extends Error {
+  constructor(readonly code: number, message: string, readonly data?: unknown) {
+    super(message);
+    this.name = "GatewayEventError";
+  }
+}
+
 /** One HTTP request to a gateway endpoint. */
 export interface GatewayRequest {
   req: IncomingMessage;
@@ -722,6 +743,8 @@ export interface GatewayRequest {
   /** What the embedder authenticated this request as, handed to {@link GatewayHost.account}.
    *  Without it every tool refuses and runs nothing. */
   auth?: AuthInfo;
+  /** Advertise and serve MCP Events only when this authenticated endpoint implements them. */
+  events?: GatewayEvents;
   /** The source tag on messages this endpoint sends. */
   source?: string;
   instructions?: string;
@@ -757,6 +780,27 @@ export async function handleGatewayRequest(host: GatewayHost, r: GatewayRequest)
   const { StreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
   const server = new McpServer({ name: "cotal", version: DOCS_VERSION }, { instructions: r.instructions ?? GATEWAY_INSTRUCTIONS });
   registerCotalGatewayTools(server, host, r.source, { approvalResume: r.approvalResume, selection: r.selection, ...(r.waitSeconds === undefined ? {} : { waitSeconds: r.waitSeconds }) });
+  if (r.events) {
+    // MCP Events is a draft extension not yet named by the SDK's capability type.
+    const capabilities: Parameters<typeof server.server.registerCapabilities>[0] & { events: Record<string, never> } = { events: {} };
+    server.server.registerCapabilities(capabilities);
+    for (const action of ["list", "subscribe", "unsubscribe"] as const) {
+      server.server.setRequestHandler(z.object({
+        method: z.literal(`events/${action}`),
+        params: z.record(z.string(), z.unknown()).optional(),
+      }), async (request, extra) => {
+        if (!extra.authInfo) throw new McpError(ErrorCode.InvalidRequest, "Authentication is required for MCP Events.");
+        let account: string;
+        try { account = host.account(extra.authInfo); }
+        catch { throw new McpError(ErrorCode.InvalidRequest, "Authentication is required for MCP Events."); }
+        try { return await r.events![action](account, request.params ?? {}); }
+        catch (error) {
+          if (error instanceof GatewayEventError) throw new McpError(error.code, error.message, error.data);
+          throw new McpError(ErrorCode.InternalError, "The MCP Events request could not be completed.");
+        }
+      });
+    }
+  }
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   r.res.on("close", () => {
     void transport.close();
@@ -796,7 +840,8 @@ export interface GatewayStdio {
 /**
  * Serve the gateway surface over stdio with this package's own MCP server, for a client such as
  * Claude Desktop that runs one local process for every conversation. A stdio request carries no
- * authentication, so `host.account` receives `undefined` and names the local user. A client that
+ * authentication, so `host.account` receives `undefined` and the request's `_meta`, and names the
+ * local user or the conversation the client's metadata names. A client that
  * cancels a call aborts its signal, as a closed HTTP request does.
  */
 export async function serveGatewayStdio(host: GatewayHost, o: GatewayStdio = {}): Promise<{ close(): Promise<void> }> {

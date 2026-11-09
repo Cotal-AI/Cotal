@@ -22,6 +22,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { recordMesh, removeMesh } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -35,6 +36,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-config-"));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const xdg = join(home, ".config");
 const cotalHome = join(home, ".cotal-home");
+process.env.COTAL_HOME = cotalHome; // Registry fixtures use the same isolated home as the child CLI.
 const file = join(xdg, "cotal", "preferences.json");
 const project = join(home, "project");
 mkdirSync(join(project, ".cotal", "agents"), { recursive: true });
@@ -69,7 +71,7 @@ const ansi = /\x1b\[/;
   const r = run(["config", "--json"]);
   const res = r.envelope?.result as { kind: string; file: string; revision: number; scope: { space: unknown }; settings: Setting[] } | undefined;
   check("config --json with no file is one ok envelope for your defaults", r.status === 0 && r.envelope?.outcome === "ok" && r.envelope.target === null && res?.kind === "preferences" && res.file === file && res.revision === 0 && res.scope.space === null, shown(r));
-  check("every key is listed, in order", JSON.stringify(res?.settings.map((s) => s.key)) === JSON.stringify(["harness", "persona", "detach-key", "color", "editor"]), res?.settings.map((s) => s.key));
+  check("every key is listed, in order", JSON.stringify(res?.settings.map((s) => s.key)) === JSON.stringify(["harness", "persona", "detach-key", "color", "editor", "name"]), res?.settings.map((s) => s.key));
   check("each key with a product default resolves to it, and the editor to nothing", settingOf(r, "harness")?.winner?.source === "default" && settingOf(r, "persona")?.value === "default" && settingOf(r, "detach-key")?.value === "ctrl-]" && settingOf(r, "color")?.value === "auto" && settingOf(r, "editor")?.value === null && settingOf(r, "editor")?.winner === null, res?.settings);
   check("reading writes nothing", !existsSync(file));
   // The file is in the Storage section, which only --verbose prints.
@@ -113,7 +115,7 @@ const ansi = /\x1b\[/;
 {
   const before = fileText();
   const refusals: [string, string[], RegExp][] = [
-    ["an unknown key names the valid keys", ["config", "set", "colour", "never"], /unknown preference "colour"; valid keys: harness, persona, detach-key, color, editor/],
+    ["an unknown key names the valid keys", ["config", "set", "colour", "never"], /unknown preference "colour"; valid keys: harness, persona, detach-key, color, editor, name/],
     ["a color outside auto, always and never", ["config", "set", "color", "purple"], /invalid color "purple": use auto, always, never/],
     ["a detach key that is not ctrl-<char> or ^<char>", ["config", "set", "detach-key", "alt-x"], /invalid detach-key "alt-x"/],
     ["an empty persona", ["config", "set", "persona", " "], /invalid persona " ": it cannot be empty/],
@@ -224,10 +226,69 @@ const ansi = /\x1b\[/;
   const folderAgain = run(["config", "set", "harness", "codex", "--user", "--json"], {}, join(home, "demo"));
   check("with nothing selected, a --user write in a prepared folder reports that folder's value",
     folderWrite.status === 0 && (folderAgain.envelope?.result as { effective?: Setting } | null)?.effective?.value === "opencode" && folderAgain.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED") === true, folderAgain.envelope);
+  // A folder whose space is only prepared does not capture the read. The selection does, and the
+  // receipt says that folder's space is not running.
+  mkdirSync(join(home, "other"), { recursive: true });
+  const other = run(["space", "create", "other", "--root", join(home, "other"), "--json"]);
+  check("setup: other is prepared", other.status === 0 && other.envelope?.outcome === "ok", shown(other));
+  writeFileSync(join(cotalHome, "current-mesh"), "other");
+  run(["config", "set", "harness", "codex", "--space", "other"]);
+  const captured = run(["config", "get", "harness", "--json"], {}, join(home, "demo"));
+  const capturedScope = (captured.envelope?.result as { scope?: { space: string; from: string }; setting?: Setting } | null);
+  check("in a prepared folder, a selected space still wins, and the read says this folder's space is not running",
+    captured.status === 0 && capturedScope?.scope?.space === "other" && capturedScope.scope.from === "selected" && capturedScope.setting?.value === "codex" && captured.envelope?.warnings.some((w) => w.code === "FOLDER_SPACE_NOT_RUNNING" && /prepared space "demo"/.test(w.message)) === true, captured.envelope);
+  const capturedWrite = run(["config", "set", "harness", "claude", "--json"], {}, join(home, "demo"));
+  check("a write there still saves your defaults, and its receipt names the selected value",
+    saved().defaults.harness === "claude" && (capturedWrite.envelope?.result as { effective?: Setting } | null)?.effective?.value === "codex" && capturedWrite.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED") === true, capturedWrite.envelope);
+  rmSync(join(cotalHome, "current-mesh"));
   run(["config", "unset", "harness"]);
   run(["config", "unset", "harness", "--space", "demo"]);
+  run(["config", "unset", "harness", "--space", "other"]);
   run(["config", "unset", "persona"]);
   run(["config", "unset", "persona", "--space", "demo"]);
+}
+
+// ── a registered folder's space wins over a different selection ──────────────────────────────────
+{
+  const demoRoot = join(home, "demo");
+  // Read-only resolution uses registrations without connecting. The live reproduction separately
+  // exercises these records through a running stack; no broker is started by this offline suite.
+  for (const space of ["demo", "other"]) recordMesh({ space, root: join(home, space), server: "nats://127.0.0.1:1", mode: "open", ts: new Date().toISOString() });
+  try {
+    run(["config", "set", "harness", "codex", "--space", "demo"]);
+    run(["config", "set", "harness", "opencode", "--space", "other"]);
+    run(["config", "set", "harness", "claude"]);
+    writeFileSync(join(cotalHome, "current-mesh"), "other");
+    const get = run(["config", "get", "harness", "--json"], {}, demoRoot);
+    const result = get.envelope?.result as { scope?: { space: string; from: string }; setting?: Setting } | null;
+    check("a registered folder beats a different selection for config get",
+      get.status === 0 && result?.scope?.space === "demo" && result.scope.from === "folder" && result.setting?.value === "codex", get.envelope);
+    const all = run(["config", "--json"], {}, demoRoot);
+    check("the full config view uses the registered folder too", all.status === 0 && settingOf(all, "harness")?.value === "codex", all.envelope);
+    const explicit = run(["config", "get", "harness", "--space", "other", "--json"], {}, demoRoot);
+    const user = run(["config", "get", "harness", "--user", "--json"], {}, demoRoot);
+    check("explicit space and user reads still override the registered folder",
+      explicit.status === 0 && (explicit.envelope?.result as { setting?: Setting } | null)?.setting?.value === "opencode" &&
+      user.status === 0 && (user.envelope?.result as { setting?: Setting } | null)?.setting?.value === "claude", { explicit: explicit.envelope, user: user.envelope });
+    const write = run(["config", "set", "harness", "claude", "--user", "--json"], {}, demoRoot);
+    check("a user write saves defaults but reports the registered folder's effective value",
+      write.status === 0 && saved().defaults.harness === "claude" && (write.envelope?.result as { effective?: Setting } | null)?.effective?.value === "codex" && write.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED") === true, write.envelope);
+    const persona = run(["config", "set", "persona", "./agents/missing.md", "--user", "--json"], {}, demoRoot);
+    check("a persona warning names the registered folder's path, not the selected space's",
+      persona.status === 0 && persona.envelope?.warnings.some((w) => w.code === "PERSONA_NOT_FOUND" && w.message.startsWith(`no persona file ${join(realpathSync(demoRoot), "agents", "missing.md")};`)) === true, persona.envelope);
+    const clear = run(["use", "--clear", "--json"]);
+    const control = run(["config", "get", "harness", "--json"], {}, demoRoot);
+    check("clearing the selection leaves the registered folder's value unchanged",
+      clear.status === 0 && control.status === 0 && (control.envelope?.result as { setting?: Setting } | null)?.setting?.value === "codex", control.envelope);
+  } finally {
+    rmSync(join(cotalHome, "current-mesh"), { force: true });
+    removeMesh("demo");
+    removeMesh("other");
+    run(["config", "unset", "persona"]);
+    run(["config", "unset", "harness"]);
+    run(["config", "unset", "harness", "--space", "demo"]);
+    run(["config", "unset", "harness", "--space", "other"]);
+  }
 }
 
 // ── with nothing selected, a read goes through the space spawn uses from this folder ──────────────

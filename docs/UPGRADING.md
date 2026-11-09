@@ -7,6 +7,133 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Migration commits need pause cleanup custody
+
+Library callers of `commitMigration` that supply journal entries and a handler must provide the
+handler's `endPause` method beside `discharge`. A run's `MeshHandler` supplies both. An admissible
+report that drops a pending pause cannot be committed without this cleanup custody. The commit
+ends those pauses before filing its record; a cleanup failure leaves the migration unfiled.
+
+`MigrateOrphan` now includes the journal `state` used to classify each row. Obtain reports through
+`migrateRun` rather than constructing old-shaped rows. This does not wire migration commits into
+the CLI or advance a run's source pin; those existing limits remain.
+
+## Terminal layout contract removed
+
+`@cotal-ai/core` no longer exports the `terminal` extension kind, so `TerminalLayout`, `Tab` and
+`Pane` are gone. `@cotal-ai/tmux` and `@cotal-ai/cmux` no longer export or register
+`tmuxTerminalProvider` and `cmuxTerminalProvider`. `cotal setup` was the only code that resolved a
+terminal provider, and it stopped opening tabs when it became configure-only, so nothing in Cotal
+reads the kind. A running mesh needs nothing. Spawned agents are unaffected, because the tmux and
+cmux runtimes never used these providers.
+
+### What stops working
+
+Importing `TerminalLayout`, `Tab` or `Pane` from `@cotal-ai/core`, or either provider from its
+package, fails to compile with TS2305. Plain JavaScript that imports either provider by name fails to
+load. `registry.resolve("terminal", "tmux")` and `registry.resolve("terminal", "cmux")` throw,
+because nothing registers that kind.
+
+### Before the upgrade
+
+Remove those imports. A host that opened tmux windows or cmux tabs through a provider can call the
+driver each package still exports, `tmux.openWindow` and `tmux.splitWindow`, or
+`cmux.openWorkspace` with its own layout JSON.
+
+## Workflow workers require the host's language package version
+
+The shipped workflow worker checks its `@cotal-ai/lang` package version against the version the host
+loaded. If they differ, the worker refuses before announcing readiness or running the program.
+The refusal names both versions and asks you to restart the manager. A host from an older release
+that does not send this version reports `unreported` and is refused too. The failed run does not
+end the manager process.
+
+After installing a new Cotal version, restart the manager through its supervisor before starting
+or resuming workflows. Keep the manager and its language package on the same installed version.
+An in-place package update does not update modules already loaded in the running host.
+
+This check compares package versions. It does not verify file contents replaced under the same
+version or provide a rolling-upgrade guarantee.
+
+## An incompatible delivery store answer prevents manager startup
+
+If delivery returns an unreadable SecretStore answer, the manager refuses startup or credential
+renewal. The refusal preserves the parser's reason and asks you to check that delivery and manager
+use the same Cotal version. The answer does not report a version, so a parse failure cannot establish
+which version the daemon runs. For example, delivery 0.68.0 names its responder but its filesystem
+store identity lacks the `id` required by later managers.
+
+When a manager started by the retained launcher exits during boot, `up` displays the private log
+path. If that launch's owned log ends with an error line, it also displays that line. It does not
+quote earlier errors, a replacement log or an ordinary console URL line.
+
+Restart delivery on its host through the supervisor that started it, using the manager's Cotal
+version. For a saved local delivery service, run `cotal down delivery --space <space>`, then
+`cotal up --space <space>`. Named `down` commands operate on saved services; they do not stop a legacy
+daemon represented only by a pidfile.
+
+For a legacy pidfile root, use the current CLI to run `cotal down` from the original folder, without
+`--space`. This stops that folder's whole stack. Then run `cotal up --space <space>`. An older CLI
+may refuse the newer connector seed generation, so do not switch back to the old executable for the
+stop. A root from before 0.111.0 also needs the [issued-store migration](#issued-authority-stores-after-01110)
+when `up` asks for it.
+
+This diagnostic does not provide a rolling upgrade or pin a running manager's worker modules to
+its loaded version. Those are separate upgrade concerns.
+
+## The web dashboard starts on the space's own credential
+
+`cotal up` on a static space now mints a read-only `observer` credential for the dashboard, the
+space's `web.creds`, and the `web` service preset uses it as its `--creds` default. `cotal service
+start web` works with no flags once the space holds it.
+
+### What changes for you
+
+- Run `cotal up` once on each existing space before `cotal service start web`; until then the start
+  refuses and names `--creds`, as before. The file is minted without an expiry and `cotal doctor auth`
+  reports it with the daemon credentials.
+- A saved `web` definition keeps the `--creds` file it was added with. Pass `--creds` to use a
+  credential you minted yourself.
+
+## Claude seats need the registered user-scope MCP entry
+
+Claude Code binds the wake channel of a session Cotal launches (`server:cotal`) only to a server
+its own configuration declares, the user config or the project's `.mcp.json`; the launch's
+`--mcp-config` entry alone does not count. A seat without it joins the mesh, reports idle and never
+answers a turn or a direct message. `cotal setup` and `cotal update` now register the plugin's
+server as the user-scope entry `cotal`, and a managed Claude launch without a declared `cotal`
+server is refused with a message naming `cotal setup`.
+
+### What changes for you
+
+- Run `cotal update` (or `cotal setup`) on every machine whose manager spawns Claude seats before
+  spawning one. Until then a spawn refuses rather than starting a seat that never wakes.
+- `cotal status` shows a `Claude wake channel` row with the entry's state.
+- A plain Claude Code session loads the entry and the installed plugin's server, which are the same
+  command and arguments, as one process.
+
+## Identity mint helpers take a mint
+
+`createManagerInstanceIdentity` and `createAuthInstanceIdentity` from `@cotal-ai/workspace` now
+take `mint`, a function that returns the identity. They call it after reading no existing record.
+They used to take the identity itself, so minting that argument happened before the helper could
+adopt an existing record.
+
+A restart still returns the stored identity. A fresh root still creates one record, and a second
+start that arrives while the first is creating it still adopts that record.
+
+### What stops working
+
+A call that passes an identity object no longer typechecks. Plain JavaScript that still passes one
+fails when the helper tries to call it. `loadManagerInstanceIdentity` and
+`loadAuthInstanceIdentity` are unchanged.
+
+### Before the upgrade
+
+Pass a function that returns the identity. A caller that already holds one passes
+`() => identity`. A caller that used to read the record and mint only when it was missing now makes
+the one call, and the helper does that read.
+
 ## More streams take a history limit after 0.139.1
 
 `cotal history limit` now also sets the limits of the delivery daemon's streams and of DMs, and
@@ -608,7 +735,13 @@ provisioned and exited 0. So a space started before the pair existed, or a space
 pair were removed, has a finding after the upgrade. Without the pair, the membership feed and live
 connection eviction do not run, as before the upgrade.
 
-A plain `cotal up` does not mint the pair, because it reuses the existing trust record. To mint it:
+A plain `cotal up` does not mint the pair, because it reuses the existing trust record. On a root
+that hosts one space and retained its system-account signing seed, the delivery daemon mints a
+missing `connection-evictor` credential itself the next time it starts. Restart the delivery daemon,
+or run `cotal down` and then `cotal up`, and the finding clears without a rotation.
+
+The rotation is still the repair when the root hosts more than one space, when it never retained the
+seed, or when the missing credential is `membership-observer`:
 
 1. Run `cotal down`.
 2. Run `cotal up --rotate-sys`.

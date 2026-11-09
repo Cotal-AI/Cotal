@@ -123,6 +123,18 @@ export function horizontalPath(row: number, startCol: number, endCol: number): C
   return out;
 }
 
+// Down the source tap, along the bus, then up into the destination tap. The bus
+// cell under the source tap is visited twice, once at the end of the descent and
+// once at the start of the run, which is the timing the frames were rendered with.
+export function busRoute(busRow: number, fromCol: number, toCol: number): Cell[] {
+  return [
+    { row: busRow - 1, col: fromCol },
+    { row: busRow, col: fromCol },
+    ...horizontalPath(busRow, fromCol, toCol),
+    { row: busRow - 1, col: toCol },
+  ];
+}
+
 export function pick<T>(path: T[], t: number): T {
   const i = Math.min(Math.floor(t * path.length), path.length - 1);
   return path[Math.max(0, i)]!;

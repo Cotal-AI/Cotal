@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, isAnycastSeq, type AnycastStatus, type ControlReply, type InlinePersona, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, sharedNameIds, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, isAnycastSeq, type AnycastStatus, type ControlReply, type InlinePersona, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem, type InboxScope } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -1135,18 +1135,14 @@ export function cotalToolSpecs(
         const preface = presence.live ? "" : `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: ${presence.detail}.\n\n`;
         const roster = read.roster;
         if (!roster.length) return ok(`${preface}No one is present in "${config.space}" yet.`);
-        // Names aren't unique. Where one repeats, append the instance id so a DM can target the
-        // exact peer (the id is the only authoritative address); keep unique rows clean.
-        const counts = new Map<string, number>();
-        for (const p of roster) {
-          const n = p.card.name.toLowerCase();
-          counts.set(n, (counts.get(n) ?? 0) + 1);
-        }
+        // A name two other peers share is not an address, so those rows carry the instance id.
+        // The session's own row is not one of them: a DM to its name reaches the other peer.
+        const shared = sharedNameIds(roster, { selfId: agent.id });
         const lines = roster.map((p) => {
           const who = peerLabel(p.card);
           const isMe = p.card.id === agent.id;
           const me = isMe ? ` (you${agent.attention !== "open" ? `, ${agent.attention}` : ""})` : "";
-          const id = (counts.get(p.card.name.toLowerCase()) ?? 0) > 1 ? ` — id: ${p.card.id}` : "";
+          const id = shared.has(p.card.id) ? ` — id: ${p.card.id}` : "";
           // A peer's attention is advisory (presence-published): show their global mode and any
           // LOCALLY-MUTED channels so you know to DM rather than @-mention. Wording per the privacy
           // model — "locally muted", never "blocked"/"unreachable" (the broker still delivers).
@@ -1878,7 +1874,7 @@ export function cotalToolSpecs(
           const d = reply.data as {
             name?: string; mode?: string; model?: string; id?: string; actor?: string; executor?: { lifecycleUid: string };
             pinAudit?: { requested: string; error: string; unreported?: true };
-            once?: { goalId: string; deadlineAt?: number }; waitingFor?: string;
+            once?: { goalId: string; deadlineAt?: number }; waitingFor?: string; startupNotice?: string;
           } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;
@@ -1912,7 +1908,10 @@ export function cotalToolSpecs(
           const task = d?.once
             ? ` Its task is goal ${JSON.stringify(d.once.goalId)}, ${d.once.deadlineAt !== undefined ? `with a deadline of ${new Date(d.once.deadlineAt).toISOString()}` : "with no deadline"}; it is stopped when the task ends. Read the outcome with cotal_invoke(endpoint="manager", command="goal-result", args={"goalId":${JSON.stringify(d.once.goalId)}}).`
             : "";
-          return ok(spawnResult({ requested: name, started: who, renamed: actual !== name, mode, model: d?.model, join, waitingFor: d?.waitingFor, once: d?.once !== undefined }) + task);
+          // The manager's word that nothing wakes the seat while idle: a DM to it waits for a turn
+          // somebody else starts, so the spawner must not hand it work and go idle waiting.
+          const wake = d?.startupNotice ? ` It joined, but ${d.startupNotice}. A message to it waits until someone starts its next turn.` : "";
+          return ok(spawnResult({ requested: name, started: who, renamed: actual !== name, mode, model: d?.model, join, waitingFor: d?.waitingFor, once: d?.once !== undefined }) + task + wake);
         } catch (e) {
           return controlFailure(`Couldn't spawn ${name}`, e);
         }

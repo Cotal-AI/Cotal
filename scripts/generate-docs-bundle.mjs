@@ -4,7 +4,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, dirname, basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readDocument, discoverDocuments } from "@cotal-ai/docs-content";
+import { readDocument, discoverDocuments, documentationCategory } from "@cotal-ai/docs-content";
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { encodeIndex } from "../extensions/connector-core/src/docs-index-core.js";
@@ -49,19 +49,12 @@ function summaryOf(description) {
   return text.length > 200 ? text.slice(0, 197).trimEnd() + "…" : text;
 }
 
-const categories = ["Start here", "Guide", "Concept", "Reference", "Project"];
-const categoryOf = (kind, path) => {
-  const category = categories.find(value => kind === value || kind.startsWith(value + " (") || kind.startsWith(value + ":"));
-  if (!category) throw new Error(`${path} has no supported documentation category`);
-  return category;
-};
-
 const pages = [];
 for (const path of files) {
   if (!readFileSync(path, "utf8").trim()) throw new Error(`gen:docsbundle: docs/${basename(path)} is empty`);
   const doc = await readDocument(path);
   pages.push({
-    slug: slugOf(path), title: doc.metadata.title, kind: doc.metadata.kind, category: categoryOf(doc.metadata.kind, path),
+    slug: slugOf(path), title: doc.metadata.title, kind: doc.metadata.kind, category: documentationCategory(doc.metadata.kind, path),
     summary: summaryOf(doc.metadata.description), body: doc.markdown,
   });
 }

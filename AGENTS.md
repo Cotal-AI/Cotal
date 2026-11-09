@@ -134,9 +134,9 @@ user's own pi, no bundled runtime) that embeds `MeshAgent` in the session's proc
 drives it off the inbox with true mid-turn steering; also covers agents built on pi's SDK.
 See [docs/connect-pi.mdx](docs/connect-pi.mdx).
 - `**@cotal-ai/cmux**` (`extensions/cmux`): the cmux integration: a driver over the cmux CLI
-plus a self-registering `cmux` Runtime and `TerminalLayout` provider.
+plus a self-registering `cmux` Runtime provider.
 - `**@cotal-ai/tmux**` (`extensions/tmux`): the tmux integration: a driver over the tmux CLI
-plus a self-registering `tmux` Runtime and `TerminalLayout` provider.
+plus a self-registering `tmux` Runtime provider.
 - `**@cotal-ai/orca**` (`extensions/orca`): the Orca integration: a driver over the public Orca
 CLI plus a self-registering `orca` Runtime provider.
 - `**@cotal-ai/herdr**` (`extensions/herdr`): the Herdr integration: a driver over the herdr CLI
@@ -148,7 +148,8 @@ Herdr session (they survive the manager's terminal going away).
 extension package — it peer-depends on core + workspace (linked to the binary's copies at add
 time) and self-registers its command.
 - `**@cotal-ai/tui**` (`implementations/tui`): the terminal app, one full-screen workspace that
-lists this machine's spaces and opens one read-only. Built on OpenCode's Solid and OpenTUI
+lists this machine's spaces and opens one, which the human watches unseen and writes to through a
+chat session opened on the first write. Built on OpenCode's Solid and OpenTUI
 components, vendored under `vendor/opencode/` and held to their recorded hashes by
 `scripts/check-vendor.mjs`. Private, needs Node 26.4 or newer, and depends on core and workspace.
 The `cotal` binary does not start it yet.
@@ -277,6 +278,9 @@ produced them.
 
 - **Changesets.** Packages are 0.x, so a breaking change is a **minor**. The `fixed` group versions every package in lockstep, so one changeset
 bumps them all; list every package with a first-party change and write one clear summary.
+The summary's first sentence is the change's headline: the GitHub Release lists it under
+`## What changed` and the Discord announcement carries only those sentences, so write it as one
+plain sentence a user understands on its own, and put the mechanism after it.
 Verify the plan with `pnpm changeset status` before committing.
 - **PR title** is a plain Conventional Commit subject (`!` marks a breaking change). **PR body**
 states the full scope of the work, not just the headline.

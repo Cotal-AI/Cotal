@@ -12,6 +12,11 @@ credentials and pre-creates the durables agents may only *bind* (their DM inbox,
 role's task queue). The manager hosts it today, but nothing is manager-special about it;
 privilege attaches to the signer, and a space can run without a manager.
 
+When join, foreground spawn, fixed-profile minting, or application identity issuance opens a
+short-lived CLI provisioner, it attempts to stop that endpoint even if startup or provisioning fails.
+A failed stop does not replace the provisioning result or its error. Endpoint-caller issuance has
+its own [close receipt](cli-auth.mdx#issuance-records), which can report a partial result.
+
 User-credential and auth-callout JWT signing uses Node's native Ed25519 implementation. NATS
 libraries still encode keys and JWTs. The signer produces the same signature bytes for the same key
 and payload; permissions, expiry and issuer checks are unchanged. The auth callout also verifies

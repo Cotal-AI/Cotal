@@ -27,6 +27,7 @@ test('skill discovery uses YAML frontmatter and preserves the served bytes', asy
   mkdirSync(site);
   for (const name of ['scripts', 'src', 'public', 'package.json']) cpSync(join(website, name), join(site, name), { recursive: true });
   symlinkSync(join(website, 'node_modules'), join(site, 'node_modules'), 'dir');
+  symlinkSync(join(website, 'typedoc'), join(site, 'typedoc'), 'dir');
   linkInputs(join(repo, 'implementations'), join(root, 'implementations'), ['cli']);
   linkInputs(join(repo, 'implementations/cli'), join(root, 'implementations/cli'), ['cotal-skills']);
   cpSync(join(repo, 'implementations/cli/cotal-skills'), join(root, 'implementations/cli/cotal-skills'), { recursive: true });

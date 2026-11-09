@@ -36,6 +36,12 @@ import {
   readCheckpointSettle,
   compileContract,
   TURN_INPUT_SCHEMA,
+  SPAWN_INPUT_SCHEMA,
+  SPAWN_OUTPUT_SCHEMA,
+  GRACEFUL_INPUT_SCHEMA,
+  STOP_OUTPUT_SCHEMA,
+  CANCEL_INPUT_SCHEMA,
+  TURN_YIELD_OUTPUT_SCHEMA,
   TURN_OUTPUT_SCHEMA,
   contractDigest,
   contractStoreContext,
@@ -119,56 +125,20 @@ const armPending = async (expect = 4): Promise<void> => {
   }
 };
 
-// ── the suite-served manager-shaped goal endpoint (spawn + turn), the turn suite's rig ─────────
-const SPAWN_INPUT = {
-  type: "object", additionalProperties: false, required: ["name"],
-  properties: {
-    name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
-    model: { type: "string" }, variant: { type: "string" },
-    subscribe: { type: "array", items: { type: "string" } },
-    runtime: { type: "string" },
-    // The run id a run's spawn names, as the manager's contract declares it.
-    runId: { type: "string", pattern: "^\\s*\\S" },
-  },
-} as const;
-const SPAWN_OUTPUT = {
-  type: "object", additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "executor"],
-  properties: {
-    name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
-    goalId: { type: "string" }, fingerprint: { type: "string" }, readinessDeadlineMs: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
-    },
-  },
-} as const;
-
 const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
-// A completed run despawns the seats it spawned, so the stand-in serves the manager's despawn too.
-const DESPAWN_INPUT = { type: "object", additionalProperties: false, properties: { graceful: { type: "boolean" } } } as const;
-const DESPAWN_OUTPUT = {
-  type: "object", additionalProperties: false, required: ["name", "stopped", "graceful"],
-  properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
-} as const;
-// The published manager cancel schemas (SPEC 13.6 item 4), without importing the manager.
-const CANCEL_INPUT = {
-  type: "object", additionalProperties: false, required: ["goalId"],
-  properties: { goalId: { type: "string", minLength: 1 }, mode: { enum: ["graceful", "terminate"] } },
-} as const;
-const CANCEL_OUTPUT = {
-  type: "object", additionalProperties: false, required: ["goalId", "state"],
-  properties: { goalId: { type: "string" }, state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] } },
-} as const;
 const COMPILED = {
-  spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
+  spawn: { input: cc(SPAWN_INPUT_SCHEMA), output: cc(SPAWN_OUTPUT_SCHEMA) },
   turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
-  despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
-  cancel: { input: cc(CANCEL_INPUT), output: cc(CANCEL_OUTPUT) },
+  despawn: { input: cc(GRACEFUL_INPUT_SCHEMA), output: cc(STOP_OUTPUT_SCHEMA) },
+  cancel: { input: cc(CANCEL_INPUT_SCHEMA), output: cc(TURN_YIELD_OUTPUT_SCHEMA) },
 };
 const CANCEL_COMMAND = { name: "cancel", class: "ephemeral" as const, targeted: false, capability: "manager.lifecycle", inputDigest: COMPILED.cancel.input.closureDigest, outputDigest: COMPILED.cancel.output.closureDigest };
 // One list owns both registration and serving, so omitting cancel restores the original gap.
 const CANCEL_COMMANDS: typeof CANCEL_COMMAND[] = [CANCEL_COMMAND];
+for (const field of ["agent", "role", "model", "variant"]) {
+  c(`served spawn refuses blank ${field}`, !COMPILED.spawn.input.validate({ name: "worker", [field]: " \t" }));
+}
+c("served spawn accepts omitted optional fields", COMPILED.spawn.input.validate({ name: "worker" }));
 const DOCUMENT = {
   urn: "ai.cotal.test.repliedmgr", revision: 1, attributes: [], events: [],
   commands: [
@@ -187,7 +157,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT, CANCEL_INPUT, CANCEL_OUTPUT]) {
+  for (const source of [SPAWN_INPUT_SCHEMA, SPAWN_OUTPUT_SCHEMA, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, GRACEFUL_INPUT_SCHEMA, STOP_OUTPUT_SCHEMA, CANCEL_INPUT_SCHEMA, TURN_YIELD_OUTPUT_SCHEMA]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -734,7 +704,7 @@ const adoptedPending = (runId: string, d: { agent: string; persona: string }, sp
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = 32;
+const EXPECTED_CELLS = 37;
 const ran = ok + fail;
 console.log(`mesh-replied.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

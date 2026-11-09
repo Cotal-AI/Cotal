@@ -72,6 +72,7 @@ It validates the complete space trust bundle before staging or changing the pres
 That commitment includes the validated operator, system, and data-account root chain, plus the static or user-auth authority state.
 
 A successful full restore recreates conservative consumer checkpoints bound to the snapshot's stream sequences.
+A fresh consumer may report a zero acknowledgement floor; its recorded replay start still applies.
 Retained agents resume under their original principals.
 A role request that a holder had taken and not yet acked when the backup was made is on its queue again, even if that holder finished it afterwards.
 The broker delivers it again at delivery count 1, as it redelivers any unacked request, so any holder of the role may take it and do the work again.

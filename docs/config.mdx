@@ -1,7 +1,7 @@
 ---
 title: Configuration
 description: Config files, preferences, environment variables, and local storage for the Cotal CLI and connectors.
-kind: Reference
+kind: "Reference: describes the TypeScript reference implementation (the `cotal` CLI and connectors), not the wire contract."
 audience: operators
 ---
 
@@ -157,6 +157,7 @@ operator default when that preference is absent. `cotal space forget` removes th
 | `detach-key` | `ctrl-<char>` or `^<char>` | no | `COTAL_DETACH_KEY` | `ctrl-]` | `attach` |
 | `color` | `auto`, `always` or `never` | no | `FORCE_COLOR`, then `NO_COLOR` | `auto` | every command |
 | `editor` | an editor command, such as `code --wait` | no | `VISUAL`, then `EDITOR` | none | `persona edit`, `personas edit` |
+| `name` | 1 to 128 letters, digits, `_`, `.` or `-`, starting and ending with a letter, digit or `_` | no | none | on a user-auth space, the handle `cotal login` recorded; on an open or static space, your OS login | `chat` |
 
 Preference precedence, highest first, is:
 
@@ -177,7 +178,8 @@ variables override a saved value. `cotal config` shows the winning value and the
 `harness` is checked against the official connectors and the ones installed extensions provide.
 `persona` must be a persona name, made of letters, digits, `_` and `-`, or a path to a persona file
 with no control characters. When the catalog of the space a command here uses (`--space`, else the
-selected space, else the space `spawn` resolves from this folder) does not hold it, the value is still saved, since the file may be created later,
+space `spawn` resolves from this folder, which is a running space registered here even when another
+space is selected) does not hold it, the value is still saved, since the file may be created later,
 with a `PERSONA_NOT_FOUND` warning naming that catalog; a launch checks it again when it uses it. A
 value is checked when it is written, and an unknown key or an invalid value is refused with the valid
 ones. Preferences hold no credentials. They change future commands, not agents already running.
@@ -329,7 +331,10 @@ writing a launch command. Shell syntax in environment values remains literal.
 
 This also permits host-session markers such as `CLAUDE_CODE_CHILD_SESSION`. A `COTAL_` name outside
 the machine-wide operator settings is refused before launch. Those names carry the launcher's
-per-seat identity, role, model, and read set.
+per-seat identity, role, model, and read set. This case-insensitive restriction also applies to
+`${VAR}` and `${VAR:-default}` references in shared MCP servers and the selected Claude user MCP
+configuration. Use a non-`COTAL_` name for a server's own input. Machine-wide names such as
+`COTAL_HOME` remain allowed.
 
 A space-local `spawn` object replaces the whole operator-level object. An absent `spawn`,
 `"spawn": { "env": [] }`, and `"spawn": {}` add no names. A non-object `spawn` or an `env` that is not

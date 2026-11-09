@@ -1,5 +1,5 @@
 import { assertUserAuthInfo, findMesh, recordMesh, type MeshEntry, type UserAuthInfo } from "./mesh-registry.js";
-import { isLoopbackHost } from "./join-target.js";
+import { isCredentialTransportUrl } from "@cotal-ai/core/loopback";
 import type { RefusalCode } from "./output.js";
 
 /** A rule's verdict: the value it produced, or the operator-facing sentence explaining the refusal
@@ -120,16 +120,11 @@ export class PinnedFetchRefused extends Error {
 }
 
 export function assertPinnedFetchUrl(u: URL, what: string): string | undefined {
-  if (u.protocol === "https:") return undefined;
-  // The loopback exception is decided by PARSING the host as an address, never by how the text
-  // begins: `/^127\./` also matched `127.evil.com`, `127.0.0.1.nip.io` and `127.com`, which anyone
-  // can register, and it missed real spellings like `0177.0.0.1`. `isLoopbackHost` is the one
-  // authority for the question, canonicalization included. A name that does not parse as an IP is
-  // a NAME and gets no exception, however it starts — `localhost` included, since a hosts entry or
-  // a poisoned lookup can point it anywhere.
-  if (u.protocol === "http:" && isLoopbackHost(u.hostname)) return undefined;
+  if (isCredentialTransportUrl(u)) return undefined;
   // Name the ACTUAL rule. "must be https://" alone misleads the developer whose local flow used
   // http://localhost: it blames the scheme, when the same scheme on 127.0.0.1 would have passed.
+  // A name that does not parse as an IP is a NAME and gets no exception, however it starts —
+  // `localhost` included, since a hosts entry or a poisoned lookup can point it anywhere.
   return (
     `${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite` +
     (u.protocol === "http:"

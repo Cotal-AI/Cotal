@@ -88,7 +88,7 @@ import {
   type ProcessOwner,
   type RestoreActiveRecord,
   type RestoreDegradedRecord,
-  type RestoreListenerProof,
+  type ListenerProof,
   type RestoreManagerCommittedRecord,
   type RestoreReadyRecord,
   readStoreIdentity,
@@ -151,7 +151,7 @@ export interface PreparedRestore {
   reentry: boolean;
   journalState: "commit-intent" | "manager-committed" | "active" | "degraded";
   managerCommit?: ManagerCommitEvidence;
-  listenerProof?: RestoreListenerProof;
+  listenerProof?: ListenerProof;
   cleanupStage(): void;
 }
 
@@ -235,13 +235,13 @@ export function bindPreparedRestoreListener(
   prepared: PreparedRestore,
   processOwner: ProcessOwner,
   heldLock?: MaintenanceLock,
-): RestoreListenerProof {
+): ListenerProof {
   const lock = heldLock ?? acquireMaintenanceLock(prepared.root);
   try {
     const journal = readMaintenanceJournal(prepared.root);
     if (!journal || journal.state !== "commit-intent" || journal.restore.attemptId !== prepared.attemptId)
       throw new Error(`restore listener bind does not match commit attempt ${prepared.attemptId}`);
-    const proof: RestoreListenerProof = {
+    const proof: ListenerProof = {
       attemptId: prepared.attemptId,
       serverName: prepared.serverName,
       serverNonce: prepared.serverNonce,
@@ -640,14 +640,14 @@ async function recreateCheckpoint(
     const info = await recreateConsumerCheckpoint(nc, space, checkpoint, RESTORE_TIMEOUT_MS);
     if (info.config.opt_start_seq !== expected.opt_start_seq || info.config.deliver_policy !== expected.deliver_policy)
       throw new Error(`${checkpoint.stream}/${checkpoint.name} did not preserve its conservative checkpoint floor`);
-    // A fresh durable is BORN with a native stream floor of effectiveStart - 1, where the
-    // effective start is its opt_start_seq or, for DeliverAll over a truncated WorkQueue (TASK),
-    // the stream's first_seq (verified against nats-server 2.14). That floor claims nothing
-    // delivered and replays everything still in the stream. Anything else — a delivered count, or
-    // a floor beyond the born value — would silently skip pre-cut entries.
+    // A fresh durable can report a zero ACK floor or effectiveStart - 1. The start policy
+    // above preserves the replay position in either case. No delivery or pending ACK may
+    // have advanced the new consumer, and no other stream floor is accepted.
     const bornFloor = Math.max(expected.opt_start_seq ?? 1, checkpoint.streamState.first_seq || 1) - 1;
-    if (info.ack_floor.stream_seq !== bornFloor || info.ack_floor.consumer_seq !== 0)
-      throw new Error(`${checkpoint.stream}/${checkpoint.name} was recreated with ack floor ${info.ack_floor.stream_seq}/${info.ack_floor.consumer_seq}; expected the born floor ${bornFloor}/0`);
+    const floor = info.ack_floor.stream_seq;
+    if ((floor !== 0 && floor !== bornFloor) || info.ack_floor.consumer_seq !== 0 ||
+        info.delivered?.consumer_seq !== 0 || info.num_ack_pending !== 0)
+      throw new Error(`${checkpoint.stream}/${checkpoint.name} was not recreated as an unused checkpoint with stream ACK floor 0 or ${bornFloor}`);
   } finally {
     await nc.drain().catch(() => {});
   }

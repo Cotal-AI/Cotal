@@ -67,9 +67,11 @@ Its header marks that feed as `live`, `stale`, `traffic-only`, or `unreadable`.
 
 ### Use operator actions
 
-Console control uses the same per-action authority as `cotal stop`, `cotal ps`, and `cotal spawn --detach`.
+Console control uses the same per-action authority as `cotal stop`, `cotal ps`, and
+`cotal spawn --detach`.
 The observer connection itself carries no control authority.
-Each action resolves the mesh and obtains a one-use caller through a minted credential, an open connection, or a user-auth bearer.
+Each action resolves the mesh and obtains a one-use caller through a minted credential,
+an open connection, or a user-auth bearer.
 It retains no caller between actions.
 
 The `canControl` permission is separate from `canWrite`, which permits chat.
@@ -87,12 +89,14 @@ Available controls include:
 | `purge` | Purge the space after you type its name to confirm. |
 | `delchan <channel>` | Delete one channel after you type its name to confirm. Wildcards are refused. |
 
-Channel deletion uses core's `clearChannel`, which purges matching history and removes the registry entry.
-It acquires a one-use `channel-purger` credential on a static mesh, a `channel-purger` view on a user-auth mesh, or an open connection.
+Channel deletion uses core's `clearChannel`, which purges matching history and removes the registry
+entry. It acquires a one-use `channel-purger` credential on a static mesh,
+a `channel-purger` view on a user-auth mesh, or an open connection.
 It does not call a manager.
 
 With several managers, agent stop, `status`, and attach target the manager that hosts the seat.
-On static-auth and open meshes, `ps` combines their rows. A silent manager keeps its last-known rows and is named as silent.
+On static-auth and open meshes, `ps` combines their rows.
+A silent manager keeps its last-known rows and is named as silent.
 A manager that returns an error is named, and its old rows are withheld.
 `:spawn` and `purge` use the class queue, as their CLI commands do without `--on`.
 

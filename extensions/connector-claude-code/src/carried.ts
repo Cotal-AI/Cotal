@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { constants, copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
-import { writePrivateRecord, type ResumeTranscriptLocator } from "@cotal-ai/core";
+import { writePrivateRecord, type ResumeTranscriptLocator, type McpServerSpec } from "@cotal-ai/core";
 
 /** The project directory name a carried seat's transcripts live under (`CLAUDE_CODE_PROJECT_DIR_NAME`). */
 const SEAT_PROJECT = "seat";
@@ -114,8 +114,11 @@ export function carriedForkRecord(home: string): string {
  *  fresh home would otherwise prompt for, trusting the authorized launch directory. Neither file is
  *  written through a symlink: the state takes the private open, and the transcript copy refuses a
  *  name that already exists. */
-export function placeCarried(home: string, transcript: string, resume: string | undefined, cwd: string): Record<string, string> {
-  writePrivateRecord(join(home, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, projects: { [cwd]: { hasTrustDialogAccepted: true } } }));
+export function placeCarried(home: string, transcript: string, resume: string | undefined, cwd: string, server: McpServerSpec): Record<string, string> {
+  // The mesh server is declared in this private user config too: Claude Code binds the seat's wake
+  // channel only to a server its own configuration names (see assertChannelServerDeclared), and a
+  // carried home starts with none. Same name as the launch's `--mcp-config` entry, so one process runs.
+  writePrivateRecord(join(home, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, projects: { [cwd]: { hasTrustDialogAccepted: true } }, mcpServers: { cotal: server } }));
   if (resume !== undefined) {
     const dir = join(home, "projects", SEAT_PROJECT);
     mkdirSync(dir, { recursive: true, mode: 0o700 });

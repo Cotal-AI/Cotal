@@ -296,15 +296,16 @@ container entrypoint, by cron, or by hand is recorded the same way as a detached
 verify that the recorded pid is alive and is a supervisor before they trust it
 ([Config](config.mdx#project-files)).
 
-### The web dashboard is not part of `cotal up`
+### The web dashboard is not started by `cotal up`
 
 The web dashboard ships inside `cotal-ai` as the `@cotal-ai/web` extension. The boot reconcile
 seeds it automatically, on the same durable, version-locked path as the built-in connectors
-(`SEEDED_EXTENSIONS`). It always matches the CLI version and needs no separate install.
+(`SEEDED_EXTENSIONS`). It always matches the CLI version and needs no separate install. A static
+`up` also mints the dashboard's read-only credential, the space's `web.creds`, when it is absent.
 
-`cotal service start web` needs the dashboard's service definition and an explicit protected
-credential, both configured first. The native child owns its PID claim and its private full-launch
-bootstrap record. The preset is explicitly read-only and retains the registered TLS requirement.
+`cotal service start web` saves the dashboard's service definition from the preset's defaults, with
+that credential unless `--creds` names another. The native child owns its PID claim and its private
+full-launch bootstrap record. The preset is explicitly read-only and retains the registered TLS requirement.
 Its initialization phase does not prove a new authenticated health response. User-auth caller
 handoff and OS installation remain unsupported. See [dashboard setup](watch-a-mesh.mdx#web-dashboard).
 

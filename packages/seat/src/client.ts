@@ -178,7 +178,12 @@ export class SeatClient {
     const req = { ...body, id } as ClientRequest;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { op: body.op, resolve, reject });
-      this.sock!.write(encodeFrame(req));
+      try {
+        this.sock!.write(encodeFrame(req));
+      } catch (e) {
+        this.pending.delete(id);
+        reject(e as Error);
+      }
     });
   }
 

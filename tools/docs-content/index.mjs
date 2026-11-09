@@ -201,6 +201,14 @@ export async function readDocument(sourcePath) {
   return { sourcePath, format, metadata, content, markdown: `# ${metadata.title}\n\n${body}` };
 }
 
+/** @param {string} kind @param {string} sourcePath */
+export function documentationCategory(kind, sourcePath) {
+  const categories = ['Start here', 'Guide', 'Concept', 'Reference', 'Project'];
+  const category = categories.find(value => kind === value || kind.startsWith(value + ' (') || kind.startsWith(value + ':'));
+  if (!category) throw new Error(`${sourcePath} has no supported documentation category`);
+  return category;
+}
+
 /** @param {string} directory @returns {Promise<string[]>} */
 export async function discoverDocuments(directory) {
   const files = (await readdir(directory, { withFileTypes: true })).filter(entry => entry.isFile() && /\.mdx?$/.test(entry.name) && !/^README\.mdx?$/i.test(entry.name)).map(entry => entry.name).sort();

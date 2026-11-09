@@ -288,8 +288,8 @@ manager's catalog has no such persona, the refusal names that manager, its host 
 to create there, and the Next gives the spawn again with `--on` for each of your other live managers
 whose catalog lists it. The launch flags
 override the file. On a user-auth mesh the
-effective name is also the agent's actor token, so it must match the token grammar (no `-`); the
-spawn is refused with that explanation before any request is sent. A spawn runs the agent attached
+effective name is also the agent's actor token, so it must match the token grammar (no `-`) and stay
+within 64 characters; the spawn is refused with that explanation before any request is sent. A spawn runs the agent attached
 to your terminal; `--detach` and `--on` hand the launch to a manager. Every mode gets the durable
 backstop on a mesh that runs the delivery daemon; `--live-only` skips it for a spawn in this
 terminal (messages posted while it is disconnected are then not replayed). A foreground exit retires

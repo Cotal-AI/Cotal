@@ -1,5 +1,318 @@
 # @cotal-ai/manager
 
+## 0.151.0
+
+### Patch Changes
+
+- 143a69e: A plain spawn of a Claude seat whose startup showed no development-channels prompt now says that mesh traffic does not wake the seat while idle: the spawn result carries `startupNotice`, `cotal spawn` prints a `STARTUP_NOTICE` warning, the `cotal_spawn` result ends with the notice, and `cotal ps` marks the seat `no idle wake`. A connector declares this with `idleWakeNeedsConfirmed`.
+- af1b5da: The reap census reads manager.ts with the type checker: any value whose type carries `reap` is a runtime, so an alias, field, return value, awaited promise, conditional, rest copy or destructured binding needs no shape of its own, an untyped value fails closed, and a spread, rest copy or `Reflect.*`/`Object.*` call that takes a runtime is a bypass.
+- 2dc2c93: A manager's default stop records each detachable seat it releases, so the next manager on that workspace adopts the seat or retires its lifecycle once the runtime proves it gone; a released seat that already exited is retired by the stop itself.
+- 6661f53: A user-mode spawn or persona definition now refuses a name the bearer exchange cannot serve, before anything is enrolled. The name door applies the exchange's own 64-character actor bound, and auto-numbering stops at that bound instead of appending a suffix that would cross it.
+- Updated dependencies [c986cc1]
+- Updated dependencies [dacb515]
+- Updated dependencies [143a69e]
+- Updated dependencies [38f5bb2]
+- Updated dependencies [7350dcc]
+- Updated dependencies [e70e96d]
+- Updated dependencies [e7cb990]
+- Updated dependencies [6661f53]
+  - @cotal-ai/core@0.151.0
+  - @cotal-ai/workspace@0.151.0
+  - @cotal-ai/seat@0.151.0
+
+## 0.150.0
+
+### Patch Changes
+
+- b5925be: Explain delivery store incompatibility without guessing the daemon's version, and name the scoped restart path for saved local delivery services. Manager startup and renewal still refuse an unreadable answer.
+- a6fb97f: Classify an absent delivery-admin responder by the transport error type. Malformed answers no longer let manager startup proceed because their error text contains a no-responder phrase.
+- Updated dependencies [8e2ba65]
+  - @cotal-ai/core@0.150.0
+  - @cotal-ai/workspace@0.150.0
+  - @cotal-ai/seat@0.150.0
+
+## 0.149.0
+
+### Minor Changes
+
+- 2d497ad: `createManagerInstanceIdentity` and `createAuthInstanceIdentity` take a function that returns the identity, and call it only when the root has no record. A caller that already holds an identity passes it back from that function. The manager and the auth service no longer read the record themselves before asking for one.
+
+### Patch Changes
+
+- dd76ef4: A refused spawn records a failed cleanup step the same way in the CLI and the manager, and both read a caught value through one helper.
+- 8c27399: A spawn request is shape-checked once, by the spawn input contract, instead of again inside the handler.
+- Updated dependencies [7068f2b]
+- Updated dependencies [2d497ad]
+- Updated dependencies [441ed3b]
+- Updated dependencies [dd76ef4]
+  - @cotal-ai/core@0.149.0
+  - @cotal-ai/workspace@0.149.0
+  - @cotal-ai/seat@0.149.0
+
+## 0.148.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.2
+  - @cotal-ai/seat@0.148.2
+  - @cotal-ai/workspace@0.148.2
+
+## 0.148.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.1
+  - @cotal-ai/seat@0.148.1
+  - @cotal-ai/workspace@0.148.1
+
+## 0.148.0
+
+### Patch Changes
+
+- Updated dependencies [c8cf718]
+  - @cotal-ai/core@0.148.0
+  - @cotal-ai/workspace@0.148.0
+  - @cotal-ai/seat@0.148.0
+
+## 0.147.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.8
+  - @cotal-ai/seat@0.147.8
+  - @cotal-ai/workspace@0.147.8
+
+## 0.147.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.7
+  - @cotal-ai/seat@0.147.7
+  - @cotal-ai/workspace@0.147.7
+
+## 0.147.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.6
+  - @cotal-ai/seat@0.147.6
+  - @cotal-ai/workspace@0.147.6
+
+## 0.147.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.5
+  - @cotal-ai/seat@0.147.5
+  - @cotal-ai/workspace@0.147.5
+
+## 0.147.4
+
+### Patch Changes
+
+- Updated dependencies [49e8694]
+  - @cotal-ai/core@0.147.4
+  - @cotal-ai/workspace@0.147.4
+  - @cotal-ai/seat@0.147.4
+
+## 0.147.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.3
+  - @cotal-ai/seat@0.147.3
+  - @cotal-ai/workspace@0.147.3
+
+## 0.147.2
+
+### Patch Changes
+
+- Updated dependencies [30d8538]
+  - @cotal-ai/core@0.147.2
+  - @cotal-ai/workspace@0.147.2
+  - @cotal-ai/seat@0.147.2
+
+## 0.147.1
+
+### Patch Changes
+
+- f65ebc2: Use native signing for the Manager's standing broker connections.
+  The service, goal-writer and session-ledger connections use the existing connection helper with current-credential getters while retaining their identity-bound inboxes and transport policy.
+- @cotal-ai/core@0.147.1
+  - @cotal-ai/seat@0.147.1
+  - @cotal-ai/workspace@0.147.1
+
+## 0.147.0
+
+### Patch Changes
+
+- f3cc268: Keep a stopped seat's runtime custody reference during manager shutdown.
+  
+  Shutdown now passes the same owned handle reference into retirement as per-agent teardown, so the runtime reaper can address recorded work before footprint cleanup. Runtime exit and ownership checks are unchanged.
+- Updated dependencies [b8b0ff4]
+  - @cotal-ai/core@0.147.0
+  - @cotal-ai/workspace@0.147.0
+  - @cotal-ai/seat@0.147.0
+
+## 0.146.0
+
+### Minor Changes
+
+- d312807: The shared listener proof type is `ListenerProof`, and its `target` is the store the attempt binds.
+- 4536cfe: Automatic restarts now require proof that the previous seat's local work has ended.
+  
+  The built-in PTY runtime cannot prove detached tools have stopped, so it refuses explicit `supervise` requests before launch. Pi crash recovery and recovery of older supervised records also refuse without authoritative work closure. Ordinary launches remain supported. This is a breaking safety restriction; it does not kill surviving tools or cancel remote effects.
+  
+  Runtime adapters can declare `supportsWorkClosure` and provide each handle's `waitForWorkExit`. Recovery after a manager crash additionally needs a durable reference and `reapWork`. Missing, failed or timed-out proof never permits a replacement. Outstanding turns retain their existing deadline semantics rather than receiving a fabricated successful or cancelled result.
+
+### Patch Changes
+
+- Updated dependencies [d312807]
+- Updated dependencies [4536cfe]
+- Updated dependencies [6cd9b65]
+- Updated dependencies [e3cfcdb]
+  - @cotal-ai/workspace@0.146.0
+  - @cotal-ai/core@0.146.0
+  - @cotal-ai/seat@0.146.0
+
+## 0.145.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.145.1
+  - @cotal-ai/seat@0.145.1
+  - @cotal-ai/workspace@0.145.1
+
+## 0.145.0
+
+### Patch Changes
+
+- Updated dependencies [d7b0be0]
+  - @cotal-ai/core@0.145.0
+  - @cotal-ai/workspace@0.145.0
+  - @cotal-ai/seat@0.145.0
+
+## 0.144.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.144.0
+  - @cotal-ai/seat@0.144.0
+  - @cotal-ai/workspace@0.144.0
+
+## 0.143.0
+
+### Patch Changes
+
+- Updated dependencies [3651b42]
+  - @cotal-ai/core@0.143.0
+  - @cotal-ai/workspace@0.143.0
+  - @cotal-ai/seat@0.143.0
+
+## 0.142.0
+
+### Patch Changes
+
+- Updated dependencies [3ad82f7]
+- Updated dependencies [e16b8d9]
+- Updated dependencies [32f93ed]
+  - @cotal-ai/workspace@0.142.0
+  - @cotal-ai/core@0.142.0
+  - @cotal-ai/seat@0.142.0
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+- 28b2628: Runtime integration tests now use the manager's actual command schemas.
+  
+  Share the spawn, stop, inspect and cancel schemas from core beside the turn contracts, preserving the manager's served contract digests. Runtime stand-ins no longer accept blank spawn fields that the manager refuses. The shared schema objects are deeply frozen so importing a schema cannot change the manager's validation.
+- Updated dependencies [d389b22]
+- Updated dependencies [28b2628]
+  - @cotal-ai/core@0.141.11
+  - @cotal-ai/workspace@0.141.11
+  - @cotal-ai/seat@0.141.11
+
+## 0.141.10
+
+### Patch Changes
+
+- Updated dependencies [392b738]
+  - @cotal-ai/workspace@0.141.10
+  - @cotal-ai/core@0.141.10
+  - @cotal-ai/seat@0.141.10
+
+## 0.141.9
+
+### Patch Changes
+
+- Updated dependencies [8d5f0d5]
+- Updated dependencies [f6ec096]
+  - @cotal-ai/core@0.141.9
+  - @cotal-ai/workspace@0.141.9
+  - @cotal-ai/seat@0.141.9
+
+## 0.141.8
+
+### Patch Changes
+
+- 29b229c: Export one UserAuthLaunch type for the user-mode identity carried through launch options, material and manager provisioning/resume data. Check the material reader's reconstruction against the complete declared type without changing runtime validation or serialization.
+- Updated dependencies [29b229c]
+  - @cotal-ai/core@0.141.8
+  - @cotal-ai/workspace@0.141.8
+  - @cotal-ai/seat@0.141.8
+
+## 0.141.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.7
+  - @cotal-ai/seat@0.141.7
+  - @cotal-ai/workspace@0.141.7
+
+## 0.141.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.6
+  - @cotal-ai/seat@0.141.6
+  - @cotal-ai/workspace@0.141.6
+
+## 0.141.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.5
+  - @cotal-ai/seat@0.141.5
+  - @cotal-ai/workspace@0.141.5
+
+## 0.141.4
+
+### Patch Changes
+
+- Updated dependencies [d53d362]
+  - @cotal-ai/workspace@0.141.4
+  - @cotal-ai/core@0.141.4
+  - @cotal-ai/seat@0.141.4
+
+## 0.141.3
+
+### Patch Changes
+
+- Updated dependencies [a77ee62]
+  - @cotal-ai/core@0.141.3
+  - @cotal-ai/workspace@0.141.3
+  - @cotal-ai/seat@0.141.3
+
+## 0.141.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.2
+  - @cotal-ai/seat@0.141.2
+  - @cotal-ai/workspace@0.141.2
+
 ## 0.141.1
 
 ### Patch Changes

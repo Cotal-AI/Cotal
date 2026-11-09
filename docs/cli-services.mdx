@@ -53,9 +53,10 @@ dependency for you: starting the manager does not start its broker.
 
 A built-in service needs no `add`. `cotal service start <preset>` saves a definition of that name
 from the preset's defaults and starts it; stderr says what it saved. A preset that needs something
-only you can give, such as the `web` dashboard's credential file or the intake's keys, refuses with
-those flags named, and takes them on the start line: `cotal service start web --creds <file>`. A
-start refused before anything launched forgets the definition it saved. A preset name acts on the
+only you can give, such as the intake's keys, refuses with those flags named, and takes them on the
+start line. A default the space cannot fill yet, such as the `web` dashboard's `web.creds` on a space
+`cotal up` has not run on since it was added, refuses the same way: `cotal service start web --creds <file>`
+replaces it. A start refused before anything launched forgets the definition it saved. A preset name acts on the
 space's one service built on that preset, so after `cotal up` the name `delivery` reaches
 `stack-delivery`. The manager has its own [`manager`](cli-maintenance.mdx#manager) commands. `--json` writes one envelope for every form,
 and `logs --follow --json` writes one record per line. Without `--json`, a follow's last line says
@@ -134,6 +135,11 @@ loopback health URL answers 200:
 | `readiness` | `{type: "process", timeoutMs}`: ready once the process runs. `{type: "http", url, expectedStatus, timeoutMs}`: ready when a loopback `http://127.0.0.1` or `http://[::1]` URL answers that status. An adapter definition uses `{type: "adapter", timeoutMs}`. `timeoutMs` is 1 to 120000 |
 | `envRefs` | Optional. Child variable name to the name of a variable in the environment `start` runs in. `CLAUDECODE` and names starting `COTAL_` or `CLAUDE_CODE_` are refused |
 | `credentialRef` | Optional. `{kind: "file", path}`: an absolute, protected credential file. The child receives its path as `COTAL_CREDS`, never its contents |
+
+For a foreground adapter service, `timeoutMs` bounds each readiness observation. While the adapter
+reports pending, the controller stays with its owned child, including a manager still registering.
+It reports readiness only after a valid adapter observation. A timed-out observation or invalid
+evidence still returns an unknown outcome; background starts and HTTP readiness retain their overall deadline.
 
 A `space` that names another space is refused `SCHEMA_INVALID`, exit 1, before `add` checks whether
 the selected space already has a service of that name. No other field is accepted. `add` saves the
@@ -383,6 +389,13 @@ exchange options keep the native validation and reverse-proxy requirement. Adver
 cannot put credentials, query parameters or fragments on the child argv. No environment-export
 onboarding or generic caller-credential substitution is used.
 
+`--registry` enables the permission-scoped endpoint registry inside this auth service. It is off by
+default and adds no guest reader authority. The lane owns the registry's identity, native registration,
+credential renewal and shutdown. Its scoped reader can read recorded caller ceilings only in this
+space account. Keep the existing delivery observer and evictor available for registration recovery
+and restarts; a missing or inconclusive authority refuses without clearing the gate. See
+[the registry lifecycle](embedding-daemons.mdx#endpoint-registry).
+
 The preset supports a prepared local user-auth root and its registered plain loopback NATS
 broker only. The native authority path does not yet carry a required TLS policy through every
 connection. TLS-required and remote broker targets refuse before authority startup rather than
@@ -417,7 +430,7 @@ manager's entry, is deprecated the same way and names `cotal manager start`.
 ```bash
 cotal deliver --space <s> [--server <url>] [--creds <file>] [--root <dir>]
 cotal deliver --spaces <manifest> --server <url> [--root <dir>]
-cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--auth-timeout <seconds>]
+cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--service-endpoints] [--registry] [--auth-timeout <seconds>]
 cotal auth-service --space <s> --server <url> --callout-only [--auth-timeout <seconds>]
 cotal auth-service --server <url> --callout-only --spaces <manifest> [--auth-timeout <seconds>]
 cotal auth-service --server <url> --spaces <manifest> [--auth-timeout <seconds>]
@@ -519,9 +532,11 @@ and `agentProvisioningUrl`, with the rules of the flags: the last four need `exc
 An entry without `exchangePublicPort` has no public face. `serviceEndpoints`, `true` or `false`, is
 the space's `--service-endpoints`: a lane whose entry sets it opens the service endpoint host and
 serves `/service-endpoint-authority` and `/service-endpoint-host`, and a lane without it opens none of
-that and answers both routes 404. Two spaces naming one port, a version other than 2 and any refusal
-of the version 1 grammar refuse the whole manifest. `--port`, the public-face flags and
-`--service-endpoints` refuse with `--spaces`; `--server` and `--auth-timeout` apply to every lane. A
+that and answers both routes 404. The independent `registry` field is also boolean and defaults to
+false; only entries with `"registry": true` host an endpoint registry. Two spaces naming one port,
+a version other than 2 and any refusal of the version 1 grammar refuse the whole manifest. `--port`,
+the public-face flags, `--service-endpoints` and `--registry` refuse with `--spaces`; `--server` and
+`--auth-timeout` apply to every lane. A
 changed entry closes that space's lane and opens it again on its new settings, and the other lanes
 keep serving. An embedder that writes the manifest checks it with `parseAuthHostManifest(text)` from
 `@cotal-ai/auth` before renaming it into place: it applies the rules the host applies and throws the
@@ -568,6 +583,16 @@ broker watchdog, timer writer and membership feed, on its own connections. Its l
 `cotal down` signals for one space, and signalling the host would stop every space it serves. The
 host is stopped by its supervisor: on SIGTERM or SIGINT it closes every lane, releasing each lease,
 and exits 0, or exits after 10 seconds when a lane cannot finish.
+
+The host is also the one process on its root that kicks a live connection. When a space on the root
+retained the system-account signing seed (`cotal up` retains it at space creation and at
+`--rotate-sys`), the host says so at start and every lane evicts through the host's kick authority:
+the lane scans its own account, the host checks each connection against its own complete census of
+that account, mints a kick-only user that lives five minutes, kicks, and keeps no `$SYS` connection
+open between kicks. A lane opens no `connection-evictor` credential, so a space created before live
+eviction evicts without a system-account rotation. When no space on the root retained the seed, the
+host says that too, and each lane kicks with the space's own stored evictor as a single-space daemon
+does.
 
 At startup the host serves every space it can, names each one it cannot with the reason, and
 retries those every 5 seconds; its ready line names the spaces it serves and the spaces it retries,

@@ -1,5 +1,137 @@
 # @cotal-ai/tmux
 
+## 0.151.0
+
+### Minor Changes
+
+- 38f5bb2: `@cotal-ai/core` no longer exports the `terminal` extension kind (`TerminalLayout`, `Tab` and `Pane`), and `@cotal-ai/tmux` and `@cotal-ai/cmux` no longer export or register `tmuxTerminalProvider` and `cmuxTerminalProvider`, along with the layout code only those providers used. Nothing in Cotal has resolved the kind since `cotal setup` became configure-only, while the contract and both providers still named `cotal setup` as their consumer. Spawned tmux and cmux agents launch as before; the cmux pane launcher keeps its `env -i` isolation and drops the login-shell and inherited-environment modes that only layout panes used. The upgrading guide lists the imports to remove.
+
+### Patch Changes
+
+- e5e4407: The tmux runtime creates a session only when tmux says none is reachable. `ensureSession` used to read every failed `has-session` as absence, so a query that failed for another reason, such as a moved socket, started a second server beside the one holding the seats. It now treats as absence only tmux's own reports: the session is not on the server, no server is running, or nothing is bound at the socket path tmux would use. A live server whose socket file was moved still shows in the kernel's bind table and makes the spawn refuse with tmux's diagnostic; a never-used path on a fresh host still gets its first server.
+
+## 0.150.0
+
+No changes in this release.
+
+## 0.149.0
+
+No changes in this release.
+
+## 0.148.2
+
+No changes in this release.
+
+## 0.148.1
+
+No changes in this release.
+
+## 0.148.0
+
+No changes in this release.
+
+## 0.147.8
+
+No changes in this release.
+
+## 0.147.7
+
+No changes in this release.
+
+## 0.147.6
+
+No changes in this release.
+
+## 0.147.5
+
+No changes in this release.
+
+## 0.147.4
+
+No changes in this release.
+
+## 0.147.3
+
+No changes in this release.
+
+## 0.147.2
+
+No changes in this release.
+
+## 0.147.1
+
+No changes in this release.
+
+## 0.147.0
+
+No changes in this release.
+
+## 0.146.0
+
+No changes in this release.
+
+## 0.145.1
+
+No changes in this release.
+
+## 0.145.0
+
+No changes in this release.
+
+## 0.144.0
+
+No changes in this release.
+
+## 0.143.0
+
+No changes in this release.
+
+## 0.142.0
+
+No changes in this release.
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+
+## 0.141.10
+
+No changes in this release.
+
+## 0.141.9
+
+No changes in this release.
+
+## 0.141.8
+
+No changes in this release.
+
+## 0.141.7
+
+No changes in this release.
+
+## 0.141.6
+
+No changes in this release.
+
+## 0.141.5
+
+No changes in this release.
+
+## 0.141.4
+
+No changes in this release.
+
+## 0.141.3
+
+No changes in this release.
+
+## 0.141.2
+
+No changes in this release.
+
 ## 0.141.1
 
 No changes in this release.
