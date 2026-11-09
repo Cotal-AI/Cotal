@@ -1859,6 +1859,9 @@ export class Manager {
    *  of `agents` before they have exited, so a second teardown would find none and report success
    *  while the first still waits on a live seat. */
   private stopTask?: { withAgents: boolean; done: Promise<void> };
+  /** The serve epoch this stop captured before it cleared the serve loop. A retirement that runs
+   *  after that loop is gone still has to name the epoch the host considers current. */
+  private releasedStopEpoch: number | undefined;
   /** Held as an instance field so broker-owning smokes can compress the schedule without changing
    *  production semantics. It is never a fence expiry: the durable non-retired row stays authoritative. */
   private staticReconcileRetryDelaysMs: readonly number[] = STATIC_RECONCILE_RETRY_DELAYS_MS;
@@ -3629,7 +3632,18 @@ export class Manager {
         continue;
       }
       const reference = a.handle.reference;
-      if (!exited && !reference) continue;
+      // A live seat with no reference still outlives this process (cmux, orca, herdr). Releasing it
+      // is the old default. It is not an in-process seat, and this stop must not hard-stop it.
+      if (!exited && !reference) {
+        try {
+          a.handle.release?.();
+        } catch (e) {
+          failures.push(`${a.name}: ${rejectionText(e)}`);
+          continue;
+        }
+        kept.push(a);
+        continue;
+      }
       try {
         writeSeatRecord(this.workspaceRoot, {
           version: "cotal-seat-record/v1",
@@ -3659,6 +3673,21 @@ export class Manager {
         failures.push(`${a.name}: ${rejectionText(e)}`);
         continue;
       }
+      // Custodial release closes the client that carried the exit watch. Adopt the same seat back
+      // so the watch is on a live client. A seat that cannot be adopted stays recorded for the next
+      // start and is not torn down: the closed client cannot prove its exit.
+      if (a.handle.kind === "pty" && reference) {
+        try {
+          const runtime = this.runtimeFor(reference.kind);
+          if (typeof runtime.adopt !== "function") throw new Error(`runtime "${runtime.kind}" cannot adopt a seat`);
+          a.handle = runtime.adopt(reference);
+          this.watchExit(a);
+        } catch (e) {
+          console.error(`! ${a.name}: the released seat could not be watched after release (${rejectionText(e)}); the next start adopts it`);
+          this.agents.delete(a.name);
+          continue;
+        }
+      }
       kept.push(a);
     }
     return { gone, kept, failures };
@@ -3669,6 +3698,7 @@ export class Manager {
   private async retireReleasedSeat(a: ManagedAgent): Promise<void> {
     await this.awaitHandleExit(a.handle);
     this.freeSlot(a, false, "process-exit");
+    await this.deprovision(this.teardownTarget(a));
     this.reapChildrenOf(this.managedPrincipal(a));
   }
 
@@ -3694,6 +3724,12 @@ export class Manager {
     const record = reference ? readSeatRecord(this.workspaceRoot, this.space, name) : undefined;
     const identity = record?.agent.identity;
     if (!reference || !record || identity?.mode !== "user" || identity.lifecycleUid !== reference.lifecycleUid) return;
+    try {
+      await this.validateRetainedAuthority(record.agent);
+    } catch (e) {
+      console.error(`! ${name}: the released seat's record was not adopted: ${rejectionText(e)}`);
+      return;
+    }
     const held = this.agents.get(name);
     if (held?.lifecycleUid === reference.lifecycleUid) return;
     if (held) return;
@@ -3937,6 +3973,7 @@ export class Manager {
     // before teardown can answer. Deregistration runs AFTER the serve loop has drained, so no
     // in-flight command can write a status back onto the record it just removed.
     const registrationRevision = this.serviceServe?.grant.registrationRevision;
+    this.releasedStopEpoch = this.serviceServe?.grant.epoch;
     await step("stop service serve", () => this.stopServiceServe());
     // The drives AFTER the serve loop (no new `run-start` can land) and BEFORE deregistration: a
     // released run's status write is the last thing this incarnation says about it.
@@ -5785,7 +5822,7 @@ export class Manager {
       const requestIdentity = newIdentity();
       const retirementTarget = { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid };
       const opId = managedRetirementOpId(a.lifecycleUid);
-      const serveEpoch = this.serviceServe?.grant.epoch ?? 0;
+      const serveEpoch = this.serviceServe?.grant.epoch ?? this.releasedStopEpoch ?? 0;
       const creds = this.remoteAuthority
         ? await this.remoteAuthority.mintRetirementRequester({ identity: requestIdentity, target: retirementTarget, opId, serveEpoch })
         : await mintCreds(this.auth!, requestIdentity, "retirement-requester", {
