@@ -579,8 +579,9 @@ message in the window came from it, and the principal otherwise. `--dms` reads t
 names, waiting up to two seconds for it. `result.items[].to` is the principal.
 A line break or other control character in a message's text shows as its `\uXXXX` escape in the
 text and `--plain` reports, so a message cannot clear the screen or start a row of its own.
-A row shows the first 500 characters of a longer message and marks the cut with the message's size.
-`--json` carries the text as it was sent, in `result.items[].text`.
+A row shows the first 500 code units of a longer message and marks the cut with the code units not
+shown. `--json` carries the text as it was sent, in `result.items[].text`. The count is code units,
+the same measure a cut `watch` line uses.
 
 Retained history is not every message sent. The chat stream keeps a post until its sender has posted
 the space's per-sender count of newer ones on that channel, or until it is older than the space's age
