@@ -36,6 +36,7 @@ import * as workerModule from "../src/engine/worker.js";
 import { runInWorker } from "../src/engine/worker.js";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import { run as walkerRun } from "../src/interpret.js";
 import { SEAM_MEMBERS, transform } from "../src/transform/index.js";
 import { EngineFrame, Signal, currentFrame, withFrame } from "../src/engine/frame.js";
@@ -1660,6 +1661,40 @@ const WORKER_ENTRY = new URL("../dist/engine/worker-entry.js", import.meta.url);
 /** The handler module the THREAD imports. Plain JS over `dist`, for the same reason as the entry. */
 const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
 
+// The old-host shape and an explicit mismatch must fail before the worker announces readiness.
+for (const hostPackageVersion of [undefined, "0.0.0-different-worker"]) {
+  const messages: string[] = [];
+  const worker = new Worker(WORKER_ENTRY, {
+    workerData: {
+      request: { source: SOURCE, module: MODULE, runId: "version-pin", handler: { module: SIM_HANDLER, config: SCRIPT } },
+      stop: new SharedArrayBuffer(516),
+      ...(hostPackageVersion === undefined ? {} : { hostPackageVersion }),
+    },
+  });
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let result: unknown;
+  try {
+    result = await Promise.race([
+      new Promise<unknown>((resolve) => {
+        worker.on("message", (message: { kind: string }) => {
+          messages.push(message.kind);
+          if (message.kind === "ready") worker.postMessage({ kind: "root-start", reason: null });
+          if (message.kind === "result") resolve(message);
+        });
+        worker.once("error", resolve);
+        worker.once("exit", (code) => resolve({ exited: code }));
+      }),
+      new Promise((resolve) => { timeout = setTimeout(() => resolve({ timedOut: true }), 10_000); }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+    await worker.terminate();
+  }
+  ok(`a worker refuses ${hostPackageVersion === undefined ? "an unreported" : "a different"} host package before readiness`,
+    result instanceof Error && result.message.includes("worker package") && result.message.includes("restart the manager") && messages.length === 0,
+    { error: result instanceof Error ? result.message : result, messages });
+}
+
 {
   const HANDLER = { module: SIM_HANDLER, config: SCRIPT };
 
@@ -2935,7 +2970,7 @@ let n = 1;
     // behaviour is celled by root-cancellation.smoke.ts's worker boot and parked cells.
     const KINDS = ["log", "ready", "result"];
     const REQUEST_FIELDS = ["cutAt", "effectCeiling", "entries", "file", "handler", "module", "pins", "resultBytes", "runId", "seed", "source", "stepBudget"];
-    const WORKER_DATA = ["bridge", "request", "stop"];
+    const WORKER_DATA = ["bridge", "hostPackageVersion", "request", "stop"];
     const posted = [...new Set([...entrySrc.matchAll(/postMessage\(\{\s*kind: "(\w+)"/g)].map((m) => m[1] as string))].sort();
     ok(`the thread posts exactly the ${KINDS.length} message kinds this table cells`, JSON.stringify(posted) === JSON.stringify(KINDS), { declared: KINDS, found: posted });
     const requestFields = [...new Set([...entrySrc.matchAll(/request\.(\w+)/g)].map((m) => m[1] as string))].sort();

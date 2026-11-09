@@ -34,6 +34,7 @@ import type { JournalEntry, JournalStore } from "./../journal.js";
 import type { RunPins } from "../pins.js";
 import { serviceBridge } from "./bridge.js";
 import type { InspectionSnapshot } from "./inspection.js";
+import { PACKAGE_VERSION as hostPackageVersion } from "./package-version.js";
 
 /** Where the reason's byte length lives in the shared stop buffer; the bytes follow it. */
 const STOP_HEADER = 4;
@@ -242,8 +243,8 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
   let worker: Worker;
   try {
     worker = bridge !== undefined
-      ? new Worker(options.entry, { workerData: { request, stop, bridge }, transferList: [bridge.port] })
-      : new Worker(options.entry, { workerData: { request, stop } });
+      ? new Worker(options.entry, { workerData: { request, stop, bridge, hostPackageVersion }, transferList: [bridge.port] })
+      : new Worker(options.entry, { workerData: { request, stop, hostPackageVersion } });
   } catch (e) {
     // A thread that never started never reaches `done`, where the seam closes, so close it here:
     // the handler's quiescence hook would otherwise wait forever on a thread that does not exist.
