@@ -27,7 +27,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { accountRevocations, createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
@@ -43,7 +43,7 @@ const configDir = join(home, "xdg");
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
-const { getSpaceAuth, shellPath, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { codeSpan, getSpaceAuth, shellPath, workspaceSecretStore } = await import("@cotal-ai/workspace");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
@@ -104,7 +104,7 @@ try {
     const live = cli(root, "auth", "revoke-credential", leaked, "--yes", "--json");
     check("on a running stack it refuses LIFECYCLE_BLOCKED, exit 2", live.status === 2 && live.env?.error?.code === "LIFECYCLE_BLOCKED", shown(live));
     check("its next step is down, the revocation, then up, and says the store stays, with each path one shell word",
-      live.env?.error?.remedy === `cotal down --yes, then \`cotal auth revoke-credential ${shellPath(leaked)} --yes\`, then \`cotal up\`, from ${shellPath(root)}; the store stays`, live.env?.error);
+      live.env?.error?.remedy === `cotal down --yes, then ${codeSpan(`cotal auth revoke-credential ${shellPath(leaked)} --yes`)}, then ${codeSpan("cotal up")}, from ${shellPath(root)}; the store stays`, live.env?.error);
     check("and the account record is unchanged", accountDigest(root) === before);
   }
 
@@ -161,7 +161,7 @@ try {
       check(`the stack's own ${file} refuses UNSUPPORTED as a system-account credential, with --rotate-sys as its Next`,
         sys.status === 2 && sys.env?.error?.code === "UNSUPPORTED"
           && sys.env.error.message === `the credential was issued by space ${space}'s system account, and auth revoke-credential revokes only credentials the space's own account issued; nothing was revoked`
-          && sys.env.error.remedy === `cotal down --yes, then \`cotal up --rotate-sys\`, from ${shellPath(root)}, issues a new system account and retires this one's credentials; full backups taken before it can no longer be restored`, shown(sys));
+          && sys.env.error.remedy === `cotal down --yes, then ${codeSpan("cotal up --rotate-sys")}, from ${shellPath(root)}, issues a new system account and retires this one's credentials; full backups taken before it can no longer be restored`, shown(sys));
     }
     check("  and none of them changes the account record", accountDigest(root) === unchanged);
     const labelRevoked = cli(root, "auth", "revoke-credential", labelFile, "--yes", "--json");
@@ -242,7 +242,7 @@ try {
     const running = cli(ownRoot, "auth", "revoke-credential", credsFile, "--json");
     check("while that space runs, the revoke refuses LIFECYCLE_BLOCKED and quotes the path and the folder",
       running.status === 2 && running.env?.error?.code === "LIFECYCLE_BLOCKED"
-        && running.env.error.remedy === `cotal down --yes, then \`cotal auth revoke-credential ${shellPath(credsFile)} --yes\`, then \`cotal up\`, from ${shellPath(ownRoot)}; the store stays`
+        && running.env.error.remedy === `cotal down --yes, then ${codeSpan(`cotal auth revoke-credential ${shellPath(credsFile)} --yes`)}, then ${codeSpan("cotal up")}, from ${shellPath(ownRoot)}; the store stays`
         && shellPath(credsFile).startsWith("'") && shellPath(ownRoot).startsWith("'"), shown(running));
     const stoppedOwn = cli(ownRoot, "down", "--yes", "--json");
     check("down --yes stops the folder's own space and leaves the selection", stoppedOwn.status === 0, shown(stoppedOwn));
@@ -254,6 +254,17 @@ try {
     const refusedOwn = cli(ownRoot, "who", "--json", "--creds", credsFile, "--space", own, "--server", ownServer);
     check("the broker then refuses that key, PERMISSION_DENIED, naming the revocation",
       refusedOwn.status === 2 && refusedOwn.env?.error?.code === "PERMISSION_DENIED" && refusedOwn.env.error.message.includes("was revoked") && refusedOwn.env.error.message.includes("auth revoke-credential"), shown(refusedOwn));
+    const tickedDir = join(ownRoot, "it's `id`");
+    const ticked = join(tickedDir, "obs.creds");
+    mkdirSync(tickedDir, { recursive: true, mode: 0o700 });
+    chmodSync(tickedDir, 0o700);
+    const tickedMint = cli(ownRoot, "auth", "mint", "ticked", "--no-expiry", "--out", ticked, "--json");
+    const tickedRun = cli(ownRoot, "auth", "revoke-credential", ticked, "--json");
+    const tickedRoute = `cotal auth revoke-credential ${shellPath(ticked)} --yes`;
+    check("a backtick in the path lengthens the code span instead of closing it",
+      tickedMint.status === 0 && tickedRun.status === 2 && tickedRun.env?.error?.code === "LIFECYCLE_BLOCKED"
+        && tickedRun.env.error.remedy === `cotal down --yes, then ${codeSpan(tickedRoute)}, then ${codeSpan("cotal up")}, from ${shellPath(ownRoot)}; the store stays`
+        && codeSpan(tickedRoute).startsWith("``") && !codeSpan(tickedRoute).slice(2, -2).includes("``"), { mint: shown(tickedMint), run: shown(tickedRun) });
   } finally {
     if (anchors.has(ownRoot)) cli(ownRoot, "down", "--yes", "--json");
     if (anchors.has(selectedRoot)) cli(selectedRoot, "down", "--yes", "--json");
