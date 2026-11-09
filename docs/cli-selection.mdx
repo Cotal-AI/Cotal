@@ -529,8 +529,10 @@ shows effective values and sources; `config --verbose` adds the storage path and
 Status starts with This machine, lists the spaces this machine knows under Spaces, then shows the
 selected space, this folder's maintenance journal under Maintenance when it holds one (its state,
 attempt and next step; `maintenance` in JSON), unsettled fresh and additive attempts in this folder
-when present, owned service records and useful commands under Next. Connection state, local process
-state and service replies remain separate observations.
+when present, owned service records and useful commands under Next. While that journal is `claimed`
+or `restore-ready`, Next names `cotal backup recover <attempt> --yes` first and does not name
+`cotal up`: that command refuses until the attempt is released. A `ready` cut still names `cotal up`.
+Connection state, local process state and service replies remain separate observations.
 
 This machine shows what is set up and what needs attention. The version line is always there. Agent
 applications is one line: the applications whose required executables are on PATH, and a count of the

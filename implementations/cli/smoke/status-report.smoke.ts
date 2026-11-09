@@ -324,6 +324,8 @@ if (!brokerDisplayOnly) {
   const restoring = { ...json.envelope!.result!, maintenance: { root: home, space: "held", state: "restore-ready", attemptId: attempt, next: restoreNextStep("restore-ready", attempt) } };
   const report = renderReport(statusView(restoring as unknown as Parameters<typeof statusView>[0]), "plain");
   check("a held restore names its recover command with the full attempt id", new RegExp(`Attempt: +${attempt}`).test(report) && report.includes(`cotal backup recover ${attempt} --yes`), report);
+  const next = report.split("\nNext\n")[1] ?? "";
+  check("Next leads with that recover command and does not offer up while the attempt holds the store", next.startsWith(`  cotal backup recover ${attempt} --yes`) && !/(^|\n)\s+cotal up\b/.test(next) && !/run `cotal up`/.test(next), next);
 }
 
 // ── a launch summary recorded at a folder this one was moved from is listed, not unreadable ──────

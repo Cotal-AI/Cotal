@@ -165,7 +165,9 @@ the native lock, preserves unknown outcomes and never retries a deletion. No liv
 or process kill is supplied.
 A restore's full attempt id has the form `restore-<uuid>`. `backup recover` also takes an
 interrupted create's `backup-<uuid>`, as described above. `cotal status` shows the attempt a root
-holds under Maintenance, with its state and next step. For a restore that left history or workflow
+holds under Maintenance, with its state and next step. While the state is `claimed` or
+`restore-ready`, Next names `cotal backup recover <attempt> --yes` first and does not name
+`cotal up`, which refuses until that attempt is released. For a restore that left history or workflow
 runs out that step includes `--discard-history`. A refusal for the wrong state names the next step
 for the recorded one. A completed `cleanup-fallback` retires the journal, so a repeated cleanup
 refuses with `TARGET_NOT_FOUND` and says the root holds no restore attempt.

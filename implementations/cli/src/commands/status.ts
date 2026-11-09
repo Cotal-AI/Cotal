@@ -1958,6 +1958,9 @@ function nextActions(r: StatusResult): Section {
   const cmd = displayCmd();
   const items: { command: string; description: string }[] = [];
   const extra: string[] = [];
+  // A killed backup create or restore leaves the cut claimed. `up` then refuses, so the step is
+  // the recover command Maintenance names, not the restart hint a stopped mesh otherwise gets.
+  const heldAttempt = r.maintenance?.state === "claimed" || r.maintenance?.state === "restore-ready" ? r.maintenance.attemptId : null;
   const noApplication = !r.machine.connectors?.length;
   if (r.selected.resolved) {
     const s = r.selected;
@@ -2078,7 +2081,10 @@ function nextActions(r: StatusResult): Section {
   // The broker keeps serving a store it found damage in, from what it can still read there.
   if (r.store?.state === "damaged" && r.selected.resolved && r.services?.instances?.some((row) => row.definition === STACK_DEFINITION.broker))
     items.unshift({ command: `${cmd} service logs stack-broker${own ? "" : ` --space ${r.selected.space}`}`, description: "Read what the broker logged about the damage it found in its store; history holds only what it could still read" });
-  return { title: "Next", blocks: [{ kind: "commands", items }, ...[...extra, ...r.hints].map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
+  // Recover first, and drop the hint that says to run `up`: that command refuses while the attempt holds the root.
+  const hints = heldAttempt ? r.hints.filter((hint) => !hint.includes("`cotal up`")) : r.hints;
+  if (heldAttempt) items.unshift({ command: `${cmd} backup recover ${heldAttempt} --yes`, description: r.maintenance?.state === "restore-ready" ? "Roll the interrupted restore back; it still holds the store" : "Release the interrupted backup; it still holds this root" });
+  return { title: "Next", blocks: [{ kind: "commands", items }, ...[...extra, ...hints].map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
 }
 
 function ownedServicesOverview(services: OwnedServiceStatus | undefined): Section | undefined {
