@@ -403,12 +403,8 @@ async function awaitManagerUp(space: string, started: ProcessIdentityRecord | { 
         ? lastLoggedLine(managerLogPath(space), logStart.offset, logStart) : undefined;
       throw new Error(`${manager} exited before it came up.${reason ? `\n${reason}` : ""}\nIt logged its reason to ${managerLogPath(space)}`);
     }
-    // The record this read resolved, not a second resolution: PID_PATH is read-resolving, so a
-    // pre-upgrade spelling appearing beside it would throw its ambiguity error in place of this
-    // refusal, and a moved record would name a file that was never read (#3715).
-    const record = PID_PATH(space);
-    if (parsePid(readPidfile(record) ?? "") !== started.pid)
-      throw new Error(`${manager} lost ${record} to another process before it came up, so it is not the manager serving the space. Its log is ${managerLogPath(space)}`);
+    if (parsePid(readPidfile(PID_PATH(space)) ?? "") !== started.pid)
+      throw new Error(`${manager} lost ${PID_PATH(space)} to another process before it came up, so it is not the manager serving the space. Its log is ${managerLogPath(space)}`);
     await sleep(200);
   }
 }
