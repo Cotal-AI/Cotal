@@ -894,7 +894,7 @@ running mesh and applies additively: all-new live channel-only manifests, or bou
 and mixed manifests on static-auth or open meshes through one native manager. It does not launch
 user-auth agents. `team remove` retires a returned deployment by its full ID within the limits in
 [Recorded team views](cli-agent-views.mdx#recorded-team-views). `spawn -f` no longer deploys a manifest; an additive
-ledger written by that older path is torn down with `cotal down -f <file> --run <id>`. When the manifest names this root's recorded space and no additive ledger exists, `cotal down -f <file> --dry-run` previews that stack and stops nothing. `up -f`,
+ledger written by that older path is torn down with `cotal down -f <file> --run <id>`. When the manifest can be read and no additive ledger exists, `cotal down -f <file> --dry-run` previews this root's recorded stack and stops nothing. `up -f`,
 `team deploy` and `team remove` take `--dry-run` to print the plan without mutating anything.
 `topology` validates the manifest and renders its channel / role / ACL graph. Given a folder
 instead of a manifest file, `topology view`, `up -f`, `down -f` and the `team` commands that take a

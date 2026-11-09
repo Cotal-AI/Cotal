@@ -277,16 +277,16 @@ function previewWholeStack(args: ParsedArgs): void {
   ] }));
 }
 
-/** A file-form dry-run previews this root's recorded stack when the manifest names its space and no
- *  additive ledger exists. A ledger, another space, or a file that cannot be read stays on the
- *  ledger teardown, which fails closed. */
+/** A file-form dry-run previews this root's recorded stack when the manifest can be read and no
+ *  additive ledger exists. A ledger, or a file that cannot be read, stays on the ledger teardown,
+ *  which fails closed. */
 function stackFilePreview(file: string): boolean {
   try {
     const root = canonicalRoot(cotalRoot());
     const local = localMeshesForRoot(root);
     const sole = local[0];
     if (local.length !== 1 || sole?.origin !== "up" || canonicalRoot(sole.root) !== root) return false;
-    if (loadManifest(file).manifest.space !== sole.space) return false;
+    loadManifest(file);
     const ledgers = listLedgerFiles(root, { requireReadable: true });
     return ledgers.valid.length === 0 && ledgers.refused.length === 0;
   } catch { return false; }
