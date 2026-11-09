@@ -1,6 +1,6 @@
 /** Native write diagnostics on a fresh private tmux socket; no model or operator session. */
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as tmux from "./dist/driver.js";
@@ -146,6 +146,51 @@ try {
       replacement.status() === "running" && !native(["capture-pane", "-p", "-t", refs[2]!]).includes("/exit"));
     replacement.stop({ graceful: false });
     await replacement.waitForExit!();
+  }
+
+  // A live server whose socket file was moved aside is not absence: tmux reports the connect failure
+  // it also gives for a never-used path, and creating here would start a second server beside the
+  // seats. The kernel still lists the server at the path it bound, and the check reads that.
+  const moved = `${socket}.moved`;
+  renameSync(socket!, moved);
+  try {
+    const direct = spawnSync("tmux", ["-u", "has-session", "-t", session], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    check("moved socket: native tmux reports a connect failure", direct.status === 1 && direct.stderr.startsWith("error connecting to "));
+    const err = caught(() => tmux.ensureSession(session, root));
+    check("moved socket: ensureSession throws instead of creating",
+      err !== undefined && err.message.startsWith(`tmux: couldn't check session ${session}:`) && err.message.includes(direct.stderr.trim()));
+    check("moved socket: no second server was started at the original path", !existsSync(socket!));
+    check("moved socket: the first server still holds its sessions",
+      native(["-S", moved, "display-message", "-p", "#{pid}"]) === server && native(["-S", moved, "list-sessions", "-F", "#S"]).split("\n").includes(session));
+  } finally {
+    renameSync(moved, socket!);
+  }
+  tmux.ensureSession(session, root);
+  check("socket back in place: ensureSession reaches the same server", tmux.serverPid() === server);
+
+  // A path where no server has ever listened gets the same connect failure, and there creating is
+  // right: this is every first spawn on a fresh host. Once that server exits its socket file stays
+  // and tmux says no server is running; creating is right there too.
+  const fresh = join(root, "fresh");
+  mkdirSync(fresh, { mode: 0o700 });
+  process.env.TMUX_TMPDIR = fresh;
+  let freshSocket: string | undefined;
+  try {
+    const never = spawnSync("tmux", ["-u", "has-session", "-t", "first"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    check("never-listened socket: native tmux reports a connect failure", never.status === 1 && never.stderr.startsWith("error connecting to "));
+    check("never-listened socket: ensureSession creates the first server", caught(() => tmux.ensureSession("first", root)) === undefined);
+    const [sock, first] = native(["display-message", "-p", "#{socket_path}\t#{pid}"]).split("\t");
+    freshSocket = sock;
+    check("never-listened socket: the new server lives in the fresh directory", sock!.startsWith(`${fresh}/`) && native(["list-sessions", "-F", "#S"]) === "first");
+    native(["-S", sock!, "kill-server"]);
+    await waitFor(() => spawnSync("tmux", ["-S", sock!, "display-message", "-p", "#{pid}"], { stdio: "ignore" }).status !== 0);
+    const exited = spawnSync("tmux", ["-u", "has-session", "-t", "again"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    check("exited server: its socket file stays and native tmux says no server is running", existsSync(sock!) && exited.status === 1 && exited.stderr.startsWith("no server running on "));
+    check("exited server: ensureSession creates a new server", caught(() => tmux.ensureSession("again", root)) === undefined && tmux.serverPid() !== first);
+  } finally {
+    if (freshSocket !== undefined && spawnSync("tmux", ["-S", freshSocket, "display-message", "-p", "#{pid}"], { stdio: "ignore" }).status === 0)
+      native(["-S", freshSocket, "kill-server"]);
+    process.env.TMUX_TMPDIR = root;
   }
 
   const unsafe = join(root, "unsafe");
