@@ -608,8 +608,10 @@ and recorded ownership separately. It does not inspect or load the running shell
 file or ownership record produces a warning and a partial result, exit 4. The warning names the
 file and why. A record wired into another startup file, as an install under another `ZDOTDIR` leaves
 one, names that file and the `ZDOTDIR` to read it with. A folder above the files that is a symlink,
-owned by another user, or group- or other-writable is named once, with the `chmod go-w` that fixes
-it when one does. The files under it are not opened, and one that does not exist is reported missing,
+owned by another account, or writable by an account that is not you is named once, with the `chmod`
+that fixes it when one does. Group write is accepted when the group is your proven user private
+group and the folder has no extended ACL, the same rule as every other protected path. The files
+under it are not opened, and one that does not exist is reported missing,
 so a report with nothing installed stays complete, exit 0. Next offers that `chmod` first, offers
 `install` and `uninstall` only when nothing stops them, and offers `uninstall` only when something is
 installed. A relative `ZDOTDIR`
@@ -675,9 +677,11 @@ completion does not support, such as tcsh, is refused with `UNSUPPORTED` (exit 2
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
 ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symlink, untrusted
 owner or unsafe file access before it creates anything. A missing startup directory is named, with
-`ZDOTDIR` when that variable chose it, and with the `mkdir` that creates it. One refusal names every refused startup
-file, stub, record and directory on the way to them with its reason, and a group- or other-writable
-one with its mode and one `chmod go-w <paths>` that fixes them all. A startup file that is a
+`ZDOTDIR` when that variable chose it, and with the `mkdir` that creates it. One refusal names every
+refused startup file, stub, record and directory on the way to them with its reason, and one another
+local account could write with its mode and one `chmod` that fixes them all. Group write on a file
+you own is accepted when the group is your proven user private group and the file has no extended
+ACL. A startup file that is a
 symlink, as a dotfile manager such as stow links it, is never written through: `install` refuses
 it, exit 2, names it and gives the line to add to the file it points to yourself. Bare `completion`
 warns that it is a symlink and does not read it. A startup file its owner made read-only is never

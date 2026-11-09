@@ -206,48 +206,67 @@ if (process.platform !== "win32") {
   check("the report warns that the rc is a symlink", report.status === 4 && reportEnv?.warnings.some((w: { code: string; message: string }) => w.code === "COMPLETION_UNREADABLE" && w.message === `${rc} is a symlink, which completion does not follow; its contents were not printed`) === true, shown(report));
 }
 
-// ── a group-writable startup file and stub folder, as umask 002 leaves them, share one refusal ──────
+// ── a startup file another local account could write, and a stub folder it could write, share one refusal ─
 // The file used to get "shell integration needs an owned, bounded regular file" with no path or chmod.
+// Group write is accepted only for the caller's proven user private group, so this case uses a shared group.
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const s = sandbox("/bin/bash");
   const rc = join(s.home, ".bashrc");
   const folder = join(s.xdg, "cotal");
+  const shared = Number(spawnSync("id", ["-G"], { encoding: "utf8" }).stdout.trim().split(/\s+/).find((gid) => gid !== String(process.getgid?.() ?? "")));
   writeFileSync(rc, "# mine\n");
   chmodSync(rc, 0o664);
   mkdirSync(folder, { recursive: true });
   chmodSync(folder, 0o775);
+  if (Number.isInteger(shared)) { spawnSync("chgrp", [String(shared), rc, folder]); }
   const refused = s.run(["completion", "install", "bash", "--json"]);
   const error = refused.stdout.startsWith("{") ? JSON.parse(refused.stdout).error : undefined;
-  check("install refuses a group-writable rc and stub folder at once, exit 2, naming each with its mode and writing nothing", refused.status === 2 && error?.code === "PERMISSION_DENIED" && error.message.includes(`${rc} is writable by group or others (mode 0664)`) && error.message.includes(`${folder} is writable by group or others (mode 0775)`) && readdirSync(folder).length === 0 && readFileSync(rc, "utf8") === "# mine\n", shown(refused));
+  check("install refuses a group-writable rc and stub folder at once, exit 2, naming each with its mode and writing nothing", refused.status === 2 && error?.code === "PERMISSION_DENIED" && error.message.includes(`${rc} is group-writable and its group is not your primary group (mode 0664)`) && error.message.includes(`${folder} is group-writable and its group is not your primary group (mode 0775)`) && readdirSync(folder).length === 0 && readFileSync(rc, "utf8") === "# mine\n", shown(refused));
   const report = s.run(["completion", "--json"]);
   const reportEnv = report.stdout.startsWith("{") ? JSON.parse(report.stdout) : undefined;
-  check("the report names the rc and its mode", report.status === 4 && reportEnv?.warnings.some((w: { code: string; message: string }) => w.code === "COMPLETION_UNREADABLE" && w.message.startsWith(`${rc} is writable by group or others (mode 0664)`)) === true, shown(report));
-  const chmod = /^(chmod go-w [^;]+) and run the command again/.exec(error?.remedy ?? "")?.[1];
+  check("the report names the rc and its mode", report.status === 4 && reportEnv?.warnings.some((w: { code: string; message: string }) => w.code === "COMPLETION_UNREADABLE" && w.message.startsWith(`${rc} is group-writable and its group is not your primary group (mode 0664)`)) === true, shown(report));
+  const chmod = /^(chmod g-w [^;]+) and run the command again/.exec(error?.remedy ?? "")?.[1];
   const fixed = chmod ? spawnSync("sh", ["-c", chmod], { encoding: "utf8" }) : undefined;
   const installed = s.run(["completion", "install", "bash"]);
-  check("running its one chmod lets install wire the rc", chmod === `chmod go-w ${rc} ${folder}` && fixed?.status === 0 && installed.status === 0 && readFileSync(rc, "utf8").includes(join(folder, "completion.bash")), { chmod, install: shown(installed) });
+  check("running its one chmod lets install wire the rc", chmod === `chmod g-w ${rc} ${folder}` && fixed?.status === 0 && installed.status === 0 && readFileSync(rc, "utf8").includes(join(folder, "completion.bash")), { chmod, install: shown(installed) });
 }
 
-// ── a group-writable config folder with nothing installed is one named warning and a complete report ─
+// A startup file left group-writable by umask 002 is accepted when its group is the caller's proven
+// user private group and it has no extended ACL. The proof needs getfacl, so a host without it skips.
+if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfacl", ["--version"], { encoding: "utf8" }).status === 0) {
+  const s = sandbox("/bin/bash");
+  const rc = join(s.home, ".bashrc");
+  writeFileSync(rc, "# mine\n");
+  chmodSync(rc, 0o664);
+  const status = s.run(["completion"]);
+  const installed = s.run(["completion", "install", "bash"]);
+  check("install accepts a group-writable rc in the caller's user private group, exit 0, and the status does not warn", status.status === 0 && !status.stderr.includes("group-writable") && installed.status === 0 && readFileSync(rc, "utf8").includes("completion.bash"), { status: shown(status), install: shown(installed) });
+}
+
+// ── a config folder a shared group can write, with nothing installed, is one named warning and a complete report ─
 // It used to be exit 4 for absent files, with an unnamed ownership line per shell and a Next that refused.
+// The caller's user private group is accepted, so the folder is given a group that is not primary.
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const s = sandbox("/bin/bash");
+  const shared = Number(spawnSync("id", ["-G"], { encoding: "utf8" }).stdout.trim().split(/\s+/).find((gid) => gid !== String(process.getgid?.() ?? "")));
   mkdirSync(s.xdg);
   chmodSync(s.xdg, 0o775);
+  if (Number.isInteger(shared)) spawnSync("chgrp", [String(shared), s.xdg]);
   const report = s.run(["completion", "--json"]);
   const env = report.stdout.startsWith("{") ? JSON.parse(report.stdout) as { outcome: string; warnings: { code: string; message: string }[]; result: { shells: { shell: string; state: string; ownership: string }[] } } : undefined;
-  const fix = `chmod go-w ${s.xdg}`;
+  const fix = `chmod g-w ${s.xdg}`;
   check("absent files under a group-writable config folder are missing and the report is complete, exit 0",
     report.status === 0 && env?.outcome === "ok" && ["bash", "zsh", "fish"].every((shell) => env.result.shells.some((row) => row.shell === shell && row.state === "missing" && row.ownership === "unrecorded")), shown(report));
   check("the folder is one warning naming it, its mode and the chmod that fixes it",
-    env?.warnings.length === 1 && env.warnings[0]!.code === "COMPLETION_FOLDER_UNSAFE" && env.warnings[0]!.message === `${s.xdg} is writable by group or others (mode 0775); completion does not open the bash, zsh and fish completion files under it, and install and uninstall refuse there; ${fix} fixes it`, env?.warnings);
+    env?.warnings.length === 1 && env.warnings[0]!.code === "COMPLETION_FOLDER_UNSAFE" && env.warnings[0]!.message === `${s.xdg} is group-writable and its group is not your primary group (mode 0775); completion does not open the bash, zsh and fish completion files under it, and install and uninstall refuse there; chmod g-w ${s.xdg} fixes it`, env?.warnings);
   const text = s.run(["completion"]);
   const next = text.stdout.slice(text.stdout.indexOf("Next"));
   check("Next offers the chmod first, then install, and no uninstall with nothing installed",
     text.status === 0 && next.trimStart().startsWith(`Next\n  ${fix} `) && /cotal completion install bash/.test(next) && !/cotal completion uninstall/.test(next) && text.stderr.split("\n").filter((line) => line.startsWith("!")).length === 1, shown(text));
   chmodSync(s.xdg, 0o700);
   check("the install Next offers then works", s.run(["completion", "install", "bash"]).status === 0);
-  chmodSync(s.xdg, 0o775);
+  chmodSync(s.xdg, 0o770);
+  if (Number.isInteger(shared)) spawnSync("chgrp", [String(shared), s.xdg]);
   const installed = s.run(["completion"]);
   const installedNext = installed.stdout.slice(installed.stdout.indexOf("Next"));
   check("with files under the folder the report is partial, and Next offers the chmod and no install or uninstall that would refuse",

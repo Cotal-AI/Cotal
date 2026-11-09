@@ -330,7 +330,7 @@ function statusView(status: CompletionStatus, unsafe: readonly UnsafeFolder[] = 
       ] },
       { title: "Next", blocks: [{ kind: "commands", items: [
         // A modified integration refuses a plain install or uninstall, so it is offered only with --force.
-        ...blocking.flatMap((folder) => folder.chmod ? [{ command: folder.chmod, description: "Remove group and other write access, so completion can read and change its files there" }] : []),
+        ...blocking.flatMap((folder) => folder.chmod ? [{ command: folder.chmod, description: "Remove the access another local account could use, so completion can read and change its files there" }] : []),
         ...status.shells.filter((shell) => shell.ownership === "modified" && shell !== selected).map((shell) => ({ command: `cotal completion install ${shell.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" })),
         ...!changeable ? [] : [selected?.ownership === "modified"
           ? { command: `cotal completion install ${selected.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" }
