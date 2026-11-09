@@ -53,6 +53,7 @@ import {
   type RunPins,
 } from "@cotal-ai/lang";
 import { assertPlanningVersion, inspectCompiled } from "./inspect-compiled.js";
+import { pauseTokens } from "./pause-tokens.js";
 
 /** What the caller decided to override, and therefore what the record has to say they decided. */
 export interface MigrateOverrides {
@@ -72,6 +73,8 @@ export type OrphanVerdict = "ignored" | "kept" | "rejected";
 export interface MigrateOrphan {
   readonly step: string;
   readonly kind: string;
+  /** The journal state the row was classified from. The commit ends a pause only while this is pending. */
+  readonly state: string;
   readonly verdict: OrphanVerdict;
   /** The error catalog code, on a rejection only. */
   readonly code?: string;
@@ -274,8 +277,12 @@ export async function migrateRun(req: MigrateRequest): Promise<MigrateReport> {
  *
  * A `--release` override is HONOURED HERE: the named seats are despawned through the run's own
  * discharge before the migration is filed, so the record never claims a release nothing performed.
- * An `--adopt` override is honoured by the driver that next runs the program: the migration's kept
- * spawn rows are what its handler hands to the next spawn of that persona ({@link migrationSeats}).
+ * An ignored row that says nothing outlives a step is honoured the same way, and only while that
+ * step is still pending: the handler's `endPause` claims its pauses before the record is filed,
+ * so the row never claims a pause is over while its timer is still armed. A settled orphan already
+ * ended its own. An `--adopt` override is honoured by the driver that next runs the program: the
+ * migration's kept spawn rows are what its handler hands to the next spawn of that persona
+ * ({@link migrationSeats}).
  *
  * What is still NOT here, stated rather than implied: the run's pinned program hash does not
  * advance, because `RunSpecValue` carries no program hash to advance — that pin is declared and
@@ -287,7 +294,13 @@ export async function commitMigration(
   endpoint: string,
   report: MigrateReport,
   driver: string,
-  seats?: { entries: readonly JournalEntry[]; handler: { discharge(entries: readonly JournalEntry[]): Promise<unknown> } },
+  seats?: {
+    entries: readonly JournalEntry[];
+    handler: {
+      discharge(entries: readonly JournalEntry[]): Promise<unknown>;
+      endPause(entry: JournalEntry): Promise<unknown>;
+    };
+  },
 ): Promise<{ migrationId: string; created: boolean; released: readonly string[] }> {
   if (!report.admissible) {
     throw new MigrationNotAdmissible(report);
@@ -300,7 +313,17 @@ export async function commitMigration(
   const release = seats === undefined ? [] : migrationSeats(seats.entries, report).release;
   if (seats === undefined && report.overrides.some((o) => o.startsWith("--release ")))
     throw new Error(`migration of run ${report.run} releases a seat, and a commit with no journal and no discharger cannot tear one down; nothing was written`);
+  // An ignored row whose step is still pending owns the pauses it armed. Ending them is the act the
+  // row's "nothing outlives it" names, the same claim a `--release` makes about a seat, and it is
+  // made through the same handler the discharge uses. A report that says it and ends nothing is the
+  // fake success this row existed to refuse, so a caller with no handler is refused before the
+  // record exists. A settled orphan ended its own pauses when it settled, and a kind that arms none
+  // has nothing to end.
+  const pauses = seats === undefined ? [] : orphanedPauses(seats.entries, report);
+  if (seats === undefined && report.orphans.some((o) => o.verdict === "ignored" && o.state === "pending" && PAUSE_KINDS.has(o.kind)))
+    throw new Error(`migration of run ${report.run} ignores a pending step that may still hold a pause, and a commit with no journal and no handler cannot end one; nothing was written`);
   if (release.length > 0) await seats!.handler.discharge(release);
+  for (const entry of pauses) await seats!.handler.endPause(entry);
   const content: Omit<RunMigrationSpecValue, "at"> = {
     v: 1,
     run: report.run,
@@ -400,6 +423,26 @@ export function migrationSeats(
   return { release, adopt };
 }
 
+/** The kinds whose orphan row says nothing outlives the step, and that arm a pause while pending. */
+const PAUSE_KINDS = new Set(["sleep", "wait", "ask", "checkpoint", "turn", "waitUntil"]);
+
+/**
+ * The pending steps an ignored orphan row says nothing outlives, folded the way
+ * {@link outstandingPauseTokens} folds a replay: the last record of a step wins, so a step that
+ * settled after its pending row is not ended again. Only a step that still owns a pause is
+ * returned. The commit ends these through the handler before the migration record exists.
+ */
+export function orphanedPauses(
+  entries: readonly JournalEntry[],
+  report: { readonly orphans: readonly { readonly step: string; readonly verdict: string }[] },
+): readonly JournalEntry[] {
+  const ignored = new Set(report.orphans.filter((o) => o.verdict === "ignored").map((o) => o.step));
+  const last = new Map<string, JournalEntry>();
+  for (const e of entries) last.set(journalEntryKeyString(e), e);
+  return [...last.values()].filter((e) =>
+    e.state === "pending" && ignored.has(journalEntryKeyString(e)) && pauseTokens(e).length > 0);
+}
+
 /**
  * The orphan table, one entry at a time.
  *
@@ -414,9 +457,9 @@ function classify(
   noticeConsumed: ReadonlyMap<string, boolean>,
 ): MigrateOrphan {
   const step = journalEntryKeyString(e);
-  const ignore = (why: string): MigrateOrphan => ({ step, kind: e.kind, verdict: "ignored", why });
+  const ignore = (why: string): MigrateOrphan => ({ step, kind: e.kind, state: e.state, verdict: "ignored", why });
   const reject = (code: string, why: string): MigrateOrphan =>
-    ({ step, kind: e.kind, verdict: "rejected", code, why });
+    ({ step, kind: e.kind, state: e.state, verdict: "rejected", code, why });
 
   switch (e.kind) {
     case "sleep":
@@ -444,6 +487,7 @@ function classify(
       return {
         step,
         kind: e.kind,
+        state: e.state,
         verdict: "kept",
         why: "the agent already took this turn and spoke in its channels; the entry stays and the migration records that the current source no longer accounts for it",
       };
@@ -479,12 +523,12 @@ function classify(
         return reject("L5003", `${handle} is named by both --adopt and --release; one agent is reassigned or torn down, never both`);
       if (adopt)
         return {
-          step, kind: e.kind, verdict: "kept",
+          step, kind: e.kind, state: e.state, verdict: "kept",
           why: `${handle} is adopted under --adopt: the new program's next spawn of persona "${spawnedPersona(e)}" receives this seat instead of minting one, and the override is recorded with the actor who passed it`,
         };
       if (release)
         return {
-          step, kind: e.kind, verdict: "ignored",
+          step, kind: e.kind, state: e.state, verdict: "ignored",
           why: `${handle} is torn down under --release when the migration commits, and the override is recorded with the actor who passed it`,
         };
       return reject(
@@ -500,6 +544,7 @@ function classify(
         return {
           step,
           kind: e.kind,
+          state: e.state,
           verdict: "kept",
           why: `a recorded decision${raw.by !== undefined ? ` by ${raw.by}` : ""} is discarded under --discard-approvals, and the override is recorded with the actor who passed it`,
         };

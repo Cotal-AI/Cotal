@@ -140,6 +140,27 @@ const checkOrThrew = async (...args: Parameters<typeof check>) =>
   c("the SAME decision off the raw append log counts the same steps and files the same id",
     rawShaped.consumedThrough === r.consumedThrough && asAppended.length === entries.length * 2,
     { folded: r.consumedThrough, raw: rawShaped.consumedThrough, rows: asAppended.length });
+
+  // A dropped step that is still PENDING owns the pause it armed. "Nothing outlives it" is then an
+  // act, not an observation: the commit ends that pause through the run's handler before the record
+  // is filed, a settled step ended its own, and a commit with nothing to end it with is refused.
+  const two = entries.find((e) => journalEntryKeyString(e).includes("sleep:two"))!;
+  const live = entries.map((e) => (e === two ? { ...e, state: "pending" as const, status: undefined, result: undefined } : e));
+  const pendingDrop = await check(RUN, live, `await sleep("1s", { name: "one" });`);
+  c("a dropped sleep that is still pending is ignored, and its row says it was pending",
+    pendingDrop.admissible === true && rowFor(pendingDrop, "sleep:two")?.verdict === "ignored" && rowFor(pendingDrop, "sleep:two")?.state === "pending",
+    rowFor(pendingDrop, "sleep:two"));
+  const ended: string[] = [];
+  const ender = { discharge: async () => undefined, endPause: async (e: JournalEntry) => { ended.push(`${journalEntryKeyString(e)}:${e.state}`); } };
+  await commitMigration(kv, EP, { ...pendingDrop, run: "r-plain-pending" }, "driver-r", { entries: live, handler: ender });
+  c("committing it ends exactly that step's pause through the run's handler, while it is pending",
+    ended.length === 1 && ended[0].includes("sleep:two") && ended[0].endsWith(":pending"), ended);
+  await commitMigration(kv, EP, { ...r, run: "r-plain-settled" }, "driver-r", { entries, handler: ender });
+  c("a settled dropped sleep ends nothing: it ended its own pause when it settled", ended.length === 1, ended);
+  const blindPause = await commitMigration(kv, EP, { ...pendingDrop, run: "r-plain-blind" }, "driver-r").then(() => null, (e: unknown) => e as Error);
+  c("a commit that ignores a pending pause but has no handler is refused before anything is filed",
+    blindPause !== null && /may still hold a pause/.test(blindPause.message) && (await listRunMigrations(kv, EP, "r-plain-blind")).length === 0,
+    blindPause?.message?.slice(0, 140));
 }
 
 // ── 2) a decision a person actually made ───────────────────────────────────────────────────────
@@ -215,7 +236,10 @@ const checkOrThrew = async (...args: Parameters<typeof check>) =>
   // migration is filed, and refuses when it has nothing to tear it down with: a record that said
   // "released" over a seat nothing released would be the fake success this row exists to refuse.
   const torn: string[] = [];
-  const discharger = { discharge: async (es: readonly JournalEntry[]) => { for (const e of es) torn.push((e.result as { agent: string }).agent); } };
+  const discharger = {
+    discharge: async (es: readonly JournalEntry[]) => { for (const e of es) torn.push((e.result as { agent: string }).agent); },
+    endPause: async () => { /* this cell releases a settled spawn, which armed no pause */ },
+  };
   const committed = await commitMigration(kv, EP, released, "driver-r", { entries, handler: discharger });
   c("committing a --release migration despawns exactly the named seat through the run's discharge",
     torn.length === 1 && torn[0] === handle && committed.released.includes(handle), { torn, released: committed.released });

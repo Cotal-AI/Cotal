@@ -115,6 +115,9 @@ the edited program's next `spawn` of that persona, which returns the recorded ha
 nothing, so the agent keeps its identity, its worktree and its turn history across the edit. A
 released seat (`--release <name>#<uid>`) is despawned when the migration commits, through the same
 discharge a cancelled branch's seat leaves by, so the record never claims a release nothing did.
+A pending step the edit dropped, such as a `sleep` that is still waiting, has its pause ended
+by that same commit, through the claim a cancelled branch uses, so the record never says nothing
+outlives the step while its timer is still armed. A step that already settled ended its own.
 The spawn that adopts a seat binds the orphaned spawn's goal as its own, so a resume of that step
 reads the same seat back and a cancellation of it despawns the seat it holds.
 
