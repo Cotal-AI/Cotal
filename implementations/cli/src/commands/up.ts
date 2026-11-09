@@ -1902,6 +1902,18 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         );
         process.exit(1);
       }
+      // A bare refresh adds the manager this broker was started without. The manager publishes its
+      // contract on the limit the broker already serves, so a recorded one below the floor is refused
+      // before that launch rather than dying on the publish.
+      const refreshPayload = maxPayload ?? runningPolicy?.maxPayload;
+      if (!noManager && held.mode !== "open" && refreshPayload !== undefined && refreshPayload < MANAGER_START_PAYLOAD_FLOOR) {
+        console.error(
+          c.red(
+            `✗ --max-payload ${refreshPayload} is below ${MANAGER_START_PAYLOAD_FLOOR} bytes, the least the space's manager starts on: it publishes its contract artifacts, one message each, and the largest is bounded at ${CONTRACT_ARTIFACT_MAX_BYTES} bytes with ${MANAGER_START_PAYLOAD_FLOOR - CONTRACT_ARTIFACT_MAX_BYTES} more for the publish; nothing was started`,
+          ),
+        );
+        process.exit(1);
+      }
       // The store directory is fixed the same way: an explicit --store-dir on a live refresh can
       // only be refused when it disagrees with what the running broker actually opened. Absent
       // `held.storeDir` (a pre-field record) has nothing to compare against, so it is not checked.
