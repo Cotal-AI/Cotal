@@ -1,14 +1,26 @@
 /** A character shown as an escape: a control, a line or paragraph separator, or a format character
  *  with no glyph of its own. `Bidi_Control` is already inside the default-ignorable set, so it is not
- *  named again. A join control is not in this class: U+200D holds an emoji sequence together, and
- *  escaping it would split a character the reader can see. A combining mark is not in it either: it
- *  draws on a visible base, and the same property carries the marks of ordinary written language. */
+ *  named again. A combining mark is not in this class: it draws on a visible base, and the same
+ *  property carries the marks of ordinary written language. A character of this class that belongs to
+ *  a grapheme with an emoji, such as the joiner inside an emoji sequence or U+FE0F on U+2764,
+ *  stays, because escaping it would split a character the reader can see. One that stands alone, or
+ *  that sits on a letter and adds nothing the reader can see, is escaped. */
 const HIDDEN = /[\p{Cc}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\p{gc=Cf}]/gu;
-const JOIN_CONTROL = /^\p{Join_Control}/u;
+const EMOJI = /\p{Emoji}/u;
+const GRAPHEME = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+interface Span { index: number; end: number }
 
-/** The `\uXXXX` form of one matched character, or the character itself when it is a join control. */
-function escaped(ch: string): string {
-  if (JOIN_CONTROL.test(ch)) return ch;
+/** The graphemes of `text` that hold an emoji and more than that character. A hidden character
+ *  inside one stays, because it belongs to a character the reader can see. A letter does not: a
+ *  joiner or a selector on one adds nothing the reader can see. */
+function kept(text: string): Span[] {
+  return [...GRAPHEME.segment(text)].flatMap((part) =>
+    part.segment.length > 1 && EMOJI.test(part.segment) ? [{ index: part.index, end: part.index + part.segment.length }] : []);
+}
+
+/** The `\uXXXX` form of one matched character, or the character itself when `kept` covers `at`. */
+function escaped(ch: string, at: number, spans: Span[]): string {
+  if (spans.some((span) => span.index <= at && at < span.end)) return ch;
   let out = "";
   for (let i = 0; i < ch.length; i++) out += `\\u${ch.charCodeAt(i).toString(16).padStart(4, "0")}`;
   return out;
@@ -20,14 +32,16 @@ function escaped(ch: string): string {
  *  return or an escape sequence rewrites the terminal, a bidirectional override reorders what is shown,
  *  and a format character such as U+200B prints as nothing, so a refused name reads as a valid one. */
 export function oneLine(text: string): string {
-  return text.replace(HIDDEN, escaped);
+  const spans = kept(text);
+  return text.replace(HIDDEN, (ch, at: number) => escaped(ch, at, spans));
 }
 
 /** ` (it contains U+XXXX)` for the first character {@link oneLine} escapes in `value`, else `""`. */
 export function hiddenNote(value: string): string {
-  for (const ch of value.match(HIDDEN) ?? []) {
-    const shown = escaped(ch);
-    if (shown !== ch) return ` (it contains U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")})`;
+  const spans = kept(value);
+  for (const match of value.matchAll(HIDDEN)) {
+    const ch = match[0], at = match.index ?? 0;
+    if (escaped(ch, at, spans) !== ch) return ` (it contains U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")})`;
   }
   return "";
 }

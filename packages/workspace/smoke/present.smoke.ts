@@ -61,10 +61,16 @@ check("ESC is escaped", oneLine("\x1b[2J") === "\\u001b[2J", oneLine("\x1b[2J"))
 check("a carriage return is escaped", oneLine("a\rb") === "a\\u000db");
 check("a C1 control is escaped", oneLine("\u009b31m") === "\\u009b31m");
 check("DEL is escaped", oneLine("\u007f") === "\\u007f");
-check("a line separator is escaped", oneLine("a b") === "a\\u2028b");
+check("a line separator is escaped", oneLine("a\u2028b") === "a\\u2028b");
 check("a bidi override is escaped", oneLine("abc\u202edef") === "abc\\u202edef");
-check("a zero-width space is escaped", oneLine("gen\u200beral") === "gen\\u200beral");
-check("a format character is named", hiddenNote("gen\u200beral") === " (it contains U+200B)");
+check("a zero-width space is escaped", oneLine("gen\u{200b}eral") === "gen\\u200beral");
+check("a joiner between letters is escaped", oneLine("gen\u{200d}eral") === "gen\\u200deral");
+check("a non-joiner between letters is escaped", oneLine("gen\u{200c}eral") === "gen\\u200ceral");
+check("a joiner inside an emoji stays", oneLine("\u{1f469}\u{200d}\u{1f4bb}") === "\u{1f469}\u{200d}\u{1f4bb}");
+check("a selector on a heart stays", oneLine("\u{2764}\u{fe0f}") === "\u{2764}\u{fe0f}");
+check("a selector alone is escaped", oneLine("\u{fe0f}") === "\\ufe0f");
+check("a format character is named", hiddenNote("gen\u{200b}eral") === " (it contains U+200B)");
+check("a joiner in a name is named", hiddenNote("gen\u{200d}eral") === " (it contains U+200D)");
 check("a visible name has no note", hiddenNote("general") === "");
 check("printable text is kept as it is", oneLine("古 👩‍💻 é seat-1") === "古 👩‍💻 é seat-1");
 check("a combining mark is kept", oneLine("a\u0338b") === "a\u0338b");
