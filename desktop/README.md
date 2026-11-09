@@ -38,7 +38,9 @@ pnpm --dir desktop app:build
 
 The Rust tests without default features check request, URL and environment boundaries, not the native webview or tray. A browser preview displays a native-controls-unavailable message rather than simulated daemon state.
 
-The Desktop apps workflow has an optional `real_service` dispatch input. On disposable GitHub-hosted macOS and Windows runners it exercises the built CLI's install, local readiness, start without restart, and uninstall using a unique daemon home. It checks native job absence through the CLI's install dry-run and requires the endpoint to report `NOT_RUNNING` after removal. A session prerequisite refusal fails the run; it is not a passing skip. Failed or unknown cleanup is retained for runner disposal and recorded in the `daemon-service-*` artifact. This does not test signed installers, browser sign-in or remote connections. The regular native-install smoke continues to use recording runners without installing a service.
+The Desktop apps workflow has an optional `real_service` dispatch input. On disposable GitHub-hosted Linux, macOS and Windows runners it exercises the built CLI's install, local readiness, start without restart, and uninstall using a unique daemon home. macOS/Windows confirm native job absence through the CLI's install dry-run; Linux additionally reads systemd's explicit `not-found` state and verifies that the loaded unit supervises the answering PID. The endpoint must report `NOT_RUNNING` after removal. A session prerequisite refusal fails the run; it is not a passing skip. Failed or unknown cleanup is retained for runner disposal and recorded in the `daemon-service-*` artifact.
+
+The Linux dispatch prepares only the disposable runner's user manager and enables linger before testing. It does not change a developer's user manager. This tests an already-lingering account, not unprivileged linger activation, logout survival or crash restart. No signed installer, browser sign-in or remote connection is exercised. The regular native-install smoke continues to use recording runners without installing a service.
 
 ## Platforms
 
