@@ -499,10 +499,10 @@ async function run(s: Space, width: number, height: number, tag: string) {
   await see(has("◐ coder-2 is waiting"), 4000)
   keys("j")
   await sleep(100)
-  keys("Tab")
+  await toBox()
   const answering = await see((f) => target(f, "answering coder-2"), 4000)
   save("answering")
-  check(`${at}: w in the tree, then j off the row, then tab: the box answers the waiting agent`, target(answering, "answering coder-2") && answering.includes("◐ coder-2 is waiting"), answering)
+  check(`${at}: w in the tree, then j off the row, then esc: the box answers the waiting agent`, target(answering, "answering coder-2") && answering.includes("◐ coder-2 is waiting"), answering)
   const answer = `approved, run it (${tag})`
   type(answer)
   keys("Enter")
@@ -753,8 +753,7 @@ async function run(s: Space, width: number, height: number, tag: string) {
   await toTree()
   keys("w")
   await see(has("◐ coder-2 is waiting"), 4000)
-  keys("Tab")
-  await sleep(150)
+  await toBox()
   const again = `still there? (${tag})`
   const reopened = await enter(again, (f) => says(f, "new session as"))
   const next = await until(() => chatRow(s), (p) => p !== undefined && p.card.id !== principal)
@@ -824,8 +823,7 @@ async function run(s: Space, width: number, height: number, tag: string) {
   await toTree()
   keys("w")
   await see(has("◐ coder-2 is waiting"), 4000)
-  keys("Tab")
-  await sleep(150)
+  await toBox()
   const bye = `signing off (${tag})`
   type(bye)
   keys("Enter")

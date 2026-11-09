@@ -38,18 +38,26 @@ name. The middle shows the open conversation, with the input box under it:
 all traffic, one channel, or one agent with its question pinned when it waits. A space opens on
 `#general`. The inspector on the right lists the agents waiting for an answer, then the replies to
 your messages and the messages that mention you, newest first, and the selected agent's status,
-model, harness and uptime. A reply or mention card opens its channel, or its sender's conversation
-for a direct message, and clears once that conversation is open. Cleared cards stay cleared until the
-app quits, and a reply or mention in the open conversation makes no card. When the conversation
+model, harness and uptime. The list scrolls when it is longer than the screen. A reply or mention
+card opens its channel, or its sender's conversation for a direct message, scrolls to the message and
+quotes it in the input box, so the next `enter` sends a reply to it. When the reply rules refuse the
+message, the box says why and quotes nothing. A card clears once its conversation is open. Cleared
+cards stay cleared until the app quits, and a reply or mention in the open conversation makes no
+card. When the conversation
 would get fewer than 40 columns, as at 80x24, the inspector shrinks to a count such as
 `1 needs you · 2 replies · 1 mention` above the input box, and the agent overview shows in the
 conversation while the tree has the keys. Each agent's name keeps one color in
 the tree, the feed and the waiting list, and yours is gold.
 
-The cursor starts in the input box. `tab` moves it to the tree, where the arrows or `j` and `k`
-move, `enter` opens the row and returns to the box, and `esc` or `tab` returns without opening.
-The letter keys work only in the tree: `w` opens the next item the inspector lists, waiting agents
-first, and `1`-`9` a specific one, as a click on its card does. `D` stops an agent, `?` lists the keys and `q` quits. While a space opens, the box keeps the keys
+The cursor starts in the input box. `tab` moves it to the tree, then to the inspector, then back to
+the box. At 80x24, with no inspector on screen, `tab` in the tree returns to the box. In the tree and
+the inspector the arrows or `j` and `k` move the highlight, `enter` opens the item and returns to the
+box, and `esc` returns without opening. `enter` on a card quotes its message, and on a waiting agent
+opens its conversation with no quote. A click on an item does what `enter` does. The highlight stays
+on its item as new ones arrive, and when an opened card clears, the item that takes its place is
+highlighted. The letter keys work only in the tree and the inspector: `w` opens the next item the
+inspector lists, waiting agents first, and `1`-`9` a specific one, quoting a card's message as
+`enter` does while the keys stay where they are. `D` stops an agent, `?` lists the keys and `q` quits. While a space opens, the box keeps the keys
 before it is on screen, so a letter typed for it runs no tree key; `tab` moves them to the tree.
 `ctrl+p` opens the commands and `ctrl+c` quits from anywhere.
 
@@ -172,9 +180,14 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   sent, and the space switched to sends at once.
   `smoke/cards.smoke.ts` posts from the input box at 209x52, 97x49 and 80x24 on an open space, then
   has peers reply in a channel, mention you in another and reply by direct message. It reads the
-  inspector's order and the one-line count at 80x24 off the screen, opens the cards with `w`, a
-  click and a number, and checks that each clears, that a mention of someone else or a reply to a
-  peer makes none, and that a mention in the open conversation makes none.
+  inspector's order and the one-line count at 80x24 off the screen. Where the inspector shows, it
+  moves the keys there with `tab`, reads the highlight off the screen's colors as the arrows and `j`
+  `k` move it, and opens the waiting agent and a card with `enter`. It checks that the card's message
+  is quoted under the box and that the next `enter` sends a reply a peer receives with that message's
+  id, that the highlight stays in the opened card's slot, and that sixteen more cards are all reached
+  by the arrows as the list scrolls. At 80x24 `tab` skips to the box. It opens cards with `w`, a click
+  and a number too, and checks that each quotes and clears, that a mention of someone else or a reply
+  to a peer makes none, and that a mention in the open conversation makes none.
   They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
   built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space

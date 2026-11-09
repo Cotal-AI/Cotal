@@ -27,9 +27,14 @@ type Command = { id: string; bind?: string; keys?: string; title: string; group:
 
 type Line = { text: string; fg: RGBA }
 
-/** Where the keys go: the input box under the conversation, or the tree. The box takes them only
- *  while it is on screen, so with no space open the tree has them. */
-type Focus = "box" | "tree"
+/** Where the keys go: the input box under the conversation, the tree, or the inspector. `tab` moves
+ *  them in that order. The box takes them only while it is on screen, so with no space open the tree
+ *  has them, and the inspector only while it is on screen. */
+type Focus = "box" | "tree" | "inspector"
+
+/** An item of the inspector: a waiting agent, or a reply or mention card with the message that
+ *  opening it quotes. `key` stays with the item while others arrive above it. */
+type Need = { key: string; open: Open; quote?: FeedEntry }
 
 /** Stopping an agent: the confirm, the manager call while it runs, then its outcome for a while. */
 type Stop = { phase: "idle" } | { phase: "confirm"; name: string } | { phase: "stopping"; name: string; force: boolean } | { phase: "done"; text: string; tone: "success" | "error" }
@@ -39,7 +44,6 @@ const FEED_ROWS = 200
 // The channel a space opens on, as `cotal join` defaults to it.
 const DEFAULT_CHANNEL = "general"
 const STOP_NOTICE_MS = 8000
-const CARDS_SHOWN = 5
 
 const fit = (s: string, n: number) => (n <= 0 ? "" : s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s)
 const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p
@@ -96,7 +100,16 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     return m && t ? cardsFor(conversationFeed(m, { kind: "channel" }, t.own(), FEED_ROWS), t.you(), t.mentionsYou, cleared()) : []
   })
   // What the inspector lists, in its order: the keys `w` and `1`-`9` open these at every width.
-  const needs = createMemo((): Open[] => [...waiting().map((p): Open => ({ kind: "peer", id: p.card.id })), ...cards().map((c) => c.open)])
+  const needs = createMemo((): Need[] => [
+    ...waiting().map((p): Need => ({ key: peerKey(p.card.id), open: { kind: "peer", id: p.card.id } })),
+    ...cards().map((c): Need => ({ key: `msg:${c.entry.id}`, open: c.open, quote: c.entry })),
+  ])
+  // The inspector's highlight, by key. Once its item clears, the item that slides into the slot has it.
+  const [needKey, setNeedKey] = createSignal<string>()
+  const needAt = createMemo((slot: number) => {
+    const at = needs().findIndex((n) => n.key === needKey())
+    return at >= 0 ? at : Math.max(0, Math.min(slot, needs().length - 1))
+  }, 0)
   // The open conversation's reply quote, which the conversation highlights.
   const draftHere = () => {
     const m = mesh()
@@ -143,17 +156,19 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   // The box has the keys while it is on screen or on its way, as a space opens or the composer
   // loads. A catalog entry's page and a space that failed or closed have no box, so the tree has them.
   const composing = () => focus() === "box" && open().kind !== "entry" && conn().phase !== "failed" && conn().phase !== "closed"
+  const keysAt = (): Focus => (composing() ? "box" : focus() === "inspector" && inspectorWidth() ? "inspector" : "tree")
   const toBox = () => {
     setCursor(undefined)
     setFocus("box")
   }
+  const nextColumn = () => (keysAt() === "tree" && inspectorWidth() ? setFocus("inspector") : toBox())
+  /** Quotes `e` in the open conversation's draft, or shows why the reply rule refuses it. */
   const quoteRow = (e: FeedEntry) => {
     const u = ui()
     const k = draftHere()
     const t = talk()
     if (!u || !k || !t) return
     setComposer((s) => u.quoteRow(s, k, e, t.you(), open()))
-    toBox()
   }
   // A quote moved off screen scrolls into view; with none the conversation follows its newest row again.
   let scroller: ScrollBoxRenderable | undefined
@@ -222,23 +237,34 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     else void switchTo(r.entry.space)
     toBox()
   }
-  // The slot `w` or a number opened last. An opened card clears, so the next item slides into its slot.
-  let lastNeed = 0
+  /** Opens the inspector's item `n` and moves the highlight to it. A card quotes its message, so the
+   *  next enter in the box replies to it. Says whether there was an item to open. */
   const openNeed = (n: number) => {
     const list = needs()
-    if (list.length === 0) return toast.show({ variant: "info", message: "Nothing needs you" })
-    const o = list[n]
-    if (!o) return toast.show({ variant: "warning", message: `Only ${list.length} item(s) need you` })
-    lastNeed = n
-    setOpen(o)
-    setCursor(o.kind === "peer" ? peerKey(o.id) : undefined)
+    if (list.length === 0) return void toast.show({ variant: "info", message: "Nothing needs you" })
+    const item = list[n]
+    if (!item) return void toast.show({ variant: "warning", message: `Only ${list.length} item(s) need you` })
+    setNeedKey(item.key)
+    setOpen(item.open)
+    setCursor(item.open.kind === "peer" ? peerKey(item.open.id) : undefined)
+    if (item.quote) quoteRow(item.quote)
+    return true
   }
+  // An opened card clears, so with the open conversation not listed `w` opens what slid into its slot.
   const nextNeed = () => {
     const here = conversationKey(open())
-    const at = needs().findIndex((o) => conversationKey(o) === here)
-    const next = at >= 0 ? at + 1 : lastNeed
+    const at = needs().findIndex((n) => conversationKey(n.open) === here)
+    const next = at >= 0 ? at + 1 : needAt()
     openNeed(next < needs().length ? next : 0)
   }
+  // Enter and a click open the item and hand the keys to the box, for the reply.
+  const answerNeed = (n: number) => openNeed(n) && toBox()
+  const moveNeed = (by: number) => {
+    const list = needs()
+    if (list.length) setNeedKey(list[Math.max(0, Math.min(list.length - 1, needAt() + by))]!.key)
+  }
+  // What the arrows and enter do in the column that has the keys.
+  const column = () => (keysAt() === "inspector" ? { move: moveNeed, open: () => answerNeed(needAt()) } : { move, open: openRow })
 
   // The shared-name warning, once per session that finds its name taken.
   createEffect(
@@ -323,12 +349,14 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     ))
   }
 
-  // Letter keys belong to the tree. In the box they are text; `tab` there is bound by the composer.
+  // Letter keys belong to the tree and the inspector. In the box they are text; `tab` there is bound
+  // by the composer.
   const commands: Command[] = [
-    { id: "cotal.box", bind: "tab,escape", keys: "tab esc", title: "Back to the input box", group: "Move", run: toBox },
-    { id: "cotal.down", bind: "j,down", keys: "j ↓", title: "Next row", group: "Move", run: () => move(1) },
-    { id: "cotal.up", bind: "k,up", keys: "k ↑", title: "Previous row", group: "Move", run: () => move(-1) },
-    { id: "cotal.open", bind: "return", keys: "enter", title: "Open the selected row", group: "Move", run: openRow },
+    { id: "cotal.next-column", bind: "tab", keys: "tab", title: "Next column: the box, the tree, the inspector", group: "Move", run: nextColumn },
+    { id: "cotal.box", bind: "escape", keys: "esc", title: "Back to the input box", group: "Move", run: toBox },
+    { id: "cotal.down", bind: "j,down", keys: "j ↓", title: "Next row", group: "Move", run: () => column().move(1) },
+    { id: "cotal.up", bind: "k,up", keys: "k ↑", title: "Previous row", group: "Move", run: () => column().move(-1) },
+    { id: "cotal.open", bind: "return", keys: "enter", title: "Open the selected row, quoting a card", group: "Move", run: () => column().open() },
     { id: "cotal.next-need", bind: "w", keys: "w", title: "Open the next waiting agent, reply or mention", group: "Needs you", palette: true, run: nextNeed },
     { id: "cotal.need", bind: "1,2,3,4,5,6,7,8,9", keys: "1-9", title: "Open that item of the inspector", group: "Needs you", run: (e) => e && openNeed(Number(e.name) - 1) },
     { id: "cotal.reload", bind: "ctrl+r", keys: "ctrl+r", title: "Reread spaces", group: "System", palette: true, run: () => void read(true) },
@@ -445,7 +473,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
               )
             const label = () => rowLabel(item, p.width - 2)
             return (
-              <box flexDirection="row" justifyContent="space-between" flexShrink={0} backgroundColor={item.key !== selection()?.key ? undefined : composing() ? theme.background.raised.high : theme.background.raised.max}>
+              <box flexDirection="row" justifyContent="space-between" flexShrink={0} backgroundColor={item.key !== selection()?.key ? undefined : keysAt() === "tree" ? theme.background.raised.max : theme.background.raised.high}>
                 <text wrapMode="none" fg={label().fg}>
                   <span style={{ fg: label().markFg }}>{label().mark}</span>
                   {` ${label().name}`}
@@ -529,7 +557,14 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
         paddingLeft={1}
         paddingRight={lit() ? 1 : 0}
         backgroundColor={lit() ? theme.hue.accent[800] : undefined}
-        onMouseDown={p.entry.events ? undefined : () => quoteRow(p.entry)}
+        onMouseDown={
+          p.entry.events
+            ? undefined
+            : () => {
+                quoteRow(p.entry)
+                toBox()
+              }
+        }
       >
         <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
           <text wrapMode="none" fg={lit() ? theme.text.base : nameFg(p.entry.from)} attributes={TextAttributes.BOLD}>
@@ -672,8 +707,12 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     </box>
   )
 
-  /** A reply or mention: who, where, and the start of what they wrote. A click opens it, as its
-   *  number does. */
+  // The item with the keys is lit as the tree's row is when the tree has them; otherwise an open
+  // waiting agent is.
+  const needBg = (n: number, opened: boolean) => (keysAt() === "inspector" && needAt() === n ? theme.background.raised.max : opened ? theme.background.raised.high : undefined)
+
+  /** A reply or mention: who, where, and the start of what they wrote. A click opens it, as enter
+   *  does. */
   const CardRow = (p: { card: Card; n: number; width: number }) => {
     const e = () => p.card.entry
     const where = () => {
@@ -681,7 +720,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
       return m.delivery === "multicast" ? (m.channel ? `#${m.channel}` : "") : m.delivery === "anycast" ? `@${m.toService ?? "?"}` : "→ you"
     }
     return (
-      <box flexShrink={0} marginBottom={1} onMouseDown={() => openNeed(p.n)}>
+      <box id={`need-${p.n}`} flexShrink={0} marginBottom={1} backgroundColor={needBg(p.n, false)} onMouseDown={() => answerNeed(p.n)}>
         <text wrapMode="none" fg={gold()}>
           <span style={{ fg: theme.text.base }}>{`${p.n + 1} `}</span>
           {p.card.kind === "reply" ? "↩ " : "@ "}
@@ -693,6 +732,14 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     )
   }
 
+  // The highlight stays on screen as it moves and as items arrive above it.
+  let needScroller: ScrollBoxRenderable | undefined
+  createEffect(
+    on([needAt, keysAt], ([n]) => {
+      if (needScroller && !needScroller.isDestroyed) needScroller.scrollChildIntoView(`need-${n}`, { align: "nearest", inset: 2 })
+    }),
+  )
+
   // The rows are kept by slot. Every snapshot makes new waiting entries and cards, and a row remade
   // between two frames drops a click on it.
   const Inspector = (p: { width: number }) => {
@@ -702,45 +749,44 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     }
     return (
       <box width={p.width} flexShrink={0} flexDirection="column" paddingLeft={2} paddingRight={2} paddingTop={1} backgroundColor={theme.background.raised.base}>
-        <Show when={waiting().length || !cards().length}>
-          <Section title={`NEEDS YOU · ${waiting().length}`} />
-          <box height={1} flexShrink={0} />
-        </Show>
-        <Show
-          when={waiting().length}
-          fallback={<Show when={!cards().length}><text fg={theme.text.muted}>Nothing needs you.</text></Show>}
-        >
-          <Index each={waiting()}>
-            {(a, i) => (
-              <box flexShrink={0} marginBottom={1} backgroundColor={openPeer() === a().card.id ? theme.background.raised.high : undefined} onMouseDown={() => openNeed(i)}>
-                <text wrapMode="none" fg={theme.text.feedback.warning.base}>
-                  <span style={{ fg: theme.text.base }}>{`${i + 1} `}</span>
-                  {"◐ "}
-                  <span style={{ fg: nameFg(a().card) }}>{fit(a().card.name, p.width - 8 - (a().card.role?.length ?? 0))}</span>
-                  <span style={{ fg: theme.text.faint }}>{a().card.role ? `  ${a().card.role}` : ""}</span>
-                </text>
-                <text fg={theme.text.muted}>{fit(a().activity ?? "reported no question", (p.width - 4) * 3)}</text>
+        <scrollbox ref={(r: ScrollBoxRenderable) => (needScroller = r)} flexGrow={1} minHeight={0} scrollbarOptions={{ visible: false }}>
+          <Show when={waiting().length || !cards().length}>
+            <Section title={`NEEDS YOU · ${waiting().length}`} />
+            <box height={1} flexShrink={0} />
+          </Show>
+          <Show
+            when={waiting().length}
+            fallback={<Show when={!cards().length}><text fg={theme.text.muted}>Nothing needs you.</text></Show>}
+          >
+            <Index each={waiting()}>
+              {(a, i) => (
+                <box id={`need-${i}`} flexShrink={0} marginBottom={1} backgroundColor={needBg(i, openPeer() === a().card.id)} onMouseDown={() => answerNeed(i)}>
+                  <text wrapMode="none" fg={theme.text.feedback.warning.base}>
+                    <span style={{ fg: theme.text.base }}>{`${i + 1} `}</span>
+                    {"◐ "}
+                    <span style={{ fg: nameFg(a().card) }}>{fit(a().card.name, p.width - 8 - (a().card.role?.length ?? 0))}</span>
+                    <span style={{ fg: theme.text.faint }}>{a().card.role ? `  ${a().card.role}` : ""}</span>
+                  </text>
+                  <text fg={theme.text.muted}>{fit(a().activity ?? "reported no question", (p.width - 4) * 3)}</text>
+                </box>
+              )}
+            </Index>
+          </Show>
+          <Show when={cards().length}>
+            <Section title={`REPLIES AND MENTIONS · ${cards().length}`} />
+            <box height={1} flexShrink={0} />
+            <Index each={cards()}>{(c, i) => <CardRow card={c()} n={waiting().length + i} width={p.width} />}</Index>
+          </Show>
+          <Show when={selected()}>
+            {(a) => (
+              <box flexShrink={0} marginTop={1}>
+                <Section title={a().card.kind === "agent" ? "AGENT" : "ENDPOINT"} right={fit(a().card.name, p.width - 16)} />
+                <box height={1} flexShrink={0} />
+                <For each={overview(a(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.base} />}</For>
               </box>
             )}
-          </Index>
-        </Show>
-        <Show when={cards().length}>
-          <Section title={`REPLIES AND MENTIONS · ${cards().length}`} />
-          <box height={1} flexShrink={0} />
-          <Index each={cards().slice(0, CARDS_SHOWN)}>{(c, i) => <CardRow card={c()} n={waiting().length + i} width={p.width} />}</Index>
-          <Show when={cards().length > CARDS_SHOWN}>
-            <text fg={theme.text.faint} marginBottom={1}>{`+${cards().length - CARDS_SHOWN} more`}</text>
           </Show>
-        </Show>
-        <Show when={selected()}>
-          {(a) => (
-            <box flexShrink={0} marginTop={1}>
-              <Section title={a().card.kind === "agent" ? "AGENT" : "ENDPOINT"} right={fit(a().card.name, p.width - 16)} />
-              <box height={1} flexShrink={0} />
-              <For each={overview(a(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.base} />}</For>
-            </box>
-          )}
-        </Show>
+        </scrollbox>
       </box>
     )
   }
