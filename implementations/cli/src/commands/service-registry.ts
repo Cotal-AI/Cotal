@@ -3,7 +3,7 @@ import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
-import { findServicePreset, presetMissingOptions, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { findServicePreset, presetFlagName, presetMissingOptions, presetOptionRefusal, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
@@ -253,9 +253,13 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       const values = guided;
       definition = forName(() => servicePresetDefinition(preset, space, values, root, `add ${name}`));
     } else {
-      const file = await prompts.text({ message: "Version-1 service definition file", placeholder: "./reviews.service.json" });
+      const file = await prompts.text({
+        message: "Version-1 service definition file",
+        placeholder: "./reviews.service.json",
+        validate: (answer) => { try { importServiceDefinition(resolve(answer ?? ""), space); return undefined; } catch (error) { return error instanceof Error ? error.message : String(error); } },
+      });
       if (prompts.isCancel(file)) return cancelled("Service creation cancelled");
-      definition = forName(() => importServiceDefinition(resolve(file), space));
+      definition = importServiceDefinition(resolve(file), space);
     }
     refuseBrokerServer(definition);
     const answer = await prompts.confirm({ message: `Save ${oneLine(name)} in ${oneLine(space)}? Its program will not be started.`, initialValue: false });
@@ -412,18 +416,23 @@ async function guidedPreset(preset: ReturnType<typeof resolveServicePreset>): Pr
   const properties = schema.properties as Record<string, Record<string, unknown>>;
   const required = schema.required as string[] | undefined;
   const values: ParsedArgs["values"] = {};
-  for (const [name, option] of Object.entries(properties)) {
-    if (!required?.includes(name)) {
+  for (const [option, schema] of Object.entries(properties)) {
+    const name = presetFlagName(option);
+    if (!required?.includes(option)) {
       const set = await prompts.confirm({ message: `Set optional --${name}?`, initialValue: false });
       if (prompts.isCancel(set)) return undefined;
       if (!set) continue;
     }
-    if (option.type === "boolean") {
+    if (schema.type === "boolean") {
       const answer = await prompts.confirm({ message: `Enable --${name}?`, initialValue: false });
       if (prompts.isCancel(answer)) return undefined;
       values[name] = answer;
     } else {
-      const answer = await prompts.text({ message: option.type === "string" ? `Non-secret value for --${name}` : `JSON ${String(option.type)} for --${name}` });
+      const answer = await prompts.text({
+        message: schema.type === "string" ? `Non-secret value for --${name}` : `JSON ${String(schema.type)} for --${name}`,
+        validate: (value) => presetOptionRefusal(preset, name, value ?? "")
+          ?? (preset.adapter === brokerService.name && option === "server" ? brokerServerProblem(value ?? "") : undefined),
+      });
       if (prompts.isCancel(answer)) return undefined;
       values[name] = answer;
     }
