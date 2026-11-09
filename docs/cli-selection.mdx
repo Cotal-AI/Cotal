@@ -408,6 +408,16 @@ with its own message. The manager reads `COTAL_SERVER` when `--server` is unset,
 `COTAL_SERVER` with a user name or password the same way, naming `COTAL_SERVER`. `space add` and
 `meshes add` refuse such a server in a connection bundle, and the `meshes add` prompt refuses one
 typed there, in the same words and with the same next step.
+The same commands refuse a `--server` that is not a broker URL, again with `USAGE_INVALID`, exit 1,
+before anything is dialed. The client drops any other scheme, and a path, query or fragment, then
+connects in plaintext to the host and port that remain, so `https://<host>:<port>` would reach a
+plaintext broker. A broker URL is `nats://`, `tls://`, `ws://` or `wss://`, with a host and no query
+or fragment. A `ws://` or `wss://` URL may name the websocket route as its path. A value with no
+scheme, such as a bare host and port, is not a broker URL and is refused as invalid. A comma-separated
+list is checked one entry at a time. The refusal names the scheme, says the value is not a valid URL,
+or says to drop the path, query or fragment, and does not repeat the value. `up` keeps its own check, because it binds one local listener: one `nats://` or
+`tls://` URL with an IP address and a port. `space add` and `meshes add` use the same check for a
+server typed at the prompt and for one carried in a connection bundle.
 
 A prepared space whose project folder was deleted cannot start. A command that targets it, `persona`
 included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming

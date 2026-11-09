@@ -7,6 +7,7 @@ import {
   authDir,
   brokerUrlCredentialProblem,
   brokerUrlHasUserinfo,
+  brokerUrlShapeProblem,
   canonicalRoot,
   checkUserBundle,
   classifyJoinTarget,
@@ -121,22 +122,8 @@ export function checkServer(raw: string, what: string): Check<string> {
     const { message, remedy } = brokerUrlCredentialProblem(what);
     return { ok: false, message: `✗ ${message}`, code: "USAGE_INVALID", remedy };
   }
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return bad(`✗ ${what} is not a valid URL (expected something like nats://127.0.0.1:4222)`, "USAGE_INVALID");
-  }
-  if (!["nats:", "tls:", "ws:", "wss:"].includes(u.protocol))
-    return bad(`✗ ${what} scheme "${u.protocol.replace(":", "")}" is not a broker scheme - use nats://, tls://, ws:// or wss://`, "USAGE_INVALID");
-  if (u.search || u.hash)
-    return bad(`✗ ${what} must be a bare broker URL - drop its ${u.search ? "query string" : "fragment"}`, "USAGE_INVALID");
-  // A path is refused on nats:// and tls:// because the NATS wire protocol has no notion of one,
-  // but on ws:// and wss:// it addresses the websocket route (`wss://host/mesh-ws` behind a
-  // reverse proxy) — the same contract classifyJoinTarget and the dial already honour.
-  if (u.pathname && u.pathname !== "/" && u.protocol !== "ws:" && u.protocol !== "wss:")
-    return bad(`✗ ${what} must be a bare broker URL - drop its path`, "USAGE_INVALID");
-  if (!u.hostname) return bad(`✗ ${what} names no host - a broker URL needs one (e.g. nats://127.0.0.1:4222)`, "USAGE_INVALID");
+  const shape = brokerUrlShapeProblem(raw, what);
+  if (shape) return { ok: false, message: `✗ ${shape.message} - ${shape.remedy}`, code: "USAGE_INVALID", remedy: shape.remedy };
   return good(raw);
 }
 

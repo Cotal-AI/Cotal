@@ -23,6 +23,7 @@ import {
   isCommandFailure,
   brokerUrlCredentialRefusal,
   brokerUrlHasUserinfo,
+  brokerUrlShapeRefusal,
   isConnectRefusal,
   isMeshRegistryError,
   isSeededCommand,
@@ -463,6 +464,13 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // command whose own check names this, such as `up`'s, has refused above. The value is never repeated.
   if (cmd.flags?.some((flag) => flag.name === "server") && typeof canonical.values.server === "string" && brokerUrlHasUserinfo(canonical.values.server))
     failureExit(cmd, brokerUrlCredentialRefusal("--server"), json, canonical.values.plain === true);
+  // The same client drops any other scheme, and a path, query or fragment, then dials that host and
+  // port in plaintext. `up` has already refused its own stricter listen address above. A command that
+  // dials, such as `send`, is refused here, in the words `space add` uses, before anything is dialed.
+  if (cmd.name !== "up" && cmd.flags?.some((flag) => flag.name === "server") && typeof canonical.values.server === "string") {
+    const shape = brokerUrlShapeRefusal(canonical.values.server, "--server");
+    if (shape) failureExit(cmd, shape, json, canonical.values.plain === true);
+  }
   return canonical;
 }
 
