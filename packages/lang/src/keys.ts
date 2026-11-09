@@ -35,8 +35,8 @@ export type ScopeKind = "parallel" | "race" | "fanOut" | "conclave" | "once";
  *
  * `dispatches`: the scope calls the handler itself, as `conclave` does to open its channel. It owes
  * what an effect owes (a durable request id, the host's stop, the effect ceiling, a cancel re-check
- * after its begin), and a migration cannot walk into it, because the handler's answer was never
- * journalled.
+ * after its begin, the L4028 refusal inside `once`), and a migration cannot walk into it, because
+ * the handler's answer was never journalled.
  *
  * Each row is frozen because `scopeTraits` hands out the shared row, and a write to it would change
  * the journal's crossing rule and the fork refusal for the whole process.
