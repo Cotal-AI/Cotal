@@ -36,8 +36,9 @@ type Focus = "box" | "tree" | "inspector"
  *  opening it quotes. `key` stays with the item while others arrive above it. */
 type Need = { key: string; open: Open; quote?: FeedEntry }
 
-/** One space's replies and mentions by message id, and the ids of the messages the human replied to. */
-type Queue = { cards: ReadonlyMap<string, Card>; answered: ReadonlySet<string> }
+/** One space's replies and mentions by message id, the ids of the messages the human replied to, and
+ *  the ids of the messages the human sent. */
+type Queue = { cards: ReadonlyMap<string, Card>; answered: ReadonlySet<string>; sent: ReadonlySet<string> }
 
 /** Stopping an agent: the confirm, the manager call while it runs, then its outcome for a while. */
 type Stop = { phase: "idle" } | { phase: "confirm"; name: string } | { phase: "stopping"; name: string; force: boolean } | { phase: "done"; text: string; tone: "success" | "error" }
@@ -99,17 +100,20 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const senders = createMemo(() => new Map(feed().map((e) => [e.id, e.from.name])))
   // Each space's cards, gathered from every snapshot of it in this app run. A card stays until a reply
   // to it shows, so it outlives its message leaving the recent rows a snapshot's cards are read from.
+  // The human's sent ids are kept the same way, so a reply to a post that has left those rows still
+  // makes a card.
   const queues = createMemo((prev: ReadonlyMap<string, Queue>) => {
     const m = mesh()
     const t = talk()
     if (!m || !t) return prev
-    const found = cardsFor(conversationFeed(m, { kind: "channel" }, t.own(), FEED_ROWS), t.you(), t.mentionsYou)
     const was = prev.get(m.status.space)
+    const found = cardsFor(conversationFeed(m, { kind: "channel" }, t.own(), FEED_ROWS), t.you(), t.mentionsYou, was?.sent ?? new Set())
     const answered = new Set([...(was?.answered ?? []), ...found.answered])
+    const sent = new Set([...(was?.sent ?? []), ...found.sent])
     const cards = new Map(was?.cards)
     for (const c of found.cards) if (!answered.has(c.entry.id)) cards.set(c.entry.id, c)
     for (const id of found.answered) cards.delete(id)
-    return new Map(prev).set(m.status.space, { cards, answered })
+    return new Map(prev).set(m.status.space, { cards, answered, sent })
   }, new Map())
   // The open space's cards, newest first, less the ones dismissed. The map holds them in arrival
   // order, so reversing it first keeps cards that share a timestamp newest first.

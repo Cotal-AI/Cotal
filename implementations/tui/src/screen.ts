@@ -102,20 +102,23 @@ const cardOpen = (e: FeedEntry): Open | undefined => {
   return e.toService === undefined ? undefined : { kind: "role", role: e.toService }
 }
 
-/** The cards in `feed`, oldest first, and the ids of the messages the human's own messages in it
- *  reply to. A message that both replies and mentions is one reply card. The human's own messages
- *  and a message with no conversation to open make none. */
-export function cardsFor(feed: readonly FeedEntry[], you: You, mentionsYou: (e: FeedEntry) => boolean): { cards: Card[]; answered: string[] } {
+/** The cards in `feed`, oldest first, the ids of the messages the human's own messages in it reply
+ *  to, and the ids of those own messages. A reply card answers one of the human's messages in `feed`
+ *  or in `sentBefore`, the ids an earlier call returned as `sent`. A message that both replies and
+ *  mentions is one reply card. The human's own messages and a message with no conversation to open
+ *  make none. */
+export function cardsFor(feed: readonly FeedEntry[], you: You, mentionsYou: (e: FeedEntry) => boolean, sentBefore: ReadonlySet<string>): { cards: Card[]; answered: string[]; sent: string[] } {
   const own = feed.filter((e) => isYou(you, e.from))
-  const sent = new Set(own.map((e) => e.id))
+  const sent = own.map((e) => e.id)
+  const yours = new Set([...sentBefore, ...sent])
   const cards: Card[] = []
   for (const e of feed) {
     if (e.events || isYou(you, e.from)) continue
-    const kind = e.replyTo !== undefined && sent.has(e.replyTo) ? "reply" : mentionsYou(e) ? "mention" : undefined
+    const kind = e.replyTo !== undefined && yours.has(e.replyTo) ? "reply" : mentionsYou(e) ? "mention" : undefined
     const open = kind ? cardOpen(e) : undefined
     if (kind && open) cards.push({ kind, entry: e, open })
   }
-  return { cards, answered: own.flatMap((e) => (e.replyTo === undefined ? [] : [e.replyTo])) }
+  return { cards, answered: own.flatMap((e) => (e.replyTo === undefined ? [] : [e.replyTo])), sent }
 }
 
 export const peerOf = (mesh: Mesh, id: string) => [...mesh.agents, ...mesh.endpoints].find((p) => p.card.id === id)
