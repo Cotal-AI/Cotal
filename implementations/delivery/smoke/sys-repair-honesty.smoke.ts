@@ -32,16 +32,16 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, mintConnectionEvictorCreds,
+  composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, credsClaims, mintConnectionEvictorCreds,
   mintMembershipObserverCreds, newIdentity,
 } from "@cotal-ai/core";
 import {
   assertSingleSpaceBroker, authDir, connectionEvictorCredsKey, CONNECTION_EVICTOR_CREDS_KIND,
   DELIVERY_CREDS_KIND, membershipObserverCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND,
-  MEMBERSHIP_RW_CREDS_KIND, REMINTABLE_DAEMON_CREDS, saveBrokerAuth, saveSpaceAccountAuth,
-  segmentedKey, workspaceSecretStore,
+  MEMBERSHIP_RW_CREDS_KIND, REMINTABLE_DAEMON_CREDS, retainSystemSigningSeed, saveBrokerAuth,
+  saveSpaceAccountAuth, segmentedKey, workspaceSecretStore,
 } from "@cotal-ai/workspace";
-import { loadSysPair, repairAdvice } from "../src/sys-creds.js";
+import { healConnectionEvictor, loadSysPair, repairAdvice } from "../src/sys-creds.js";
 
 // `findCotalRoot()` is never called here, but the repo's own `.cotal/` is the one directory on the
 // box guaranteed to look provisioned, so every root below is an mkdtemp with its own empty `.cotal/`.
@@ -178,7 +178,7 @@ try {
   check("the delivery heal writes exactly the evictor, and only that", writers(healSrc) === 1 && /connectionEvictorCredsKey\(source\.space, source\), await mintConnectionEvictorCreds\(/.test(healSrc), writers(healSrc));
   check("no OTHER module writes the pair at all", writers(upSrc) + writers(rotSrc) + writers(healSrc) === 5);
   check("rotateSystemCreds is guarded by the single-space broker assert", /assertSingleSpaceBroker\(authDir\(root\), "a system-account rotation/.test(rotSrc));
-  check("the evictor heal is guarded by the same assert, so it refuses on this root too", /assertSingleSpaceBroker\(authDir\(source\.root\), "minting the connection evictor"/.test(healSrc));
+  check("the evictor heal asks the same guard through rotationRefusal, so it writes nothing on this root", /if \(rotationRefusal\(source\.root\) !== undefined\) return false;/.test(healSrc));
   // And the standing renewal owner is excluded by design, so nothing repairs it on a timer either.
   const remintable = REMINTABLE_DAEMON_CREDS.map((r) => r.kind);
   check("REMINTABLE_DAEMON_CREDS excludes both $SYS creds, so renewal never repairs them", !remintable.includes(MEMBERSHIP_OBSERVER_CREDS_KIND) && !remintable.includes(CONNECTION_EVICTOR_CREDS_KIND), remintable);
@@ -198,6 +198,47 @@ try {
   await store.put(connectionEvictorCredsKey("provisioned", provisioned), await mintConnectionEvictorCreds(auth, newIdentity()));
   const fullPair = await loadSysPair(fsSource(soloBuilt.root, "provisioned"), "both");
   check("CONTROL: a provisioned root reports NOTHING missing through the same reader", fullPair.missing.length === 0 && typeof fullPair.observer === "string", fullPair.missing);
+
+  console.log("\n6) the evictor heal mints exactly where the rotation would run, beside an observer of the same generation");
+  /** A root with the observer and, when asked, the retained seed for its first space; the evictor absent. */
+  async function healRoot(label: string, spaces: string[], opts: { seed: boolean; observer: "own" | "other" | "none"; corrupt?: boolean }) {
+    const built = await makeRoot(label, spaces);
+    roots.push(built.root);
+    const auth = composeSpaceAuth(built.broker, built.accounts[0]);
+    const store = workspaceSecretStore(built.root);
+    const composition = { injected: false as const, root: built.root };
+    if (opts.observer === "own") await store.put(membershipObserverCredsKey(spaces[0], composition), await mintMembershipObserverCreds(auth, newIdentity()));
+    if (opts.observer === "other") {
+      // Another trust chain's system account signs the observer, as a rotation that crashed between the trust record and the pair leaves it.
+      const retired = await makeRoot(`${label}-retired`, [spaces[0]]);
+      roots.push(retired.root);
+      await store.put(membershipObserverCredsKey(spaces[0], composition), await mintMembershipObserverCreds(composeSpaceAuth(retired.broker, retired.accounts[0]), newIdentity()));
+    }
+    if (opts.seed) await retainSystemSigningSeed(store, auth);
+    if (opts.corrupt) writeFileSync(join(authDir(built.root), "account.zznothex.json"), JSON.stringify({ space: "x" }));
+    return { source: fsSource(built.root, spaces[0]), evictorKey: connectionEvictorCredsKey(spaces[0], composition), store, auth };
+  }
+  /** The heal's answer, or the error it threw: the cells below need to tell a no-op from a refusal. */
+  async function heal(source: Parameters<typeof healConnectionEvictor>[0]): Promise<boolean | Error> {
+    try { return await healConnectionEvictor(source); } catch (e) { return e as Error; }
+  }
+  const eligible = await healRoot("heal", ["heal"], { seed: true, observer: "own" });
+  check("CONTROL: a single-space root with its observer and the retained seed gets the evictor", await heal(eligible.source) === true);
+  const healed = await loadSysPair(eligible.source, "both");
+  check("...signed by the system account that signed the observer, so the pair is one generation",
+    healed.evictor !== undefined && healed.observer !== undefined && credsClaims(healed.evictor).iss === credsClaims(healed.observer).iss && credsClaims(healed.evictor).iss === eligible.auth.sys.pub);
+  check("...and the next start leaves the present evictor untouched", await heal(eligible.source) === false && (await eligible.store.get(eligible.evictorKey)) === healed.evictor);
+  const twoSpaces = await healRoot("healtwo", ["alpha", "beta"], { seed: true, observer: "own" });
+  check("a root hosting two spaces: the heal is a no-op, not a refusal, so delivery still starts there", await heal(twoSpaces.source) === false && (await twoSpaces.store.get(twoSpaces.evictorKey)) === undefined);
+  const corrupt = await healRoot("healcorrupt", ["one"], { seed: true, observer: "own", corrupt: true });
+  check("a root whose tenant list will not read: the same no-op, the guard's fail-closed answer included", await heal(corrupt.source) === false && (await corrupt.store.get(corrupt.evictorKey)) === undefined);
+  const torn = await healRoot("healtorn", ["torn"], { seed: true, observer: "other" });
+  check("an observer the retired system account signed: nothing is written, so the pair is not torn", await heal(torn.source) === false && (await torn.store.get(torn.evictorKey)) === undefined);
+  const noObserver = await healRoot("healnoobs", ["noobs"], { seed: true, observer: "none" });
+  check("no observer: nothing is written, and admission reports the observer as before", await heal(noObserver.source) === false && (await noObserver.store.get(noObserver.evictorKey)) === undefined);
+  const noSeed = await healRoot("healnoseed", ["noseed"], { seed: false, observer: "own" });
+  check("no retained seed: nothing to sign with, nothing written", await heal(noSeed.source) === false && (await noSeed.store.get(noSeed.evictorKey)) === undefined);
+  check("a hosted store: the heal never writes", await heal({ secrets: eligible.store, space: "heal", injected: true }) === false);
 
   console.log(`\nSYS-REPAIR-HONESTY SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 } finally {

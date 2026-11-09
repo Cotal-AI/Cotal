@@ -261,18 +261,34 @@ async function trustWithRetainedSeed(source: SysCredsSource): Promise<SpaceAuth 
  * kind of credential: signed by the system account, scoped to one verb, and written where this daemon
  * reads it.
  *
- * The mint is refused everywhere the rotation itself is refused. `assertSingleSpaceBroker` turns away
- * a root that hosts several spaces and a root whose tenant list will not read, because the evictor
- * credential's kick reaches every connection on the broker. A hosted store has no root to ask, and a
- * root that never retained the seed has nothing to sign with; both stay on the rotation repair. An
- * evictor that is already present is left untouched, so a half-rotated pair is never papered over.
+ * The heal is optional, so wherever it is not eligible it does nothing and startup admission runs
+ * as it did before, with the evictor optional. It writes nothing on a hosted store (no root to ask),
+ * on a root with no retained seed (nothing to sign with), where the evictor is already present (a
+ * half-rotated pair is never papered over), and on a root where the rotation itself would refuse:
+ * the evictor's kick reaches every connection on the broker, so a root that hosts several spaces, or
+ * whose tenant list will not read, stays on the rotation repair. That last answer comes from the
+ * guard itself, through {@link rotationRefusal}, not from a tenant count read here.
+ *
+ * It also writes nothing unless the observer is present and the retained seed's system account
+ * signed it. A rotation commits the trust record and the seed before it writes the pair, so a crash
+ * in that window leaves the observer on the retired account with no evictor; minting a successor
+ * evictor beside it would turn a root that admission still accepts into a torn pair that admission
+ * refuses at every start. That window stays on the rotation repair, as it was.
  */
 export async function healConnectionEvictor(source: SysCredsSource): Promise<boolean> {
   if (source.injected) return false;
   if ((await source.secrets.get(connectionEvictorCredsKey(source.space, source))) !== undefined) return false;
-  assertSingleSpaceBroker(authDir(source.root), "minting the connection evictor");
+  if (rotationRefusal(source.root) !== undefined) return false;
   const auth = await trustWithRetainedSeed(source);
   if (auth === undefined) return false;
+  const observer = await source.secrets.get(membershipObserverCredsKey(source.space, source));
+  if (observer === undefined || issuerOf(observer) !== auth.sys.pub) return false;
   await source.secrets.put(connectionEvictorCredsKey(source.space, source), await mintConnectionEvictorCreds(auth, newIdentity()));
   return true;
+}
+
+/** The system account that signed `creds`, or `undefined` for a credential that will not decode;
+ *  the health check reports that one with its own message. */
+function issuerOf(creds: string): string | undefined {
+  try { return credsClaims(creds).iss; } catch { return undefined; }
 }
