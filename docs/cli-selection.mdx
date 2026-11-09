@@ -367,7 +367,9 @@ space, as it does with nothing selected, and the note under its `Mesh:` heading,
 included, says the selection applies outside the folder. A space `cotal space create` prepared there
 and no `cotal up` started, and one whose stack there is stopped, is the target of the commands about
 the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the folder part of
-`cotal status`. Every other command run there targets the selection, and the note under its `Mesh:`
+`cotal status`. `cotal auth revoke-credential` also targets the stopped one, because that space's
+account issued a credential minted there, and a space that never started holds no such account.
+Every other command run there targets the selection, and the note under its `Mesh:`
 heading says what this folder holds and the `cotal up` that starts it. When that stack's last `up`
 or `down` ended before it recorded an outcome, a member's unconfirmed stop can keep `cotal up`
 refusing, so the note names `cotal status` there instead, whose Next names the step that finishes
