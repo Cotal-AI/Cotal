@@ -28,13 +28,14 @@ export interface FeedbackResult {
 const ok = (text: string): FeedbackResult => ({ text });
 const err = (text: string): FeedbackResult => ({ text, isError: true });
 
-/** A stored submission: the documented 202 receipt, with a non-empty id. */
-function receipt(status: number, value: unknown): { id: string; published?: boolean } | undefined {
-  if (status !== 202 || typeof value !== "object" || value === null) return undefined;
+/** A stored submission: the documented 202 receipt, with a printable id and a boolean published. */
+function receipt(status: number, value: unknown): { id: string; published: boolean } | undefined {
+  if (status !== 202 || typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const body = value as { ok?: unknown; id?: unknown; published?: unknown };
-  if (body.ok !== true || typeof body.id !== "string" || body.id.length === 0) return undefined;
-  if (body.published !== undefined && typeof body.published !== "boolean") return undefined;
-  return { id: body.id, ...(typeof body.published === "boolean" ? { published: body.published } : {}) };
+  if (body.ok !== true || typeof body.id !== "string" || body.id.length === 0 || body.id.length > 200) return undefined;
+  if (/[\u0000-\u001f\u007f]/.test(body.id) || body.id.trim() !== body.id) return undefined;
+  if (typeof body.published !== "boolean") return undefined;
+  return { id: body.id, published: body.published };
 }
 
 /** Submit feedback through the same keyed or public intake used by `cotal_feedback`. */

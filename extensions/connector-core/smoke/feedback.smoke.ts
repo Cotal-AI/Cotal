@@ -164,6 +164,14 @@ try {
   check("a truncated body is an unconfirmed result", truncated.isError === true && /not retried/.test(truncated.text) && !/Feedback sent/.test(truncated.text), truncated.text);
   cut.close();
 
+  nextStatus = 202;
+  nextReply = { ok: true, id: "fixture-incomplete" };
+  const missingPublished = await submitFeedback!({ ...args, source: "smoke" }, { key: "fbk_test", url });
+  check("202 without published is not a confirmed send", missingPublished.isError === true && !/fixture-incomplete/.test(missingPublished.text), missingPublished.text);
+  nextReply = { ok: true, id: " \n", published: true };
+  const blankId = await submitFeedback!({ ...args, source: "smoke" }, { key: "fbk_test", url });
+  check("202 with a whitespace id is not a confirmed send", blankId.isError === true && !/Feedback sent/.test(blankId.text), blankId.text);
+
   console.log(`\nfeedback smoke: ${pass} checks passed`);
   process.exit(0);
 } finally {
