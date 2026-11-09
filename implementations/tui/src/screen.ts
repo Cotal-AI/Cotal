@@ -90,18 +90,24 @@ export const isYou = (you: You, who: FeedEntry["from"]) => you.principals.has(wh
  *  `open` is the conversation it opens: its channel, its sender's conversation or its role's. */
 export type Card = { kind: "reply" | "mention"; entry: FeedEntry; open: Open }
 
-const cardOpen = (e: FeedEntry): Open =>
-  e.delivery === "multicast" ? { kind: "channel", channel: e.channel } : e.delivery === "anycast" ? { kind: "role", role: e.toService ?? "" } : { kind: "peer", id: e.from.id }
+/** The conversation a card opens. A channel post with no channel or a role task with no role has
+ *  none, since it would open all traffic or an empty role. */
+const cardOpen = (e: FeedEntry): Open | undefined => {
+  if (e.delivery === "unicast") return { kind: "peer", id: e.from.id }
+  if (e.delivery === "multicast") return e.channel === undefined ? undefined : { kind: "channel", channel: e.channel }
+  return e.toService === undefined ? undefined : { kind: "role", role: e.toService }
+}
 
 /** The cards in `feed`, newest first. A message that both replies and mentions is one reply card. The
- *  human's own messages and the ids in `read` make none. */
+ *  human's own messages, the ids in `read` and a message with no conversation to open make none. */
 export function cardsFor(feed: readonly FeedEntry[], you: You, mentionsYou: (e: FeedEntry) => boolean, read: ReadonlySet<string>): Card[] {
   const sent = new Set(feed.filter((e) => isYou(you, e.from)).map((e) => e.id))
   const cards: Card[] = []
   for (const e of feed) {
     if (e.events || read.has(e.id) || isYou(you, e.from)) continue
     const kind = e.replyTo !== undefined && sent.has(e.replyTo) ? "reply" : mentionsYou(e) ? "mention" : undefined
-    if (kind) cards.push({ kind, entry: e, open: cardOpen(e) })
+    const open = kind ? cardOpen(e) : undefined
+    if (kind && open) cards.push({ kind, entry: e, open })
   }
   return cards.reverse()
 }
