@@ -147,7 +147,7 @@ export function openTalk(deps: { target: MeshTarget; control: ControlClient; aft
 
   const resolveName = async (): Promise<ChatName | undefined> => {
     try {
-      const found = await resolveChatName(target)
+      const found = await resolveChatName(target, { remedy: "use Change your name (ctrl+p)" })
       setName({ state: "ok", name: found })
       return found
     } catch (e) {

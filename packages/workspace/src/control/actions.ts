@@ -11,7 +11,7 @@
 import { assertValidChannel, clearChannel, isConcreteChannel } from "@cotal-ai/core";
 import { connectOrThrow, userViewAuth, type ConnectFlags } from "../connect.js";
 import { resolveControlTarget } from "../control-target.js";
-import { askManager, scatterManager, START_TIMEOUT_MS, type ControlClient, type ManagerReply } from "./manager.js";
+import { askManager, scatterManager, START_TIMEOUT_MS, type ControlClient, type ManagerPin, type ManagerReply } from "./manager.js";
 import { locateSeat, seatMissRefusal, seatNotFoundMessage } from "./seat.js";
 
 /** The console's control coordinates: the same `ConnectFlags` triple the CLI's control commands
@@ -66,13 +66,17 @@ export interface ManagedRow {
   uptimeMs: number;
   mesh: string;
   model?: string;
+  /** The run this row reports. A seat restarted under the same name gets a new one. */
+  lifecycleUid: string;
 }
 
 /** One control call. A targeted op names its seat in `args.name`; the alias is resolved to the
  *  incarnation triple inside `askManager` (the manager's `inspect` read), so the wire never carries
- *  a name as a target. Reach is `owner` on a user mesh (the bearer's one path; the manager decides
- *  by ledger scope) and `any` on a static or open mesh (the admin instrument's cross-agent row). */
-export async function control(client: ControlClient, ctx: ControlCtx, op: ControlOp, args?: Record<string, unknown>): Promise<ManagerReply> {
+ *  a name as a target. `expectedTarget` pins a targeted op to the run the caller selected: when the
+ *  name now resolves to another run, nothing is sent. Reach is `owner` on a user mesh (the bearer's
+ *  one path; the manager decides by ledger scope) and `any` on a static or open mesh (the admin
+ *  instrument's cross-agent row). */
+export async function control(client: ControlClient, ctx: ControlCtx, op: ControlOp, args?: Record<string, unknown>, opts: Pick<ManagerPin, "expectedTarget"> = {}): Promise<ManagerReply> {
   const spec = OPS[op];
   try {
     let on: string | undefined;
@@ -89,7 +93,7 @@ export async function control(client: ControlClient, ctx: ControlCtx, op: Contro
     const timeoutMs = "timeoutMs" in spec ? spec.timeoutMs : undefined;
     // `args` goes through as given: a void-input command is refused by the manager's schema when it
     // is handed `{}` instead of nothing, so no default is filled in here.
-    return await askManager(client, t.space, t.server, op, args, t.auth, reach, timeoutMs, spec.targeted ? { instanceId: on } : undefined);
+    return await askManager(client, t.space, t.server, op, args, t.auth, reach, timeoutMs, spec.targeted ? { instanceId: on, expectedTarget: opts.expectedTarget } : undefined);
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }

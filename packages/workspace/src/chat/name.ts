@@ -30,8 +30,9 @@ function osLogin(): string {
 }
 
 /** The account name the user-mode target's IdP gave at `cotal login`, through the space's
- *  registered auth provider, and the step that records it again. */
-async function accountName(target: Pick<MeshTarget, "space" | "root" | "userAuth">): Promise<{ found: ChatName; signIn: string }> {
+ *  registered auth provider, and the step that records it again. `remedy` is the front end's own
+ *  way to name a session. */
+async function accountName(target: Pick<MeshTarget, "space" | "root" | "userAuth">, remedy: string): Promise<{ found: ChatName; signIn: string }> {
   const space = target.space;
   if (!target.userAuth)
     throw new CommandFailure("refused", "UNSUPPORTED", "a user-mode chat name requires a recorded user-auth target", { target: { space } });
@@ -55,7 +56,7 @@ async function accountName(target: Pick<MeshTarget, "space" | "root" | "userAuth
   if (!status.login.name)
     throw new CommandFailure("refused", "AUTH_REQUIRED", `your sign-in at ${idp} has no name on record that an @mention can reach, because it was made by an older cotal or the provider gave none`, {
       target: { space },
-      remedy: `${signIn}, or ${SAVE_NAME}`,
+      remedy: `${signIn}, ${remedy}, or ${SAVE_NAME}`,
     });
   return { found: { name: status.login.name, source: "account", from: `your sign-in at ${idp}` }, signIn };
 }
@@ -64,25 +65,26 @@ async function accountName(target: Pick<MeshTarget, "space" | "root" | "userAuth
  * The name a chat session appears as. Highest first: `flag`; the `name` preference, so `cotal
  * config` shows the same winner; then the mode's own name, with no suffix: in user mode the account
  * name recorded at `cotal login`, in open and static mode the OS login. One mode's failure never
- * falls back to another mode's rule.
+ * falls back to another mode's rule. `remedy` is how this front end names a session, such as
+ * "pass `--name <name>`"; a refusal lists it with the remedies every front end shares.
  */
 export async function resolveChatName(
   target: Pick<MeshTarget, "mode" | "space" | "root" | "userAuth">,
-  opts: { readonly flag?: string; readonly preferences?: Preferences; readonly login?: () => string } = {},
+  opts: { readonly remedy: string; readonly flag?: string; readonly preferences?: Preferences; readonly login?: () => string },
 ): Promise<ChatName> {
   const chosen = resolvePreference("name", { flag: { name: "name", value: opts.flag }, preferences: opts.preferences }).winner;
   let found: ChatName;
   let signIn: string | undefined;
   if (chosen?.source === "flag") found = { name: chosen.value, source: "flag", from: "--name" };
   else if (chosen) found = { name: chosen.value, source: "preference", from: "your saved name" };
-  else if (target.mode === "user") ({ found, signIn } = await accountName(target));
+  else if (target.mode === "user") ({ found, signIn } = await accountName(target, opts.remedy));
   else if (target.mode === "open" || target.mode === "auth") found = { name: (opts.login ?? osLogin)(), source: "login", from: "your OS login" };
   else throw new CommandFailure("refused", "UNSUPPORTED", `chat has no name for a mesh recorded in "${String(target.mode)}" mode`, { target: { space: target.space } });
   const problem = chatNameProblem(found.name);
   if (problem)
     throw new CommandFailure("refused", "USAGE_INVALID", `${found.from}, ${JSON.stringify(oneLine(found.name))}, cannot be a chat name: ${problem}`, {
       target: { space: target.space },
-      remedy: found.source === "flag" ? "pass another --name" : `${signIn ? `${signIn}, ` : ""}pass \`--name <name>\`, or ${SAVE_NAME}`,
+      remedy: found.source === "flag" ? "pass another --name" : `${signIn ? `${signIn}, ` : ""}${opts.remedy}, or ${SAVE_NAME}`,
       selfContained: true,
     });
   return found;

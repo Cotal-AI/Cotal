@@ -174,7 +174,7 @@ export async function chat(args: ParsedArgs): Promise<void> {
     const held = operationWarnings().find((w) => w.code === "FOLDER_SPACE_NOT_RUNNING");
     if (held) notice = [`this session joins the selected space "${target.space}"; ${held.message}`, notice].filter(Boolean).join("; ");
     if (notice) process.stderr.write(`cotal chat: ${notice}\n`);
-    const name = await resolveChatName(target, { flag: input.label });
+    const name = await resolveChatName(target, { remedy: "pass `--name <name>`", flag: input.label });
     const before = signals.caught();
     if (before !== undefined) {
       signals.release();
