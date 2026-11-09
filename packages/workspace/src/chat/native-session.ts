@@ -483,6 +483,10 @@ export class NativeChatSession implements AdmittedChatSession {
       ep.off("warning", this.onWarning);
       this.reportOverflow();
       this.engine.clear();
+      if (!this.streamsGone) {
+        const gone = await absentStreams(ep, this.inputs.identity.space, this.inputs.identity.mode);
+        if (gone) this.streamsGone = gone.message;
+      }
       let stopped = true;
       try { await ep.stop(); } catch { stopped = false; }
       let report: CloseReport;

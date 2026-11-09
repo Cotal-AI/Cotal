@@ -411,10 +411,11 @@ reconnect gives that reason instead, and its `close` carries it as `lost`.
 When stdin ends, the requests already read finish first. `close` has `retirement` (`retired`,
 `requested`, `unknown` or `not-applicable`), `connectionClosed` (`confirmed` or `not-confirmed`) and
 `message`. A static session's `close` can carry `credentialValidUntil` in epoch milliseconds: the
-broker accepts its credential until then unless its eviction was verified. When a send already
-observed that the space's streams are gone and the retirement request then has an unknown outcome,
-`retirement` is `not-applicable` and `message` starts with the same refusal, then the request's own
-message. Once the session has ended by itself and before the `end` record, a request refuses with
+broker accepts its credential until then unless its eviction was verified. Close reads the chat
+stream when no send has already found it gone. When that stream is gone and the retirement request
+then has an unknown outcome, `retirement` is `not-applicable` and `message` starts with the same
+refusal a one-shot send gives, then the request's own message. A read that fails for another reason
+leaves the retirement as it was. Once the session has ended by itself and before the `end` record, a request refuses with
 `LIFECYCLE_BLOCKED` and `the session is ending; no new requests are accepted`. When the reader closes stdout, stderr says
 `stdout closed by the reader; ending the session`, and no later record is written, `end` included.
 Any other failed write, such as to a full disk, says `stdout could not be written; ending the
