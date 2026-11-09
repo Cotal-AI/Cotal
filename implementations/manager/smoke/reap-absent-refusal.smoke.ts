@@ -125,44 +125,110 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
     ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isNonNullExpression(node) || ts.isSatisfiesExpression(node) || ts.isTypeAssertionExpression(node)
       ? unwrap(node.expression) : node;
   // A runtime origin is `this.requiredRuntime`, `this.runtimeFor(...)`, the private `runtime` field
-  // that getter returns, a parameter typed `Runtime`, or a local name bound or assigned from one.
-  const aliases = new Set<string>();
+  // that getter returns, a parameter typed `Runtime`, or a value carried from one of those by a
+  // binding, an assignment, a call that returns one, or an object property. A name is a runtime only
+  // inside the function that binds it, so a Runtime parameter does not mark the same name elsewhere.
+  const bindings = new Map<ts.Node, Set<string>>();
+  const returnsRuntime = new Set<ts.SignatureDeclaration>();
+  const runtimeProperties = new Map<ts.Node, Set<string>>();
   const isThis = (node: ts.Expression): boolean => unwrap(node).kind === ts.SyntaxKind.ThisKeyword;
-  const isRuntimeProperty = (node: ts.Expression): boolean =>
-    ts.isPropertyAccessExpression(node) && isThis(node.expression) && (node.name.text === "requiredRuntime" || node.name.text === "runtime");
-  const isRuntimeCall = (node: ts.Expression): boolean => {
-    if (!ts.isCallExpression(node)) return false;
-    const callee = unwrap(node.expression);
-    return ts.isPropertyAccessExpression(callee) && callee.name.text === "runtimeFor" && isThis(callee.expression);
+  const scopeOf = (node: ts.Node): ts.Node => {
+    for (let p: ts.Node | undefined = node; p; p = p.parent) if (ts.isFunctionLike(p) || ts.isSourceFile(p)) return p;
+    return source;
   };
-  const isRuntime = (node: ts.Expression): boolean => {
-    const bare = unwrap(node);
-    return isRuntimeProperty(bare) || isRuntimeCall(bare) || (ts.isIdentifier(bare) && aliases.has(bare.text));
+  const boundHere = (node: ts.Node, name: string): boolean => {
+    for (let p: ts.Node | undefined = node; p; p = p.parent) {
+      if (bindings.get(p)?.has(name)) return true;
+      if (ts.isFunctionLike(p)) return false;
+    }
+    return false;
   };
   const typeNamesRuntime = (type: ts.TypeNode | undefined): boolean => {
     if (type === undefined) return false;
     const bare = ts.isTypeReferenceNode(type) ? type.typeName : type;
     return ts.isIdentifier(bare) && bare.text === "Runtime";
   };
-  for (let grew = true; grew;) {
-    grew = false;
-    const note = (name: string | undefined): void => {
-      if (name !== undefined && !aliases.has(name)) { aliases.add(name); grew = true; }
-    };
-    const collect = (node: ts.Node): void => {
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && isRuntime(node.initializer)) note(node.name.text);
-      if (ts.isParameter(node) && ts.isIdentifier(node.name) && typeNamesRuntime(node.type)) note(node.name.text);
-      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left) && isRuntime(node.right)) note(node.left.text);
-      ts.forEachChild(node, collect);
-    };
-    collect(source);
-  }
-  // A key the census can read: a literal, or in a binding a plain or quoted name. Anything else
-  // (`[key]`, `[a + b]`) is undefined.
   const literalKey = (key: ts.Expression): string | undefined => {
     const bare = unwrap(key);
     return ts.isStringLiteralLike(bare) || ts.isNumericLiteral(bare) ? bare.text : undefined;
   };
+  const receiverKey = (node: ts.Expression): string => {
+    const bare = unwrap(node);
+    return ts.isIdentifier(bare) ? bare.text : isThis(bare) ? "this" : "";
+  };
+  const propertyKey = (node: ts.PropertyAccessExpression | ts.ElementAccessExpression): string | undefined =>
+    ts.isPropertyAccessExpression(node) ? node.name.text : literalKey(node.argumentExpression);
+  const isRuntimePropertyAccess = (node: ts.Expression): boolean =>
+    ts.isPropertyAccessExpression(node) && isThis(node.expression) && (node.name.text === "requiredRuntime" || node.name.text === "runtime");
+  const functionNamed = (name: string): ts.SignatureDeclaration | undefined => {
+    let found: ts.SignatureDeclaration | undefined;
+    const look = (n: ts.Node): void => {
+      if (found) return;
+      if ((ts.isFunctionDeclaration(n) || ts.isMethodDeclaration(n)) && n.name && ts.isIdentifier(n.name) && n.name.text === name) found = n;
+      else ts.forEachChild(n, look);
+    };
+    look(source);
+    return found;
+  };
+  const isRuntime = (node: ts.Expression): boolean => {
+    const bare = unwrap(node);
+    if (isRuntimePropertyAccess(bare)) return true;
+    if (ts.isCallExpression(bare)) {
+      const callee = unwrap(bare.expression);
+      if (ts.isPropertyAccessExpression(callee) && callee.name.text === "runtimeFor" && isThis(callee.expression)) return true;
+      const target = ts.isIdentifier(callee) ? callee.text
+        : ts.isPropertyAccessExpression(callee) && isThis(callee.expression) ? callee.name.text : undefined;
+      const fn = target === undefined ? undefined : functionNamed(target);
+      return fn !== undefined && returnsRuntime.has(fn);
+    }
+    if (ts.isIdentifier(bare)) return boundHere(bare, bare.text);
+    if (ts.isPropertyAccessExpression(bare) || ts.isElementAccessExpression(bare)) {
+      const key = propertyKey(bare);
+      const id = receiverKey(bare.expression);
+      const held = runtimeProperties.get(scopeOf(bare));
+      return key !== undefined && id !== "" && held !== undefined && held.has(`${id}.${key}`);
+    }
+    return false;
+  };
+  for (let grew = true; grew;) {
+    grew = false;
+    const bind = (owner: ts.Node, name: string): void => {
+      const names = bindings.get(owner) ?? new Set<string>();
+      if (!names.has(name)) { names.add(name); bindings.set(owner, names); grew = true; }
+    };
+    const hold = (owner: ts.Node, id: string, key: string): void => {
+      const held = runtimeProperties.get(owner) ?? new Set<string>();
+      if (!held.has(`${id}.${key}`)) { held.add(`${id}.${key}`); runtimeProperties.set(owner, held); grew = true; }
+    };
+    const collect = (node: ts.Node): void => {
+      if (ts.isParameter(node) && ts.isIdentifier(node.name) && typeNamesRuntime(node.type) && node.parent && ts.isFunctionLike(node.parent)) bind(node.parent, node.name.text);
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && isRuntime(node.initializer)) bind(scopeOf(node), node.name.text);
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left) && isRuntime(node.right)) bind(scopeOf(node), node.left.text);
+      if ((ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) && !returnsRuntime.has(node)) {
+        const body = node.body;
+        const returns = body !== undefined && ts.isBlock(body)
+          ? body.statements.some((s) => ts.isReturnStatement(s) && s.expression !== undefined && isRuntime(s.expression))
+          : body !== undefined && !ts.isBlock(body) && isRuntime(body);
+        if (returns) { returnsRuntime.add(node); grew = true; }
+      }
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && isRuntime(node.right)) {
+        const left = unwrap(node.left);
+        if (ts.isPropertyAccessExpression(left) || ts.isElementAccessExpression(left)) {
+          const key = propertyKey(left);
+          const id = receiverKey(left.expression);
+          if (key !== undefined && id !== "") hold(scopeOf(node), id, key);
+        }
+      }
+      if (ts.isPropertyAssignment(node) && node.parent && ts.isObjectLiteralExpression(node.parent) && isRuntime(node.initializer)) {
+        const key = ts.isIdentifier(node.name) || ts.isStringLiteralLike(node.name) ? node.name.text : ts.isComputedPropertyName(node.name) ? literalKey(node.name.expression) : undefined;
+        const holder = node.parent.parent;
+        const id = holder && ts.isVariableDeclaration(holder) && ts.isIdentifier(holder.name) ? holder.name.text : "";
+        if (key !== undefined && id !== "") hold(scopeOf(node), id, key);
+      }
+      ts.forEachChild(node, collect);
+    };
+    collect(source);
+  }
   const bindingKey = (key: ts.PropertyName | ts.BindingName): string | undefined =>
     ts.isIdentifier(key) || ts.isStringLiteralLike(key) || ts.isNumericLiteral(key) ? key.text
       : ts.isComputedPropertyName(key) ? literalKey(key.expression) : undefined;
@@ -172,9 +238,8 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "requireRuntimeReap") out.guarded.push(where(node));
     if (ts.isCallExpression(node)) {
       const callee = unwrap(node.expression);
-      const owner = ts.isPropertyAccessExpression(callee) ? unwrap(callee.expression) : undefined;
-      const method = ts.isPropertyAccessExpression(callee) ? callee.name.text : undefined;
-      if (owner !== undefined && method !== undefined && ts.isIdentifier(owner) && (owner.text === "Reflect" || owner.text === "Object") && node.arguments.some((arg) => isRuntime(arg))) noteBypass(node);
+      const owner = ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee) ? unwrap(callee.expression) : undefined;
+      if (owner !== undefined && ts.isIdentifier(owner) && (owner.text === "Reflect" || owner.text === "Object") && node.arguments.some((arg) => isRuntime(arg))) noteBypass(node);
     }
     if ((ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) && isRuntime(node.expression)) noteBypass(node);
     let reap = ts.isPropertyAccessExpression(node) && node.name.text === "reap";
@@ -234,6 +299,21 @@ const instrument: [string, string, (c: ReturnType<typeof censusReaps>) => boolea
   ["an unreadable key on a runtimeFor result is a bypass",
     fixture('  private async later() { const key = "reap"; await this.runtimeFor(kind)[key](ref); }'),
     (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a computed Reflect.get of the runtime is a bypass",
+    fixture('  private async later() { await Reflect["get"](this.requiredRuntime, "reap")(ref); }'),
+    (c) => c.bypass.length === 1],
+  ["a computed Object.values of a runtimeFor result is a bypass",
+    fixture('  private async later() { Object["values"](this.runtimeFor(kind)); }'),
+    (c) => c.bypass.length === 1],
+  ["a returned runtime is a runtime",
+    fixture('  private relay(seat: Runtime) { return seat; }\n  private async later() { const returned = this.relay(this.requiredRuntime); const key = "reap"; await returned[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a runtime stored on an object is a runtime",
+    fixture('  private async later() { const holder = { backend: this.requiredRuntime }; const key = "reap"; await holder.backend[key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["the same property name in another method is not a runtime",
+    fixture('  private async later() { const holder = { backend: this.requiredRuntime }; }\n  private async other() { const holder = { backend: { reap() {} } }; const key = "reap"; await holder.backend[key](ref); }'),
+    (c) => c.bypass.length === 0 && c.elements["unreadable, not on the runtime"] === 1],
 ];
 for (const [name, text, holds] of instrument) {
   const c = censusReaps("fixture.ts", text);
