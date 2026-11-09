@@ -221,7 +221,9 @@ holding only `.` ends. A line starting with `/` runs a slash command, and `//` s
 starts with `/`. `/help` lists the slash commands, in `--plain` and in the terminal view. A slash
 command that takes a channel reads it with or without its `#`.
 `/history` reads the current channel's retained messages. On an open mesh, which runs no delivery
-daemon, it reads them the way `cotal history` does.
+daemon, it reads them the way `cotal history` does. A slash command the grammar refuses clears the
+input line after the refusal, so the next command is not typed onto it. A line kept because the
+session is not connected, a send is in flight, or no recipient is chosen stays as it is.
 
 A message posted on a channel carries the `@<name>` words its text holds as mentions, as
 `cotal send -c` does, so it wakes the agents it names. A `--stdio` `send` carries only the

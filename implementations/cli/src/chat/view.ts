@@ -183,7 +183,9 @@ function submit(state: ChatState): { state: ChatState; intent?: Intent } {
     case "slash":
       return { state: { ...state, draft: "" }, intent: { kind: "slash", command: d.command } };
     case "hold":
-      return d.pick ? { state: notice(state, d.tone, d.text), intent: { kind: "pick-recipient" } } : { state: notice(state, d.tone, d.text) };
+      return d.pick
+        ? { state: notice(state, d.tone, d.text), intent: { kind: "pick-recipient" } }
+        : { state: notice(d.clear ? { ...state, draft: "" } : state, d.tone, d.text) };
     case "publish":
       return { state: { ...state, pending: { to: d.to, text: d.text, draft: state.draft } }, intent: { kind: "publish", to: d.to, text: d.text } };
   }
