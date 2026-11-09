@@ -224,8 +224,24 @@ const ansi = /\x1b\[/;
   const folderAgain = run(["config", "set", "harness", "codex", "--user", "--json"], {}, join(home, "demo"));
   check("with nothing selected, a --user write in a prepared folder reports that folder's value",
     folderWrite.status === 0 && (folderAgain.envelope?.result as { effective?: Setting } | null)?.effective?.value === "opencode" && folderAgain.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED") === true, folderAgain.envelope);
+  // A folder whose space is only prepared does not capture the read. The selection does, and the
+  // receipt says that folder's space is not running.
+  mkdirSync(join(home, "other"), { recursive: true });
+  const other = run(["space", "create", "other", "--root", join(home, "other"), "--json"]);
+  check("setup: other is prepared", other.status === 0 && other.envelope?.outcome === "ok", shown(other));
+  writeFileSync(join(cotalHome, "current-mesh"), "other");
+  run(["config", "set", "harness", "codex", "--space", "other"]);
+  const captured = run(["config", "get", "harness", "--json"], {}, join(home, "demo"));
+  const capturedScope = (captured.envelope?.result as { scope?: { space: string; from: string }; setting?: Setting } | null);
+  check("in a prepared folder, a selected space still wins, and the read says this folder's space is not running",
+    captured.status === 0 && capturedScope?.scope?.space === "other" && capturedScope.scope.from === "selected" && capturedScope.setting?.value === "codex" && captured.envelope?.warnings.some((w) => w.code === "FOLDER_SPACE_NOT_RUNNING" && /prepared space "demo"/.test(w.message)) === true, captured.envelope);
+  const capturedWrite = run(["config", "set", "harness", "claude", "--json"], {}, join(home, "demo"));
+  check("a write there still saves your defaults, and its receipt names the selected value",
+    saved().defaults.harness === "claude" && (capturedWrite.envelope?.result as { effective?: Setting } | null)?.effective?.value === "codex" && capturedWrite.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED") === true, capturedWrite.envelope);
+  rmSync(join(cotalHome, "current-mesh"));
   run(["config", "unset", "harness"]);
   run(["config", "unset", "harness", "--space", "demo"]);
+  run(["config", "unset", "harness", "--space", "other"]);
   run(["config", "unset", "persona"]);
   run(["config", "unset", "persona", "--space", "demo"]);
 }

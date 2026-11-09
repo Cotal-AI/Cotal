@@ -1,5 +1,5 @@
-import { join } from "node:path";
-import { cachedPreferences, describeLayer, isWorkspaceTargetError, resolveMeshTarget, resolvePreference, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
+import { isAbsolute, join, relative } from "node:path";
+import { cachedPreferences, canonicalRoot, describeLayer, isWorkspaceTargetError, preparedNeverStarted, resolveMeshTarget, resolvePreference, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
 import { defaultPersonaFix } from "./default-persona.js";
 
 /** Persona selection shared by foreground and detached spawn: `--config`, then the positional, then
@@ -26,15 +26,18 @@ export function callerHarness(space: string): string | undefined {
 export const spawnUsesManager = (values: { detach?: boolean; on?: string }): boolean => values.detach === true || values.on !== undefined;
 
 /** The space a launch from `cwd` targets when no `--space` or `--server` names one: the space the mesh
- *  target resolves to, or the space prepared here that no `up` has started, which `spawn --dry-run`
- *  previews. Undefined when nothing here resolves to one space. */
+ *  target resolves to, or the space prepared in this folder that no `up` has started, which
+ *  `spawn --dry-run` previews. A selected space that is only prepared somewhere else is not one.
+ *  Undefined when nothing here resolves to one space. */
 export function launchSpace(cwd: string): { space: string; source: MeshTarget["source"] | "prepared" } | undefined {
   try {
     const target = resolveMeshTarget(cwd, { readOnly: true });
     return { space: target.space, source: target.source };
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
-    return error.code === "not-started" && error.details.space ? { space: error.details.space, source: "prepared" } : undefined;
+    if (error.code !== "not-started" || !preparedNeverStarted(error.details)) return undefined;
+    const inside = relative(canonicalRoot(error.details.root), canonicalRoot(cwd));
+    return inside === "" || (!inside.startsWith("..") && !isAbsolute(inside)) ? { space: error.details.space, source: "prepared" } : undefined;
   }
 }
 
