@@ -46,7 +46,7 @@
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
-import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -59,7 +59,7 @@ import {
   writeSecretFileAtomic, mintMembershipObserverCreds, mintConnectionEvictorCreds, type SecretStore,
 } from "@cotal-ai/core";
 import {
-  deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadOwnerSecret, saveIdpSession,
+  deleteIdpSession, deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadOwnerSecret, saveIdpSession,
   saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
 import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, removeMesh, recordMesh, resolveControlTarget, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
@@ -152,6 +152,8 @@ const jwtsIssued: string[] = [];
 let idpRevoked = false;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
+  if (req.url === "/api/auth/device/code") return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 }));
+  if (req.url === "/api/auth/device/token") return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
   if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(catalog));
   if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
     const chunks: Buffer[] = [];
@@ -650,6 +652,7 @@ try {
       catalog = { v: 1, account: { idpUrl, issuer: idpOrigin, sub: "machine-owner" }, spaces: [{ id: ON, slug: ON, name: "Daemon smoke", kind: "team", role: "owner", registration: discovery }] };
       removeMesh(ON);
       check("H0 requested space is absent from local registry before setup", findMesh(ON) === undefined);
+      deleteIdpSession(home, idpUrl);
       const prefix = join(root, "config", "cotal", "extensions");
       const pkg = join(prefix, "node_modules", "daemon-smoke-connector");
       mkdirSync(pkg, { recursive: true });
@@ -669,6 +672,15 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
         return { code, doc: JSON.parse(out) as Record<string, any>, err };
       };
+      const plainSetup = async () => {
+        const process = spawn(globalThis.process.execPath, [join(repo, "bin", "dist", "cotal.js"), "daemon", "setup", "--space", ON, "--plain"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        process.stdout.on("data", (b) => { out += String(b); }); process.stderr.on("data", (b) => { err += String(b); });
+        const code = await new Promise<number | null>((resolve) => process.once("exit", resolve));
+        console.log("  H1 plain stdout", JSON.stringify(out));
+        console.log("  H1 plain stderr", JSON.stringify(err));
+        return { code, out, err };
+      };
       const startDaemon = async () => {
         const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), "daemon", "serve"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         child.stdout.resume(); child.stderr.resume();
@@ -677,11 +689,17 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       };
       let child = await startDaemon();
       try {
-        const setup = await cli("setup", "--space", ON, "--wait", "0");
+        const setup = await cli("setup", "--space", ON, "--idp", idpUrl, "--wait", "0");
         console.log("  H1 setup", JSON.stringify(setup));
-        check("H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.manager?.state === "answering", setup);
+        check("H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
+        check("H0 fresh setup prints device URL and code on stderr", setup.err.includes(`${idpOrigin}/approve?code=DAEMON`) && setup.err.includes("Approval code") && setup.err.includes("DAEMON"));
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        const plain = await plainSetup();
+        check("H1 human success names launch-ready computer, space and instance", plain.code === 0 && plain.out.includes(`Agents can now be launched on this computer from space ${ON} through Manager instance ${manager.instanceId}.`));
+        const daemonStatus = await cli("status", "--space", ON);
+        console.log("  H1 status JSON", JSON.stringify(daemonStatus.doc));
+        check("H1 per-space status carries the same Manager instance", daemonStatus.doc.result?.managers?.[0]?.instanceId === manager.instanceId);
         check("H0 setup discovers the space through daemon-held sign-in", findMesh(ON)?.origin === "catalog");
         const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
         const client = { versionSkew: (s: string) => s, roster: async () => [] };

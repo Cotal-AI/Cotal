@@ -571,8 +571,10 @@ The desktop app uses these same controls. Its source and native build instructio
 service, discovers the space through the daemon-held sign-in, signs in by device code when needed,
 and starts the space's Manager. It succeeds when that registered instance answers `status`.
 The separate `ai.cotal.machine` registration and connection are reported even while owner approval
-is pending. That approval never holds up agent launches. Progress goes to stderr, so `--json` writes
-one document on stdout. Missing `supervise` scope refuses with the Manager's reason and next step.
+is pending. That approval never holds up agent launches. JSON reports `launchReady: true`, the
+registered Manager's `instanceId`, its `manager` status and the separate machine `registration`.
+Progress goes to stderr, so `--json` writes one document on stdout. Missing `supervise` scope
+refuses with the Manager's reason and next step.
 
 The daemon supervises each Manager as a separate child, restarts it with bounded backoff after a
 crash, and resumes recorded hosting intents after its own restart. It records intent only after

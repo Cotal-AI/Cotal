@@ -1,11 +1,10 @@
 /**
  * `cotal daemon setup`: connect a headless machine to a space with one command.
  *
- * It does what an operator would otherwise do by hand, in order: install the daemon as a user
- * service and wait for it to answer, sign it in by device code when it is not signed in already,
- * ask the space to register it, and connect it once the space owner approves. There is no local
- * browser anywhere on that path; the sign-in prints an approval link and code for the operator to
- * open elsewhere.
+ * It installs the daemon as a user service, discovers the space using the daemon-held sign-in,
+ * signs in by device code when needed, and waits for the stock Manager to answer status. Machine
+ * service registration is reported separately. The service-only opt-out waits for owner approval.
+ * Sign-in prints an approval link and code for the operator to open elsewhere.
  *
  * Every step is a no-op when it is already done, so running this again after an interruption
  * continues rather than starting over or refusing. That matters because the approval in the middle
@@ -31,6 +30,7 @@ export interface SetupStep {
 }
 
 export interface SetupResult {
+  readonly launchReady?: boolean;
   readonly space: string;
   readonly state: ServiceConnectionState;
   readonly steps: readonly SetupStep[];
@@ -255,7 +255,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     }
     steps.push({ step: "connect", outcome: state, detail: message });
     opts.report(`connect: machine service ${state}; Manager launch-readiness is independent`);
-    return { space: opts.space, state, manager, registration, instanceId: manager.instanceId, steps, ...(unit ? { unit } : {}) };
+    return { space: opts.space, launchReady: true, state, manager, registration, instanceId: manager.instanceId, steps, ...(unit ? { unit } : {}) };
   }
   await requestRegistration(opts, steps);
   const end = await connectWhenApproved(opts, steps);
