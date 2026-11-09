@@ -151,7 +151,7 @@ check("the manager preset defaults to this space's root and the pty runtime",
   JSON.stringify(builtIn("manager")?.defaults) === JSON.stringify({ root: { space: "root" }, runtime: { value: "pty" } }), builtIn("manager")?.defaults);
 check("the delivery preset defaults to this space's root and its delivery credential file",
   builtIn("delivery")?.defaults?.root !== undefined && JSON.stringify(builtIn("delivery")?.defaults?.creds) === JSON.stringify({ space: "material", kind: "delivery.creds" }), builtIn("delivery")?.defaults);
-check("the web preset defaults to this space's root and read-only", sorted(builtIn("web")?.defaults) === sorted({ "read-only": { value: true }, root: { space: "root" } }), builtIn("web")?.defaults);
+check("the web preset defaults to this space's root, read-only and its web credential file", sorted(builtIn("web")?.defaults) === sorted({ "read-only": { value: true }, root: { space: "root" }, creds: { space: "material", kind: "web.creds" } }), builtIn("web")?.defaults);
 check("the auth-service and feedback-intake presets default only the root",
   ["auth-service", "feedback-intake"].every((name) => JSON.stringify(builtIn(name)?.defaults) === JSON.stringify({ root: { space: "root" } })), ["auth-service", "feedback-intake"].map((name) => builtIn(name)?.defaults));
 check("every built-in preset's summary is plain words a person reads", ["manager", "delivery", "web", "auth-service", "feedback-intake"].every((name) => (builtIn(name)?.summary.length ?? 0) > 10), ["manager", "delivery", "web", "auth-service", "feedback-intake"].map((name) => builtIn(name)?.summary));
