@@ -163,14 +163,14 @@ console.log("issuer invariant");
   ok("a source-free agent reaches it too: it carries its own presence key", (await issueSourceFree("agent")) === STAGED);
   const mc = await issueSourceFree("manager-caller", { managerInstanceId: "inst0000000000000000000000a1" });
   ok("a source-free non-instrument with no presence key of its own is refused before staging", /must carry its own presence key/.test(mc), mc);
-  // An issued static agent credential carries untargeted, unjournaled third-party endpoint commands
-  // only: the static terminal has no obligation drain (SPEC 13.1). Refused on the spawn's issue and
-  // on a renewal, before anything reaches the evidence store.
+  // For third-party endpoints, an issued static agent credential carries only untargeted,
+  // unjournaled commands: the static terminal has no obligation drain (SPEC 13.1). Refused on the
+  // spawn's issue and on a renewal, before anything reaches the evidence store.
   const targeted: EpCapability = { endpoint: "com.example.orders", command: "cancel-order", target: { mode: "self" } };
   const journaled: EpCapability = { endpoint: "com.example.orders", command: "import", journal: true };
   for (const mode of ["issue", "renew"] as const) {
     const t = await issueSourceFree("agent", { endpointCapabilities: [targeted] }, mode);
-    ok(`an issued agent ${mode} with a targeted endpoint command is refused before staging`, /untargeted, unjournaled third-party endpoint commands only; "com\.example\.orders cancel-order" is targeted/.test(t), t);
+    ok(`an issued agent ${mode} with a targeted endpoint command is refused before staging`, /for third-party endpoints, an issued static agent credential carries only untargeted, unjournaled commands; "com\.example\.orders cancel-order" is targeted/.test(t), t);
     const j = await issueSourceFree("agent", { endpointCapabilities: [journaled] }, mode);
     ok(`an issued agent ${mode} with a journaled endpoint command is refused before staging`, /"com\.example\.orders import" is journaled/.test(j), j);
   }

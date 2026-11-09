@@ -5494,9 +5494,10 @@ whose conferral exists only as trusted redemption. A static agent mint MUST refu
 endpoint capability with a `target` or `journal`, on issue and on renewal: the static lifecycle
 terminal has no obligation drain (§13.1), and an untargeted request keys the `ep` sentinel, which no
 retirement drain reads (the `oblig` record, §13.7), so a retired caller leaves nothing that drain
-would settle. A reference endpoint's rows (§13.2) are outside that rule: they are the rows the
-`spawn`, `run` and `admin` capabilities already carry, and passing them as endpoint capabilities, as
-an instance-pinned caller does, grants nothing those do not. The static
+would settle. The rule does not cover a reference endpoint (§13.2), which it tells apart by its
+single-label name, whatever command the row names. The reference-endpoint rows an instance-pinned
+caller passes are the manager's own, the ones the `spawn`, `run` and `admin` capabilities carry, and
+the persona field refuses a single-label name, so the hand-on path never reaches that exemption. The static
 terminal revokes the helper's ledger rows and evicts its live connections, but a static credential
 copied off disk before the despawn stays valid until it expires, up to the managed credential's
 lifetime after its last renewal, and can reconnect and call the endpoint commands it carries. This
