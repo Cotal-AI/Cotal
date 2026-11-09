@@ -331,12 +331,6 @@ function validateArtifactInventory(artifact: string, manifest: BackupManifest): 
     throw invalidManifest("its file inventory does not match the folder");
   if (new Set(manifest.files.map((file) => file.path)).size !== manifest.files.length)
     throw invalidManifest("it declares a file more than once");
-  // Inspect, verify and staging share this inventory. A declared name that is a symbolic link,
-  // FIFO or device is refused here, before any read follows it, the way a linked manifest is.
-  for (const file of manifest.files) {
-    const stat = lstatSync(join(artifact, file.path));
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new ArtifactFileFault(file.path, "not-regular");
-  }
   for (const file of manifest.files) {
     if (!Number.isSafeInteger(file.size) || file.size < 0 || !/^[0-9a-f]{64}$/.test(file.sha256) ||
         !["snapshot", "checkpoints"].includes(file.kind) ||
@@ -344,6 +338,13 @@ function validateArtifactInventory(artifact: string, manifest: BackupManifest): 
       throw invalidManifest(`its record for ${file.path} has an invalid size, SHA-256, kind or stream`);
     if (file.kind === "checkpoints" && file.size > MAX_CHECKPOINT_BYTES)
       throw invalidManifest(`it declares a checkpoints file larger than its ${MAX_CHECKPOINT_BYTES / 1024 / 1024} MiB limit`);
+  }
+  // Inspect, verify and staging share this inventory. A declared name that is a symbolic link,
+  // FIFO or device is refused here, before any read follows it, the way a linked manifest is.
+  // Record shape is checked first, so a bad record keeps the fault it had before this check.
+  for (const file of manifest.files) {
+    const stat = lstatSync(join(artifact, file.path));
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new ArtifactFileFault(file.path, "not-regular");
   }
   const checkpointFiles = manifest.files.filter((file) => file.kind === "checkpoints");
   if (checkpointFiles.length !== 1 || checkpointFiles[0].path !== manifest.checkpoints)
