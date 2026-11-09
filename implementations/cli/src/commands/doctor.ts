@@ -377,16 +377,21 @@ function daemonRemintRepair(): string {
 
 /** The repair for the $SYS pair, which nothing re-signs in place. A plain `down` + `up` does NOT
  *  touch these: `up` mints them only on the branch that CREATES the trust record, so re-upping an
- *  existing space reuses the same files and reports success. The rotation must be asked for. */
-function systemRotationRepair(): string {
-  return `system-account rotation: \`${displayCmd()} down\` then \`${displayCmd()} up --rotate-sys\` re-mints the $SYS material (the space, its agents, its creds and its data are untouched)`;
+ *  existing space reuses the same files and reports success. The rotation must be asked for. A
+ *  missing connection evictor is the exception: the delivery daemon mints that one on its next start
+ *  when this root hosts one space and retained its system-account signing seed. */
+function systemRotationRepair(kind?: CredentialKind): string {
+  const rotation = `system-account rotation: \`${displayCmd()} down\` then \`${displayCmd()} up --rotate-sys\` re-mints the $SYS material (the space, its agents, its creds and its data are untouched)`;
+  if (kind !== "connection-evictor") return rotation;
+  return `the delivery daemon mints a missing connection evictor on its next start when this root hosts one space and retained its system-account signing seed. Otherwise ${rotation}`;
 }
 
 /** A credential file that is absent. Only the $SYS pair is a finding then, once the space has its
- *  trust: `up` mints the other two when they are missing, and nothing but a rotation mints these. */
+ *  trust: `up` mints the other two when they are missing. Nothing but a rotation mints the observer.
+ *  The delivery daemon mints a missing evictor on its next start when the root can sign one. */
 function missingReport(label: string, kind: CredentialKind, path: string, sysPub?: string): CredReport {
   if (sysPub === undefined || (kind !== "membership-observer" && kind !== "connection-evictor")) return { label, kind, path };
-  return { label, kind, path, problem: `missing - ${kind === "membership-observer" ? "the membership feed" : "live connection eviction"} cannot run without it`, repair: systemRotationRepair() };
+  return { label, kind, path, problem: `missing - ${kind === "membership-observer" ? "the membership feed" : "live connection eviction"} cannot run without it`, repair: systemRotationRepair(kind) };
 }
 
 /** Local filename/issued-at ordering only. No role here proves a connected or running successor. */
