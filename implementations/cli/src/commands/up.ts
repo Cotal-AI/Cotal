@@ -16,7 +16,6 @@ import {
   realpathSync,
   readdirSync,
   rmdirSync,
-  unlinkSync,
   type Stats,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -64,7 +63,6 @@ import {
   openPrivateAppend,
   realDirNoSymlink,
   writeSecretFile,
-  writeSecretFileAtomic,
   utf16Problem,
   type AuthPrepared,
   type SpaceAuth,
@@ -85,10 +83,6 @@ import {
   recordManagerSeatCap,
   parseSeatCapFlag,
   seatCapText,
-  assertRecordIdentity,
-  formatRecord,
-  identityRecord,
-  parseRecord,
   CommandFailure,
   codeSpan,
   commandFailureReport,
@@ -255,6 +249,7 @@ import {
   unparsableDaemonCredsNotice,
 } from "./stack-up.js";
 import { handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
+import { claimForegroundHold, foregroundHolder, releaseForegroundHold } from "../lib/foreground-hold.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
@@ -762,12 +757,22 @@ function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM"): Promis
   }).finally(() => { process.exitCode = signal === "SIGINT" ? 130 : 143; });
 }
 
+/** A hangup, such as a closed terminal, is not a stop. The stack keeps running and the notice names
+ *  the command that stops it. The exit runs the hold's release, which removes this process's record,
+ *  so a later foreground `up` can take the running stack over. */
+function hangupForegroundStack(root: string): never {
+  process.stderr.write(`The terminal closed. This stack in ${root} is still running; \`cotal down\` stops it.\n`);
+  process.exitCode = 129;
+  process.exit(129);
+}
+
 /** Foreground controller stack: the terminal holds the stack's lifetime until SIGINT or SIGTERM,
- *  which runs the same guarded whole-stack stop as bare `down`. `start`, when given, is the startup
- *  this terminal already holds: a signal during it lets the start settle, then runs that stop. A
- *  failed start still runs the stop, and its failure is thrown once the stop returns. The hold's end
- *  sets the exit code: 0 when another command completed the stop or preserve, 130 or 143 after a
- *  signal, whatever the start receipt set. */
+ *  which runs the same guarded whole-stack stop as bare `down`. A hangup leaves the stack running and
+ *  exits 129, naming `cotal down`. `start`, when given, is the startup this terminal already holds: a
+ *  signal during it lets the start settle, then a stop signal runs that stop and a hangup leaves what
+ *  the start left. A failed start still runs the stop, and its failure is thrown once the stop returns.
+ *  The hold's end sets the exit code: 0 when another command completed the stop or preserve, 129 after
+ *  a hangup, 130 or 143 after a stop signal, whatever the start receipt set. */
 export async function holdForegroundStack(root: string, start?: () => Promise<void>): Promise<void> {
   claimForegroundHold(root);
   try { await holdStack(root, start); }
@@ -780,19 +785,22 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
   // so a signal that lands in the start's last synchronous step would be lost in between.
   let releaseStart = (): void => {};
   if (start) {
-    let requested: "SIGINT" | "SIGTERM" | undefined;
-    const request = (signal: "SIGINT" | "SIGTERM") => {
+    let requested: "SIGINT" | "SIGTERM" | "SIGHUP" | undefined;
+    const request = (signal: "SIGINT" | "SIGTERM" | "SIGHUP") => {
       if (requested) return;
       requested = signal;
-      process.stderr.write("Stop requested; the whole-stack stop runs once the start settles\n");
+      process.stderr.write(signal === "SIGHUP"
+        ? "The terminal closed; the start settles, then the stack is left running\n"
+        : "Stop requested; the whole-stack stop runs once the start settles\n");
     };
-    const interrupt = () => request("SIGINT"), terminate = () => request("SIGTERM");
-    process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
+    const interrupt = () => request("SIGINT"), terminate = () => request("SIGTERM"), hangup = () => request("SIGHUP");
+    process.on("SIGINT", interrupt); process.on("SIGTERM", terminate); process.on("SIGHUP", hangup);
     handOverStartupNotice();
     let failure: { error: unknown } | undefined;
     try { await start(); } catch (error) { failure = { error }; }
-    releaseStart = () => { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); };
+    releaseStart = () => { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup); };
     if (requested || failure) releaseStart();
+    if (requested === "SIGHUP") hangupForegroundStack(root);
     if (requested) await stopForegroundStack(root, requested);
     if (failure) throw failure.error;
     if (requested) return;
@@ -809,7 +817,7 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
       const operation = recorded();
       if (stopping || !operation || operation.id === held || operation.phase !== "completed" || operation.kind !== "down" && operation.kind !== "preserve") return;
       stopping = true;
-      process.off("SIGINT", interrupt); process.off("SIGTERM", terminate);
+      process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup);
       clearInterval(lifetime);
       process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", process.stderr)}\n`);
       process.exitCode = 0;
@@ -818,43 +826,17 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
     const stop = (signal: "SIGINT" | "SIGTERM") => {
       if (stopping) return;
       stopping = true;
-      process.off("SIGINT", interrupt); process.off("SIGTERM", terminate);
+      process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup);
       clearInterval(lifetime);
       void stopForegroundStack(root, signal).finally(resolveHold);
     };
     const interrupt = () => stop("SIGINT");
     const terminate = () => stop("SIGTERM");
-    process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
+    const hangup = () => { if (!stopping) hangupForegroundStack(root); };
+    process.on("SIGINT", interrupt); process.on("SIGTERM", terminate); process.on("SIGHUP", hangup);
     releaseStart();
     handOverStartupNotice();
   });
-}
-
-/** Where a foreground `up` records the process that holds its stack's lifetime. */
-const foregroundHoldPath = (root: string): string => join(root, ".cotal", "stack-foreground.hold");
-
-/** The process of another foreground `up` that holds `root`'s stack, while that exact process runs. */
-export function foregroundHolder(root: string): number | undefined {
-  let raw: string;
-  try { raw = readFileSync(foregroundHoldPath(root), "utf8"); } catch { return undefined; }
-  const read = parseRecord(raw);
-  if (read.kind !== "record" || read.record.pid === process.pid) return undefined;
-  return assertRecordIdentity(read.record).kind === "match" ? read.record.pid : undefined;
-}
-
-/** Record this process as the foreground holder of `root`'s stack. A host that cannot pin a process
- *  start records nothing, so no later `up` refuses on a pid that may have been reused. */
-function claimForegroundHold(root: string): void {
-  const record = identityRecord(process.pid);
-  if ("token" in record) writeSecretFileAtomic(foregroundHoldPath(root), `${formatRecord(record)}\n`);
-}
-
-/** Remove this process's foreground hold record, and leave one another process wrote. */
-function releaseForegroundHold(root: string): void {
-  try {
-    const read = parseRecord(readFileSync(foregroundHoldPath(root), "utf8"));
-    if (read.kind === "record" && read.record.pid === process.pid) unlinkSync(foregroundHoldPath(root));
-  } catch { /* nothing recorded */ }
 }
 
 /** The registered `up` command. When a background run is the main process of a systemd unit, it
