@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.150.0
+
+### Patch Changes
+
+- c9d5969: `submitFeedback` confirms a send only from the documented 202 receipt, and a redirect no longer carries the submission to another origin.
+
 ## 0.149.0
 
 ### Minor Changes

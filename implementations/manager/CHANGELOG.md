@@ -1,5 +1,16 @@
 # @cotal-ai/manager
 
+## 0.150.0
+
+### Patch Changes
+
+- b5925be: Explain delivery store incompatibility without guessing the daemon's version, and name the scoped restart path for saved local delivery services. Manager startup and renewal still refuse an unreadable answer.
+- a6fb97f: Classify an absent delivery-admin responder by the transport error type. Malformed answers no longer let manager startup proceed because their error text contains a no-responder phrase.
+- Updated dependencies [8e2ba65]
+  - @cotal-ai/core@0.150.0
+  - @cotal-ai/workspace@0.150.0
+  - @cotal-ai/seat@0.150.0
+
 ## 0.149.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @cotal-ai/lang
 
+## 0.150.0
+
+### Minor Changes
+
+- 8ff39d3: Require workflow workers to match the language package version loaded by their host before running a program. A worker also refuses an older host that sends no version pin, so restart managers after an in-place package upgrade before starting or resuming workflows. A mismatch fails the run without ending the manager process.
+
 ## 0.149.0
 
 No changes in this release.
