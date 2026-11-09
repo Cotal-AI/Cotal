@@ -163,6 +163,35 @@ A fenced plane or
 a lost broker connection makes that context `unavailable` and closes it without exiting the process.
 The host writes no discovery file for it.
 
+### Endpoint registry
+
+Auth can host the space's permission-scoped endpoint registry. It is off by default. Import
+`registryService` from `@cotal-ai/registry` and pass `registry: registryService` to
+`startAuthService`, or in the third argument of `runAuthService`. The binary supplies the same
+implementation for the `auth-service` preset's `registry` option. A multi-space process enables it
+only on manifest entries with `"registry": true`; an injected implementation alone does not enable
+other lanes.
+
+The auth lane keeps a distinct registry instance and serving identity in its assigned secret store.
+The record is pinned to the account and is retained across restarts. Missing state may be created;
+malformed or foreign state is refused without replacing it. Registration and recovery use the native
+endpoint gate and repair cursor. A frozen registration requires the delivery oracle to prove the
+former holder gone and verify every required eviction. Missing authority or inconclusive evidence
+leaves the gate held. Keep the space's scoped delivery observer and evictor available for restarts.
+
+The registry implementation receives separate serving and read connections, never signing keys or
+the secret store. Its reader can read every recorded caller ceiling in that account, a stream-wide
+residual of the native registry-reader profile; it is not a credential to give a guest. Every serving
+credential renewal passes the native issuance-gate CAS against the captured registration. The usual
+profile lifetimes apply: one hour for the reader and 24 hours for serving. The trusted-host
+`registryCredentialTtlSeconds` rehearsal option shortens both to 5 through 900 seconds; no CLI flag
+sets it.
+
+Listings use the caller's recorded ceiling and current registration records. An unproved reader,
+failed read or plane fence refuses disclosure. Registry work and its connections close before the
+auth plane claim is released. An unsupported or failed registry start refuses that auth lane;
+no empty or fabricated listing stands in for it.
+
 ### Public exchange face
 
 The handle carries what `auth-service.json` holds for a

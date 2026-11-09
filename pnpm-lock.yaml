@@ -120,6 +120,9 @@ importers:
       '@cotal-ai/manager':
         specifier: workspace:*
         version: link:../implementations/manager
+      '@cotal-ai/registry':
+        specifier: workspace:*
+        version: link:../implementations/registry
       '@cotal-ai/runtime':
         specifier: workspace:*
         version: link:../implementations/runtime

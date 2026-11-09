@@ -389,6 +389,13 @@ exchange options keep the native validation and reverse-proxy requirement. Adver
 cannot put credentials, query parameters or fragments on the child argv. No environment-export
 onboarding or generic caller-credential substitution is used.
 
+`--registry` enables the permission-scoped endpoint registry inside this auth service. It is off by
+default and adds no guest reader authority. The lane owns the registry's identity, native registration,
+credential renewal and shutdown. Its scoped reader can read recorded caller ceilings only in this
+space account. Keep the existing delivery observer and evictor available for registration recovery
+and restarts; a missing or inconclusive authority refuses without clearing the gate. See
+[the registry lifecycle](embedding-daemons.mdx#endpoint-registry).
+
 The preset supports a prepared local user-auth root and its registered plain loopback NATS
 broker only. The native authority path does not yet carry a required TLS policy through every
 connection. TLS-required and remote broker targets refuse before authority startup rather than
@@ -423,7 +430,7 @@ manager's entry, is deprecated the same way and names `cotal manager start`.
 ```bash
 cotal deliver --space <s> [--server <url>] [--creds <file>] [--root <dir>]
 cotal deliver --spaces <manifest> --server <url> [--root <dir>]
-cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--auth-timeout <seconds>]
+cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--service-endpoints] [--registry] [--auth-timeout <seconds>]
 cotal auth-service --space <s> --server <url> --callout-only [--auth-timeout <seconds>]
 cotal auth-service --server <url> --callout-only --spaces <manifest> [--auth-timeout <seconds>]
 cotal auth-service --server <url> --spaces <manifest> [--auth-timeout <seconds>]
@@ -525,9 +532,11 @@ and `agentProvisioningUrl`, with the rules of the flags: the last four need `exc
 An entry without `exchangePublicPort` has no public face. `serviceEndpoints`, `true` or `false`, is
 the space's `--service-endpoints`: a lane whose entry sets it opens the service endpoint host and
 serves `/service-endpoint-authority` and `/service-endpoint-host`, and a lane without it opens none of
-that and answers both routes 404. Two spaces naming one port, a version other than 2 and any refusal
-of the version 1 grammar refuse the whole manifest. `--port`, the public-face flags and
-`--service-endpoints` refuse with `--spaces`; `--server` and `--auth-timeout` apply to every lane. A
+that and answers both routes 404. The independent `registry` field is also boolean and defaults to
+false; only entries with `"registry": true` host an endpoint registry. Two spaces naming one port,
+a version other than 2 and any refusal of the version 1 grammar refuse the whole manifest. `--port`,
+the public-face flags, `--service-endpoints` and `--registry` refuse with `--spaces`; `--server` and
+`--auth-timeout` apply to every lane. A
 changed entry closes that space's lane and opens it again on its new settings, and the other lanes
 keep serving. An embedder that writes the manifest checks it with `parseAuthHostManifest(text)` from
 `@cotal-ai/auth` before renaming it into place: it applies the rules the host applies and throws the
