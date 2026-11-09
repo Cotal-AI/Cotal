@@ -23,10 +23,12 @@ export function concreteChannelProblem(channel: string): string | undefined {
   return undefined;
 }
 
-/** What a sender is told when a direct message goes to an agent the roster shows offline. The DM
- *  durable belongs to the recipient's lifecycle (SPEC §8): the same session receives the stored
- *  message when it reconnects, and a new spawn under that name starts after it and never does. */
+/** What a sender is told when a direct message goes to an agent the roster shows offline. An offline
+ *  card does not say the lifecycle's DM durable still exists: a confirmed chat retirement deletes it,
+ *  and a later session under the same name is a new lifecycle. The notice therefore says only that
+ *  the message was stored while that agent was offline, and that a new agent spawned as that name
+ *  does not receive it. */
 export function offlineRecipientNotice(name: string): string {
-  return `${name} is offline. The message is stored and delivered when ${name} reconnects; a new agent spawned as ${name} does not receive it.`;
+  return `${name} is offline. The message was stored while ${name} is offline; a new agent spawned as ${name} does not receive it.`;
 }
 

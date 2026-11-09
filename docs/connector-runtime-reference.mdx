@@ -122,8 +122,8 @@ A stored sequence proves broker acceptance, without confirming receipt or comple
 `cotal_dm` names the recipient, says other agents can't read the DM, and points what others could use at the task's channel.
 It reads the recipient's roster status immediately before publication.
 It uses that observation for offline and unrostered warnings; the success text does not include the stored sequence or a full roster-status report.
-When that status is `offline`, `cotal_dm`, `cotal send -t`, `cotal chat`, `cotal join`, and the console explain that the DM waits for the recipient to reconnect.
-The same lifecycle receives it after reconnect. A new spawn under the same name does not inherit that inbox.
+When that status is `offline`, `cotal_dm`, `cotal send -t`, `cotal chat`, `cotal join`, and the console say the DM was stored while the recipient is offline.
+An offline roster card does not say that lifecycle's DM durable still exists. A confirmed retirement deletes it, and a new spawn under the same name does not receive the message.
 Retention and the lifecycle interval still bound delivery.
 
 A one-shot sender such as `cotal send` can send a DM without joining the roster.

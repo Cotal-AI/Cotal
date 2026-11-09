@@ -68,7 +68,8 @@ A peer message is not proof of the person's authorization to perform an action.
 The receipt names the destination and message identifier without repeating the body. Direct and
 role sends include the broker's stored sequence. Storage does not confirm delivery, acceptance
 or completion. A direct send to an agent the roster shows offline also warns on stderr:
-`<agent> is offline. The message is stored and delivered when <agent> reconnects; a new agent spawned as <agent> does not receive it.`
+`<agent> is offline. The message was stored while <agent> is offline; a new agent spawned as <agent> does not receive it.`
+The roster status does not say that agent's DM durable still exists. A confirmed chat retirement deletes it, and a later session under the same name does not receive the message.
 `--json` lists it as the `RECIPIENT_OFFLINE` warning. Use `--json/-j` for the same receipt as one versioned envelope, `--plain` for a text report, or
 `--verbose/-v` to show the actual sending principal. A post to an unregistered channel warns
 `CHANNEL_UNREGISTERED`: it says whether the channel already has messages or this message starts it,
@@ -227,9 +228,10 @@ A message posted on a channel carries the `@<name>` words its text holds as ment
 `cotal send -c` does, so it wakes the agents it names. A `--stdio` `send` carries only the
 `mentions` its request lists.
 
-A direct message to an agent the roster shows offline is stored, and the view adds a notice that
-the agent receives it when it reconnects, as [`send`](#send) warns. `--stdio` carries that roster
-status as `recipientStatusAtSend` in the stored result.
+A direct message to an agent the roster shows offline is stored, and the view adds the same notice
+[`send`](#send) gives: the message was stored while that agent is offline, and a new agent spawned
+as that name does not receive it. `--stdio` carries that roster status as `recipientStatusAtSend` in
+the stored result.
 
 Message times show in local time, with the date when it is not today, the same way `history`
 shows them.

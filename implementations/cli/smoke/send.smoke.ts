@@ -663,8 +663,8 @@ try {
   );
   // The warning may wrap at the terminal width, so its words are compared with whitespace collapsed.
   check(
-    "the offline-window `send -t` warns that bob is offline and gets the message when he reconnects",
-    offlineDm.stderr.replace(/\s+/g, " ").includes("! bob is offline. The message is stored and delivered when bob reconnects; a new agent spawned as bob does not receive it."),
+    "the offline-window `send -t` warns that bob is offline and that a new agent spawned as bob does not receive the message",
+    offlineDm.stderr.replace(/\s+/g, " ").includes("! bob is offline. The message was stored while bob is offline; a new agent spawned as bob does not receive it."),
     offlineDm.stderr,
   );
   // Bob's held send is read through his exact durable, which does not depend on his card.

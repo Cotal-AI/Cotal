@@ -269,8 +269,8 @@ check("Ctrl-D with no draft leaves at once", keys(s0(), [{ kind: "ctrl-d" }]).in
   check("unknown keeps the draft and warns not to resend blindly", unk.draft === "hi" && unk.transcript.some((e) => e.kind === "notice" && /not resent/.test(e.text)));
   const toBob = (status: "offline" | "idle") => applyPublishResult(sent, { outcome: "stored", messageId: "m9", seq: 4, recipient: { id: "BOBID", name: "bob" }, recipientStatusAtSend: status });
   check(
-    "a DM stored for an offline recipient adds a notice that bob gets it when he reconnects",
-    toBob("offline").transcript.some((e) => e.kind === "notice" && e.tone === "waiting" && e.text === "bob is offline. The message is stored and delivered when bob reconnects; a new agent spawned as bob does not receive it."),
+    "a DM stored for an offline recipient adds a notice that the message was stored while bob is offline",
+    toBob("offline").transcript.some((e) => e.kind === "notice" && e.tone === "waiting" && e.text === "bob is offline. The message was stored while bob is offline; a new agent spawned as bob does not receive it."),
   );
   check("...and a DM to a live recipient adds no such notice", !toBob("idle").transcript.some((e) => e.kind === "notice" && /is offline/.test(e.text)));
 }

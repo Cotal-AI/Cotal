@@ -665,7 +665,7 @@ async function run(s: Space, width: number, height: number, tag: string) {
   save("offline-recipient")
   check(
     `${at}: a direct message to an offline agent is stored at its principal and says so`,
-    says(offline, "ghost is offline. The message is stored and delivered when ghost reconnects") && toGhost.some((m) => textOf(m) === late && m.to === ghost.id),
+    says(offline, "ghost is offline. The message was stored while ghost is offline") && toGhost.some((m) => textOf(m) === late && m.to === ghost.id),
     offline,
   )
 
