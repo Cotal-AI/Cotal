@@ -167,7 +167,11 @@ export function validateDownArguments(args: ParsedArgs): void {
   if (args.values["abandon-stop"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-stop applies only to a controller stack's member stop, and this root has none; nothing was abandoned");
   if (args.values["abandon-launch"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-launch applies only to a controller stack's member launch, and this root has none; nothing was abandoned");
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
-  if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined && typeof args.values.file !== "boolean") return;
+  if (typeof args.values.file === "string" && args.values["dry-run"] === true && args.values.run === undefined) {
+    const reason = manifestRead(args.values.file);
+    if (reason) throw new CommandFailure("refused", "SCHEMA_INVALID", reason, { target: { file: args.values.file } });
+  }
+  if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined && (args.values.file === undefined || typeof args.values.file === "string" && recordedStackPreview())) return;
   // A folder holding another folder's registered space answers with a refusal, not with the lines a
   // bare stop prints, so structured output carries it rather than refusing the flag.
   if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && (stoppedLegacyStack() || recordsElsewhere(canonicalRoot(cotalRoot()), "stop")))) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
@@ -548,7 +552,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   if ((values.file || values.run) && values.space) {
     throw new CommandFailure("refused", "USAGE_INVALID", "component names and --space cannot be combined with --file or --run");
   }
-  if (values.file && values["dry-run"]) {
+  if (values.file && values["dry-run"] && values.run === undefined) {
     const reason = manifestRead(values.file);
     if (reason) throw new CommandFailure("refused", "SCHEMA_INVALID", reason, { target: { file: values.file } });
     if (recordedStackPreview()) return previewWholeStack(args);
