@@ -3,8 +3,8 @@
  * in an `implementations/*` package so it can later wire `@cotal-ai/auth` and `@cotal-ai/manager`
  * without one implementation importing another (AGENTS.md, repository map).
  *
- * This slice serves a local, authenticated endpoint for status, sign-in, a connection check and a
- * registration request, and installs itself as a systemd user service. It starts no Manager and
+ * This serves a local authenticated endpoint for status, sign-in, connection checks and registration.
+ * The daemon hosts a stock Manager per requested space in a separate child process, and
  * serves its registered machine-status command. Sign-in runs inside the
  * daemon through stock `establishIdpSession`, so the session lands in the machine-home Cotal
  * directory where `cotal login` keeps it, and no token ever crosses the local endpoint. The
@@ -29,10 +29,11 @@ import { CommandFailure, homeCotalDir, jsonFlag, plainFlag, presentationOf, rend
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
-import { connectCheckViaDaemon, loginViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
+import { connectCheckViaDaemon, loginViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import { applyInstall, applyUninstall, planInstall, planUninstall, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runSetup } from "./setup.js";
+import { forgetHostedManagerIntents } from "./manager.js";
 import type { ConnectCheckResult, DaemonStatus, LoginResult, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
@@ -45,6 +46,7 @@ export const daemonFlags = [
   { name: "dry-run", type: "boolean", description: "install, uninstall: report the unit it would write or remove, and change nothing" },
   { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script" },
   { name: "wait", type: "string", value: "<seconds>", description: "setup: how long to wait for the space owner's approval (default 900, 0 reports what it reached)" },
+  { name: "no-manager", type: "boolean", description: "setup: connect only the machine service without hosting a Manager" },
   spaceFlag,
 ] as const satisfies readonly FlagSpec[];
 
@@ -115,7 +117,9 @@ function asFailure(e: unknown): unknown {
 }
 
 function statusView(s: DaemonStatus): Report {
-  return { sections: [{ title: "Daemon", blocks: [{ kind: "fields", rows: [["State", s.state], ["Version", s.version], ["Protocol", String(s.protocol)], ["PID", String(s.pid)], ["Started", s.startedAt], ["Uptime", `${Math.round(s.uptimeMs / 1000)}s`]] }] }] };
+  return { sections: [{ title: "Daemon", blocks: [{ kind: "fields", rows: [["State", s.state], ["Version", s.version], ["Protocol", String(s.protocol)], ["PID", String(s.pid)], ["Started", s.startedAt], ["Uptime", `${Math.round(s.uptimeMs / 1000)}s`]] }] },
+    ...(s.managers ?? []).map((manager) => ({ title: `Manager: ${manager.space}`, blocks: [{ kind: "fields" as const, rows: [["State", manager.state], ["Instance", manager.instanceId ?? "not registered"], ["PID", String(manager.pid ?? "none")], ["Restarts", String(manager.restarts)], ...(manager.lastRefusal || manager.reason ? [["Last refusal", manager.lastRefusal ?? manager.reason!]] : []), ...(manager.next ? [["Next", manager.next]] : [])] as [string, string][] }] })),
+  ] };
 }
 
 async function status(args: ParsedArgs): Promise<void> {
@@ -128,7 +132,9 @@ async function status(args: ParsedArgs): Promise<void> {
     throw asFailure(e);
   }
   if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the status request: ${reply.error.code} ${reply.error.message}`);
-  writeResult(presentation, { command: "daemon status", target: null, result: reply.result }, statusView);
+  const space = (args.values as { space?: string }).space;
+  const result = space ? { ...reply.result, managers: [await managerViaDaemon({ paths, peerUid, peerPid }, { op: "manager-status", space }) as import("./protocol.js").HostedManager] } : reply.result;
+  writeResult(presentation, { command: "daemon status", target: space ? { space } : null, result }, statusView);
 }
 
 /** Sign in through the running daemon. The daemon talks to the IdP and keeps the session; this
@@ -263,7 +269,7 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the service request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ServiceConnectionResult = reply.result;
   const native = { native: { code: (r.state === "ended" && r.reason ? r.reason : r.state).toUpperCase().replaceAll("-", "_") } };
-  const ok = r.state === "connected" || (op === "service-disconnect" && r.state === "disconnected");
+  const ok = (op === "service-status" && r.manager?.state === "answering") || r.state === "connected" || (op === "service-disconnect" && r.state === "disconnected");
   if (!ok) {
     const code = r.state === "not-requested" || r.state === "not-registered" ? "TARGET_NOT_FOUND"
       : r.state === "unsupported" ? "UNSUPPORTED"
@@ -277,7 +283,7 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
   }
   writeResult(presentation, { command: `daemon ${op}`, target: { space }, result: r }, () => ({ sections: [
     { title: r.state === "connected" ? "Connected" : "Disconnected", blocks: [
-      { kind: "fields", rows: [["Space", r.space], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : [])] },
+      { kind: "fields", rows: [["Space", r.space], ["Machine service", r.state], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.manager ? [["Manager", r.manager.state], ["Manager instance", r.manager.instanceId ?? "none"], ...(r.manager.reason ? [["Refusal", r.manager.reason]] : []), ...(r.manager.next ? [["Next", r.manager.next]] : [])] as [string, string][] : [])] },
       { kind: "lines", lines: [{ text: r.message, tone: "hint" }] },
     ] },
   ] }));
@@ -303,7 +309,13 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
   }
   const dry = values["dry-run"] === true;
   if (!dry && values.yes !== true && !process.stdout.isTTY) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon uninstall needs --yes outside a terminal; nothing was removed");
+  if (!dry) {
+    planUninstall(paths);
+    try { await managerViaDaemon({ paths, peerUid, peerPid }, { op: "managers-stop" }); }
+    catch (error) { if (!(error instanceof EndpointRefusal) || error.code !== "NOT_RUNNING") throw error; }
+  }
   const r = dry ? { ...planUninstall(paths), state: "would-remove" as const } : applyUninstall(paths);
+  if (!dry) forgetHostedManagerIntents(home ?? homeCotalDir());
   writeResult(presentation, { command: "daemon uninstall", target: { unit: r.unit }, result: r }, () => ({ sections: [
     { title: dry ? "Would remove" : "Removed", blocks: [
       { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Installed", r.installedAt]] },
@@ -317,7 +329,7 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
 /** Connect a headless machine with one command: install, sign in, register, connect. */
 async function setupCommand(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
-  const values = args.values as { space?: string; idp?: string; "client-id"?: string; wait?: string };
+  const values = args.values as { space?: string; idp?: string; "client-id"?: string; wait?: string; "no-manager"?: boolean };
   const space = values.space;
   if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon setup needs --space <s>");
   let idp: string | undefined;
@@ -335,7 +347,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   let r;
   try {
     r = await runSetup({
-      paths, daemonHome: home, space, peerUid, peerPid, waitSeconds, report,
+      paths, daemonHome: home, space, peerUid, peerPid, waitSeconds, report, noManager: values["no-manager"] === true,
       ...(idp !== undefined ? { idp } : {}),
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: (p) => {
@@ -349,10 +361,11 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
     throw asFailure(e);
   }
   writeResult(presentation, { command: "daemon setup", target: { space }, result: r }, () => ({ sections: [
-    { title: "Connected", blocks: [
+    { title: r.manager?.state === "answering" ? "Ready to launch" : "Connected", blocks: [
       { kind: "fields", rows: [["Space", r.space], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.unit ? [["Unit", r.unit] as [string, string]] : [])] },
       { kind: "lines", lines: [
         ...r.steps.map((s) => ({ text: `${s.step}: ${s.outcome}`, tone: "hint" as const })),
+        ...(r.manager ? [{ text: `Agents can now be launched on this computer from space ${r.space} through Manager instance ${r.manager.instanceId}.`, tone: "hint" as const }, { text: `Machine service registration: ${r.registration?.outcome ?? r.state}.`, tone: "hint" as const }] : []),
         { text: "The daemon runs as a user service, restarts on its own and reconnects after a restart. Read it with `cotal daemon service-status`, and close the connection with `cotal daemon service-disconnect`.", tone: "hint" as const },
       ] },
     ] },
@@ -428,8 +441,8 @@ const daemonCommand: Command = {
     { name: "spaces", summary: "list registered spaces; optionally refresh catalogs using the daemon-held sign-in", flagNames: ["refresh", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "start", summary: "start the unchanged, recorded daemon service without restarting a running instance", flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "desktop", summary: "serve one bounded JSON request from the desktop app on stdin; credentials remain in the daemon", flagNames: ["daemon-home"], prepareMeshTarget: false },
-    { name: "setup", summary: "connect this machine to a space with one command: install the user service, sign in by device code without a local browser, register, and connect once the space owner approves", examples: [{ command: "cotal daemon setup --space <space> --idp <url>", note: "connect a headless machine" }, { command: "cotal daemon setup --space <space> --wait 0", note: "report what it reached without waiting for approval" }], flagNames: ["space", "idp", "client-id", "wait", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
-    { name: "status", summary: "ask the running daemon for its status over the local endpoint", examples: [{ command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon status --json", note: "the same as one JSON document" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
+    { name: "setup", summary: "make this computer launch-ready for a space: install, sign in, discover and host its Manager; machine-service approval is separate", examples: [{ command: "cotal daemon setup --space <space> --idp <url>", note: "connect a headless machine" }, { command: "cotal daemon setup --space <space> --wait 0", note: "report what it reached without waiting for approval" }], flagNames: ["space", "idp", "client-id", "wait", "no-manager", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "status", summary: "ask the running daemon for its status and hosted Managers over the local endpoint", examples: [{ command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon status --json", note: "the same as one JSON document" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "serve", summary: "run the daemon in the foreground and serve its local endpoint (refusals honor --json)", examples: [{ command: "cotal daemon serve", note: "run the machine daemon in this terminal" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "install", summary: "install the daemon as this platform's user service; Linux also enables linger", examples: [{ command: "cotal daemon install", note: "run it as a persistent user service" }, { command: "cotal daemon install --dry-run", note: "show the unit it would write" }], flagNames: ["daemon-home", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "uninstall", summary: "stop the daemon's user service, disable autostart and remove its unit", examples: [{ command: "cotal daemon uninstall", note: "remove its login unit" }], flagNames: ["daemon-home", "yes", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },

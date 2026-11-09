@@ -537,12 +537,12 @@ without treating an option's value as another command word.
 ## daemon [#daemon]
 
 ```bash
-cotal daemon setup --space <s> [--idp <auth base URL>] [--client-id <id>] [--wait <seconds>] [--daemon-home <dir>] [--json|--plain]
+cotal daemon setup --space <s> [--idp <auth base URL>] [--client-id <id>] [--no-manager] [--wait <seconds>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]
 cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]
 cotal daemon start [--daemon-home <dir>] [--json|--plain]
 cotal daemon serve [--daemon-home <dir>] [--json|--plain]
-cotal daemon status [--daemon-home <dir>] [--json|--plain]
+cotal daemon status [--space <s>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon login --idp <auth base URL> [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon spaces [--refresh] [--daemon-home <dir>] [--json|--plain]
 cotal daemon connect-check --space <s> [--daemon-home <dir>] [--json|--plain]
@@ -554,8 +554,8 @@ cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 
 This release serves a local endpoint for status, sign-in, a connection check, a registration request
 and the daemon's own service connection, and installs itself as the user's own service: a systemd
-user service on Linux, a LaunchAgent on macOS, or a scheduled task on Windows. It does not
-start a Manager or grant remote execution or file access. Its registered service exposes
+user service on Linux, a LaunchAgent on macOS, or a scheduled task on Windows. Setup hosts a stock
+Manager for each requested user-auth space. Its registered machine service exposes
 `machine-status`. A space connection requires owner approval, broker acceptance and space readiness.
 It has local transport implementations for Linux, macOS and Windows. On macOS and Windows the endpoint needs the `@cotal-ai/seat` native helper built for that
 platform; where none is built or shipped, every command refuses `UNSUPPORTED`
@@ -567,19 +567,27 @@ its catalogs. Name collisions and unreadable registrations are reported rather t
 The desktop app uses these same controls. Its source and native build instructions are in the
 [desktop README](../desktop/README.md). Closing its tray UI does not stop the installed daemon.
 
-`setup` connects a machine with no browser on it, in one command. It installs the user service,
-waits for the daemon to answer, signs it in by device code when it is not signed in already, asks
-the space to register it, and connects it once the space owner approves. It prints one plain line
-per stage to stderr as it goes, so `--json` still writes one document on stdout. Disconnecting uses `service-disconnect`. Pause and rename controls are not implemented.
+`setup` makes a computer ready to launch agents from a space with one command. It installs the user
+service, discovers the space through the daemon-held sign-in, signs in by device code when needed,
+and starts the space's Manager. It succeeds when that registered instance answers `status`.
+The separate `ai.cotal.machine` registration and connection are reported even while owner approval
+is pending. That approval never holds up agent launches. Progress goes to stderr, so `--json` writes
+one document on stdout. Missing `supervise` scope refuses with the Manager's reason and next step.
 
-Every stage is skipped when it is already done, so running `setup` again after an interruption
-continues from where it stopped. That matters because the owner's approval in the middle belongs to
-a person. `--wait <seconds>` bounds how long it waits for that approval, 900 by default; `--wait 0`
+The daemon supervises each Manager as a separate child, restarts it with bounded backoff after a
+crash, and resumes recorded hosting intents after its own restart. It records intent only after
+status answers. A permanent refusal, such as a missing sign-in or scope, stops automatic retries.
+Manager state stays under the daemon's own per-space directory. No project folder or selected space
+is changed. `service-disconnect` stops that space's hosted Manager and removes its hosting intent.
+`uninstall` stops all hosted Managers and removes their intents. Pause and rename are not implemented.
+
+Every completed stage is reused when setup runs again. `--no-manager` keeps the machine-service-only
+setup path and waits for owner approval. On that path `--wait <seconds>` bounds the wait, 900 by default; `--wait 0`
 reports what it reached and stops. A wait that runs out is `partial` (`OPERATION_PARTIAL`) with
 `APPROVAL_PENDING` as the native code: the service is installed and the registration is sent, and
 the message says so, so nothing is lost by running it again. An answer that cannot improve is a
 refusal carrying the space's own reason, such as `PERMISSION_DENIED` (`PROPOSAL_REFUSED`), and the
-connection stage is never reached. Only a connected machine exits 0.
+connection stage is never reached. With `--no-manager`, only a connected machine exits 0.
 
 `--idp` is needed only when this machine is not signed in. Without it, a machine that needs a
 sign-in refuses `AUTH_REQUIRED` (`NOT_SIGNED_IN`) and names the flag, before any registration.
@@ -637,7 +645,10 @@ and names that command. Each refusal's Next says to run it from a logged-in sess
 `serve` runs in the foreground and prints one ready line, `daemon ready at <socket>`, on stdout once
 the endpoint is bound and checked. Its log lines, such as a recovered socket, go to stderr. That
 success line is plain text; `--json` shapes its refusals. `status` prints the
-state, version, protocol, process ID, start time and uptime. `state: "ready"` means only that the
+state, version, protocol, process ID, start time and uptime. It also lists each hosted Manager's state,
+instance, PID, restart count, last refusal and Next. `--space <s>` selects one space. JSON carries the
+same facts. `service-status` reports the machine connection and Manager separately.
+`state: "ready"` means only that the
 local control listener is bound and verified, not that a mesh or Cloud connection exists.
 
 On Linux the endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. Without `XDG_RUNTIME_DIR` both forms

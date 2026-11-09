@@ -13,7 +13,7 @@ import { connect as netConnect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { connectPipe, windowsUserSid, type PipePeer } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSupportedPlatform, checkDir, checkSocket, defaultPeerPid, defaultPeerUid, type DaemonPaths, type PeerPid, type PeerUid } from "./endpoint.js";
-import { encode, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type LoginPrompt, type LoginResult, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
+import { encode, type ConnectCheckResult, type DaemonRequest, type DaemonResponse, type DaemonStatus, type HostedManager, type LoginPrompt, type LoginResult, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { processBirth, readLifetimeRecord } from "./lifetime.js";
 
 /** Ask the daemon whether it could register with `space`. Nothing is registered either way. */
@@ -50,6 +50,19 @@ export async function registerViaDaemon(opts: Pick<QueryOptions, "paths" | "peer
 
 export interface ClientCounters {
   bytesWritten: number;
+}
+
+/** Send a bounded machine-control request after authenticating the daemon's live process. */
+export async function managerViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">, request: { op: "manager-start" | "manager-status"; space: string } | { op: "managers-stop" }): Promise<HostedManager | DaemonStatus> {
+  const sock = await openVerified(opts);
+  try {
+    const id = randomUUID().replaceAll("-", "");
+    sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request } as DaemonRequest));
+    const reply = JSON.parse(await readLine(sock, 130_000)) as DaemonResponse;
+    if (!reply.ok) throw new Error(`the daemon refused ${request.op}: ${reply.error.code} ${reply.error.message}`);
+    if (reply.id !== id || "event" in reply || !("state" in reply.result)) throw new Error("invalid Manager response");
+    return reply.result as HostedManager | DaemonStatus;
+  } finally { sock.destroy(); }
 }
 
 /** Ask the daemon to connect, disconnect or report its own service connection to `space`. */

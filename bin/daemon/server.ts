@@ -29,6 +29,8 @@ import { registerDaemon } from "./register.js";
 import { createServiceConnections } from "./service.js";
 import { homeCotalDir } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
+import { withIdpSessionDir } from "@cotal-ai/auth";
+import { createHostedManagers } from "./manager.js";
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
 export const MAX_REQUESTS_PER_CONNECTION = 64;
@@ -130,6 +132,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const machineHome = opts.sessionDir ?? homeCotalDir();
   const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
   const services = createServiceConnections(machineHome);
+  const managers = createHostedManagers(machineHome);
   const startedAt = new Date();
   const status = (): DaemonStatus => ({
     state: "ready",
@@ -138,6 +141,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     pid: process.pid,
     startedAt: startedAt.toISOString(),
     uptimeMs: Date.now() - startedAt.getTime(),
+    managers: managers.all(),
   });
 
   const sockets = new Set<Socket>();
@@ -178,6 +182,15 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       const req = parsed.request;
+      if (req.op === "manager-start" || req.op === "manager-status") {
+        const result = req.op === "manager-start" ? managers.start(req.space) : Promise.resolve(managers.status(req.space));
+        void result.then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }));
+        return;
+      }
+      if (req.op === "managers-stop") {
+        void Promise.all(managers.all().map((manager) => managers.disconnect(manager.space))).then(() => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result: status() }));
+        return;
+      }
       if (req.op === "status") {
         counters.statusAnswered++;
         void write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result: status() });
@@ -202,7 +215,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "register") {
-        void registerDaemon(req.space, machineHome).catch((): RegisterResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the registration request; nothing is connected" }))
+        void withIdpSessionDir(machineHome, () => registerDaemon(req.space, machineHome)).catch((): RegisterResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the registration request; nothing is connected" }))
           .then((result) => {
             counters.registersAnswered++;
             return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
@@ -211,11 +224,15 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
         const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
-          : (req.op === "service-connect" ? services.connect(req.space) : services.disconnect(req.space))
+          : withIdpSessionDir(machineHome, async () => {
+            if (req.op === "service-connect") return services.connect(req.space);
+            await managers.disconnect(req.space);
+            return services.disconnect(req.space);
+          })
             .catch((): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: "the daemon could not complete the request; nothing is connected" }));
         void run.then((result) => {
           counters.serviceAnswered++;
-          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
+          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result: { ...result, manager: managers.status(req.space) } });
         });
         return;
       }
@@ -307,7 +324,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   // Resume what this daemon home was connected to before it stopped. This runs after the endpoint
   // is published, so a space that is slow or unreachable never delays readiness; `service-status`
   // reports each one's real state. A space with no recorded intent is not connected.
-  const resumed = services.resume().then((spaces) => {
+  const managersResumed = managers.resume();
+  const resumed = withIdpSessionDir(machineHome, () => services.resume()).then((spaces) => {
     counters.connectionsResumed = spaces.length;
     if (spaces.length) log(`daemon: resumed ${spaces.length} recorded service connection(s)`);
   }, () => {});
@@ -319,6 +337,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       await resumed;
       // An in-flight sign-in is cancelled through the stock fence before the listener goes away.
       await login.close();
+      await managers.close();
+      await managersResumed;
       // Every service connection, its endpoint and its renewal source close before the socket does.
       await services.close();
       for (const s of sockets) s.destroy();

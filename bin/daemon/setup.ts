@@ -17,14 +17,15 @@
 import { CommandFailure } from "@cotal-ai/workspace";
 import type { DaemonPaths } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
-import { connectCheckViaDaemon, loginViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
+import { connectCheckViaDaemon, loginViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
+import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
-import type { LoginPrompt, ServiceConnectionState } from "./protocol.js";
+import type { HostedManager, LoginPrompt, RegisterResult, ServiceConnectionState } from "./protocol.js";
 import { applyInstall, planUninstall, startInstalled } from "./install.js";
 
 /** How each step ended, in the order they ran. A reader sees what this did and what it skipped. */
 export interface SetupStep {
-  readonly step: "install" | "sign-in" | "register" | "connect";
+  readonly step: "install" | "discover" | "sign-in" | "manager" | "register" | "connect";
   readonly outcome: string;
   readonly detail: string;
 }
@@ -35,9 +36,12 @@ export interface SetupResult {
   readonly steps: readonly SetupStep[];
   readonly instanceId?: string;
   readonly unit?: string;
+  readonly manager?: HostedManager;
+  readonly registration?: RegisterResult;
 }
 
 export interface SetupOptions {
+  readonly noManager?: boolean;
   readonly paths: DaemonPaths;
   readonly daemonHome: string | undefined;
   readonly space: string;
@@ -167,10 +171,15 @@ async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<v
 }
 
 /** Ask the space to register this daemon. Replaying an existing request is the same call. */
-async function requestRegistration(opts: SetupOptions, steps: SetupStep[]): Promise<void> {
+async function requestRegistration(opts: SetupOptions, steps: SetupStep[]): Promise<RegisterResult> {
   const reply = await registerViaDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, space: opts.space });
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the registration request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r = reply.result;
+  if (!opts.noManager) {
+    steps.push({ step: "register", outcome: r.outcome, detail: r.message });
+    opts.report(`register: ${r.outcome}; ${r.message}`);
+    return r;
+  }
   const native = { native: { code: (r.outcome === "refused" && "reason" in r ? r.reason : r.outcome).toUpperCase().replaceAll("-", "_") } };
   if (r.outcome === "not-registered") throw new CommandFailure("refused", "TARGET_NOT_FOUND", r.message, native);
   if (r.outcome === "not-user-auth" || r.outcome === "unsupported-by-space") throw new CommandFailure("refused", "UNSUPPORTED", r.message, native);
@@ -181,6 +190,7 @@ async function requestRegistration(opts: SetupOptions, steps: SetupStep[]): Prom
   if (r.outcome !== "approval-required" && r.outcome !== "pending" && r.outcome !== "registered") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", r.message, native);
   steps.push({ step: "register", outcome: r.outcome, detail: `${r.endpoint} instance ${r.instanceId}, request ${r.requestId}` });
   opts.report(`register: ${r.outcome}, service ${r.endpoint}, instance ${r.instanceId}`);
+  return r;
 }
 
 /** States that will not become `connected` however long anyone waits. */
@@ -216,7 +226,37 @@ async function connectWhenApproved(opts: SetupOptions, steps: SetupStep[]): Prom
 export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
   const steps: SetupStep[] = [];
   const unit = await ensureInstalled(opts, steps);
+  if (!opts.noManager) {
+    let discovered = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
+    const hasSpace = () => discovered.ok && !("event" in discovered) && "spaces" in discovered.result && discovered.result.spaces.some((entry) => entry.space === opts.space);
+    if (!hasSpace() && opts.idp) {
+      const signed = await loginViaDaemon({ ...opts, idp: opts.idp });
+      if (!signed.ok || signed.result.outcome !== "signed-in") throw new CommandFailure("refused", "AUTH_REQUIRED", "the daemon could not sign in to discover this space", { remedy: `run cotal daemon login --idp ${opts.idp}` });
+      discovered = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
+    }
+    if (!hasSpace()) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this space was not found in the daemon's signed-in catalogs", { remedy: `run cotal daemon setup --space ${opts.space} --idp <url>; ask the space owner to grant this account access` });
+    steps.push({ step: "discover", outcome: "registered", detail: "the daemon discovered the requested space" });
+    opts.report("discover: the requested space is registered on this machine");
+  }
   await ensureSignedIn(opts, steps);
+  if (!opts.noManager) {
+    const manager = await managerViaDaemon(opts, { op: "manager-start", space: opts.space }) as HostedManager;
+    steps.push({ step: "manager", outcome: manager.state, detail: manager.reason ?? manager.instanceId ?? manager.state });
+    opts.report(`manager: ${manager.state}${manager.instanceId ? `, instance ${manager.instanceId}` : ""}`);
+    if (manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", manager.reason ?? "the hosted Manager is not answering yet", { remedy: manager.next ?? `read cotal daemon status --space ${opts.space}`, native: { code: manager.state.toUpperCase() } });
+    const registration = await requestRegistration(opts, steps);
+    // A pending registration has no service credential yet. Report it without polling its owner.
+    let state: ServiceConnectionState = registration.outcome === "approval-required" || registration.outcome === "pending" ? "approval-pending" : "refused";
+    let message = registration.message;
+    if (registration.outcome === "registered") {
+      const connected = await serviceViaDaemon({ ...opts, op: "service-connect" });
+      state = connected.ok ? connected.result.state : "unavailable";
+      message = connected.ok ? connected.result.message : connected.message;
+    }
+    steps.push({ step: "connect", outcome: state, detail: message });
+    opts.report(`connect: machine service ${state}; Manager launch-readiness is independent`);
+    return { space: opts.space, state, manager, registration, instanceId: manager.instanceId, steps, ...(unit ? { unit } : {}) };
+  }
   await requestRegistration(opts, steps);
   const end = await connectWhenApproved(opts, steps);
   const result: SetupResult = { space: opts.space, state: end.state, steps, ...(end.instanceId ? { instanceId: end.instanceId } : {}), ...(unit ? { unit } : {}) };
