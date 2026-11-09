@@ -1,7 +1,7 @@
 import type { Recipient } from "@cotal-ai/workspace/chat"
 import type { Entry } from "./catalog.js"
 import type { Conn, FeedEntry, Managed, Mesh, Presence } from "./live.js"
-import type { OwnTraffic } from "./talk.js"
+import type { OwnTraffic, You } from "./talk.js"
 
 /** One selectable tree row. The key is stable across snapshots, so the cursor stays on the same row
  *  while the roster re-sorts under it. */
@@ -80,6 +80,30 @@ export function conversationRecipient(open: Open, mesh: Mesh): Recipient | undef
   if (open.kind === "peer") return { kind: "peer", principal: open.id, name: peerOf(mesh, open.id)?.card.name ?? open.id }
   if (open.kind === "role") return { kind: "role", role: open.role }
   return undefined
+}
+
+/** Whether a sender is the human: a session this app run opened, or one under their chat name in any
+ *  letter case. */
+export const isYou = (you: You, who: FeedEntry["from"]) => you.principals.has(who.id) || who.name.toLowerCase() === you.name
+
+/** A message for the human in the inspector: a reply to one they sent, or one that mentions them.
+ *  `open` is the conversation it opens: its channel, its sender's conversation or its role's. */
+export type Card = { kind: "reply" | "mention"; entry: FeedEntry; open: Open }
+
+const cardOpen = (e: FeedEntry): Open =>
+  e.delivery === "multicast" ? { kind: "channel", channel: e.channel } : e.delivery === "anycast" ? { kind: "role", role: e.toService ?? "" } : { kind: "peer", id: e.from.id }
+
+/** The cards in `feed`, newest first. A message that both replies and mentions is one reply card. The
+ *  human's own messages and the ids in `read` make none. */
+export function cardsFor(feed: readonly FeedEntry[], you: You, mentionsYou: (e: FeedEntry) => boolean, read: ReadonlySet<string>): Card[] {
+  const sent = new Set(feed.filter((e) => isYou(you, e.from)).map((e) => e.id))
+  const cards: Card[] = []
+  for (const e of feed) {
+    if (e.events || read.has(e.id) || isYou(you, e.from)) continue
+    const kind = e.replyTo !== undefined && sent.has(e.replyTo) ? "reply" : mentionsYou(e) ? "mention" : undefined
+    if (kind) cards.push({ kind, entry: e, open: cardOpen(e) })
+  }
+  return cards.reverse()
 }
 
 export const peerOf = (mesh: Mesh, id: string) => [...mesh.agents, ...mesh.endpoints].find((p) => p.card.id === id)

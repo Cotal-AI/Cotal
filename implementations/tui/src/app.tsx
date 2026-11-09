@@ -12,7 +12,7 @@ import type { Catalog, Entry } from "./catalog.js"
 import type { ComposerState } from "./compose.js"
 import { layoutFor } from "./layout.js"
 import type { Conn, FeedEntry, Managed, Mesh, Presence, Session } from "./live.js"
-import { clock, conversationFeed, draftKey, entryKey, meshOf, type Open, openRowKey, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
+import { type Card, cardsFor, clock, conversationFeed, conversationKey, draftKey, entryKey, meshOf, type Open, openRowKey, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
 import type { Talk } from "./talk.js"
 
 type ComposerModule = typeof import("./composer.js")
@@ -39,6 +39,7 @@ const FEED_ROWS = 200
 // The channel a space opens on, as `cotal join` defaults to it.
 const DEFAULT_CHANNEL = "general"
 const STOP_NOTICE_MS = 8000
+const CARDS_SHOWN = 5
 
 const fit = (s: string, n: number) => (n <= 0 ? "" : s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s)
 const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p
@@ -56,6 +57,8 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const [cursor, setCursor] = createSignal<string>()
   const [open, setOpen] = createSignal<Open>({ kind: "channel", channel: DEFAULT_CHANNEL })
   const [seen, setSeen] = createSignal<Record<string, number>>({})
+  // The ids of the replies and mentions whose conversation the human has opened, for this app run.
+  const [cleared, setCleared] = createSignal<ReadonlySet<string>>(new Set())
   const [now, setNow] = createSignal(Date.now())
   const [stop, setStop] = createSignal<Stop>({ phase: "idle" })
   const [composer, setComposer] = createSignal<ComposerState>({ drafts: {}, sending: {} })
@@ -87,6 +90,13 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     return m ? conversationFeed(m, open(), talk()?.own() ?? { received: [], sent: [] }, FEED_ROWS) : []
   })
   const senders = createMemo(() => new Map(feed().map((e) => [e.id, e.from.name])))
+  const cards = createMemo((): Card[] => {
+    const m = mesh()
+    const t = talk()
+    return m && t ? cardsFor(conversationFeed(m, { kind: "channel" }, t.own(), FEED_ROWS), t.you(), t.mentionsYou, cleared()) : []
+  })
+  // What the inspector lists, in its order: the keys `w` and `1`-`9` open these at every width.
+  const needs = createMemo((): Open[] => [...waiting().map((p): Open => ({ kind: "peer", id: p.card.id })), ...cards().map((c) => c.open)])
   // The open conversation's reply quote, which the conversation highlights.
   const draftHere = () => {
     const m = mesh()
@@ -122,6 +132,12 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     if (!m || o.kind !== "channel" || o.channel === undefined) return
     const arrivals = m.channels.find((c) => c.channel === o.channel)?.arrivals ?? 0
     if (seen()[o.channel] !== arrivals) setSeen((s) => ({ ...s, [o.channel!]: arrivals }))
+  })
+  // A card clears once its conversation is open.
+  createEffect(() => {
+    const here = conversationKey(open())
+    const done = cards().filter((c) => conversationKey(c.open) === here)
+    if (done.length) setCleared((r) => new Set([...r, ...done.map((c) => c.entry.id)]))
   })
 
   // The box has the keys while it is on screen or on its way, as a space opens or the composer
@@ -206,17 +222,22 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     else void switchTo(r.entry.space)
     toBox()
   }
-  const openWaiting = (n: number) => {
-    const list = waiting()
+  // The slot `w` or a number opened last. An opened card clears, so the next item slides into its slot.
+  let lastNeed = 0
+  const openNeed = (n: number) => {
+    const list = needs()
     if (list.length === 0) return toast.show({ variant: "info", message: "Nothing needs you" })
-    const p = list[n]
-    if (!p) return toast.show({ variant: "warning", message: `Only ${list.length} agent(s) need you` })
-    setOpen({ kind: "peer", id: p.card.id })
-    setCursor(peerKey(p.card.id))
+    const o = list[n]
+    if (!o) return toast.show({ variant: "warning", message: `Only ${list.length} item(s) need you` })
+    lastNeed = n
+    setOpen(o)
+    setCursor(o.kind === "peer" ? peerKey(o.id) : undefined)
   }
-  const nextWaiting = () => {
-    const at = waiting().findIndex((p) => p.card.id === openPeer())
-    openWaiting(at + 1 < waiting().length ? at + 1 : 0)
+  const nextNeed = () => {
+    const here = conversationKey(open())
+    const at = needs().findIndex((o) => conversationKey(o) === here)
+    const next = at >= 0 ? at + 1 : lastNeed
+    openNeed(next < needs().length ? next : 0)
   }
 
   // The shared-name warning, once per session that finds its name taken.
@@ -308,8 +329,8 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     { id: "cotal.down", bind: "j,down", keys: "j ↓", title: "Next row", group: "Move", run: () => move(1) },
     { id: "cotal.up", bind: "k,up", keys: "k ↑", title: "Previous row", group: "Move", run: () => move(-1) },
     { id: "cotal.open", bind: "return", keys: "enter", title: "Open the selected row", group: "Move", run: openRow },
-    { id: "cotal.next-need", bind: "w", keys: "w", title: "Open the next waiting agent", group: "Needs you", palette: true, run: nextWaiting },
-    { id: "cotal.need", bind: "1,2,3,4,5,6,7,8,9", keys: "1-9", title: "Open that waiting agent", group: "Needs you", run: (e) => e && openWaiting(Number(e.name) - 1) },
+    { id: "cotal.next-need", bind: "w", keys: "w", title: "Open the next waiting agent, reply or mention", group: "Needs you", palette: true, run: nextNeed },
+    { id: "cotal.need", bind: "1,2,3,4,5,6,7,8,9", keys: "1-9", title: "Open that item of the inspector", group: "Needs you", run: (e) => e && openNeed(Number(e.name) - 1) },
     { id: "cotal.reload", bind: "ctrl+r", keys: "ctrl+r", title: "Reread spaces", group: "System", palette: true, run: () => void read(true) },
     { id: COMMAND_PALETTE_COMMAND, bind: "ctrl+p", keys: "ctrl+p", title: "Commands", group: "System", global: true, run: () => dialog.replace(() => <Palette commands={commands} />) },
     { id: "cotal.help", bind: "?", keys: "?", title: "Keys", group: "System", palette: true, run: () => dialog.replace(() => <Help commands={commands} />, undefined, { size: "large" }) },
@@ -586,6 +607,15 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   })
   Keymap.createLayer(() => ({ mode: "hold", commands: [{ id: "cotal.hold.tree", bind: "tab", title: "Move to the tree", group: "Move", run: () => void setFocus("tree") }] }))
 
+  /** The inspector as one line, for a screen too narrow for it, such as `1 needs you · 2 mentions`. */
+  const summary = () => {
+    const n = waiting().length
+    const replies = cards().filter((c) => c.kind === "reply").length
+    const mentions = cards().length - replies
+    const parts = [n ? `${n} need${n === 1 ? "s" : ""} you` : "", replies ? `${replies} repl${replies === 1 ? "y" : "ies"}` : "", mentions ? `${mentions} mention${mentions === 1 ? "" : "s"}` : ""]
+    return parts.filter(Boolean).join(" · ")
+  }
+
   const Middle = () => (
     <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2} paddingTop={1} minWidth={0} minHeight={0}>
       <Show
@@ -609,10 +639,10 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
           </>
         )}
       </Show>
-      <Show when={layout().kind === "two" && waiting().length}>
-        {(n) => (
+      <Show when={layout().kind === "two" && summary()}>
+        {(line) => (
           <text wrapMode="none" fg={theme.text.feedback.warning.base} flexShrink={0}>
-            {`${n()} need${n() === 1 ? "s" : ""} you`}
+            {line()}
           </text>
         )}
       </Show>
@@ -640,6 +670,24 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     </box>
   )
 
+  /** A reply or mention: who, where, and the start of what they wrote. A click opens it, as its
+   *  number does. */
+  const CardRow = (p: { card: Card; n: number; width: number }) => {
+    const e = p.card.entry
+    const where = e.delivery === "multicast" ? (e.channel ? `#${e.channel}` : "") : e.delivery === "anycast" ? `@${e.toService ?? "?"}` : "→ you"
+    return (
+      <box flexShrink={0} marginBottom={1} onMouseDown={() => openNeed(p.n)}>
+        <text wrapMode="none" fg={gold()}>
+          <span style={{ fg: theme.text.base }}>{`${p.n + 1} `}</span>
+          {p.card.kind === "reply" ? "↩ " : "@ "}
+          <span style={{ fg: nameFg(e.from) }}>{fit(e.from.name, p.width - 8 - where.length)}</span>
+          <span style={{ fg: theme.text.faint }}>{`  ${where}`}</span>
+        </text>
+        <text fg={theme.text.muted}>{fit(e.text.split("\n")[0]!, (p.width - 4) * 2)}</text>
+      </box>
+    )
+  }
+
   const Inspector = (p: { width: number }) => {
     const selected = () => {
       const r = selection()
@@ -647,15 +695,17 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     }
     return (
       <box width={p.width} flexShrink={0} flexDirection="column" paddingLeft={2} paddingRight={2} paddingTop={1} backgroundColor={theme.background.raised.base}>
-        <Section title={`NEEDS YOU · ${waiting().length}`} />
-        <box height={1} flexShrink={0} />
+        <Show when={waiting().length || !cards().length}>
+          <Section title={`NEEDS YOU · ${waiting().length}`} />
+          <box height={1} flexShrink={0} />
+        </Show>
         <Show
           when={waiting().length}
-          fallback={<text fg={theme.text.muted}>Nothing needs you.</text>}
+          fallback={<Show when={!cards().length}><text fg={theme.text.muted}>Nothing needs you.</text></Show>}
         >
           <For each={waiting()}>
             {(a, i) => (
-              <box flexShrink={0} marginBottom={1} backgroundColor={openPeer() === a.card.id ? theme.background.raised.high : undefined}>
+              <box flexShrink={0} marginBottom={1} backgroundColor={openPeer() === a.card.id ? theme.background.raised.high : undefined} onMouseDown={() => openNeed(i())}>
                 <text wrapMode="none" fg={theme.text.feedback.warning.base}>
                   <span style={{ fg: theme.text.base }}>{`${i() + 1} `}</span>
                   {"◐ "}
@@ -666,6 +716,16 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
               </box>
             )}
           </For>
+        </Show>
+        <Show when={cards().length}>
+          <Section title={`REPLIES AND MENTIONS · ${cards().length}`} />
+          <box height={1} flexShrink={0} />
+          <For each={cards().slice(0, CARDS_SHOWN)}>
+            {(c, i) => <CardRow card={c} n={waiting().length + i()} width={p.width} />}
+          </For>
+          <Show when={cards().length > CARDS_SHOWN}>
+            <text fg={theme.text.faint} marginBottom={1}>{`+${cards().length - CARDS_SHOWN} more`}</text>
+          </Show>
         </Show>
         <Show when={selected()}>
           {(a) => (

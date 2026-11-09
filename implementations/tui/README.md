@@ -36,16 +36,20 @@ Three columns. The left one lists the spaces, then the open space's channels, ag
 with your name at the bottom. A chat session is listed while it is open, and yours only as that
 name. The middle shows the open conversation, with the input box under it:
 all traffic, one channel, or one agent with its question pinned when it waits. A space opens on
-`#general`. The inspector on the right lists the agents waiting for an answer and the selected
-agent's status, model, harness and uptime. When the conversation would get fewer than 40 columns, as
-at 80x24, the inspector shrinks to a count such as `1 needs you` above the input box, and the agent
-overview shows in the conversation while the tree has the keys. Each agent's name keeps one color in
+`#general`. The inspector on the right lists the agents waiting for an answer, then the replies to
+your messages and the messages that mention you, newest first, and the selected agent's status,
+model, harness and uptime. A reply or mention card opens its channel, or its sender's conversation
+for a direct message, and clears once that conversation is open. Cleared cards stay cleared until the
+app quits, and a reply or mention in the open conversation makes no card. When the conversation
+would get fewer than 40 columns, as at 80x24, the inspector shrinks to a count such as
+`1 needs you · 2 replies · 1 mention` above the input box, and the agent overview shows in the
+conversation while the tree has the keys. Each agent's name keeps one color in
 the tree, the feed and the waiting list, and yours is gold.
 
 The cursor starts in the input box. `tab` moves it to the tree, where the arrows or `j` and `k`
 move, `enter` opens the row and returns to the box, and `esc` or `tab` returns without opening.
-The letter keys work only in the tree: `w` opens the next waiting agent and `1`-`9` a specific one,
-`D` stops an agent, `?` lists the keys and `q` quits. While a space opens, the box keeps the keys
+The letter keys work only in the tree: `w` opens the next item the inspector lists, waiting agents
+first, and `1`-`9` a specific one, as a click on its card does. `D` stops an agent, `?` lists the keys and `q` quits. While a space opens, the box keeps the keys
 before it is on screen, so a letter typed for it runs no tree key; `tab` moves them to the tree.
 `ctrl+p` opens the commands and `ctrl+c` quits from anywhere.
 
@@ -166,6 +170,11 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   conversation, and in all traffic a direct message between two agents or to a namesake.
   With the static space's manager held, a switch and a quit each say the first message was not
   sent, and the space switched to sends at once.
+  `smoke/cards.smoke.ts` posts from the input box at 209x52, 97x49 and 80x24 on an open space, then
+  has peers reply in a channel, mention you in another and reply by direct message. It reads the
+  inspector's order and the one-line count at 80x24 off the screen, opens the cards with `w`, a
+  click and a number, and checks that each clears, that a mention of someone else or a reply to a
+  peer makes none, and that a mention in the open conversation makes none.
   They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
   built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space
