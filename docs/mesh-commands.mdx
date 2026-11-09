@@ -1,0 +1,4870 @@
+---
+title: Mesh command catalog
+description: Built-in endpoint command declarations, capabilities, targeting modes and JSON schemas.
+kind: "Reference (informative)"
+audience: developers integrating with Cotal
+---
+
+This catalog is generated from the built-in Manager, auth and registry cluster contracts in this source revision. It lists every command those three contracts declare, with its complete input and output JSON schemas. Dynamic extension endpoints, including MCP bridges, are discovered from their running service. Reserved protocol verbs such as `describe` are defined in [SPEC §13](../SPEC.md#13-endpoint-control-surface-v04), not in these cluster tables.
+
+## Discover before calling
+
+A published catalog does not establish that a service is running or that a caller has authority. Resolve the live endpoint before invoking it; [discovery](control-discovery.mdx#service-discovery) verifies the registered contract digests. Installed versions may differ from this page. Capability names classify commands; they are not grants. Target modes and instance routing remain enforced by the broker and service.
+
+For an already authorized space, these examples inspect the Manager and make a read-only status call. Choose the Manager instance explicitly where required by your deployment. They do not create a grant or start a service.
+
+```sh
+cotal describe manager --space <space> --on <instance>
+cotal invoke manager status --args 'null' --space <space> --on <instance>
+```
+
+The [CLI endpoint reference](cli-endpoints.mdx) explains discovery, target selection and invocation. Agent sessions use `cotal_describe` followed by `cotal_invoke`; see the [tool catalog](mcp-tools.mdx). Do not substitute an identity field in command arguments for the authenticated target.
+
+## Request failures
+
+The output schemas below describe successful command results, not the protocol error envelope. Input validation refuses before publication. A received `error.outcome` of `not-executed` proves the command did not run; an unknown or absent outcome does not. Check the affected state before repeating a mutation. Commands may also return domain refusal states inside a successful result, as their output schema specifies. See [request outcomes](control-discovery.mdx#request-outcomes) and [SPEC §13](../SPEC.md#13-endpoint-control-surface-v04) for errors, deadlines and retry rules. The cluster documents do not declare an exhaustive per-command error-code list.
+
+## manager
+
+Cluster `ai.cotal.manager`, revision 46. 43 commands.
+
+| Command                                                   | Capability          | Class     | Target modes |
+| --------------------------------------------------------- | ------------------- | --------- | ------------ |
+| [`vitals`](#manager-vitals)                               | `manager.vitals`    | ephemeral | untargeted   |
+| [`status`](#manager-status)                               | `manager.read`      | ephemeral | untargeted   |
+| [`ps`](#manager-ps)                                       | `manager.read`      | ephemeral | untargeted   |
+| [`inspect`](#manager-inspect)                             | `manager.read`      | ephemeral | untargeted   |
+| [`slots`](#manager-slots)                                 | `manager.read`      | ephemeral | untargeted   |
+| [`models`](#manager-models)                               | `manager.read`      | ephemeral | untargeted   |
+| [`resolve-cwd`](#manager-resolve-cwd)                     | `manager.spawn`     | ephemeral | untargeted   |
+| [`resolve-agent`](#manager-resolve-agent)                 | `manager.spawn`     | ephemeral | untargeted   |
+| [`spawn`](#manager-spawn)                                 | `manager.spawn`     | ephemeral | untargeted   |
+| [`despawn`](#manager-despawn)                             | `manager.lifecycle` | ephemeral | owner, any   |
+| [`attach`](#manager-attach)                               | `manager.lifecycle` | ephemeral | owner, any   |
+| [`input`](#manager-input)                                 | `manager.lifecycle` | ephemeral | owner, any   |
+| [`turn`](#manager-turn)                                   | `manager.lifecycle` | ephemeral | owner, any   |
+| [`turn-participate`](#manager-turn-participate)           | `manager.self`      | ephemeral | self         |
+| [`turn-pending`](#manager-turn-pending)                   | `manager.self`      | ephemeral | self         |
+| [`turn-yield`](#manager-turn-yield)                       | `manager.self`      | ephemeral | self         |
+| [`turn-unconfirmed`](#manager-turn-unconfirmed)           | `manager.self`      | ephemeral | self         |
+| [`cancel`](#manager-cancel)                               | `manager.lifecycle` | ephemeral | untargeted   |
+| [`stop`](#manager-stop)                                   | `manager.self`      | ephemeral | self         |
+| [`run-start`](#manager-run-start)                         | `manager.run`       | ephemeral | untargeted   |
+| [`run-start-keyed`](#manager-run-start-keyed)             | `manager.run`       | ephemeral | untargeted   |
+| [`run-submission-status`](#manager-run-submission-status) | `manager.run`       | ephemeral | untargeted   |
+| [`run-resume`](#manager-run-resume)                       | `manager.run`       | ephemeral | untargeted   |
+| [`run-cancel`](#manager-run-cancel)                       | `manager.run`       | ephemeral | untargeted   |
+| [`run-answer`](#manager-run-answer)                       | `manager.run`       | ephemeral | self         |
+| [`run-status`](#manager-run-status)                       | `manager.read`      | ephemeral | untargeted   |
+| [`run-ps`](#manager-run-ps)                               | `manager.read`      | ephemeral | untargeted   |
+| [`goal-result`](#manager-goal-result)                     | `manager.read`      | ephemeral | untargeted   |
+| [`define-persona`](#manager-define-persona)               | `manager.persona`   | ephemeral | untargeted   |
+| [`remove-persona`](#manager-remove-persona)               | `manager.persona`   | ephemeral | untargeted   |
+| [`chat-session-open`](#manager-chat-session-open)         | `manager.chat`      | ephemeral | untargeted   |
+| [`chat-session-retire`](#manager-chat-session-retire)     | `manager.chat`      | ephemeral | untargeted   |
+| [`list-personas`](#manager-list-personas)                 | `manager.read`      | ephemeral | untargeted   |
+| [`show-persona`](#manager-show-persona)                   | `manager.read`      | ephemeral | untargeted   |
+| [`purge`](#manager-purge)                                 | `manager.admin`     | ephemeral | untargeted   |
+| [`launch`](#manager-launch)                               | `manager.admin`     | ephemeral | untargeted   |
+| [`resume-preserved`](#manager-resume-preserved)           | `manager.admin`     | ephemeral | untargeted   |
+| [`commit-resume`](#manager-commit-resume)                 | `manager.admin`     | ephemeral | untargeted   |
+| [`finalize-resume`](#manager-finalize-resume)             | `manager.admin`     | ephemeral | untargeted   |
+| [`prepare-preservation`](#manager-prepare-preservation)   | `manager.admin`     | ephemeral | untargeted   |
+| [`commit-preservation`](#manager-commit-preservation)     | `manager.admin`     | ephemeral | untargeted   |
+| [`abort-preservation`](#manager-abort-preservation)       | `manager.admin`     | ephemeral | untargeted   |
+| [`transcript-receive`](#manager-transcript-receive)       | `manager.admin`     | ephemeral | untargeted   |
+
+### manager vitals
+
+Registered declaration:
+
+```json
+{
+  "name": "vitals",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.vitals",
+  "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+  "outputDigest": "sha256:2e2481b4e4fde9392355035231323b1468873ffa47038e89f003eb9806f1f5ab"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "null"
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sampledAt",
+    "cpu",
+    "memory",
+    "filesystems"
+  ],
+  "properties": {
+    "sampledAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "cpu": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logicalCount",
+        "load1",
+        "load5",
+        "load15"
+      ],
+      "properties": {
+        "logicalCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "load1": {
+          "type": "number",
+          "minimum": 0
+        },
+        "load5": {
+          "type": "number",
+          "minimum": 0
+        },
+        "load15": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "totalBytes",
+        "availableBytes"
+      ],
+      "properties": {
+        "totalBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "availableBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "filesystems": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mount",
+          "totalBytes",
+          "freeBytes"
+        ],
+        "properties": {
+          "mount": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+          },
+          "totalBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "freeBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### manager status
+
+Registered declaration:
+
+```json
+{
+  "name": "status",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.read",
+  "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+  "outputDigest": "sha256:20fcd4978ef14fa010b0da9c704fc0289d9cc8b4ee290ac388d47cb09db81362"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "null"
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "instanceId",
+    "execution",
+    "runtime",
+    "custody",
+    "runHosting",
+    "terminalSessions",
+    "agentCount",
+    "uptimeMs",
+    "connectors",
+    "classSpawn",
+    "staticReconciliation"
+  ],
+  "properties": {
+    "instanceId": {
+      "type": "string"
+    },
+    "host": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
+    "lifecycleUid": {
+      "type": "string"
+    },
+    "execution": {
+      "enum": [
+        "runtime",
+        "none"
+      ]
+    },
+    "runtime": {
+      "type": "string"
+    },
+    "custody": {
+      "enum": [
+        "legacy",
+        "custodied",
+        "none"
+      ]
+    },
+    "runHosting": {
+      "type": "boolean"
+    },
+    "terminalSessions": {
+      "type": "boolean"
+    },
+    "agentCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "uptimeMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "classSpawn": {
+      "type": "boolean"
+    },
+    "connectors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agent",
+          "state",
+          "binaries",
+          "eventPlane"
+        ],
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "available",
+              "unavailable"
+            ]
+          },
+          "binaries": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "eventPlane": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "stopImpact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agentScope",
+        "observedAt",
+        "maintenance",
+        "resumeRequired",
+        "stopping",
+        "lifecycleInFlight",
+        "reservedLaunches",
+        "retirementsPending",
+        "deprovisioningInFlight",
+        "staticReconciliationInFlight",
+        "agents"
+      ],
+      "properties": {
+        "agentScope": {
+          "enum": [
+            "manager",
+            "owner-filtered"
+          ]
+        },
+        "observedAt": {
+          "type": "string"
+        },
+        "maintenance": {
+          "enum": [
+            "active",
+            "preserving",
+            "preserved"
+          ]
+        },
+        "resumeRequired": {
+          "type": "boolean"
+        },
+        "stopping": {
+          "type": "boolean"
+        },
+        "lifecycleInFlight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reservedLaunches": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retirementsPending": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deprovisioningInFlight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "staticReconciliationInFlight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "id",
+              "lifecycleUid",
+              "mode",
+              "defaultAction",
+              "withAgentsAction"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "lifecycleUid": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "defaultAction": {
+                "enum": [
+                  "release-custody",
+                  "stop",
+                  "stop-retaining-state"
+                ]
+              },
+              "withAgentsAction": {
+                "enum": [
+                  "stop",
+                  "stop-retaining-state"
+                ]
+              }
+            }
+          }
+        },
+        "preservation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attemptId",
+            "inventorySha256"
+          ],
+          "properties": {
+            "attemptId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+            },
+            "inventorySha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "staticReconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "failures"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "idle",
+            "running",
+            "retry-wait",
+            "retrying",
+            "recovered",
+            "failed"
+          ]
+        },
+        "lastSweep": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "startedAt",
+            "attempted",
+            "succeeded",
+            "failed"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "startup",
+                "post-adoption"
+              ]
+            },
+            "startedAt": {
+              "type": "string"
+            },
+            "completedAt": {
+              "type": "string"
+            },
+            "attempted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "succeeded": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "error": {
+              "type": "string"
+            }
+          }
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "alias",
+              "actor",
+              "lifecycleUid",
+              "phase",
+              "attempts",
+              "maxAttempts",
+              "disposition"
+            ],
+            "properties": {
+              "alias": {
+                "type": "string"
+              },
+              "actor": {
+                "type": "string"
+              },
+              "lifecycleUid": {
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "provisioning",
+                  "active",
+                  "terminalizing",
+                  "retired"
+                ]
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "maxAttempts": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "disposition": {
+                "enum": [
+                  "retry-scheduled",
+                  "retrying",
+                  "recovered",
+                  "refused",
+                  "refused-foreign",
+                  "retry-exhausted"
+                ]
+              },
+              "lastError": {
+                "type": "string"
+              },
+              "nextRetryAt": {
+                "type": "string"
+              },
+              "recoveredAt": {
+                "type": "string"
+              },
+              "remedy": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### manager ps
+
+Registered declaration:
+
+```json
+{
+  "name": "ps",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.read",
+  "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+  "outputDigest": "sha256:7157974d7b0e7b1c0d52a76b410451f547598383f0d4490d81d29b37a146f108"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "null"
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "name",
+      "id",
+      "agent",
+      "space",
+      "mode",
+      "status",
+      "uptimeMs",
+      "mesh",
+      "lifecycleUid"
+    ],
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "id": {
+        "type": "string"
+      },
+      "role": {
+        "type": "string"
+      },
+      "agent": {
+        "type": "string"
+      },
+      "space": {
+        "type": "string"
+      },
+      "mode": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "uptimeMs": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "mesh": {
+        "type": "string"
+      },
+      "joinHealth": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "reason"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "const": "degraded"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "condition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "since": {
+            "type": "number"
+          }
+        }
+      },
+      "activeAt": {
+        "type": "number"
+      },
+      "meshView": {
+        "type": "string",
+        "enum": [
+          "current",
+          "stale",
+          "unpopulated"
+        ]
+      },
+      "presenceIdentityVerified": {
+        "type": "boolean"
+      },
+      "presenceObservedAt": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "offlineSince": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "lifecycleUid": {
+        "type": "string"
+      },
+      "authHealth": {
+        "type": "string"
+      },
+      "authReason": {
+        "type": "string"
+      },
+      "model": {
+        "type": "string"
+      },
+      "variant": {
+        "type": "string"
+      },
+      "provider": {
+        "type": "string"
+      },
+      "cwd": {
+        "type": "string"
+      },
+      "pid": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "spawner": {
+        "type": "string"
+      },
+      "instanceId": {
+        "type": "string"
+      },
+      "host": {
+        "type": "string"
+      },
+      "resume": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "transcriptSha256": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "transferredAt": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### manager inspect
+
+Registered declaration:
+
+```json
+{
+  "name": "inspect",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.read",
+  "inputDigest": "sha256:c74bfe6c0426cf31f56796a48992639eb08a46c36f7dd7205b497cf2c83a8382",
+  "outputDigest": "sha256:02ded1a202858d47e44e303c28b31c42ac1a55c792327a96647812ed294fafd4"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "id",
+    "agent",
+    "space",
+    "mode",
+    "status",
+    "uptimeMs",
+    "mesh",
+    "lifecycleUid"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "agent": {
+      "type": "string"
+    },
+    "space": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "uptimeMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mesh": {
+      "type": "string"
+    },
+    "joinHealth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "reason"
+      ],
+      "properties": {
+        "state": {
+          "type": "string",
+          "const": "degraded"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "since": {
+          "type": "number"
+        }
+      }
+    },
+    "activeAt": {
+      "type": "number"
+    },
+    "meshView": {
+      "type": "string",
+      "enum": [
+        "current",
+        "stale",
+        "unpopulated"
+      ]
+    },
+    "presenceIdentityVerified": {
+      "type": "boolean"
+    },
+    "presenceObservedAt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "offlineSince": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "lifecycleUid": {
+      "type": "string"
+    },
+    "authHealth": {
+      "type": "string"
+    },
+    "authReason": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "variant": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "spawner": {
+      "type": "string"
+    },
+    "instanceId": {
+      "type": "string"
+    },
+    "host": {
+      "type": "string"
+    },
+    "resume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source"
+      ],
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "transcriptSha256": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "transferredAt": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
+```
+
+### manager slots
+
+Registered declaration:
+
+```json
+{
+  "name": "slots",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.read",
+  "inputDigest": "sha256:60ec4285f99501ea9b3419ff63645f517f4c95edb43faa53ac2d8a1502ba4c7d",
+  "outputDigest": "sha256:da5feb93000530a54705e4699c81390bbb3e1d3acd4ebfbab0349544b75f47a9"
+}
+```
+
+Input schema:
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "null"
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "names": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "maxLength": 200
+          }
+        },
+        "includeRetired": {
+          "type": "boolean"
+        }
+      }
+    }
+  ]
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "name",
+      "owner",
+      "actor",
+      "slotLifecycleUid",
+      "slotPhase",
+      "slotRevision",
+      "readOrder",
+      "consistency",
+      "live",
+      "managerInstanceId"
+    ],
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "owner": {
+        "type": "string"
+      },
+      "actor": {
+        "type": "string"
+      },
+      "slotLifecycleUid": {
+        "type": "string"
+      },
+      "slotPhase": {
+        "type": "string",
+        "enum": [
+          "provisioning",
+          "active",
+          "terminalizing",
+          "retired"
+        ]
+      },
+      "cleanupComplete": {
+        "type": "boolean"
+      },
+      "slotRevision": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "headState": {
+        "type": "string",
+        "enum": [
+          "active",
+          "retiring",
+          "retired"
+        ]
+      },
+      "headOp": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "opId",
+          "kind"
+        ],
+        "properties": {
+          "opId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "retirement"
+            ]
+          }
+        }
+      },
+      "headLifecycleUid": {
+        "type": "string"
+      },
+      "headRevision": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "readOrder": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "slot",
+            "head"
+          ]
+        },
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "consistency": {
+        "type": "string",
+        "enum": [
+          "ordered-not-atomic"
+        ]
+      },
+      "live": {
+        "type": "boolean"
+      },
+      "managerInstanceId": {
+        "type": "string"
+      }
+    }
+  }
+}
+```
+
+### manager models
+
+Registered declaration:
+
+```json
+{
+  "name": "models",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.read",
+  "inputDigest": "sha256:edcf1dcdeede38991ec59b6bf2a44fc2a36bb6252fce5d80e399717ec85df88c",
+  "outputDigest": "sha256:66c9c24fef33a9cf69afdb59324a37591e600ce8106ed61e71b46dddcbc124f6"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "type": "string"
+    },
+    "refresh": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "catalogs"
+  ],
+  "properties": {
+    "catalogs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "agent",
+          "supported",
+          "models"
+        ],
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "supported": {
+            "type": "boolean"
+          },
+          "models": {
+            "type": "array"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### manager resolve-cwd
+
+Registered declaration:
+
+```json
+{
+  "name": "resolve-cwd",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.spawn",
+  "inputDigest": "sha256:ea591334a950e26e492ad4be32c44ac5687ba73c01929064c41e7ae59efa3d22",
+  "outputDigest": "sha256:5c3dc3539b27d9a7c95379984bb8e9eba33d0bffb68817681f014d4b0646ef79"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "cwd"
+  ],
+  "properties": {
+    "cwd": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "cwd",
+    "host"
+  ],
+  "properties": {
+    "cwd": {
+      "type": "string"
+    },
+    "host": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager resolve-agent
+
+Registered declaration:
+
+```json
+{
+  "name": "resolve-agent",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.spawn",
+  "inputDigest": "sha256:4e082d960896c6bfffe62657e42a56694a1e371fa9aaf9fb4dee5e0a93713db9",
+  "outputDigest": "sha256:bd5150fceb1ed179f0cb3db78c67e4adba7be6501db228a619556c355474a295"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "config": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "agent": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "defaultAgent": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "agent"
+  ],
+  "properties": {
+    "agent": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager spawn
+
+Registered declaration:
+
+```json
+{
+  "name": "spawn",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.spawn",
+  "inputDigest": "sha256:fdb061219ac54df53789b2dfba3ff709271075e4115be6f5142d731b609269fe",
+  "outputDigest": "sha256:d883a9f97f7c034772c7cbc28b22d63cf69870ba072d470c2f7b104f455e2e83"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agent": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "defaultAgent": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "role": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "config": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "identity": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "model": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "variant": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "launchOptions": {
+      "type": "object"
+    },
+    "resume": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "resumeClaim": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "resumeAgent": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "events": {
+      "type": "boolean"
+    },
+    "cwd": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "prompt": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "persona": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prompt"
+      ],
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "role": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "model": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "variant": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "description": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "subscribe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowSubscribe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowPublish": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "save": {
+          "type": "boolean"
+        }
+      }
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "subscribe": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowSubscribe": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowPublish": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "join": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "callerAcl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowSubscribe",
+        "allowPublish"
+      ],
+      "properties": {
+        "allowSubscribe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowPublish": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "shareTools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "runtime": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "supervise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "restarts",
+        "windowMs"
+      ],
+      "properties": {
+        "restarts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "windowMs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "once": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deadlineMs": {
+          "anyOf": [
+            {
+              "const": -1
+            },
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "owner",
+    "actor",
+    "uid",
+    "goalId",
+    "fingerprint",
+    "executor"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "uid": {
+      "type": "string"
+    },
+    "goalId": {
+      "type": "string"
+    },
+    "fingerprint": {
+      "type": "string"
+    },
+    "readinessDeadlineMs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lifecycleUid",
+        "epoch"
+      ],
+      "properties": {
+        "lifecycleUid": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
+```
+
+### manager despawn
+
+Registered declaration:
+
+```json
+{
+  "name": "despawn",
+  "class": "ephemeral",
+  "targeted": true,
+  "modes": [
+    "owner",
+    "any"
+  ],
+  "capability": "manager.lifecycle",
+  "inputDigest": "sha256:2fde1dce4a65d3dad7991113b4b98f51f10b94109898f049154759bc456567ef",
+  "outputDigest": "sha256:7ec7cf7c8d9011fc57022db68577851eb1fb57cdbef94766e4d6ca26bc70131e"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "graceful": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "stopped",
+    "graceful"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "stopped": {
+      "type": "boolean"
+    },
+    "graceful": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+### manager attach
+
+Registered declaration:
+
+```json
+{
+  "name": "attach",
+  "class": "ephemeral",
+  "targeted": true,
+  "modes": [
+    "owner",
+    "any"
+  ],
+  "capability": "manager.lifecycle",
+  "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+  "outputDigest": "sha256:db9b6af74cba69ac9d3a08c9d313b3f65dca9df6e19ad19cc1753956dcf937c3"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "null"
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "grant"
+  ],
+  "properties": {
+    "grant": {
+      "type": "object"
+    },
+    "resumedFrom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "source"
+      ],
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
+```
+
+### manager input
+
+Registered declaration:
+
+```json
+{
+  "name": "input",
+  "class": "ephemeral",
+  "targeted": true,
+  "modes": [
+    "owner",
+    "any"
+  ],
+  "capability": "manager.lifecycle",
+  "inputDigest": "sha256:31b92d1926fc84652ca043f8b9a2c443ed272932e99935b64ab35e24d88c0052",
+  "outputDigest": "sha256:165c6b378b4731d23598bf42d390998da55afeac3690cfdad700820b0ad5b126"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "text"
+  ],
+  "properties": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536
+    },
+    "enter": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "bytes"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}
+```
+
+### manager turn
+
+Registered declaration:
+
+```json
+{
+  "name": "turn",
+  "class": "ephemeral",
+  "targeted": true,
+  "modes": [
+    "owner",
+    "any"
+  ],
+  "capability": "manager.lifecycle",
+  "inputDigest": "sha256:89dfd09e59fbbef6db68f62f6ab2bbeb8ba7223ea89be008cb327b25723754e7",
+  "outputDigest": "sha256:b9d570154853a000e00e612c8051b21aaedaf96586b4ccca76bf4572b24b050d"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "payload"
+  ],
+  "oneOf": [
+    {
+      "required": [
+        "deadlineMs"
+      ]
+    },
+    {
+      "required": [
+        "deadlineAt"
+      ]
+    }
+  ],
+  "properties": {
+    "payload": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536
+    },
+    "deadlineMs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "deadlineAt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "handoffFrom": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "owner",
+    "actor",
+    "uid",
+    "goalId",
+    "fingerprint",
+    "deadlineAt",
+    "executor"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "uid": {
+      "type": "string"
+    },
+    "goalId": {
+      "type": "string"
+    },
+    "fingerprint": {
+      "type": "string"
+    },
+    "deadlineAt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lifecycleUid",
+        "epoch"
+      ],
+      "properties": {
+        "lifecycleUid": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
+```
+
+### manager turn-participate
+
+Registered declaration:
+
+```json
+{
+  "name": "turn-participate",
+  "class": "ephemeral",
+  "targeted": true,
+  "modes": [
+    "self"
+  ],
+  "capability": "manager.self",
+  "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+  "outputDigest": "sha256:4afc76abda2042d3792fcaea09a7b0fbb39298bd98b46d1b1f10723e77570ef8"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "null"
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "owner",
+    "actor",
+    "lifecycleUid",
+    "name",
+    "managerInstanceId",
+    "expiresAt"
+  ],
+  "properties": {
+    "owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lifecycleUid": {
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "managerInstanceId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expiresAt": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}
+```
+
+### manager turn-pending
+
+Registered declaration:
+
+```json
+{
+  "name": "turn-pending",
+  "class": "ephemeral",
+  "targeted": true,
+  "modes": [
+    "self"
+  ],
+  "capability": "manager.self",
+  "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+  "outputDigest": "sha256:36938254cd92614ab832a2c410cdd9f48b2498d8da36b53f9aa565e280328490"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "null"
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "turns"
+  ],
+  "properties": {
+    "notices": {
+      "const": true
+    },
+    "stop": {
+      "const": true
+    },
+    "turns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "goalId",
+          "payload",
+          "acceptedAt"
+        ],
+        "properties": {
+          "goalId": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "string"
+          },
+          "acceptedAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "deadlineAt": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "once": {
+            "const": true
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### manager turn-yield
+
+Registered declaration:
+
+```json
+{
+  "name": "turn-yield",
+  "class": "ephemeral",
+  "targeted": true,
+  "modes": [
+    "self"
+  ],
+  "capability": "manager.self",
+  "inputDigest": "sha256:dc992f7975be5cec5c3f90153288ad6821380867fe004056fbcf8eb227656542",
+  "outputDigest": "sha256:63909e8274cd7febd74f46b4932af8e1a27d6d5b7c16dd5d8dbd2955142bd013"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId",
+    "status"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "done",
+        "blocked",
+        "handoff"
+      ]
+    },
+    "to": {
+      "type": "string",
+      "minLength": 1
+    },
+    "note": {
+      "type": "string",
+      "maxLength": 4096
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId",
+    "state"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "expired",
+        "uncertain"
+      ]
+    }
+  }
+}
+```
+
+### manager turn-unconfirmed
+
+Registered declaration:
+
+```json
+{
+  "name": "turn-unconfirmed",
+  "class": "ephemeral",
+  "targeted": true,
+  "modes": [
+    "self"
+  ],
+  "capability": "manager.self",
+  "inputDigest": "sha256:d85c21db12518b997058347762cabad0a41f6f63d32a9b487abbeae49a51ecd1",
+  "outputDigest": "sha256:63909e8274cd7febd74f46b4932af8e1a27d6d5b7c16dd5d8dbd2955142bd013"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId",
+    "state"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "expired",
+        "uncertain"
+      ]
+    }
+  }
+}
+```
+
+### manager cancel
+
+Registered declaration:
+
+```json
+{
+  "name": "cancel",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.lifecycle",
+  "inputDigest": "sha256:57768d63b61c55c1590cf549cba7e0b4ee1b4de62dc711ec036eea8576511583",
+  "outputDigest": "sha256:63909e8274cd7febd74f46b4932af8e1a27d6d5b7c16dd5d8dbd2955142bd013"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "enum": [
+        "graceful",
+        "terminate"
+      ]
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId",
+    "state"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "expired",
+        "uncertain"
+      ]
+    }
+  }
+}
+```
+
+### manager stop
+
+Registered declaration:
+
+```json
+{
+  "name": "stop",
+  "class": "ephemeral",
+  "targeted": true,
+  "modes": [
+    "self"
+  ],
+  "capability": "manager.self",
+  "inputDigest": "sha256:2fde1dce4a65d3dad7991113b4b98f51f10b94109898f049154759bc456567ef",
+  "outputDigest": "sha256:7ec7cf7c8d9011fc57022db68577851eb1fb57cdbef94766e4d6ca26bc70131e"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "graceful": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "stopped",
+    "graceful"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "stopped": {
+      "type": "boolean"
+    },
+    "graceful": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+### manager run-start
+
+Registered declaration:
+
+```json
+{
+  "name": "run-start",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.run",
+  "inputDigest": "sha256:8e362b51f48d3895be78889490dcc402d3dad77f8f444c7041a5f38a770ce8d5",
+  "outputDigest": "sha256:137ba8c3bf03a825cce5b1f3958db9a9f7a8788ee4fb1f1137cb98b34a04578c"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source"
+  ],
+  "properties": {
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "file": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timeout": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager run-start-keyed
+
+Registered declaration:
+
+```json
+{
+  "name": "run-start-keyed",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.run",
+  "inputDigest": "sha256:8e362b51f48d3895be78889490dcc402d3dad77f8f444c7041a5f38a770ce8d5",
+  "outputDigest": "sha256:23f2d21f7cd2876c8739e17986e07c1042194d3e4e967b64995c81a951039b66"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source"
+  ],
+  "properties": {
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "file": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timeout": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "submissionId",
+    "state",
+    "instanceId",
+    "processEpoch"
+  ],
+  "properties": {
+    "submissionId": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "unbound",
+        "binding-only",
+        "admitted",
+        "activated",
+        "indeterminate"
+      ]
+    },
+    "instanceId": {
+      "type": "string"
+    },
+    "processEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "runId": {
+      "type": "string"
+    },
+    "fingerprint": {
+      "type": "string"
+    },
+    "callbackDeadline": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager run-submission-status
+
+Registered declaration:
+
+```json
+{
+  "name": "run-submission-status",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.run",
+  "inputDigest": "sha256:f1d18fe0ca475aa2308a6c333eeb3ad5c2e6490df8ff3d00048e35327ca3c86f",
+  "outputDigest": "sha256:23f2d21f7cd2876c8739e17986e07c1042194d3e4e967b64995c81a951039b66"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "submissionId"
+  ],
+  "properties": {
+    "submissionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "submissionId",
+    "state",
+    "instanceId",
+    "processEpoch"
+  ],
+  "properties": {
+    "submissionId": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "unbound",
+        "binding-only",
+        "admitted",
+        "activated",
+        "indeterminate"
+      ]
+    },
+    "instanceId": {
+      "type": "string"
+    },
+    "processEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "runId": {
+      "type": "string"
+    },
+    "fingerprint": {
+      "type": "string"
+    },
+    "callbackDeadline": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager run-resume
+
+Registered declaration:
+
+```json
+{
+  "name": "run-resume",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.run",
+  "inputDigest": "sha256:caf250696cca5065b7bf9056decccba83775b1ff3d8941d285350b6575c0dfe1",
+  "outputDigest": "sha256:137ba8c3bf03a825cce5b1f3958db9a9f7a8788ee4fb1f1137cb98b34a04578c"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timeout": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager run-cancel
+
+Registered declaration:
+
+```json
+{
+  "name": "run-cancel",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.run",
+  "inputDigest": "sha256:81f3d6efcfe85e94b0b99a9fa37c1594715149ef28a287a977928f47bef1d100",
+  "outputDigest": "sha256:690ac1173589459bbfa9d694754deb01933b47b0487c8c2e35d5ff8447cfdee4"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "reason"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "duplicate",
+    "authority",
+    "observed"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string"
+    },
+    "duplicate": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "authority": {
+      "enum": [
+        "original",
+        "owner-interactive",
+        "admin"
+      ]
+    },
+    "revocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by",
+        "reason",
+        "revokedAt"
+      ],
+      "properties": {
+        "by": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "revokedAt": {
+          "type": "integer"
+        }
+      }
+    },
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "processEpoch",
+        "phase"
+      ],
+      "properties": {
+        "processEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "phase": {
+          "enum": [
+            "terminal",
+            "launch-abandoned",
+            "stop-requested",
+            "stopped",
+            "not-driven-here"
+          ]
+        },
+        "recordedState": {
+          "enum": [
+            "running",
+            "released",
+            "completed",
+            "failed"
+          ]
+        },
+        "runEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fencingToken": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "holder": {
+          "type": "string"
+        },
+        "driveOutcome": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "steps"
+              ],
+              "properties": {
+                "status": {
+                  "const": "completed"
+                },
+                "steps": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "value": {}
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "reason"
+              ],
+              "properties": {
+                "status": {
+                  "const": "released"
+                },
+                "reason": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "name",
+                    "message"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "error"
+              ],
+              "properties": {
+                "status": {
+                  "const": "failed"
+                },
+                "error": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "name",
+                    "message"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "code": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+### manager run-answer
+
+Registered declaration:
+
+```json
+{
+  "name": "run-answer",
+  "class": "ephemeral",
+  "targeted": true,
+  "modes": [
+    "self"
+  ],
+  "capability": "manager.run",
+  "inputDigest": "sha256:6866b0ca9769bce89c5d1a20e1bfaa8615631ca3aeb305bfc984a6b723521830",
+  "outputDigest": "sha256:25a531f5a7cdb8ae96563e0af24afbcb18edd63b72bd769c530a07f90221a235"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "stepKey"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "endpoint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stepKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "value": {},
+    "artifact": {
+      "type": "string",
+      "minLength": 1
+    },
+    "amend": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "token",
+    "answerId"
+  ],
+  "properties": {
+    "token": {
+      "type": "string"
+    },
+    "answerId": {
+      "type": "string"
+    },
+    "settle": {
+      "type": "object"
+    },
+    "supersedes": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager run-status
+
+Registered declaration:
+
+```json
+{
+  "name": "run-status",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.read",
+  "inputDigest": "sha256:67695dbcf54a9f34a8d1fdf88c46da0808c5cc3a045e14b8a55cad725944999d",
+  "outputDigest": "sha256:9a44037dfa81572346d83a2593b95e63f84d6366dd1357226923ffdac159aec0"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "endpoint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "journal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "offset"
+      ],
+      "properties": {
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "endpoint",
+    "spec",
+    "journal"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string"
+    },
+    "endpoint": {
+      "type": "string"
+    },
+    "revoked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by",
+        "reason"
+      ],
+      "properties": {
+        "by": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "revocationUnreadable": {
+      "type": "string"
+    },
+    "programHash": {
+      "type": "string"
+    },
+    "programUnreadable": {
+      "type": "string"
+    },
+    "spec": {
+      "type": "object"
+    },
+    "status": {
+      "type": "object"
+    },
+    "journal": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "n",
+          "kind"
+        ],
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "activation",
+              "step"
+            ]
+          },
+          "holder": {
+            "type": "string"
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "replayedTo": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "step": {
+            "type": "string"
+          },
+          "effect": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "settled"
+            ]
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "errorCode": {
+            "type": "string"
+          },
+          "errorMessage": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": "number"
+          },
+          "endedAt": {
+            "type": "number"
+          },
+          "winner": {
+            "type": "string"
+          },
+          "lostRace": {
+            "type": "string"
+          },
+          "asks": {
+            "type": "string"
+          },
+          "addressee": {
+            "type": "string"
+          },
+          "deadlineAt": {
+            "type": "number"
+          },
+          "onExpiry": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "answerId"
+            ],
+            "properties": {
+              "answerId": {
+                "type": "string"
+              },
+              "value": {},
+              "by": {
+                "type": "string"
+              },
+              "artifact": {
+                "type": "string"
+              },
+              "at": {
+                "type": "number"
+              }
+            }
+          },
+          "amendments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "answerId",
+                "supersedes",
+                "by",
+                "at"
+              ],
+              "properties": {
+                "answerId": {
+                  "type": "string"
+                },
+                "supersedes": {
+                  "type": "string"
+                },
+                "value": {},
+                "by": {
+                  "type": "string"
+                },
+                "artifact": {
+                  "type": "string"
+                },
+                "at": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "journalTotal": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}
+```
+
+### manager run-ps
+
+Registered declaration:
+
+```json
+{
+  "name": "run-ps",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.read",
+  "inputDigest": "sha256:dffa73003c2d1326c8b5f388133795b1413a51859d792f54faa88247951f5f4c",
+  "outputDigest": "sha256:b8fb0446dd0c7f7656a874b6e703aa1130702642dc9ee646682a0440c3fa0237"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "endpoint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 3072,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "anyOf": [
+    {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "runId",
+          "endpoint"
+        ],
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "released",
+              "completed",
+              "failed"
+            ]
+          },
+          "holder": {
+            "type": "string"
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "journalHigh": {
+            "type": "integer",
+            "minimum": -1
+          },
+          "failure": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "pattern": "^L[0-9]{4}$"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          },
+          "startedAt": {
+            "type": "number"
+          },
+          "programHash": {
+            "type": "string"
+          },
+          "forkedFrom": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run",
+              "step"
+            ],
+            "properties": {
+              "run": {
+                "type": "string"
+              },
+              "step": {
+                "type": "string"
+              }
+            }
+          },
+          "revoked": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "by",
+              "reason"
+            ],
+            "properties": {
+              "by": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          },
+          "revocationUnreadable": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "semantics",
+        "space",
+        "endpointFilter",
+        "responder",
+        "cutSeq",
+        "nextSeq",
+        "items",
+        "endObserved",
+        "stopReason",
+        "storageReads"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "semantics": {
+          "const": "diagnostic"
+        },
+        "space": {
+          "type": "string"
+        },
+        "endpointFilter": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          ]
+        },
+        "responder": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "instanceId",
+            "epoch"
+          ],
+          "properties": {
+            "instanceId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "epoch": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "cutSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740990
+        },
+        "nextSeq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "endpoint",
+              "runId",
+              "specRevision",
+              "startedAt",
+              "observedAt",
+              "status",
+              "revocation"
+            ],
+            "properties": {
+              "endpoint": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "runId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,64}$"
+              },
+              "specRevision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "startedAt": {
+                "type": "number",
+                "minimum": 0
+              },
+              "observedAt": {
+                "type": "number",
+                "minimum": 0
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "v",
+                      "observedSpecRevision",
+                      "state",
+                      "holder",
+                      "epoch",
+                      "fencingToken",
+                      "journalHigh",
+                      "at",
+                      "statusRevision",
+                      "staleProjection"
+                    ],
+                    "properties": {
+                      "v": {
+                        "const": 1
+                      },
+                      "observedSpecRevision": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "running",
+                          "released",
+                          "completed",
+                          "failed"
+                        ]
+                      },
+                      "holder": {
+                        "type": "string"
+                      },
+                      "epoch": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "fencingToken": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "journalHigh": {
+                        "type": "integer",
+                        "minimum": -1
+                      },
+                      "at": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "statusRevision": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "staleProjection": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                ]
+              },
+              "revocation": {
+                "enum": [
+                  "present",
+                  "not-observed"
+                ]
+              }
+            }
+          }
+        },
+        "nextCursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 3072,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "endObserved": {
+          "type": "boolean"
+        },
+        "stopReason": {
+          "enum": [
+            "end",
+            "rows",
+            "bytes",
+            "read-budget"
+          ]
+        },
+        "storageReads": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 64
+        }
+      }
+    }
+  ]
+}
+```
+
+### manager goal-result
+
+Registered declaration:
+
+```json
+{
+  "name": "goal-result",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.read",
+  "inputDigest": "sha256:d85c21db12518b997058347762cabad0a41f6f63d32a9b487abbeae49a51ecd1",
+  "outputDigest": "sha256:df1e8e4a9c3b5865f022b39638db4fc6ef9199a924ea5e70f82a165beb022d46"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goalId"
+  ],
+  "properties": {
+    "goalId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "result": {
+      "type": "object"
+    }
+  }
+}
+```
+
+### manager define-persona
+
+Registered declaration:
+
+```json
+{
+  "name": "define-persona",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.persona",
+  "inputDigest": "sha256:680a2b5b79a268835add7bd20ed131f65f3ae333936f50faeb90bbfeee67ca97",
+  "outputDigest": "sha256:a121baba27357c3710b20023422927b0c11d4d1d58a542f909efd7ad1152751c"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "persona"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "persona": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "role": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "agent": {
+      "type": "string",
+      "pattern": "^\\s*\\S"
+    },
+    "subscribe": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowSubscribe": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowPublish": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "path"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager remove-persona
+
+Registered declaration:
+
+```json
+{
+  "name": "remove-persona",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.persona",
+  "inputDigest": "sha256:f73163e07e3006cd60057db30a9a73f97922c4933307ac3eff25940fc7bc5c2b",
+  "outputDigest": "sha256:e1786e14b9f948f90ccd31cae7b7b535f77a5d86e88f5ccea0030347f660e7f7"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager chat-session-open
+
+Registered declaration:
+
+```json
+{
+  "name": "chat-session-open",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.chat",
+  "inputDigest": "sha256:372937ec2609c503be78ec18b88ab69171560fb513f4e086d35929f154024897",
+  "outputDigest": "sha256:d06af8eb81792c588149d46884195f7e969e6b588bc452ff6890e0a1ec848b96"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "label",
+    "ttl",
+    "sealTo"
+  ],
+  "properties": {
+    "subscribe": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "allowSubscribe": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "allowPublish": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "ttl": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 900
+    },
+    "sealTo": {
+      "type": "string",
+      "pattern": "^X[A-Z2-7]{55}$"
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "alias",
+    "actor",
+    "lifecycleUid",
+    "expiresAt",
+    "sealer",
+    "sealed"
+  ],
+  "properties": {
+    "alias": {
+      "type": "string",
+      "pattern": "^chat_[a-z2-7]{26}$"
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lifecycleUid": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expiresAt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sealer": {
+      "type": "string",
+      "pattern": "^X[A-Z2-7]{55}$"
+    },
+    "sealed": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+### manager chat-session-retire
+
+Registered declaration:
+
+```json
+{
+  "name": "chat-session-retire",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.chat",
+  "inputDigest": "sha256:090530663f13f4091fd291e08c8680a6dc50bf07f9978308ce704eab07178353",
+  "outputDigest": "sha256:4f7241c6c87230f843a0fd9b85f38d148384c914faecdab8299a10a8a3ab83d2"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "alias",
+    "actor",
+    "lifecycleUid"
+  ],
+  "properties": {
+    "alias": {
+      "type": "string",
+      "pattern": "^chat_[a-z2-7]{26}$"
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lifecycleUid": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "outcome"
+  ],
+  "properties": {
+    "outcome": {
+      "enum": [
+        "retired",
+        "alreadyRetired",
+        "failed"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager list-personas
+
+Registered declaration:
+
+```json
+{
+  "name": "list-personas",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.read",
+  "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+  "outputDigest": "sha256:bb37634698c67b4468dd1c85dfbcfa0c13125f91aed9fd0769ee813438048c49"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "null"
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "personas"
+  ],
+  "properties": {
+    "personas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### manager show-persona
+
+Registered declaration:
+
+```json
+{
+  "name": "show-persona",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.read",
+  "inputDigest": "sha256:c74bfe6c0426cf31f56796a48992639eb08a46c36f7dd7205b497cf2c83a8382",
+  "outputDigest": "sha256:45118d9dfc9803469c095dc2d34d8f6bec6b48eec90d8017f4617acc9d6fb7d2"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "persona": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager purge
+
+Registered declaration:
+
+```json
+{
+  "name": "purge",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.admin",
+  "inputDigest": "sha256:fc7eb2289bcdc583558efe1127c5f8ab988649ecbe0a0e950dd175c512b4cd86",
+  "outputDigest": "sha256:dc91365525849af1bd5dfacedd4b5b6fbdc611db99c2478a803ee8995191ee4e"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "includeDms": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "chat"
+  ],
+  "properties": {
+    "chat": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "dm": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}
+```
+
+### manager launch
+
+Registered declaration:
+
+```json
+{
+  "name": "launch",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.admin",
+  "inputDigest": "sha256:dc33bfbeba9027bba4e06e0d96ea5ea0bdb2f412899707288ba0e534d88dc565",
+  "outputDigest": "sha256:d883a9f97f7c034772c7cbc28b22d63cf69870ba072d470c2f7b104f455e2e83"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "name"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "spec": {
+      "type": "object"
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "owner",
+    "actor",
+    "uid",
+    "goalId",
+    "fingerprint",
+    "executor"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "uid": {
+      "type": "string"
+    },
+    "goalId": {
+      "type": "string"
+    },
+    "fingerprint": {
+      "type": "string"
+    },
+    "readinessDeadlineMs": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lifecycleUid",
+        "epoch"
+      ],
+      "properties": {
+        "lifecycleUid": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
+```
+
+### manager resume-preserved
+
+Registered declaration:
+
+```json
+{
+  "name": "resume-preserved",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.admin",
+  "inputDigest": "sha256:204aa0baa9794e9c0183cf62666928f0a8a04811aa92b4ce73e5c12a0574b5b9",
+  "outputDigest": "sha256:241df3a8f87af62ea53beb2267ab5309af830a357180952924a0fca26e748efb"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId",
+    "inventory"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "inventory": {
+      "type": "object"
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object"
+}
+```
+
+### manager commit-resume
+
+Registered declaration:
+
+```json
+{
+  "name": "commit-resume",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.admin",
+  "inputDigest": "sha256:b863e0912fbf9344b346a1f69179a1039254fad2a5dec27cb691fd7812617976",
+  "outputDigest": "sha256:b89dc03ca8afa323c4e36ad54e8af032fa084aba04e0c3f6b27ef5df4788f46c"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId",
+    "state",
+    "durableCommitToken"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    },
+    "durableCommitToken": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager finalize-resume
+
+Registered declaration:
+
+```json
+{
+  "name": "finalize-resume",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.admin",
+  "inputDigest": "sha256:7df6373748333f8c0907dc38eaca8596714aad3a05cf11974bef97cd328f238c",
+  "outputDigest": "sha256:959dbd34809db2f410c4f983b1cb0bf7a7fbf24d275ceb5fd097979e46e1fee7"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId",
+    "durableCommitToken"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "durableCommitToken": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId",
+    "state"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager prepare-preservation
+
+Registered declaration:
+
+```json
+{
+  "name": "prepare-preservation",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.admin",
+  "inputDigest": "sha256:b863e0912fbf9344b346a1f69179a1039254fad2a5dec27cb691fd7812617976",
+  "outputDigest": "sha256:241df3a8f87af62ea53beb2267ab5309af830a357180952924a0fca26e748efb"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object"
+}
+```
+
+### manager commit-preservation
+
+Registered declaration:
+
+```json
+{
+  "name": "commit-preservation",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.admin",
+  "inputDigest": "sha256:b863e0912fbf9344b346a1f69179a1039254fad2a5dec27cb691fd7812617976",
+  "outputDigest": "sha256:241df3a8f87af62ea53beb2267ab5309af830a357180952924a0fca26e748efb"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object"
+}
+```
+
+### manager abort-preservation
+
+Registered declaration:
+
+```json
+{
+  "name": "abort-preservation",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.admin",
+  "inputDigest": "sha256:b863e0912fbf9344b346a1f69179a1039254fad2a5dec27cb691fd7812617976",
+  "outputDigest": "sha256:959dbd34809db2f410c4f983b1cb0bf7a7fbf24d275ceb5fd097979e46e1fee7"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId",
+    "state"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    }
+  }
+}
+```
+
+### manager transcript-receive
+
+Registered declaration:
+
+```json
+{
+  "name": "transcript-receive",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.admin",
+  "inputDigest": "sha256:af7e6146da1d67b985d06171139d1cba1e8bd812ac2f96b1b481db9ef1918e1f",
+  "outputDigest": "sha256:1ee2030f621873f348aee7f7daca6411f1814e4ad4bdbe1065377c8030d4afa8"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sha256",
+    "size",
+    "source",
+    "sourceHost"
+  ],
+  "properties": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceHost": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string"
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "state"
+  ],
+  "properties": {
+    "state": {
+      "type": "string",
+      "enum": [
+        "upload",
+        "staged"
+      ]
+    },
+    "claim": {
+      "type": "string"
+    },
+    "fetched": {
+      "type": "boolean"
+    }
+  }
+}
+```
+
+## auth
+
+Cluster `ai.cotal.auth`, revision 1. 1 commands.
+
+| Command                                      | Capability   | Class     | Target modes |
+| -------------------------------------------- | ------------ | --------- | ------------ |
+| [`retire-lifecycle`](#auth-retire-lifecycle) | `auth.admin` | ephemeral | exact        |
+
+### auth retire-lifecycle
+
+Registered declaration:
+
+```json
+{
+  "name": "retire-lifecycle",
+  "class": "ephemeral",
+  "targeted": true,
+  "modes": [
+    "exact"
+  ],
+  "capability": "auth.admin",
+  "inputDigest": "sha256:6d87fc4ef53998c80e6670eba5e0dfb44988421e25cc40fe5b57c69fd39b02db",
+  "outputDigest": "sha256:1d166387571a054df00aab485bc3ae5daa80c32830212ee3701a9a3fcfaafbec"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "opId",
+    "serveEndpoint",
+    "serveInstanceId",
+    "serveEpoch"
+  ],
+  "properties": {
+    "opId": {
+      "type": "string"
+    },
+    "serveEndpoint": {
+      "type": "string"
+    },
+    "serveInstanceId": {
+      "type": "string"
+    },
+    "serveEpoch": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "retired",
+    "lifecycleUid",
+    "opId",
+    "evictedPrincipals"
+  ],
+  "properties": {
+    "retired": {
+      "type": "boolean"
+    },
+    "lifecycleUid": {
+      "type": "string"
+    },
+    "opId": {
+      "type": "string"
+    },
+    "evictedPrincipals": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
+```
+
+## registry
+
+Cluster `ai.cotal.registry`, revision 1. 1 commands.
+
+| Command                            | Capability           | Class     | Target modes |
+| ---------------------------------- | -------------------- | --------- | ------------ |
+| [`endpoints`](#registry-endpoints) | `registry.endpoints` | ephemeral | untargeted   |
+
+### registry endpoints
+
+Registered declaration:
+
+```json
+{
+  "name": "endpoints",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "registry.endpoints",
+  "inputDigest": "sha256:dbad33c4a2b77079ceca72beb1a9645dcc35757932a80349c8ae6ddc97dbda5a",
+  "outputDigest": "sha256:d41895936172446a6b7f82e53cacb477b3459a0458be98a8cc3e47945a0868f1"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "after": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "rows",
+    "source"
+  ],
+  "properties": {
+    "rows": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "endpoint",
+          "instances",
+          "commands"
+        ],
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "instances": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "instanceId",
+                "state",
+                "artifacts"
+              ],
+              "properties": {
+                "instanceId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "state": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 64
+                },
+                "artifacts": {
+                  "enum": [
+                    "verified",
+                    "missing",
+                    "invalid"
+                  ]
+                }
+              }
+            }
+          },
+          "commands": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "class",
+                "forms"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "class": {
+                  "enum": [
+                    "ephemeral",
+                    "journal"
+                  ]
+                },
+                "forms": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "rail",
+                      "literals",
+                      "covered"
+                    ],
+                    "properties": {
+                      "rail": {
+                        "enum": [
+                          "ep",
+                          "ep.v1",
+                          "epj"
+                        ]
+                      },
+                      "route": {
+                        "enum": [
+                          "one",
+                          "all",
+                          "inst"
+                        ]
+                      },
+                      "mode": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      },
+                      "literals": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          }
+                        }
+                      },
+                      "covered": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "maxLength": 64
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "instances": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                }
+              }
+            }
+          },
+          "unprojected": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        }
+      }
+    },
+    "next": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "source": {
+      "enum": [
+        "recorded-ceiling",
+        "no-permission-system"
+      ]
+    }
+  }
+}
+```
+
+## Regeneration
+
+Run `pnpm gen:meshdocs` from the repository root. The generator reads the service contract modules and verifies each schema closure against its declared digest. `pnpm check:meshdocs` checks the generated entries and schemas against those contracts without writing the page. The docs-bundle check also detects stale generated bytes.
