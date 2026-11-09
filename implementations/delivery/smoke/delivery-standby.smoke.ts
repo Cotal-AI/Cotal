@@ -34,7 +34,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, NoRespondersError, RequestError, type NatsConnection } from "@nats-io/transport-node";
 import {
-  CotalEndpoint, CONTROL_DELIVERY, DEV_OWNER, MEMBERSHIP_INBOX_PREFIX, composeSpaceAuth, controlServiceSubject, createBrokerAuth,
+  CotalEndpoint, CONTROL_DELIVERY, DEV_OWNER, LEASE_TTL_MS, MEMBERSHIP_INBOX_PREFIX, composeSpaceAuth, controlServiceSubject, createBrokerAuth,
   createSpaceAccountAuth, deliveryLeaseHolderFor, isReachable, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid,
   mintMembershipObserverCreds, newIdentity, provisionAgent, serverConfig, setupSpaceStreams, type CotalMessage, type Identity,
   type SpaceAuth,
@@ -196,7 +196,7 @@ async function traffic() {
   };
 }
 
-const lease = (ep: CotalEndpoint) => ep.readDeliveryLease(0).catch(() => undefined);
+const lease = (ep: CotalEndpoint) => ep.readDeliveryLease(0);
 const creds = new Map<Host, string>();
 const holderOf = (host: Host) => deliveryLeaseHolderFor(creds.get(host)!);
 
@@ -221,7 +221,8 @@ async function suite(): Promise<void> {
 
   // ---- the first host serves, the second does not ---------------------------------------------------
   const run1 = startHost(h1);
-  check("the first host comes up serving the space", await until(() => run1.text().includes(`✓ delivery host up (1 space(s): ${SPACE})`) || run1.child.exitCode !== null, 120_000), run1.text().slice(-800));
+  await until(() => run1.text().includes(`✓ delivery host up (1 space(s): ${SPACE})`) || run1.child.exitCode !== null, 120_000);
+  check("the first host comes up serving the space", run1.text().includes(`✓ delivery host up (1 space(s): ${SPACE})`) && run1.child.exitCode === null, run1.text().slice(-800));
   const first = await lease(look);
   check("the lease row is ready and held by the first host's identity", first?.ready === true && first.holder === holderOf(h1), first);
   check("the control rail answers", await ask());
@@ -267,11 +268,13 @@ async function suite(): Promise<void> {
   for (const r of refusalRuns) await killAndAwaitExit(r.run.child, "SIGTERM", 30_000);
 
   // ---- the holder is killed, the standby takes over -----------------------------------------------
-  const preKill = await lease(look);
-  const outagePost = (() => { const p = sink.post("posted while the first host is dead"); return p; })();
   await killAndAwaitExit(run1.child, "SIGKILL", 15_000);
   const killedAt = Date.now();
-  const outageId = await outagePost.catch(() => undefined);
+  check("the holder exited by SIGKILL before the outage post", run1.child.signalCode === "SIGKILL");
+  const finalHolderLease = await lease(look);
+  check("the killed holder's final lease is still present and no control responder remains", finalHolderLease?.holder === holderOf(h1) && !await ask(), finalHolderLease);
+  const outageId = await sink.post("posted after the first host exited");
+  check("the outage post was accepted before any durable copy or control responder returned", typeof outageId === "string" && outageId.length > 0 && sink.copiesOf(outageId) === 0 && !await ask());
   let rowGoneAt: number | undefined, takeoverAt: number | undefined, taken: Awaited<ReturnType<typeof lease>>;
   const tookOver = await until(async () => {
     taken = await lease(look);
@@ -279,12 +282,11 @@ async function suite(): Promise<void> {
     else if (taken.holder === holderOf(h2) && taken.ready === true) takeoverAt ??= Date.now();
     return takeoverAt !== undefined;
   }, 120_000, 200);
-  check("the post made while the holder died was accepted", outageId !== undefined);
-  check("the standby took the lease with its own identity after the holder was killed", tookOver && taken?.holder === holderOf(h2) && taken.ready === true, { taken, preKill });
-  check("the row expired before the standby took it (no forced deletion, no takeover while the row was live)", rowGoneAt !== undefined || (taken?.acquiredAt ?? 0) > (preKill?.since ?? 0), { rowGoneAt, preKill, taken });
+  check("the standby took the lease with its own identity after the holder was killed", tookOver && taken?.holder === holderOf(h2) && taken.ready === true, { taken, finalHolderLease });
+  check("the successor was acquired after the final holder lease's TTL window", finalHolderLease !== undefined && taken?.acquiredAt !== undefined && taken.acquiredAt >= finalHolderLease.since + LEASE_TTL_MS, { rowGoneAt, finalHolderLease, taken });
   times.rowExpiredAfterKillMs = rowGoneAt === undefined ? -1 : rowGoneAt - killedAt;
   times.takeoverAfterKillMs = takeoverAt === undefined ? -1 : takeoverAt - killedAt;
-  times.lastRenewalBeforeKillAgeMs = preKill === undefined ? -1 : killedAt - preKill.since;
+  times.lastRenewalBeforeKillAgeMs = finalHolderLease === undefined ? -1 : killedAt - finalHolderLease.since;
   check("the standby's lane opened once and it answers the control rail", lanesUp(run2) === 1 && await until(ask, 15_000), run2.text().slice(-600));
   check("the post made during the outage reaches the receiver exactly once", outageId !== undefined && await until(() => sink.copiesOf(outageId) >= 1, 60_000) && (await wait(2000), sink.copiesOf(outageId) === 1), outageId && sink.copiesOf(outageId));
   const afterTakeover = await sink.post("after the standby took over");
