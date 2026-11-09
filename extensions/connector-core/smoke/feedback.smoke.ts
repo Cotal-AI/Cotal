@@ -150,6 +150,20 @@ try {
   const unpublished = await submitFeedback!({ ...args, source: "smoke" }, { key: "fbk_test", url });
   check("202 with published false is still stored", !unpublished.isError && unpublished.text.includes("fb_stored") && unpublished.text.includes("publish failed"), unpublished.text);
 
+  // ---- a body that fails after the headers is an unconfirmed result, not a throw ----
+  const cut = createServer(async (req, res) => {
+    await readRaw(req);
+    res.writeHead(202, { "content-type": "application/json", "content-length": "1024" });
+    res.flushHeaders();
+    res.write('{"ok":true,');
+    setTimeout(() => res.destroy(), 25);
+  });
+  await new Promise<void>((r) => cut.listen(0, "127.0.0.1", r));
+  const cutUrl = `http://127.0.0.1:${(cut.address() as { port: number }).port}/`;
+  const truncated = await submitFeedback!({ ...args, source: "smoke" }, { key: "fbk_test", url: cutUrl });
+  check("a truncated body is an unconfirmed result", truncated.isError === true && /not retried/.test(truncated.text) && !/Feedback sent/.test(truncated.text), truncated.text);
+  cut.close();
+
   console.log(`\nfeedback smoke: ${pass} checks passed`);
   process.exit(0);
 } finally {

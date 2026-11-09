@@ -55,13 +55,14 @@ export async function submitFeedback(
     body.email = options.email;
   }
   let res: Response;
+  let raw: string;
   try {
     // One POST, and only to the configured intake. A redirect is an unconfirmed outcome, not a second destination.
     res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), redirect: "error" });
+    raw = await res.text();
   } catch (e) {
     return err(`Couldn't reach the feedback intake at ${url}: ${(e as Error).message} The submission was not retried.`);
   }
-  const raw = await res.text();
   let reply: unknown = undefined;
   if (raw)
     try {
