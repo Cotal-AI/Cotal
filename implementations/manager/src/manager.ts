@@ -684,8 +684,9 @@ export interface ManagerOptions {
 
 export interface ManagerStopOptions {
   /** Stop and deprovision managed agents. The default releases detachable local custody and stops
-   *  only the in-process seats that cannot outlive the manager. A released seat that is still
-   *  running keeps running. A released seat the runtime already reports gone is retired. */
+   *  only the in-process seats that cannot outlive the manager. A released seat keeps running and
+   *  is recorded, so the next manager on this workspace adopts it, or retires it once its runtime
+   *  proves it gone. A detachable seat that already exited is retired by this stop. */
   withAgents?: boolean;
 }
 
@@ -1859,9 +1860,6 @@ export class Manager {
    *  of `agents` before they have exited, so a second teardown would find none and report success
    *  while the first still waits on a live seat. */
   private stopTask?: { withAgents: boolean; done: Promise<void> };
-  /** The serve epoch this stop captured before it cleared the serve loop. A retirement that runs
-   *  after that loop is gone still has to name the epoch the host considers current. */
-  private releasedStopEpoch: number | undefined;
   /** Held as an instance field so broker-owning smokes can compress the schedule without changing
    *  production semantics. It is never a fence expiry: the durable non-retired row stays authoritative. */
   private staticReconcileRetryDelaysMs: readonly number[] = STATIC_RECONCILE_RETRY_DELAYS_MS;
@@ -3614,93 +3612,55 @@ export class Manager {
     return agent.handle.kind === "pty" && typeof agent.handle.release !== "function";
   }
 
-  /** Drop local custody of every seat that can outlive this process. A seat the runtime already
-   *  reports gone is returned so this stop can retire it. A seat that is still running is recorded
-   *  and kept: its exit watch retires it when the runtime proves it gone, and the record lets the
-   *  next manager do that if this process exits first. A seat this manager cannot record stays in
-   *  the map so the caller stops and retires it instead of releasing an untracked seat. */
-  private releaseManagedAgents(): { gone: ManagedAgent[]; kept: ManagedAgent[]; failures: string[] } {
-    const managed = [...this.agents.values()].filter((a) => !this.isProcessBoundSeat(a));
-    const gone: ManagedAgent[] = [];
-    const kept: ManagedAgent[] = [];
+  /** Drop local custody of every seat that can outlive this process, and leave it running. A seat
+   *  with a runtime reference is recorded first, so the next manager on this workspace adopts it, or
+   *  retires it once its runtime proves it gone. The stopping manager keeps no watch on a released
+   *  seat: its endpoint is closing, and a retirement it drove afterwards would run over a dead
+   *  connection and race the next manager's. `stop` is every seat left for the caller to stop and
+   *  retire now: an in-process seat, a seat the runtime already reports gone, and a seat whose record
+   *  could not be written, because a released seat nobody can find again is the leak this stop must
+   *  not create. */
+  private releaseManagedAgents(): { failures: string[]; stop: ManagedAgent[] } {
     const failures: string[] = [];
-    for (const a of managed) {
+    const stop: ManagedAgent[] = [];
+    for (const a of [...this.agents.values()]) {
+      if (this.isProcessBoundSeat(a)) {
+        stop.push(a);
+        continue;
+      }
       let exited = false;
       try {
         exited = a.handle.status() === "exited";
       } catch {
-        // Status is not proof either way. Leave the seat for the caller to stop and retire.
+        // Status is not proof either way; the seat is released as any running seat is.
+      }
+      if (exited) {
+        stop.push(a);
         continue;
       }
       const reference = a.handle.reference;
-      // A live seat with no reference still outlives this process (cmux, orca, herdr). Releasing it
-      // is the old default. It is not an in-process seat, and this stop must not hard-stop it.
-      if (!exited && !reference) {
+      if (reference) {
         try {
-          a.handle.release?.();
+          // A static manager records an adoptable seat at launch and keeps that record current. A
+          // user-mode manager records nothing until here.
+          if (this.userMode)
+            writeSeatRecord(this.workspaceRoot, { version: "cotal-seat-record/v1", instanceId: this.managerInstanceId, crashes: a.restart?.crashes ?? [], agent: this.resumeEntryOf(a) });
+          writeReleasedSeatReference(this.workspaceRoot, this.space, a.name, { version: "cotal-released-seat/v1", lifecycleUid: a.lifecycleUid, kind: reference.kind, id: reference.id });
         } catch (e) {
-          failures.push(`${a.name}: ${rejectionText(e)}`);
+          console.error(`! ${a.name}: the released seat could not be recorded (${rejectionText(e)}); this stop retires it instead`);
+          stop.push(a);
           continue;
         }
-        kept.push(a);
-        continue;
-      }
-      try {
-        writeSeatRecord(this.workspaceRoot, {
-          version: "cotal-seat-record/v1",
-          instanceId: this.managerInstanceId,
-          crashes: [],
-          agent: this.resumeEntryOf(a),
-        });
-        if (reference) {
-          writeReleasedSeatReference(this.workspaceRoot, this.space, a.name, {
-            version: "cotal-released-seat/v1",
-            lifecycleUid: a.lifecycleUid,
-            kind: reference.kind,
-            id: reference.id,
-          });
-        }
-      } catch {
-        if (exited) gone.push(a);
-        continue;
-      }
-      if (exited) {
-        gone.push(a);
-        continue;
       }
       try {
         a.handle.release?.();
+        a.suppressCleanup = true;
+        this.agents.delete(a.name);
       } catch (e) {
         failures.push(`${a.name}: ${rejectionText(e)}`);
-        continue;
       }
-      // Custodial release closes the client that carried the exit watch. Adopt the same seat back
-      // so the watch is on a live client. A seat that cannot be adopted stays recorded for the next
-      // start and is not torn down: the closed client cannot prove its exit.
-      if (a.handle.kind === "pty" && reference) {
-        try {
-          const runtime = this.runtimeFor(reference.kind);
-          if (typeof runtime.adopt !== "function") throw new Error(`runtime "${runtime.kind}" cannot adopt a seat`);
-          a.handle = runtime.adopt(reference);
-          this.watchExit(a);
-        } catch (e) {
-          console.error(`! ${a.name}: the released seat could not be watched after release (${rejectionText(e)}); the next start adopts it`);
-          this.agents.delete(a.name);
-          continue;
-        }
-      }
-      kept.push(a);
     }
-    return { gone, kept, failures };
-  }
-
-  /** Retire one released seat the runtime already reports gone. The seat did not keep running, so
-   *  its lifecycle must not stay active after this stop. */
-  private async retireReleasedSeat(a: ManagedAgent): Promise<void> {
-    await this.awaitHandleExit(a.handle);
-    this.freeSlot(a, false, "process-exit");
-    await this.deprovision(this.teardownTarget(a));
-    this.reapChildrenOf(this.managedPrincipal(a));
+    return { failures, stop };
   }
 
   /** Take back user-mode seats a previous manager released while they were still running. A seat
@@ -3921,23 +3881,16 @@ export class Manager {
     await this.awaitLifecycleDrain();
     let releaseFailures: string[] = [];
     let seatFailure: string | undefined;
-    let gone: ManagedAgent[] = [];
-    let kept: ManagedAgent[] = [];
     try {
       if (this.maintenanceState === "active" && !this.resumeRequired) {
         if (withAgents) await this.teardownManagedAgents();
         else {
-          // An in-process seat cannot be detached from the process that is exiting, so the default
-          // stop stops and deprovisions it as `withAgents` does instead of orphaning its footprint.
-          // A released seat that is still running stays in the map: its exit watch retires it once
-          // the runtime proves it gone, and this stop does not wait for that.
+          // An in-process seat cannot be detached from the process that is exiting, and a released
+          // seat that already exited cannot come back, so the default stop stops and deprovisions
+          // both as `withAgents` does instead of orphaning their footprints.
           const detached = this.releaseManagedAgents();
-          gone = detached.gone;
-          kept = detached.kept;
           releaseFailures = detached.failures;
-          const releasing = new Set([...gone, ...kept]);
-          const inProcess = [...this.agents.values()].filter((a) => !releasing.has(a));
-          await this.teardownManagedAgents(inProcess);
+          await this.teardownManagedAgents(detached.stop);
         }
       } else {
         // A signal after a partial preservation must never fall back into destructive teardown.
@@ -3974,7 +3927,6 @@ export class Manager {
     // before teardown can answer. Deregistration runs AFTER the serve loop has drained, so no
     // in-flight command can write a status back onto the record it just removed.
     const registrationRevision = this.serviceServe?.grant.registrationRevision;
-    this.releasedStopEpoch = this.serviceServe?.grant.epoch;
     await step("stop service serve", () => this.stopServiceServe());
     // The drives AFTER the serve loop (no new `run-start` can land) and BEFORE deregistration: a
     // released run's status write is the last thing this incarnation says about it.
@@ -3986,19 +3938,6 @@ export class Manager {
     await step("stop session plane", () => this.stopSessionPlane());
     await step("stop endpoint", () => this.ep.stop());
     await step("stop attach endpoint", () => this.attach.stop());
-    // A seat released because it had already exited cannot come back. Retirement uses its own
-    // requester connection, so it runs after this manager's endpoint is gone.
-    if (gone.length && seatFailure === undefined) {
-      const retired = await Promise.all(gone.map(async (a) => {
-        try {
-          await this.retireReleasedSeat(a);
-          return undefined;
-        } catch (e) {
-          return `${a.name}: ${rejectionText(e)}`;
-        }
-      }));
-      for (const failure of retired) if (failure) releaseFailures.push(failure);
-    }
     const also = failures.length ? `; teardown also failed: ${failures.join("; ")}` : "";
     if (seatFailure !== undefined) throw new Error(`${seatFailure}${also}`);
     if (releaseFailures.length)
@@ -5823,7 +5762,7 @@ export class Manager {
       const requestIdentity = newIdentity();
       const retirementTarget = { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid };
       const opId = managedRetirementOpId(a.lifecycleUid);
-      const serveEpoch = this.serviceServe?.grant.epoch ?? this.releasedStopEpoch ?? 0;
+      const serveEpoch = this.serviceServe?.grant.epoch ?? 0;
       const creds = this.remoteAuthority
         ? await this.remoteAuthority.mintRetirementRequester({ identity: requestIdentity, target: retirementTarget, opId, serveEpoch })
         : await mintCreds(this.auth!, requestIdentity, "retirement-requester", {
