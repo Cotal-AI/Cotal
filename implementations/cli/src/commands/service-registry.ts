@@ -3,7 +3,7 @@ import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
-import { findServicePreset, presetMissingOptions, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { findServicePreset, presetMissingOptions, presetOptionRefusal, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
@@ -249,9 +249,13 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       const values = guided;
       definition = forName(() => servicePresetDefinition(preset, space, values, root, `add ${name}`));
     } else {
-      const file = await prompts.text({ message: "Version-1 service definition file", placeholder: "./reviews.service.json" });
+      const file = await prompts.text({
+        message: "Version-1 service definition file",
+        placeholder: "./reviews.service.json",
+        validate: (answer) => { try { importServiceDefinition(resolve(answer ?? ""), space); return undefined; } catch (error) { return error instanceof Error ? error.message : String(error); } },
+      });
       if (prompts.isCancel(file)) return cancelled("Service creation cancelled");
-      definition = forName(() => importServiceDefinition(resolve(file), space));
+      definition = importServiceDefinition(resolve(file), space);
     }
     refuseBrokerServer(definition);
     const answer = await prompts.confirm({ message: `Save ${oneLine(name)} in ${oneLine(space)}? Its program will not be started.`, initialValue: false });
@@ -416,7 +420,10 @@ async function guidedPreset(preset: ReturnType<typeof resolveServicePreset>): Pr
       if (prompts.isCancel(answer)) return undefined;
       values[name] = answer;
     } else {
-      const answer = await prompts.text({ message: option.type === "string" ? `Non-secret value for --${name}` : `JSON ${String(option.type)} for --${name}` });
+      const answer = await prompts.text({
+        message: option.type === "string" ? `Non-secret value for --${name}` : `JSON ${String(option.type)} for --${name}`,
+        validate: (value) => presetOptionRefusal(preset, name, value ?? ""),
+      });
       if (prompts.isCancel(answer)) return undefined;
       values[name] = answer;
     }
