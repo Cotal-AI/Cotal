@@ -8,7 +8,9 @@ to this site and the release bundle served by `cotal_docs`.
 
 ## Develop
 
-Requires Node.js 22 or later.
+Requires Node.js 22 or later. The site publishes the TypeScript reference, which
+TypeDoc generates from the package sources: run `pnpm install` and `pnpm gen:tsdocs`
+at the repository root before the site commands.
 
 ```sh
 cd website
@@ -32,6 +34,7 @@ Cotal gold accents. Sidebar page links each occupy their own row. Desktop
 section tabs sit above the page; mobile uses the section dropdown.
 
 Docs live at `/docs/<page>/`; API Reference lives at `/api-reference/<page>/`.
+The TypeScript reference at `/api/typescript/` keeps TypeDoc's own navigation and search.
 The root opens What is Cotal through a Pages redirect. Old page and Markdown
 URLs redirect to their new section. The legacy `/api-reference/` URL retains its
 Integration interfaces document and heading bookmarks; the API tab opens the overview.

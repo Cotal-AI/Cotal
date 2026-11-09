@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSync, cpSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -431,6 +431,11 @@ const anchors = new Map([...documents].map(([rel, document]) => [rel, anchorsOf(
 for (const section of ['docs', 'api-reference', 'api']) {
   rmSync(join(pubDir, section), { recursive: true, force: true });
 }
+// TypeDoc writes the TypeScript reference from the published packages' sources; the site serves
+// it unchanged, with its own navigation and search.
+const typedocDir = join(here, '..', 'typedoc');
+if (!existsSync(join(typedocDir, 'index.html'))) throw new Error('missing TypeScript reference: run `pnpm gen:tsdocs` at the repository root');
+cpSync(typedocDir, join(pubDir, 'api', 'typescript'), { recursive: true });
 const http = publishHttpReferences({
   outDir, pubDir, genDir, documents,
   rewriteMarkdown: (markdown, rel) => rewriteLinks(markdown, rel, [gfm()]),
@@ -495,7 +500,7 @@ const taskRoutes = [
 const taskRouting = '## Route by task\n\n' +
   '- [Agent setup prompt](https://docs.cotal.ai/prompt.md): Run the setup instructions with your coding agent.\n' +
   taskRoutes.join('\n') + '\n\n## All pages\n\n';
-writeFileSync(join(pubDir, 'llms.txt'), '# Cotal\n\nA standard wire interface for agents over NATS + JetStream. The normative wire specification wins where other pages disagree. Roadmap content is not shipped behavior.\n\n- [All documentation](https://docs.cotal.ai/llms-full.txt)\n- [Compact documentation](https://docs.cotal.ai/llms-small.txt)\n- [Agent setup prompt](https://docs.cotal.ai/prompt.md)\n- [Message schema](https://docs.cotal.ai/cotal.schema.json)\n\n' + httpReferences.map(reference => `- [${reference.label} OpenAPI](${origin}/${reference.specFile})`).join('\n') + '\n\n' + taskRouting + pages.map(p => `- [${p.title}](${origin}${p.url.slice(0, -1)}.md)`).join('\n') + '\n');
+writeFileSync(join(pubDir, 'llms.txt'), '# Cotal\n\nA standard wire interface for agents over NATS + JetStream. The normative wire specification wins where other pages disagree. Roadmap content is not shipped behavior.\n\n- [All documentation](https://docs.cotal.ai/llms-full.txt)\n- [Compact documentation](https://docs.cotal.ai/llms-small.txt)\n- [Agent setup prompt](https://docs.cotal.ai/prompt.md)\n- [Message schema](https://docs.cotal.ai/cotal.schema.json)\n- [TypeScript reference](https://docs.cotal.ai/api/typescript/)\n\n' + httpReferences.map(reference => `- [${reference.label} OpenAPI](${origin}/${reference.specFile})`).join('\n') + '\n\n' + taskRouting + pages.map(p => `- [${p.title}](${origin}${p.url.slice(0, -1)}.md)`).join('\n') + '\n');
 for (const [name, subset] of [['full', pages], ['small', pages.filter(p => !['release', 'setup-internals', 'roadmap'].includes(p.slug))]]) {
   writeFileSync(join(pubDir, `llms-${name}.txt`), subset.map(p => `Source: ${origin}${p.url}\n\n${p.markdown}`).join('\n\n'));
 }

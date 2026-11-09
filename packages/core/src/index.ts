@@ -1,3 +1,4 @@
+/** @module index */
 export * from "./types.js";
 export { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 export * from "./advisory-lock.js";
