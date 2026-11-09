@@ -1,5 +1,27 @@
 # @cotal-ai/runtime
 
+## 0.151.0
+
+### Minor Changes
+
+- 87e1810: A migration commit ends pending orphan pauses before recording the migration.
+  
+  `MigrateOrphan` now includes its journal state, and callers supplying a `commitMigration` handler must provide `endPause` beside `discharge`. Pass the run's `MeshHandler` and journal entries so removed pending steps can release their timers and wait consumers. Missing cleanup custody or a failed cleanup refuses the commit before it records success. Settled orphans are not ended again.
+
+### Patch Changes
+
+- Updated dependencies [c986cc1]
+- Updated dependencies [dacb515]
+- Updated dependencies [143a69e]
+- Updated dependencies [38f5bb2]
+- Updated dependencies [7350dcc]
+- Updated dependencies [6e67bbf]
+- Updated dependencies [e7cb990]
+- Updated dependencies [6661f53]
+  - @cotal-ai/core@0.151.0
+  - @cotal-ai/workspace@0.151.0
+  - @cotal-ai/lang@0.151.0
+
 ## 0.150.0
 
 ### Patch Changes

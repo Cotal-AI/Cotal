@@ -1,5 +1,21 @@
 # @cotal-ai/delivery
 
+## 0.151.0
+
+### Patch Changes
+
+- a50683c: A space created before live eviction gets its missing connection evictor the next time the delivery daemon starts, so a despawned seat's name is released without rotating the system account. The daemon mints it only on a root that hosts one space and retained its system-account signing seed, beside an observer that same system account signed; anywhere else, a root hosting several spaces included, the heal does nothing and the daemon starts as before. An evictor that is already present is left untouched.
+- 7350dcc: The multi-space delivery host (`cotal deliver --spaces`) is now the one process on a broker that kicks a live connection. When a space on its root retained the system-account signing seed, every lane evicts through the host's kick authority: the lane scans its own account, the host checks each connection against its own complete census of that account, mints a kick-only user that lives five minutes, kicks, and keeps no `$SYS` connection open between kicks. A lane opens no `connection-evictor` credential, so a space created before live eviction on a multi-space broker completes its eviction barrier without a system-account rotation, and no per-space process holds the broker-wide KICK. The host says which posture it runs at start. A single-space daemon is unchanged. Core exports the pieces the host uses: `KickTarget`, `kickConnection`, `accountHoldsConnection`, and a `kick` function the eviction sweep can delegate to.
+- Updated dependencies [c986cc1]
+- Updated dependencies [dacb515]
+- Updated dependencies [143a69e]
+- Updated dependencies [38f5bb2]
+- Updated dependencies [7350dcc]
+- Updated dependencies [e7cb990]
+- Updated dependencies [6661f53]
+  - @cotal-ai/core@0.151.0
+  - @cotal-ai/workspace@0.151.0
+
 ## 0.150.0
 
 ### Patch Changes

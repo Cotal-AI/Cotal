@@ -1,5 +1,22 @@
 # @cotal-ai/workspace
 
+## 0.151.0
+
+### Minor Changes
+
+- dacb515: `cotal login` no longer warns that chat refuses when you have saved a chat name, and a refused chat name now names the remedy the surface you use offers. When no handle is recorded and no name is saved, `cotal login` names both `--name` and `cotal config set name`; with a saved name it says chat sessions use it. `resolveChatName` now requires the caller's own `remedy` option, so `cotal chat` still offers `--name` and the terminal app offers Change your name (ctrl+p). A sign-in with no handle on record now also lists that remedy.
+
+### Patch Changes
+
+- 143a69e: A plain spawn of a Claude seat whose startup showed no development-channels prompt now says that mesh traffic does not wake the seat while idle: the spawn result carries `startupNotice`, `cotal spawn` prints a `STARTUP_NOTICE` warning, the `cotal_spawn` result ends with the notice, and `cotal ps` marks the seat `no idle wake`. A connector declares this with `idleWakeNeedsConfirmed`.
+- e7cb990: A stop sent through `control` can now name the run it means, so a run that replaced it under the same name is never stopped instead. `control` takes an optional `expectedTarget` (the row's `id` and `lifecycleUid`) that it passes to the manager request, which sends nothing when the name now resolves to another run. `ManagedRow` now carries the `lifecycleUid` every manager already reports, and the refusal no longer speaks only of attaching.
+- Updated dependencies [c986cc1]
+- Updated dependencies [143a69e]
+- Updated dependencies [38f5bb2]
+- Updated dependencies [7350dcc]
+- Updated dependencies [6661f53]
+  - @cotal-ai/core@0.151.0
+
 ## 0.150.0
 
 ### Patch Changes
