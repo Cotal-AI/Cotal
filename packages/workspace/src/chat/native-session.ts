@@ -33,6 +33,7 @@ import {
   type PresenceView,
 } from "@cotal-ai/core";
 import type { RefusalCode } from "../output.js";
+import { spaceStreamsAbsent, spaceStreamsExpected } from "../space-streams.js";
 import { mentionsName } from "./compose.js";
 import { ParticipantEngine } from "./engine.js";
 import type {
@@ -75,6 +76,21 @@ function classify(e: unknown): { outcome: "refused"; code: RefusalCode; message:
     if (code && e.outcome !== "unknown" && e.outcome !== "executed") return { outcome: "refused", code, message, native: { code: e.code, detail: e.details } };
   }
   return { outcome: "unknown", message };
+}
+
+/** Whether the chat stream of a space whose streams were created here is present. `undefined` when
+ *  this space is not one of those, or the read failed: neither is evidence that the stream is gone. */
+async function chatStreamPresent(endpoint: CotalEndpoint, space: string, mode: "open" | "static" | "user"): Promise<boolean | undefined> {
+  if (!spaceStreamsExpected(space, mode === "static" ? "auth" : mode)) return undefined;
+  try { return (await endpoint.chatRetention()).stream; } catch { return undefined; }
+}
+
+/** Refuse before publishing when the space's chat stream is known to be absent. A later absence
+ *  cannot establish whether an earlier unacknowledged publish was stored. */
+async function absentStreams(endpoint: CotalEndpoint, space: string, mode: "open" | "static" | "user"): Promise<Refused | undefined> {
+  if (await chatStreamPresent(endpoint, space, mode) !== false) return undefined;
+  const failure = spaceStreamsAbsent(space, undefined);
+  return { outcome: "refused", code: "TARGET_UNAVAILABLE", message: failure.message };
 }
 
 const refusedUsage = (message: string) => ({ outcome: "refused" as const, code: "USAGE_INVALID" as const, message });
@@ -168,6 +184,8 @@ export class NativeChatSession implements AdmittedChatSession {
   private closed: Promise<CloseReport> | undefined;
   /** Why the session ended itself, when it could not continue. */
   private lost: string | undefined;
+  /** Last observed absence of the chat stream, rechecked by a later connection report. */
+  private streamsGone: string | undefined;
   /** What the full inbox let go that no gap has reported yet. */
   private overflow = { channelDropped: 0, directedDeferred: 0 };
   private overflowTimer: ReturnType<typeof setTimeout> | undefined;
@@ -283,14 +301,17 @@ export class NativeChatSession implements AdmittedChatSession {
     if (!isConcreteChannel(channel)) return refusedUsage("a send needs a concrete channel");
     const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post", this.inputs.words);
     if (outside) return outside;
+    const gone = await this.beforePublish();
+    if (gone) return gone;
     let registered: boolean;
     try {
       registered = this.inputs.endpoint.getChannelConfig(channel) !== undefined;
       const msg = await this.inputs.endpoint.multicast(text, { channel, ...(mentions.length ? { mentions: [...mentions] } : {}), ...(replyTo !== undefined ? { replyTo } : {}) });
       // Native multicast awaits the stream ack but does not return it (endpoint.ts:4231-4236): no seq.
+      this.streamsGone = undefined;
       return { outcome: "stored", messageId: msg.id, channel, registered };
     } catch (e) {
-      return classify(e);
+      return this.afterPublish(e);
     }
   }
 
@@ -304,21 +325,27 @@ export class NativeChatSession implements AdmittedChatSession {
     const ep = this.inputs.endpoint;
     const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.self());
     if ("outcome" in recipient) return recipient;
+    const gone = await this.beforePublish();
+    if (gone) return gone;
     const recipientStatusAtSend: PresenceStatus | "unrostered" = ep.getRoster().find((p) => p.card.id === recipient.id)?.status ?? "unrostered";
     try {
       const { msg, ack } = await ep.unicastAttributed(recipient.id, text, replyTo !== undefined ? { replyTo } : {});
+      this.streamsGone = undefined;
       return { outcome: "stored", messageId: msg.id, seq: ack.seq, duplicate: ack.duplicate, recipient, recipientStatusAtSend };
     } catch (e) {
-      return classify(e);
+      return this.afterPublish(e);
     }
   }
 
   async anycast(role: string, text: string): Promise<PublishResult> {
+    const gone = await this.beforePublish();
+    if (gone) return gone;
     try {
       const { msg, ack } = await this.inputs.endpoint.anycastAttributed(role, text);
+      this.streamsGone = undefined;
       return { outcome: "stored", messageId: msg.id, seq: ack.seq, duplicate: ack.duplicate };
     } catch (e) {
-      return classify(e);
+      return this.afterPublish(e);
     }
   }
 
@@ -394,15 +421,17 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async connection(): Promise<Result<ConnectionReport>> {
     const ep = this.inputs.endpoint;
+    if (this.streamsGone) await this.observeStreams();
     return {
       outcome: "ok",
       value: {
-        state: this.state,
+        state: this.streamsGone ? "disconnected" : this.state,
         identity: this.inputs.identity,
         bufferedInbox: this.engine.bufferedCount(),
         joinedChannels: ep.joinedChannels(),
         attention: this.attention,
         channelModes: this.engine.channelModes(),
+        ...(this.streamsGone ? { reason: this.streamsGone } : {}),
       },
     };
   }
@@ -484,6 +513,26 @@ export class NativeChatSession implements AdmittedChatSession {
       return stopped ? report : { ...report, connectionClosed: "not-confirmed" };
     })();
     return this.closed;
+  }
+
+  private async beforePublish(): Promise<Refused | undefined> {
+    const gone = await absentStreams(this.inputs.endpoint, this.inputs.identity.space, this.inputs.identity.mode);
+    if (gone) this.streamsGone = gone.message;
+    return gone;
+  }
+
+  /** Refresh the connection observation without rewriting an attempted publish's outcome. */
+  private async afterPublish(e: unknown): Promise<PublishResult> {
+    await this.observeStreams();
+    return classify(e);
+  }
+
+  /** Remember a read that found the chat stream gone, and forget one that found it present. A failed
+   *  read leaves the last observation, because it says nothing about the stream. */
+  private async observeStreams(): Promise<void> {
+    const present = await chatStreamPresent(this.inputs.endpoint, this.inputs.identity.space, this.inputs.identity.mode);
+    if (present === true) this.streamsGone = undefined;
+    else if (present === false) this.streamsGone = spaceStreamsAbsent(this.inputs.identity.space, undefined).message;
   }
 
   private setState(s: ConnectionState, reason?: string): void {

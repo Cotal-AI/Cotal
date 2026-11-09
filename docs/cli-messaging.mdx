@@ -334,7 +334,7 @@ as `cotal send` refuses an empty message.
 | `inbox` | optional `peek` (default `false`) | `ok`: `peek`, `messages` |
 | `roster` | none | `ok`: `rows`, `view` |
 | `channelInfo` | `channel` | `ok`: `channel`, `registered`, `replay`, `readable`, `postable`, optional `description` and `instructions` |
-| `connection` | none | `ok`: `state`, `identity`, `bufferedInbox`, `joinedChannels`, `attention`, `channelModes` |
+| `connection` | none | `ok`: `state`, `identity`, `bufferedInbox`, `joinedChannels`, `attention`, `channelModes`, optional `reason` |
 | `invoke` | `endpoint` (1 to 200 characters), `command` (1 to 128), optional `args` (an object) and `timeoutMs` (an integer from 1 to 120000, default 30000) | `ok`: the endpoint's data, or `null` when it returned none |
 
 `identity` in the `connection` result names the session, and no other record names its space. It
@@ -352,6 +352,19 @@ with `code`, `message` and, when the native layer gave one, `cause` with its own
 have happened. The session never retries it, and it reports an unexpected failure of its own the
 same way. `failed` (`OPERATION_FAILED`) is a step that did not complete and had no effect. `stored`
 means the broker's stream accepted the message. It does not say anyone read it.
+
+Before a `send`, `dm` or `anycast` publishes on an authenticated or locally created space, it checks
+the chat stream. When that stream is absent, the request refuses with `TARGET_UNAVAILABLE` and the
+same message `cotal send` gives, without publishing. An unreadable stream check does not establish
+absence. After an attempted publish fails, the session refreshes its stream observation but keeps
+the publish's original outcome. A lost acknowledgement remains `unknown` even if the stream was
+subsequently deleted: the message may already have been stored.
+
+An observed absence makes a later `connection` report `state` `disconnected` with that message as `reason`.
+The broker connection itself is unchanged. A later `connection`, while that observation stands, reads
+the chat stream again. When the stream is present, as after `cotal up` creates it again, `state` is
+the connection's own and `reason` is absent. A stored `send`, `dm` or `anycast` clears the observation
+too. A read that fails leaves it as it was.
 
 
 ### Unsolicited records
@@ -413,8 +426,10 @@ reconnect gives that reason instead, and its `close` carries it as `lost`.
 When stdin ends, the requests already read finish first. `close` has `retirement` (`retired`,
 `requested`, `unknown` or `not-applicable`), `connectionClosed` (`confirmed` or `not-confirmed`) and
 `message`. A static session's `close` can carry `credentialValidUntil` in epoch milliseconds: the
-broker accepts its credential until then unless its eviction was verified. Once the session has
-ended by itself and before the `end` record, a request refuses with `LIFECYCLE_BLOCKED` and
+broker accepts its credential until then unless its eviction was verified. A missing chat stream
+does not prove that session retirement completed. An unconfirmed retirement stays `unknown`, even
+when sending is refused because the stream is absent. Once the session has ended by itself and
+before the `end` record, a request refuses with `LIFECYCLE_BLOCKED` and
 `the session is ending; no new requests are accepted`. When the reader closes stdout, stderr says
 `stdout closed by the reader; ending the session`, and no later record is written, `end` included.
 Any other failed write, such as to a full disk, says `stdout could not be written; ending the
