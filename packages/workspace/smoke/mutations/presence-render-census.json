@@ -79,7 +79,7 @@
       "name": "M8 expected AST candidate total drifts by one",
       "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
       "find": "    \"total\": 978,",
-      "replace": "    \"total\": 977,"
+      "replace": "    \"total\": 977,",
       "expectRed": "presence render census count drifted",
       "note": "The reviewed total is 978 after the shadcn web port and the later feedback, update, chat, spawn and tui sites were classified. The mutant drifts that total by one."
     },
