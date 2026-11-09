@@ -74,9 +74,11 @@ export interface ConnectFlags extends ResolveFlags {
 export interface ConnectOpts {
   instanceId?: string | string[];
   mint?: Pick<MintOpts, "runDriver" | "runMediator" | "runOperator" | "runAdmitter">;
-  /** Stable actor for a one-shot operator sender, or for a hosted run command's control
-   *  instrument. Does not replace an explicit credential, a managed seat, or a user bearer. */
+  /** Stable actor for a one-shot operator sender. Does not replace an explicit credential or user bearer. */
   operatorActor?: string;
+  /** A hosted run command asks for the static-auth operator actor. It is derived only once this
+   *  connect has selected that instrument mint, never for an open mesh, a signed-in user, or a raw credential. */
+  staticOperator?: boolean;
   /** A read must not sweep or prune the local registry as a hidden prelude. */
   readOnly?: boolean;
 }
@@ -727,8 +729,10 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
       // The issuer dial waits out its own budget on a stopped broker, so the preflight names it first.
       if (stoppedLoopbackListener(target.server) !== undefined) await preflightOrThrow(target, undefined, opts.readOnly === true);
       try {
+        // The OS login is read here, after this connect has selected the static instrument mint.
+        const operatorActor = opts.staticOperator === true ? staticOperatorActor() : opts.operatorActor;
         ({ creds, epCaller } = await mintControlInstrument({ server: target.server, space: target.space, tlsRequired: target.tlsRequired, auth: target.auth },
-          role === "control-caller-admin" ? "admin" : "privileged", opts.instanceId, opts.operatorActor));
+          role === "control-caller-admin" ? "admin" : "privileged", opts.instanceId, operatorActor));
       } catch (e) {
         // The issuer dial is now the first thing on this path to touch the broker. A mesh that
         // is not there must still be reported in the preflight's classified words (and prune the

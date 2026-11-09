@@ -85,7 +85,6 @@ import {
   endpointAuth,
   resolveControlTarget,
   resolveSeatControlTarget,
-  staticOperatorActor,
   sweepForSeatResolve,
   type ConnectOpts,
   type Connection,
@@ -877,15 +876,15 @@ async function refuseWithoutLiveManager(nc: NatsConnection, space: string, on?: 
 /** A spawned static seat that shells out to the rendered `cotal run answer …` command must answer as
  *  THAT seat ({@link resolveSeatControlTarget}). An open mesh keeps the operator caller here, which
  *  holds the run capability's full answer reach. Outside a managed seat, a static-auth operator
- *  instrument records {@link staticOperatorActor} while its credential and lifecycle stay fresh for
- *  the call. `--on` reaches the mint on every path and becomes the instance the
+ *  instrument derives its actor only after that mint is selected. Its credential and lifecycle stay
+ *  fresh for the call. `--on` reaches the mint on every path and becomes the instance the
  *  call addresses; a user-mode view already carries the instance its issuer bound. `seat` says the
  *  target is the seat's own. Both resolves read one registry sweep ({@link sweepForSeatResolve}). */
 async function resolveRunControlTarget(values: RunValues): Promise<{ target: ControlTarget; seat: boolean }> {
   const on = values.on;
   const flags = values.creds === undefined ? await sweepForSeatResolve(values) : values;
   const seat = values.creds === undefined ? await resolveSeatControlTarget(flags, on) : undefined;
-  const target = seat?.mode === "auth" ? seat : await resolveControlTarget(flags, "control-caller-privileged", on, { onRefusal: "throw", operatorActor: staticOperatorActor() });
+  const target = seat?.mode === "auth" ? seat : await resolveControlTarget(flags, "control-caller-privileged", on, { onRefusal: "throw", staticOperator: true });
   recordOperationSpace(target.space);
   const resolved = { target, seat: target === seat };
   if (on === undefined) return resolved;
