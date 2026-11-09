@@ -221,9 +221,7 @@ holding only `.` ends. A line starting with `/` runs a slash command, and `//` s
 starts with `/`. `/help` lists the slash commands, in `--plain` and in the terminal view. A slash
 command that takes a channel reads it with or without its `#`.
 `/history` reads the current channel's retained messages. On an open mesh, which runs no delivery
-daemon, it reads them the way `cotal history` does. A slash command the grammar refuses clears the
-input line after the refusal, so the next command is not typed onto it. A line kept because the
-session is not connected, a send is in flight, or no recipient is chosen stays as it is.
+daemon, it reads them the way `cotal history` does.
 
 A message posted on a channel carries the `@<name>` words its text holds as mentions, as
 `cotal send -c` does, so it wakes the agents it names. A `--stdio` `send` carries only the
@@ -275,7 +273,9 @@ space restarted and retired it while the connection was down, ends by itself wit
 exits 5 when its close is confirmed. On a static mesh, leaving waits up to 30 seconds for the
 manager to answer the retirement. When the delivery daemon does not answer, the manager waits 15
 seconds for it, then reports the retirement pending and names the daemon, and the session exits 4.
-In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
+In the terminal view Ctrl-C and Ctrl-D leave. A slash command the grammar refuses clears the input
+line after the refusal, so the next command is not typed onto it. A line kept because the session
+is not connected, a send is in flight, or no recipient is chosen stays as it is. With `--plain` or `--stdio`, Ctrl-C ends
 input and the session closes, then exits 130. A terminate signal exits 143 and a hangup 129. A
 signal that arrives before the view starts is held: no session is opened if admission has not
 begun, and a session admitted meanwhile is closed at once. The exit status is still the signal's.
