@@ -1,4 +1,4 @@
-import { CotalEndpoint, formatChatAge, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
+import { CotalEndpoint, formatChatAge, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
 import {
   brokerAddressForDisplay,
   CommandFailure,
@@ -25,6 +25,7 @@ import {
   concreteChannelProblem,
 } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
+import { historyGrant, historyGrantCovers, historyGrantText } from "../lib/history-grant.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
 import { HISTORY_LIMIT_FLAGS, historyLimit, historyLimitRequest } from "./history-limit.js";
@@ -196,37 +197,12 @@ function keep(item: HistoryItem, since: Since | undefined, from: string | undefi
 
 const denial = (e: unknown): boolean => /permission|not authori[sz]ed|read acl|may not read/i.test(e instanceof Error ? e.message : String(e));
 
-/** How a raw credential reads chat history, from the grants it carries. One that holds the bare
- *  multi-filter consumer create, as the observer and admin profiles do, reads across channels and
- *  gets `undefined`. An agent's reads one channel at a time through its own
- *  `chathist_<owner>-<actor>-<uid>` consumer: that lifecycle UID, and the channels the create grant
- *  names. One that may create no chat consumer at all reads no channel: no UID, and no channels. Any
- *  other shape, and a user bearer, gets `undefined`; a bearer's own lifecycle comes with the
- *  connection. */
+/** How a raw credential reads chat history. One whose grants are not an agent's own history rows,
+ *  such as an observer, gets `undefined` and reads across channels. */
 function credentialReader(conn: Connection): { lifecycleUid: string | undefined; channels: string[] } | undefined {
   if (conn.creds === undefined || conn.bearer !== undefined) return undefined;
-  const allow = credsClaims(conn.creds).nats?.pub?.allow ?? [];
-  const create = `$JS.API.CONSUMER.CREATE.${chatStream(conn.space)}`;
-  if (allow.some((row) => subjectMatches(row, create))) return undefined;
-  const actor = idFromCreds(conn.creds), filter = `${spacePrefix(conn.space)}.chat.*.*.`;
-  let lifecycleUid: string | undefined;
-  const channels: string[] = [];
-  for (const row of allow) {
-    if (!row.startsWith(`${create}.chathist_`)) continue;
-    const [name = "", ...tail] = row.slice(create.length + 1).split(".");
-    const uid = name.slice(name.lastIndexOf("-") + 1);
-    try { if (name !== chatHistDurable(DEV_OWNER, actor, uid)) continue; } catch { continue; }
-    lifecycleUid ??= uid;
-    const subject = tail.join(".");
-    if (subject.startsWith(filter)) channels.push(subject.slice(filter.length));
-  }
-  if (lifecycleUid !== undefined) return { lifecycleUid, channels };
-  return allow.some((row) => row.startsWith(`${create}.`) || subjectMatches(row, `${create}.reader`)) ? undefined : { lifecycleUid, channels };
+  return historyGrant(conn.creds, conn.space);
 }
-
-/** The channels a credential's history grant names, as a refusal quotes them. */
-const grantedText = (channels: readonly string[]): string =>
-  channels.includes(">") ? "every channel" : channels.length ? channels.map((ch) => `#${ch}`).join(", ") : "no channel";
 /** A bare number that reads as a year, which `--since` still takes as a sequence. */
 const yearShaped = (input: string): boolean => /^(19|20)\d\d$/.test(input);
 
@@ -406,9 +382,9 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     let incomplete = false;
     for (const ch of channels) {
       // A credential whose own grant leaves the channel out is told what it does grant, unread.
-      if (reader && !reader.channels.some((granted) => subjectMatches(granted, ch))) {
+      if (reader && !historyGrantCovers(reader.channels, ch)) {
         if (req.channel !== undefined)
-          throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential may not read #${ch} in ${conn.space}: its history grant is ${grantedText(reader.channels)}`, { target: req.target, remedy: `read a channel it grants, or mint one that reads #${ch} with \`cotal auth mint <label> --space ${conn.space} --allow-subscribe ${ch} --out <file>\`` });
+          throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential may not read #${ch} in ${conn.space}: its history grant is ${historyGrantText(reader.channels)}`, { target: req.target, remedy: `read a channel it grants, or mint one that reads #${ch} with \`cotal auth mint <label> --space ${conn.space} --allow-subscribe ${ch} --out <file>\`` });
         denied.push(ch);
         continue;
       }
@@ -426,7 +402,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
       }
     }
     if (denied.length)
-      warnings.push({ code: "CHANNELS_DENIED", target: req.target, message: `this identity may not read ${denied.length === 1 ? "one channel" : `${denied.length} channels`} (${denied.map((ch) => `#${ch}`).join(", ")}), so their messages are not shown${reader ? `; its history grant is ${grantedText(reader.channels)}` : ""}` });
+      warnings.push({ code: "CHANNELS_DENIED", target: req.target, message: `this identity may not read ${denied.length === 1 ? "one channel" : `${denied.length} channels`} (${denied.map((ch) => `#${ch}`).join(", ")}), so their messages are not shown${reader ? `; its history grant is ${historyGrantText(reader.channels)}` : ""}` });
     read.sort((a, b) => a.ts.localeCompare(b.ts));
     olderRetained = incomplete || read.length > req.limit;
     read = read.slice(-req.limit);

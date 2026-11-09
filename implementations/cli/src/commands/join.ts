@@ -21,6 +21,7 @@ import {
 } from "@cotal-ai/core";
 import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
+import { historyGrant, historyGrantCovers, historyGrantText } from "../lib/history-grant.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { resolveSpace } from "../lib/status.js";
 import { activityDetail, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
@@ -29,7 +30,7 @@ import { activityDetail, c, presenceDetail, statusBadge, stderrLine } from "../u
 // refusal instead of a raw NATS stack. Shared by the self-mint provisioning step (which runs
 // BEFORE ep.start) and ep.start itself. Known TLS negotiation refusal is classified here too.
 // Unexpected failures still propagate unchanged.
-function joinAuthFailure(e: unknown, space: string, credsLifecycle?: string): CommandFailure | undefined {
+function joinAuthFailure(e: unknown, space: string, credsLifecycle?: string, creds?: string, channel?: string): CommandFailure | undefined {
   const msg = (e as Error)?.message ?? String(e);
   if (msg === "server does not support 'tls'")
     return new CommandFailure("refused", "UNSUPPORTED", `TLS is required to join ${space}, but this server does not support TLS`, { remedy: "ask the mesh operator for its TLS-enabled broker address" });
@@ -42,6 +43,19 @@ function joinAuthFailure(e: unknown, space: string, credsLifecycle?: string): Co
   if (/consumer not found|no responders|not provisioned/i.test(msg))
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} isn't provisioned for a console session yet`, { remedy: "run `cotal up` first, or join with --creds/--token" });
   if (/authoriz|permission|not authorized/i.test(msg)) {
+    // A provisioned agent credential whose read ACL names no channel still reaches the broker: its
+    // inbox exists, and the join's history read is the first thing the broker denies. That denial is
+    // the same Permissions Violation an unbound delivery responder produces, so it is told apart here
+    // by the credential's own history grant, which the mint receipt already printed as "May read".
+    // A credential that does grant the channel, or whose file will not parse, keeps the daemon
+    // sentence: that is the reported cause, and guessing a grant from an unreadable file would hide it.
+    let grant: string | undefined;
+    try { grant = channel === undefined ? undefined : missingChannelGrant(creds, space, channel); }
+    catch { grant = undefined; }
+    if (grant !== undefined)
+      return new CommandFailure("refused", "PERMISSION_DENIED", `not authorized to join #${channel} in ${space}: this credential's history grant is ${grant}`, {
+        remedy: `mint one that reads it with \`cotal auth mint <name> --space ${space} --allow-subscribe ${channel} --provision --out <file>\`, then join with the lifecycle UID that mint reports`,
+      });
     // #1576. THIS USED TO NAME CREDENTIALS AND NOTHING ELSE, and an operator holding valid,
     // unexpired creds spent days pursuing that hypothesis. A durable join is authorized by the
     // delivery daemon off the ACL row, so when its responder is not bound the broker denies the
@@ -55,6 +69,14 @@ function joinAuthFailure(e: unknown, space: string, credsLifecycle?: string): Co
     });
   }
   return undefined;
+}
+
+/** The quoted history grant of a `--creds` permission denial whose grant leaves the joined channel
+ *  out, or `undefined` when the grant covers it or the credential is not that shape. */
+function missingChannelGrant(creds: string | undefined, space: string, channel: string): string | undefined {
+  const grant = historyGrant(creds, space);
+  if (grant === undefined || historyGrantCovers(grant.channels, channel)) return undefined;
+  return historyGrantText(grant.channels);
 }
 
 /** Refresh a manual user-auth registration's policy before anything is dialed. A refresh that fails
@@ -406,7 +428,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     await leaveSeat();
     // A bare `cotal join` binds a durable DM inbox nobody pre-created on an unprovisioned space;
     // surface that (and an auth reject) as ONE classified refusal, not a raw NATS stack.
-    throw joinAuthFailure(e, space, values.creds ? lifecycleUid : undefined) ?? e;
+    throw joinAuthFailure(e, space, values.creds ? lifecycleUid : undefined, auth.creds, channel) ?? e;
   }
   started = true;
 

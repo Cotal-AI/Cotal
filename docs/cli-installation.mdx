@@ -317,7 +317,9 @@ assumed for a credential.
 
 A `--creds` join binds the inbox provisioned for its lifecycle, so the space's owner mints the
 credential with `cotal auth mint <name> --provision` and hands over the lifecycle UID that mint
-reports. A credential minted without `--provision` has no inbox there, and `join` refuses, naming
+reports. That mint grants no channel unless it carries `--allow-subscribe <channel>`, and a join
+of a channel the credential does not grant is refused naming that grant and the mint that adds
+it. A credential minted without `--provision` has no inbox there, and `join` refuses, naming
 that lifecycle and the mint that makes one.
 
 On a registered user-auth space, sign in with `cotal login` first. `join` uses your existing `cli`
