@@ -7,6 +7,17 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Migration commits need pause cleanup custody
+
+Library callers of `commitMigration` that supply journal entries and a handler must provide the
+handler's `endPause` method beside `discharge`. A run's `MeshHandler` supplies both. An admissible
+report that drops a pending pause cannot be committed without this cleanup custody. The commit
+ends those pauses before filing its record; a cleanup failure leaves the migration unfiled.
+
+`MigrateOrphan` now includes the journal `state` used to classify each row. Obtain reports through
+`migrateRun` rather than constructing old-shaped rows. This does not wire migration commits into
+the CLI or advance a run's source pin; those existing limits remain.
+
 ## Terminal layout contract removed
 
 `@cotal-ai/core` no longer exports the `terminal` extension kind, so `TerminalLayout`, `Tab` and
@@ -28,6 +39,7 @@ because nothing registers that kind.
 Remove those imports. A host that opened tmux windows or cmux tabs through a provider can call the
 driver each package still exports, `tmux.openWindow` and `tmux.splitWindow`, or
 `cmux.openWorkspace` with its own layout JSON.
+
 ## Workflow workers require the host's language package version
 
 The shipped workflow worker checks its `@cotal-ai/lang` package version against the version the host
