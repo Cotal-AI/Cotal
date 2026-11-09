@@ -223,6 +223,19 @@ for (const [label, config, expected] of [
   check(`${label} another endpoint never receives a manager pin`, calls.at(-1)?.opts.instanceId === undefined);
   await tools.find(t => t.name === "cotal_invoke")!.run(agent, config, { endpoint: "manager", command: "status" });
   check(`${label} generic untargeted call retains its existing class route`, calls.at(-1)?.opts.instanceId === undefined);
+  // An explicit instance pins any endpoint, and wins over the manager pin a seat would otherwise use.
+  const pin = "p".repeat(26);
+  await tools.find(t => t.name === "cotal_describe")!.run(agent, config, { endpoint: "com.example.orders", instance: pin });
+  check(`${label} an explicit instance pins a third-party describe`, calls.at(-1)?.endpoint === "com.example.orders" && calls.at(-1)?.opts.instanceId === pin);
+  await tools.find(t => t.name === "cotal_invoke")!.run(agent, config, { endpoint: "com.example.orders", command: "list", instance: pin });
+  check(`${label} an explicit instance pins a third-party invoke`, calls.at(-1)?.opts.instanceId === pin);
+  await tools.find(t => t.name === "cotal_invoke")!.run(agent, config, { endpoint: "manager", command: "turn-pending", self: true, instance: pin });
+  check(`${label} an explicit instance wins over the manager pin`, calls.at(-1)?.opts.instanceId === pin && calls.at(-1)?.opts.target?.mode === "self");
+}
+{
+  const schema = cotalToolSpecs(cfg).find(t => t.name === "cotal_invoke")!.schema;
+  check("cotal_invoke refuses an instance that is not a lifecycle token before any call",
+    !schema.safeParse({ endpoint: "com.example.orders", command: "list", instance: "Not-A-Token" }).success && schema.safeParse({ endpoint: "com.example.orders", command: "list", instance: "p".repeat(26) }).success);
 }
 
 // Constructed throw exercises the actual managerInvoke -> spawn -> tool rendering pipeline.
@@ -302,7 +315,7 @@ for (const [label, config, expected] of [
     !SILENCE.test(answered.result.text) && !answered.result.text.includes("may already have been recorded"), answered);
 }
 
-const EXPECTED_CELLS = 74;
+const EXPECTED_CELLS = 87;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

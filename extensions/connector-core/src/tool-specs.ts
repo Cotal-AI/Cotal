@@ -212,6 +212,16 @@ const managerInstanceArg = z
   .optional()
   .describe("Optional manager instance id for a multi-manager space. When omitted, a seat a manager launched uses that manager and any other caller lets the mesh select one; on a user-auth mesh with several of your managers live, that selection refuses and lists their ids. A pin that cannot be resolved is refused without falling back to another manager.");
 
+/** The endpoint-instance pin of `cotal_describe` and `cotal_invoke`, for any endpoint. */
+const endpointInstanceArg = z
+  .string()
+  .refine((value) => {
+    try { assertLifecycleToken(value, "instance"); return true; }
+    catch { return false; }
+  }, "instance must be a lifecycle token ([a-z0-9]{26,32})")
+  .optional()
+  .describe("Optional instance id: call this one instance of the endpoint on its own rail, never another. Pass it when you were handed a command on one instance; cotal_orientation shows which. Omitted, the endpoint picks an instance.");
+
 /** One-line meaning of each attention mode, echoed back on set/read so the agent always sees the
  *  effect of a mode it may have set turns ago (self-visibility is the escape hatch for `focus`). */
 const ATTENTION_DESC: Record<"open" | "dnd" | "focus", string> = {
@@ -1595,7 +1605,7 @@ export function cotalToolSpecs(
             allowSubscribe: z.array(z.string()).optional().describe("Channels the helper may read. Each must be one you may read."),
             allowPublish: z.array(z.string()).optional().describe("Channels the helper may post to. Each must be one you may post to."),
             capabilities: z.array(z.string()).optional().describe("Capabilities to hand on, such as spawn or run. Each must be one you hold."),
-            endpoints: z.array(z.object({ endpoint: z.string(), commands: z.array(z.string()).min(1), instanceId: z.string().optional() }).strict()).optional().describe("Endpoint commands to hand on, as { endpoint, commands } entries such as { endpoint: \"com.example.orders\", commands: [\"list\"] }. Each must be one you hold."),
+            endpoints: z.array(z.object({ endpoint: z.string(), commands: z.array(z.string()).min(1), instanceId: z.string().optional() }).strict()).optional().describe("Endpoint commands to hand on, as { endpoint, commands } entries such as { endpoint: \"com.example.orders\", commands: [\"list\"] }. Each must be one you hold. Add instanceId to hand on a command you hold on one instance of the endpoint."),
             save: z.boolean().optional().describe("Also save this persona to the catalog under `name`, for a broad persona worth reusing. A name already in the catalog is refused before anything starts."),
           })
           .strict()
@@ -1961,7 +1971,7 @@ export function cotalToolSpecs(
         allowSubscribe: z.array(z.string()).optional().describe("Optional read ACL written into the persona file. Wins over allowSubscribe: in the prompt's frontmatter."),
         allowPublish: z.array(z.string()).optional().describe("Optional post ACL written into the persona file. Wins over allowPublish: in the prompt's frontmatter."),
         capabilities: z.array(z.string()).optional().describe("Optional capabilities written into the persona file, such as spawn or run. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Capabilities in the prompt's frontmatter are dropped."),
-        endpoints: z.array(z.object({ endpoint: z.string(), commands: z.array(z.string()).min(1), instanceId: z.string().optional() }).strict()).optional().describe("Optional endpoint commands written into the persona file, as { endpoint, commands } entries. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Endpoints in the prompt's frontmatter are dropped."),
+        endpoints: z.array(z.object({ endpoint: z.string(), commands: z.array(z.string()).min(1), instanceId: z.string().optional() }).strict()).optional().describe("Optional endpoint commands written into the persona file, as { endpoint, commands } entries, with instanceId for a command held on one instance. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Endpoints in the prompt's frontmatter are dropped."),
         announce: z
           .string()
           .optional()
@@ -2134,14 +2144,15 @@ export function cotalToolSpecs(
       name: "cotal_describe",
       title: "Cotal: describe an endpoint",
       description:
-        "List the commands a registered endpoint serves, as this session's credential sees them: each command's capability, whether it is targeted, and its input schema. The surface comes from the endpoint's describe reply and the content-addressed contract store, digest-verified, never from the endpoint's own claims. Read it before cotal_invoke.",
+        "List the commands a registered endpoint serves, as this session's credential sees them: each command's capability, whether it is targeted, and its input schema. The surface comes from the endpoint's describe reply and the content-addressed contract store, digest-verified, never from the endpoint's own claims. Read it before cotal_invoke, with the same instance if you pass one.",
       schema: {
         endpoint: z.string().min(1).max(200).describe("The endpoint name, e.g. com.example.orders."),
+        instance: endpointInstanceArg,
         refresh: z.boolean().optional().describe("Resolve again instead of using this session's cached surface."),
       },
-      async run(agent, config, { endpoint, refresh }: { endpoint: string; refresh?: boolean }) {
+      async run(agent, config, { endpoint, instance, refresh }: { endpoint: string; instance?: string; refresh?: boolean }) {
         try {
-          const instanceId = endpoint === "manager" && !isAuthed(config) ? config.managerInstanceId : undefined;
+          const instanceId = instance ?? (endpoint === "manager" && !isAuthed(config) ? config.managerInstanceId : undefined);
           const svc = await agent.ep.describeService(endpoint, { refresh, ...(instanceId !== undefined ? { instanceId } : {}) });
           const commands = [...svc.commands.values()]
             .sort((a, b) => a.command.localeCompare(b.command))
@@ -2167,14 +2178,15 @@ export function cotalToolSpecs(
         "Call one command on a registered endpoint with JSON arguments, over this session's own connection and grants. The arguments are checked against the command's digest-verified input schema before anything is sent, and the reply against its output schema. A failure reports its code and outcome: `not-executed` means the command did not run; `unknown` means it may have. Do not repeat a call whose outcome is unknown without checking first.",
       schema: {
         endpoint: z.string().min(1).max(200).describe("The endpoint name, e.g. com.example.orders."),
+        instance: endpointInstanceArg,
         command: z.string().min(1).max(128).describe("The command name from cotal_describe."),
         args: z.record(z.string(), z.unknown()).optional().describe("The command's arguments as a JSON object."),
         self: z.boolean().optional().describe("Targeted commands only: act on this session itself."),
         timeoutMs: z.number().int().min(1).max(120000).optional().describe("Reply deadline in milliseconds (default 30000)."),
       },
-      async run(agent, config, { endpoint, command, args, self, timeoutMs }: { endpoint: string; command: string; args?: Record<string, unknown>; self?: boolean; timeoutMs?: number }) {
+      async run(agent, config, { endpoint, instance, command, args, self, timeoutMs }: { endpoint: string; instance?: string; command: string; args?: Record<string, unknown>; self?: boolean; timeoutMs?: number }) {
         try {
-          const instanceId = endpoint === "manager" && self && !isAuthed(config) ? config.managerInstanceId : undefined;
+          const instanceId = instance ?? (endpoint === "manager" && self && !isAuthed(config) ? config.managerInstanceId : undefined);
           const r = await agent.ep.invokeService(endpoint, command, args, { deadlineMs: timeoutMs ?? 30_000, ...(self ? { target: { mode: "self" as const } } : {}), ...(instanceId !== undefined ? { instanceId } : {}) });
           if (r.reply.ok !== true) {
             const e = r.reply.error;

@@ -276,7 +276,7 @@ export function renderOrientation(o: Orientation): string {
   lines.push(
     `  • post: ${o.access.post.length ? fmt(o.access.post) : "— (read-only; no post channels)"}`,
     `  • capabilities: ${o.capabilities.length ? o.capabilities.join(", ") : "none beyond defaults"}`,
-    ...(o.endpoints.length ? [`  • endpoint commands handed at launch: ${o.endpoints.join(", ")} (cotal_endpoints lists what your credential's grants cover)`] : []),
+    ...(o.endpoints.length ? [`  • endpoint commands handed at launch: ${o.endpoints.join(", ")} (cotal_endpoints lists what your credential's grants cover${o.endpoints.some((e) => e.includes("(instance ")) ? "; pass a command's instance to cotal_describe and cotal_invoke as instance" : ""})`] : []),
     "",
     `Tools — core loop: ${o.tools.core.map((t) => t.name).join(", ") || "—"}`,
     `Tools — more: ${o.tools.more.map((t) => t.name).join(", ") || "—"}`,

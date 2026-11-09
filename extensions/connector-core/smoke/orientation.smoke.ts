@@ -457,6 +457,10 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.ok(card.includes("endpoint commands handed at launch: com.example.orders create, com.example.orders list (cotal_endpoints lists what your credential's grants cover)"), card);
   const none = renderOrientation(await orient(agentStub(), configFromEnv(base), [], 1));
   assert.ok(!none.includes("endpoint commands handed at launch"), "a seat handed none shows no line");
+  // A pinned entry shows its instance and says where to pass it.
+  const pinned = [{ endpoint: "com.example.orders", commands: ["list"], instanceId: "i0000000000000000000000000a" }];
+  const pinnedCard = renderOrientation(await orient(agentStub(), configFromEnv({ ...base, ...aclEnv({ endpoints: pinned }) }), [], 1));
+  assert.ok(pinnedCard.includes("endpoint commands handed at launch: com.example.orders list (instance i0000000000000000000000000a) (cotal_endpoints lists what your credential's grants cover; pass a command's instance to cotal_describe and cotal_invoke as instance)"), pinnedCard);
   assert.throws(() => configFromEnv({ ...base, COTAL_ENDPOINTS: "com.example.orders" }), /COTAL_ENDPOINTS: expected the JSON list the launcher writes/);
   assert.throws(() => configFromEnv({ ...base, COTAL_ENDPOINTS: JSON.stringify([{ endpoint: "com.example.orders", commands: ["describe"] }]) }), /reserved command "describe"/);
   // A launch that resolved no endpoint commands says so, and the session believes the launch over the
