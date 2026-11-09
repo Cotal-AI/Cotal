@@ -548,6 +548,9 @@ try {
     const recordsBefore = await runCount();
     writeFileSync(controlPath, scenario);
     await until(() => trace().some((e) => e.kind === `tool-${scenario}`), `native tool ${scenario}`);
+    if (scenario === "parent-restored" && trace().find((e) => e.kind === `tool-${scenario}`)?.isError !== true) {
+      await until(async () => drives.size === before + 1 && await runCount() === recordsBefore + 1, `native tool ${scenario} settled counts`);
+    }
     check(`MC-5 ${scenario} uses authentic child caller without new acceptance on denial`, (trace().find((e) => e.kind === `tool-${scenario}`)?.isError === true) === (scenario !== "parent-restored") && drives.size === before + (scenario === "parent-restored" ? 1 : 0) && await runCount() === recordsBefore + (scenario === "parent-restored" ? 1 : 0));
   }
   writeFileSync(join(root, ".cotal", "agents", "toolbaseline.md"), "---\nname: toolbaseline\nagent: u4-seat\ncapabilities: []\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nNative child without run.\n");
