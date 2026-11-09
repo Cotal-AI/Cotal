@@ -7,8 +7,8 @@
  * a trailing `label=`, sanitized: a healthy card, a card naming another principal, and a card that
  * carries control bytes and a line break. `--json` keeps its legacy candidate lines byte for byte.
  * `cotal pending` names the same subject principal as each candidate's `from` in `--json` and
- * `--plain`, within `--limit`, and keeps its partial cleanup warning. No read changes the durable's
- * pending or ack state, and every read opens as many consumers as the first `--json` read does.
+ * `--plain`, within `--limit`. A confirmed bounded read received every message it requested and exits 0 with no cleanup warning. No read changes the durable's
+ * pending or ack state. `cotal pending` deletes only the named reader it created. The retained spelling leaves its ordered consumer.
  *
  * Run: pnpm smoke:deliver-pending-sender
  */
@@ -196,10 +196,10 @@ try {
   const doc = (r: { stdout: string }) => JSON.parse(r.stdout) as { completeness?: string; warnings: Array<{ code: string }>; result: { candidates: unknown[]; candidateRead: string; candidateLimit: number } };
   const [full, limited] = [doc(modernJson), doc(modernLimited)];
   check(
-    "pending reads keep their partial cleanup warning and add no candidate warning",
-    [modernJson, modernPlain, modernLimited].every((r) => r.code === 4) &&
-      [full, limited].every((d) => d.completeness === "partial" && d.result.candidateRead === "bounded-from-ack-floor" && JSON.stringify(d.warnings.map((w) => w.code)) === '["EPHEMERAL_CLEANUP_UNCONFIRMED"]') &&
-      !modernPlain.stderr.includes("could not be decoded"),
+    "pending reads finish the bounded candidate read and add no candidate warning",
+    [modernJson, modernPlain, modernLimited].every((r) => r.code === 0) &&
+      [full, limited].every((d) => d.completeness === "complete" && d.result.candidateRead === "bounded-from-ack-floor" && d.warnings.length === 0) &&
+      !modernPlain.stderr.includes("could not be decoded") && !modernPlain.stderr.includes("✗"),
     [modernJson.code, modernPlain.code, modernLimited.code, full.warnings, modernPlain.stderr],
   );
   const subjectRows = [[ok, healthy], [claimed, forger], [escaped, forger]] as const;
@@ -227,8 +227,9 @@ try {
     states,
   );
   check(
-    "every read opens as many consumers as the first --json read",
-    states.slice(1).every((s, i) => s.consumers - states[i].consumers === s1.consumers - s0.consumers),
+    "cotal pending deletes its reader and the retained spelling leaves its ordered consumer",
+    s4.consumers === s3.consumers && s5.consumers === s4.consumers && s6.consumers === s5.consumers &&
+      s1.consumers - s0.consumers === 1 && s2.consumers - s1.consumers === 1 && s3.consumers - s2.consumers === 1,
     states.map((s) => s.consumers),
   );
 } finally {

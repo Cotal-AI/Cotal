@@ -76,7 +76,7 @@
  *
  * Run: tsx bin/smoke/daemon-lifetime.smoke.ts   (Linux only)
  */
-import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { constants } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
@@ -141,9 +141,12 @@ const children: ChildProcess[] = [];
  *  cells that read the user manager use it, and they write nothing outside the sandbox. */
 const realRuntimeDir = process.env.XDG_RUNTIME_DIR;
 /** The daemon as a real child whose own pid is the daemon's, so a SIGKILL kills the holder. */
-function child(args: string[], opts: { userManager?: boolean; env?: NodeJS.ProcessEnv } = {}): ChildProcess {
+function child(args: string[], opts: { userManager?: boolean; env?: NodeJS.ProcessEnv; directory?: string } = {}): ChildProcess {
   const runtime = opts.userManager && realRuntimeDir ? realRuntimeDir : rtDir;
-  const c = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(repo, "bin", "cotal.ts"), "daemon", ...args], {
+  const entry = opts.directory === undefined
+    ? ["--import", import.meta.resolve("tsx"), join(repo, "bin", "cotal.ts")]
+    : [join(repo, "bin", "dist", "daemon-cwd.js"), opts.directory];
+  const c = spawn(process.execPath, [...entry, "daemon", ...args], {
     cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: runtime, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", ...opts.env }, stdio: ["ignore", "pipe", "pipe"],
   });
   children.push(c);
@@ -194,8 +197,8 @@ async function cliUserManager(...args: string[]): Promise<{ status: number | nul
 }
 
 /** Start a serving child and wait for its ready line, returning its pid and what it printed so far. */
-async function serveChild(): Promise<{ proc: ChildProcess; pid: number; out: () => string; err: () => string }> {
-  const c = child(["serve"]);
+async function serveChild(directory?: string): Promise<{ proc: ChildProcess; pid: number; out: () => string; err: () => string }> {
+  const c = child(["serve"], { ...(directory === undefined ? {} : { directory }) });
   let out = "", err = "";
   c.stdout!.on("data", (b) => { out += String(b); });
   c.stderr!.on("data", (b) => { err += String(b); });
@@ -244,6 +247,25 @@ const unitDirAvailable = realRuntimeDir !== undefined && spawnSync("systemctl", 
 console.log(`daemon lifetime smoke in ${root}`);
 
 try {
+  await cell("L0 the shipped bootstrap sets cwd before the daemon starts", async () => {
+    if (!existsSync(join(repo, "bin", "dist", "daemon-cwd.js"))) throw new Error("build the shipped daemon cwd entry before running this cell");
+    const directory = join(root, "service-home");
+    mkdirSync(directory, { mode: 0o700 });
+    const linked = join(root, "linked-home");
+    symlinkSync(directory, linked);
+    for (const [invalid, reason] of [["relative", "needs an absolute directory"], [linked, "must be a real directory owned by this user"]] as const) {
+      const c = child(["serve"], { directory: invalid });
+      let err = "";
+      c.stderr!.on("data", b => { err += String(b); });
+      const status = await Promise.race([new Promise<number | null>(r => c.once("exit", r)), sleep(10_000).then(() => -1)]);
+      check("L0 relative or symlink cwd refuses before serving", status === 1 && err.includes(reason) && !existsSync(paths.lock));
+    }
+    const d = await serveChild(directory);
+    check("L0 kernel cwd is the requested directory, not the launching cwd", realpathSync(`/proc/${d.pid}/cwd`) === realpathSync(directory));
+    const st = await cli("status", "--json");
+    check("L0 the unchanged CLI serves and authenticates the bootstrap process", st.status === 0 && st.doc.result?.pid === d.pid);
+    await kill(d.proc, "SIGTERM");
+  });
   await cell("L1 the lifetime lock serializes serve", async () => {
     const first = await serveChild();
     const st = await cli("status", "--json");

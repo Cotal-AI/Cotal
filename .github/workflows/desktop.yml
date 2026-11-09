@@ -1,12 +1,18 @@
 name: Desktop apps
 on:
   workflow_dispatch:
+    inputs:
+      real_service:
+        description: 'Install and remove an isolated per-user daemon service on disposable macOS/Windows runners'
+        type: boolean
+        default: false
   schedule:
     - cron: '17 6 * * 1'
   pull_request:
     paths:
       - 'desktop/**'
       - 'bin/daemon/**'
+      - 'bin/smoke/daemon-install-*.smoke.*'
       - 'packages/seat/**'
       - 'packages/workspace/native/**'
       - '.github/workflows/desktop.yml'
@@ -77,6 +83,19 @@ jobs:
       - run: pnpm --dir desktop test
       - run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --no-default-features --lib
       - run: pnpm smoke:daemon-install-native
+      - name: Verify the real per-user daemon service
+        if: inputs.real_service && runner.os != 'Linux'
+        env:
+          COTAL_TEST_REAL_SERVICE: '1'
+        run: node bin/smoke/daemon-install-real.smoke.mjs
+      - name: Upload the real service result
+        if: always() && inputs.real_service && runner.os != 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-service-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/daemon-service-result.json
+          if-no-files-found: error
+          retention-days: 7
       - run: pnpm --filter cotal-ai seeded-connectors
       - run: pnpm --dir desktop prepare:runtime
       - run: pnpm --dir desktop check:runtime

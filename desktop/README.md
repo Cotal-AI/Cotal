@@ -38,6 +38,8 @@ pnpm --dir desktop app:build
 
 The Rust tests without default features check request, URL and environment boundaries, not the native webview or tray. A browser preview displays a native-controls-unavailable message rather than simulated daemon state.
 
+The Desktop apps workflow has an optional `real_service` dispatch input. On disposable GitHub-hosted macOS and Windows runners it exercises the built CLI's install, local readiness, start without restart, and uninstall using a unique daemon home. It checks native job absence through the CLI's install dry-run and requires the endpoint to report `NOT_RUNNING` after removal. A session prerequisite refusal fails the run; it is not a passing skip. Failed or unknown cleanup is retained for runner disposal and recorded in the `daemon-service-*` artifact. This does not test signed installers, browser sign-in or remote connections. The regular native-install smoke continues to use recording runners without installing a service.
+
 ## Platforms
 
 | Platform | Desktop service | Installer |
@@ -56,4 +58,4 @@ Build artifacts are not signed production releases. macOS distribution needs Dev
 
 The OS user is the trust principal. A hostile process running as that same user is not isolated by the tray. Native peer authentication and lifetime custody protect the daemon from other users and foreign listeners. The renderer has no shell, filesystem or remote IPC capability. Rust launches only the bundled Node and stock CLI, admits a closed request schema, removes inherited provider/agent authority from its child environment, and bounds input/output and time. Browser opening permits HTTPS and literal loopback HTTP only. Login proofs and tokens never cross into the webview.
 
-On macOS, starting or removing a loaded LaunchAgent also requires native evidence that its label, executable, arguments and working directory match the recorded definition. If macOS omits a required field or the lookup is unavailable, the operation refuses without stopping the job. `launchctl` display text is not parsed as authority.
+On macOS, starting or removing a loaded LaunchAgent requires its recorded source digest and native evidence matching its label, executable and full argument vector. New installs carry the working directory in those arguments: a small Node entry validates it and changes directory before loading the CLI. They do not depend on launchd exporting its WorkingDirectory property. Legacy plists that carry that property still require the matching native field; an omitted field refuses without stopping the job. No legacy receipt is migrated or adopted through the new path. An unavailable lookup or missing executable/arguments also refuses. `launchctl` display text is not parsed as authority.
