@@ -1,5 +1,28 @@
 # @cotal-ai/cli
 
+## 0.151.1
+
+### Patch Changes
+
+- ee5e222: Make `cotal config` read the space a launch in the current folder uses when another space is selected. Write receipts and missing-persona warnings use the same space, while explicit `--space` and `--user` reads keep their scopes.
+- 1f0e175: A closed terminal of a foreground `cotal up` now says the stack is still running and names `cotal down`, then exits 129.
+  
+  The stack keeps running, as before. The holding process removes its hold record as it exits, and a later `cotal down` removes one a killed holder left behind.
+- 35d1c85: Revoke a credential in the space its folder holds after that space is stopped, even while another space is selected.
+  
+  The recovery printed while the space is running now quotes a path a shell would split or expand, and so does the Next after the revocation.
+- acc85cf: `cotal setup --json` now reports a failed connector seed as one JSON document on stdout, with no text failure line on stderr.
+  
+  The seed runs before the command, so the refusal used to print one text line and leave stdout empty. A command that asks for JSON now gets the same envelope any later refusal writes. When npm is not on PATH, the reason says that instead of a raw spawn error with an embedded newline.
+- faf7c80: `cotal service` now points a stopped controller stack member at bare `cotal up`, and refuses to start or restart one by itself.
+  
+  Starting `stack-broker`, `stack-delivery` or `stack-manager` on its own, or the preset name that reaches it, launches the process and leaves the space unregistered, so later commands fail until `cotal down`. The start now stops before anything launches and tells you to run `cotal up`. The guard checks the saved adapter and controller journal, so a direct-process service with the same name still starts and restarts normally.
+- f84069e: The docs site now has a TypeScript reference for every published package, generated from source. Each of these packages' entry files gains a `@module index` comment so the reference names the main import path `index` instead of leaving it blank. The published code is otherwise unchanged.
+- Updated dependencies [dd3d984]
+- Updated dependencies [f84069e]
+  - @cotal-ai/workspace@0.151.1
+  - @cotal-ai/core@0.151.1
+
 ## 0.151.0
 
 ### Patch Changes

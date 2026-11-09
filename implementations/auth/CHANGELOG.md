@@ -1,5 +1,16 @@
 # @cotal-ai/auth
 
+## 0.151.1
+
+### Patch Changes
+
+- f84069e: The docs site now has a TypeScript reference for every published package, generated from source. Each of these packages' entry files gains a `@module index` comment so the reference names the main import path `index` instead of leaving it blank. The published code is otherwise unchanged.
+- Updated dependencies [dd3d984]
+- Updated dependencies [f84069e]
+  - @cotal-ai/workspace@0.151.1
+  - @cotal-ai/core@0.151.1
+  - @cotal-ai/lang@0.151.1
+
 ## 0.151.0
 
 ### Patch Changes
