@@ -84,8 +84,45 @@ malformed credential, or lacks the `$SYS` observer credential refuses on its own
 touches the lease. The `smoke:delivery-standby` suite runs two complete hosts on one machine and
 one broker through the kill, return and graceful-stop cases and prints observed takeover times.
 Those times are not an SLA. One machine with two host processes is not a test of two physical
-hosts or of a network partition. The fixture uses short-lived credentials without renewal; each
-production host still needs its provisioner's credential renewal and observer/scan custody.
+hosts or of a network partition. The fixture also replaces each host's delivery credential through
+its own store, crosses the initial expiry while the holder still serves, and refuses an invalid
+manifest without disturbing that holder. It does not test membership-credential renewal or
+system-account rotation.
+
+### Standby provisioning
+
+This is an operator-provisioned or embedded topology; the CLI has no cross-host standby enrollment
+command. Prepare two distinct roots with `.cotal`, one version-1 manifest per host, and the same
+broker URL and space account. Start each with `cotal deliver --spaces <manifest> --root <root>
+--server <url>` and the broker's required TLS setting. The manifests name spaces, not identities or
+credentials. A malformed manifest refuses the whole start; an invalid lane credential refuses that
+lane and is retried. Never copy another account's credential to make a lane open.
+
+A trusted provisioner uses the public mint helpers and writes each host's assigned SecretStore keys:
+
+| Input | Mint helper | Store key helper |
+| --- | --- | --- |
+| Delivery | `mintCreds` with profile `delivery` | `deliveryCredsKey` |
+| Membership writer | `mintCreds` with profile `membership-rw` | `membershipRwCredsKey` |
+| Account observer | `mintMembershipObserverCreds` | `membershipObserverCredsKey` |
+| Connection eviction | `mintConnectionEvictorCreds` | `connectionEvictorCredsKey` |
+
+The mint helpers come from `@cotal-ai/core`; the store key helpers and `workspaceSecretStore` come
+from `@cotal-ai/workspace`. A CLI host's keys use `{ injected: false, root }` with that host's root.
+Keep each host's delivery nkey stable across renewal and restart, and distinct from the other host's.
+The provisioning owner retains identity/signing custody and atomically replaces bounded credentials
+in each host's store before expiry. Delivery rereads its own key and proves renewed credentials
+against the broker; the membership feed uses its own renewed writer key. Neither host needs the
+account signer. A copied static credential file is not a renewal owner. See
+[delivery renewal](embedding-daemons.mdx#delivery) for the stock Manager/store continuity contract.
+
+The observer must be pinned to the same data account and broker the lane serves. Its scan results,
+not a caller-supplied connection ID, select eviction targets. The separate evictor is high-power:
+its native KICK permission is broker-wide, not account-confined. Keep it on trusted delivery hosts,
+never in a participant or tenant-controlled sandbox. Observer and evictor credentials have their
+own provision/rotation lifecycle; do not infer their renewal from a delivery-credential refresh.
+Missing or inconsistent scan authority refuses admission or verified eviction. An operator must
+resolve that provisioning boundary explicitly, without clearing leases or fabricating scan results.
 
 The manager needs this daemon while it starts. Its SecretStore challenge, its boot repair of a frozen
 registration gate, and the verified eviction a restart performs all go over the daemon's
