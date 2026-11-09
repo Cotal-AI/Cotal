@@ -1,13 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync, fsyncSync, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, fchmodSync, fchownSync, linkSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync, fsyncSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { acquireLock } from "@cotal-ai/core";
 import { LOAD_NOW, SCRIPTS } from "./completion-scripts.js";
 import { CommandFailure, codeSpan, localWriterGap } from "@cotal-ai/workspace";
 
-interface Snapshot { bytes: Buffer; hash: string; dev: number; ino: number; mode: number }
+interface Snapshot { bytes: Buffer; hash: string; dev: number; ino: number; mode: number; gid: number }
 /** `wiring.created` marks a startup file that `install` created, so `uninstall` removes it once it is empty. */
 interface Ownership { schemaVersion: 1; shell: string; stub: string; stubHash: string; wiring: { path: string; block: string; created?: true } | null }
 interface Paths { stub: string; rc?: string }
@@ -143,12 +143,12 @@ function read(path: string, privateFile = false): Snapshot | undefined {
     const after = fstatSync(fd);
     if (length > 2 * 1024 * 1024 || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new CommandFailure("refused", "CONFLICT", "the shell file changed while it was read; no replacement was made", { target: { path } });
     const content = bytes.subarray(0, length);
-    return { bytes: content, hash: hash(content), dev: before.dev, ino: before.ino, mode: before.mode & 0o777 };
+    return { bytes: content, hash: hash(content), dev: before.dev, ino: before.ino, mode: before.mode & 0o777, gid: before.gid };
   } finally { closeSync(fd); }
 }
 function same(path: string, expected: Snapshot | undefined): void {
   const current = read(path);
-  if (expected ? !current || current.hash !== expected.hash || current.dev !== expected.dev || current.ino !== expected.ino || current.mode !== expected.mode : current !== undefined) throw new CommandFailure("refused", "CONFLICT", "the shell file changed since review; no other writer's content was replaced", { target: { path } });
+  if (expected ? !current || current.hash !== expected.hash || current.dev !== expected.dev || current.ino !== expected.ino || current.mode !== expected.mode || current.gid !== expected.gid : current !== undefined) throw new CommandFailure("refused", "CONFLICT", "the shell file changed since review; no other writer's content was replaced", { target: { path } });
 }
 function write(path: string, expected: Snapshot | undefined, bytes: Buffer | string, mode: number): void {
   same(path, expected);
@@ -158,9 +158,18 @@ function write(path: string, expected: Snapshot | undefined, bytes: Buffer | str
   let attempted = false;
   let published = false;
   try {
-    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode);
+    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     created = true;
-    try { writeFileSync(fd, bytes); fchmodSync(fd, mode); fsyncSync(fd); } finally { closeSync(fd); }
+    try {
+      // A setgid parent can give the replacement a different group. Keep it private until the
+      // original group is restored, then check its final access before writing any shell content.
+      if (expected && fstatSync(fd).gid !== expected.gid) fchownSync(fd, process.getuid!(), expected.gid);
+      fchmodSync(fd, mode);
+      const gap = fileGap(temporary, fstatSync(fd), false);
+      if (gap) throw unsafe([gap]);
+      writeFileSync(fd, bytes);
+      fsyncSync(fd);
+    } finally { closeSync(fd); }
     same(path, expected);
     attempted = true;
     if (expected) { renameSync(temporary, path); published = true; created = false; }

@@ -682,7 +682,9 @@ refused startup file, stub, record and directory on the way to them with its rea
 local account could write with its mode and one `chmod` that fixes them all. Bare `completion`
 offers that `chmod` before `install`. Group write on a file
 you own is accepted when the group is your proven user private group and the file has no extended
-ACL. A file you do not own stays refused. A startup file that is a
+ACL. Replacements keep the existing file's group and mode, including under a setgid directory.
+The temporary file starts private, and its final access is checked before it receives shell content.
+A file you do not own stays refused. A startup file that is a
 symlink, as a dotfile manager such as stow links it, is never written through: `install` refuses
 it, exit 2, names it and gives the line to add to the file it points to yourself. Bare `completion`
 warns that it is a symlink and does not read it. A startup file its owner made read-only is never

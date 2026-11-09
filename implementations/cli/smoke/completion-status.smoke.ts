@@ -12,7 +12,7 @@
  * Run: pnpm smoke:completion-status
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { assertSmokeSandboxDown, createSuite } from "@cotal-ai/smoke-kit";
@@ -316,6 +316,25 @@ if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfa
   const status = s.run(["completion"]);
   const installed = s.run(["completion", "install", "bash"]);
   check("install accepts a group-writable rc in the caller's user private group, exit 0, and the status does not warn", status.status === 0 && !status.stderr.includes("group-writable") && installed.status === 0 && readFileSync(rc, "utf8").includes("completion.bash"), { status: shown(status), install: shown(installed) });
+  const group = supplementaryGroup();
+  if (group) {
+    const inherited = sandbox("/bin/bash");
+    const startup = join(inherited.home, ".bashrc");
+    const original = "# private-group startup\n";
+    writeFileSync(startup, original);
+    chmodSync(startup, 0o664);
+    const gid = statSync(startup).gid;
+    check("the setgid regression has a supplementary-group parent", assignedGroup(group, [inherited.home]));
+    chmodSync(inherited.home, 0o2750);
+    const install = inherited.run(["completion", "install", "bash", "--json"]);
+    check("install preserves the startup file's private group and mode under a setgid parent",
+      install.status === 0 && statSync(startup).gid === gid && (statSync(startup).mode & 0o777) === 0o664, shown(install));
+    const after = inherited.run(["completion", "--json"]);
+    check("the replacement remains safe on the next status read", after.status === 0, shown(after));
+    const uninstall = inherited.run(["completion", "uninstall", "bash", "--json"]);
+    check("uninstall also preserves the private group, mode and original text",
+      uninstall.status === 0 && statSync(startup).gid === gid && (statSync(startup).mode & 0o777) === 0o664 && readFileSync(startup, "utf8") === original, shown(uninstall));
+  }
   const barePath = pathWithout("getfacl");
   if (barePath) {
     const bare = sandbox("/bin/bash");
