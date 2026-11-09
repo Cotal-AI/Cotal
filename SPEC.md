@@ -7043,7 +7043,12 @@ expiry; `supervisor`/`delivery`/`membership-rw` carry a 24h expiry with the mana
 renewal owner (self-remint for its own credential; same-nkey re-sign + explicit `reloadCreds`
 adoption for the seed-less daemons); the two system-account credentials (`membership-observer`,
 `connection-evictor`) carry a 30d expiry and are renewable ONLY by a system-account rotation +
-broker restart; no persisted system-account minting secret exists, by design. On per-user-auth
+broker restart. The broker root retains the system-account signing seed in its own secret store,
+for own-broker caller issuance and for the multi-space delivery host; it never enters a client
+bundle, a registration or a message. KICK is broker-wide, so on a broker with several spaces no
+space daemon holds the evictor: the host is the one process that kicks, with a kick-only user it
+mints per kick, and only a connection its own complete census of the asking lane's account lists.
+On per-user-auth
 spaces, static `agent`/`observer`/`admin` minting is retired entirely (the flip): agent identities
 exist only as owner+actor principals under a logged-in user, and the elevated profiles of this
 appendix are reached per-connection via the exchange-authored view claim instead (§10). The flip is

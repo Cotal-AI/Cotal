@@ -1,7 +1,7 @@
 import { credsClaims, isAccountNkey, mintConnectionEvictorCreds, nativeNkeySigner, newIdentity, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import {
-  assertSingleSpaceBroker, authDir, connectionEvictorCredsKey, CONNECTION_EVICTOR_CREDS_KIND,
-  loadSpaceAuth, membershipObserverCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND, readSystemSigningSeed, segmentedKey,
+  assertSingleSpaceBroker, authDir, connectionEvictorCredsKey, CONNECTION_EVICTOR_CREDS_KIND, listSpaceAccounts,
+  loadSpaceAuth, membershipObserverCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND, readSystemSigningSeed, segmentedKey, workspaceSecretStore,
 } from "@cotal-ai/workspace";
 
 /**
@@ -105,7 +105,7 @@ export function repairAdvice(source: SysCredsSource, kinds: readonly string[]): 
   const evictor = kinds.length === 1 && kinds[0] === CONNECTION_EVICTOR_CREDS_KIND;
   return (
     `${refusal}. ${evictor
-      ? "The delivery daemon mints a missing connection evictor on its next start only on a single-space root that retained its system-account signing seed, so that does not apply here. "
+      ? "No space daemon holds a connection evictor on a root with several spaces: run the spaces under one delivery host (`cotal deliver --spaces <manifest> --server <url>`), whose one kick authority kicks for every lane from the retained system-account signing seed. "
       : ""}There is no other command that mints ${named}: the trust record carries no $SYS signing seed, ` +
     "so nothing re-signs it on this root until per-space segmentation lands"
   );
@@ -248,6 +248,34 @@ async function trustWithRetainedSeed(source: SysCredsSource): Promise<SpaceAuth 
   if (!isAccountNkey(derived) || derived !== record.sysPub)
     throw new Error(`the retained system-account signing seed does not derive its recorded account ${record.sysPub}; restore the record or rotate the system account`);
   return { ...auth, sys: { ...auth.sys, signingSeed: record.signingSeed } };
+}
+
+/** The system-account signing seed one space of a workstation root retained, with that space's trust
+ *  put back together around it, so the one process that may hold the broker's kick credential can
+ *  mint it. Every space on a root shares the broker's system account, so the first record found
+ *  serves them all; two records that name different system accounts are refused, because the root's
+ *  trust then disagrees about which account is the broker's. */
+export interface RetainedBrokerSeed {
+  space: string;
+  sysPub: string;
+  /** `space`'s trust with `sys.signingSeed` in memory. */
+  auth: SpaceAuth;
+}
+
+export async function retainedBrokerSeed(root: string): Promise<RetainedBrokerSeed | undefined> {
+  const secrets = workspaceSecretStore(root);
+  let found: RetainedBrokerSeed | undefined;
+  for (const space of listSpaceAccounts(authDir(root))) {
+    const auth = await trustWithRetainedSeed({ secrets, space, injected: false, root });
+    if (auth === undefined) continue;
+    if (found !== undefined && found.sysPub !== auth.sys.pub)
+      throw new Error(
+        `the system-account signing seeds retained by spaces "${found.space}" and "${space}" name different system accounts (${found.sysPub.slice(0, 12)}… and ${auth.sys.pub.slice(0, 12)}…); ` +
+        "this root's trust records disagree about the broker's system account, so no kick authority can be minted from them; rotate the system account or restore the records",
+      );
+    found ??= { space, sysPub: auth.sys.pub, auth };
+  }
+  return found;
 }
 
 /**

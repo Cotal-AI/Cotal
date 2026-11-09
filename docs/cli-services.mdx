@@ -584,6 +584,16 @@ broker watchdog, timer writer and membership feed, on its own connections. Its l
 host is stopped by its supervisor: on SIGTERM or SIGINT it closes every lane, releasing each lease,
 and exits 0, or exits after 10 seconds when a lane cannot finish.
 
+The host is also the one process on its root that kicks a live connection. When a space on the root
+retained the system-account signing seed (`cotal up` retains it at space creation and at
+`--rotate-sys`), the host says so at start and every lane evicts through the host's kick authority:
+the lane scans its own account, the host checks each connection against its own complete census of
+that account, mints a kick-only user that lives five minutes, kicks, and keeps no `$SYS` connection
+open between kicks. A lane opens no `connection-evictor` credential, so a space created before live
+eviction evicts without a system-account rotation. When no space on the root retained the seed, the
+host says that too, and each lane kicks with the space's own stored evictor as a single-space daemon
+does.
+
 At startup the host serves every space it can, names each one it cannot with the reason, and
 retries those every 5 seconds; its ready line names the spaces it serves and the spaces it retries,
 in manifest order. A space whose lease a

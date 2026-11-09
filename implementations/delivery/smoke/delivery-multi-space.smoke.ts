@@ -14,7 +14,12 @@
  *    manifest keeps the live lanes, and re-adding the space opens its lane again;
  *  - a lane whose lease another daemon takes stops alone, is retried, and reopens once the lease is
  *    free, with the other lanes serving throughout;
- *  - SIGTERM releases every lane's lease before the process exits.
+ *  - SIGTERM releases every lane's lease before the process exits;
+ *  - a space provisioned with no connection evictor evicts a live principal through the host's one
+ *    kick authority, minted from the system-account signing seed another space on the root retained,
+ *    while a connection under the same principal string in another space is untouched; and the
+ *    authority itself refuses a connection the asked account's census does not list, an observer
+ *    scoped to another account, and a root that retained no seed.
  *
  * `--measure` instead reports RSS and CPU per space at 1, 4 and 16 lanes in one process against 16
  * single-space processes, under identical Plane-3 traffic: per space, three members joined durably
@@ -40,12 +45,13 @@ import { connect, credsAuthenticator, NoRespondersError, RequestError, type Nats
 import {
   CotalEndpoint, CONTROL_DELIVERY, DEV_OWNER, MEMBERSHIP_INBOX_PREFIX, composeSpaceAuth, controlServiceSubject, createBrokerAuth,
   createSpaceAccountAuth, deliveryLeaseHolderFor, isReachable, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid,
-  mintMembershipObserverCreds, newIdentity, provisionAgent, serverConfig, setupSpaceStreams, type CotalMessage, type SpaceAuth,
+  mintMembershipObserverCreds, newIdentity, principalKey, provisionAgent, serverConfig, setupSpaceStreams, type CotalMessage, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
   DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, connectionEvictorCredsKey, deliveryCredsKey,
-  membershipObserverCredsKey, membershipRwCredsKey, remintDaemonCreds, saveSpaceAuth, workspaceSecretStore,
+  membershipObserverCredsKey, membershipRwCredsKey, remintDaemonCreds, retainSystemSigningSeed, saveSpaceAuth, workspaceSecretStore,
 } from "@cotal-ai/workspace";
+import { hostKickAuthority } from "../src/kick-authority.js";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, procMem, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 import { deliveryCoverage } from "./_delivery-coverage.js";
@@ -129,8 +135,9 @@ const callers: NatsConnection[] = [];
 const endpoints: CotalEndpoint[] = [];
 
 /** Provision space `i` into the root store as `cotal up` leaves it: the space signer, the scoped
- *  delivery and membership credentials, and the account's `$SYS` observer and evictor. */
-async function provision(i: number, deliveryExpiresInSeconds = 3600): Promise<void> {
+ *  delivery and membership credentials, and the account's `$SYS` observer and evictor. With
+ *  `evictor` false the space is left as one created before live eviction: observer, no evictor. */
+async function provision(i: number, deliveryExpiresInSeconds = 3600, evictor = true): Promise<void> {
   const space = names[i]!, auth = auths[i]!;
   await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   saveSpaceAuth(authDir(root), auth);
@@ -138,7 +145,7 @@ async function provision(i: number, deliveryExpiresInSeconds = 3600): Promise<vo
   await store.put(deliveryCredsKey(space, composition), await mintCreds(auth, deliveryIds[i]!, "delivery", { expiresInSeconds: deliveryExpiresInSeconds }));
   await store.put(membershipRwCredsKey(space, composition), await mintCreds(auth, newIdentity(), "membership-rw", { expiresInSeconds: 3600 }));
   await store.put(membershipObserverCredsKey(space, composition), observers[i]!);
-  await store.put(connectionEvictorCredsKey(space, composition), await mintConnectionEvictorCreds(auth, newIdentity()));
+  if (evictor) await store.put(connectionEvictorCredsKey(space, composition), await mintConnectionEvictorCreds(auth, newIdentity()));
 }
 
 /** Write the manifest the way a provisioning backend does: a new file renamed into place. */
@@ -186,9 +193,9 @@ async function prober(i: number): Promise<() => Promise<boolean>> {
 }
 
 /** A read-only endpoint in space `i`, for its lease row. */
-async function inspector(i: number): Promise<CotalEndpoint> {
+async function inspector(i: number, profile: "delivery" | "supervisor" = "delivery"): Promise<CotalEndpoint> {
   const id = newIdentity();
-  const ep = new CotalEndpoint({ space: names[i]!, servers, creds: await mintCreds(auths[i]!, id, "delivery"), card: { id: id.id, name: "msd-inspector", kind: "endpoint" }, channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false });
+  const ep = new CotalEndpoint({ space: names[i]!, servers, creds: await mintCreds(auths[i]!, id, profile), card: { id: id.id, name: "msd-inspector", kind: "endpoint" }, channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false });
   ep.on("error", () => {});
   await ep.start();
   endpoints.push(ep);
@@ -230,7 +237,10 @@ async function suite(): Promise<void> {
   check("the broker answers", await until(() => isReachable(servers), 15_000));
   await provision(0);
   await provision(1);
-  await provision(3); // C (index 2) stays unprovisioned: an account on the broker with nothing in the root
+  await provision(3, 3600, false); // C (index 2) stays unprovisioned: an account on the broker with nothing in the root; D has no evictor
+  // A retains the broker's system-account signing seed, as `cotal up` leaves a space created after
+  // retention landed. It is what lets the host mint its kick authority for D, which has no evictor.
+  await retainSystemSigningSeed(store, auths[0]!);
 
   // ---- refusals, before anything is read or dialed --------------------------------------------
   writeManifest(manifestOf([A, B]));
@@ -291,6 +301,43 @@ async function suite(): Promise<void> {
     check("no account's CONNZ holds another lane's delivery identity", foreign.every((n) => n === 0), foreign);
   }
   check("no lane writes a delivery pidfile", [A, B, D].every((space) => !existsSync(canonicalLocalProcessPath(DELIVERY_PIDFILE, { root, space }))));
+
+  // ---- live eviction through the host's one kick authority -------------------------------------
+  // D holds no connection evictor, the state of a space created before live eviction on a broker
+  // with several spaces, where no space daemon may hold one. Its lane kicks through the host.
+  check("the host reports its kick authority and the space whose retained seed mints it",
+    host.text().includes(`• delivery host: live eviction kicks through this process's one kick authority, minted per kick from the system-account signing seed retained by space "${A}"; no lane opens a kick credential`), host.text().slice(0, 1500));
+  check("D's lane admits with no stored connection evictor and says it opens no kick credential",
+    host.text().includes(`[${D}] • delivery: live eviction kicks through the host's kick authority; this lane opens no kick credential`), host.text().slice(0, 1500));
+  const victimActor = "victim_d";
+  const victimPrincipal = principalKey(DEV_OWNER, victimActor).key;
+  const victimIn = async (i: number) => connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(await mintCreds(auths[i]!, newIdentity(), "operator", { principal: { owner: DEV_OWNER, actor: victimActor } }))), reconnect: false });
+  const [victimD, victimA] = await Promise.all([victimIn(3), victimIn(0)]);
+  callers.push(victimD, victimA);
+  const supervisorD = await inspector(3, "supervisor");
+  const evicted = await supervisorD.requestDeliveryAdmin("evictPrincipal", { principal: victimPrincipal }, 15_000);
+  const outcome = evicted.data as { kicked?: number; remaining?: number; verifiedGone?: boolean; scanComplete?: boolean } | undefined;
+  check("D's lane evicts a live principal through the host's kick authority, verified gone by its own re-scan",
+    evicted.ok && outcome?.verifiedGone === true && outcome.scanComplete === true && (outcome.kicked ?? 0) >= 1, evicted);
+  check("the victim's connection in D dropped", await until(() => victimD.isClosed(), 5000));
+  check("A's connection under the same principal string was untouched", !victimA.isClosed());
+  check("D's lane never named a connection evictor of its own", !host.text().includes(`[${D}] • delivery: minted the missing connection evictor`), host.text().slice(-800));
+  {
+    const authority = hostKickAuthority({ root, server: servers });
+    const target = { serverId: victimA.info!.server_id, cid: victimA.info!.client_id };
+    const refusal = (p: Promise<void>) => p.then(() => "resolved", (e: Error) => e.message);
+    const foreign = await refusal(authority.kick({ accountId: accounts[3]!.account.pub, observerCreds: observers[3]!, target }));
+    check("the authority refuses a connection the asked account's census does not list, and the connection stays",
+      /is not in account/.test(foreign) && !victimA.isClosed(), foreign);
+    const mismatched = await refusal(authority.kick({ accountId: accounts[3]!.account.pub, observerCreds: observers[0]!, target }));
+    check("the authority refuses an observer scoped to another account than the one asked about", /is scoped to/.test(mismatched), mismatched);
+    const bare = join(dir, "bare-root");
+    mkdirSync(join(bare, ".cotal", "auth"), { recursive: true, mode: 0o700 });
+    const unretained = await refusal(hostKickAuthority({ root: bare, server: servers }).kick({ accountId: accounts[0]!.account.pub, observerCreds: observers[0]!, target }));
+    check("a root that retained no system-account signing seed holds no kick authority", /holds no kick authority/.test(unretained) && !victimA.isClosed(), unretained);
+    const control = await refusal(authority.kick({ accountId: accounts[0]!.account.pub, observerCreds: observers[0]!, target }));
+    check("CONTROL: the authority kicks a connection the asked account's census lists", control === "resolved" && await until(() => victimA.isClosed(), 5000), control);
+  }
 
   // ---- an outside party re-signs one lane's credential ------------------------------------------
   const reminted = await remintDaemonCreds(root, A);

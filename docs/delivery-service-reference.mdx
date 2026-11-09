@@ -119,7 +119,12 @@ account signer. A copied static credential file is not a renewal owner. See
 The observer must be pinned to the same data account and broker the lane serves. Its scan results,
 not a caller-supplied connection ID, select eviction targets. The separate evictor is high-power:
 its native KICK permission is broker-wide, not account-confined. Keep it on trusted delivery hosts,
-never in a participant or tenant-controlled sandbox. Observer and evictor credentials have their
+never in a participant or tenant-controlled sandbox. On a broker that hosts several spaces, no space
+daemon holds it. The multi-space delivery host (`cotal deliver --spaces`) is the one process that
+kicks: when a space on its root retained the system-account signing seed, the host mints a kick-only
+user per kick from that seed, and a lane asks the host to kick each live match of its own sweep. The
+host kicks a connection only after its own complete census of the lane's account lists it, and the
+lane opens no kick credential. Observer and evictor credentials have their
 own provision/rotation lifecycle; do not infer their renewal from a delivery-credential refresh.
 Missing or inconsistent scan authority refuses admission or verified eviction. An operator must
 resolve that provisioning boundary explicitly, without clearing leases or fabricating scan results.
