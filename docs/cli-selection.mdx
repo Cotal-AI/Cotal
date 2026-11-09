@@ -416,7 +416,8 @@ included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer
 was moved to, whose stack journal names the old folder, such a command says the folder was moved and
 names the next step that `up` and `down` name there. Run from another folder, `cotal status --space <space>`
 names the move on its Connection and Project rows and names that step with the moved folder's path, and `cotal space show <space>`
-names the moved folder on its root row with that step under it. A deleted folder has no journal to find,
+names the moved folder on its root row with that step under it. A hidden sibling is found the same way,
+and a journal that names the old folder but belongs to another space is passed over. A deleted folder has no journal to find,
 so those commands keep the gone-folder stop.
 
 With nothing selected, a command run in a project targets the space registered for that project's

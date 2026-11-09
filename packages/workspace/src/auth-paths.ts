@@ -63,33 +63,34 @@ export function stackJournalRoot(root: string): string | undefined {
   }
 }
 
-/** The project folder under `start` whose stack journal names `recordedRoot`, other than that root
- *  itself: where a moved or renamed project now holds the journal. The walk does not enter a project, a
- *  control directory, a hidden directory or a directory it cannot read, and it reads only a small
- *  stack journal. Undefined when none is found within the bound, so a large tree is not treated
- *  as proof that the folder is gone. */
-export function projectMovedTo(start: string, recordedRoot: string): string | undefined {
+/** Project folders under `start` whose stack journal names `recordedRoot`, other than that root
+ *  itself: where a moved or renamed project may now hold the journal. The walk does not enter a project
+ *  or a control directory, and it reads only a small stack journal. A hidden directory is still a
+ *  candidate, because a rename can hide the project, but the walk does not enter one. A candidate whose
+ *  journal is not the space's own is left for the caller to pass over. Undefined when none is found
+ *  within the bound, so a large tree is not treated as proof that the folder is gone. */
+export function projectMovedTo(start: string, recordedRoot: string): string[] | undefined {
   const recorded = (() => { try { return realpathSync.native(recordedRoot); } catch { return resolve(recordedRoot); } })();
   const same = (path: string) => { try { return realpathSync.native(path) === recorded; } catch { return resolve(path) === recorded; } };
   const seen = new Set<string>();
-  const walk = (dir: string, depth: number): string | undefined => {
-    if (depth > 6 || seen.size > 4000) return undefined;
+  const found: string[] = [];
+  const walk = (dir: string, depth: number): boolean => {
+    if (depth > 6 || seen.size > 4000) return false;
     let entries: Dirent[];
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return undefined; }
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return false; }
     for (const entry of entries) {
-      if (seen.size > 4000) return undefined;
-      if (entry.name === ".cotal" || entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+      if (seen.size > 4000 || found.length > 32) return false;
+      if (entry.name === ".cotal" || entry.name === "node_modules") continue;
       const path = join(dir, entry.name);
       if (!entry.isDirectory() || entry.isSymbolicLink() || seen.has(path)) continue;
       seen.add(path);
-      if (stackJournalRoot(path) === recordedRoot && !same(path)) return path;
-      if (controlDirectory(path) !== undefined || existsSync(join(path, ".cotal"))) continue;
-      const found = walk(path, depth + 1);
-      if (found !== undefined) return found;
+      if (stackJournalRoot(path) === recordedRoot && !same(path)) { found.push(path); continue; }
+      if (entry.name.startsWith(".") || controlDirectory(path) !== undefined || existsSync(join(path, ".cotal"))) continue;
+      if (!walk(path, depth + 1)) return false;
     }
-    return undefined;
+    return true;
   };
-  return walk(resolve(start), 0);
+  return walk(resolve(start), 0) && found.length > 0 ? found : undefined;
 }
 
 /** The way back for a project folder moved away from `recordedRoot`, the folder its records name. A

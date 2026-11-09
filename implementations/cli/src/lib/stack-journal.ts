@@ -746,20 +746,22 @@ function recordedStackConfig(space: string): string | undefined {
 export function movedStack(space: string): { root: string; recordedRoot: string; remedy: string } | undefined {
   const recordedRoot = recordedStackRoot(space);
   if (recordedRoot === undefined || existsSync(stackJournalPath(recordedRoot))) return undefined;
-  let holder: string | undefined;
+  const holders = projectMovedTo(dirname(recordedRoot), recordedRoot);
+  if (holders === undefined) return undefined;
   const remedyFor = (found: string) => movedRootRemedy(recordedRoot, found);
-  try {
-    holder = projectMovedTo(dirname(recordedRoot), recordedRoot);
-    if (holder === undefined || stackJournalRoot(holder) !== recordedRoot) return undefined;
-    const journal = readStackJournal(holder)?.journal;
-    if (journal?.space !== space || journal.root !== recordedRoot) return undefined;
-    return { root: holder, recordedRoot, remedy: remedyFor(holder) };
-  } catch (e) {
-    const failure = e instanceof CommandFailure ? e : undefined;
-    const target = failure?.target as { root?: unknown; recordedRoot?: unknown; space?: unknown } | undefined;
-    if (holder !== undefined && failure?.code === "CONFLICT" && failure.remedy !== undefined && target?.root === holder && target?.recordedRoot === recordedRoot && target?.space === space) return { root: holder, recordedRoot, remedy: remedyFor(holder) };
-    return undefined;
+  for (const holder of holders) {
+    try {
+      if (stackJournalRoot(holder) !== recordedRoot) continue;
+      const journal = readStackJournal(holder)?.journal;
+      if (journal?.space !== space || journal.root !== recordedRoot) continue;
+      return { root: holder, recordedRoot, remedy: remedyFor(holder) };
+    } catch (e) {
+      const failure = e instanceof CommandFailure ? e : undefined;
+      const target = failure?.target as { root?: unknown; recordedRoot?: unknown; space?: unknown } | undefined;
+      if (failure?.code === "CONFLICT" && failure.remedy !== undefined && target?.root === holder && target?.recordedRoot === recordedRoot && target?.space === space) return { root: holder, recordedRoot, remedy: remedyFor(holder) };
+    }
   }
+  return undefined;
 }
 
 /** Remove the controller stack definitions saved for `space` at `root`, with their stopped instance
