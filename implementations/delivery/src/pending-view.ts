@@ -109,9 +109,11 @@ export async function pendingView(args: ParsedArgs): Promise<void> {
         if (!created || owned === undefined) throw new Error("every history reader name this credential may delete is held by a consumer this read did not create");
         const consumer = js.consumers.getConsumerFromInfo(created);
         const count = Math.min(created.num_pending, limit);
+        let received = 0;
         if (count) {
           const batch = await consumer.fetch({ max_messages: count, expires: 2_000 });
           for await (const message of batch) {
+            received++;
             try {
               const row = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(message.data)) as Record<string, unknown>;
               const sender = row.from as { id?: unknown } | null;
@@ -123,6 +125,9 @@ export async function pendingView(args: ParsedArgs): Promise<void> {
               if (!warnings.some((warning) => warning.code === "CANDIDATE_UNREADABLE")) warnings.push({ code: "CANDIDATE_UNREADABLE", message: "At least one candidate message could not be decoded safely; its contents were withheld.", target: { space, durable } });
             }
           }
+          // A fetch iterator also ends when its request expires. Count the messages it
+          // received, because ending the loop is not evidence that the bounded read finished.
+          if (batch.getReceived() !== received || received !== count) throw new Error("the bounded candidate fetch ended before the requested messages arrived");
         }
         result.candidateRead = "bounded-from-ack-floor";
       } catch { warnings.push({ code: "CANDIDATE_READ_UNAVAILABLE", message: "The bounded candidate read did not complete; durable counts remain separate facts.", target: { space, durable } }); }

@@ -7,7 +7,7 @@
  * a trailing `label=`, sanitized: a healthy card, a card naming another principal, and a card that
  * carries control bytes and a line break. `--json` keeps its legacy candidate lines byte for byte.
  * `cotal pending` names the same subject principal as each candidate's `from` in `--json` and
- * `--plain`, within `--limit`. A confirmed bounded read exits 0 with no cleanup warning. No read changes the durable's
+ * `--plain`, within `--limit`. A confirmed bounded read received every message it requested and exits 0 with no cleanup warning. No read changes the durable's
  * pending or ack state. `cotal pending` deletes only the named reader it created. The retained spelling leaves its ordered consumer.
  *
  * Run: pnpm smoke:deliver-pending-sender
