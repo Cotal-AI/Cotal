@@ -1,21 +1,25 @@
 /** A character shown as an escape: a control, a line or paragraph separator, or a format character
  *  with no glyph of its own. `Bidi_Control` is already inside the default-ignorable set, so it is not
  *  named again. A combining mark is not in this class: it draws on a visible base, and the same
- *  property carries the marks of ordinary written language. A character of this class that belongs to
- *  a grapheme with an emoji, such as the joiner inside an emoji sequence or U+FE0F on U+2764,
- *  stays, because escaping it would split a character the reader can see. One that stands alone, or
- *  that sits on a letter and adds nothing the reader can see, is escaped. */
+ *  property carries the marks of ordinary written language. */
 const HIDDEN = /[\p{Cc}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\p{gc=Cf}]/gu;
-const EMOJI = /\p{Emoji}/u;
+const PICTOGRAPH = /\p{Extended_Pictographic}/u;
 const GRAPHEME = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 interface Span { index: number; end: number }
 
-/** The graphemes of `text` that hold an emoji and more than that character. A hidden character
- *  inside one stays, because it belongs to a character the reader can see. A letter does not: a
- *  joiner or a selector on one adds nothing the reader can see. */
+/** A hidden character whose grapheme also holds two extended pictographs. That is the joiner between
+ *  the pictures of one emoji sequence. A selector on one picture, a joiner on a digit, and a hidden
+ *  character the segmenter merely attaches to a picture are not in it. */
 function kept(text: string): Span[] {
-  return [...GRAPHEME.segment(text)].flatMap((part) =>
-    part.segment.length > 1 && EMOJI.test(part.segment) ? [{ index: part.index, end: part.index + part.segment.length }] : []);
+  return [...GRAPHEME.segment(text)].flatMap((part) => {
+    let pictures = 0;
+    for (let i = 0; i < part.segment.length;) {
+      const ch = String.fromCodePoint(part.segment.codePointAt(i)!);
+      if (PICTOGRAPH.test(ch)) pictures += 1;
+      i += ch.length;
+    }
+    return pictures >= 2 ? [{ index: part.index, end: part.index + part.segment.length }] : [];
+  });
 }
 
 /** The `\uXXXX` form of one matched character, or the character itself when `kept` covers `at`. */

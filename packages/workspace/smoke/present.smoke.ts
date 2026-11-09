@@ -67,10 +67,13 @@ check("a zero-width space is escaped", oneLine("gen\u{200b}eral") === "gen\\u200
 check("a joiner between letters is escaped", oneLine("gen\u{200d}eral") === "gen\\u200deral");
 check("a non-joiner between letters is escaped", oneLine("gen\u{200c}eral") === "gen\\u200ceral");
 check("a joiner inside an emoji stays", oneLine("\u{1f469}\u{200d}\u{1f4bb}") === "\u{1f469}\u{200d}\u{1f4bb}");
-check("a selector on a heart stays", oneLine("\u{2764}\u{fe0f}") === "\u{2764}\u{fe0f}");
+check("a selector on a heart is escaped", oneLine("\u{2764}\u{fe0f}") === "\u{2764}\\ufe0f");
 check("a selector alone is escaped", oneLine("\u{fe0f}") === "\\ufe0f");
 check("a format character is named", hiddenNote("gen\u{200b}eral") === " (it contains U+200B)");
 check("a joiner in a name is named", hiddenNote("gen\u{200d}eral") === " (it contains U+200D)");
+check("a joiner after a digit is escaped", oneLine("1\u{200d}") === "1\\u200d");
+check("a selector after a digit is escaped", oneLine("1\u{fe0f}") === "1\\ufe0f");
+check("a non-joiner after an emoji is escaped", oneLine("\u{1f469}\u{200c}") === "\u{1f469}\\u200c");
 check("a visible name has no note", hiddenNote("general") === "");
 check("printable text is kept as it is", oneLine("古 👩‍💻 é seat-1") === "古 👩‍💻 é seat-1");
 check("a combining mark is kept", oneLine("a\u0338b") === "a\u0338b");
