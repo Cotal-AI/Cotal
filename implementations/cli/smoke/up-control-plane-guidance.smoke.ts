@@ -1,10 +1,12 @@
 /** Exercise the retained launcher through the built, shipped CLI on owned loopback brokers. */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { canonicalLocalProcessPath, MANAGER_PIDFILE, probeLiveness } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
+
+import { lastLoggedLine } from "../src/lib/private-log.js";
 
 const suite = createSuite();
 const cli = resolve(import.meta.dirname, "../../../bin/dist/cotal.js");
@@ -18,6 +20,35 @@ const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 let cleaned = true;
 
 try {
+  const log = join(sandbox, "boot.log");
+  writeFileSync(log, "✗ an older manager failed\n", { mode: 0o600 });
+  const info = lstatSync(log), started = { offset: info.size, dev: info.dev, ino: info.ino };
+  suite.check("a manager's startup quote excludes earlier boot errors", lastLoggedLine(log, started.offset, started) === undefined);
+  const reason = "✗ delivery and manager must use the same version; next: restart delivery";
+  appendFileSync(log, `2026-11-09T00:00:00.000Z ${reason}\n`);
+  suite.check("a manager's startup quote carries its new error and recovery step",
+    lastLoggedLine(log, started.offset, started) === `2026-11-09T00:00:00.000Z ${reason}`);
+  appendFileSync(log, "console: http://localhost/?token=must-not-quote\n");
+  suite.check("a manager's startup quote never copies a console credential line", lastLoggedLine(log, started.offset, started) === undefined);
+  appendFileSync(log, `\u001b[31m${reason}\u001b[0m\n`);
+  suite.check("a colored error is recognized before terminal sanitization", lastLoggedLine(log, started.offset, started)?.includes("restart delivery") === true);
+  if (process.platform !== "win32") {
+    chmodSync(log, 0o644);
+    suite.check("a manager's startup quote refuses a nonprivate log", lastLoggedLine(log, started.offset, started) === undefined);
+    chmodSync(log, 0o600);
+  }
+  renameSync(log, `${log}.previous`);
+  writeFileSync(log, `${reason}\n`, { mode: 0o600 });
+  suite.check("a manager's startup quote refuses a replacement inode", lastLoggedLine(log, started.offset, started) === undefined);
+  rmSync(log);
+  symlinkSync(`${log}.previous`, log);
+  suite.check("a manager's startup quote never follows a symlink", lastLoggedLine(log, started.offset, started) === undefined);
+  rmSync(log);
+  renameSync(`${log}.previous`, log);
+  writeFileSync(log, "✗ short\n");
+  suite.check("a manager's startup quote does not read before its offset after truncation", lastLoggedLine(log, started.offset, started) === undefined);
+  suite.check("the existing service quote still accepts ordinary diagnostic lines", lastLoggedLine(log, 0) === "✗ short");
+
   for (const malformed of [true, false]) {
     const label = malformed ? "refused" : "clean";
     const space = `guidance-${label}`;
