@@ -10,7 +10,7 @@
  * Run: pnpm smoke:chat-compose
  */
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { closeSummary, parseRecipient, parseSlash, publish, recipientLabel, replyRecipient, runsOffline, settlePublish, type AdmittedChatSession, type CloseReport, type PublishResult, type Recipient, type SessionIdentity, type SessionMessage } from "../src/chat/index.js";
+import { closeSummary, parseRecipient, parseSlash, publish, recipientLabel, replyRecipient, runsOffline, settlePublish, submitDraft, type AdmittedChatSession, type CloseReport, type PublishResult, type Recipient, type SessionIdentity, type SessionMessage } from "../src/chat/index.js";
 
 const { check, finish } = createSuite();
 
@@ -42,6 +42,17 @@ check("/help is a command, takes no arguments and runs while disconnected",
   check("an unknown command is refused with its name escaped", !r.ok && (r as { error: string }).error.includes("\\u001b") && !(r as { error: string }).error.includes("\u001b"));
 }
 check("/reply takes no arguments", sl("/reply").ok && !sl("/reply x").ok);
+{
+  const refused = sl("/reply pong back");
+  check("/reply with a message names the usage", !refused.ok && refused.error === "/reply takes no arguments; it answers the latest direct message or role task, and the message is typed after it", refused);
+  const at = { recipient: { kind: "channel" as const, channel: "general" }, connection: "connected" as const, sending: false, pick: "Tab" };
+  const held = submitDraft("/reply pong back", at);
+  check("a refused slash command clears its line", held.kind === "hold" && held.clear === true && held.tone === "failed", held);
+  const kept = submitDraft("/who", { ...at, connection: "disconnected" });
+  check("a command the connection cannot run keeps its line", kept.kind === "hold" && kept.clear === undefined, kept);
+  const unknown = submitDraft("/nope", at);
+  check("an unknown command clears its line too", unknown.kind === "hold" && unknown.clear === true, unknown);
+}
 
 console.log("2. closeSummary: open mode claims routing only");
 {
