@@ -25,7 +25,7 @@ export * from "./seat-cap.js";
 export * from "./flags.js";
 // Lifted to @cotal-ai/core so the connector roster escapes presence text by the same rule;
 // re-exported here so the package surface is unchanged.
-export { boundedValue, oneLine } from "@cotal-ai/core";
+export { boundedValue, hiddenNote, oneLine } from "@cotal-ai/core";
 export * from "./output.js";
 export * from "./preferences.js";
 export * from "./chat-name.js";

@@ -553,8 +553,9 @@ The report shows each message's local time, with its date when it is not today; 
 is the ISO time. A DM row shows its recipient's name when the roster carries that principal or a
 message in the window came from it, and the principal otherwise. `--dms` reads the roster for those
 names, waiting up to two seconds for it. `result.items[].to` is the principal.
-A line break or other control character in a message's text shows as its `\uXXXX` escape in the
-text and `--plain` reports, so a message cannot clear the screen or start a row of its own.
+A line break, another control character, or a format character with no glyph of its own, such as
+U+200B, in a message's text shows as its `\uXXXX` escape in the text and `--plain` reports, so a
+message cannot clear the screen, start a row of its own, or hide a character inside a name.
 A row shows the first 500 characters of a longer message and marks the cut with the message's size.
 `--json` carries the text as it was sent, in `result.items[].text`.
 

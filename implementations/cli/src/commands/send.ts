@@ -18,6 +18,7 @@ import {
   AmbiguousPeerError,
   CotalEndpoint,
   mentionsIn,
+  hiddenNote,
   type FlagSpec,
   type FlagValues,
   type PeerCandidate,
@@ -266,7 +267,7 @@ async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], s
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no matching participant was found in the authorized presence view", { target: { space, name }, remedy: `list the participants with \`cotal who --all --space ${space}\`, then use one name or full identity` });
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no matching participant was found in the authorized presence view${hiddenNote(name)}`, { target: { space, name }, remedy: `list the participants with \`cotal who --all --space ${space}\`, then use one name or full identity` });
 }
 
 /** How long a role send waits for the presence snapshot before it says nothing about holders. */

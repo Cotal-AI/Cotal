@@ -13,6 +13,7 @@ const {
   displayWidth,
   disableColor,
   oneLine,
+  hiddenNote,
   isCommandFailure,
   presentationOf,
   renderReport,
@@ -61,8 +62,12 @@ check("a carriage return is escaped", oneLine("a\rb") === "a\\u000db");
 check("a C1 control is escaped", oneLine("\u009b31m") === "\\u009b31m");
 check("DEL is escaped", oneLine("\u007f") === "\\u007f");
 check("a line separator is escaped", oneLine("a b") === "a\\u2028b");
-check("a bidi override is escaped", oneLine("abc‮def") === "abc\\u202edef");
+check("a bidi override is escaped", oneLine("abc\u202edef") === "abc\\u202edef");
+check("a zero-width space is escaped", oneLine("gen\u200beral") === "gen\\u200beral");
+check("a format character is named", hiddenNote("gen\u200beral") === " (it contains U+200B)");
+check("a visible name has no note", hiddenNote("general") === "");
 check("printable text is kept as it is", oneLine("古 👩‍💻 é seat-1") === "古 👩‍💻 é seat-1");
+check("a combining mark is kept", oneLine("a\u0338b") === "a\u0338b");
 
 const report: Report = {
   sections: [

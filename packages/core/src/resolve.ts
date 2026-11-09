@@ -14,6 +14,7 @@ import type { Presence, PresenceStatus } from "./types.js";
 import { LINE_BREAK } from "./peer-label.js";
 import { peerLabel } from "./peer-label.js";
 import { isWellFormedUnicode } from "./canonical-json.js";
+import { hiddenNote } from "./one-line.js";
 
 export { peerLabel };
 
@@ -150,12 +151,13 @@ export function assertValidName(name: string): void {
       `invalid name ${JSON.stringify(name.slice(0, 32))}…: ${name.length} characters exceeds the ` +
         `${MAX_NAME_LENGTH}-character limit (the CONNECT line budget that carries it)`,
     );
+  const note = hiddenNote(name);
   if (LINE_BREAK.test(name))
-    throw new Error(`invalid name ${JSON.stringify(name)}: must be a single line`);
+    throw new Error(`invalid name ${JSON.stringify(name)}: must be a single line${note}`);
   if (name.includes("/"))
-    throw new Error(`invalid name ${JSON.stringify(name)}: "/" is reserved (the owner/name separator)`);
+    throw new Error(`invalid name ${JSON.stringify(name)}: "/" is reserved (the owner/name separator)${note}`);
   if (name.includes("\\"))
-    throw new Error(`invalid name ${JSON.stringify(name)}: "\\" is reserved (a Windows path separator)`);
+    throw new Error(`invalid name ${JSON.stringify(name)}: "\\" is reserved (a Windows path separator)${note}`);
   // A name must be well-formed UTF-16 — no unpaired surrogate. This is an IDENTITY rule, not a
   // tidiness one, and it is here at the shared choke point rather than at one consumer.
   //
@@ -172,6 +174,6 @@ export function assertValidName(name: string): void {
     throw new Error(
       `invalid name ${JSON.stringify(name)}: contains an unpaired UTF-16 surrogate. Such a name ` +
         `cannot survive UTF-8 encoding — it is replaced with U+FFFD — so distinct names would ` +
-        `silently become one identity.`,
+        `silently become one identity.${note}`,
     );
 }

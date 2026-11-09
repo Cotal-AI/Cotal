@@ -27,6 +27,7 @@
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
  */
 import { fromPublic } from "@nats-io/nkeys";
+import { hiddenNote } from "./one-line.js";
 import type { Presence, PresenceStatus } from "./types.js";
 
 const ILLEGAL = /[^A-Za-z0-9_-]/g;
@@ -90,7 +91,7 @@ export function assertValidRole(role: string): string {
   if (typeof role !== "string" || !/^[A-Za-z0-9_-]+$/.test(role))
     throw new Error(
       `invalid role "${role}": must be a single NATS-safe token ([A-Za-z0-9_-]) - a role is an ` +
-        `address, so it is rejected rather than silently rewritten`,
+        `address, so it is rejected rather than silently rewritten${typeof role === "string" ? hiddenNote(role) : ""}`,
     );
   return role;
 }
@@ -186,7 +187,7 @@ export function assertValidChannel(channel: string): string {
     if (!/^[A-Za-z0-9_-]+$/.test(s))
       throw new Error(
         `invalid channel "${channel}": segment "${s}" must be a NATS-safe token ([A-Za-z0-9_-])${/[*>]/.test(s) ? ", '*', or '>'" : ""} - ` +
-          `policy channel names can't contain characters the wire layer would rewrite`,
+          `policy channel names can't contain characters the wire layer would rewrite${hiddenNote(s)}`,
       );
   });
   return channel;
