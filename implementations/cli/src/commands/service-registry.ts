@@ -3,7 +3,7 @@ import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
-import { findServicePreset, presetMissingOptions, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { describeDefault, findServicePreset, presetMissingOptions, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
@@ -248,7 +248,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     if (choice.startsWith("preset:")) {
       const presetName = chosenPreset = choice.slice("preset:".length);
       const preset = forName(() => resolveServicePreset(presetName));
-      const guided = await guidedPreset(preset);
+      const guided = await guidedPreset(preset, space, root);
       if (!guided) return cancelled("Service creation cancelled");
       const values = guided;
       definition = forName(() => servicePresetDefinition(preset, space, values, root, `add ${name}`));
@@ -406,25 +406,42 @@ export function serviceComplete(argv: string[]): CompletionResult {
   return { items: [], directive: "nofiles" };
 }
 
-async function guidedPreset(preset: ReturnType<typeof resolveServicePreset>): Promise<ParsedArgs["values"] | undefined> {
+/** The words a guided question shows for a preset default. A default the selected space cannot fill
+ *  yet is the flag form's reason, such as a space with no registered broker; one it can fill is the
+ *  same description help prints. */
+function guidedDefault(preset: ServicePreset, space: string, root: string, option: string): { shown: string; filled: boolean } | undefined {
+  const fallback = preset.defaults?.[option];
+  if (!fallback) return undefined;
+  const unfilled = presetUnfilledDefaults(preset, space, root, {}).find((row) => row.name === option);
+  return unfilled ? { shown: unfilled.reason, filled: false } : { shown: describeDefault(fallback), filled: true };
+}
+
+/** Ask a preset's options the way its flags take them. An option with a default is asked as
+ *  optional, and Enter leaves it out so the flag form's defaults fill it. A typed answer, including
+ *  an empty one, is that answer. An option with no default stays required, and Enter there is an
+ *  empty answer, which the schema refuses as an explicit empty flag does. */
+async function guidedPreset(preset: ServicePreset, space: string, root: string): Promise<ParsedArgs["values"] | undefined> {
   servicePresetFlags(preset);
   const schema = resolveServiceAdapter(preset.adapter, {}, false).declaration.optionsSchema;
   const properties = schema.properties as Record<string, Record<string, unknown>>;
   const required = schema.required as string[] | undefined;
   const values: ParsedArgs["values"] = {};
   for (const [name, option] of Object.entries(properties)) {
-    if (!required?.includes(name)) {
-      const set = await prompts.confirm({ message: `Set optional --${name}?`, initialValue: false });
+    const fallback = guidedDefault(preset, space, root, name);
+    if (!required?.includes(name) || fallback) {
+      const set = await prompts.confirm({ message: fallback ? `Set --${name}? Its default is ${fallback.shown}.` : `Set optional --${name}?`, initialValue: false });
       if (prompts.isCancel(set)) return undefined;
       if (!set) continue;
     }
     if (option.type === "boolean") {
-      const answer = await prompts.confirm({ message: `Enable --${name}?`, initialValue: false });
+      const answer = await prompts.confirm({ message: fallback?.filled ? `Enable --${name}? Its default is ${fallback.shown}.` : `Enable --${name}?`, initialValue: false });
       if (prompts.isCancel(answer)) return undefined;
       values[name] = answer;
     } else {
-      const answer = await prompts.text({ message: option.type === "string" ? `Non-secret value for --${name}` : `JSON ${String(option.type)} for --${name}` });
+      const kind = option.type === "string" ? "Non-secret value" : `JSON ${String(option.type)}`;
+      const answer = await prompts.text({ message: fallback ? `${kind} for --${name}. Enter keeps its default, ${fallback.shown}.` : `${kind} for --${name}` });
       if (prompts.isCancel(answer)) return undefined;
+      if (fallback && answer === "") continue;
       values[name] = answer;
     }
   }
