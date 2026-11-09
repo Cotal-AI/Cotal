@@ -697,6 +697,12 @@ export function runningStackManagerPid(root: string, space: string): number | un
   } catch { return undefined; }
 }
 
+/** Whether `name` is a controller stack member saved in `space`. Those members start and stop with
+ *  the stack: a start of one by itself leaves a process the space is not registered for. */
+export function isStackMember(space: string, name: string): boolean {
+  return (Object.values(STACK_DEFINITION) as string[]).includes(name) && serviceDefinitionStore(space).read(name) !== undefined;
+}
+
 /** The controller stack definition a legacy component name stands for in `space`, when that
  *  definition is saved there. A controller stack names its members stack-<role>. */
 export function stackMemberFor(space: string, name: string): string | undefined {
