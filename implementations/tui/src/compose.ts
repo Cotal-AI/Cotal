@@ -1,6 +1,6 @@
 import { publishOutcome, recipientLabel, replyRecipient, settlePublish, SLASH_COMMANDS, submitDraft, type Answerable, type PublishResult, type Recipient, type SlashCommand } from "@cotal-ai/workspace/chat"
 import type { FeedEntry } from "./live.js"
-import type { DraftKey, Open } from "./screen.js"
+import { isYou, type DraftKey, type Open } from "./screen.js"
 import type { AppSlash, Outcome, TalkPhase, You } from "./talk.js"
 
 /** The message a draft answers. Its recipient came from the reply rule, not from the open
@@ -150,10 +150,6 @@ export function unsent(state: ComposerState, space: string): ComposerState {
 
 type Quotable = Answerable & { text: string }
 type Refused = { readonly refused: string }
-
-/** Whether a sender is the human: a session this app run opened, or one under their chat name in any
- *  letter case. */
-const isYou = (you: You, who: FeedEntry["from"]) => you.principals.has(who.id) || who.name.toLowerCase() === you.name
 
 /** Where a reply to `m` goes. A direct message or role task from the human refuses, from any of their
  *  sessions. One under their name that this app run did not open may be another person's, so its
