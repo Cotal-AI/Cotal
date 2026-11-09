@@ -28,7 +28,7 @@ const NONE = prefs();
 const IDP = "https://idp.example.test/api/auth";
 /** How `cotal chat` sets a session's name, and how the terminal app does. */
 const CLI = "pass `--name <name>`";
-const APP = "use ctrl+p, Change your name";
+const APP = "use Change your name (ctrl+p)";
 
 let status: UserAuthStatus = { idpUrl: IDP };
 const statusCalls: { space: string; actor: string }[] = [];
@@ -74,7 +74,7 @@ try {
       bad?.code === "USAGE_INVALID" && bad.selfContained === true && bad.message.includes(RULE) && bad.remedy === "pass `--name <name>`, or save a name with `cotal config set name <name>`", bad);
     const app = await refusal(resolveChatName(open, { remedy: APP, preferences: NONE, login: () => "" }));
     check("the same refusal in a front end without --name names that front end's own way, and not --name",
-      app?.code === "USAGE_INVALID" && app.remedy === "use ctrl+p, Change your name, or save a name with `cotal config set name <name>`", app);
+      app?.code === "USAGE_INVALID" && app.remedy === "use Change your name (ctrl+p), or save a name with `cotal config set name <name>`", app);
   }
 
   console.log("3. the flag, then the saved name, win over the mode's name");
@@ -113,7 +113,7 @@ try {
         && nameless.remedy === `sign in again with \`cotal login --idp ${IDP}\`, pass \`--name <name>\`, or save a name with \`cotal config set name <name>\``, nameless);
     const appNameless = await refusal(resolveChatName(user, { remedy: APP, preferences: NONE }));
     check("the same refusal in the terminal app names its own way, and not --name",
-      appNameless?.code === "AUTH_REQUIRED" && appNameless.remedy === `sign in again with \`cotal login --idp ${IDP}\`, use ctrl+p, Change your name, or save a name with \`cotal config set name <name>\``, appNameless);
+      appNameless?.code === "AUTH_REQUIRED" && appNameless.remedy === `sign in again with \`cotal login --idp ${IDP}\`, use Change your name (ctrl+p), or save a name with \`cotal config set name <name>\``, appNameless);
 
     status = { idpUrl: IDP, login: { sub: "u1", expiresAt: 0, name: "human@example.test" } };
     const long = await refusal(resolveChatName(user, { remedy: CLI, preferences: NONE }));
