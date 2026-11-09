@@ -809,10 +809,13 @@ export async function launchManagedPersona(
     const unknown = reply.nativeOutcome !== "executed" || reply.unanswered;
     throw new CommandFailure(unknown ? "unknown" : "failed", unknown ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager did not confirm launch readiness", { target, native, remedy: "inspect `cotal ps` and the selected manager before retrying; this launch was not submitted again" });
   }
-  const { result, eventsNotice } = readManagedLaunch(reply, { space: t.space, requestedModel: values.model ?? null, detached: values.detach === true }, target);
+  const { result, eventsNotice, startupNotice } = readManagedLaunch(reply, { space: t.space, requestedModel: values.model ?? null, detached: values.detach === true }, target);
   const { streamsTerminal } = result;
   const presentation = presentationOf(values);
-  const warnings: OutputWarning[] = eventsNotice ? [{ code: "EVENT_PLANE_NOTICE", target, message: eventsNotice }] : [];
+  const warnings: OutputWarning[] = [
+    ...(eventsNotice ? [{ code: "EVENT_PLANE_NOTICE", target, message: eventsNotice }] : []),
+    ...(startupNotice ? [{ code: "STARTUP_NOTICE", target, message: `${result.name} joined, but ${startupNotice}` }] : []),
+  ];
   if (observer) {
     try { observer.ready(result, warnings); }
     catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but the composite command could not record its native readiness; no replacement was launched", { target, changed: [result], remedy: "inspect the original agent and manager before another launch" }); }

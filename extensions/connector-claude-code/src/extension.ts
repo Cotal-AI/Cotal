@@ -177,6 +177,8 @@ export const claudeConnector: Connector = {
   // both; the hooks hand it over at most once (hooks.ts).
   supportsTurnRelay: true,
   onceNeedsConfirmed: "its startup did not show channels on (Claude's development-channels prompt and its notice that server:cotal messages reach the session)",
+  // A plain spawn starts anyway. Its reply and the seat's ps row say that nothing wakes the seat.
+  idleWakeNeedsConfirmed: "channels are off for this session (Claude showed no development-channels prompt), so mesh traffic does not wake it while idle; type into its pane to start a turn, or enable channels for the organization",
   turnFrameLimit: HOOK_CONTEXT_CHARS,
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
   // `--opt resume=` renders a bare `--resume`, which opens Claude's session picker; the session joins
