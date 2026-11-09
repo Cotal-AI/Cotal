@@ -527,8 +527,10 @@ re-signed by the space's operator, and the broker refuses that key from its next
 
 The broker loads a revocation only when it starts, so the space must be stopped: run
 `cotal down --yes`, then this command, then `cotal up`. On a running space it refuses
-`LIFECYCLE_BLOCKED` and names that route, and it refuses the same way while the root records a
-maintenance attempt. A connection held with the credential ends at the `down` and is refused after
+`LIFECYCLE_BLOCKED` and names that route, quoting a path a shell would split or expand, and it
+refuses the same way while the root records a maintenance attempt. After that `down`, the command
+run in the folder revokes the space that folder holds even while another space is selected. A path
+in that refusal, and in the Next after a revocation, is one shell word. A connection held with the credential ends at the `down` and is refused after
 the `up`. It asks before it revokes, or takes `--yes`; `--json` without `--yes` refuses. A key
 already revoked reports the time it was first revoked and changes nothing. `--json` reports
 `publicKey`, `revokedAt` in Unix seconds, `alreadyRevoked` and `takesEffect`.

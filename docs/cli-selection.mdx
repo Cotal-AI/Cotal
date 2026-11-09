@@ -366,8 +366,10 @@ one registered space other than the selection, and whose broker answers, the com
 space, as it does with nothing selected, and the note under its `Mesh:` heading, a refusal's
 included, says the selection applies outside the folder. A space `cotal space create` prepared there
 and no `cotal up` started, and one whose stack there is stopped, is the target of the commands about
-the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the folder part of
-`cotal status`. Every other command run there targets the selection, and the note under its `Mesh:`
+the folder itself only: `cotal up`, `cotal down`, `cotal space show`, the folder part of
+`cotal status`, and `cotal auth revoke-credential`. That last one records the revocation in the
+space the folder holds, which is the space whose account issued a credential minted there. Every
+other command run there targets the selection, and the note under its `Mesh:`
 heading says what this folder holds and the `cotal up` that starts it. When that stack's last `up`
 or `down` ended before it recorded an outcome, a member's unconfirmed stop can keep `cotal up`
 refusing, so the note names `cotal status` there instead, whose Next names the step that finishes
