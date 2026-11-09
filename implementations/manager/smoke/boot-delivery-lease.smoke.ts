@@ -10,7 +10,8 @@
  *   3. `stop()` during an in-flight renew waits for that renew, then releases the row by CAS.
  *   4. `stop()` does not release a row it no longer owns.
  *   5. Real manager startup rejects answered malformed challenges and accepts a no-responder with no lease.
- *   6. The admin wait retries promptly, preserves refusals and sends nothing after its deadline.
+ *   6. Incompatible answers refuse with scoped recovery guidance; a matching daemon permits startup.
+ *   7. The admin wait retries promptly, preserves refusals and sends nothing after its deadline.
  *
  * Run: pnpm smoke:boot-delivery-lease
  */
@@ -154,7 +155,60 @@ try {
     }
   }
 
-  console.log("6. an unanswered admin rail is retried promptly without weakening the deadline");
+  console.log("6. incompatible store answers name version recovery without guessing the daemon's age");
+  for (const [index, data] of [
+    { identity: { kind: "fs", root: ws }, responder: "older-delivery", holdsDeliveryLease: true },
+    { kind: "fs", root: ws },
+  ].entries()) {
+    const workspaceRoot = join(ws, `older-manager-${index}`);
+    mkdirSync(workspaceRoot);
+    saveSpaceAuth(authDir(workspaceRoot), auth);
+    let answered = 0;
+    const responder = reader.subscribe(controlServiceSubject(space, CONTROL_DELIVERY_ADMIN, "*", "*"), {
+      queue: CONTROL_DELIVERY_ADMIN,
+      callback: (error, message) => {
+        if (error) return;
+        if (message.json<ControlRequest>().op !== "reloadStoreIdentity") return;
+        answered++;
+        message.respond(new TextEncoder().encode(JSON.stringify({ ok: true, data })));
+      },
+    });
+    await reader.flush();
+    const manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
+    let started = false;
+    let failure: unknown;
+    try {
+      try { await manager.start(); started = true; } catch (error) { failure = error; }
+      c(`incompatible store answer ${index} reaches the real challenge`, answered > 0);
+      c(`incompatible store answer ${index} still refuses manager startup`,
+        !started && failure instanceof Error && failure.message.includes("unreadable SecretStore"),
+        failure instanceof Error ? failure.message : { started });
+      c(`incompatible store answer ${index} names scoped recovery without guessing its version`,
+        failure instanceof Error && !failure.message.includes("older than #1694") &&
+        failure.message.includes("same Cotal version") && failure.message.includes("supervisor") &&
+        failure.message.includes(`cotal down delivery --space ${space}`) &&
+        failure.message.includes(`cotal up --space ${space}`),
+        failure instanceof Error ? failure.message : failure);
+    } finally {
+      responder.unsubscribe();
+      await reader.flush();
+      await manager.stop();
+    }
+  }
+  {
+    saveSpaceAuth(authDir(ws), auth);
+    const delivery = await boot();
+    const manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot: ws });
+    try {
+      await manager.start();
+      c("a manager still starts beside a daemon with the matching store answer", true);
+    } finally {
+      await manager.stop();
+      await delivery.stop();
+    }
+  }
+
+  console.log("7. an unanswered admin rail is retried promptly without weakening the deadline");
   {
     let attempts = 0;
     const delays: number[] = [];
@@ -211,7 +265,7 @@ rmSync(ws, { recursive: true, force: true });
 if (previousHome === undefined) delete process.env.COTAL_HOME;
 else process.env.COTAL_HOME = previousHome;
 
-const EXPECTED_CELLS = 22;
+const EXPECTED_CELLS = 29;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;
