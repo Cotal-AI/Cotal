@@ -145,7 +145,8 @@ function censusReaps(fileName: string, text: string): { guarded: string[]; bypas
     const computed = ts.isElementAccessExpression(bare) ? unwrap(bare.argumentExpression) : undefined;
     if (
       ts.isElementAccessExpression(bare) && bare.expression.kind === ts.SyntaxKind.ThisKeyword &&
-      computed !== undefined && (ts.isStringLiteralLike(computed) || ts.isNumericLiteral(computed)) && computed.text === "requiredRuntime"
+      computed !== undefined && (ts.isStringLiteralLike(computed) || ts.isNumericLiteral(computed)) &&
+      (computed.text === "requiredRuntime" || computed.text === "runtime")
     ) return true;
     if (ts.isPropertyAccessExpression(bare)) {
       const receiver = unwrap(bare.expression);
@@ -361,6 +362,9 @@ const instrument: [string, string, (c: ReturnType<typeof censusReaps>) => boolea
     (c) => c.bypass.length === 1],
   ["a computed requiredRuntime is a runtime",
     fixture('  private async later() { const key = "reap"; await this["requiredRuntime"][key](ref); }'),
+    (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
+  ["a computed this.runtime is a runtime",
+    fixture('  private async later() { const key = "reap"; await this["runtime"][key](ref); }'),
     (c) => c.bypass.length === 1 && c.elements["unreadable, on the runtime"] === 1],
 ];
 for (const [name, text, holds] of instrument) {
