@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { readFileSync, statSync, type Stats } from "node:fs";
+import { hostname, userInfo } from "node:os";
 import { dirname, resolve } from "node:path";
 import {
   DEFAULT_SPACE,
@@ -74,6 +76,9 @@ export interface ConnectOpts {
   mint?: Pick<MintOpts, "runDriver" | "runMediator" | "runOperator" | "runAdmitter">;
   /** Stable actor for a one-shot operator sender. Does not replace an explicit credential or user bearer. */
   operatorActor?: string;
+  /** A hosted run command asks for the static-auth operator actor. It is derived only once this
+   *  connect has selected that instrument mint, never for an open mesh, a signed-in user, or a raw credential. */
+  staticOperator?: boolean;
   /** A read must not sweep or prune the local registry as a hidden prelude. */
   readOnly?: boolean;
 }
@@ -510,9 +515,11 @@ export async function mintControlInstrument(
   target: Pick<MeshTarget, "server" | "space" | "tlsRequired"> & { readonly auth: SpaceAuth },
   tier: "privileged" | "admin",
   instanceId?: string | string[],
+  actor?: string,
 ): Promise<{ creds: string; epCaller: IssuedCaller }> {
   const identity = newIdentity();
   const uid = mintLifecycleUid();
+  const principalActor = actor ?? identity.id;
   const profile = tier === "admin" ? "control-caller-admin" : "control-caller-privileged";
   // The instrument's expiry is its generation's horizon, so it is fixed before either exists.
   const expiresAt = Math.floor(Date.now() / 1000) + credentialLifetime(profile).defaultTtlSeconds!;
@@ -520,6 +527,7 @@ export async function mintControlInstrument(
   const pinned = instanceId !== undefined ? instancePinnedInstrumentCapabilities(tier, instanceId) : undefined;
   const creds = await withIssuerSession({ servers: target.server, space: target.space, auth: target.auth, tls: target.tlsRequired }, (s) =>
     mintCreds(target.auth, identity, profile, {
+      ...(actor !== undefined ? { principal: { owner: DEV_OWNER, actor } } : {}),
       lifecycleUid: uid,
       expiresAt,
       ...(pinned ? { endpointCapabilities: pinned } : {}),
@@ -527,7 +535,21 @@ export async function mintControlInstrument(
       issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] },
     }),
   );
-  return { creds, epCaller: { owner: DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as IssuedCaller };
+  return { creds, epCaller: { owner: DEV_OWNER, actor: principalActor, uid, generation: issued.generation } as IssuedCaller };
+}
+
+/** The actor a static-auth operator's hosted run commands share. It is derived from the OS login
+ *  and host, and it fits the 64-character caller-token bound. The connection key and lifecycle stay
+ *  fresh for each command. An empty OS login or host throws, because there is then no actor to record. */
+export function staticOperatorActor(): string {
+  const login = userInfo().username.trim();
+  const host = hostname().trim();
+  if (!login || !host)
+    throw new Error("the operator actor cannot be derived: the OS login or host is empty");
+  const actor = `cli_${createHash("sha256").update(`${login}@${host}`).digest("hex").slice(0, 60)}`;
+  if (!/^[A-Za-z0-9_]{1,64}$/.test(actor))
+    throw new Error("the operator actor is not a caller token");
+  return actor;
 }
 
 /** The space {@link connectOrThrow} connects `flags` to, read from local records only, with no probe
@@ -707,8 +729,10 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
       // The issuer dial waits out its own budget on a stopped broker, so the preflight names it first.
       if (stoppedLoopbackListener(target.server) !== undefined) await preflightOrThrow(target, undefined, opts.readOnly === true);
       try {
+        // The OS login is read here, after this connect has selected the static instrument mint.
+        const operatorActor = opts.staticOperator === true ? staticOperatorActor() : opts.operatorActor;
         ({ creds, epCaller } = await mintControlInstrument({ server: target.server, space: target.space, tlsRequired: target.tlsRequired, auth: target.auth },
-          role === "control-caller-admin" ? "admin" : "privileged", opts.instanceId));
+          role === "control-caller-admin" ? "admin" : "privileged", opts.instanceId, operatorActor));
       } catch (e) {
         // The issuer dial is now the first thing on this path to touch the broker. A mesh that
         // is not there must still be reported in the preflight's classified words (and prune the
