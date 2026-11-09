@@ -1,5 +1,13 @@
 # @cotal-ai/tmux
 
+## 0.151.1
+
+### Patch Changes
+
+- bbc323c: Keep a failed tmux session lookup from starting a second server when its socket path contains repeated whitespace.
+  
+  On Linux, preserve the socket pathname when reading the kernel's Unix-socket table so a moved socket is still recognized as belonging to a live server.
+
 ## 0.151.0
 
 ### Minor Changes
