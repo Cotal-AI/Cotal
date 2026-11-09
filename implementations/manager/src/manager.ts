@@ -2691,9 +2691,10 @@ export class Manager {
       answer = parseDaemonStoreAnswer(reply.data);
     } catch (e) {
       throw new Error(
-        `delivery daemon named an unreadable SecretStore: ${rejectionText(e)}. A daemon older ` +
-          `than #1694 replies with a bare store identity and no answerer binding; this manager ` +
-          `cannot establish which process answered, so nothing reminted - upgrade the delivery daemon`,
+        `delivery daemon named an unreadable SecretStore: ${rejectionText(e)}. Nothing reminted. ` +
+          `Check that delivery and manager use the same Cotal version, then restart delivery through its supervisor. ` +
+          `For a saved local delivery service: cotal down delivery --space ${this.space}, ` +
+          `then cotal up --space ${this.space}`,
       );
     }
     // The answerer's own claim first, so an honest non-holder is refused by its own admission and

@@ -7,6 +7,22 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## An incompatible delivery store answer prevents manager startup
+
+If delivery returns an unreadable SecretStore answer, the manager refuses startup or credential
+renewal. The refusal preserves the parser's reason and asks you to check that delivery and manager
+use the same Cotal version. The answer does not report a version, so a parse failure cannot establish
+which version the daemon runs. For example, delivery 0.68.0 names its responder but its filesystem
+store identity lacks the `id` required by later managers.
+
+Restart delivery on its host through the supervisor that started it, using the manager's Cotal
+version. For a saved local delivery service, run `cotal down delivery --space <space>`, then
+`cotal up --space <space>`. Named `down` commands operate on saved services; they do not stop a legacy
+daemon represented only by a pidfile. Stop that daemon through its original supervisor.
+
+This diagnostic does not provide a rolling upgrade or pin a running manager's worker modules to
+its loaded version. Those are separate upgrade concerns.
+
 ## The web dashboard starts on the space's own credential
 
 `cotal up` on a static space now mints a read-only `observer` credential for the dashboard, the
