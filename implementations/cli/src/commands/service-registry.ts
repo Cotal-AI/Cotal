@@ -418,8 +418,9 @@ function guidedDefault(preset: ServicePreset, space: string, root: string, optio
 
 /** Ask a preset's options the way its flags take them. An option with a default is asked as
  *  optional, and Enter leaves it out so the flag form's defaults fill it. A typed answer, including
- *  an empty one, is that answer. An option with no default stays required, and Enter there is an
- *  empty answer, which the schema refuses as an explicit empty flag does. */
+ *  an empty one, is that answer. For a boolean, Enter is that empty answer and `y` is an explicit
+ *  yes. An option with no default stays required, and Enter there is an empty answer, which the
+ *  schema refuses as an explicit empty flag does. */
 async function guidedPreset(preset: ServicePreset, space: string, root: string): Promise<ParsedArgs["values"] | undefined> {
   servicePresetFlags(preset);
   const schema = resolveServiceAdapter(preset.adapter, {}, false).declaration.optionsSchema;
@@ -434,8 +435,9 @@ async function guidedPreset(preset: ServicePreset, space: string, root: string):
       if (!set) continue;
     }
     if (option.type === "boolean") {
-      const answer = await prompts.confirm({ message: fallback?.filled ? `Enable --${name}? Its default is ${fallback.shown}.` : `Enable --${name}?`, initialValue: false });
+      const answer = await prompts.confirm({ message: fallback?.filled ? `Enable --${name}? Enter keeps its default, ${fallback.shown}.` : `Enable --${name}?`, initialValue: false });
       if (prompts.isCancel(answer)) return undefined;
+      if (fallback?.filled && answer === false) continue;
       values[name] = answer;
     } else {
       const kind = option.type === "string" ? "Non-secret value" : `JSON ${String(option.type)}`;

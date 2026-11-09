@@ -259,7 +259,7 @@ component records make the inventory partial. Reads do not start, repair or inst
 [Adding a service](#adding-a-service). A declared preset uses
 `service add <name> --preset <preset> <declared-options>`. Guided input offers installed presets
 and file import. A guided question for an option the preset defaults shows that default, the same
-words its flag help prints, and Enter, or an empty value, leaves the option out so the default fills it. Typing
+words its flag help prints, and Enter, or an empty value, leaves the option out so the default fills it. A yes-or-no option does the same for Enter. Typing
 a value uses that value. An option with no default stays required. Input is capped
 at 256 KiB, checked against the selected native space and its schema before a private record is
 saved. Whether a root or credential suits the preset is checked
