@@ -21,8 +21,9 @@
  *
  * It does not add or test an election, a placement or a failover API: the standby is the existing
  * lease retry. Timings are measured in this topology and are not an SLA. One machine running two
- * isolated host processes is not two-physical-host or network-partition acceptance, and the
- * credentials here are not renewed (the test is minutes long and the hosts have no renewal owner).
+ * isolated host processes is not two-physical-host or network-partition acceptance. The fixture
+ * signs replacement delivery credentials into each host's own store before the initial credentials
+ * expire. Membership and observer credentials do not expire during this test.
  *
  * Runs the BUILT dist (`pnpm build` first). Needs `nats-server` on PATH.
  * Run: pnpm smoke:delivery-standby
@@ -35,7 +36,7 @@ import { join } from "node:path";
 import { connect, credsAuthenticator, NoRespondersError, RequestError, type NatsConnection } from "@nats-io/transport-node";
 import {
   CotalEndpoint, CONTROL_DELIVERY, DEV_OWNER, LEASE_TTL_MS, MEMBERSHIP_INBOX_PREFIX, composeSpaceAuth, controlServiceSubject, createBrokerAuth,
-  createSpaceAccountAuth, deliveryLeaseHolderFor, isReachable, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid,
+  createSpaceAccountAuth, credsClaims, deliveryLeaseHolderFor, isReachable, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid,
   mintMembershipObserverCreds, newIdentity, provisionAgent, serverConfig, setupSpaceStreams, type CotalMessage, type Identity,
   type SpaceAuth,
 } from "@cotal-ai/core";
@@ -205,7 +206,7 @@ async function suite(): Promise<void> {
   await setupSpaceStreams({ servers, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   const h1 = makeHost("host1"), h2 = makeHost("host2");
   for (const h of [h1, h2]) {
-    const own = await mintCreds(auth, h.delivery, "delivery", { expiresInSeconds: 3600 });
+    const own = await mintCreds(auth, h.delivery, "delivery", { expiresInSeconds: 45 });
     creds.set(h, own);
     await provision(h, { delivery: own });
   }
@@ -240,6 +241,37 @@ async function suite(): Promise<void> {
   const sweepSteady = await connz();
   const steady = { holder1: sweepSteady.get(h1.delivery.id) ?? 0, holder2: sweepSteady.get(h2.delivery.id) ?? 0 };
   check("the first host holds delivery connections", steady.holder1 >= 2, steady);
+
+  // Only the fixture's provisioning owner signs. Each host receives its own renewed credential
+  // through the same atomic SecretStore key it already reads, with no signer in either root.
+  const initialExp = Math.max(...[h1, h2].map((h) => credsClaims(creds.get(h)!).exp ?? 0)) * 1000;
+  check("initial delivery credentials have a live bounded expiry before renewal", initialExp > Date.now());
+  for (const h of [h1, h2]) {
+    const fresh = await mintCreds(auth, h.delivery, "delivery", { expiresInSeconds: 600 });
+    check("renewal keeps this host's serving identity and extends its lifetime", deliveryLeaseHolderFor(fresh) === holderOf(h)
+      && (credsClaims(fresh).exp ?? 0) * 1000 > initialExp);
+    await h.store.put(deliveryCredsKey(SPACE, h.composition), fresh);
+  }
+  await wait(Math.max(0, initialExp - Date.now() + 1500));
+  const afterRenewal = await lease(look);
+  check("the original host serves beyond its initial credential expiry without replacing its lease", Date.now() > initialExp
+    && afterRenewal?.holder === holderOf(h1) && afterRenewal.incarnation === first?.incarnation
+    && lanesUp(run1) === 1 && await ask());
+  check("the renewed standby remains non-serving until takeover", lanesUp(run2) === 0 && run2.child.exitCode === null);
+  const renewedPost = await sink.post("after the first delivery credential expired");
+  check("a post after credential renewal is durably delivered once", await until(() => sink.copiesOf(renewedPost) >= 1, 30_000)
+    && (await wait(1500), sink.copiesOf(renewedPost) === 1));
+
+  const malformed = makeHost("malformed-manifest");
+  await provision(malformed);
+  writeFileSync(malformed.manifest, JSON.stringify({ version: 2, spaces: [SPACE] }));
+  const malformedRun = startHost(malformed);
+  const malformedCode = await Promise.race([malformedRun.exited, wait(15_000).then(() => "timeout" as const)]);
+  check("a malformed manifest refuses before any lane is opened", typeof malformedCode === "number" && malformedCode !== 0
+    && malformedRun.text().includes("version must be 1") && lanesUp(malformedRun) === 0, { code: malformedCode });
+  const afterMalformed = await lease(look);
+  check("malformed manifest startup leaves the live holder and its delivery intact", afterMalformed?.holder === holderOf(h1)
+    && afterMalformed.incarnation === first?.incarnation && await ask());
 
   // ---- refusal hosts against the live holder -----------------------------------------------------
   const refusals: { name: string; needle: string; prepare: (h: Host) => Promise<void> }[] = [
