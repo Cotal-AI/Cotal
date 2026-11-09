@@ -7,7 +7,7 @@
  *
  * Loopback HTTP only; broker-free. Run: pnpm smoke:auth-login-name
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -50,11 +50,18 @@ const auth = betterAuth({
 });
 handler = toNodeHandler(auth);
 
-/** Run the real `cotal login --idp <base> --plain` in its own home, approving its device code as `user`. */
-const cotalLogin = (user: DeviceApprover) => new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
+const COTAL = ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts")];
+
+/** Run the real `cotal login --idp <base> --plain` in its own home, approving its device code as
+ *  `user`, after saving `saved` with `cotal config set name` when given. */
+const cotalLogin = (user: DeviceApprover, saved?: string) => new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
   const own = mkdtempSync(join(tmpdir(), "cotal-login-name-cli-"));
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: own, COTAL_HOME: own, XDG_CONFIG_HOME: join(own, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
-  const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts"), "login", "--idp", base, "--plain"], { env, stdio: ["ignore", "pipe", "pipe"] });
+  if (saved !== undefined) {
+    const set = spawnSync(process.execPath, [...COTAL, "config", "set", "name", saved], { env, encoding: "utf8" });
+    if (set.status !== 0) throw new Error(`cotal config set name failed:\n${set.stdout}${set.stderr}`);
+  }
+  const child = spawn(process.execPath, [...COTAL, "login", "--idp", base, "--plain"], { env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   let approval: Promise<void> | undefined;
@@ -101,8 +108,11 @@ try {
   check("cotal login prints the chat name it recorded",
     named.status === 0 && /^\s*Chat name\b.*\bhuman$/m.test(named.stdout) && !named.stdout.includes("cotal config set name"), named);
   const nameless = await cotalLogin(otherIdp);
-  check("cotal login says it recorded no chat name, and how to save one",
-    nameless.status === 0 && /^\s*Chat name\b.*\bnone$/m.test(nameless.stdout) && nameless.stdout.includes("cotal config set name <name>"), nameless);
+  check("cotal login says it recorded no chat name, and names saving one and --name",
+    nameless.status === 0 && /^\s*Chat name\b.*\bnone$/m.test(nameless.stdout) && nameless.stdout.includes("cotal config set name <name>") && nameless.stdout.includes("--name <name>"), nameless);
+  const saved = await cotalLogin(otherIdp, "ops-lead");
+  check("cotal login with no chat name recorded but one saved says chat uses the saved name, and warns of no refusal",
+    saved.status === 0 && /^\s*Chat name\b.*\bnone$/m.test(saved.stdout) && saved.stdout.includes("ops-lead") && !/refuse/.test(saved.stdout), saved);
 } finally {
   server.close();
   rmSync(home, { recursive: true, force: true });
