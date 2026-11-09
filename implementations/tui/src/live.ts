@@ -33,9 +33,9 @@ export type StopResult = { ok: true } | { ok: false; error: string }
 export type Session = {
   conn: Accessor<Conn>
   managed: Accessor<Managed>
-  /** Asks the seat's manager to stop the agent by name. Graceful lets it shut down; otherwise the
-   *  manager kills the process. */
-  stop: (name: string, graceful: boolean) => Promise<StopResult>
+  /** Asks the seat's manager to stop the run `row` reports. When the name now belongs to another
+   *  run, nothing is stopped. Graceful lets it shut down; otherwise the manager kills the process. */
+  stop: (row: ManagedRow, graceful: boolean) => Promise<StopResult>
   /** The human's chat session owner, once the space is open. */
   talk: Accessor<Talk | undefined>
   /** Closes the chat session first, then the observer. Says how the chat session closed, when one
@@ -137,12 +137,11 @@ export function openSpace(space: string | undefined, afterPaint: () => Promise<v
   return {
     conn,
     managed,
-    stop: async (name, graceful) => {
+    stop: async (row, graceful) => {
       if (!ctx) return { ok: false, error: "the space is not open yet" }
-      const r = await control(client, ctx, "stop", { name, graceful })
-      if (!r.ok) return { ok: false, error: safe(r.error ?? "failed") }
+      const r = await control(client, ctx, "stop", { name: row.name, graceful }, { expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid } })
       void readManaged(true)
-      return { ok: true }
+      return r.ok ? { ok: true } : { ok: false, error: safe(r.error ?? "failed") }
     },
     talk,
     close: async () => {

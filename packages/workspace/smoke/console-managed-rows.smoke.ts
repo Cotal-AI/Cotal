@@ -23,7 +23,7 @@ function check(label: string, cond: boolean, extra?: unknown): void {
 
 const row = (name: string, over: Partial<ManagedRow> = {}): ManagedRow => ({
   name, id: `id-${name}`, role: "worker", agent: "claude",
-  mode: "seat", status: "running", uptimeMs: 60_000, mesh: "idle", ...over,
+  mode: "seat", status: "running", uptimeMs: 60_000, mesh: "idle", lifecycleUid: `uid-${name}`, ...over,
 });
 const seats = (m: Map<string, ManagedRow[]>): string[] => [...managedById(m).keys()].sort();
 

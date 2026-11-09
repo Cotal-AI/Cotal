@@ -15,6 +15,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { CotalEndpoint, isReachable, registry, setupSpaceStreams, type Connector, type LaunchOpts, type LaunchSpec, type Presence } from "@cotal-ai/core"
+import { control, controlPs, type ControlClient } from "@cotal-ai/workspace/control"
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit"
 
 const [major, minor] = process.versions.node.split(".").map(Number)
@@ -327,6 +328,44 @@ try {
   save(dir, "04-stopped")
   check("D then y stops the agent and says so", stopped.includes("stopped w2"), stopped)
   check("the stopped seat leaves the roster or goes offline", await until(() => !seatLive(w2), 15000))
+
+  // The human asks to stop w2, and a new run replaces it under the same name before they confirm.
+  const runOf = (name: string) => live(name)?.lifecycleUid
+  // The manager reuses a name once its own roster has the last run offline, which trails this
+  // watcher by under a second. Sooner, it numbers the new run `w2_2`.
+  const nameFree = async (name: string) => (await until(() => !runOf(name), 15000)) && (await sleep(3000), true)
+  await nameFree("w2")
+  const first = await manager.startAgent({ name: "w2", agent: "seat", cwd: project, events: false })
+  const oldRun = (await until(() => !!runOf("w2"), 15000)) ? runOf("w2") : undefined
+  // The app learns of the new run on its next manager read.
+  await sleep(11000)
+  await pick("w2", space, (f) => /process\s+running/.test(f))
+  keys("D")
+  const askedOld = await waitFor(has(confirm("w2")), "D to ask before stopping w2").catch(() => capture())
+  const outside: ControlClient = { versionSkew: (detail) => detail, roster: async () => watcher!.getRoster() }
+  const killedOld = await control(outside, { space, server }, "stop", { name: "w2", graceful: false })
+  await nameFree("w2")
+  const second = await manager.startAgent({ name: "w2", agent: "seat", cwd: project, events: false })
+  const newRun = (await until(() => !!runOf("w2") && runOf("w2") !== oldRun, 15000)) ? runOf("w2") : undefined
+  check("fixture: a new run of w2 replaces the one the human asked to stop", askedOld.includes(confirm("w2")) && first.ok && killedOld.ok && second.ok && !!oldRun && !!newRun, JSON.stringify({ first, killedOld, second, oldRun, newRun }))
+  keys("y")
+  const pinned = await waitFor((f) => f.includes("stop: ") || f.includes("stopped w2"), "the stop outcome", 30000).catch(() => capture())
+  save(dir, "05-replaced-run")
+  check("D then y on a replaced run stops nothing and says the run changed", pinned.includes("stop: ") && pinned.includes("replaced") && !pinned.includes("stopped w2"), pinned)
+  // Presence trails a stop by seconds, so the manager's own list says whether the new run still runs.
+  await sleep(2000)
+  const after = await controlPs(outside, { space, server })
+  check("the run that replaced it keeps running", after.ok && after.rows.some((r) => r.name === "w2"), JSON.stringify(after))
+  // The app has no refresh key, so it reads the managers again after the refusal.
+  const dropped = await waitFor((f) => field(f, "managed") === "not by a manager on this space", "the overview to drop the replaced run", 5000).catch(() => capture())
+  check("after the refusal the replaced run's overview no longer shows it running", field(dropped, "managed") === "not by a manager on this space", dropped)
+  await pick("w2", space, (f) => /process\s+running/.test(f))
+  keys("D")
+  await waitFor(has(confirm("w2")), "D to ask before stopping the new run of w2")
+  keys("y")
+  const current = await waitFor(has("stopped w2"), "the new run's stop outcome", 30000).catch(() => capture())
+  const finished = await controlPs(outside, { space, server })
+  check("D then y on the new run stops it", current.includes("stopped w2") && finished.ok && !finished.rows.some((r) => r.name === "w2"), current)
 
   manager2 = new Manager({ space, servers: server, runtime: "pty", workspaceRoot: project2 })
   await manager2.start()

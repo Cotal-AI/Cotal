@@ -56,12 +56,13 @@ overview shows the reason, and the app stops asking until the space reconnects. 
 nothing to the registry.
 
 `D` on a selected agent that a manager reports running asks `Stop agent <name> via the manager?`.
-`y` stops it gracefully, `f` force-kills it, and `n`, esc or enter cancel. The stop names the agent,
-so `D` offers nothing for an agent no manager reports, even one that shares a managed agent's name,
+`y` stops it gracefully, `f` force-kills it, and `n`, esc or enter cancel. The stop acts on the run
+the overview showed when you pressed `D`. If a new run has replaced it under the same name since,
+nothing is stopped and the app reads its managers again. The manager finds the agent by name, so
+`D` offers nothing for an agent no manager reports, even one that shares a managed agent's name,
 or for a name two managed agents share. The line above the status bar shows `stopping <name>…`
 or `force-killing <name>…` until the manager answers, then `stopped <name>`, `force-killed <name>` or
-`stop: <error>`, cut to one line. The stop names the agent and not one run of it, as `cotal stop`
-and the console do, so an agent restarted under the same name in the meantime is the one stopped.
+`stop: <error>`, cut to one line.
 
 The status bar shows `reconnecting` while the broker is away (the last model stays on screen) and
 `not connected` when the space did not open, with the reason in the middle. While the space is
@@ -145,9 +146,9 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   `smoke/live.smoke.ts` starts its own broker and peers and covers the live screens, the letter keys
   typing into the box until `tab`, and a broker restart.
   `smoke/control.smoke.ts` runs a real manager with two seats and covers the overview, the confirm
-  and both kinds of stop, a stop refused for an unmanaged agent and for a name two managers hold, a
-  space with no manager, and a broker that turns auth on while the app reads its managers, after
-  which the space is still registered.
+  and both kinds of stop, a stop refused for an unmanaged agent, for a run replaced under the same
+  name after `D`, and for a name two managers hold, a space with no manager, and a broker that turns
+  auth on while the app reads its managers, after which the space is still registered.
   `smoke/composer.smoke.ts` writes from the input box at 209x52 and 80x24 on an open space and on a
   static-auth space that a real `cotal up --detach` stack serves. It reads each send off the broker:
   a post with its mention, a direct message to one of two agents that share a name, an answer to a
