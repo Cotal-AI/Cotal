@@ -1,10 +1,10 @@
 {
   "expected": {
     "total": 978,
-    "honest-text": 66,
-    "presence-only-glyph/count": 142,
+    "honest-text": 75,
+    "presence-only-glyph/count": 131,
     "command-ack": 10,
-    "non-render/control": 760
+    "non-render/control": 762
   },
   "renderers": [
     {
@@ -38,9 +38,16 @@
     {
       "path": "packages/core/src/resolve.ts",
       "kind": "status-token",
-      "anchor": "\"offline\"",
+      "anchor": "ter((p) => p.status !== \"offline\");\n  const pool = live.l",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Name lookup drops offline ghosts when a live peer shares the name, then resolves the remaining pool. It chooses an address and renders nothing."
+    },
+    {
+      "path": "packages/core/src/resolve.ts",
+      "kind": "status-token",
+      "anchor": "ter((p) => p.status !== \"offline\");\n    const pool = live",
+      "class": "non-render/control",
+      "rationale": "The shared-name set uses the same live-over-offline comparison as name lookup. It records ids and renders nothing."
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
@@ -92,7 +99,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working \u00b7 progress unknown\\)/,"
+        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
       }
     },
     {
@@ -103,7 +110,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working \u00b7 progress unknown\\)/,"
+        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
       }
     },
     {
@@ -123,12 +130,12 @@
     {
       "path": "extensions/connector-core/src/orientation.ts",
       "kind": "derived-output",
-      "anchor": "`  \u2022 status: ${honestStatus(o.status)} \u00b7 attention: ${o.attention}`",
+      "anchor": "`  • status: ${honestStatus(o.status)} · attention: ${o.attention}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working \u00b7 progress unknown\\)/,"
+        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
       }
     },
     {
@@ -139,20 +146,20 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working \u00b7 progress unknown\\)/,"
+        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
       }
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
-      "anchor": "string {\n  return s === \"working\" ? \"\u25cf\" : s === \"waiting\"",
+      "anchor": "string {\n  return s === \"working\" ? \"●\" : s === \"waiting\"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
-      "anchor": "\"working\" ? \"\u25cf\" : s === \"waiting\" ? \"\u25d0\" : s === \"idle\" ? ",
+      "anchor": "\"working\" ? \"●\" : s === \"waiting\" ? \"◐\" : s === \"idle\" ? ",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -171,31 +178,31 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/src/tool-specs.ts",
-        "anchor": "const progress = p.status === \"working\" ? `working${condition} \u00b7 progress unknown` : `${p.status}${condition}`;"
+        "anchor": "const progress = p.status === \"working\" ? `working${condition} · progress unknown` : `${p.status}${condition}`;"
       }
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`${statusGlyph(p.status)} ${who} \u2014 ${progress}${activity}${attn}${me}${mutedHint}${id}`",
+      "anchor": "`${statusGlyph(p.status)} ${who} — ${progress}${activity}${attn}${me}${mutedHint}${id}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/src/tool-specs.ts",
-        "anchor": "const progress = p.status === \"working\" ? `working${condition} \u00b7 progress unknown` : `${p.status}${condition}`;"
+        "anchor": "const progress = p.status === \"working\" ? `working${condition} · progress unknown` : `${p.status}${condition}`;"
       }
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`  \u2022 ${peerLabel(c)} (${c.status}) \u2014 id: ${c.id}`",
+      "anchor": "`  • ${peerLabel(c)} (${c.status}) — id: ${c.id}`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`\"${e.target}\" is ambiguous \u2014 ${e.candidates.length} peers share that name. ` +\n                `Re-send cotal_dm with the exact instance id as \"to\":\\n${who}`",
+      "anchor": "`\"${e.target}\" is ambiguous — ${e.candidates.length} peers share that name. ` +\n                `Re-send cotal_dm with the exact instance id as \"to\":\\n${who}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -251,7 +258,7 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`Turn yielded (${status}${to ? ` \u2192 ${to}` : \"\"}) \u2014 the run continues.`",
+      "anchor": "`Turn yielded (${status}${to ? ` → ${to}` : \"\"}) — the run continues.`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
@@ -286,7 +293,7 @@
     {
       "path": "implementations/cli/src/lib/teardown-spare.ts",
       "kind": "derived-output",
-      "anchor": "`  ${[row.name, row.mode, row.pid === undefined ? undefined : `pid ${row.pid}`, row.agent, row.cwd, status].filter(Boolean).join(\"  \u00b7  \")}`",
+      "anchor": "`  ${[row.name, row.mode, row.pid === undefined ? undefined : `pid ${row.pid}`, row.agent, row.cwd, status].filter(Boolean).join(\"  ·  \")}`",
       "class": "non-render/control",
       "rationale": "Spared-agent inventory row containing lifecycle metadata and optional manager-reported process state, not an observed work-progress claim."
     },
@@ -321,7 +328,7 @@
     {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
-      "anchor": "`\u2713 preserved state for \"${mesh.space}\"`",
+      "anchor": "`✓ preserved state for \"${mesh.space}\"`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -349,12 +356,12 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "c.green(`\u2192 ${who(ev.presence.card)} joined `) + statusBadge(ev.presence.status) + presenceDetail(ev.presence)",
+      "anchor": "c.green(`→ ${who(ev.presence.card)} joined `) + statusBadge(ev.presence.status) + presenceDetail(ev.presence)",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -365,7 +372,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -376,7 +383,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -387,7 +394,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -398,7 +405,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -409,13 +416,13 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "status-token",
-      "anchor": "dgedStatus = status === \"working\" ? \"working \u00b7 progress u",
+      "anchor": "dgedStatus = status === \"working\" ? \"working · progress u",
       "class": "command-ack",
       "rationale": "The working-only acknowledgement label explicitly distinguishes presence from unavailable progress observation."
     },
@@ -434,7 +441,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -468,14 +475,14 @@
     {
       "path": "implementations/cli/src/commands/meshes-add.ts",
       "kind": "derived-output",
-      "anchor": "`\u2717 the pinned exchange at ${base} answered /health with ${res.status} - it is not serving as the bundle promises`",
+      "anchor": "`✗ the pinned exchange at ${base} answered /health with ${res.status} - it is not serving as the bundle promises`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/commands/meshes-add.ts",
       "kind": "derived-output",
-      "anchor": "`\u2717 the pinned exchange at ${base} answered /jwks with ${res.status}`",
+      "anchor": "`✗ the pinned exchange at ${base} answered /jwks with ${res.status}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -832,23 +839,23 @@
     {
       "path": "implementations/cli/src/console/ui/Detail.tsx",
       "kind": "derived-output",
-      "anchor": "{s.dot + \" \" + s.word + (status === \"working\" ? \" \u00b7 progress unknown\" : \"\")}",
+      "anchor": "{s.dot + \" \" + s.word + (status === \"working\" ? \" · progress unknown\" : \"\")}",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/console/ui/Detail.tsx",
-        "anchor": "<Text color={s.color}>{s.dot + \" \" + s.word + (status === \"working\" ? \" \u00b7 progress unknown\" : \"\")}</Text>"
+        "anchor": "<Text color={s.color}>{s.dot + \" \" + s.word + (status === \"working\" ? \" · progress unknown\" : \"\")}</Text>"
       }
     },
     {
       "path": "implementations/cli/src/console/ui/Detail.tsx",
       "kind": "derived-output",
-      "anchor": "s.dot + \" \" + s.word + (status === \"working\" ? \" \u00b7 progress unknown\" : \"\")",
+      "anchor": "s.dot + \" \" + s.word + (status === \"working\" ? \" · progress unknown\" : \"\")",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/console/ui/Detail.tsx",
-        "anchor": "<Text color={s.color}>{s.dot + \" \" + s.word + (status === \"working\" ? \" \u00b7 progress unknown\" : \"\")}</Text>"
+        "anchor": "<Text color={s.color}>{s.dot + \" \" + s.word + (status === \"working\" ? \" · progress unknown\" : \"\")}</Text>"
       }
     },
     {
@@ -882,7 +889,7 @@
     {
       "path": "implementations/cli/src/console/ui/Dm.tsx",
       "kind": "indexed-map",
-      "anchor": "              {\"  \u21b3 \" + STATUS[c.status].dot + \" \" + label}\n    ",
+      "anchor": "              {\"  ↳ \" + STATUS[c.status].dot + \" \" + label}\n    ",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
     },
@@ -935,21 +942,21 @@
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "{status.connected ? \"\u25cf \" : \"\u2a2f \"}",
+      "anchor": "{status.connected ? \"● \" : \"⨯ \"}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "{status.space + \" \u00b7 #\" + activeChannel + \" \u00b7 \" + agentCount + \" agents \u00b7 \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"}",
+      "anchor": "{status.space + \" · #\" + activeChannel + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "status.space + \" \u00b7 #\" + activeChannel + \" \u00b7 \" + agentCount + \" agents \u00b7 \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"",
+      "anchor": "status.space + \" · #\" + activeChannel + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1180,7 +1187,7 @@
     {
       "path": "implementations/cli/src/console/ui/topo/model.ts",
       "kind": "derived-output",
-      "anchor": "src.key + \"\u2192\" + dst.key",
+      "anchor": "src.key + \"→\" + dst.key",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1234,7 +1241,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -1245,7 +1252,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -1256,7 +1263,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -1267,7 +1274,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -1742,7 +1749,7 @@
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
-      "anchor": "{rows.map((r) => (\n        <div key={r.id} className=\"v3-eprow\">\n          <span className={r.status === \"offline\" ? \"ui-av ui-av-ep ui-av-off\" : \"ui-av ui-av-ep\"}><Icon icon={Settings01Icon} size={16} className=\"ui-ic ui-ic16\" /></span>\n          <b>{r.name}</b>\n          <span>{[r.role, r.host, r.status === \"offline\" ? word(r.status) : undefined].filter(Boolean).join(\" \u00b7 \")}</span>\n        </div>\n      ))}",
+      "anchor": "{rows.map((r) => (\n        <div key={r.id} className=\"v3-eprow\">\n          <span className={r.status === \"offline\" ? \"ui-av ui-av-ep ui-av-off\" : \"ui-av ui-av-ep\"}><Icon icon={Settings01Icon} size={16} className=\"ui-ic ui-ic16\" /></span>\n          <b>{r.name}</b>\n          <span>{[r.role, r.host, r.status === \"offline\" ? word(r.status) : undefined].filter(Boolean).join(\" · \")}</span>\n        </div>\n      ))}",
       "class": "presence-only-glyph/count",
       "rationale": "The word Offline on an endpoint the roster holds offline: a presence word that makes no progress claim."
     },
@@ -1770,7 +1777,7 @@
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
-      "anchor": "{[r.role, r.host, r.status === \"offline\" ? word(r.status) : undefined].filter(Boolean).join(\" \u00b7 \")}",
+      "anchor": "{[r.role, r.host, r.status === \"offline\" ? word(r.status) : undefined].filter(Boolean).join(\" · \")}",
       "class": "presence-only-glyph/count",
       "rationale": "The word Offline on an endpoint the roster holds offline: a presence word that makes no progress claim."
     },
@@ -2055,13 +2062,6 @@
     {
       "path": "implementations/web/client/src/ui/MessageRow.tsx",
       "kind": "derived-output",
-      "anchor": "{!cont && (pick && senderId !== undefined ? (\n          // The name beside it is the keyboard's way in, so the avatar is not a second tab stop.\n          <button type=\"button\" className=\"ui-who\" tabIndex={-1} aria-label={name} onClick={() => pick(senderId)}>{avatar}</button>\n        ) : avatar)}",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/MessageRow.tsx",
-      "kind": "derived-output",
       "anchor": "{avatar}",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
@@ -2333,6 +2333,13 @@
       "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
     },
     {
+      "path": "implementations/web/client/src/ui/MessageRow.tsx",
+      "kind": "derived-output",
+      "anchor": "{(where === \"alone\" || where === \"last\") && (pick && senderId !== undefined ? (\n          // The name above is the keyboard's way in, so the avatar is not a second tab stop.\n          <button type=\"button\" tabIndex={-1} aria-label={name} onClick={() => pick(senderId)}>{avatar}</button>\n        ) : avatar)}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The message avatar, drawn on the last row of a run. Its only status use is the face and dot Avatar draws, with no textual progress claim."
+    },
+    {
       "path": "implementations/web/client/src/ui/NeedsCard.tsx",
       "kind": "derived-output",
       "anchor": "status={row.status}",
@@ -2377,30 +2384,38 @@
     {
       "path": "implementations/web/client/src/ui/Sidebar.tsx",
       "kind": "derived-output",
-      "anchor": "{channels.map((c) => {\n          const count = unread[c.channel] ?? 0;\n          const event = isEventChannel(c.channel);\n          const working = busy.get(c.channel) ?? [];\n          return (\n            <Row\n              key={c.channel}\n              to={{ view: \"channel\", channel: c.channel }}\n              here={route.view === \"channel\" && route.channel === c.channel}\n              bold={count > 0}\n              title={event ? `Events from run ${c.channel.slice(\"run.\".length)}` : undefined}\n            >\n              {event ? <Icon icon={Plug01Icon} size={18} className=\"ui-ic\" /> : <RailIcon name=\"hash\" />}\n              <span className=\"ui-row-lbl\">{c.channel}</span>\n              {working.length > 0 && (\n                <span className=\"ox-sbw\" title={`${working.length} member${working.length === 1 ? \"\" : \"s\"} working: ${working.map((r) => r.name).join(\", \")}`}>\n                  <Icon icon={Loading03Icon} size={16} className=\"ui-ic ox-spin\" />\n                  {working.length}\n                </span>\n              )}\n              {count > 0 && <span className=\"ui-badge-blue\">{count}</span>}\n            </Row>\n          );\n        })}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The sidebar's working count on a channel row: how many members the broker's membership and presence say are working, with their names in its title. A presence count, never read from the event plane."
+      "anchor": "{loading.roster || loading.channels ? <SkeletonPlaces /> : (\n        <SidebarContent role=\"navigation\" aria-label=\"Places\">\n          <SidebarGroup>\n            <SidebarMenu>\n              <Row to={{ view: \"needs\" }} here={route.view === \"needs\"} tip={needing > 0 ? waitingText : undefined} badge={needing > 0 ? needing : undefined} link={firstPlace}>\n                <RailIcon name=\"inbox\" />\n                <span className=\"flex-1 truncate\">Needs you</span>\n                {needing > 0 && <span className=\"ui-sr\">{` ${waitingText}`}</span>}\n              </Row>\n              <Row to={{ view: \"activity\" }} here={route.view === \"activity\"} badge={rate}>\n                <RailIcon name=\"activity\" />\n                <span className=\"flex-1 truncate\">Activity</span>\n                <span className=\"ui-sr\">{` ${rate}`}</span>\n              </Row>\n            </SidebarMenu>\n          </SidebarGroup>\n          <SidebarGroup>\n            <SidebarGroupLabel>Channels</SidebarGroupLabel>\n            {channels.length === 0 && (\n              <Empty className=\"p-4\">\n                <EmptyHeader>\n                  <EmptyDescription>No channels yet. One appears with its first message.</EmptyDescription>\n                </EmptyHeader>\n              </Empty>\n            )}\n            <SidebarMenu>\n              {channels.map((c) => {\n                const count = unread[c.channel] ?? 0;\n                const event = isEventChannel(c.channel) ? `Events from run ${c.channel.slice(\"run.\".length)}` : undefined;\n                const working = busy.get(c.channel) ?? [];\n                return (\n                  <Row\n                    key={c.channel}\n                    to={{ view: \"channel\", channel: c.channel }}\n                    here={route.view === \"channel\" && route.channel === c.channel}\n                    tip={event}\n                    badge={count > 0 ? count : undefined}\n                  >\n                    {event ? <Icon icon={Plug01Icon} /> : <RailIcon name=\"hash\" />}\n                    <span className=\"flex-1 truncate\">{c.channel}</span>\n                    {working.length > 0 && (\n                      <Tooltip>\n                        <TooltipTrigger asChild>\n                          <span className=\"ox-sbw\">\n                            <Icon icon={Loading03Icon} className=\"ox-spin\" />\n                            <span aria-hidden=\"true\">{working.length}</span>\n                            <span className=\"ui-sr\">{workingTitle(working)}</span>\n                          </span>\n                        </TooltipTrigger>\n                        <TooltipContent>{workingTitle(working)}</TooltipContent>\n                      </Tooltip>\n                    )}\n                    {count > 0 && <span className=\"ui-sr\">{` ${count}`}</span>}\n                    {event && <span className=\"ui-sr\">{` ${event}`}</span>}\n                  </Row>\n                );\n              })}\n            </SidebarMenu>\n          </SidebarGroup>\n          <SidebarGroup>\n            <SidebarGroupLabel>Direct messages</SidebarGroupLabel>\n            <SidebarMenu>\n              {listed.map(({ key, parts, opener: a, verified }) => {\n                const b = parts[0] === a ? parts[1] : parts[0];\n                return (\n                  <Row key={key} to={{ view: \"dm\", peer: a, with: b }} here={key === openKey}>\n                    <span className=\"ui-stack\" aria-hidden=\"true\">\n                      {[a, b].map((id) => (\n                        <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                      ))}\n                    </span>\n                    <span className=\"flex-1 truncate\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n                    {!verified && <Unverified />}\n                  </Row>\n                );\n              })}\n              {conversations.length > DM_ROWS && (\n                <SidebarMenuItem>\n                  <SidebarMenuButton type=\"button\" aria-expanded={allDms} onClick={() => setAllDms((v) => !v)}>\n                    <span>{allDms ? \"Show fewer\" : `Show all ${conversations.length}`}</span>\n                  </SidebarMenuButton>\n                </SidebarMenuItem>\n              )}\n            </SidebarMenu>\n          </SidebarGroup>\n        </SidebarContent>\n      )}",
+      "class": "honest-text",
+      "rationale": "Needs you says how many agents presence reports waiting, in words for a screen reader and as its tooltip. The cited assertion reads those words.",
+      "proof": {
+        "path": "implementations/web/smoke/sidebar.smoke.ts",
+        "anchor": "ok(\"2.3 which a screen reader hears in words\""
+      }
     },
     {
       "path": "implementations/web/client/src/ui/Sidebar.tsx",
       "kind": "derived-output",
-      "anchor": "{[a, b].map((id) => (\n                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                ))}",
-      "class": "presence-only-glyph/count",
-      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws, and the initial badge, which is chosen by id and greys its fill offline: no textual progress claim."
+      "anchor": "{channels.map((c) => {\n                const count = unread[c.channel] ?? 0;\n                const event = isEventChannel(c.channel) ? `Events from run ${c.channel.slice(\"run.\".length)}` : undefined;\n                const working = busy.get(c.channel) ?? [];\n                return (\n                  <Row\n                    key={c.channel}\n                    to={{ view: \"channel\", channel: c.channel }}\n                    here={route.view === \"channel\" && route.channel === c.channel}\n                    tip={event}\n                    badge={count > 0 ? count : undefined}\n                  >\n                    {event ? <Icon icon={Plug01Icon} /> : <RailIcon name=\"hash\" />}\n                    <span className=\"flex-1 truncate\">{c.channel}</span>\n                    {working.length > 0 && (\n                      <Tooltip>\n                        <TooltipTrigger asChild>\n                          <span className=\"ox-sbw\">\n                            <Icon icon={Loading03Icon} className=\"ox-spin\" />\n                            <span aria-hidden=\"true\">{working.length}</span>\n                            <span className=\"ui-sr\">{workingTitle(working)}</span>\n                          </span>\n                        </TooltipTrigger>\n                        <TooltipContent>{workingTitle(working)}</TooltipContent>\n                      </Tooltip>\n                    )}\n                    {count > 0 && <span className=\"ui-sr\">{` ${count}`}</span>}\n                    {event && <span className=\"ui-sr\">{` ${event}`}</span>}\n                  </Row>\n                );\n              })}",
+      "class": "honest-text",
+      "rationale": "A channel row says how many members presence and the broker's membership report working, with their names. The cited assertion reads that count and those names.",
+      "proof": {
+        "path": "implementations/web/smoke/sidebar.smoke.ts",
+        "anchor": "same(\"11.1 a channel with working members shows the turning spokes and how many, from the broker's membership and presence, titled with their names\""
+      }
     },
     {
       "path": "implementations/web/client/src/ui/Sidebar.tsx",
       "kind": "derived-output",
-      "anchor": "{loading.roster || loading.channels ? <SkeletonPlaces /> : <nav className=\"ui-side-scroll\" aria-label=\"Places\">\n        <Row to={{ view: \"needs\" }} here={route.view === \"needs\"}>\n          <RailIcon name=\"inbox\" />\n          <span className=\"ui-row-lbl\">Needs you</span>\n          {needing > 0 && <span className=\"ui-badge-gold\" title={`${needing} agent${needing === 1 ? \"\" : \"s\"} waiting`}>{needing}</span>}\n        </Row>\n        <Row to={{ view: \"activity\" }} here={route.view === \"activity\"}>\n          <RailIcon name=\"activity\" />\n          <span className=\"ui-row-lbl\">Activity</span>\n          <span className=\"ui-row-n\">{rateText(msgPerSecond())}</span>\n        </Row>\n        <div className=\"ui-sec\">Channels</div>\n        {channels.length === 0 && <div className=\"ui-beat ui-beat-empty\">No channels yet. One appears with its first message.</div>}\n        {channels.map((c) => {\n          const count = unread[c.channel] ?? 0;\n          const event = isEventChannel(c.channel);\n          const working = busy.get(c.channel) ?? [];\n          return (\n            <Row\n              key={c.channel}\n              to={{ view: \"channel\", channel: c.channel }}\n              here={route.view === \"channel\" && route.channel === c.channel}\n              bold={count > 0}\n              title={event ? `Events from run ${c.channel.slice(\"run.\".length)}` : undefined}\n            >\n              {event ? <Icon icon={Plug01Icon} size={18} className=\"ui-ic\" /> : <RailIcon name=\"hash\" />}\n              <span className=\"ui-row-lbl\">{c.channel}</span>\n              {working.length > 0 && (\n                <span className=\"ox-sbw\" title={`${working.length} member${working.length === 1 ? \"\" : \"s\"} working: ${working.map((r) => r.name).join(\", \")}`}>\n                  <Icon icon={Loading03Icon} size={16} className=\"ui-ic ox-spin\" />\n                  {working.length}\n                </span>\n              )}\n              {count > 0 && <span className=\"ui-badge-blue\">{count}</span>}\n            </Row>\n          );\n        })}\n        <div className=\"ui-sec\">Direct messages</div>\n        {listed.map(({ key, parts, opener: a, verified }) => {\n          const b = parts[0] === a ? parts[1] : parts[0];\n          return (\n            <Row key={key} to={{ view: \"dm\", peer: a, with: b }} here={key === openKey}>\n              <span className=\"ui-stack\" aria-hidden=\"true\">\n                {[a, b].map((id) => (\n                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                ))}\n              </span>\n              <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n              {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n            </Row>\n          );\n        })}\n        {conversations.length > DM_ROWS && (\n          <button type=\"button\" className=\"ui-row ui-row-more\" aria-expanded={allDms} onClick={() => setAllDms((v) => !v)}>\n            <span className=\"ui-row-lbl\">{allDms ? \"Show fewer\" : `Show all ${conversations.length}`}</span>\n          </button>\n        )}\n      </nav>}",
+      "anchor": "{listed.map(({ key, parts, opener: a, verified }) => {\n                const b = parts[0] === a ? parts[1] : parts[0];\n                return (\n                  <Row key={key} to={{ view: \"dm\", peer: a, with: b }} here={key === openKey}>\n                    <span className=\"ui-stack\" aria-hidden=\"true\">\n                      {[a, b].map((id) => (\n                        <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                      ))}\n                    </span>\n                    <span className=\"flex-1 truncate\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n                    {!verified && <Unverified />}\n                  </Row>\n                );\n              })}",
       "class": "presence-only-glyph/count",
-      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws, and the initial badge, which is chosen by id and greys its fill offline: no textual progress claim."
+      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws. The initial badge is chosen by id and greys its fill offline. No textual progress claim."
     },
     {
       "path": "implementations/web/client/src/ui/Sidebar.tsx",
       "kind": "derived-output",
-      "anchor": "{listed.map(({ key, parts, opener: a, verified }) => {\n          const b = parts[0] === a ? parts[1] : parts[0];\n          return (\n            <Row key={key} to={{ view: \"dm\", peer: a, with: b }} here={key === openKey}>\n              <span className=\"ui-stack\" aria-hidden=\"true\">\n                {[a, b].map((id) => (\n                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                ))}\n              </span>\n              <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n              {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n            </Row>\n          );\n        })}",
+      "anchor": "{[a, b].map((id) => (\n                        <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                      ))}",
       "class": "presence-only-glyph/count",
-      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws, and the initial badge, which is chosen by id and greys its fill offline: no textual progress claim."
+      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws. The initial badge is chosen by id and greys its fill offline. No textual progress claim."
     },
     {
       "path": "implementations/web/client/src/ui/Status.tsx",
@@ -2461,27 +2476,6 @@
     {
       "path": "implementations/web/client/src/ui/Status.tsx",
       "kind": "derived-output",
-      "anchor": "className={`v3-spill v3-s-${row.status}`}",
-      "class": "non-render/control",
-      "rationale": "Styling: the pill's colour class. The pill's word comes from statusLabel and its icon is the shape."
-    },
-    {
-      "path": "implementations/web/client/src/ui/Status.tsx",
-      "kind": "derived-output",
-      "anchor": "{`v3-spill v3-s-${row.status}`}",
-      "class": "non-render/control",
-      "rationale": "Styling: the pill's colour class. The pill's word comes from statusLabel and its icon is the shape."
-    },
-    {
-      "path": "implementations/web/client/src/ui/Status.tsx",
-      "kind": "derived-output",
-      "anchor": "`v3-spill v3-s-${row.status}`",
-      "class": "non-render/control",
-      "rationale": "Styling: the pill's colour class. The pill's word comes from statusLabel and its icon is the shape."
-    },
-    {
-      "path": "implementations/web/client/src/ui/Status.tsx",
-      "kind": "derived-output",
       "anchor": "icon={icon}",
       "class": "presence-only-glyph/count",
       "rationale": "The status pill's icon, each status's own shape so it never rests on colour alone: a glyph with no textual progress claim."
@@ -2496,37 +2490,65 @@
     {
       "path": "implementations/web/client/src/ui/Status.tsx",
       "kind": "status-token",
-      "anchor": "\"working\"",
+      "anchor": ": string => (status === \"working\" ? `${base} ox-spin` : b",
       "class": "presence-only-glyph/count",
-      "rationale": "The status icon's class: the working spokes turn while presence says working and stop under reduced motion. A presence glyph with no textual progress claim."
+      "rationale": "The status icon's class: the working spokes turn while presence says working and stand still otherwise. A presence glyph with no textual progress claim."
     },
     {
       "path": "implementations/web/client/src/ui/Status.tsx",
       "kind": "derived-output",
-      "anchor": "{icon && <Icon icon={icon} size={16} className={statusIconClass(row.status, \"ui-ic ui-ic16\")} />}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The status pill's icon, each status's own shape so it never rests on colour alone, turning while working: a glyph with no textual progress claim."
+      "anchor": "Object.hasOwn(STATUS_VARIANT, row.status)",
+      "class": "non-render/control",
+      "rationale": "Lookup: whether the status has a Badge variant. It renders nothing itself."
+    },
+    {
+      "path": "implementations/web/client/src/ui/Status.tsx",
+      "kind": "indexed-map",
+      "anchor": "STATUS_VARIANT[row.status]",
+      "class": "non-render/control",
+      "rationale": "Lookup: the Badge variant for the status. The word inside the Badge is statusLabel's."
     },
     {
       "path": "implementations/web/client/src/ui/Status.tsx",
       "kind": "derived-output",
-      "anchor": "className={statusIconClass(row.status, \"ui-ic ui-ic16\")}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The status icon's class: the working spokes turn while presence says working and stop under reduced motion. A presence glyph with no textual progress claim."
+      "anchor": "variant={variant}",
+      "class": "non-render/control",
+      "rationale": "Styling: the Badge variant for the status. The word inside the Badge is statusLabel's."
     },
     {
       "path": "implementations/web/client/src/ui/Status.tsx",
       "kind": "derived-output",
-      "anchor": "{statusIconClass(row.status, \"ui-ic ui-ic16\")}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The status icon's class: the working spokes turn while presence says working and stop under reduced motion. A presence glyph with no textual progress claim."
+      "anchor": "{variant}",
+      "class": "non-render/control",
+      "rationale": "Styling: the Badge variant for the status. The word inside the Badge is statusLabel's."
     },
     {
       "path": "implementations/web/client/src/ui/Status.tsx",
       "kind": "derived-output",
-      "anchor": "statusIconClass(row.status, \"ui-ic ui-ic16\")",
+      "anchor": "{icon && <Icon icon={icon} data-icon=\"inline-start\" className={row.status === \"working\" ? \"ox-spin\" : undefined} />}",
       "class": "presence-only-glyph/count",
-      "rationale": "The status icon's class: the working spokes turn while presence says working and stop under reduced motion. A presence glyph with no textual progress claim."
+      "rationale": "The status Badge's icon: the working spokes turn while presence says working. A glyph with no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/Status.tsx",
+      "kind": "derived-output",
+      "anchor": "className={row.status === \"working\" ? \"ox-spin\" : undefined}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status Badge's icon: the working spokes turn while presence says working. A glyph with no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/Status.tsx",
+      "kind": "status-token",
+      "anchor": "assName={row.status === \"working\" ? \"ox-spin\" : undefined",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status Badge's icon: the working spokes turn while presence says working. A glyph with no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/Status.tsx",
+      "kind": "derived-output",
+      "anchor": "{row.status === \"working\" ? \"ox-spin\" : undefined}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status Badge's icon: the working spokes turn while presence says working. A glyph with no textual progress claim."
     },
     {
       "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
@@ -2657,35 +2679,7 @@
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "derived-output",
-      "anchor": "{working.length > 0 && (\n          <span className=\"ox-hchip\" title={`Working now: ${working.map((r) => r.name).join(\", \")}`}>\n            <Icon icon={Loading03Icon} size={16} className=\"ui-ic ox-spin\" />\n            {sheet ? working.length : `${working.length} working`}\n          </span>\n        )}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The channel header's working chip: how many members presence says are working, with their names in its title and the turning spokes. A presence count that makes no progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
-      "kind": "derived-output",
-      "anchor": "title={`Working now: ${working.map((r) => r.name).join(\", \")}`}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The channel header's working chip: how many members presence says are working, with their names in its title and the turning spokes. A presence count that makes no progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
-      "kind": "derived-output",
-      "anchor": "{`Working now: ${working.map((r) => r.name).join(\", \")}`}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The channel header's working chip: how many members presence says are working, with their names in its title and the turning spokes. A presence count that makes no progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
-      "kind": "derived-output",
       "anchor": "`Working now: ${working.map((r) => r.name).join(\", \")}`",
-      "class": "presence-only-glyph/count",
-      "rationale": "The channel header's working chip: how many members presence says are working, with their names in its title and the turning spokes. A presence count that makes no progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
-      "kind": "derived-output",
-      "anchor": "{sheet ? working.length : `${working.length} working`}",
       "class": "presence-only-glyph/count",
       "rationale": "The channel header's working chip: how many members presence says are working, with their names in its title and the turning spokes. A presence count that makes no progress claim."
     },
@@ -2695,13 +2689,6 @@
       "anchor": "`${working.length} working`",
       "class": "presence-only-glyph/count",
       "rationale": "The channel header's working chip: how many members presence says are working, with their names in its title and the turning spokes. A presence count that makes no progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
-      "kind": "derived-output",
-      "anchor": "{members.slice(0, STACK).map((m) => {\n              const r = peers.get(m.id);\n              return <Avatar key={m.id} vendor={r?.harness} status={r?.status ?? \"offline\"} badge={r ? badgeOf(m.id) : undefined} size={22} />;\n            })}",
-      "class": "presence-only-glyph/count",
-      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws, and the initial badge, which is chosen by id and greys its fill offline: no textual progress claim."
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
@@ -2723,6 +2710,79 @@
       "proof": {
         "path": "implementations/web/smoke/views.smoke.ts",
         "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "kind": "derived-output",
+      "anchor": "{working.length > 0 && (\n          <Tooltip>\n            <TooltipTrigger asChild>\n              <span className=\"ox-hchip\">\n                <Icon icon={Loading03Icon} size={16} className=\"ui-ic ox-spin\" />\n                {phone ? working.length : `${working.length} working`}\n                <span className=\"ui-sr\">{` ${workingNow}`}</span>\n              </span>\n            </TooltipTrigger>\n            <TooltipContent>{workingNow}</TooltipContent>\n          </Tooltip>\n        )}",
+      "class": "honest-text",
+      "rationale": "The channel header's working chip: how many members presence says are working, their names for a screen reader and the tooltip, and the turning spokes. The cited assertion reads the words.",
+      "proof": {
+        "path": "implementations/web/smoke/views.smoke.ts",
+        "anchor": "same(\"3.7 the header chip reads 2 working, with the turning spokes and the working names in its tooltip and screen reader text, before the member stack\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "kind": "derived-output",
+      "anchor": "{phone ? working.length : `${working.length} working`}",
+      "class": "honest-text",
+      "rationale": "The channel header's working chip: how many members presence says are working, their names for a screen reader and the tooltip, and the turning spokes. The cited assertion reads the words.",
+      "proof": {
+        "path": "implementations/web/smoke/views.smoke.ts",
+        "anchor": "same(\"3.7 the header chip reads 2 working, with the turning spokes and the working names in its tooltip and screen reader text, before the member stack\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "kind": "derived-output",
+      "anchor": "{` ${workingNow}`}",
+      "class": "honest-text",
+      "rationale": "The channel header's working chip: how many members presence says are working, their names for a screen reader and the tooltip, and the turning spokes. The cited assertion reads the words.",
+      "proof": {
+        "path": "implementations/web/smoke/views.smoke.ts",
+        "anchor": "same(\"3.7 the header chip reads 2 working, with the turning spokes and the working names in its tooltip and screen reader text, before the member stack\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "kind": "derived-output",
+      "anchor": "` ${workingNow}`",
+      "class": "honest-text",
+      "rationale": "The channel header's working chip: how many members presence says are working, their names for a screen reader and the tooltip, and the turning spokes. The cited assertion reads the words.",
+      "proof": {
+        "path": "implementations/web/smoke/views.smoke.ts",
+        "anchor": "same(\"3.7 the header chip reads 2 working, with the turning spokes and the working names in its tooltip and screen reader text, before the member stack\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "kind": "derived-output",
+      "anchor": "        <TooltipContent>{workingNow}</TooltipContent>\n      ",
+      "class": "honest-text",
+      "rationale": "The channel header's working chip: how many members presence says are working, their names for a screen reader and the tooltip, and the turning spokes. The cited assertion reads the words.",
+      "proof": {
+        "path": "implementations/web/smoke/views.smoke.ts",
+        "anchor": "same(\"3.7 the header chip reads 2 working, with the turning spokes and the working names in its tooltip and screen reader text, before the member stack\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "kind": "derived-output",
+      "anchor": "{members.slice(0, STACK).map((m) => {\n                    const r = peers.get(m.id);\n                    return <Avatar key={m.id} vendor={r?.harness} status={r?.status ?? \"offline\"} badge={r ? badgeOf(m.id) : undefined} size={22} />;\n                  })}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The member stack's avatars. Each one's only status use is the face and dot Avatar draws, and the initial badge is chosen by id. No textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "kind": "derived-output",
+      "anchor": "{working.length > 0 && (\n                <MessageScrollerItem>\n                  <WorkingLine rows={working} />\n                </MessageScrollerItem>\n              )}",
+      "class": "honest-text",
+      "rationale": "The channel's working line, handed the members presence says are working. Its words are WorkingLine's, the status presence reports and the activity; the cited assertion reads them.",
+      "proof": {
+        "path": "implementations/web/smoke/views.smoke.ts",
+        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with"
       }
     },
     {
@@ -2756,17 +2816,6 @@
     {
       "path": "implementations/web/client/src/ui/views/DmView.tsx",
       "kind": "derived-output",
-      "anchor": "{conv || sent > 0 ? (\n          <div className=\"ui-col\">\n            {conv && cut && <div className=\"ui-cutoff\">Earlier messages aren't loaded</div>}\n            {conv && <MessageList messages={conv.messages} idx={idx} peers={peers} />}\n            {target && <OutgoingRows store={store} target={target} shown={shown} />}\n            <WorkingLine rows={working} />\n          </div>\n        ) : (\n          <div className=\"ui-empty\"><span>{`No direct messages with ${name} yet.`}</span></div>\n        )}",
-      "class": "honest-text",
-      "rationale": "The conversation's working line, <name> is <statusLabel> <activity>, for the parties presence says are working: the status presence reports and nothing more; the cited assertion reads the line with progress unknown.",
-      "proof": {
-        "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/DmView.tsx",
-      "kind": "derived-output",
       "anchor": "rows={working}",
       "class": "honest-text",
       "rationale": "The conversation's working line, <name> is <statusLabel> <activity>, for the parties presence says are working: the status presence reports and nothing more; the cited assertion reads the line with progress unknown.",
@@ -2784,6 +2833,28 @@
       "proof": {
         "path": "implementations/web/smoke/views.smoke.ts",
         "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/DmView.tsx",
+      "kind": "derived-output",
+      "anchor": "{conv || sent > 0 ? (\n                <>\n                  {conv && cut && (\n                    <MessageScrollerItem>\n                      <Marker>\n                        <MarkerContent>Earlier messages aren't loaded</MarkerContent>\n                      </Marker>\n                    </MessageScrollerItem>\n                  )}\n                  {conv && <MessageList messages={conv.messages} idx={idx} peers={peers} self={self} />}\n                  {target && <OutgoingRows store={store} target={target} shown={shown} />}\n                  {working.length > 0 && (\n                    <MessageScrollerItem>\n                      <WorkingLine rows={working} />\n                    </MessageScrollerItem>\n                  )}\n                </>\n              ) : (\n                <MessageScrollerItem>\n                  <Empty>\n                    <EmptyHeader>\n                      <EmptyTitle>{`No direct messages with ${name} yet.`}</EmptyTitle>\n                    </EmptyHeader>\n                  </Empty>\n                </MessageScrollerItem>\n              )}",
+      "class": "honest-text",
+      "rationale": "The conversation, including the working line for the parties presence says are working. Its words are WorkingLine's, the status presence reports and the activity; the cited assertion reads them.",
+      "proof": {
+        "path": "implementations/web/smoke/views.smoke.ts",
+        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with"
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/DmView.tsx",
+      "kind": "derived-output",
+      "anchor": "{working.length > 0 && (\n                    <MessageScrollerItem>\n                      <WorkingLine rows={working} />\n                    </MessageScrollerItem>\n                  )}",
+      "class": "honest-text",
+      "rationale": "The conversation's working line, handed the parties presence says are working. Its words are WorkingLine's, the status presence reports and the activity; the cited assertion reads them.",
+      "proof": {
+        "path": "implementations/web/smoke/views.smoke.ts",
+        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with"
       }
     },
     {
@@ -3060,20 +3131,6 @@
     {
       "path": "implementations/web/client/src/ui/work/ToolLine.tsx",
       "kind": "derived-output",
-      "anchor": "fallback={line}",
-      "class": "non-render/control",
-      "rationale": "Not presence: the failed call's line and its tooltip; `line` carries the trace line's own `status` prop, set from the call's result marker, never the agent's status."
-    },
-    {
-      "path": "implementations/web/client/src/ui/work/ToolLine.tsx",
-      "kind": "derived-output",
-      "anchor": "\n    <Suspense fallback={line}>\n      <FailedTip line=",
-      "class": "non-render/control",
-      "rationale": "Not presence: the failed call's line and its tooltip; `line` carries the trace line's own `status` prop, set from the call's result marker, never the agent's status."
-    },
-    {
-      "path": "implementations/web/client/src/ui/work/ToolLine.tsx",
-      "kind": "derived-output",
       "anchor": "line={line}",
       "class": "non-render/control",
       "rationale": "Not presence: the failed call's line and its tooltip; `line` carries the trace line's own `status` prop, set from the call's result marker, never the agent's status."
@@ -3081,9 +3138,9 @@
     {
       "path": "implementations/web/client/src/ui/work/ToolLine.tsx",
       "kind": "derived-output",
-      "anchor": ">\n      <FailedTip line={line} words={call.kind === \"c",
+      "anchor": "{line}",
       "class": "non-render/control",
-      "rationale": "Not presence: the failed call's line and its tooltip; `line` carries the trace line's own `status` prop, set from the call's result marker, never the agent's status."
+      "rationale": "Not presence: the failed call's line. `line` carries the trace line's own status prop, set from the call's result marker, never the agent's status."
     },
     {
       "path": "implementations/web/client/src/ui/work/Turn.tsx",
@@ -3422,69 +3479,6 @@
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
-      "kind": "derived-output",
-      "anchor": "Object.hasOwn(STATUS_ICON, row.status)",
-      "class": "non-render/control",
-      "rationale": "Lookup: whether the status has an icon for the header Badge; it renders nothing itself."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
-      "kind": "indexed-map",
-      "anchor": "STATUS_ICON[row.status]",
-      "class": "presence-only-glyph/count",
-      "rationale": "Narrow presence glyph: the header Badge's status icon, with no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
-      "kind": "derived-output",
-      "anchor": "className={`ox-badge ox-badge-${row.status}`}",
-      "class": "non-render/control",
-      "rationale": "Styling: the header Badge's colour per status; the word inside it is statusLabel's."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
-      "kind": "derived-output",
-      "anchor": "{`ox-badge ox-badge-${row.status}`}",
-      "class": "non-render/control",
-      "rationale": "Styling: the header Badge's colour per status; the word inside it is statusLabel's."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
-      "kind": "derived-output",
-      "anchor": "`ox-badge ox-badge-${row.status}`",
-      "class": "non-render/control",
-      "rationale": "Styling: the header Badge's colour per status; the word inside it is statusLabel's."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
-      "kind": "derived-output",
-      "anchor": "{row.status === \"working\" ? <Spinner /> : icon && <Icon icon={icon} size={16} />}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The header Badge's icon: the turning spinner while presence says working, else the status's own icon; a glyph with no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
-      "kind": "status-token",
-      "anchor": "\"working\"",
-      "class": "presence-only-glyph/count",
-      "rationale": "The header Badge's icon: the turning spinner while presence says working, else the status's own icon; a glyph with no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
-      "kind": "derived-output",
-      "anchor": "icon={icon}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The header Badge's icon: the turning spinner while presence says working, else the status's own icon; a glyph with no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
-      "kind": "derived-output",
-      "anchor": "{icon}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The header Badge's icon: the turning spinner while presence says working, else the status's own icon; a glyph with no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
       "kind": "status-token",
       "anchor": "\"offline\"",
       "class": "non-render/control",
@@ -3537,38 +3531,9 @@
     {
       "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
       "kind": "derived-output",
-      "anchor": ">Loading</div>}\n        {list}\n      </div>\n    );\n  }",
-      "class": "honest-text",
-      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
-      "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
-      "kind": "derived-output",
       "anchor": "status={row.status}",
       "class": "presence-only-glyph/count",
       "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
-      "kind": "derived-output",
-      "anchor": "{known?.harness} status={row.status} size={30} badge={known ",
-      "class": "presence-only-glyph/count",
-      "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
-      "kind": "derived-output",
-      "anchor": "{known && <StatusBadge row={known} />}",
-      "class": "honest-text",
-      "rationale": "The page header's status Badge: its word is statusLabel's, so a working agent reads Working with no progress claim; the cited assertion reads it.",
-      "proof": {
-        "path": "implementations/web/smoke/session-view.smoke.ts",
-        "anchor": "ok(\"5.3 the header Badge says the status presence reports, Working, for an agent whose progress is unknown, with no progress claim\""
-      }
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
@@ -3580,6 +3545,34 @@
         "path": "implementations/web/smoke/panel.smoke.ts",
         "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
       }
+    },
+    {
+      "path": "extensions/connector-core/src/feedback.ts",
+      "kind": "derived-output",
+      "anchor": "receipt(res.status, reply)",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: whether the feedback intake stored the submission. No agent presence is rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/feedback.ts",
+      "kind": "derived-output",
+      "anchor": "`Feedback sent (id ${stored.id})${note}. Thanks!`",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: the feedback intake accepted the submission. No agent presence is rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/feedback.ts",
+      "kind": "derived-output",
+      "anchor": "`Feedback rejected (${res.status}${errorText ? `: ${errorText}` : \"\"}).`",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: the feedback intake's status code in a rejection message. No agent presence is rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/feedback.ts",
+      "kind": "derived-output",
+      "anchor": "`Feedback acceptance is unconfirmed (${res.status}). The request may have reached the intake and was not retried.`",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: the feedback intake answered without a stored receipt. No agent presence is rendered."
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
@@ -3594,6 +3587,35 @@
       "anchor": "ges groups={groups} row={row} nameOf={nameOf} /></div",
       "class": "presence-only-glyph/count",
       "rationale": "The roster row handed to the Messages tab, whose only status use is the face each row's Avatar draws: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "ker>\n        )}\n        {list}\n      </div>\n    );\n  }",
+      "class": "honest-text",
+      "rationale": "The work list, which ends in the footer. The footer's words are the status presence reports, with its activity; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its acti"
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "{row.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The header avatar's status, which Avatar draws as a face and a dot. No textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "{known && <StatusWord row={known} />}",
+      "class": "honest-text",
+      "rationale": "The page header's status Badge. Its word is statusLabel's, so a working agent reads Working with no progress claim; the cited assertion reads it.",
+      "proof": {
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"5.3 the header Badge says the status presence reports, Working, for an agent whose pro"
+      }
     },
     {
       "path": "implementations/web/client/src/Shell.tsx",
@@ -3651,16 +3673,9 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
-      "anchor": "\"waiting\" ? \"\u25d0\" : s === \"idle\" ? \"\u25cb\" : \"\u00b7\";\n}\n\n/** The",
+      "anchor": "\"waiting\" ? \"◐\" : s === \"idle\" ? \"○\" : \"·\";\n}\n\n/** The",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "extensions/connector-core/src/feedback.ts",
-      "kind": "derived-output",
-      "anchor": "`Feedback rejected (${res.status}${reply.error ? `: ${reply.error}` : \"\"}).`",
-      "class": "non-render/control",
-      "rationale": "HTTP response plumbing: the feedback intake's status code in a rejection message; no agent presence is rendered."
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
@@ -3670,7 +3685,7 @@
       "rationale": "Textual presence status: prefixes the NOT-LIVE preface onto the roster header and rows; the cited assertion runs the cotal_roster tool and checks that a working row names its progress as unknown.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(result.text, /bob\\b[^\\n]* \u2014 working[^\\n]* \u00b7 progress unknown/,"
+        "anchor": "assert.match(result.text, /bob\\b[^\\n]* — working[^\\n]* · progress unknown/,"
       }
     },
     {
@@ -3709,7 +3724,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/manager/smoke/cli-seat-locality.smoke.ts",
-        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working \u00b7 progress unknown/.test(ps.out), ps.out.slice(-1200));"
+        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working · progress unknown/.test(ps.out), ps.out.slice(-1200));"
       }
     },
     {
@@ -3720,7 +3735,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/manager/smoke/cli-seat-locality.smoke.ts",
-        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working \u00b7 progress unknown/.test(ps.out), ps.out.slice(-1200));"
+        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working · progress unknown/.test(ps.out), ps.out.slice(-1200));"
       }
     },
     {
@@ -3738,7 +3753,7 @@
       "rationale": "The ps mesh column joins the status word with the harness-reported condition and last-activity age; the cited output assertion keeps a working row's unknown progress explicit.",
       "proof": {
         "path": "implementations/manager/smoke/cli-seat-locality.smoke.ts",
-        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working \u00b7 progress unknown/.test(ps.out), ps.out.slice(-1200));"
+        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working · progress unknown/.test(ps.out), ps.out.slice(-1200));"
       }
     },
     {
@@ -3828,19 +3843,19 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "status-token",
-      "anchor": "   else if (ev.type === \"offline\")\n      print(c.dim(`\u2190 $",
+      "anchor": "   else if (ev.type === \"offline\")\n      print(c.dim(`← $",
       "class": "non-render/control",
       "rationale": "Comparison that routes the join feed's offline presence event to its went-offline line; the token itself is not rendered."
     },
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "`${c.dim(\"\u2022\")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${activityDetail(ev.presence)}`",
+      "anchor": "`${c.dim(\"•\")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${activityDetail(ev.presence)}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -3851,7 +3866,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -3955,23 +3970,23 @@
     {
       "path": "implementations/cli/src/console/commands.ts",
       "kind": "derived-output",
-      "anchor": "`${peerLabel(a)} \u00b7 ${a.agent} \u00b7 ${a.mode} \u00b7 ${a.status} \u00b7 mesh ${meshWord(a)} \u00b7 up ${Math.round(a.uptimeMs / 60000)}m`",
+      "anchor": "`${peerLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${meshWord(a)} · up ${Math.round(a.uptimeMs / 60000)}m`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/smoke/console-status-row.smoke.ts",
-        "anchor": "check(\"a working seat renders `mesh working \u00b7 progress unknown`\", working.includes(\"mesh working \u00b7 progress unknown\"), working);"
+        "anchor": "check(\"a working seat renders `mesh working · progress unknown`\", working.includes(\"mesh working · progress unknown\"), working);"
       }
     },
     {
       "path": "implementations/cli/src/console/ui/CommandPalette.tsx",
       "kind": "derived-output",
-      "anchor": "`${row.agent} \u00b7 ${row.status} \u00b7 mesh ${meshWord(row)}`",
+      "anchor": "`${row.agent} · ${row.status} · mesh ${meshWord(row)}`",
       "class": "honest-text",
-      "rationale": "Palette managed-seat suggestion for status and attach: the mesh word goes through meshWord, the helper :status uses, so a working seat reads working \u00b7 progress unknown.",
+      "rationale": "Palette managed-seat suggestion for status and attach: the mesh word goes through meshWord, the helper :status uses, so a working seat reads working · progress unknown.",
       "proof": {
         "path": "implementations/cli/smoke/console-palette.smoke.tsx",
-        "anchor": "assert.ok(row.includes(\"mesh working \u00b7 progress unknown\")"
+        "anchor": "assert.ok(row.includes(\"mesh working · progress unknown\")"
       }
     },
     {
@@ -3984,7 +3999,7 @@
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "(isAgent ? s.dot : \"\u2699\") + \" \"",
+      "anchor": "(isAgent ? s.dot : \"⚙\") + \" \"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -4019,7 +4034,7 @@
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "`\u2713 running in the background: ${components.join(\", \")} - ${status.root ? `from ${oneLine(status.root)}, stop with: ${stop}` : `stop with: ${stop}`}`",
+      "anchor": "`✓ running in the background: ${components.join(\", \")} - ${status.root ? `from ${oneLine(status.root)}, stop with: ${stop}` : `stop with: ${stop}`}`",
       "class": "non-render/control",
       "rationale": "Up result line: lists the started components, the root and the stop command; status is the local stack record, not agent presence."
     },
@@ -4031,7 +4046,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -4042,7 +4057,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(`${mark(\"\u25cf\")}working \u00b7 progress unknown`);"
+        "anchor": "return c.green(`${mark(\"●\")}working · progress unknown`);"
       }
     },
     {
@@ -4160,7 +4175,7 @@
     {
       "path": "implementations/cli/src/commands/who.ts",
       "kind": "derived-output",
-      "anchor": "`${row.status === \"working\" ? \"working \u00b7 progress unknown\" : row.status}${facts.condition}`",
+      "anchor": "`${row.status === \"working\" ? \"working · progress unknown\" : row.status}${facts.condition}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -4280,7 +4295,7 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": "of date`} \u00b7 ${remedy}`, \"waiting\");\n}\n\n/** The nats-serve",
+      "anchor": "of date`} · ${remedy}`, \"waiting\");\n}\n\n/** The nats-serve",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -4301,7 +4316,7 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": "lected.personas.root}`, \"waiting\")]);\n      rows.push([\"\u2192",
+      "anchor": "lected.personas.root}`, \"waiting\")]);\n      rows.push([\"→",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -4392,9 +4407,9 @@
     {
       "path": "implementations/cli/src/chat/controller.ts",
       "kind": "derived-output",
-      "anchor": "`${oneLine(personLabel(r, shared))} \u00b7 ${r.sessionKind === \"chat\" ? \"human session\" : oneLine(r.kind)}${r.role ? ` \u00b7 ${oneLine(r.role)}` : \"\"} \u00b7 ${r.status === \"working\" ? \"working \u00b7 progress unknown\" : r.status}${r.activity ? ` \u00b7 ${oneLine(r.activity)}` : \"\"}`",
+      "anchor": "`${oneLine(personLabel(r, shared))} · ${r.sessionKind === \"chat\" ? \"human session\" : oneLine(r.kind)}${r.role ? ` · ${oneLine(r.role)}` : \"\"} · ${r.status === \"working\" ? \"working · progress unknown\" : r.status}${r.activity ? ` · ${oneLine(r.activity)}` : \"\"}`",
       "class": "honest-text",
-      "rationale": "Chat /who roster line: a working peer reads \"working \u00b7 progress unknown\"; the cited output assertion checks the rendered line.",
+      "rationale": "Chat /who roster line: a working peer reads \"working · progress unknown\"; the cited output assertion checks the rendered line.",
       "proof": {
         "path": "implementations/cli/smoke/chat-pure.smoke.ts",
         "anchor": "check(\"/who names a working peer's progress as unknown\""
@@ -4473,9 +4488,9 @@
     {
       "path": "implementations/cli/src/chat/picker.ts",
       "kind": "derived-output",
-      "anchor": "`${row.sessionKind === \"chat\" ? \"human session\" : oneLine(row.kind)}${row.role ? ` \u00b7 ${oneLine(row.role)}` : \"\"} \u00b7 ${row.status === \"working\" ? \"working \u00b7 progress unknown\" : row.status}`",
+      "anchor": "`${row.sessionKind === \"chat\" ? \"human session\" : oneLine(row.kind)}${row.role ? ` · ${oneLine(row.role)}` : \"\"} · ${row.status === \"working\" ? \"working · progress unknown\" : row.status}`",
       "class": "honest-text",
-      "rationale": "Chat recipient picker detail: a working peer reads \"working \u00b7 progress unknown\"; the cited output assertion checks the rendered detail.",
+      "rationale": "Chat recipient picker detail: a working peer reads \"working · progress unknown\"; the cited output assertion checks the rendered detail.",
       "proof": {
         "path": "implementations/cli/smoke/chat-pure.smoke.ts",
         "anchor": "check(\"the picker names a working peer's progress as unknown\""
@@ -4925,7 +4940,7 @@
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "derived-output",
-      "anchor": "`${item.name} \u00b7 ${item.status}`",
+      "anchor": "`${item.name} · ${item.status}`",
       "class": "non-render/control",
       "rationale": "Attach picker label: the agent name with the manager-reported process state (row.status), not mesh presence or work progress."
     },
@@ -4981,21 +4996,21 @@
     {
       "path": "implementations/cli/src/commands/completion.ts",
       "kind": "status-token",
-      "anchor": "ned integration`, tone: \"waiting\", mark: \"\u25cf\" };\n  if (she",
+      "anchor": "ned integration`, tone: \"waiting\", mark: \"●\" };\n  if (she",
       "class": "non-render/control",
       "rationale": "Completion integration cell: \"waiting\" is the color tone for a modified or unreadable integration, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/completion.ts",
       "kind": "status-token",
-      "anchor": "needs migration\", tone: \"waiting\", mark: \"\u25cf\" };\n  if (she",
+      "anchor": "needs migration\", tone: \"waiting\", mark: \"●\" };\n  if (she",
       "class": "non-render/control",
       "rationale": "Completion integration cell: \"waiting\" is the color tone for legacy wiring that needs migration, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/completion.ts",
       "kind": "status-token",
-      "anchor": " not configured\", tone: \"waiting\", mark: \"\u25cf\" };\n  if (she",
+      "anchor": " not configured\", tone: \"waiting\", mark: \"●\" };\n  if (she",
       "class": "non-render/control",
       "rationale": "Completion integration cell: \"waiting\" is the color tone for a script whose startup is not configured, not any peer's presence."
     },
@@ -5485,7 +5500,7 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": "t: \"unreachable\", tone: \"waiting\", mark: \"\u25cf\" };\n  return ",
+      "anchor": "t: \"unreachable\", tone: \"waiting\", mark: \"●\" };\n  return ",
       "class": "non-render/control",
       "rationale": "Space list check cell: \"waiting\" is the color tone for an unreachable broker, not any peer's presence."
     },
@@ -5870,9 +5885,9 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "printLegacyReport(report, target.space)",
+      "anchor": "printLegacyReport(report, target.space, remote ? `cotal manager stop --space ${target.space}` : `cotal down --space ${target.space}`)",
       "class": "non-render/control",
-      "rationale": "Update legacy report: prints the legacy manager inventory of the space; it reports install state, not any peer's presence."
+      "rationale": "Update legacy report: prints the legacy manager inventory of the space and the command that stops it. It reports install state, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
@@ -6140,7 +6155,7 @@
     {
       "path": "implementations/cli/src/watch-view.tsx",
       "kind": "derived-output",
-      "anchor": "`cotal watch \u00b7 ${snapshot.status.space}`",
+      "anchor": "`cotal watch · ${snapshot.status.space}`",
       "class": "non-render/control",
       "rationale": "Watch title: the space name read from the observer's own status record; no peer presence or progress is shown."
     },
@@ -6375,16 +6390,23 @@
     {
       "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",
-      "anchor": "`sign in again with \\`cotal login --idp ${idp}\\`, or ${SAVE_NAME}`",
+      "anchor": "`your sign-in at ${idp}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",
-      "anchor": "`your sign-in at ${idp}`",
+      "anchor": "`sign in again with \\`cotal login --idp ${idp}\\``",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "The sign-in remedy for a chat name that cannot be reached: the command to sign in again. It renders no agent presence."
+    },
+    {
+      "path": "packages/workspace/src/chat/name.ts",
+      "kind": "derived-output",
+      "anchor": "`${signIn}, ${remedy}, or ${SAVE_NAME}`",
+      "class": "non-render/control",
+      "rationale": "The sign-in remedy joined with the recorded remedy and the save command. It tells the operator how to sign in and renders no agent presence."
     },
     {
       "path": "implementations/cli/src/commands/config.ts",
@@ -6501,7 +6523,7 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": "rsion}`).join(\" \u00b7 \")}`, \"waiting\") : text;\n}\n\n/**\n * What",
+      "anchor": "rsion}`).join(\" · \")}`, \"waiting\") : text;\n}\n\n/**\n * What",
       "class": "non-render/control",
       "rationale": "Status extensions row: \"waiting\" is the color tone for an extension version skew, not any peer's presence."
     },
@@ -6653,6 +6675,13 @@
       "rationale": "Spawn partial remedy: names the ps command for the original lifecycle in a code span; no peer presence is rendered."
     },
     {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "`${result.name} joined, but ${startupNotice}`",
+      "class": "non-render/control",
+      "rationale": "The managed launch's startup notice, composed into the warning for the agent that joined. It reports launch state, not a peer's presence."
+    },
+    {
       "path": "implementations/cli/src/commands/up.ts",
       "kind": "derived-output",
       "anchor": "reserved.add(key)",
@@ -6774,12 +6803,12 @@
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "{(pr) => (\n            <box flexShrink={0} marginBottom={1}>\n              <Show when={pr().status === \"waiting\"}>\n                <text fg={theme.text.feedback.warning.base}>{`\u25d0 ${pr().card.name} is waiting`}</text>\n                <text fg={theme.text.base}>{pr().activity ? `\u201c${pr().activity}\u201d` : \"It reported no question.\"}</text>\n              </Show>\n              <Show when={layout().kind === \"two\" && !composing()}>\n                <For each={overview(pr(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.muted} />}</For>\n              </Show>\n            </box>\n          )}",
+      "anchor": "{(pr) => (\n            <box flexShrink={0} marginBottom={1}>\n              <Show when={pr().status === \"waiting\"}>\n                <text fg={theme.text.feedback.warning.base}>{`◐ ${pr().card.name} is waiting`}</text>\n                <text fg={theme.text.base}>{pr().activity ? `“${pr().activity}”` : \"It reported no question.\"}</text>\n              </Show>\n              <Show when={layout().kind === \"two\" && !composing()}>\n                <For each={overview(pr(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.muted} />}</For>\n              </Show>\n            </box>\n          )}",
       "class": "honest-text",
       "rationale": "App peer header: a waiting agent's own question, then the overview fields whose status names working progress as unknown.",
       "proof": {
         "path": "implementations/tui/src/screen.ts",
-        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" \u00b7 progress unknown\" : \"\"}` },"
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
       }
     },
     {
@@ -6869,7 +6898,7 @@
     {
       "path": "implementations/tui/src/screen.ts",
       "kind": "status-token",
-      "anchor": "ing: { mark: \"\u25cf\", word: \"working\" },\n  waiting: { mark: \"",
+      "anchor": "ing: { mark: \"●\", word: \"working\" },\n  waiting: { mark: \"",
       "class": "non-render/control",
       "rationale": "App status table: the glyph and word lookup definition; the overview renders it with the progress qualifier."
     },
@@ -6890,19 +6919,19 @@
     {
       "path": "implementations/tui/src/screen.ts",
       "kind": "status-token",
-      "anchor": "ine: { mark: \"\u2a2f\", word: \"offline\" },\n} as const\n\nexport f",
+      "anchor": "ine: { mark: \"⨯\", word: \"offline\" },\n} as const\n\nexport f",
       "class": "non-render/control",
       "rationale": "App status table: the glyph and word lookup definition; the overview renders it with the progress qualifier."
     },
     {
       "path": "implementations/tui/src/screen.ts",
       "kind": "derived-output",
-      "anchor": "`${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" \u00b7 progress unknown\" : \"\"}`",
+      "anchor": "`${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}`",
       "class": "honest-text",
       "rationale": "App inspector status: the overview's status field names a working agent's progress as unknown.",
       "proof": {
         "path": "implementations/tui/src/screen.ts",
-        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" \u00b7 progress unknown\" : \"\"}` },"
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
       }
     },
     {
@@ -6913,7 +6942,7 @@
       "rationale": "App inspector status: the overview's status field names a working agent's progress as unknown.",
       "proof": {
         "path": "implementations/tui/src/screen.ts",
-        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" \u00b7 progress unknown\" : \"\"}` },"
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
       }
     },
     {
@@ -6924,13 +6953,13 @@
       "rationale": "App inspector status: the overview's status field names a working agent's progress as unknown.",
       "proof": {
         "path": "implementations/tui/src/screen.ts",
-        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" \u00b7 progress unknown\" : \"\"}` },"
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
       }
     },
     {
       "path": "implementations/tui/src/screen.ts",
       "kind": "status-token",
-      "anchor": "us].word}${p.status === \"working\" ? \" \u00b7 progress unknown\"",
+      "anchor": "us].word}${p.status === \"working\" ? \" · progress unknown\"",
       "class": "non-render/control",
       "rationale": "App overview status: the working check that adds the unknown-progress qualifier; routing only."
     },
@@ -7026,6 +7055,13 @@
       "rationale": "App input box: hands the open space, its mesh and the session to the composer; no status word is rendered."
     },
     {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "derived-output",
+      "anchor": "conversationFeed(m, { kind: \"channel\" }, t.own(), FEED_ROWS)",
+      "class": "non-render/control",
+      "rationale": "Feed shaping: the channel transcript the reply cards are gathered from. It selects messages and renders no presence status."
+    },
+    {
       "path": "implementations/tui/src/composer.tsx",
       "kind": "status-token",
       "anchor": "   if (peer?.status === \"waiting\" && r.kind === \"peer\" &&",
@@ -7040,7 +7076,7 @@
       "rationale": "App input box line: names the waiting agent the message answers; it makes no progress claim, and the agent's status shows only in the overview.",
       "proof": {
         "path": "implementations/tui/src/screen.ts",
-        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" \u00b7 progress unknown\" : \"\"}` },"
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
       }
     },
     {
@@ -7079,7 +7115,7 @@
       "rationale": "App input box line: where the message goes, and for a waiting agent `answering <name>`; it makes no progress claim, and the agent's status shows only in the overview.",
       "proof": {
         "path": "implementations/tui/src/screen.ts",
-        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" \u00b7 progress unknown\" : \"\"}` },"
+        "anchor": "{ label: \"status\", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === \"working\" ? \" · progress unknown\" : \"\"}` },"
       }
     },
     {

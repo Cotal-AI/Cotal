@@ -363,7 +363,9 @@ for (const entry of manifest.entries) {
     const proofBody = readFileSync(join(root, entry.proof!.path), "utf8");
     const proofCount = proofBody.split(entry.proof!.anchor).length - 1;
     assert.equal(proofCount, 1, `honest-text proof anchor must exist exactly once in ${entry.proof!.path} but occurs ${proofCount} time(s): ${entry.proof!.anchor}`);
-    if (entry.proof!.path.includes("/smoke/")) assert.ok(/assert|check|ok\(/.test(entry.proof!.anchor), `smoke proof is not an output assertion: ${entry.proof!.path}: ${entry.proof!.anchor}`);
+    // `same(name, got, want)` is the web suites' equality assertion: it calls `ok` with the two
+    // values compared. A proof may cite that call, not only `ok(`, `assert` or `check`.
+    if (entry.proof!.path.includes("/smoke/")) assert.ok(/assert|check|ok\(|same\(/.test(entry.proof!.anchor), `smoke proof is not an output assertion: ${entry.proof!.path}: ${entry.proof!.anchor}`);
     else assert.equal(proofAnchors.get(entry.proof!.path), entry.proof!.anchor, `honest-text source proof is not a checked honest renderer: ${entry.proof!.path}: ${entry.proof!.anchor}`);
   } else assert.equal(entry.proof, undefined, `${entry.class} entry must not carry honest-text proof: ${entry.path}: ${entry.anchor}`);
 }
