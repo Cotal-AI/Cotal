@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync, type Stats } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { parse as parseYaml } from "yaml";
@@ -326,12 +326,24 @@ export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget
   };
 }
 
-/** A `cotal.yaml` in `dir` that declares a mesh and a space, or undefined when there is none, it
- *  cannot be read, or it does not. Only `kind` and `space` are read; the file is not launched. */
+/** A regular `cotal.yaml` in `dir` that declares a mesh and a space, or undefined when there is
+ *  none, it is not a regular file, it is larger than a team file needs to be, it cannot be read,
+ *  or it does not. Only `kind` and `space` are read, and only the bytes the file had when it was
+ *  found; the file is not launched. A pipe, device, or other non-file is left unread so discovery
+ *  cannot block on it. */
 function meshManifestAt(dir: string): { path: string; space: string } | undefined {
   const path = join(dir, "cotal.yaml");
   let text: string;
-  try { text = readFileSync(path, "utf8"); } catch { return undefined; }
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.size > 1024 * 1024) return undefined;
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(stat.size);
+      const n = readSync(fd, buf, 0, stat.size, 0);
+      text = buf.subarray(0, n).toString("utf8");
+    } finally { closeSync(fd); }
+  } catch { return undefined; }
   let doc: unknown;
   try { doc = parseYaml(text); } catch { return undefined; }
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return undefined;
@@ -339,6 +351,16 @@ function meshManifestAt(dir: string): { path: string; space: string } | undefine
   const space = record.space;
   if (record.kind !== "Mesh" || typeof space !== "string" || !space.trim() || space !== space.trim()) return undefined;
   return { path, space };
+}
+
+/** True when this root names no space the team file should yield to: no `.cotal` at all, an empty
+ *  one, or one whose records name nothing. A project that names a space, or whose records cannot be
+ *  read, is not this. */
+export function rootHidesNoManifest(root: string): boolean {
+  if (!isGenuineSpace(root) || rootNamesNoSpace(root)) return true;
+  let entries: string[];
+  try { entries = readdirSync(join(root, ".cotal")); } catch { return false; }
+  return entries.length === 0;
 }
 
 /** The team file beside the command, or in the project root the command resolved. A fresh clone has
@@ -1046,10 +1068,11 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   }
 
   const root = findCotalRoot(cwd);
-  // A team file in this directory is this folder's file unless a project above it contains the
-  // directory. The file is read before that project is inherited.
+  // A team file in this directory is this folder's file unless a project that names a space
+  // contains the directory. An empty `.cotal` names nothing, so it does not hide the file. The file
+  // is read before that project is inherited.
   const beside = nearbyMeshManifest(cwd);
-  if (beside && !isGenuineSpace(root))
+  if (beside && rootHidesNoManifest(root))
     throw new MeshTargetError("no-meshes", `no space is registered or prepared here for ${cwd}`, { root: cwd, manifest: beside });
   if (isGenuineSpace(root)) {
     // The DISK is the tenant authority for this root, before any registry record: a broker whose

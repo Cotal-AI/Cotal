@@ -4,7 +4,7 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, heldSpaceNote, isGenuineSpace, loadMeshes, loadPreparedSpaces, localeIsUtf8, nearbyMeshManifest, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, paintFor, renderReport, resolvePreference, terminalWidth, upCommand, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, heldSpaceNote, isGenuineSpace, loadMeshes, loadPreparedSpaces, localeIsUtf8, nearbyMeshManifest, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, paintFor, renderReport, resolvePreference, rootHidesNoManifest, terminalWidth, upCommand, wrapWords, type Section } from "@cotal-ai/workspace";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
@@ -220,7 +220,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
       if (prepared) start = upAt(prepared.root, space);
       if (held && held.space !== space) folderHeld = heldSpaceNote(held);
     } else anySpace = loadMeshes().length > 0 || loadPreparedSpaces().length > 0;
-    if (!space && !isGenuineSpace(root)) manifest = nearbyMeshManifest(process.cwd());
+    if (!space && rootHidesNoManifest(root)) manifest = nearbyMeshManifest(process.cwd());
   } catch {
     unreadable = true;
   }
@@ -243,14 +243,14 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     ...(start ? [] : [["spawn", "cotal spawn", "Open your default agent"] as [string, string, string]]),
     ["setup", "cotal setup", "Review setup and defaults"],
     ["use", "cotal use", "Choose another space"],
-  ] : anySpace ? [
-    ["use", "cotal use <name>", "Choose the space commands use"],
-    ["space", "cotal space", "List the spaces on this machine"],
   ] : manifest ? [
     ["team", `cotal team check ${shellWord(manifest.path)}`, `Check the team file, which declares ${shellWord(manifest.space)}`],
     ["space", `cotal space create ${shellWord(manifest.space)}`, "Prepare the space that file declares"],
     ["team", `cotal team boot ${shellWord(manifest.path)}`, "Boot that team"],
     ["up", `cotal up -f ${shellWord(manifest.path)}`, "Start the space from that file"],
+  ] : anySpace ? [
+    ["use", "cotal use <name>", "Choose the space commands use"],
+    ["space", "cotal space", "List the spaces on this machine"],
   ] : [["setup", "cotal setup", "Choose your application and prepare a space"]]));
   sections.push(actions("Everyday", [
     ["ps", "cotal ps", "List agents"],
