@@ -531,7 +531,10 @@ const SEAMS: Seam[] = [
   // it probes and a copy that the despawn evicts, and bin/smoke/run-host-live connects the starter
   // issued again with a command it gained after admission. All dial the plaintext loopback broker
   // their suite starts and state `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 390, untypecheckedSites: 307 },
+  // 390/307 -> 400/314: main landed ten calls without booking them: auth/smoke/registry-host two,
+  // cli/smoke/app-identity-live and core/smoke/endpoint-family-scan one each,
+  // runtime/smoke/run-command three, and manager/src/manager.ts three. All ten state `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 400, untypecheckedSites: 314 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
