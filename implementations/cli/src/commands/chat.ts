@@ -97,12 +97,14 @@ export function cliWords(args: Pick<ParsedArgs, "raw" | "positionalIndices">): C
 }
 
 /** The exit code of a session that ended by leaving, end of input, expiry or loss. Only a confirmed
- *  close is 0. A session that ended itself because it could not continue is 5. Retirement asked
- *  for and not confirmed is 4. An unknown outcome, an unconfirmed connection close, or no close
- *  report is 3. */
+ *  close is 0. A session that ended itself because it could not continue is 5 when its connection
+ *  close is confirmed, even when the manager did not answer the retirement. Retirement asked for
+ *  and not confirmed is 4. An unknown outcome without that self-end, an unconfirmed connection
+ *  close, or no close report is 3. */
 export function closeExitCode(close: CloseReport | undefined): number {
-  if (!close || close.retirement === "unknown" || close.connectionClosed !== "confirmed") return 3;
+  if (!close || close.connectionClosed !== "confirmed") return 3;
   if (close.lost) return 5;
+  if (close.retirement === "unknown") return 3;
   return close.retirement === "requested" ? 4 : 0;
 }
 
