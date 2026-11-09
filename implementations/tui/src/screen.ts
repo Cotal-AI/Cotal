@@ -86,9 +86,13 @@ export function conversationRecipient(open: Open, mesh: Mesh): Recipient | undef
  *  letter case. */
 export const isYou = (you: You, who: FeedEntry["from"]) => you.principals.has(who.id) || who.name.toLowerCase() === you.name
 
-/** A message for the human in the inspector: a reply to one they sent, or one that mentions them.
- *  `open` is the conversation it opens: its channel, its sender's conversation or its role's. */
-export type Card = { kind: "reply" | "mention"; entry: FeedEntry; open: Open }
+/** What the human did with a card in this app run: opened it, or dismissed it without replying. */
+export type Mark = "seen" | "dismissed"
+
+/** A message that still needs the human's answer, for the inspector: a reply to one they sent, or one
+ *  that mentions them. `open` is the conversation it opens: its channel, its sender's conversation or
+ *  its role's. `seen` once opened in this app run. */
+export type Card = { kind: "reply" | "mention"; entry: FeedEntry; open: Open; seen: boolean }
 
 /** The conversation a card opens. A channel post with no channel or a role task with no role has
  *  none, since it would open all traffic or an empty role. */
@@ -99,15 +103,18 @@ const cardOpen = (e: FeedEntry): Open | undefined => {
 }
 
 /** The cards in `feed`, newest first. A message that both replies and mentions is one reply card. The
- *  human's own messages, the ids in `read` and a message with no conversation to open make none. */
-export function cardsFor(feed: readonly FeedEntry[], you: You, mentionsYou: (e: FeedEntry) => boolean, read: ReadonlySet<string>): Card[] {
-  const sent = new Set(feed.filter((e) => isYou(you, e.from)).map((e) => e.id))
+ *  human's own messages, a message one of them replies to, a dismissed one and a message with no
+ *  conversation to open make none. */
+export function cardsFor(feed: readonly FeedEntry[], you: You, mentionsYou: (e: FeedEntry) => boolean, marks: ReadonlyMap<string, Mark>): Card[] {
+  const own = feed.filter((e) => isYou(you, e.from))
+  const sent = new Set(own.map((e) => e.id))
+  const answered = new Set(own.map((e) => e.replyTo))
   const cards: Card[] = []
   for (const e of feed) {
-    if (e.events || read.has(e.id) || isYou(you, e.from)) continue
+    if (e.events || isYou(you, e.from) || answered.has(e.id) || marks.get(e.id) === "dismissed") continue
     const kind = e.replyTo !== undefined && sent.has(e.replyTo) ? "reply" : mentionsYou(e) ? "mention" : undefined
     const open = kind ? cardOpen(e) : undefined
-    if (kind && open) cards.push({ kind, entry: e, open })
+    if (kind && open) cards.push({ kind, entry: e, open, seen: marks.get(e.id) === "seen" })
   }
   return cards.reverse()
 }

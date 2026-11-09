@@ -12,7 +12,7 @@ import type { Catalog, Entry } from "./catalog.js"
 import type { ComposerState } from "./compose.js"
 import { layoutFor } from "./layout.js"
 import type { Conn, FeedEntry, Managed, Mesh, Presence, Session } from "./live.js"
-import { type Card, cardsFor, clock, conversationFeed, conversationKey, draftKey, entryKey, meshOf, type Open, openRowKey, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
+import { type Card, cardsFor, clock, conversationFeed, conversationKey, type DraftKey, draftKey, entryKey, type Mark, meshOf, type Open, openRowKey, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
 import type { Talk } from "./talk.js"
 
 type ComposerModule = typeof import("./composer.js")
@@ -61,8 +61,8 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const [cursor, setCursor] = createSignal<string>()
   const [open, setOpen] = createSignal<Open>({ kind: "channel", channel: DEFAULT_CHANNEL })
   const [seen, setSeen] = createSignal<Record<string, number>>({})
-  // The ids of the replies and mentions whose conversation the human has opened, for this app run.
-  const [cleared, setCleared] = createSignal<ReadonlySet<string>>(new Set())
+  // The replies and mentions the human opened or dismissed in this app run, by message id.
+  const [marks, setMarks] = createSignal<ReadonlyMap<string, Mark>>(new Map())
   const [now, setNow] = createSignal(Date.now())
   const [stop, setStop] = createSignal<Stop>({ phase: "idle" })
   const [composer, setComposer] = createSignal<ComposerState>({ drafts: {}, sending: {} })
@@ -97,14 +97,15 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const cards = createMemo((): Card[] => {
     const m = mesh()
     const t = talk()
-    return m && t ? cardsFor(conversationFeed(m, { kind: "channel" }, t.own(), FEED_ROWS), t.you(), t.mentionsYou, cleared()) : []
+    return m && t ? cardsFor(conversationFeed(m, { kind: "channel" }, t.own(), FEED_ROWS), t.you(), t.mentionsYou, marks()) : []
   })
   // What the inspector lists, in its order: the keys `w` and `1`-`9` open these at every width.
   const needs = createMemo((): Need[] => [
     ...waiting().map((p): Need => ({ key: peerKey(p.card.id), open: { kind: "peer", id: p.card.id } })),
     ...cards().map((c): Need => ({ key: `msg:${c.entry.id}`, open: c.open, quote: c.entry })),
   ])
-  // The inspector's highlight, by key. Once its item clears, the item that slides into the slot has it.
+  // The inspector's highlight, by key. Once its item leaves the list, the item that slides into the
+  // slot has it.
   const [needKey, setNeedKey] = createSignal<string>()
   const needAt = createMemo((slot: number) => {
     const at = needs().findIndex((n) => n.key === needKey())
@@ -146,11 +147,16 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     const arrivals = m.channels.find((c) => c.channel === o.channel)?.arrivals ?? 0
     if (seen()[o.channel] !== arrivals) setSeen((s) => ({ ...s, [o.channel!]: arrivals }))
   })
-  // A card clears once its conversation is open.
+  const mark = (ids: readonly string[], m: Mark) => setMarks((prev) => new Map([...prev, ...ids.map((id) => [id, m] as const)]))
+  // A reply or mention that lands in the open conversation is seen as it arrives. One the
+  // conversation already held when it opened, such as the space's history, is not.
+  let shown: { key?: DraftKey; since: number } = { since: 0 }
   createEffect(() => {
+    const key = draftHere()
+    if (key !== shown.key) shown = { key, since: Date.now() }
     const here = conversationKey(open())
-    const done = cards().filter((c) => conversationKey(c.open) === here)
-    if (done.length) setCleared((r) => new Set([...r, ...done.map((c) => c.entry.id)]))
+    const landed = cards().filter((c) => !c.seen && c.entry.ts >= shown.since && conversationKey(c.open) === here)
+    if (landed.length) mark(landed.map((c) => c.entry.id), "seen")
   })
 
   // The box has the keys while it is on screen or on its way, as a space opens or the composer
@@ -237,8 +243,9 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     else void switchTo(r.entry.space)
     toBox()
   }
-  /** Opens the inspector's item `n` and moves the highlight to it. A card quotes its message, so the
-   *  next enter in the box replies to it. Says whether there was an item to open. */
+  /** Opens the inspector's item `n` and moves the highlight to it. A card is seen from then on and
+   *  quotes its message, so the next enter in the box replies to it. Says whether there was an item
+   *  to open. */
   const openNeed = (n: number) => {
     const list = needs()
     if (list.length === 0) return void toast.show({ variant: "info", message: "Nothing needs you" })
@@ -247,21 +254,30 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     setNeedKey(item.key)
     setOpen(item.open)
     setCursor(item.open.kind === "peer" ? peerKey(item.open.id) : undefined)
-    if (item.quote) quoteRow(item.quote)
+    if (item.quote) {
+      mark([item.quote.id], "seen")
+      quoteRow(item.quote)
+    }
     return true
   }
-  // An opened card clears, so with the open conversation not listed `w` opens what slid into its slot.
+  // `w` passes the highlighted item when its conversation is the open one, and otherwise opens it,
+  // which after a reply or a dismissal is the item that slid into its slot.
   const nextNeed = () => {
-    const here = conversationKey(open())
-    const at = needs().findIndex((n) => conversationKey(n.open) === here)
-    const next = at >= 0 ? at + 1 : needAt()
-    openNeed(next < needs().length ? next : 0)
+    const list = needs()
+    const at = needAt()
+    const next = list[at] && conversationKey(list[at].open) === conversationKey(open()) ? at + 1 : at
+    openNeed(next < list.length ? next : 0)
   }
   // Enter and a click open the item and hand the keys to the box, for the reply.
   const answerNeed = (n: number) => openNeed(n) && toBox()
   const moveNeed = (by: number) => {
     const list = needs()
     if (list.length) setNeedKey(list[Math.max(0, Math.min(list.length - 1, needAt() + by))]!.key)
+  }
+  // `x` in the inspector dismisses the highlighted card without a reply. A waiting agent stays.
+  const dismissNeed = () => {
+    const item = needs()[needAt()]
+    if (keysAt() === "inspector" && item?.quote) mark([item.quote.id], "dismissed")
   }
   // What the arrows and enter do in the column that has the keys.
   const column = () => (keysAt() === "inspector" ? { move: moveNeed, open: () => answerNeed(needAt()) } : { move, open: openRow })
@@ -359,6 +375,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     { id: "cotal.open", bind: "return", keys: "enter", title: "Open the selected row, quoting a card", group: "Move", run: () => column().open() },
     { id: "cotal.next-need", bind: "w", keys: "w", title: "Open the next waiting agent, reply or mention", group: "Needs you", palette: true, run: nextNeed },
     { id: "cotal.need", bind: "1,2,3,4,5,6,7,8,9", keys: "1-9", title: "Open that item of the inspector", group: "Needs you", run: (e) => e && openNeed(Number(e.name) - 1) },
+    { id: "cotal.dismiss", bind: "x", keys: "x", title: "Dismiss the highlighted reply or mention", group: "Needs you", run: dismissNeed },
     { id: "cotal.reload", bind: "ctrl+r", keys: "ctrl+r", title: "Reread spaces", group: "System", palette: true, run: () => void read(true) },
     { id: COMMAND_PALETTE_COMMAND, bind: "ctrl+p", keys: "ctrl+p", title: "Commands", group: "System", global: true, run: () => dialog.replace(() => <Palette commands={commands} />) },
     { id: "cotal.help", bind: "?", keys: "?", title: "Keys", group: "System", palette: true, run: () => dialog.replace(() => <Help commands={commands} />, undefined, { size: "large" }) },
@@ -711,23 +728,24 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   // waiting agent is.
   const needBg = (n: number, opened: boolean) => (keysAt() === "inspector" && needAt() === n ? theme.background.raised.max : opened ? theme.background.raised.high : undefined)
 
-  /** A reply or mention: who, where, and the start of what they wrote. A click opens it, as enter
-   *  does. */
+  /** A reply or mention: who, where, and the start of what they wrote, all in the faint color once it
+   *  is seen. A click opens it, as enter does. */
   const CardRow = (p: { card: Card; n: number; width: number }) => {
     const e = () => p.card.entry
     const where = () => {
       const m = e()
       return m.delivery === "multicast" ? (m.channel ? `#${m.channel}` : "") : m.delivery === "anycast" ? `@${m.toService ?? "?"}` : "→ you"
     }
+    const dim = () => (p.card.seen ? theme.text.faint : undefined)
     return (
       <box id={`need-${p.n}`} flexShrink={0} marginBottom={1} backgroundColor={needBg(p.n, false)} onMouseDown={() => answerNeed(p.n)}>
-        <text wrapMode="none" fg={gold()}>
-          <span style={{ fg: theme.text.base }}>{`${p.n + 1} `}</span>
+        <text wrapMode="none" fg={dim() ?? gold()}>
+          <span style={{ fg: dim() ?? theme.text.base }}>{`${p.n + 1} `}</span>
           {p.card.kind === "reply" ? "↩ " : "@ "}
-          <span style={{ fg: nameFg(e().from) }}>{fit(e().from.name, p.width - 8 - where().length)}</span>
+          <span style={{ fg: dim() ?? nameFg(e().from) }}>{fit(e().from.name, p.width - 8 - where().length)}</span>
           <span style={{ fg: theme.text.faint }}>{`  ${where()}`}</span>
         </text>
-        <text fg={theme.text.muted}>{fit(e().text.split("\n")[0]!, (p.width - 4) * 2)}</text>
+        <text fg={dim() ?? theme.text.muted}>{fit(e().text.split("\n")[0]!, (p.width - 4) * 2)}</text>
       </box>
     )
   }

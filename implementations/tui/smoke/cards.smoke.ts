@@ -8,9 +8,13 @@
  * line counts them. `tab` reaches the inspector from the tree where it is on screen, the arrows and
  * `j` `k` move its highlight, and `enter` opens the item with the keys in the box: a card's message
  * is quoted, so the next `enter` sends a reply to it, and a waiting agent opens with no quote.
- * `w`, a click and a number open and quote too, each card clears once its conversation is open, a
- * mention that arrives in the open conversation never makes one, and sixteen more cards are all
- * reached by the arrows. Captures are kept under the printed directory.
+ * `w`, a click and a number open and quote too. An opened card stays listed, drawn dimmer than an
+ * unseen one, after its conversation is left. A quoted reply reaches the peer with the card's id and
+ * the card leaves the list, while a post without the quote leaves it listed. A mention that arrives
+ * in the open conversation makes a card already drawn as seen. `x` in the inspector dismisses a card
+ * and leaves a waiting agent, and sixteen more cards are all reached by the arrows. After the app
+ * quits and starts again on the same space, the replied card stays gone and the dismissed ones are
+ * back. Captures are kept under the printed directory.
  *
  * Needs Node >= 26.4, tmux and nats-server, so it is not part of smoke:ci, which runs Node 22.
  * Run: pnpm --filter @cotal-ai/tui smoke
@@ -96,39 +100,74 @@ function middle(frame: string, width: number): string[] {
   const end = l.kind === "three" ? width - l.inspector : width
   return frame.trimEnd().split("\n").slice(0, -1).map((line) => [...line].slice(l.tree, end).join("").trim())
 }
-/** The cards' first lines in the inspector, top to bottom, from the `REPLIES AND MENTIONS` header on. */
-function cardHeads(frame: string, width: number): string[] {
-  const lines = inspector(frame, width)
-  const at = lines.findIndex((l) => l.startsWith("REPLIES AND MENTIONS"))
-  return at < 0 ? [] : lines.slice(at + 1).filter((l) => /^\d+ [↩@] /.test(l))
-}
-/** The screen with each column's background, read from one capture's SGR escapes. */
-function painted(): { text: string[]; bg: string[][] } {
+/** The first lines of the cards on screen in the inspector, top to bottom. */
+const cardHeads = (frame: string, width: number) => inspector(frame, width).filter((l) => /^\d+ [↩@] /.test(l))
+/** The screen with each cell's background and foreground, read from one capture's SGR escapes. */
+function painted(): { text: string[]; bg: string[][]; fg: string[][] } {
   const text: string[] = []
   const bg: string[][] = []
+  const fg: string[][] = []
   for (const line of tmux("capture-pane", "-p", "-e", "-t", "t").split("\n")) {
-    const cols: string[] = []
-    let now = ""
+    const back: string[] = []
+    const fore: string[] = []
+    let b = ""
+    let f = ""
     for (const part of line.split(/(\x1b\[[\d;:]*m)/)) {
       const sgr = /^\x1b\[([\d;:]*)m$/.exec(part)
       if (!sgr) {
-        for (const _ of part) cols.push(now)
+        for (const _ of part) {
+          back.push(b)
+          fore.push(f)
+        }
         continue
       }
       const p = sgr[1]!.split(";").map(Number)
       for (let k = 0; k < p.length; k++) {
-        if (p[k] === 0 || p[k] === 49) now = ""
+        if (p[k] === 0) b = f = ""
+        else if (p[k] === 49) b = ""
+        else if (p[k] === 39) f = ""
         else if (p[k] === 38 || p[k] === 48) {
           const n = p[k + 1] === 2 ? 4 : 2
-          if (p[k] === 48) now = p.slice(k + 1, k + 1 + n).join(";")
+          const color = p.slice(k + 1, k + 1 + n).join(";")
+          if (p[k] === 48) b = color
+          else f = color
           k += n
         }
       }
     }
     text.push(line.replace(/\x1b\[[\d;:]*m/g, ""))
-    bg.push(cols)
+    bg.push(back)
+    fg.push(fore)
   }
-  return { text, bg }
+  return { text, bg, fg }
+}
+const luminance = (color: string) => {
+  const [r, g, b] = color.split(";").slice(1).map((v) => {
+    const c = Number(v) / 255
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!
+}
+const contrast = (a: string, b: string) => {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+  return (hi! + 0.05) / (lo! + 0.05)
+}
+/** How strongly the inspector draws the sender's name on the card whose first line matches `head`:
+ *  its color's contrast with the background. A dimmer card scores lower; no such card is NaN. */
+function strength(width: number, head: RegExp): number {
+  const l = layoutFor(width)
+  if (l.kind !== "three") return NaN
+  const from = width - l.inspector
+  const s = painted()
+  for (let y = 0; y < s.text.length; y++) {
+    const cells = [...s.text[y]!].slice(from).join("")
+    const line = cells.trim()
+    const lead = /^\d+ [↩@] /.exec(line)
+    if (!lead || !head.test(line)) continue
+    const x = from + cells.indexOf(line) + lead[0].length
+    return contrast(s.fg[y]![x]!, s.bg[y]![x]!)
+  }
+  return NaN
 }
 /** The background of the tree row showing `name`, which is the tree's highlight while it has the keys. */
 function treeRowBg(name: string, width: number): string {
@@ -239,7 +278,7 @@ try {
     const theirs = await planner.ep.multicast(`planner's own note (${size})`, { channel: "general" })
     await openRow("all traffic")
 
-    await planner.ep.multicast(`on it (${size})`, { channel: "general", replyTo: mine.id })
+    const onIt = await planner.ep.multicast(`on it (${size})`, { channel: "general", replyTo: mine.id })
     await reviewer.ep.multicast(`@${me} can you check the mockup (${size})`, { channel: "design", mentions: [me] })
     const dmReply = await reviewer.ep.unicast(mine.from.id, `notes look right (${size})`, { replyTo: mine.id })
     await reviewer.ep.multicast(`@someone-else unrelated (${size})`, { channel: "general", mentions: ["someone-else"] })
@@ -262,7 +301,6 @@ try {
       check(`${size}: with no inspector, one line counts who waits, the replies and the mentions`, summaryOf(cards, width) === "1 needs you · 2 replies · 1 mention" && !cards.includes("REPLIES AND MENTIONS"), cards)
     }
     check(`${size}: a mention of someone else and a reply to a peer's own message make no card`, three ? cardHeads(cards, width).length === 3 : summaryOf(cards, width).endsWith("2 replies · 1 mention"), cards)
-    const cleared = (f: string) => (three ? cardHeads(f, width).length === 2 && /^2 @ reviewer/.test(cardHeads(f, width)[0]!) : summaryOf(f, width) === "1 needs you · 1 reply · 1 mention")
     /** Types `text` in the box and checks it shows there, then deletes it: the box has the keys. */
     const boxHasKeys = async () => {
       const probe = `probe-${width}`
@@ -272,12 +310,20 @@ try {
       await waitFor((f) => !f.includes(probe), "the probe deleted", 3000).catch(() => {})
       return middle(typed, width).includes(probe)
     }
+    /** Types `text` in the box, which has the keys, and sends it. */
+    const send = (text: string) => {
+      keys("-l", text)
+      keys("Enter")
+    }
+    let keysBg = ""
+    /** The first line of the inspector item that has the keys, once it starts with `head`. */
+    const highlight = (head: string, what: string) => waitFor(() => (lit(width, keysBg)[0] ?? "").startsWith(head), what, 3000).then(() => lit(width, keysBg)[0]!).catch(() => lit(width, keysBg)[0] ?? "(none)")
+    // The unseen mention's strength, which every seen card from reviewer is measured against.
+    let unseen = NaN
 
     if (three) {
       await toTree()
-      const keysBg = treeRowBg("all traffic", width)
-      /** The first line of the inspector item that has the keys, once it starts with `head`. */
-      const highlight = (head: string, what: string) => waitFor(() => (lit(width, keysBg)[0] ?? "").startsWith(head), what, 3000).then(() => lit(width, keysBg)[0]!).catch(() => lit(width, keysBg)[0] ?? "(none)")
+      keysBg = treeRowBg("all traffic", width)
       keys("Tab")
       const first = await highlight("1 ◐ coder-2", "tab to move the keys to the inspector")
       save(dir, "02-inspector-focused")
@@ -305,8 +351,7 @@ try {
       const agent = await waitFor(has("◐ coder-2 is waiting"), "enter to open the waiting agent", 5000).catch(() => capture())
       check(`${size}: enter on the waiting agent opens it with no quote`, agent.includes("◐ coder-2 is waiting") && quoteLine(agent, width) === "", agent)
       const approve = `approved (${size})`
-      keys("-l", approve)
-      keys("Enter")
+      send(approve)
       const approved = await until(() => coder.got.find((m) => textOf(m) === approve), "the answer at coder-2", 5000).catch(() => undefined)
       check(`${size}: after enter on the waiting agent the box has the keys, and its enter answers the agent with no reply id`, approved !== undefined && approved.replyTo === undefined, JSON.stringify(approved))
 
@@ -317,27 +362,39 @@ try {
       keys("Down")
       await highlight("2 ↩ reviewer", "down to the DM reply")
       keys("Enter")
-      const dm = await waitFor((f) => titled("reviewer")(f) && quoteLine(f, width).startsWith("↳ reviewer: “notes look right") && cleared(f), "enter to open and quote the DM reply", 5000).catch(() => capture())
-      save(dir, "04-dm-reply-quoted")
-      check(`${size}: enter on the DM reply opens reviewer's conversation, quotes the message under the box, and the card clears`, titled("reviewer")(dm) && middle(dm, width).includes(`┃ notes look right (${size})`) && quoteLine(dm, width).startsWith("↳ reviewer: “notes look right") && cleared(dm), dm)
+      const dm = await waitFor((f) => titled("reviewer")(f) && quoteLine(f, width).startsWith("↳ reviewer: “notes look right"), "enter to open and quote the DM reply", 5000).catch(() => capture())
+      check(`${size}: enter on the DM reply opens reviewer's conversation and quotes the message under the box`, titled("reviewer")(dm) && middle(dm, width).includes(`┃ notes look right (${size})`) && quoteLine(dm, width).startsWith("↳ reviewer: “notes look right"), dm)
+      await sleep(300)
+      const opened = capture()
+      const heads = cardHeads(opened, width)
+      unseen = strength(width, /^3 @ reviewer/)
+      const seen = strength(width, /^2 ↩ reviewer/)
+      save(dir, "04-seen-next-to-unseen")
+      check(
+        `${size}: the opened DM reply stays listed, drawn dimmer than the unseen mention from the same sender`,
+        heads.length === 3 && /^2 ↩ reviewer/.test(heads[0]!) && /^3 @ reviewer/.test(heads[1]!) && seen < unseen,
+        `seen ${seen.toFixed(2)}, unseen ${unseen.toFixed(2)}\n${opened}`,
+      )
       const thanks = `thanks (${size})`
-      keys("-l", thanks)
-      keys("Enter")
+      send(thanks)
       const answered = await until(() => reviewer.got.find((m) => textOf(m) === thanks), "the reply at reviewer", 5000).catch(() => undefined)
       check(`${size}: the next enter sends a reply to that message`, answered?.replyTo === dmReply.id, JSON.stringify(answered))
+      const replied = await waitFor((f) => cardHeads(f, width).length === 2 && /^2 @ reviewer\s+#design$/.test(cardHeads(f, width)[0]!), "the replied card to leave", 5000).catch(() => capture())
+      save(dir, "05-after-reply")
+      check(`${size}: once the reply is in the feed the DM reply's card leaves the list`, cardHeads(replied, width).length === 2 && /^2 @ reviewer\s+#design$/.test(cardHeads(replied, width)[0]!) && replied.includes("REPLIES AND MENTIONS · 2"), replied)
 
       keys("Tab")
       await sleep(150)
       keys("Tab")
       const slid = await highlight("2 @ reviewer", "the highlight on the card that slid in")
-      check(`${size}: after the opened card clears, the highlight stays in its slot, on the card that slid in`, slid.startsWith("2 @ reviewer"), slid)
+      check(`${size}: after the replied card leaves, the highlight stays in its slot, on the card that slid in`, slid.startsWith("2 @ reviewer"), slid)
       keys("Escape")
       await sleep(150)
 
       click("@ reviewer")
       const design = await waitFor((f) => titled("#design")(f) && quoteLine(f, width).startsWith(`↳ reviewer: “@${me} can you`), "a click to open and quote the mention in #design", 5000).catch(() => capture())
-      save(dir, "05-mention-opened")
-      check(`${size}: a click on the mention card opens #design, quotes the mention, and the card clears`, titled("#design")(design) && quoteLine(design, width).startsWith(`↳ reviewer: “@${me} can you`) && cardHeads(design, width).length === 1 && /^2 ↩ planner\s+#general$/.test(cardHeads(design, width)[0]!), design)
+      save(dir, "06-mention-opened")
+      check(`${size}: a click on the mention card opens #design and quotes the mention`, titled("#design")(design) && quoteLine(design, width).startsWith(`↳ reviewer: “@${me} can you`), design)
       check(`${size}: after a click on a card the box has the keys`, await boxHasKeys(), capture())
     } else {
       await toTree()
@@ -350,70 +407,180 @@ try {
       const agent = await waitFor(has("◐ coder-2 is waiting"), "w to open the waiting agent first", 5000).catch(() => capture())
       check(`${size}: w opens the waiting agent first, with no quote`, agent.includes("◐ coder-2 is waiting") && quoteLine(agent, width) === "", agent)
       keys("w")
-      const dm = await waitFor((f) => titled("reviewer")(f) && quoteLine(f, width).startsWith("↳ reviewer: “notes look right") && cleared(f), "w to open and quote the DM reply", 5000).catch(() => capture())
+      const dm = await waitFor((f) => titled("reviewer")(f) && quoteLine(f, width).startsWith("↳ reviewer: “notes look right"), "w to open and quote the DM reply", 5000).catch(() => capture())
+      await sleep(300)
       save(dir, "02-dm-reply-quoted")
-      check(`${size}: w next opens the newest card, the DM reply, quotes it, and it clears`, titled("reviewer")(dm) && quoteLine(dm, width).startsWith("↳ reviewer: “notes look right") && cleared(dm), dm)
+      check(`${size}: w next opens the newest card, the DM reply, quotes it, and it is still counted`, titled("reviewer")(dm) && quoteLine(dm, width).startsWith("↳ reviewer: “notes look right") && summaryOf(capture(), width) === "1 needs you · 2 replies · 1 mention", capture())
+      keys("Escape")
+      await sleep(150)
+      const thanks = `thanks (${size})`
+      send(thanks)
+      const answered = await until(() => reviewer.got.find((m) => textOf(m) === thanks), "the reply at reviewer", 5000).catch(() => undefined)
+      check(`${size}: enter in the box sends a reply to the quoted message`, answered?.replyTo === dmReply.id, JSON.stringify(answered))
+      const replied = await waitFor((f) => summaryOf(f, width) === "1 needs you · 1 reply · 1 mention", "the replied card to leave the count", 5000).catch(() => capture())
+      save(dir, "03-after-reply")
+      check(`${size}: once the reply is in the feed the count drops the DM reply`, summaryOf(replied, width) === "1 needs you · 1 reply · 1 mention", replied)
 
+      await toTree()
       keys("w")
       const design = await waitFor((f) => titled("#design")(f) && quoteLine(f, width).startsWith(`↳ reviewer: “@${me} can you`), "w to open and quote the mention in #design", 5000).catch(() => capture())
-      save(dir, "03-mention-opened")
-      check(`${size}: w again opens #design, quotes the mention, and the card clears`, titled("#design")(design) && quoteLine(design, width).startsWith(`↳ reviewer: “@${me} can you`) && summaryOf(design, width) === "1 needs you · 1 reply", design)
+      await sleep(300)
+      save(dir, "04-mention-opened")
+      check(`${size}: w then opens the item that slid into the replied card's slot, the mention in #design, quotes it, and it is still counted`, titled("#design")(design) && quoteLine(design, width).startsWith(`↳ reviewer: “@${me} can you`) && summaryOf(capture(), width) === "1 needs you · 1 reply · 1 mention", capture())
     }
 
     await toTree()
-    keys("2")
-    const general = await waitFor((f) => titled("#general")(f) && quoteLine(f, width).startsWith(`↳ planner: “on it (${size})`), "2 to open and quote the reply in #general", 5000).catch(() => capture())
-    await reviewer.ep.multicast(`@${me} while you are here (${size})`, { channel: "general", mentions: [me] })
-    const here = await waitFor(has(`while you are here (${size})`), "a mention in the open conversation", 5000).catch(() => capture())
+    keys("3")
+    const general = await waitFor((f) => titled("#general")(f) && quoteLine(f, width).startsWith(`↳ planner: “on it (${size})`), "3 to open and quote the reply in #general", 5000).catch(() => capture())
     await sleep(300)
-    const after = capture()
-    save(dir, "06-reply-opened")
-    check(`${size}: 2 opens the reply in #general, which shows whom it answers, and quotes it`, general.includes(`↩ ${me}`) && quoteLine(general, width).startsWith(`↳ planner: “on it (${size})`), general)
+    const left = capture()
+    save(dir, "07-reply-opened")
+    check(`${size}: 3 opens the reply in #general, which shows whom it answers, and quotes it`, general.includes(`↩ ${me}`) && quoteLine(general, width).startsWith(`↳ planner: “on it (${size})`), general)
+    const mentionLeft = strength(width, /^2 @ reviewer\s+#design$/)
     check(
-      `${size}: a mention in the open conversation makes no card, and only the waiting agent is left`,
-      here.includes(`@you`) && (three ? !after.includes("REPLIES AND MENTIONS") && after.includes("NEEDS YOU · 1") : summaryOf(after, width) === "1 needs you"),
-      after,
+      `${size}: the mention opened before stays listed after another card is opened${three ? ", drawn dimmer than when it was unseen" : ""}`,
+      three ? /^2 @ reviewer\s+#design$/.test(cardHeads(left, width)[0] ?? "") && mentionLeft < unseen : summaryOf(left, width) === "1 needs you · 1 reply · 1 mention",
+      `seen ${mentionLeft.toFixed(2)}, unseen ${unseen.toFixed(2)}\n${left}`,
     )
 
+    keys("Escape")
+    await sleep(150)
+    keys("Escape")
+    await waitFor((f) => quoteLine(f, width) === "", "esc to drop the quote", 3000).catch(() => {})
+    const plain = `plain note (${size})`
+    send(plain)
+    const plainGot = await until(() => planner.got.find((m) => textOf(m) === plain), "the plain post at planner", 5000).catch(() => undefined)
+    await sleep(500)
+    const unquoted = capture()
+    check(
+      `${size}: a post in #general without the quote carries no reply id and leaves the reply's card listed`,
+      plainGot !== undefined && plainGot.replyTo === undefined && (three ? cardHeads(unquoted, width).some((h) => /^3 ↩ planner\s+#general$/.test(h)) : summaryOf(unquoted, width) === "1 needs you · 1 reply · 1 mention"),
+      `${JSON.stringify(plainGot)}\n${unquoted}`,
+    )
+
+    await reviewer.ep.multicast(`@${me} while you are here (${size})`, { channel: "general", mentions: [me] })
+    const here = await waitFor((f) => f.includes(`while you are here (${size})`) && (three ? f.includes("REPLIES AND MENTIONS · 3") : summaryOf(f, width) === "1 needs you · 1 reply · 2 mentions"), "a card for the mention in the open conversation", 5000).catch(() => capture())
+    await sleep(300)
+    const arrived = strength(width, /^2 @ reviewer\s+#general$/)
+    save(dir, "08-mention-in-open-conversation")
+    check(
+      `${size}: a mention that arrives in the open conversation makes a card${three ? ", listed first and already drawn as seen" : ", counted"}`,
+      here.includes("@you") && (three ? /^2 @ reviewer\s+#general$/.test(cardHeads(capture(), width)[0] ?? "") && arrived < unseen : summaryOf(capture(), width) === "1 needs you · 1 reply · 2 mentions"),
+      `arrived ${arrived.toFixed(2)}, unseen ${unseen.toFixed(2)}\n${capture()}`,
+    )
+
+    await toTree()
+    keys("4")
+    await waitFor((f) => quoteLine(f, width).startsWith(`↳ planner: “on it (${size})`), "4 to quote the reply in #general again", 5000).catch(() => {})
+    keys("Escape")
+    await sleep(150)
+    const noted = `noted (${size})`
+    send(noted)
+    const notedGot = await until(() => planner.got.find((m) => textOf(m) === noted), "the quoted reply at planner", 5000).catch(() => undefined)
+    check(`${size}: the quoted reply reaches #general with the card's id`, notedGot?.replyTo === onIt.id && notedGot.channel === "general", JSON.stringify(notedGot))
+    const gone = await waitFor((f) => (three ? f.includes("REPLIES AND MENTIONS · 2") && !cardHeads(f, width).some((h) => h.includes("↩ planner")) : summaryOf(f, width) === "1 needs you · 2 mentions"), "the replied card to leave", 5000).catch(() => capture())
+    check(`${size}: once the quoted reply is in the feed the reply's card leaves the list`, three ? gone.includes("REPLIES AND MENTIONS · 2") && !cardHeads(gone, width).some((h) => h.includes("↩ planner")) : summaryOf(gone, width) === "1 needs you · 2 mentions", gone)
+
     if (three) {
+      await toTree()
+      keys("Tab")
+      keys(...times(4, "k"))
+      await highlight("1 ◐ coder-2", "the highlight on the waiting agent")
+      keys("Down")
+      await highlight("2 @ reviewer", "down to the mention in #general")
+      const before = reviewer.got.length + planner.got.length
+      keys("x")
+      const dismissed = await waitFor((f) => cardHeads(f, width).length === 1, "x to dismiss the card", 3000).catch(() => capture())
+      const slid = await highlight("2 @ reviewer", "the highlight on the card that slid in")
+      save(dir, "09-after-dismiss")
+      check(
+        `${size}: x dismisses the highlighted card, sends nothing, and the highlight moves to the card that slid in`,
+        cardHeads(dismissed, width).length === 1 && /^2 @ reviewer\s+#design$/.test(cardHeads(dismissed, width)[0]!) && slid.startsWith("2 @ reviewer") && reviewer.got.length + planner.got.length === before,
+        `${slid}\n${dismissed}`,
+      )
+      keys("x")
+      const empty = await waitFor((f) => !f.includes("REPLIES AND MENTIONS"), "x to dismiss the last card", 3000).catch(() => capture())
+      keys("x")
+      await sleep(300)
+      const kept = capture()
+      check(`${size}: x on the waiting agent does nothing`, !empty.includes("REPLIES AND MENTIONS") && kept.includes("NEEDS YOU · 1") && inspector(kept, width).some((l) => l.startsWith("1 ◐ coder-2")), kept)
+      keys("Escape")
+      await sleep(150)
+
       const many = 16
       for (let k = 1; k <= many; k++) await reviewer.ep.multicast(`@${me} ping ${k}`, { channel: "design", mentions: [me] })
-      await waitFor(has(`REPLIES AND MENTIONS · ${many}`), `${many} cards`)
-      const keysBg = await (async () => {
-        await toTree()
-        return treeRowBg("# general", width)
-      })()
+      await waitFor(has(`REPLIES AND MENTIONS · ${many}`), `${many} cards`).catch(() => {})
+      await toTree()
+      keysBg = treeRowBg("# general", width)
       keys("Tab")
-      const seen: string[] = []
+      const seenRows: string[] = []
       for (let n = 1; n <= many + 1; n++) {
         if (n > 1) keys("Down")
         const head = n === 1 ? "1 ◐ coder-2" : `${n} @ reviewer`
-        seen.push(await waitFor(() => (lit(width, keysBg)[0] ?? "").startsWith(head), `the highlight on ${head}`, 3000).then(() => lit(width, keysBg)[0]!).catch(() => `(missing ${head})`))
+        seenRows.push(await waitFor(() => (lit(width, keysBg)[0] ?? "").startsWith(head), `the highlight on ${head}`, 3000).then(() => lit(width, keysBg)[0]!).catch(() => `(missing ${head})`))
       }
       const bottom = capture()
-      save(dir, "07-many-cards-scrolled")
+      save(dir, "10-many-cards-scrolled")
       check(
         `${size}: the arrows reach all ${many + 1} items in order, the list scrolls to keep the highlight on screen, and no item hides behind a count`,
-        seen.every((l, i) => l.startsWith(i === 0 ? "1 ◐ coder-2" : `${i + 1} @ reviewer`)) && !inspector(bottom, width).some((l) => l.startsWith("1 ◐ coder-2")) && !/\+\d+ more/.test(bottom),
-        `${seen.join("\n")}\n${bottom}`,
+        seenRows.every((l, i) => l.startsWith(i === 0 ? "1 ◐ coder-2" : `${i + 1} @ reviewer`)) && !inspector(bottom, width).some((l) => l.startsWith("1 ◐ coder-2")) && !/\+\d+ more/.test(bottom),
+        `${seenRows.join("\n")}\n${bottom}`,
       )
       keys("Enter")
       const oldest = await waitFor((f) => titled("#design")(f) && quoteLine(f, width).startsWith(`↳ reviewer: “@${me} ping 1”`), "enter to open and quote the oldest card", 5000).catch(() => capture())
-      save(dir, "08-oldest-card-quoted")
+      save(dir, "11-oldest-card-quoted")
       check(`${size}: enter on the oldest card scrolls #design back to that message and quotes it`, middle(oldest, width).includes(`┃ @${me} ping 1`) && quoteLine(oldest, width).startsWith(`↳ reviewer: “@${me} ping 1”`), oldest)
       keys("Escape")
       const dropped = await waitFor((f) => quoteLine(f, width) === "", "esc to drop the quote", 3000).catch(() => capture())
       check(`${size}: esc in the box drops the quote`, quoteLine(dropped, width) === "" && titled("#design")(dropped), dropped)
+    } else {
+      await toTree()
+      keys("x")
+      await sleep(300)
+      check(`${size}: with no inspector, x in the tree dismisses nothing`, summaryOf(capture(), width) === "1 needs you · 2 mentions", capture())
     }
 
-    const back = await openRow("all traffic")
+    await openRow("all traffic")
     await sleep(300)
-    check(`${size}: opened cards stay cleared after leaving their conversations`, three ? !capture().includes("REPLIES AND MENTIONS") : summaryOf(capture(), width) === "1 needs you", back)
+    const back = capture()
+    const oldestSeen = strength(width, /^17 @ reviewer/)
+    const nextUnseen = strength(width, /^16 @ reviewer/)
+    check(
+      `${size}: an opened card stays listed after leaving its conversation${three ? ", drawn dimmer than the unseen card above it" : ""}`,
+      three ? /^17 @ reviewer\s+#design$/.test(cardHeads(back, width).at(-1) ?? "") && oldestSeen < nextUnseen : summaryOf(back, width) === "1 needs you · 2 mentions",
+      `seen ${oldestSeen.toFixed(2)}, unseen ${nextUnseen.toFixed(2)}\n${back}`,
+    )
 
     await toTree()
     keys("q")
     await waitFor(has("EXIT=0"), "q to quit with status 0")
     check(`${size}: q quits with status 0`, true)
+
+    launch(width, height, join(work, `${size}-again.err`))
+    const again = await waitFor((f) => titled("#general")(f) && f.includes(`while you are here (${size})`) && (three ? f.includes("REPLIES AND MENTIONS") : summaryOf(f, width) !== ""), "the relaunched app with the space's history").catch(() => capture())
+    await sleep(1000)
+    let relaunched = capture()
+    if (three) {
+      // The oldest cards are at the bottom of the list, so the highlight goes there to scroll it.
+      await toTree()
+      keysBg = treeRowBg("# general", width)
+      keys("Tab", ...times(20, "j"))
+      await highlight("19 @ reviewer", "the highlight on the oldest card")
+      relaunched = capture()
+    }
+    save(dir, "12-relaunched")
+    const againHeads = cardHeads(relaunched, width)
+    check(
+      `${size}: after a relaunch the replied card stays gone, and the dismissed mentions are back`,
+      titled("#general")(again) &&
+        (three
+          ? againHeads.length > 1 && /^18 @ reviewer\s+#general$/.test(againHeads.at(-2)!) && /^19 @ reviewer\s+#design$/.test(againHeads.at(-1)!) && !againHeads.some((h) => h.includes("↩"))
+          : summaryOf(relaunched, width) === "1 needs you · 2 mentions"),
+      relaunched,
+    )
+    await toTree()
+    keys("q")
+    await waitFor(has("EXIT=0"), "q to quit the relaunched app with status 0")
   }
 } finally {
   try {
