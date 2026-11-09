@@ -76,7 +76,7 @@ const fakeSeat = (name: string, kind: string): FakeSeat => {
   const listeners: Array<() => void> = [];
   const session = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: (cb: () => void) => { listeners.push(cb); return () => {}; }, write: () => {}, resize: () => {} };
   return {
-    name, kind, status: () => (exited ? "exited" : "running"), stop: () => { exited = true; }, interrupt: () => {}, attach: () => session, waitForExit: async () => {},
+    name, kind, status: () => (exited ? "exited" : "running"), stop: () => { exited = true; }, interrupt: () => {}, attach: () => session, waitForExit: async () => {}, waitForWorkExit: async () => {},
     exit: () => { exited = true; for (const l of listeners.splice(0)) l(); },
   } as unknown as FakeSeat;
 };
@@ -110,6 +110,7 @@ function managerAt(root: string, opts: { auth?: boolean }) {
   const beforeLaunch = new Map<string, () => void>();
   (mgr as unknown as { runtime: unknown }).runtime = {
     kind: "pty",
+    supportsWorkClosure: true, // Inert unit runtime; it launches no process or tool.
     spawn: (name: string, _spec: LaunchSpec) => {
       spawned.set(name, (spawned.get(name) ?? 0) + 1);
       beforeLaunch.get(name)?.();
