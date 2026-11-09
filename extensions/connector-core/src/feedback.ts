@@ -28,6 +28,15 @@ export interface FeedbackResult {
 const ok = (text: string): FeedbackResult => ({ text });
 const err = (text: string): FeedbackResult => ({ text, isError: true });
 
+/** A stored submission: the documented 202 receipt, with a non-empty id. */
+function receipt(status: number, value: unknown): { id: string; published?: boolean } | undefined {
+  if (status !== 202 || typeof value !== "object" || value === null) return undefined;
+  const body = value as { ok?: unknown; id?: unknown; published?: unknown };
+  if (body.ok !== true || typeof body.id !== "string" || body.id.length === 0) return undefined;
+  if (body.published !== undefined && typeof body.published !== "boolean") return undefined;
+  return { id: body.id, ...(typeof body.published === "boolean" ? { published: body.published } : {}) };
+}
+
 /** Submit feedback through the same keyed or public intake used by `cotal_feedback`. */
 export async function submitFeedback(
   input: FeedbackInput,
@@ -45,21 +54,32 @@ export async function submitFeedback(
       );
     body.email = options.email;
   }
+  let res: Response;
   try {
-    const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
-    const raw = await res.text();
-    let reply: { id?: string; error?: string; published?: boolean } = {};
-    if (raw)
-      try {
-        reply = JSON.parse(raw);
-      } catch {
-        reply = { error: raw };
-      }
-    if (!res.ok)
-      return err(`Feedback rejected (${res.status}${reply.error ? `: ${reply.error}` : ""}).`);
-    const note = reply.published === false ? " (stored, but the internal feedback channel publish failed)" : "";
-    return ok(`Feedback sent${reply.id ? ` (id ${reply.id})` : ""}${note}. Thanks!`);
+    // One POST, and only to the configured intake. A redirect is an unconfirmed outcome, not a second destination.
+    res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), redirect: "error" });
   } catch (e) {
-    return err(`Couldn't reach the feedback intake at ${url}: ${(e as Error).message}`);
+    return err(`Couldn't reach the feedback intake at ${url}: ${(e as Error).message} The submission was not retried.`);
   }
+  const raw = await res.text();
+  let reply: unknown = undefined;
+  if (raw)
+    try {
+      reply = JSON.parse(raw);
+    } catch {
+      reply = undefined;
+    }
+  const stored = receipt(res.status, reply);
+  if (stored) {
+    const note = stored.published === false ? " (stored, but the internal feedback channel publish failed)" : "";
+    return ok(`Feedback sent (id ${stored.id})${note}. Thanks!`);
+  }
+  const errorText =
+    typeof reply === "object" && reply !== null && typeof (reply as { error?: unknown }).error === "string"
+      ? (reply as { error: string }).error
+      : undefined;
+  if (!res.ok) return err(`Feedback rejected (${res.status}${errorText ? `: ${errorText}` : ""}).`);
+  return err(
+    `Feedback acceptance is unconfirmed (${res.status}). The request may have reached the intake and was not retried.`,
+  );
 }

@@ -283,6 +283,7 @@ Send feedback about Cotal to its developers. With a configured feedback key it g
 * **Side-effect:** sends data to an external HTTPS intake (network egress).
 * **Available:** always.
 * Keyless submissions need a contact email; never include secrets.
+* A send is confirmed only by the intake's HTTP 202 receipt (`ok`, `id`, and `published`). Any other 2xx is an unconfirmed outcome and is not retried. A redirect is not followed.
 
 | Argument      | Type                                                 | Required | Meaning                                                                                        |
 | ------------- | ---------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
