@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.150.0
+
+### Patch Changes
+
+- 6249b27: Mark a `cotal invoke` refused by the fetched input contract as `not-executed`. The refusal runs nothing, and its native outcome was absent before.
+- Updated dependencies [8e2ba65]
+  - @cotal-ai/core@0.150.0
+  - @cotal-ai/workspace@0.150.0
+
 ## 0.149.0
 
 ### Minor Changes

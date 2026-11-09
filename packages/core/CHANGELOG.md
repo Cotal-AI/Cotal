@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.150.0
+
+### Patch Changes
+
+- 8e2ba65: Report a refused service subscription once, preserving the broker error as its cause and keeping independent refusals observable.
+
 ## 0.149.0
 
 ### Patch Changes
