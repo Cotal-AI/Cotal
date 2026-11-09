@@ -489,14 +489,14 @@ export class NativeChatSession implements AdmittedChatSession {
       ep.off("warning", this.onWarning);
       this.reportOverflow();
       this.engine.clear();
-      if (!this.streamsGone) await this.observeStreams();
+      const goneNow = await absentStreams(ep, this.inputs.identity.space, this.inputs.identity.mode);
       let stopped = true;
       try { await ep.stop(); } catch { stopped = false; }
       let report: CloseReport;
       try { report = await this.inputs.retire(); }
       catch (e) { report = { retirement: "unknown", connectionClosed: "not-confirmed", message: (e as Error).message }; }
-      if (this.streamsGone && report.retirement === "unknown")
-        report = { ...report, retirement: "not-applicable", message: `${this.streamsGone}. ${report.message}` };
+      if (goneNow && report.retirement === "unknown")
+        report = { ...report, retirement: "not-applicable", message: `${goneNow.message}. ${report.message}` };
       ep.off("error", this.onError);
       if (this.lost) report = { ...report, lost: this.lost };
       this.setState("ended", this.lost);
