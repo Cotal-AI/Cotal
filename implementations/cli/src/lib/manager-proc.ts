@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, fstatSync, readFileSync, rmSync } from "node:fs";
 import { relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { daemonArgv } from "./self-exec.js";
@@ -18,6 +18,7 @@ import { c } from "../ui.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { listManagerSeatsForSpare, printLegacyManagerSpareUncertainty, printSparedAgents, type SpareSeatRow } from "./teardown-spare.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
+import { lastLoggedLine, type LogStart } from "./private-log.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -215,6 +216,7 @@ export type ManagerStartOpts = {
 
 export function startManagerDetached(
   o: ManagerStartOpts = {},
+  onLogStart?: (start: LogStart) => void,
 ): number {
   const space = o.space ?? folderSpace();
   // BEFORE ANY RECORD OR LOG IS TOUCHED. `selfArgv` refuses when this process was not started from
@@ -259,8 +261,14 @@ export function startManagerDetached(
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
-  const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
-  closeSync(fd);
+  let child: ReturnType<typeof spawn>;
+  try {
+    if (onLogStart) {
+      const info = fstatSync(fd);
+      onLogStart({ offset: info.size, dev: info.dev, ino: info.ino });
+    }
+    child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
+  } finally { closeSync(fd); }
   child.unref();
   // CANONICAL path, never a pre-upgrade one: a start that kept writing the root-scoped name would
   // keep minting the very records this change ends.
@@ -324,7 +332,7 @@ export function assertManagerRecordReplaceable(
  *  record publishes its own capability, which says nothing about the started process, so losing the
  *  record refuses. No deadline: the manager bounds its own boot waits (the delivery-admin one alone
  *  runs to a minute), so a deadline here could only misreport a slow boot. */
-async function awaitManagerUp(space: string, started: ProcessIdentityRecord | { pid: number }): Promise<void> {
+async function awaitManagerUp(space: string, started: ProcessIdentityRecord | { pid: number }, logStart?: LogStart): Promise<void> {
   const manager = `the manager started for space "${space}" (pid ${started.pid})`;
   if (!("token" in started))
     throw new Error(`cannot read the start identity of ${manager}, so its readiness cannot be told apart from another manager's. Its log is ${managerLogPath(space)}`);
@@ -336,8 +344,12 @@ async function awaitManagerUp(space: string, started: ProcessIdentityRecord | { 
       // Not published for the started process yet, or the record names another one: decided below.
     }
     const identity = assertRecordIdentity(started).kind;
-    if (identity === "gone" || identity === "mismatch")
-      throw new Error(`${manager} exited before it came up. It logged its reason to ${managerLogPath(space)}`);
+    if (identity === "gone" || identity === "mismatch") {
+      const recorded = parsePid(readPidfile(PID_PATH(space)) ?? "");
+      const reason = logStart && (recorded === undefined || recorded === started.pid)
+        ? lastLoggedLine(managerLogPath(space), logStart.offset, logStart) : undefined;
+      throw new Error(`${manager} exited before it came up.${reason ? `\n${reason}` : ""}\nIt logged its reason to ${managerLogPath(space)}`);
+    }
     if (parsePid(readPidfile(PID_PATH(space)) ?? "") !== started.pid)
       throw new Error(`${manager} lost ${PID_PATH(space)} to another process before it came up, so it is not the manager serving the space. Its log is ${managerLogPath(space)}`);
     await sleep(200);
@@ -358,8 +370,9 @@ export async function ensureManager(
   if (state === "alive") return { running: true, started: false };
   assertManagerRecordReplaceable(space, root, seams); // refuses on unknown / unattributable, reports foreign
   await seedBeforeLaunch();
-  const pid = startManagerDetached(o);
-  await awaitManagerUp(space, identityRecord(pid));
+  let logStart: LogStart | undefined;
+  const pid = startManagerDetached(o, (start) => { logStart = start; });
+  await awaitManagerUp(space, identityRecord(pid), logStart);
   return { running: true, started: true, pid };
 }
 

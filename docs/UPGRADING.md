@@ -30,10 +30,20 @@ use the same Cotal version. The answer does not report a version, so a parse fai
 which version the daemon runs. For example, delivery 0.68.0 names its responder but its filesystem
 store identity lacks the `id` required by later managers.
 
+When a manager started by the retained launcher exits during boot, `up` displays the private log
+path. If that launch's owned log ends with an error line, it also displays that line. It does not
+quote earlier errors, a replacement log or an ordinary console URL line.
+
 Restart delivery on its host through the supervisor that started it, using the manager's Cotal
 version. For a saved local delivery service, run `cotal down delivery --space <space>`, then
 `cotal up --space <space>`. Named `down` commands operate on saved services; they do not stop a legacy
-daemon represented only by a pidfile. Stop that daemon through its original supervisor.
+daemon represented only by a pidfile.
+
+For a legacy pidfile root, use the current CLI to run `cotal down` from the original folder, without
+`--space`. This stops that folder's whole stack. Then run `cotal up --space <space>`. An older CLI
+may refuse the newer connector seed generation, so do not switch back to the old executable for the
+stop. A root from before 0.111.0 also needs the [issued-store migration](#issued-authority-stores-after-01110)
+when `up` asks for it.
 
 This diagnostic does not provide a rolling upgrade or pin a running manager's worker modules to
 its loaded version. Those are separate upgrade concerns.
