@@ -185,15 +185,17 @@ Before disk reconciliation, `update` reads the selected running manager. A machi
 mesh has no running manager to observe, so that read is skipped and the command completes. The same
 holds when every recorded mesh is down and none is selected. A remote user mesh, registered with
 `cotal meshes add --mode user`, is named and skipped when no `cotal manager start` or
-`cotal supervise` process on this machine may be serving its space: its manager runs under another
-install, so there is no custody on this machine to preserve. A supervisor started without `--space`
+`cotal supervise` process that loaded this install may be serving its space. A supervisor whose
+command names another install's CLI entry is untouched by replacing this one, so it is no custody
+here, the same as a manager that runs on another machine. A node binary or a loader argument does
+not name that entry. A supervisor started without `--space`
 serves the space its `COTAL_SPACE` names, so a service unit's manager for another mesh does not count
 as this one's. When such a process runs here, that
 manager is read like a local one, and a `legacy` verdict's `Next` line names
 `cotal manager stop --space <space>` as the stop before the cold update. A `legacy` verdict still
 comes only from a manager this machine read. A stopped mesh that this machine runs, chosen with `--space` or by running
-inside its project, has no running manager either when no `cotal supervise` process on this machine
-may be serving its space and nothing listens at its recorded broker address, so the read is skipped
+inside its project, has no running manager either when no `cotal supervise` process that loaded this
+install may be serving its space and nothing listens at its recorded broker address, so the read is skipped
 there too. A controller stack that completed ordinary `cotal down` is eligible after its retained
 service records prove every process gone. Missing instance records, live or unresolved processes,
 and an unfinished down still refuse. That is the cold path past a `legacy` verdict: `cotal down`,
