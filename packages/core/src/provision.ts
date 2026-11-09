@@ -1027,8 +1027,11 @@ export async function mintCreds(
   // An issued static agent credential carries untargeted, unjournaled endpoint commands only. The
   // static lifecycle terminal has no SPEC 13.1 obligation drain, so a targeted or journaled grant
   // could leave accepted work keyed to a retired lifecycle that nothing settles. Refused before
-  // anything is signed or staged. The `spawn` and `admin` capabilities mint their own manager rows
-  // and are not endpoint capabilities, so they are unaffected.
+  // anything is signed or staged. The guard covers every issued agent mint: the managed spawn
+  // (through provisionAgent), the managed renewal and the foreground spawn. An unissued mint skips
+  // it, so a future caller that hands a static agent endpoint commands must mint it issued. The
+  // `spawn` and `admin` capabilities mint their own manager rows and are not endpoint capabilities,
+  // so they are unaffected.
   if (profile === "agent" && opts.issued) {
     const drained = opts.endpointCapabilities?.find((c) => c.target !== undefined || c.journal);
     if (drained)
