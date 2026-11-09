@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parse } from 'parse5';
+import { lexer } from 'marked';
 import { readDocument, documentationCategory } from '@cotal-ai/docs-content';
 import { assertPlainMarkdown } from './assert-plain-markdown.mjs';
 
@@ -11,7 +12,7 @@ const models = JSON.parse(read('./fixtures/models-anchors.json'));
 const legacy = { ...JSON.parse(read('./fixtures/api-reference-anchors.json')), ...configuration, ...models };
 const cli = JSON.parse(read('./fixtures/cli-fragments.json'));
 const focused = [...new Set(Object.values(cli))];
-const slugs = ['overview', 'api-reference', 'cli', 'mcp-tools', 'agent-briefing', ...focused, ...Object.keys(configuration), ...Object.keys(models)];
+const slugs = ['overview', 'api-reference', 'mesh-commands', 'cli', 'mcp-tools', 'agent-briefing', ...focused, ...Object.keys(configuration), ...Object.keys(models)];
 const attr = (node, name) => node.attrs?.find(attribute => attribute.name === name)?.value;
 const elements = (node, result = []) => {
   if (node.tagName) result.push(node);
@@ -82,4 +83,10 @@ for (const path of ['/api-reference', '/api-reference/'])
   assert(artifact('_redirects').includes(`${path} /api-reference/api-reference/ 301`), 'legacy API root keeps its original document');
 assert(artifact('_redirects').includes('/api-reference.md /api-reference/api-reference.md 301'), 'legacy HTML and Markdown resolve to the same document');
 assert(artifact('api-reference/overview/index.html').includes('href="/api-reference/overview/"'), 'API tab opens overview');
+const catalog = await readDocument(new URL('../../docs/mesh-commands.mdx', import.meta.url).pathname);
+const jsonBlocks = markdown => lexer(markdown).filter(token => token.type === 'code' && token.lang === 'json').map(token => JSON.parse(token.text));
+const sourceBlocks = jsonBlocks(catalog.markdown);
+assert(sourceBlocks.length > 0, 'mesh catalog has contract data');
+assert.deepEqual(jsonBlocks(artifact('api-reference/mesh-commands.md')), sourceBlocks, 'every declaration and schema survives Markdown export');
+console.log(`check-api-reference: mesh catalog retains ${sourceBlocks.length} JSON blocks`);
 console.log(`check-api-reference: ${slugs.length} direct MDX references, ${Object.values(legacy).flat().length} legacy fragments, native Cards, Markdown and navigation verified`);
