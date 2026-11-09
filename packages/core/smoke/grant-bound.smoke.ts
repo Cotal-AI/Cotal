@@ -146,9 +146,9 @@ console.log("issuer invariant");
   // A fake evidence store whose stage records the profile and stops the mint, so no broker is needed.
   const STAGED = "staged: the issuer reached the evidence store";
   const auth = await createSpaceAuth(space);
-  const issueSourceFree = async (profile: "agent" | "control-caller-privileged" | "manager-caller", extra: Omit<MintOpts, "lifecycleUid" | "issued" | "issuance" | "expiresAt"> = {}) => {
+  const issueSourceFree = async (profile: "agent" | "control-caller-privileged" | "manager-caller", extra: Omit<MintOpts, "lifecycleUid" | "issued" | "issuance" | "expiresAt"> = {}, mode: "issue" | "renew" = "issue") => {
     const now = Math.floor(Date.now() / 1000);
-    const seam = { mode: "issue", sources: [], accepted: {}, store: { stage: async () => { throw new Error(STAGED); } } } as unknown as IssuanceSeam;
+    const seam = { mode, sources: [], accepted: {}, store: { stage: async () => { throw new Error(STAGED); } } } as unknown as IssuanceSeam;
     try {
       await mintCreds(auth, newIdentity(), profile, { ...extra, lifecycleUid: mintLifecycleUid(), expiresAt: now + 300,
         issued: { generation: mintGeneration(now + 3600), acceptedToken: mintAcceptedToken() }, issuance: seam });
@@ -161,6 +161,25 @@ console.log("issuer invariant");
   ok("a source-free agent reaches it too: it carries its own presence key", (await issueSourceFree("agent")) === STAGED);
   const mc = await issueSourceFree("manager-caller", { managerInstanceId: "inst0000000000000000000000a1" });
   ok("a source-free non-instrument with no presence key of its own is refused before staging", /must carry its own presence key/.test(mc), mc);
+  // An issued static agent credential carries untargeted, unjournaled endpoint commands only: the
+  // static terminal has no obligation drain (SPEC 13.1). Refused on the spawn's issue and on a
+  // renewal, before anything reaches the evidence store.
+  const targeted: EpCapability = { endpoint: "com.example.orders", command: "cancel-order", target: { mode: "self" } };
+  const journaled: EpCapability = { endpoint: "com.example.orders", command: "import", journal: true };
+  for (const mode of ["issue", "renew"] as const) {
+    const t = await issueSourceFree("agent", { endpointCapabilities: [targeted] }, mode);
+    ok(`an issued agent ${mode} with a targeted endpoint command is refused before staging`, /untargeted, unjournaled endpoint commands only; "com\.example\.orders cancel-order" is targeted/.test(t), t);
+    const j = await issueSourceFree("agent", { endpointCapabilities: [journaled] }, mode);
+    ok(`an issued agent ${mode} with a journaled endpoint command is refused before staging`, /"com\.example\.orders import" is journaled/.test(j), j);
+  }
+  ok("an issued agent with an untargeted command still reaches the evidence store",
+    (await issueSourceFree("agent", { endpointCapabilities: [{ endpoint: "com.example.orders", command: "list" }] })) === STAGED);
+  ok("an issued agent holding spawn, whose manager rows are targeted, still reaches the evidence store",
+    (await issueSourceFree("agent", { capabilities: ["spawn"] })) === STAGED);
+  let unissued = "minted";
+  try { await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid(), endpointCapabilities: [targeted], expiresInSeconds: 300 }); }
+  catch (e) { unissued = (e as Error).message; }
+  ok("an unissued operator mint is not this guard's to refuse", unissued === "minted", unissued);
 }
 
 console.log("endpoints");

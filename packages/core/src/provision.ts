@@ -1024,6 +1024,16 @@ export async function mintCreds(
   profile: Profile,
   opts: MintOpts = {},
 ): Promise<string> {
+  // An issued static agent credential carries untargeted, unjournaled endpoint commands only. The
+  // static lifecycle terminal has no SPEC 13.1 obligation drain, so a targeted or journaled grant
+  // could leave accepted work keyed to a retired lifecycle that nothing settles. Refused before
+  // anything is signed or staged. The `spawn` and `admin` capabilities mint their own manager rows
+  // and are not endpoint capabilities, so they are unaffected.
+  if (profile === "agent" && opts.issued) {
+    const drained = opts.endpointCapabilities?.find((c) => c.target !== undefined || c.journal);
+    if (drained)
+      throw new Error(`mintCreds: an issued static agent credential carries untargeted, unjournaled endpoint commands only; "${drained.endpoint} ${drained.command}" is ${drained.target !== undefined ? "targeted" : "journaled"}, and the static lifecycle terminal has no obligation drain to settle what it could leave (SPEC 13.1, 13.15)`);
+  }
   const signer = nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed));
   const pr = principalOf(identity, opts.principal, opts.lifecycleUid);
   // Serve rows are INTERNAL to mintCreds behind the §13.1 fence: the exported permissionsFor
