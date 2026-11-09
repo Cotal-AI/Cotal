@@ -149,7 +149,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     writeResult(presentation, { command: "service", target, result: { kind: "service-inventory", services, definitions, instances, attempts, processes, presets, presetCompleteness: catalogFailure ? "unavailable" : presetWarnings.length ? "partial" : "complete-cached-inventory", presetCatalogUnavailable: catalogFailure?.message ?? null, instanceCompleteness: "complete-local-process-records", remoteRegistrations: "not-checked" }, ...(warnings.length ? { completeness: "partial", partial: { message: "Some local component records, preset metadata or supervisor-file observations were unavailable, or a native attempt remains unsettled. The inventory is not a settled service state." } } : {}), warnings: [...warnings, ...await readinessAddressSurvivors(space)] }, (result): Report => ({ sections: [
       { title: "Services", blocks: [
         { kind: "fields", rows: [["Space", space], ["Folder", root]] },
-        result.services.length ? { kind: "table", columns: [{ key: "name", label: "Service" }, { key: "kind", label: "Kind" }, { key: "state", label: "State" }, { key: "next", label: "Next" }], rows: result.services.map((row) => ({ name: { text: row.name, tone: "command" }, kind: row.preset ? row.preset === row.name ? "built-in" : `built-in ${row.preset}` : "yours", state: { text: row.state, tone: row.state.startsWith("running") ? "ok" : row.state === "not started" || row.state === "stopped" ? "waiting" : "failed" }, next: { text: row.next, tone: "command" } })) } : { kind: "lines", lines: [result.presetCatalogUnavailable ?? "No service is saved or built in here."] },
+        result.services.length ? { kind: "table", columns: [{ key: "name", label: "Service" }, { key: "kind", label: "Kind" }, { key: "state", label: "State" }, { key: "next", label: "Next" }], rows: result.services.map((row) => ({ name: { text: row.name, tone: "command" }, kind: row.preset ? row.preset === row.name ? "built-in" : `built-in ${row.preset}` : "yours", state: { text: row.state, tone: row.state.startsWith("running") ? "ok" : row.state === "not started" || row.state === "stopped" || row.state === "stopping" ? "waiting" : "failed" }, next: { text: row.next, tone: "command" } })) } : { kind: "lines", lines: [result.presetCatalogUnavailable ?? "No service is saved or built in here."] },
         { kind: "lines", lines: [{ text: "A built-in service needs no add: its start saves it from its defaults. A start never starts another service for it.", tone: "hint" }, ...(result.presets.some((row) => row.name === "web") ? [] : [{ text: "The web dashboard is an extension: add it with `cotal ext add @cotal-ai/web`.", tone: "hint" as const }])] },
       ] },
       ...(result.services.some((row) => row.preset) ? [{ title: "What the built-in services do", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Service" }, { key: "summary", label: "What it does" }], rows: result.presets.map((row) => ({ name: row.name, summary: row.summary })) }] }] : []),
@@ -294,8 +294,16 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
   for (const row of saved) {
     const preset = presetOf(row);
     const own = instances.filter((instance) => instance.definition === row.name);
-    const state = own.some((instance) => instance.observedProcess === "running") ? "running" : own.length ? "stopped" : "not started";
-    const action = state === "running" ? "status" : "start";
+    // The recorded state status prints, not whether a process happens to be alive: a start that
+    // missed readiness leaves its process running and records unknown, and one whose process
+    // exited records failed.
+    const state = own.some((instance) => instance.recordedState === "running") ? "running"
+      : own.some((instance) => instance.recordedState === "starting") ? "starting"
+      : own.some((instance) => instance.recordedState === "stopping") ? "stopping"
+      : own.some((instance) => instance.recordedState === "unknown") ? "unknown"
+      : own.some((instance) => instance.recordedState === "failed") ? "failed"
+      : own.length ? "stopped" : "not started";
+    const action = state === "running" || state === "starting" || state === "stopping" || state === "unknown" ? "status" : "start";
     // One a forgotten space of this name left in another root does not start here; forgetting it is the step.
     if (state !== "running" && definitionRootMatch(row.record.value, root) === "inherited") {
       rows.push({ name: row.name, preset, definition: row.name, state: `inherited from ${row.record.value.root}`, needs: [], next: `cotal service remove ${row.name} --space ${space} --yes` });

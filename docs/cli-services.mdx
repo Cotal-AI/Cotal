@@ -48,7 +48,12 @@ cotal service remove <name> [--instance <id>] [--yes]
 
 A service is a saved definition in one space plus the instances started from it. Bare `service`
 lists every service you can name here with its state and the one command that moves it on: the
-built-in services (the presets), whether started or not, and the ones you added. Nothing starts a
+built-in services (the presets), whether started or not, and the ones you added. A saved service's
+`State` is the recorded state `service status` prints for it: `running`, `starting`, `stopping`,
+`unknown`, `failed`, `stopped`, or `not started` when it has no instance. A start that missed its
+readiness and left the process running lists `unknown`, and one whose process exited before
+readiness lists `failed`. Neither is listed as merely `running` or `stopped`. `Next` is `status`
+while a record is `running`, `starting`, `stopping` or `unknown`, and `start` otherwise. Nothing starts a
 dependency for you: starting the manager does not start its broker.
 
 A built-in service needs no `add`. `cotal service start <preset>` saves a definition of that name
