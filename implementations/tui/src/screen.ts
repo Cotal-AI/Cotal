@@ -91,8 +91,8 @@ export type Mark = "seen" | "dismissed"
 
 /** A message that still needs the human's answer, for the inspector: a reply to one they sent, or one
  *  that mentions them. `open` is the conversation it opens: its channel, its sender's conversation or
- *  its role's. `seen` once opened in this app run. */
-export type Card = { kind: "reply" | "mention"; entry: FeedEntry; open: Open; seen: boolean }
+ *  its role's. */
+export type Card = { kind: "reply" | "mention"; entry: FeedEntry; open: Open }
 
 /** The conversation a card opens. A channel post with no channel or a role task with no role has
  *  none, since it would open all traffic or an empty role. */
@@ -102,21 +102,20 @@ const cardOpen = (e: FeedEntry): Open | undefined => {
   return e.toService === undefined ? undefined : { kind: "role", role: e.toService }
 }
 
-/** The cards in `feed`, newest first. A message that both replies and mentions is one reply card. The
- *  human's own messages, a message one of them replies to, a dismissed one and a message with no
- *  conversation to open make none. */
-export function cardsFor(feed: readonly FeedEntry[], you: You, mentionsYou: (e: FeedEntry) => boolean, marks: ReadonlyMap<string, Mark>): Card[] {
+/** The cards in `feed`, oldest first, and the ids of the messages the human's own messages in it
+ *  reply to. A message that both replies and mentions is one reply card. The human's own messages
+ *  and a message with no conversation to open make none. */
+export function cardsFor(feed: readonly FeedEntry[], you: You, mentionsYou: (e: FeedEntry) => boolean): { cards: Card[]; answered: string[] } {
   const own = feed.filter((e) => isYou(you, e.from))
   const sent = new Set(own.map((e) => e.id))
-  const answered = new Set(own.map((e) => e.replyTo))
   const cards: Card[] = []
   for (const e of feed) {
-    if (e.events || isYou(you, e.from) || answered.has(e.id) || marks.get(e.id) === "dismissed") continue
+    if (e.events || isYou(you, e.from)) continue
     const kind = e.replyTo !== undefined && sent.has(e.replyTo) ? "reply" : mentionsYou(e) ? "mention" : undefined
     const open = kind ? cardOpen(e) : undefined
-    if (kind && open) cards.push({ kind, entry: e, open, seen: marks.get(e.id) === "seen" })
+    if (kind && open) cards.push({ kind, entry: e, open })
   }
-  return cards.reverse()
+  return { cards, answered: own.flatMap((e) => (e.replyTo === undefined ? [] : [e.replyTo])) }
 }
 
 export const peerOf = (mesh: Mesh, id: string) => [...mesh.agents, ...mesh.endpoints].find((p) => p.card.id === id)

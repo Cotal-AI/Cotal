@@ -36,6 +36,9 @@ type Focus = "box" | "tree" | "inspector"
  *  opening it quotes. `key` stays with the item while others arrive above it. */
 type Need = { key: string; open: Open; quote?: FeedEntry }
 
+/** One space's replies and mentions by message id, and the ids of the messages the human replied to. */
+type Queue = { cards: ReadonlyMap<string, Card>; answered: ReadonlySet<string> }
+
 /** Stopping an agent: the confirm, the manager call while it runs, then its outcome for a while. */
 type Stop = { phase: "idle" } | { phase: "confirm"; name: string } | { phase: "stopping"; name: string; force: boolean } | { phase: "done"; text: string; tone: "success" | "error" }
 type Answer = "graceful" | "force" | "cancel"
@@ -94,11 +97,28 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     return m ? conversationFeed(m, open(), talk()?.own() ?? { received: [], sent: [] }, FEED_ROWS) : []
   })
   const senders = createMemo(() => new Map(feed().map((e) => [e.id, e.from.name])))
-  const cards = createMemo((): Card[] => {
+  // Each space's cards, gathered from every snapshot of it in this app run. A card stays until a reply
+  // to it shows, so it outlives its message leaving the recent rows a snapshot's cards are read from.
+  const queues = createMemo((prev: ReadonlyMap<string, Queue>) => {
     const m = mesh()
     const t = talk()
-    return m && t ? cardsFor(conversationFeed(m, { kind: "channel" }, t.own(), FEED_ROWS), t.you(), t.mentionsYou, marks()) : []
+    if (!m || !t) return prev
+    const found = cardsFor(conversationFeed(m, { kind: "channel" }, t.own(), FEED_ROWS), t.you(), t.mentionsYou)
+    const was = prev.get(m.status.space)
+    const answered = new Set([...(was?.answered ?? []), ...found.answered])
+    const cards = new Map(was?.cards)
+    for (const c of found.cards) if (!answered.has(c.entry.id)) cards.set(c.entry.id, c)
+    for (const id of found.answered) cards.delete(id)
+    return new Map(prev).set(m.status.space, { cards, answered })
+  }, new Map())
+  // The open space's cards, newest first, less the ones dismissed. The map holds them in arrival
+  // order, so reversing it first keeps cards that share a timestamp newest first.
+  const cards = createMemo((): Card[] => {
+    const m = mesh()
+    const q = m && queues().get(m.status.space)
+    return q ? [...q.cards.values()].filter((c) => marks().get(c.entry.id) !== "dismissed").reverse().sort((a, b) => b.entry.ts - a.entry.ts) : []
   })
+  const seenCard = (c: Card) => marks().get(c.entry.id) === "seen"
   // What the inspector lists, in its order: the keys `w` and `1`-`9` open these at every width.
   const needs = createMemo((): Need[] => [
     ...waiting().map((p): Need => ({ key: peerKey(p.card.id), open: { kind: "peer", id: p.card.id } })),
@@ -155,7 +175,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     const key = draftHere()
     if (key !== shown.key) shown = { key, since: Date.now() }
     const here = conversationKey(open())
-    const landed = cards().filter((c) => !c.seen && c.entry.ts >= shown.since && conversationKey(c.open) === here)
+    const landed = cards().filter((c) => !seenCard(c) && c.entry.ts >= shown.since && conversationKey(c.open) === here)
     if (landed.length) mark(landed.map((c) => c.entry.id), "seen")
   })
 
@@ -736,7 +756,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
       const m = e()
       return m.delivery === "multicast" ? (m.channel ? `#${m.channel}` : "") : m.delivery === "anycast" ? `@${m.toService ?? "?"}` : "→ you"
     }
-    const dim = () => (p.card.seen ? theme.text.faint : undefined)
+    const dim = () => (seenCard(p.card) ? theme.text.faint : undefined)
     return (
       <box id={`need-${p.n}`} flexShrink={0} marginBottom={1} backgroundColor={needBg(p.n, false)} onMouseDown={() => answerNeed(p.n)}>
         <text wrapMode="none" fg={dim() ?? gold()}>

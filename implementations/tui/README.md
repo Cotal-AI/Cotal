@@ -41,11 +41,16 @@ your messages and the messages that mention you, newest first, and the selected 
 model, harness and uptime. The list scrolls when it is longer than the screen. A reply or mention
 card opens its channel, or its sender's conversation for a direct message, scrolls to the message and
 quotes it in the input box, so the next `enter` sends a reply to it. When the reply rules refuse the
-message, the box says why and quotes nothing. A card stays listed until you reply to it. It goes
-once a reply you sent with its message quoted shows in the conversation. The app reads that reply
-from the space's history, so the card stays gone after a restart. A message you send without the
-quote leaves the card listed. A card you opened is drawn dimmer than one you have not,
-and a reply or mention that arrives in the conversation you have open is listed already dimmed.
+message, the box says why and quotes nothing. A card stays listed until you reply to it or dismiss
+it, also after its message has left the recent messages the app holds. It goes once a reply you
+sent with its message quoted shows in the conversation, and a message you send without the quote
+leaves it listed. A card whose message has left its conversation still opens it and quotes the
+message, and the next `enter` sends the reply. Each space keeps its cards while the app runs, also
+while another space is open. After a restart the list starts again from the history the app
+loads, the newest 50 messages of each channel and 300 in all. A channel card comes back when its
+message is in that history, and stays gone when your reply is there too. A card you opened is drawn
+dimmer than one you have not, and a reply or mention that arrives in the conversation you have open
+is listed already dimmed.
 When the conversation
 would get fewer than 40 columns, as at 80x24, the inspector shrinks to a count such as
 `1 needs you · 2 replies · 1 mention` above the input box, counting the cards you opened too, and the agent overview shows in the
@@ -195,7 +200,11 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   and checks that each quotes and stays listed after you leave it, that a mention of someone else or a
   reply to a peer makes none, that a post without the quote leaves the card listed, and that a mention
   in the open conversation makes a card already dimmed. It then quits, starts the app again on the
-  same space, and checks that the replied card stays gone while the dismissed ones are back.
+  same space, and checks that the replied card stays gone while the dismissed ones are back. At
+  209x52 an agent then posts 250 messages in another channel, and it checks that two new cards stay
+  listed, that one answered goes and stays gone after 250 more posts, and that the other, whose
+  message has left the loaded rows, is still listed after a switch to another space and back, then
+  quotes it and sends a reply a peer receives with its id.
   They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
   built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space

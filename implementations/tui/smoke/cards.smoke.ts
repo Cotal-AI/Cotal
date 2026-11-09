@@ -15,8 +15,9 @@
  * and leaves a waiting agent, and sixteen more cards are all reached by the arrows. After the app
  * quits and starts again on the same space, the replied card stays gone and the dismissed ones are
  * back. At 209x52 the relaunched app then gets two new mentions and an agent posts 250 messages in
- * #ops: both cards stay listed, one is answered and goes, and after 250 more posts it stays gone
- * while the other, whose message has left the loaded rows, still opens, quotes and takes a reply.
+ * #ops: both cards stay listed, one is answered and goes, and after 250 more posts in #design it
+ * stays gone. The other, whose message has left the loaded rows and #design's history, is still
+ * listed after a switch to another space and back, and still opens, quotes and takes a reply.
  * Captures are kept under the printed directory.
  *
  * Needs Node >= 26.4, tmux and nats-server, so it is not part of smoke:ci, which runs Node 22.
@@ -46,6 +47,10 @@ const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))
 const socket = `cotal-tui-cards-${process.pid}`
 const tmux = (...args: string[]) => execFileSync("tmux", ["-L", socket, "-f", "/dev/null", ...args], { encoding: "utf8" })
 const space = "team-alpha"
+// A second space, which a switch opens and leaves.
+const other = "team-beta"
+// The space rows at the top of the tree.
+const SPACE_ROWS = 2
 // Posts in another channel, more than the 200 rows of all traffic the app reads.
 const FLOOD = 250
 
@@ -213,11 +218,11 @@ async function toTree() {
   keys("Tab")
   await sleep(150)
 }
-/** Opens the tree row titled `name`, counting down from the top past the one space row. */
+/** Opens the tree row titled `name`, counting down from the top past the space rows. */
 async function openRow(name: string): Promise<string> {
   for (let i = 0; i < 24; i++) {
     await toTree()
-    keys(...times(40, "k"), ...times(1 + i, "j"))
+    keys(...times(40, "k"), ...times(SPACE_ROWS + i, "j"))
     await sleep(80)
     const before = titleOf(capture())
     keys("Enter")
@@ -252,10 +257,11 @@ try {
   mkdirSync(project)
   await startBroker()
   await setupSpaceStreams({ servers: server, space })
+  await setupSpaceStreams({ servers: server, space: other })
   Object.assign(process.env, { HOME: home, XDG_CONFIG_HOME: xdg })
   delete process.env.COTAL_HOME
   const w = await import("@cotal-ai/workspace")
-  w.recordMesh({ space, server, root: project, mode: "open", origin: "manual", ts: new Date().toISOString() })
+  for (const s of [space, other]) w.recordMesh({ space: s, server, root: project, mode: "open", origin: "manual", ts: new Date().toISOString() })
   w.setCurrent(space)
 
   const planner = peer("planner", "planner")
@@ -585,10 +591,16 @@ try {
     )
 
     if (width === 209) {
-      const flood = async (round: number) => {
-        for (let k = 1; k <= FLOOD; k++) await coder.ep.multicast(`ops line ${round}.${k} (${size})`, { channel: "ops" })
+      const flood = async (round: number, channel: string) => {
+        for (let k = 1; k <= FLOOD; k++) await coder.ep.multicast(`busy line ${round}.${k} (${size})`, { channel })
         await openRow("all traffic")
-        await waitFor(has(`ops line ${round}.${FLOOD} (${size})`), `the ${FLOOD} posts in #ops`)
+        await waitFor(has(`busy line ${round}.${FLOOD} (${size})`), `the ${FLOOD} posts in #${channel}`)
+      }
+      /** Enter on the space row `at`, counted from the top of the tree, and waits for `name` to open. */
+      const openSpace = async (at: number, name: string) => {
+        await toTree()
+        keys(...times(40, "k"), ...times(at, "j"), "Enter")
+        await waitFor((f) => titleOf(f).includes(`#general  ${name}`) && footer(f) === "? help · ctrl+p commands", `${name} to open`)
       }
       const toTop = async () => {
         await toTree()
@@ -601,7 +613,7 @@ try {
       const fresh = await waitFor((f) => f.includes("REPLIES AND MENTIONS · 20") && /^2 @ planner\s+#design$/.test(cardHeads(f, width)[0] ?? ""), "two more cards").catch(() => capture())
       check(`${size}: two new mentions make two cards at the top of the list`, fresh.includes("REPLIES AND MENTIONS · 20") && /^3 @ reviewer\s+#general$/.test(cardHeads(fresh, width)[1] ?? ""), fresh)
       keys("Escape")
-      await flood(1)
+      await flood(1, "ops")
       await toTop()
       const busy = capture()
       save(dir, "13-after-busy-channel")
@@ -623,21 +635,32 @@ try {
       const answered = await waitFor((f) => f.includes("REPLIES AND MENTIONS · 19") && !inspector(f, width).some((l) => l.includes("sign off the release")), "the answered card to leave", 5000).catch(() => capture())
       check(`${size}: the answered card leaves the list`, answered.includes("REPLIES AND MENTIONS · 19") && !inspector(answered, width).some((l) => l.includes("sign off the release")), answered)
 
-      await flood(2)
+      await flood(2, "design")
       await toTop()
       const later = capture()
       save(dir, "14-after-second-busy-round")
       check(
-        `${size}: after ${FLOOD} more posts the answered card stays gone and the unanswered one stays listed`,
+        `${size}: after ${FLOOD} more posts, in #design, the answered card stays gone and the unanswered one stays listed`,
         later.includes("REPLIES AND MENTIONS · 19") && !inspector(later, width).some((l) => l.includes("sign off the release")) && /^2 @ planner\s+#design$/.test(cardHeads(later, width)[0] ?? ""),
         later,
+      )
+
+      await openSpace(1, other)
+      await openSpace(0, space)
+      await toTop()
+      const back = await waitFor((f) => f.includes("REPLIES AND MENTIONS · 19") && /^2 @ planner\s+#design$/.test(cardHeads(f, width)[0] ?? ""), "the cards back on the space").catch(() => capture())
+      save(dir, "15-back-from-another-space")
+      check(
+        `${size}: after a switch to another space and back, the card whose message has left #design's history is still listed and the answered one stays gone`,
+        back.includes("REPLIES AND MENTIONS · 19") && /^2 @ planner\s+#design$/.test(cardHeads(back, width)[0] ?? "") && !inspector(back, width).some((l) => l.includes("sign off the release")),
+        back,
       )
 
       keys("Down")
       await highlight("2 @ planner", "down to the mention in #design")
       keys("Enter")
       const gone = await waitFor((f) => titled("#design")(f) && quoteLine(f, width).startsWith(`↳ planner: “@${me} pick a launch date`), "enter to open and quote the mention in #design", 5000).catch(() => capture())
-      save(dir, "15-quoted-message-out-of-the-feed")
+      save(dir, "16-quoted-message-out-of-the-feed")
       check(
         `${size}: enter on a card whose message left the loaded rows opens #design and quotes it, with the message no longer in the conversation`,
         titled("#design")(gone) && quoteLine(gone, width).startsWith(`↳ planner: “@${me} pick a launch date`) && !middle(gone, width).some((l) => !l.startsWith("↳ ") && l.includes("pick a launch date")),
