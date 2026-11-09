@@ -283,6 +283,28 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   }
 }
 
+// The words that follow a chmod in a refusal can also occur inside a shell-quoted path. Next has to
+// offer the whole command, not stop at the first copy of those words.
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const parent = sandbox("/bin/bash");
+  const home = join(parent.home, "home and run the command again suffix");
+  const rc = join(home, ".bashrc");
+  mkdirSync(home);
+  writeFileSync(rc, "# mine\n");
+  chmodSync(rc, 0o664);
+  const shared = supplementaryGroup();
+  const assigned = shared !== undefined && assignedGroup(shared, [rc]);
+  check("a quoted path whose name contains the remedy wording is grouped before its chmod is checked", shared === undefined || assigned, { shared, assigned });
+  if (assigned) {
+    const text = parent.run(["completion"], { HOME: home, USERPROFILE: home });
+    const command = text.stdout.split("\n").map((line) => line.trim()).find((line) => line.startsWith("chmod "))?.split("  ")[0];
+    const syntax = command ? spawnSync("/bin/sh", ["-n", "-c", command], { encoding: "utf8" }) : undefined;
+    const install = parent.run(["completion", "install", "bash", "--json"], { HOME: home, USERPROFILE: home });
+    const remedy = install.stdout.startsWith("{") ? JSON.parse(install.stdout).error?.remedy : undefined;
+    check("Next offers the whole quoted chmod, and install's remedy is that command plus its trailing sentence", text.status === 4 && command === `chmod g-w '${rc}'` && syntax?.status === 0 && typeof remedy === "string" && remedy.startsWith(`${command} and run the command again`), { command, syntax: syntax?.stderr, remedy });
+  }
+}
+
 // A startup file left group-writable by umask 002 is accepted when its group is the caller's proven
 // user private group and it has no extended ACL. getfacl has to be installed, and the primary group
 // has to be private. A host that has neither does not assert the acceptance.

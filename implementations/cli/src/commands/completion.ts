@@ -207,10 +207,12 @@ interface UnsafeFolder { readonly problem: string; readonly chmod?: string; read
 /** A completion file whose refusal blocks install, with the chmod that fixes it when one does. */
 interface FileRepair { readonly shell: string; readonly chmod?: string }
 
-/** The `chmod` command in a file refusal's remedy, when the refusal has one. */
+/** The `chmod` command in a file refusal's remedy, when the refusal has one. The trailing sentence is
+ *  removed only as a suffix: the same words can occur inside a shell-quoted path. */
 const chmodOf = (error: unknown): string | undefined => {
   if (!isCommandFailure(error) || typeof error.remedy !== "string") return undefined;
-  return /^chmod \S+ .*?(?= and run the command again|$)/.exec(error.remedy)?.[0];
+  const command = error.remedy.replace(/ and run the command again, or wire completion yourself from `cotal completion script <shell>`$/, "");
+  return command.startsWith("chmod ") ? command : undefined;
 };
 
 const folderWarning = (folder: UnsafeFolder): OutputWarning => ({
