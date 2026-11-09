@@ -85,9 +85,8 @@ async function chatStreamPresent(endpoint: CotalEndpoint, space: string, mode: "
   try { return (await endpoint.chatRetention()).stream; } catch { return undefined; }
 }
 
-/** A publish the broker did not acknowledge, after the chat stream of a space whose streams were
- *  created here is gone. Nothing could store it, so it is the same refusal a one-shot send gives,
- *  not an unknown outcome. A read that fails for any other reason leaves the original result. */
+/** Refuse before publishing when the space's chat stream is known to be absent. A later absence
+ *  cannot establish whether an earlier unacknowledged publish was stored. */
 async function absentStreams(endpoint: CotalEndpoint, space: string, mode: "open" | "static" | "user"): Promise<Refused | undefined> {
   if (await chatStreamPresent(endpoint, space, mode) !== false) return undefined;
   const failure = spaceStreamsAbsent(space, undefined);
@@ -185,8 +184,7 @@ export class NativeChatSession implements AdmittedChatSession {
   private closed: Promise<CloseReport> | undefined;
   /** Why the session ended itself, when it could not continue. */
   private lost: string | undefined;
-  /** The space's streams were observed gone, so a later connection report and close can say so
-   *  without another broker read. */
+  /** Last observed absence of the chat stream, rechecked by a later connection report. */
   private streamsGone: string | undefined;
   /** What the full inbox let go that no gap has reported yet. */
   private overflow = { channelDropped: 0, directedDeferred: 0 };
@@ -295,6 +293,8 @@ export class NativeChatSession implements AdmittedChatSession {
     if (!isConcreteChannel(channel)) return refusedUsage("a send needs a concrete channel");
     const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post", this.inputs.words);
     if (outside) return outside;
+    const gone = await this.beforePublish();
+    if (gone) return gone;
     let registered: boolean;
     try {
       registered = this.inputs.endpoint.getChannelConfig(channel) !== undefined;
@@ -317,6 +317,8 @@ export class NativeChatSession implements AdmittedChatSession {
     const ep = this.inputs.endpoint;
     const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.self());
     if ("outcome" in recipient) return recipient;
+    const gone = await this.beforePublish();
+    if (gone) return gone;
     const recipientStatusAtSend: PresenceStatus | "unrostered" = ep.getRoster().find((p) => p.card.id === recipient.id)?.status ?? "unrostered";
     try {
       const { msg, ack } = await ep.unicastAttributed(recipient.id, text, replyTo !== undefined ? { replyTo } : {});
@@ -328,6 +330,8 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   async anycast(role: string, text: string): Promise<PublishResult> {
+    const gone = await this.beforePublish();
+    if (gone) return gone;
     try {
       const { msg, ack } = await this.inputs.endpoint.anycastAttributed(role, text);
       this.streamsGone = undefined;
@@ -489,14 +493,11 @@ export class NativeChatSession implements AdmittedChatSession {
       ep.off("warning", this.onWarning);
       this.reportOverflow();
       this.engine.clear();
-      const goneNow = await absentStreams(ep, this.inputs.identity.space, this.inputs.identity.mode);
       let stopped = true;
       try { await ep.stop(); } catch { stopped = false; }
       let report: CloseReport;
       try { report = await this.inputs.retire(); }
       catch (e) { report = { retirement: "unknown", connectionClosed: "not-confirmed", message: (e as Error).message }; }
-      if (goneNow && report.retirement === "unknown")
-        report = { ...report, retirement: "not-applicable", message: `${goneNow.message}. ${report.message}` };
       ep.off("error", this.onError);
       if (this.lost) report = { ...report, lost: this.lost };
       this.setState("ended", this.lost);
@@ -506,13 +507,16 @@ export class NativeChatSession implements AdmittedChatSession {
     return this.closed;
   }
 
-  /** A publish the broker did not acknowledge. A missing chat stream is a refusal, because nothing
-   *  stored it. Anything else keeps its original classification. */
-  private async afterPublish(e: unknown): Promise<PublishResult> {
+  private async beforePublish(): Promise<Refused | undefined> {
     const gone = await absentStreams(this.inputs.endpoint, this.inputs.identity.space, this.inputs.identity.mode);
-    if (!gone) return classify(e);
-    this.streamsGone = gone.message;
+    if (gone) this.streamsGone = gone.message;
     return gone;
+  }
+
+  /** Refresh the connection observation without rewriting an attempted publish's outcome. */
+  private async afterPublish(e: unknown): Promise<PublishResult> {
+    await this.observeStreams();
+    return classify(e);
   }
 
   /** Remember a read that found the chat stream gone, and forget one that found it present. A failed
