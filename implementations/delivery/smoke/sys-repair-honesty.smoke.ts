@@ -162,20 +162,23 @@ try {
     check(`...and names the SEGMENTED key, not the bare kind, on the ${label} root`, hosted.includes(segmentedKey(MEMBERSHIP_OBSERVER_CREDS_KIND, "hosted")), hosted);
   }
 
-  console.log("\n4) the pair still has exactly two writers, and neither is reachable here");
+  console.log("\n4) every writer of the pair is unreachable on a root the guard refuses");
   // Source-asserted, not recalled: this is the structural half of the finding, and drift must break
   // this suite rather than quietly invalidate the claim that no minting path exists on such a root.
   const upSrc = readFileSync("implementations/cli/src/commands/up.ts", "utf8");
   const rotSrc = readFileSync("packages/workspace/src/system-rotation.ts", "utf8");
+  const healSrc = readFileSync("implementations/delivery/src/sys-creds.ts", "utf8");
   // As of P7 the pair is written through the SecretStore under the per-space key builders, never at a
   // path a caller composed, so the probe anchors on the builders: a `put` keyed by either of them IS
   // a write of the pair, and there is no other spelling that reaches the canonical location.
-  const writers = (s: string) => (s.match(/put\(\s*(?:membershipObserverCredsKey|connectionEvictorCredsKey)\(/g) ?? []).length;
+  const writers = (s: string) => (s.match(/\.put\(\s*(?:membershipObserverCredsKey|connectionEvictorCredsKey)\(/g) ?? []).length;
   check("up.ts writes the pair in exactly ONE function (provisionMembershipCreds)", writers(upSrc) === 2, writers(upSrc));
   check("...and that function has exactly ONE call site, in the fresh-space branch", (upSrc.match(/provisionMembershipCreds\(/g) ?? []).length === 2, (upSrc.match(/provisionMembershipCreds\(/g) ?? []).length);
   check("system-rotation.ts writes the pair in exactly ONE function (rotateSystemCreds)", writers(rotSrc) === 2, writers(rotSrc));
-  check("no OTHER module writes the pair at all", writers(upSrc) + writers(rotSrc) === 4);
+  check("the delivery heal writes exactly the evictor, and only that", writers(healSrc) === 1 && /connectionEvictorCredsKey\(source\.space, source\), await mintConnectionEvictorCreds\(/.test(healSrc), writers(healSrc));
+  check("no OTHER module writes the pair at all", writers(upSrc) + writers(rotSrc) + writers(healSrc) === 5);
   check("rotateSystemCreds is guarded by the single-space broker assert", /assertSingleSpaceBroker\(authDir\(root\), "a system-account rotation/.test(rotSrc));
+  check("the evictor heal is guarded by the same assert, so it refuses on this root too", /assertSingleSpaceBroker\(authDir\(source\.root\), "minting the connection evictor"/.test(healSrc));
   // And the standing renewal owner is excluded by design, so nothing repairs it on a timer either.
   const remintable = REMINTABLE_DAEMON_CREDS.map((r) => r.kind);
   check("REMINTABLE_DAEMON_CREDS excludes both $SYS creds, so renewal never repairs them", !remintable.includes(MEMBERSHIP_OBSERVER_CREDS_KIND) && !remintable.includes(CONNECTION_EVICTOR_CREDS_KIND), remintable);
