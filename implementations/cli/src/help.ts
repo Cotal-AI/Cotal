@@ -247,7 +247,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     ["use", "cotal use <name>", "Choose the space commands use"],
     ["space", "cotal space", "List the spaces on this machine"],
   ] : manifest ? [
-    ["team", `cotal team check ${shellWord(manifest.path)}`, `Check the team file, which declares ${manifest.space}`],
+    ["team", `cotal team check ${shellWord(manifest.path)}`, `Check the team file, which declares ${shellWord(manifest.space)}`],
     ["space", `cotal space create ${shellWord(manifest.space)}`, "Prepare the space that file declares"],
     ["team", `cotal team boot ${shellWord(manifest.path)}`, "Boot that team"],
     ["up", `cotal up -f ${shellWord(manifest.path)}`, "Start the space from that file"],
