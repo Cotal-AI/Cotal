@@ -349,7 +349,10 @@ created, reads the chat stream once. When that stream is gone, as `cotal space d
 the result is `refused` with `TARGET_UNAVAILABLE` and the same message `cotal send` gives, because
 nothing could store it. A read that fails for another reason leaves the result `unknown`. The same
 observation makes a later `connection` report `state` `disconnected` with that message as `reason`.
-The broker connection itself is unchanged, and `reason` is absent while the streams are present.
+The broker connection itself is unchanged. A later `connection`, while that observation stands, reads
+the chat stream again. When the stream is present, as after `cotal up` creates it again, `state` is
+the connection's own and `reason` is absent. A stored `send`, `dm` or `anycast` clears the observation
+too. A read that fails leaves it as it was.
 
 
 ### Unsolicited records
