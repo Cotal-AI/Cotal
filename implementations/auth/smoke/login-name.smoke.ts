@@ -110,6 +110,9 @@ try {
   const nameless = await cotalLogin(otherIdp);
   check("cotal login says it recorded no chat name, and names saving one and --name",
     nameless.status === 0 && /^\s*Chat name\b.*\bnone$/m.test(nameless.stdout) && nameless.stdout.includes("cotal config set name <name>") && nameless.stdout.includes("--name <name>"), nameless);
+  const savedNamed = await cotalLogin(idp, "ops-lead");
+  check("cotal login with a chat name recorded and one saved says chat uses the saved name",
+    savedNamed.status === 0 && /^\s*Chat name\b.*\bhuman$/m.test(savedNamed.stdout) && savedNamed.stdout.includes('your saved name "ops-lead"'), savedNamed);
   const saved = await cotalLogin(otherIdp, "ops-lead");
   check("cotal login with no chat name recorded but one saved says chat uses the saved name, and warns of no refusal",
     saved.status === 0 && /^\s*Chat name\b.*\bnone$/m.test(saved.stdout) && saved.stdout.includes("ops-lead") && !/refuse/.test(saved.stdout), saved);
