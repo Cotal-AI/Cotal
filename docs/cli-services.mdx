@@ -53,7 +53,9 @@ dependency for you: starting the manager does not start its broker. A member of 
 `stack-broker`, `stack-auth`, `stack-delivery` or `stack-manager`, starts and stops with the stack.
 While it is stopped its Next is bare `cotal up`, and `service start` or `service restart` of it
 refuses `LIFECYCLE_BLOCKED` before anything launches, with that same Next. A start of one by itself
-would leave its process running and the space unregistered.
+would leave its process running and the space unregistered. This restriction checks the saved
+adapter and the stack journal's membership. A process service you added with one of those names
+still uses its own `service start` and `service restart` commands.
 
 A built-in service needs no `add`. `cotal service start <preset>` saves a definition of that name
 from the preset's defaults and starts it; stderr says what it saved. A preset that needs something

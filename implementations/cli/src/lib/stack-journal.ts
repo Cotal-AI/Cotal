@@ -697,10 +697,15 @@ export function runningStackManagerPid(root: string, space: string): number | un
   } catch { return undefined; }
 }
 
-/** Whether `name` is a controller stack member saved in `space`. Those members start and stop with
- *  the stack: a start of one by itself leaves a process the space is not registered for. */
+/** Whether the saved definition and its root's journal bind `name` to a controller stack in `space`.
+ *  A matching name alone does not make a person's own process service part of that stack. */
 export function isStackMember(space: string, name: string): boolean {
-  return (Object.values(STACK_DEFINITION) as string[]).includes(name) && serviceDefinitionStore(space).read(name) !== undefined;
+  const role = STACK_ROLES.find((role) => STACK_DEFINITION[role] === name);
+  if (!role) return false;
+  const launch = serviceDefinitionStore(space).read(name)?.record.value.launch;
+  if (launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || typeof launch.options.root !== "string") return false;
+  const journal = readStackJournal(launch.options.root)?.journal;
+  return journal?.space === space && journal.members.some((member) => member.role === role && member.definition === name);
 }
 
 /** The controller stack definition a legacy component name stands for in `space`, when that
