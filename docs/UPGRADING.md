@@ -7,6 +7,21 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Workflow workers require the host's language package version
+
+The shipped workflow worker checks its `@cotal-ai/lang` package version against the version the host
+loaded. If they differ, the worker refuses before announcing readiness or running the program.
+The refusal names both versions and asks you to restart the manager. A host from an older release
+that does not send this version reports `unreported` and is refused too. The failed run does not
+end the manager process.
+
+After installing a new Cotal version, restart the manager through its supervisor before starting
+or resuming workflows. Keep the manager and its language package on the same installed version.
+An in-place package update does not update modules already loaded in the running host.
+
+This check compares package versions. It does not verify file contents replaced under the same
+version or provide a rolling-upgrade guarantee.
+
 ## An incompatible delivery store answer prevents manager startup
 
 If delivery returns an unreadable SecretStore answer, the manager refuses startup or credential
