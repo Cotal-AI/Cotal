@@ -1,0 +1,39 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "name": "Cotal TypeScript packages",
+  "entryPointStrategy": "packages",
+  "entryPoints": [
+    "packages/core",
+    "packages/lang",
+    "packages/seat",
+    "packages/workspace",
+    "implementations/auth",
+    "implementations/cli",
+    "implementations/delivery",
+    "implementations/linear",
+    "implementations/manager",
+    "implementations/registry",
+    "implementations/runtime",
+    "implementations/web",
+    "extensions/cmux",
+    "extensions/connector-claude-code",
+    "extensions/connector-codex",
+    "extensions/connector-core",
+    "extensions/connector-hermes",
+    "extensions/connector-jcode",
+    "extensions/connector-opencode",
+    "extensions/herdr",
+    "extensions/orca",
+    "extensions/pi",
+    "extensions/tmux"
+  ],
+  "out": "website/typedoc",
+  "readme": "website/src/content/api-overviews/typescript.md",
+  "packageOptions": {
+    "readme": "none"
+  },
+  "navigationLinks": {
+    "Docs": "/docs/what-is-cotal/",
+    "API Reference": "/api-reference/overview/"
+  }
+}

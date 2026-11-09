@@ -1,6 +1,7 @@
 name: Docs
 
-# Build and deploy the docs site (website/) to Cloudflare Pages.
+# Build and deploy the docs site (website/) to Cloudflare Pages, with the TypeScript reference
+# TypeDoc generates from the published packages' sources at /api/typescript/.
 #  - push to main touching docs sources   -> production deploy (docs.cotal.ai)
 #  - pull request touching docs sources   -> preview deploy (URL in the job summary)
 #  - release published                    -> immutable snapshot on a branch alias
@@ -23,6 +24,16 @@ on:
       - 'implementations/delivery/openapi.json'
       - 'SPEC.md'
       - 'assets/**'
+      - 'typedoc.json'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'packages/*/src/**'
+      - 'packages/*/package.json'
+      - 'implementations/*/src/**'
+      - 'implementations/*/package.json'
+      - 'extensions/*/src/**'
+      - 'extensions/*/package.json'
+      - 'extensions/*/typedoc.json'
       - '.github/workflows/docs.yml'
   pull_request:
     paths:
@@ -37,6 +48,16 @@ on:
       - 'implementations/delivery/openapi.json'
       - 'SPEC.md'
       - 'assets/**'
+      - 'typedoc.json'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'packages/*/src/**'
+      - 'packages/*/package.json'
+      - 'implementations/*/src/**'
+      - 'implementations/*/package.json'
+      - 'extensions/*/src/**'
+      - 'extensions/*/package.json'
+      - 'extensions/*/typedoc.json'
       - '.github/workflows/docs.yml'
   release:
     types: [published]
@@ -53,11 +74,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: website/package-lock.json
+      - run: pnpm install --frozen-lockfile
+      # The site publishes the TypeScript reference; TypeDoc's warnings stay visible in this log.
+      - run: pnpm gen:tsdocs
       - run: npm ci
         working-directory: website
       - run: npm run build

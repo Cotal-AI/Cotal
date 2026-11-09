@@ -101,7 +101,8 @@ function scan(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name !== '_next') scan(p);
+      // TypeDoc links its reference pages relatively; check-typescript-reference resolves those.
+      if (entry.name !== '_next' && p !== join(dist, 'api', 'typescript')) scan(p);
       continue;
     }
     // Next's .txt flight payloads are serialized data, not Markdown documents.

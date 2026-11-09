@@ -1,3 +1,4 @@
+/** @module index */
 export * from "./advisory-lock.js";
 export * from "./extension-mutation.js";
 export * from "./auth-paths.js";

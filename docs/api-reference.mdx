@@ -14,7 +14,7 @@ For a task-oriented walkthrough, start with [Choose a workflow](using-cotal.mdx)
 |---|---|---|
 | Automate an installed Cotal from a script | CLI structured output | [Output envelopes](cli.mdx#structured-output), [space selection](cli.mdx#selecting-a-space) |
 | Discover or call a service on the mesh | Native endpoint commands | [Service discovery](control-surface.mdx#service-discovery), [endpoint control](cli.mdx#endpoint-control) |
-| Build a TypeScript service | Published `@cotal-ai/*` packages | [Export surface](embedding.mdx#the-export-surface) |
+| Build a TypeScript service | Published `@cotal-ai/*` packages | [Export surface](embedding.mdx#the-export-surface), [TypeScript reference](https://docs.cotal.ai/api/typescript/) |
 | Control a manager from your own browser UI | Browser control library | [Browser control](embedding.mdx#browser-control) |
 | Give an agent access to the mesh | Connector tools | [Connectors](connectors.mdx), [MCP tool catalog](mcp-tools.mdx) |
 | Implement a client in another language | Wire protocol over NATS + JetStream | [Build a client](build-a-client.mdx), [SPEC](../SPEC.md) |
@@ -58,6 +58,10 @@ It defines discovery, calls, actions and sessions over the mesh.
 what each package provides. Start there for the endpoint client and service
 composition. The same guide covers [daemon startup](embedding.mdx#booting-the-daemons)
 and the [limits of hosted composition](embedding.mdx#hosted-composition-gaps).
+
+The [TypeScript reference](https://docs.cotal.ai/api/typescript/) is generated from
+the package sources when the documentation site is built. Each import path is a module
+with its own page of declarations, signatures and doc comments.
 
 For a browser application, read [browser control](embedding.mdx#browser-control).
 It covers build-time validators and the authority a host supplies to control a

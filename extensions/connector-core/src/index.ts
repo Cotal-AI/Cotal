@@ -1,3 +1,4 @@
+/** @module index */
 export * from "./config.js";
 export { controlFromEnv, hasIdentity } from "./session-env.js";
 export * from "./agent.js";

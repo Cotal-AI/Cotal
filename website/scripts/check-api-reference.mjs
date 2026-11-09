@@ -61,7 +61,7 @@ for (const [id, slug] of Object.entries(cli)) {
   assert(index.slice(start, end === -1 ? undefined : end).some(node => node.tagName === 'a' && attr(node, 'href') === `/api-reference/${slug}/#${id}`), `CLI forwarding link: ${id}`);
 }
 const overviewCards = articles.get('overview').filter(node => node.tagName === 'a' && attr(node, 'data-card') === 'true');
-assert.equal(overviewCards.length, 9, 'nine native API overview destinations');
+assert.equal(overviewCards.length, 10, 'ten native API overview destinations');
 assert.equal(index.filter(node => node.tagName === 'div' && attr(node, 'data-card') === 'true').length, 6, 'six native CLI groups without nested anchors');
 for (const slug of focused) assert(artifact('api-reference/cli.md').includes(`](/api-reference/${slug}/)`), `CLI group links export: ${slug}`);
 const { navigation } = await import('../src/generated/navigation.mjs');

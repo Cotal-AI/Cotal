@@ -1,3 +1,4 @@
+/** @module index */
 import "./exec-endpoint/service-adapter.js";
 import "./lib/broker-service.js";
 import "./service-unit.js";
