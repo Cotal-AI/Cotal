@@ -1,8 +1,7 @@
 /**
- * After `cotal space forget`, `cotal status` in that space's root selects no space and dials
- * nothing. The resolver gives an unregistered project root the default broker address, and status
- * used to report that guess as the selected mesh, with `Mesh: <space>` and a probe of
- * nats://127.0.0.1:4222. Any broker could hold that address.
+ * After `cotal space forget`, the folder's `.cotal/` names no space. `cotal status` there selects
+ * no space and dials nothing, the same way `persona`, `team` and `spawn --dry-run` refuse there.
+ * An empty `.cotal/` still names a bare `up`.
  *
  * Driven through the built binary in a sandboxed COTAL_HOME. No broker is started.
  *
@@ -51,18 +50,16 @@ check("rig: the space is forgotten and its root's files stay", forgot.status ===
 
 const json = run(["status", "--json"]);
 check("status reads the machine and selects no space", read(json) && json.envelope?.target?.space === null, shown(json));
-check("the selection is unresolved as an unregistered root", json.envelope?.result?.selected.resolved === false && json.envelope.result.selected.code === "unregistered-root", json.envelope?.result?.selected);
+check("the selection is unresolved because the folder names no space", json.envelope?.result?.selected.resolved === false && json.envelope.result.selected.code === "no-meshes", json.envelope?.result?.selected);
 check("no default broker address is reported or probed", !json.stdout.includes("4222") && !json.stderr.includes("4222"), shown(json));
 
 const plain = run(["status", "--plain"]);
 check("the report carries no Mesh header for the forgotten space", read(plain) && !/^Mesh: /m.test(plain.stdout), shown(plain));
 check("the report names no default broker address", !plain.stdout.includes("4222") && !plain.stderr.includes("4222"), shown(plain));
-// A bare `up` here would start the default space, which then holds the folder, so the step back is
-// to prepare a space again.
 check("the report names space create for this folder, not a bare up", plain.stdout.includes(`cotal space create <name> --root ${realpathSync.native(root)}\``) && /cotal use <name>/.test(plain.stdout) && !/cotal up\b/.test(plain.stdout), shown(plain));
 
 const components = run(["status", "--components"]);
-check("status --components refuses the unregistered root and probes no default broker", /target\s+refused · unregistered-root/.test(components.stdout) && !components.stdout.includes("4222") && !components.stderr.includes("4222"), shown(components));
+check("status --components refuses the folder that names no space and probes no default broker", /target\s+refused · no-meshes/.test(components.stdout) && !components.stdout.includes("4222") && !components.stderr.includes("4222"), shown(components));
 
 // A `.cotal/` with nothing in it names no records, and a bare `up` there is how a space starts.
 const fresh = mkdtempSync(join(home, "fresh-"));

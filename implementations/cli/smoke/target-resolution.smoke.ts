@@ -7,8 +7,8 @@
  * that names another space is refused before anything is written. `up -f --json` checks its manifest
  * first: one that does not validate refuses `SCHEMA_INVALID` with its problem, and a valid one refuses
  * `UNSUPPORTED`, naming only `--json` to omit. In a folder whose records name no
- * space, as after `space forget`, `whoami` and `spawn --dry-run` keep exit 0 under the held default's
- * heading, say it was assumed, and name the folder and that space in their target. A folder's space
+ * space, as after `space forget`, `whoami` and `spawn --dry-run` refuse with no space selected and name
+ * the folder. A folder's space
  * is the target of the commands run there only while it RUNS: a space prepared there and never
  * started, and one whose registration survives a stack that no `cotal down` stopped, leave the
  * selection the target, and the run names what the folder holds and the `cotal up` that starts it,
@@ -511,8 +511,8 @@ const QUESTION = "Which one?";
   }
 }
 
-// A forgotten space's folder keeps its `.cotal/` records, which name no space, so the held default is
-// assumed there only to report on it.
+// A forgotten space's folder keeps its `.cotal/` records, which name no space, so nothing there is
+// given the held default.
 {
   clearCurrent();
   const forgotten = join(home, "forgotten");
@@ -520,16 +520,16 @@ const QUESTION = "Which one?";
   const prepared = run(["space", "create", "gone"], forgotten);
   const forgot = run(["space", "forget", "gone"], forgotten);
   check("control: a space prepared in a folder and then forgotten", prepared.status === 0 && forgot.status === 0 && existsSync(join(forgotten, ".cotal")), { prepared: shown(prepared), forgot: shown(forgot) });
-  const line = "this folder names no space; the held default main was assumed";
   const root = realpathSync(forgotten);
   for (const command of [["whoami"], ["spawn", "--dry-run"]]) {
     const json = run([...command, "--json"], forgotten);
-    const target = json.status === 0 ? (JSON.parse(json.stdout) as { target?: Record<string, unknown> }).target : undefined;
-    check(`${command.join(" ")} there exits 0 with a target naming the folder and the assumed space, not a space`,
-      target?.root === root && target.assumed === "main" && !Object.hasOwn(target, "space"), shown(json));
+    const body = json.status === 2 ? JSON.parse(json.stdout) as { target?: Record<string, unknown> | null; error?: { code?: string; message?: string } } : undefined;
+    const namesFolder = body?.target?.root === root || body?.error?.message?.includes(`for ${root}`) === true;
+    check(`${command.join(" ")} there refuses with no space, naming the folder and not an assumed one`,
+      body?.error?.code === "TARGET_NOT_FOUND" && namesFolder && !Object.hasOwn(body.target ?? {}, "space") && !Object.hasOwn(body.target ?? {}, "assumed") && !json.stdout.includes("\"main\""), shown(json));
     const plain = run([...command, "--plain"], forgotten);
-    check(`${command.join(" ")} there keeps the Mesh: main heading and says the default was assumed`,
-      plain.status === 0 && new RegExp(`^Mesh: main\n\\s*${line}\n`).test(plain.stdout), shown(plain));
+    check(`${command.join(" ")} there names no Mesh and says no space is registered here`,
+      plain.status === 2 && !/^Mesh: /m.test(plain.stdout + plain.stderr) && (plain.stdout + plain.stderr).includes(`no space is registered or prepared here for ${root}`), shown(plain));
   }
 }
 

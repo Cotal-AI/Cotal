@@ -35,10 +35,10 @@ export function personaCatalog(values: { space?: string; server?: string }): Per
     if (error.code === "not-started" && !values.server && error.details.root && error.details.space && !error.details.rootMissing)
       return catalogAt(error.details.root, error.details.space);
     const { message, remedy } = workspaceErrorParts({ kind: "target", error });
-    // Every caller selects with --space, and some take no --server, so the shared remedy's
-    // `--server` would name a flag the command refuses. A prepared space is selectable by name.
-    // The catalog is read offline, so no running mesh is not the reason: nothing selects a space.
-    const none = error.code === "no-meshes";
+    // A folder whose records name no space already has its next step, including a team file there.
+    // Every other no-mesh refusal is a machine with nothing selected: the catalog is read offline,
+    // and some callers take no --server, so the shared remedy's `--server` would name a flag they refuse.
+    const none = error.code === "no-meshes" && error.details.root === undefined;
     const next = none ? "run `cotal up` in a project, or name a prepared or registered space with `--space <name>`" : remedy;
     throw new CommandFailure("refused", targetErrorCode(error.code), none ? "no space is selected, and this folder is not a space's project" : message, next ? { remedy: next } : {});
   }

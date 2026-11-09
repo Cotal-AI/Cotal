@@ -1,6 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
+import { parse as parseYaml } from "yaml";
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
@@ -167,6 +168,9 @@ export interface MeshTargetErrorDetails {
   /** For `not-started` on a prepared space: the last whole-stack operation its root's stack journal
    *  records for it with no outcome, which `cotal status` there names the way out of. */
   unsettled?: "up" | "down";
+  /** For `no-meshes` in a folder whose records name no space: a `cotal.yaml` in that folder that
+   *  declares `kind: Mesh` and a `space`, and the space it declares. The file was read, not launched. */
+  manifest?: { path: string; space: string };
 }
 
 const WORKSPACE_TARGET_ERROR = "cotal:workspace:mesh-target-error";
@@ -320,6 +324,27 @@ export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget
     personaRoot: personaDir(m.root),
     source,
   };
+}
+
+/** A `cotal.yaml` in `dir` that declares a mesh and a space, or undefined when there is none, it
+ *  cannot be read, or it does not. Only `kind` and `space` are read; the file is not launched. */
+function meshManifestAt(dir: string): { path: string; space: string } | undefined {
+  const path = join(dir, "cotal.yaml");
+  let text: string;
+  try { text = readFileSync(path, "utf8"); } catch { return undefined; }
+  let doc: unknown;
+  try { doc = parseYaml(text); } catch { return undefined; }
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return undefined;
+  const record = doc as { kind?: unknown; space?: unknown };
+  const space = record.space;
+  if (record.kind !== "Mesh" || typeof space !== "string" || !space.trim() || space !== space.trim()) return undefined;
+  return { path, space };
+}
+
+/** The team file beside the command, or in the project root the command resolved. A fresh clone has
+ *  the file and no `.cotal/`, so the current directory is read before the root walk. */
+export function nearbyMeshManifest(cwd: string, root = cwd): { path: string; space: string } | undefined {
+  return meshManifestAt(cwd) ?? (root === cwd ? undefined : meshManifestAt(root));
 }
 
 function localTarget(root: string, server: string, source: MeshTarget["source"], readOnly = false): MeshTarget {
@@ -1021,6 +1046,10 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   }
 
   const root = findCotalRoot(cwd);
+  // A fresh folder with a team file and no `.cotal/` is that file's project. An ancestor `.cotal/`
+  // belongs to another folder, so it does not take this command.
+  const beside = canonicalRoot(root) === canonicalRoot(cwd) ? undefined : nearbyMeshManifest(cwd);
+  if (beside) throw new MeshTargetError("no-meshes", `no space is registered or prepared here for ${cwd}`, { root: cwd, manifest: beside });
   if (isGenuineSpace(root)) {
     // The DISK is the tenant authority for this root, before any registry record: a broker whose
     // auth dir holds several accounts stays several tenants even when only one of them happens to
@@ -1102,8 +1131,14 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
         `another mesh ("${onDefault.space}") is running at ${DEFAULT_SERVER}`,
         { space: onDefault.space, server: DEFAULT_SERVER },
       );
-    const target = localTarget(root, DEFAULT_SERVER, "local-space", flags.readOnly);
-    return rootNamesNoSpace(root) ? { ...target, namesNoSpace: true } : target;
+    // A folder whose records name no space, as after `space forget`, is not a mesh named the
+    // held default. Read-only commands and a launch agree with `status`: nothing is selected
+    // here. A `cotal.yaml` in the folder is named, not launched.
+    if (rootNamesNoSpace(root)) {
+      const manifest = nearbyMeshManifest(cwd, root);
+      throw new MeshTargetError("no-meshes", `no space is registered or prepared here for ${root}`, { root, ...(manifest ? { manifest } : {}) });
+    }
+    return localTarget(root, DEFAULT_SERVER, "local-space", flags.readOnly);
   }
 
   // The fallback names *running* meshes. A liveness miss used to delete the record and

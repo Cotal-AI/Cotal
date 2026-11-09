@@ -34,9 +34,8 @@ local persona, harness precedence and physical working directory. Binary, login,
 performed. Both previews say where the persona came from: `--file`, the command line, a preference
 or the default. A harness that names no connector this workstation knows is a `HARNESS_UNKNOWN`
 warning, or the `PREFERENCE_INVALID` warning `config` gives when only `COTAL_DEFAULT_AGENT` chose
-it. In a folder whose `.cotal/` names no space, as after `space forget`, the preview keeps `Mesh:
-main`, says under it that the held default was assumed, and its JSON `target` names the folder as
-`root` and the space as `assumed`.
+it. In a folder whose `.cotal/` names no space, as after `space forget`, the preview refuses
+with no space selected and names the folder. It does not keep `Mesh: main`.
 
 `spawn --foreground --enrollment-file <private-file> --space <name>` uses the existing one-seat
 foreground enrollment path. The file is opened with protected ownership/mode and bounded input

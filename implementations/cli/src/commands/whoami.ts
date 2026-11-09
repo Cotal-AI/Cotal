@@ -93,10 +93,9 @@ export async function whoami(args: ParsedArgs): Promise<void> {
     if (prepared?.space === undefined || prepared.root === undefined || hasUserAuthState(prepared.root, prepared.space, { readOnly: true })) throw error;
     return writePrepared(presentation, prepared.space, prepared.root);
   }
-  // A folder whose records name no space was given the held default only to report on it, so the
-  // target names the folder and the space it assumed.
-  const assumed = t.namesNoSpace === true;
-  const target = assumed ? { root: t.root, assumed: t.space } : { space: t.space };
+  // A folder whose records name no space is refused by the resolver, so it is never reported as the
+  // held default.
+  const target = { space: t.space };
   recordOperationSpace(t.space);
   const warnings: OutputWarning[] = [];
   const server = brokerAddressForDisplay(t.server);
@@ -180,7 +179,7 @@ export async function whoami(args: ParsedArgs): Promise<void> {
           ? { message: "whoami could not tell whether the broker enforces the registered mode; the warning names why", remedy: `check it by adding it again without --force: \`cotal space forget ${t.space}\`, then \`cotal space add ${t.space} --server ${server} --root ${t.root}\`` }
           : { message: "whoami could not read this identity's grant; the warning names why", remedy: "run `cotal whoami` on the machine that hosts the space's auth service" } } : {}),
     },
-    (r) => whoamiView(r, assumed),
+    (r) => whoamiView(r),
   );
 }
 
@@ -290,7 +289,7 @@ function writePrepared(presentation: Presentation, space: string, root: string):
   const result: WhoamiResult = signer
     ? { ...base, identity: { kind: "space-signer", ...none }, read: "all", post: "all", dms: true, capabilities: "all" }
     : { ...base, identity: { kind: "no-credential", ...none }, read: [], post: [], dms: false, capabilities: [] };
-  writeResult(presentation, { command: "whoami", target: { space, root }, result }, (r) => whoamiView(r, false, root));
+  writeResult(presentation, { command: "whoami", target: { space, root }, result }, (r) => whoamiView(r, root));
 }
 
 const grantText = (g: Grant | null, empty: string): Cell =>
@@ -304,7 +303,7 @@ const KIND_TEXT: Record<WhoamiResult["identity"]["kind"], string> = {
   unknown: "unknown: this address is not registered here, and whoami does not contact the broker",
 };
 
-function whoamiView(r: WhoamiResult, assumed: boolean, preparedRoot?: string): Report {
+function whoamiView(r: WhoamiResult, preparedRoot?: string): Report {
   const id = r.identity;
   const rows: (readonly [string, Cell])[] = [
     ["space", { text: r.space, tone: "selected" }],
@@ -322,7 +321,5 @@ function whoamiView(r: WhoamiResult, assumed: boolean, preparedRoot?: string): R
   if (preparedRoot !== undefined) hints.push({ text: `this space is prepared and not started; start it with \`cotal up\` in ${preparedRoot}`, tone: "hint" });
   else if (id.kind === "no-credential") hints.push({ text: "commands against this space need `--creds <file>`", tone: "hint" });
   const identity: Section = { title: "Identity and access", blocks: [{ kind: "fields", rows }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] };
-  // The heading names the space the folder was given; the line under it says it was only assumed.
-  if (!assumed) return { sections: [identity] };
-  return { space: r.space, sections: [{ blocks: [{ kind: "lines", lines: [{ text: `this folder names no space; the held default ${r.space} was assumed`, tone: "hint" }] }] }, identity] };
+  return { sections: [identity] };
 }
