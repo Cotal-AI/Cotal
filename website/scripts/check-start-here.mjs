@@ -102,6 +102,7 @@ assert.equal(
 const reference = new Set([
   'overview',
   'api-reference',
+  'mesh-commands',
   ...Object.values(JSON.parse(readFileSync(new URL('./fixtures/cli-fragments.json', import.meta.url), 'utf8'))),
   'cli',
   'mcp-tools',
