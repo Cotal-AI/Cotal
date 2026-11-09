@@ -423,7 +423,8 @@ async function guidedPreset(preset: ReturnType<typeof resolveServicePreset>): Pr
     } else {
       const answer = await prompts.text({
         message: schema.type === "string" ? `Non-secret value for --${name}` : `JSON ${String(schema.type)} for --${name}`,
-        validate: (value) => presetOptionRefusal(preset, name, value ?? ""),
+        validate: (value) => presetOptionRefusal(preset, name, value ?? "")
+          ?? (preset.adapter === brokerService.name && option === "server" ? brokerServerProblem(value ?? "") : undefined),
       });
       if (prompts.isCancel(answer)) return undefined;
       values[name] = answer;

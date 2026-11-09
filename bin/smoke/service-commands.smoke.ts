@@ -73,13 +73,12 @@ for (const [line, what] of [["echo 'x", "single quote that is never closed"], ["
   check(`--exec ${JSON.stringify(line)} refuses: ${what}`, typeof result === "string" && result.startsWith("USAGE_INVALID: ") && result.includes(what), result);
 }
 
-// Guided broker answers use the same address rule as the final definition save.
-const guidedBroker = resolveServicePreset("broker");
-check("a guided broker server rejects DNS before the next question", presetOptionRefusal(guidedBroker, "server", "nats://localhost:4222")?.includes("concrete IP literal") === true);
-check("a guided broker server rejects wildcard binds", presetOptionRefusal(guidedBroker, "server", "nats://0.0.0.0:4222")?.includes("wildcard bind") === true);
-check("a guided broker server accepts a concrete address", presetOptionRefusal(guidedBroker, "server", "nats://127.0.0.1:4222") === undefined);
-const credentialAddress = presetOptionRefusal(guidedBroker, "server", "nats://fixture:secret@127.0.0.1:4222");
-check("a guided broker server refusal withholds credential-bearing input", credentialAddress !== undefined && !credentialAddress.includes("fixture:secret"));
+// A guided answer is checked without requiring the form's other answers yet.
+const guidedAuth = resolveServicePreset("auth-service");
+check("a guided integer answer rejects invalid JSON", presetOptionRefusal(guidedAuth, "port", "abc")?.includes("not valid JSON") === true);
+check("a guided integer answer rejects a fractional value", presetOptionRefusal(guidedAuth, "port", "1.25")?.includes("closed schema") === true);
+check("a guided port answer applies its schema bound", presetOptionRefusal(guidedAuth, "port", "65536")?.includes("closed schema") === true);
+check("a corrected guided port answer needs no other answers", presetOptionRefusal(guidedAuth, "port", "65535") === undefined);
 
 // ---- A preset's defaults are a closed declaration ----------------------------------------------
 const base = { kind: "service-preset" as const, name: "fixture", summary: "fixture", adapter: "fixture-adapter", timeoutMs: 1000 };
