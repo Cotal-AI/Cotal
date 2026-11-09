@@ -62,11 +62,11 @@ import {
   deleteIdpSession, deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadOwnerSecret, saveIdpSession,
   saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
-import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, removeMesh, recordMesh, resolveControlTarget, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
+import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
-import { daemonPaths } from "../daemon/endpoint.js";
+import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
 import { daemonConnectIntentFile } from "../daemon/service.js";
 import { runSetup } from "../daemon/setup.js";
 import { serveDaemon } from "../daemon/server.js";
@@ -634,7 +634,7 @@ try {
     await cell("H1 shipped setup hosts an answering Manager independently of machine approval", async () => {
       seedUnitReceipt();
       await d.close();
-      grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
+      const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] }).lifecycleUid!;
       const original = findMesh(ON)!;
       const published = await (await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as { server: string; tlsRequired?: boolean; userAuth: NonNullable<MeshEntry["userAuth"]> };
       const deliveryStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${ON}` });
@@ -681,10 +681,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         console.log("  H1 plain stderr", JSON.stringify(err));
         return { code, out, err };
       };
-      const startDaemon = async () => {
-        const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), "daemon", "serve"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+      const startDaemon = async (managedHome?: string) => {
+        const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
+        const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         child.stdout.resume(); child.stderr.resume();
-        for (let i = 0; i < 100; i++) { try { await ask(paths.socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
+        for (let i = 0; i < 100; i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
+        await killAndAwaitExit(child, "SIGTERM");
         throw new Error("shipped daemon did not answer");
       };
       let child = await startDaemon();
@@ -722,7 +724,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         check("H3 killed daemon resumes answering Manager without setup", replacement.state === "answering", replacement);
         await cli("service-disconnect", "--space", ON);
         check("H4 disconnect forgets intent and stops Manager", !existsSync(intent) && resultOf(await ask(paths.socket, { op: "manager-status", space: ON })).state === "stopped");
-        grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
+        grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: cliLifecycle, scope: [], allowSubscribe: [], allowPublish: [] });
         const refused = await cli("setup", "--space", ON, "--wait", "0");
         const before = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
         await sleep(3500);
@@ -732,6 +734,36 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         await cli("service-disconnect", "--space", ON);
         await cli("setup", "--no-manager", "--space", ON, "--wait", "0");
         check("H6 --no-manager starts no child or hosting intent", resultOf(await ask(paths.socket, { op: "manager-status", space: ON })).state === "stopped" && !existsSync(intent));
+        grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: cliLifecycle, scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
+        const managedHome = join(root, "managed-daemon");
+        mkdirSync(managedHome, { mode: 0o700 });
+        const managedPaths = daemonPathsFor(managedHome, env);
+        const unitPath = join(root, "managed-daemon.service");
+        const unitBytes = "[Unit]\nDescription=Owned recording fixture\n[Service]\nRestart=always\n";
+        writeFileSync(unitPath, unitBytes, { mode: 0o600 });
+        writeFileSync(join(managedHome, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon-0123456789abcdef.service", unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString(), daemonHome: managedHome }), { mode: 0o600 });
+        const managedChild = await startDaemon(managedHome);
+        try {
+          const setupManaged = await cli("setup", "--space", ON, "--idp", idpUrl, "--daemon-home", managedHome);
+          const managed = setupManaged.doc.result?.manager;
+          const managedIntent = join(managedHome, "daemon", spaceSegment(ON), "manager-host.json");
+          check("H7 explicit home signs in and hosts its own answering Manager", setupManaged.code === 0 && setupManaged.doc.result?.launchReady === true && managed?.state === "answering" && existsSync(managedIntent), setupManaged);
+          check("H7 explicit home does not host in the default daemon", resultOf(await ask(paths.socket, { op: "manager-status", space: ON })).state === "stopped" && !existsSync(intent));
+          const recorder = join(root, "native-recorder");
+          mkdirSync(recorder, { mode: 0o700 });
+          const nativeLog = join(root, "native-recorder.log");
+          writeFileSync(join(recorder, "systemctl"), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(nativeLog)}\ncase "$*" in\n  '--user --no-ask-password --no-pager stop cotal-daemon-0123456789abcdef.service'|'--user --no-ask-password --no-pager disable cotal-daemon-0123456789abcdef.service'|'--user --no-ask-password --no-pager daemon-reload') exit 0 ;;\n  *) exit 99 ;;\nesac\n`, { mode: 0o700 });
+          const priorPath = env.PATH;
+          env.PATH = `${recorder}:${priorPath}`;
+          let removed;
+          try { removed = await cli("uninstall", "--yes", "--daemon-home", managedHome); }
+          finally { env.PATH = priorPath; }
+          check("H8 uninstall removes the owned recorded unit and hosting intent", removed.code === 0 && removed.doc.result?.state === "removed" && !existsSync(unitPath) && !existsSync(managedIntent), removed);
+          let managerAlive = false;
+          if (typeof managed?.pid === "number") { try { process.kill(managed.pid, 0); managerAlive = true; } catch { /* the owned Manager exited */ } }
+          check("H8 uninstall leaves the real hosted Manager exited and records native removal", typeof managed?.pid === "number" && !managerAlive && resultOf(await ask(managedPaths.socket, { op: "manager-status", space: ON })).state === "stopped" && !existsSync(join(managedHome, "service-unit.json")) && readFileSync(nativeLog, "utf8").trim().split("\n").length === 3);
+          check("H8 uninstall leaves the default daemon answering", resultOf(await ask(paths.socket, { op: "status" })).state === "ready");
+        } finally { await killAndAwaitExit(managedChild, "SIGTERM"); }
       } finally {
         await killAndAwaitExit(child, "SIGTERM");
         recordMesh(original);
