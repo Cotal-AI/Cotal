@@ -148,6 +148,17 @@ try {
 } catch (error) {
   report.failure = error.message;
   process.exitCode = 1;
+  if (process.platform === "win32" && installAttempted && plan) {
+    // Filter before logging: /V also prints the task's process arguments and user environment.
+    const task = spawnSync(join(process.env.SystemRoot, "System32", "schtasks.exe"),
+      ["/Query", "/TN", plan.unit, "/V", "/FO", "LIST"], {
+        encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024, windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    report.scheduledTask = { exit: task.status, signal: task.signal,
+      summary: (task.stdout ?? "").split(/\r?\n/).filter(line => /^\s*(Status|Last Result|Last Run Time)\s*:/.test(line)),
+      log: join(paths.state, "daemon.log") };
+  }
   if (process.platform === "darwin" && installAttempted && existsSync(receipt)) {
     try {
       const { darwinLaunchdJob } = await import("@cotal-ai/seat");

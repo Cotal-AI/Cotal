@@ -148,9 +148,23 @@ export function daemonServeArgv(daemonHome: string | undefined): string[] {
   if (process.platform === "win32" && existsSync(join(dirname(dirname(entry)), "desktop-runtime.json"))) {
     const launcher = join(dirname(cli[0]!), "cotal-desktop.exe");
     if (!existsSync(launcher)) throw new CommandFailure("refused", "UNSUPPORTED", "the packaged desktop daemon launcher is missing; no console-program task was substituted");
+    assertScheduledEntry(join(dirname(entry), "cotal.js"));
     return [launcher, "--daemon", ...(daemonHome !== undefined ? ["--daemon-home", daemonHome] : [])];
   }
+  if (process.platform === "win32") {
+    assertScheduledEntry(join(dirname(entry), "daemon-native.js"));
+  }
   return [...cli, "daemon", "serve", ...(daemonHome !== undefined ? ["--daemon-home", daemonHome] : [])];
+}
+
+/** Refuse a broken installed launch before publishing or registering a Windows task. */
+export function assertScheduledEntry(entry: string): void {
+  let file = false;
+  try { file = lstatSync(entry).isFile(); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  if (!file) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE",
+    `the scheduled task entry is missing or is not a file: ${entry}; no task was prepared`,
+    { remedy: "repair or reinstall this Cotal installation before running cotal daemon install again" });
 }
 
 /** One native tool call's outcome. `detail` is a bounded single line of its output for a refusal. */
