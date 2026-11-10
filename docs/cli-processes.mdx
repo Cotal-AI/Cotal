@@ -545,12 +545,18 @@ cotal daemon serve [--daemon-home <dir>] [--json|--plain]
 cotal daemon status [--daemon-home <dir>] [--json|--plain]
 cotal daemon login --idp <auth base URL> [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon spaces [--refresh] [--daemon-home <dir>] [--json|--plain]
+cotal daemon desktop [--daemon-home <dir>]
 cotal daemon connect-check --space <s> [--daemon-home <dir>] [--json|--plain]
 cotal daemon register --space <s> [--daemon-home <dir>] [--json|--plain]
 cotal daemon service-connect --space <s> [--daemon-home <dir>] [--json|--plain]
 cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plain]
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
+
+Each mode accepts only its listed flags. A flag from another mode refuses with `USAGE_INVALID`
+before any daemon or service action, including `--dry-run` on `serve`. Bare `cotal daemon` lists
+the declared modes and points to `cotal help daemon`, which works without a running daemon.
+`desktop` serves the desktop app's bounded JSON request on stdin; it has its own protocol output.
 
 This release serves a local endpoint for status, sign-in, a connection check, a registration request
 and the daemon's own service connection, and installs itself as the user's own service: a systemd
