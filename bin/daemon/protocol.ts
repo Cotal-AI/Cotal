@@ -161,7 +161,7 @@ const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 export const ATTEMPT_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const MAX_CLIENT_ID = 128;
 /** A space name as it appears in a subject token. */
-const SPACE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+export const SPACE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export type ParsedRequest = { readonly ok: true; readonly request: DaemonRequest } | { readonly ok: false; readonly id: string | null; readonly code: ProtocolErrorCode; readonly message: string };
 
