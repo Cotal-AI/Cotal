@@ -1687,6 +1687,10 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           await approve(host, ON, fixture.owner);
           await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A1 desired 200 connects real broker service");
           await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          const humanStatus = await plainCommand("status");
+          check("A2a CLI human status names account computer and desired revision", humanStatus.code === 0 && humanStatus.out.includes("Account computer") && humanStatus.out.includes("Desired revision") && humanStatus.out.includes(ON), humanStatus);
+          const jsonStatus = await cli("status");
+          check("A2b CLI status JSON includes account desired and observed fields", jsonStatus.doc.result?.account?.spaces?.some((r: any) => r.space === ON && r.desired && r.observed === "connected"), jsonStatus);
           await ask(paths.socket, { op: "service-disconnect", space: ON }, 100_000);
           accountRevision++;
           await sleep(6000);
