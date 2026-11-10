@@ -200,6 +200,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
         assert.doesNotMatch(err, /could not list|refusing bare manager stop|spare.capability|NOT BOUND/i, "ready shutdown has no listing, spare or unbound failure"); passed++;
       }
       assert.equal([...owned.values()].some(live), false, "no recorded owned process survives successful teardown"); passed++;
+      assert.deepEqual([brokerPath, managerPath, deliveryPath].filter((file) => existsSync(file)), [], "no recorded pidfile survives successful teardown"); passed++;
     }
     console.log(`PASS foreground-up-signals ${name}`);
     return true;
@@ -464,6 +465,7 @@ await cell("term", { signal: "SIGTERM" });
 await cell("double", { twice: true });
 await cell("auth-early", { auth: true, twice: true });
 await cell("auth-ready", { auth: true, ready: true });
+await cell("auth-ready-term", { auth: true, ready: true, signal: "SIGTERM" });
 let refusalObserved = false;
 for (let attempt = 1; attempt <= 3 && !refusalObserved; attempt++) {
   refusalObserved = await cell(`auth-refused-${attempt}`, { auth: true, refusal: true });
