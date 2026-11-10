@@ -545,7 +545,7 @@ export function recordLocalSpace(name: string, root: string): { file: string; pr
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT" && lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink())
       throw refuse("TARGET_NOT_FOUND", `${dir} links to ${resolve(root, readlinkSync(dir))}, which does not exist; nothing was written`, target, "remove the link or make the folder it names, then run this create again");
-    if (!unwritable(error)) throw error;
+    if (!unwritable(error)) throw localWriteFailure(error, dir, { requested: name, root });
     throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, "create the space in a folder you own, or pass --root <dir>");
   }
   protectedLocalDirectory(dir, "the project's .cotal directory");

@@ -24,11 +24,24 @@ function test(name, body) {
   }
 }
 
-function run(home, args, limit) {
+function run(home, args, limit, mkdirFault) {
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const tmp = join(home, "tmp");
   mkdirSync(tmp, { recursive: true, mode: 0o700 });
-  const command = [process.execPath, ...args];
+  const preload = join(home, "mkdir-fault.mjs");
+  if (mkdirFault) writeFileSync(preload, `
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    const mkdir = fs.mkdirSync;
+    fs.mkdirSync = function(path, ...args) {
+      if (path === ${JSON.stringify(mkdirFault.path)}) {
+        throw Object.assign(new Error("injected mkdir failure"), { code: ${JSON.stringify(mkdirFault.code)}, path, syscall: "mkdir" });
+      }
+      return mkdir.call(this, path, ...args);
+    };
+    syncBuiltinESMExports();
+  `);
+  const command = [process.execPath, ...(mkdirFault ? ["--import", preload] : []), ...args];
   const env = {
     PATH: process.env.PATH,
     HOME: home,
@@ -54,6 +67,32 @@ function temporaryFiles(dir) {
 }
 
 try {
+  for (const code of ["ENOSPC", "EDQUOT", "EFBIG", "EACCES"]) {
+    test(`space: initial directory ${code} names its boundary without publishing a record`, () => {
+      const home = join(root, `mkdir-${code}`);
+      const project = join(home, "project");
+      mkdirSync(project, { recursive: true, mode: 0o700 });
+      const dir = join(project, ".cotal");
+      const args = [bin, "space", "create", "storage", "--root", project, "--json"];
+      const failed = run(home, args, undefined, { path: dir, code });
+      const result = JSON.parse(failed.stdout);
+      assert.equal(failed.signal, null);
+      assert.equal(failed.status, code === "EACCES" ? 2 : 5, failed.stdout + failed.stderr);
+      assert.equal(result.error.code, code === "EACCES" ? "PERMISSION_DENIED" : "OPERATION_FAILED");
+      if (code !== "EACCES") {
+        assert.equal(result.error.cause.code, code);
+        assert.equal(result.target.path, dir);
+        assert.equal(result.target.requested, "storage");
+        assert.ok(result.error.message.includes(dir));
+        assert.match(result.error.remedy, /retry/);
+      }
+      assert.equal(existsSync(dir), false);
+      assert.equal(existsSync(join(home, ".cotal")), false);
+      assert.equal(failed.stderr, "");
+      assert.equal(run(home, args).status, 0);
+    });
+  }
+
   test("storage codes carry a path and remedy while unrelated failures propagate", () => {
     for (const code of ["EFBIG", "ENOSPC", "EDQUOT"]) {
       const error = Object.assign(new Error("write failed"), { code });
