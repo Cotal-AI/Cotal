@@ -720,6 +720,9 @@ connection stage is never reached. With `--no-manager`, only a connected machine
 
 `--idp` is needed only when this machine is not signed in. Without it, a machine that needs a
 sign-in refuses `AUTH_REQUIRED` (`NOT_SIGNED_IN`) and names the flag, before any registration.
+An expired or revoked session rejected by the provider needs a new device sign-in, even when a
+cached session remains on disk. A provider outage or unusable response stops setup with
+`DEPENDENCY_UNAVAILABLE`, without asking for a new sign-in or reporting the session as valid.
 A daemon that is already answering while no installed unit is recorded for it refuses `CONFLICT`
 (`RUNNING_WITHOUT_UNIT`): installing then would start a second daemon that the lifetime lock
 refuses, and the running one is not a persistent service. Stop it and run `setup` again, or keep it
@@ -935,16 +938,27 @@ The sign-in cache check includes provider keys and session records, not only the
 
 `connect-check` asks the running daemon whether it could register with a space as its own service.
 The daemon is not a Manager and never borrows a Manager's identity or authority. The check reads
-the space's registration on this machine and the daemon's sign-in, then the space's public account
-identity from its auth service (`GET <exchange>/service-endpoint-authority`, no redirects). It sends
-no registration and holds no credential. A space whose auth service does not host service endpoints
+the space's registration on this machine and validates the daemon's sign-in through the provider's
+token exchange, then reads the space's public account identity from its auth service
+(`GET <exchange>/service-endpoint-authority`, no redirects). It sends
+no registration and persists no credential. The exchange reuses the stock in-memory JWT cache for
+at most 60 seconds, never past the JWT's expiry margin. The provider decides whether a cached
+session is expired or revoked; the expiry on disk is advisory. A space whose auth service does not
+host service endpoints
 refuses `UNSUPPORTED` (`UNSUPPORTED_BY_SPACE`). The daemon does not fall back to anything else.
+Before declaring readiness, the daemon checks that the returned proof has a signed JWT shape with
+a decodable signature segment, a subject and a future expiry, and no future not-before time. This does not
+verify its signature or replace the space's claim checks. An unusable proof refuses
+`DEPENDENCY_UNAVAILABLE` (`REFUSED`) without asking for another device sign-in.
+The connection-check caller allows 65 seconds for the token exchange and authority read, whose
+default request limits are 30 seconds each. Registration allows 95 seconds, and service connection
+allows 160 seconds for the subsequent stages.
 
 The other refusals are `TARGET_NOT_FOUND` (`NOT_REGISTERED`) for a space this machine has not
 registered, `UNSUPPORTED` (`NOT_USER_AUTH`) for a space without user sign-in, `AUTH_REQUIRED`
 (`NOT_SIGNED_IN`) when the machine is not signed in to the space's provider, and
-`DEPENDENCY_UNAVAILABLE` (`UNREACHABLE` or `REFUSED`) when the auth service cannot be reached or
-answers with something unusable.
+`DEPENDENCY_UNAVAILABLE` (`UNREACHABLE` or `REFUSED`) when the sign-in provider or auth service
+cannot be reached or answers with something unusable.
 
 On success it reports `ready-to-register` with the space's account, the daemon's service name
 `ai.cotal.machine` and the daemon's own instance ID. Nothing has been registered. The space owner must

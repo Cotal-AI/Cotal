@@ -195,16 +195,22 @@ const ACCOUNT = `A${"B".repeat(55)}`;
 const hits: Array<{ method: string }> = [];
 const authority = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   for await (const _ of req) { /* drain */ }
+  if (req.url === "/api/auth/token") {
+    res.writeHead(200, { "content-type": "application/json" });
+    const token = [JSON.stringify({ alg: "EdDSA" }), JSON.stringify({ sub: "fixture", exp: Date.now() / 1000 + 30 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".fixture";
+    res.end(JSON.stringify({ token }));
+    return;
+  }
   hits.push({ method: req.method ?? "" });
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ v: 1, kind: "service-endpoint-authority-info", space: "ready", accountPublicKey: ACCOUNT }));
 });
 await new Promise<void>((r) => authority.listen(0, "127.0.0.1", r));
 const base = `http://127.0.0.1:${(authority.address() as AddressInfo).port}`;
-const IDP = "https://idp.example.test/api/auth";
+const IDP = `${base}/api/auth`;
 const userMesh = (space: string): MeshEntry => ({
   space, server: "nats://127.0.0.1:4222", root: meshRoot, mode: "user", origin: "manual",
-  userAuth: { provider: "cotal", idp: { url: IDP, issuer: "https://idp.example.test", audience: "https://idp.example.test" }, endpoints: { url: base }, remote: true, sentinelCredsPath: join(userAuthStateDir(meshRoot, space, { readOnly: true }), "sentinel.creds") },
+  userAuth: { provider: "cotal", idp: { url: IDP, issuer: base, audience: base }, endpoints: { url: base }, remote: true, sentinelCredsPath: join(userAuthStateDir(meshRoot, space, { readOnly: true }), "sentinel.creds") },
   ts: new Date().toISOString(),
 });
 const identities = (dir: string): string[] => existsSync(join(dir, "daemon")) ? readdirSync(join(dir, "daemon"), { recursive: true }).map(String).filter((p) => p.endsWith("service-identity.json")).sort() : [];

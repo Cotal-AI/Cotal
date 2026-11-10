@@ -1,11 +1,12 @@
 /**
  * The daemon's connection readiness for one space (A2b.1). It answers whether this machine's daemon
  * could register with the space as its own service, and if not, exactly why. It never registers,
- * holds no bearer and starts nothing.
+ * persists no bearer and starts nothing.
  *
  * Every input is stock: the mesh registry entry (`findMesh`), the machine's stock IdP session
- * (`loadIdpSession`), and the registered auth provider's `serviceEndpointInfo`, which reads the
- * space's stock service authority route (GET only, no redirects, closed parser). A 404 there means the
+ * (`loadIdpSession` and `fetchIdpJwt`), and the registered auth provider's `serviceEndpointInfo`,
+ * which reads the space's stock service authority route (GET only, no redirects, closed parser).
+ * A 404 there means the
  * space does not host service endpoints (stock `serviceEndpoints` is off by default); the daemon
  * reports that, and never falls back to a Manager view, `manager.vitals` or static credentials.
  *
@@ -16,9 +17,10 @@
  * holds no credential, owner, hostname or hardware id.
  */
 import { join } from "node:path";
+import { base64url, decodeJwt, decodeProtectedHeader } from "jose";
 import { assertLifecycleToken, isAccountNkey, mintLifecycleUid, resolveAuthProvider } from "@cotal-ai/core";
 import { claimIdentityRecord, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
-import { loadIdpSession } from "@cotal-ai/auth";
+import { fetchIdpJwt, IdpSessionRejectedError, IdpUnreachableError, loadIdpSession } from "@cotal-ai/auth";
 import type { ConnectCheckResult } from "./protocol.js";
 
 /** The service name the daemon proposes for itself. Single-label names are reserved for reference
@@ -78,6 +80,25 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
   let session;
   try { session = loadIdpSession(home, ua.idp.url); } catch { session = undefined; }
   if (!session) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"] };
+  // The cached handle's presence and advisory expiry do not prove the IdP still accepts it.
+  // Reuse the stock bounded JWT cache, so readiness and registration agree on revocation.
+  try {
+    const jwt = await fetchIdpJwt(ua.idp.url, session.token);
+    const header = decodeProtectedHeader(jwt), claims = decodeJwt(jwt);
+    const signature = jwt.split(".")[2] ?? "";
+    const now = Date.now() / 1000;
+    // This is a usability check only. The space still verifies the signature and pinned claims.
+    if (typeof header.alg !== "string" || !header.alg || header.alg === "none" || !/^[A-Za-z0-9_-]+$/.test(signature) || base64url.decode(signature).length === 0
+      || typeof claims.sub !== "string" || !claims.sub
+      || typeof claims.exp !== "number" || !Number.isFinite(claims.exp) || claims.exp <= now
+      || (claims.nbf !== undefined && (typeof claims.nbf !== "number" || !Number.isFinite(claims.nbf) || claims.nbf > now)))
+      return { outcome: "refused", space, message: "the space's sign-in provider gave an answer the daemon cannot use" };
+  }
+  catch (e) {
+    if (e instanceof IdpSessionRejectedError) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"] };
+    if (e instanceof IdpUnreachableError) return { outcome: "unreachable", space, message: "the space's sign-in provider could not be reached" };
+    return { outcome: "refused", space, message: "the space's sign-in provider gave an answer the daemon cannot use" };
+  }
 
   let accountPublicKey: string;
   try {

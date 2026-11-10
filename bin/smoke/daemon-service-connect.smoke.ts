@@ -123,6 +123,7 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--service-only") && title.startsWith("H1")) return;
   if (process.argv.includes("--resume-only") && !/^(C1 |C2 |C15 |C6b )/.test(title)) return;
   if (setupHintsOnly && !["C1 ", "C2 ", "C17 "].some((prefix) => title.startsWith(prefix))) return;
+  if (process.argv.includes("--setup-session-only") && !title.startsWith("H2")) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
 }
@@ -175,6 +176,8 @@ let catalogTarget: string | undefined;
 const jwtsIssued: string[] = [];
 /** R11: the IdP rejects the session handle, as for an expired or revoked session. */
 let idpRevoked = false;
+let tokenFailure: "unreachable" | "unusable" | undefined;
+let recoverOnApproval = false;
 let deviceCodeRequests = 0;
 let deviceFailure: "denied" | "expired" | "unreachable" | undefined;
 let catalogUnavailable = false;
@@ -185,7 +188,10 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/device/code") { deviceCodeRequests++; if (deviceFailure === "unreachable") { req.socket.destroy(); return; } return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 })); }
   if (req.url === "/api/auth/device/token" && deviceFailure) { res.writeHead(400); return void res.end(JSON.stringify({ error: deviceFailure === "denied" ? "access_denied" : "expired_token" })); }
-  if (req.url === "/api/auth/device/token") return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
+  if (req.url === "/api/auth/device/token") {
+    if (recoverOnApproval) idpRevoked = false;
+    return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
+  }
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
   if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(catalog));
   if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
@@ -199,6 +205,8 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     return void res.end(Buffer.from(await answer.arrayBuffer()));
   }
   if (req.url === "/api/auth/jwks") return void res.end(JSON.stringify({ keys: [jwk] }));
+  if (req.url === "/api/auth/token" && tokenFailure === "unreachable") { req.socket.destroy(); return; }
+  if (req.url === "/api/auth/token" && tokenFailure === "unusable") { res.writeHead(503); return void res.end("{}"); }
   if (req.url === "/api/auth/token" && idpRevoked) { res.writeHead(401); return void res.end("{}"); }
   if (req.url === "/api/auth/token" && (req.headers.authorization ?? "") === `Bearer ${SESSION}`) {
     if (catalog) res.setHeader("link", `<${idpOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`);
@@ -261,7 +269,7 @@ const posts = (space: string) => hits.filter((h) => h.space === space && h.metho
 
 const broker = await createBrokerAuth("a2b2-broker");
 const stamp = Date.now();
-const spaces = ["on", "off", "deny", "brk"].map((s) => `${setupHintsOnly ? "-" : ""}a2b2-${s}-${stamp}`);
+const spaces = ["on", "off", "deny", "brk", "session"].map((s) => `${setupHintsOnly ? "-" : ""}a2b2-${s}-${stamp}`);
 const accounts = await Promise.all(spaces.map((s) => createSpaceAccountAuth(broker, s)));
 const handles: AuthServiceHandle[] = [];
 let nats: ChildProcess | undefined, release: (() => void) | undefined;
@@ -944,6 +952,70 @@ try {
       } finally {
         d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
         if (crashed) check("C14 the successor recovered the crashed child's socket by itself (1 recovery)", d.counters.socketsRecovered === 1, d.counters);
+      }
+    });
+
+    await cell("H2 shipped setup recovers rejected cached sessions without relogin on outages", async () => {
+      seedUnitReceipt();
+      await d.close();
+      const sessionSpace = spaces[4]!;
+      const sessionHost = svc[4]!.serviceEndpointHost!;
+      const sessionOwner = deriveOwnerForIdpSubject((await loadOwnerSecret(ctx[4]!.store, sessionSpace))!, idpOrigin, "machine-owner");
+      const cliEntry = join(repo, "bin/dist/cotal.js");
+      const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+      const cli = async (...args: string[]) => {
+        const child = spawn(process.execPath, [cliEntry, "daemon", ...args, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
+        const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
+        return { code, doc: JSON.parse(out) as Record<string, any>, err };
+      };
+      const start = async () => {
+        const child = spawn(process.execPath, [cliEntry, "daemon", "serve"], { cwd: root, env, stdio: ["ignore", "ignore", "ignore"] });
+        for (let i = 0; i < 100 && !existsSync(paths.socket) && child.exitCode === null; i++) await sleep(100);
+        if (!existsSync(paths.socket)) { await killAndAwaitExit(child, "SIGTERM"); throw new Error("shipped daemon did not bind its socket"); }
+        return child;
+      };
+      let child = await start();
+      recoverOnApproval = true;
+      try {
+        const login = await cli("login", "--idp", idpUrl);
+        check("H2 initial device login succeeds", login.code === 0);
+        idpRevoked = true;
+        console.log("  H2 waiting past the stock 60-second JWT cache cap");
+        await sleep(61_000);
+        const setupArgs = ["setup", "--no-manager", "--space", sessionSpace, "--wait", "0"];
+        const before = deviceCodeRequests;
+        const rejected = await cli("connect-check", "--space", sessionSpace);
+        const missing = await cli(...setupArgs);
+        check("H2 rejected cached session refuses connect-check and setup without --idp", rejected.code === 2 && rejected.doc.error?.code === "AUTH_REQUIRED" && missing.code === 2 && missing.doc.error?.code === "AUTH_REQUIRED" && deviceCodeRequests === before);
+        const recovered = await cli(...setupArgs, "--idp", idpUrl);
+        check("H2 revoked session starts one new device sign-in and reaches registration", deviceCodeRequests === before + 1 && recovered.err.includes("Approval code") && recovered.code === 4 && recovered.doc.error?.code === "OPERATION_PARTIAL" && recovered.doc.error?.cause?.code === "APPROVAL_PENDING", { code: recovered.code, error: recovered.doc.error });
+        await approve(sessionHost, sessionSpace, sessionOwner);
+        const validBefore = deviceCodeRequests;
+        const valid = await cli(...setupArgs, "--idp", idpUrl);
+        check("H2 valid session reuses sign-in and connects after approval", valid.code === 0 && valid.doc.result?.state === "connected" && deviceCodeRequests === validBefore && valid.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "already-signed-in"), { code: valid.code, error: valid.doc.error });
+        await cli("service-disconnect", "--space", sessionSpace);
+        await killAndAwaitExit(child, "SIGTERM");
+        saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: 1, sub: "machine-owner" });
+        idpRevoked = true;
+        child = await start();
+        for (const failure of ["unreachable", "unusable"] as const) {
+          tokenFailure = failure;
+          const requests = deviceCodeRequests, authorityPosts = posts(sessionSpace);
+          const unavailable = await cli(...setupArgs, "--idp", idpUrl);
+          check(`H2 ${failure} provider stops without device login or registration`, unavailable.code === 2 && unavailable.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && deviceCodeRequests === requests && posts(sessionSpace) === authorityPosts && !unavailable.err.includes("already signed in"));
+        }
+        tokenFailure = undefined;
+        const expired = await cli("connect-check", "--space", sessionSpace);
+        const expiredBefore = deviceCodeRequests;
+        const renewed = await cli(...setupArgs, "--idp", idpUrl);
+        check("H2 expired rejected session also signs in once and reconnects", expired.code === 2 && expired.doc.error?.code === "AUTH_REQUIRED" && renewed.code === 0 && renewed.doc.result?.state === "connected" && deviceCodeRequests === expiredBefore + 1);
+        await cli("service-disconnect", "--space", sessionSpace);
+      } finally {
+        tokenFailure = undefined; idpRevoked = false; recoverOnApproval = false;
+        await killAndAwaitExit(child, "SIGTERM");
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
       }
     });
 

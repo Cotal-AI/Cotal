@@ -140,7 +140,8 @@ export async function exchangeDesktopRequest(
   try {
     const id = randomUUID().replaceAll("-", "");
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request }));
-    const reply = JSON.parse(await readLine(sock, 130_000)) as DaemonResponse;
+    // Service connection includes the same cold-readiness exchange as the ordinary CLI client.
+    const reply = JSON.parse(await readLine(sock, 160_000)) as DaemonResponse;
     if (reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || "event" in reply) throw new Error("mismatched daemon reply");
     return reply;
   } finally { sock.destroy(); }
