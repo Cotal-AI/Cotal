@@ -553,6 +553,12 @@ cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plai
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
+Space-specific daemon commands require an explicit `--space <s>` even when `cotal use`
+has selected a space. `daemon status` can omit it to read the daemon and all hosted Managers.
+After setup, use `cotal daemon service-status --space <s>` to read the machine connection and
+`cotal daemon service-disconnect --space <s>` to close it.
+Setup prints these commands with `--space=<s>` so names beginning with a hyphen also work.
+
 Daemon commands use the machine home, not the invoking project's `.cotal` records. They run from
 a removed working directory or a folder with a `.cotal` file, and malformed preferences do not
 block them. Machine-home validation and the permissions required for each operation still apply.

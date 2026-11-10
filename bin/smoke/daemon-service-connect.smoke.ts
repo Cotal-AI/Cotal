@@ -53,6 +53,7 @@
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
  * Account pin regression only: add --account-mismatch-only (C1, C2, C7b and C10).
  * Offline status regression only: add --status-only (C0, C1, C2, C3, C5, C6, C10 and C15).
+ * Add --setup-hints-only to run approval and setup follow-up checks with a leading-hyphen space.
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
@@ -88,6 +89,7 @@ if (process.platform !== "linux") skipSuite(`daemon-service-connect smoke: Linux
 const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
 const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
 const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
+const setupHintsOnly = process.argv.includes("--setup-hints-only");
 const originalPath = process.env.PATH;
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
@@ -120,6 +122,7 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--status-only") && !/^C(0|1|2|3|5|6|10|15) /.test(title)) return;
   if (process.argv.includes("--service-only") && title.startsWith("H1")) return;
   if (process.argv.includes("--resume-only") && !/^(C1 |C2 |C15 |C6b )/.test(title)) return;
+  if (setupHintsOnly && !["C1 ", "C2 ", "C17 "].some((prefix) => title.startsWith(prefix))) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
 }
@@ -258,7 +261,7 @@ const posts = (space: string) => hits.filter((h) => h.space === space && h.metho
 
 const broker = await createBrokerAuth("a2b2-broker");
 const stamp = Date.now();
-const spaces = ["on", "off", "deny", "brk"].map((s) => `a2b2-${s}-${stamp}`);
+const spaces = ["on", "off", "deny", "brk"].map((s) => `${setupHintsOnly ? "-" : ""}a2b2-${s}-${stamp}`);
 const accounts = await Promise.all(spaces.map((s) => createSpaceAccountAuth(broker, s)));
 const handles: AuthServiceHandle[] = [];
 let nats: ChildProcess | undefined, release: (() => void) | undefined;
@@ -782,6 +785,25 @@ try {
       check("C17 the connection it made is recorded for resume", existsSync(intentFile(ON)));
       check("C17 the space reads this instance ready", stateOf(await statusS(ON)) === "connected");
       check("C17 nothing secret reached its progress lines", !lines.some((l) => [SESSION, ...jwtsIssued].some((t) => l.includes(t))) && !lines.some((l) => /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(l)));
+      const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_STATE_HOME: join(root, "state"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+      const cli = async (args: string[]) => {
+        const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        child.stdout.on("data", (b) => { out += String(b); });
+        child.stderr.on("data", (b) => { err += String(b); });
+        const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+        try { return { code: await new Promise<number | null>((resolve) => child.once("exit", resolve)), out, err }; }
+        finally { clearTimeout(timer); }
+      };
+      const setup = await cli(["daemon", "setup", "--no-manager", `--space=${ON}`, "--wait", "0", "--plain"]);
+      check("C17 shipped setup attaches its space to both follow-up options", setup.code === 0 && setup.out.includes(`cotal daemon service-status --space=${ON}`) && setup.out.includes(`cotal daemon service-disconnect --space=${ON}`), setup);
+      const suggested = [...setup.out.matchAll(/`(cotal daemon service-(?:status|disconnect) [^`]+)`/g)].map((match) => match[1]!);
+      check("C17 setup offers two copyable follow-up commands", suggested.length === 2, suggested);
+      for (const command of suggested) {
+        const result = await cli(command.split(" ").slice(1));
+        check(`C17 suggested ${command.includes("service-status") ? "status" : "disconnect"} command succeeds verbatim`, result.code === 0 && new RegExp(`Machine service:\\s+${command.includes("service-status") ? "connected" : "disconnected"}(?:\\n|$)`).test(result.out), result);
+      }
+      check("C17 restore connection after the suggested disconnect", stateOf(await connectS(ON)) === "connected");
     });
 
     await cell("BASELINE shipped setup connects but provides no Manager to call", async () => {
