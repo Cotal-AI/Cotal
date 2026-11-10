@@ -35,7 +35,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } 
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure } from "@cotal-ai/workspace";
-import { assertSystemdSource, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
+import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import type { DaemonPaths } from "./endpoint.js";
 import { launchAgentService, xmlText } from "./install-darwin.js";
 import { scheduledTaskService } from "./install-win32.js";
@@ -271,6 +271,7 @@ export function planInstall(paths: DaemonPaths, daemonHome: string | undefined):
   try { lstatSync(rendered.unitPath); present = true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${rendered.unitPath} could not be inspected; no absent unit was inferred`); }
   if (present) throw new CommandFailure("refused", "CONFLICT", `${rendered.unitPath} already exists and no install of this daemon recorded it; it was not written over`);
+  assertSystemdSourceDirectory(dirname(rendered.unitPath));
   return { mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, sha256: rendered.sha256, user, lingerAlready: lingerEnabled(user),
     restart: directive(rendered.bytes, "Restart"), wantedBy: directive(rendered.bytes, "WantedBy"), ...(daemonHome !== undefined ? { daemonHome } : {}) };
 }
@@ -301,19 +302,19 @@ export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined)
     return { mechanism, unit, unitPath, sha256, user, restart, wantedBy, ...(daemonHome !== undefined ? { daemonHome } : {}), state: "installed" };
   }
   const plan = planInstall(paths, daemonHome);
-  const rendered = renderDaemonUnit(systemdUserUnitDirectory(), daemonHome);
+  const rendered = renderDaemonUnit(dirname(plan.unitPath), daemonHome);
   // This daemon's own state directory, which holds the receipt below. It is ours, so it is created
   // 0700 and checked; the user manager's unit directory is the operator's and is only created when
   // it is absent, never hardened or repaired when it is already there.
   mkSecretDir(paths.state);
   const unitDir = join(rendered.unitPath, "..");
   mkdirSync(unitDir, { recursive: true, mode: 0o700 });
-  if (!plan.lingerAlready) {
-    const enabled = loginctl(["enable-linger", plan.user]);
-    if (enabled.status !== 0 || !lingerEnabled(plan.user)) throw new CommandFailure("refused", "PERMISSION_DENIED", `linger could not be enabled for ${plan.user}, so a unit would stop at logout; nothing was installed. Enable it with loginctl enable-linger ${plan.user} and run this again`);
-  }
   createSystemdSource(rendered.unitPath, rendered.bytes, rendered.sha256);
   writeReceipt(paths, { v: 1, mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, unitSha256: rendered.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}) });
+  if (!plan.lingerAlready) {
+    const enabled = loginctl(["enable-linger", plan.user]);
+    if (enabled.status !== 0 || !lingerEnabled(plan.user)) throw new CommandFailure("refused", "PERMISSION_DENIED", `linger could not be enabled for ${plan.user}, so the recorded unit was not enabled or started. Remove it with \`cotal daemon uninstall\`, enable linger with loginctl enable-linger ${plan.user} and run this again`);
+  }
   submitSystemdUnitRegistration("reload", rendered.unit);
   submitSystemdUnitRegistration("enable", rendered.unit);
   submitSystemdUnitControl("start", rendered.unit);
