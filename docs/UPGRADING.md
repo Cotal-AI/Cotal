@@ -10,8 +10,9 @@ its own, what does not, and the order of the steps.
 ## Personas read `endpoints` after 0.151.0
 
 A persona file's `endpoints` key used to be an unmodeled list that loading ignored. It now names the
-endpoint commands the persona hands its agent, as a closed list of `{ endpoint, commands }` entries,
-and a file whose `endpoints` is not that list fails to load and names the problem.
+endpoint commands the persona hands its agent, as a closed list of `{ endpoint, commands }` entries
+that may add `instanceId` to pin one instance, and a file whose `endpoints` is not that list fails to
+load and names the problem.
 
 On a static mesh the spawn bound from 0.140.8 also measures each listed command against the
 spawner's issued evidence, and refuses one it does not cover as `endpoints <endpoint> <command>`. A
