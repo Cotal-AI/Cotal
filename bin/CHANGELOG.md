@@ -1,5 +1,33 @@
 # cotal-ai
 
+## 0.152.0
+
+### Patch Changes
+
+- c7b64d4: Keep a separate daemon's catalog refresh from changing shared registrations, sentinel files or the default selected space.
+- 3b0dae8: Preserve a dead daemon's socket recovery record when a startup preflight refuses, so correcting the runtime directory lets the next start recover normally. Rejected socket claims and clean shutdown still clear the record.
+- 1f4700a: Use the selected daemon home's sign-in for service registration and activation. Authority and renewal calls carry an explicit provider-session directory, so a separate daemon cannot borrow the default home's account; callers that omit the directory keep their existing behavior.
+- 362c59b: Refuse Linux daemon service receipts whose home, unit name or path differs from the selected daemon and the user manager's unit directory before starting or removing a service.
+- Updated dependencies [d6e7b75]
+- Updated dependencies [4bd669c]
+- Updated dependencies [c7b64d4]
+- Updated dependencies [1f4700a]
+- Updated dependencies [1fec76f]
+- Updated dependencies [e044ab0]
+- Updated dependencies [4b75e8b]
+- Updated dependencies [f40b049]
+- Updated dependencies [d26134d]
+  - @cotal-ai/cli@0.152.0
+  - @cotal-ai/core@0.152.0
+  - @cotal-ai/runtime@0.152.0
+  - @cotal-ai/manager@0.152.0
+  - @cotal-ai/auth@0.152.0
+  - @cotal-ai/workspace@0.152.0
+  - @cotal-ai/connector-core@0.152.0
+  - @cotal-ai/delivery@0.152.0
+  - @cotal-ai/registry@0.152.0
+  - @cotal-ai/seat@0.152.0
+
 ## 0.151.3
 
 ### Patch Changes
