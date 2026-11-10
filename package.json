@@ -307,6 +307,7 @@
     "smoke:static-chat-pure": "tsx packages/workspace/smoke/static-chat-pure.smoke.ts",
     "smoke:chat-compose": "tsx packages/workspace/smoke/chat-compose.smoke.ts",
     "smoke:chat-open:live": "tsx packages/workspace/smoke/chat-open-live.smoke.ts",
+    "smoke:chat-transport:live": "tsx implementations/cli/smoke/chat-transport-live.smoke.ts",
     "smoke:chat-name": "tsx packages/workspace/smoke/chat-name.smoke.ts",
     "smoke:chat-command": "tsx implementations/cli/smoke/chat-command.smoke.ts",
     "smoke:chat-leave": "tsx implementations/cli/smoke/chat-leave.smoke.ts",

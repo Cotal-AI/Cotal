@@ -262,6 +262,58 @@ if (mode === "plain" || mode === "stdio") {
     check("the peer whose display name spells the principal received nothing", !sent.includes("u_d.mallory"), sent);
   }
 
+  console.log("4b. transport loss and bind readiness remain separate");
+  {
+    let finishReconnect: (() => void) | undefined;
+    const endpoint = Object.assign(new EventEmitter(), {
+      stop: async () => {}, joinedChannels: () => ["general"],
+      reconnect: () => new Promise<void>((resolve) => { finishReconnect = resolve; }),
+    });
+    const session = new NativeChatSession({ endpoint: endpoint as unknown as CotalEndpoint, identity,
+      retire: async () => ({ retirement: "not-applicable", connectionClosed: "confirmed", message: "closed" }), words });
+    const events: SessionEvent[] = [];
+    session.subscribe((event) => events.push(event));
+    const state = async () => {
+      const report = await session.connection();
+      return report.outcome === "ok" ? report.value.state : report.outcome;
+    };
+    endpoint.emit("transport", { connected: false });
+    endpoint.emit("transport", { connected: false });
+    check("a transient transport loss is reported once before the binding closes",
+      await state() === "disconnected" && events.length === 1, events);
+    endpoint.emit("transport", { connected: true });
+    check("a transport reconnect with its binding intact restores connected", await state() === "connected");
+    endpoint.emit("transport", { connected: false });
+    endpoint.emit("connection", { connected: false });
+    const downEvents = events.length;
+    endpoint.emit("transport", { connected: true });
+    check("terminal close adds no duplicate outage, and a fresh dial waits for the bind",
+      await state() === "disconnected" && events.length === downEvents && downEvents === 3, events);
+    endpoint.emit("connection", { connected: true });
+    check("the completed bind restores connected", await state() === "connected");
+    endpoint.emit("transport", { connected: false });
+    endpoint.emit("connection", { connected: true });
+    check("a bind event cannot conceal a transport still down", await state() === "disconnected");
+    endpoint.emit("transport", { connected: true });
+    const manual = session.reconnect();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    endpoint.emit("transport", { connected: false });
+    endpoint.emit("connection", { connected: false });
+    endpoint.emit("transport", { connected: true });
+    check("an explicit reconnect stays reconnecting through transport and bind teardown", await state() === "reconnecting");
+    endpoint.emit("connection", { connected: true });
+    finishReconnect!();
+    await manual;
+    check("the explicit reconnect emits only its reconnecting and connected transitions",
+      JSON.stringify(events.slice(-2)) === JSON.stringify([{ type: "connection", state: "reconnecting" }, { type: "connection", state: "connected" }]), events.slice(-2));
+    await session.close();
+    const endedEvents = events.length;
+    endpoint.emit("transport", { connected: true });
+    endpoint.emit("connection", { connected: true });
+    check("close releases both connection listeners and cannot be revived",
+      endpoint.listenerCount("transport") === 0 && endpoint.listenerCount("connection") === 0 && await state() === "ended" && events.length === endedEvents);
+  }
+
   console.log("5. a reconnect that finds the session's inbox gone ends the session with that reason");
   {
     const consumerGone = new JetStreamApiError({ code: 404, err_code: 10014, description: "consumer not found" });
