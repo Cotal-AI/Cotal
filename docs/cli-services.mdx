@@ -660,7 +660,9 @@ heading or lines follow it. A missing name or lifecycle durable returns a `refus
 `TARGET_NOT_FOUND` (exit 2). The reader accepts `--limit` from 1 to 100 and a lifecycle-keyed
 `--durable`, and reports an incomplete candidate read or unconfirmed reader cleanup as partial
 (exit 4). The deprecation warning stays on stderr. Without `--json`, the earlier text output and
-refusals remain unchanged.
+refusals remain unchanged. Pending inspection never seeds or repairs installed connectors.
+Receipts for this spelling name `deliver` in `command`, including success, partial reads and
+refusals. Value-taking options may precede `pending`; parser refusals still return one receipt.
 
 The verb needs the `admin` credential profile: it runs through the same static-mesh route as
 `cotal auth mint --profile admin`, and refuses a user-mode mesh, naming the retired static credential,

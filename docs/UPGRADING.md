@@ -12,6 +12,7 @@ its own, what does not, and the order of the steps.
 `cotal deliver pending <name> --json` now uses the `cotal pending` reader. It writes one
 versioned JSON receipt, including a `TARGET_NOT_FOUND` refusal (exit 2) when the name or exact
 lifecycle durable is absent. The deprecation warning still goes to stderr.
+Its `command` field is `deliver` on every outcome. Inspection does not seed or repair connectors.
 
 Scripts that read the old first-line facts object or trailing candidate lines must read
 `result` and `result.candidates` instead. Retention fields are `maxAge` and `maxMsgsPerSubject`.

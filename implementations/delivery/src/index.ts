@@ -34,7 +34,7 @@ const deliveryCommands: Command[] = [
     summary:
       "run the delivery daemon — the server-side Plane-3 durable backstop [--space <s>] [--server <url>] [--creds <file>] (auth mode only; N=1); or one lane per space from one process with --spaces <manifest> --server <url>; or `deliver pending <name>` to inspect a recipient's held DMs",
     positionals: "[pending <name> [--limit <n>] [--durable <name>]]",
-    subcommands: [{ name: "pending", hidden: true, summary: "inspect a recipient's held DMs",
+    subcommands: [{ name: "pending", hidden: true, reads: true, summary: "inspect a recipient's held DMs",
       outputs: ["json"], flagNames: ["space", "server", "creds", "limit", "durable", "json"] }],
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to serve (required; the scoped cred doesn't encode it)" },
@@ -54,7 +54,7 @@ const deliveryCommands: Command[] = [
     run: (args) => {
       if (args.values.spaces !== undefined) return runDeliveryHost(args);
       if (args.positionals[0] !== "pending") return runDelivery(args);
-      if (args.values.json) return pendingView({ ...args, positionals: args.positionals.slice(1) });
+      if (args.values.json) return pendingView({ ...args, positionals: args.positionals.slice(1) }, "deliver");
       return runPending(args);
     },
   },

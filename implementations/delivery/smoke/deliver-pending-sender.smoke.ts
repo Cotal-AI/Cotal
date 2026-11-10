@@ -42,7 +42,7 @@ import {
 import { freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 22;
+const EXPECTED = 28;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -81,7 +81,6 @@ Object.assign(env, {
   TMPDIR: join(home, "tmp"),
   COTAL_HOME: join(home, ".cotal"),
   XDG_CONFIG_HOME: join(home, "xdg"),
-  COTAL_SKIP_CONNECTOR_SEED: "1",
   NO_COLOR: "1",
 });
 const run = (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> =>
@@ -255,6 +254,30 @@ try {
   const absentDurable = await run([...args.map((arg) => arg === durable ? dmDurable(DEV_OWNER, "absent", recipient.lifecycleUid) : arg), "--json"]);
   check("an absent lifecycle durable returns one refused JSON document",
     absentDurable.code === 2 && parse(absentDurable)?.outcome === "refused" && parse(absentDurable)?.error?.code === "TARGET_NOT_FOUND", absentDurable);
+  check("success and not-found receipts name the invoked command, without a connector seed bypass",
+    [jsonBefore, jsonAfter, named, limitedLegacy, absentName, absentDurable].every((r) => parse(r)?.command === "deliver") &&
+      parse(namedControl)?.command === "pending");
+  const invalidLimit = await run(["deliver", ...namedArgs.slice(3), "pending", "recipient", "--limit", "101", "--json"]);
+  check("a validated usage refusal keeps the deliver command identity",
+    invalidLimit.code === 1 && parse(invalidLimit)?.command === "deliver" && parse(invalidLimit)?.error?.code === "USAGE_INVALID", invalidLimit);
+  const unknown = await run(["deliver", ...namedArgs.slice(3), "pending", "recipient", "--unknown-flag", "--json"]);
+  check("an unknown flag after value-taking options still returns one JSON refusal",
+    unknown.code === 1 && parse(unknown)?.command === "deliver" && parse(unknown)?.error?.code === "USAGE_INVALID", unknown);
+  const unknownEquals = await run(["deliver", `--space=${space}`, `--server=${servers}`, `--creds=${adminCreds}`, "pending", "recipient", "--unknown-flag", "-j"]);
+  check("inline option values and -j select the structured pending parser refusal",
+    unknownEquals.code === 1 && parse(unknownEquals)?.command === "deliver" && parse(unknownEquals)?.error?.code === "USAGE_INVALID", unknownEquals);
+  const daemonUnknown = await run(["deliver", "--space", "pending", "--unknown-flag", "--json"]);
+  check("a daemon option value named pending does not enable structured daemon output",
+    daemonUnknown.code === 1 && daemonUnknown.stdout === "" && daemonUnknown.stderr.includes("Unknown option"), daemonUnknown);
+  const malformedSender = await dialerFor(servers)({ servers, ...standaloneConnectOpts({ creds: healthy.creds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    await jetstream(malformedSender).publish(unicastSubject(space, DEV_OWNER, recipient.actor, DEV_OWNER, healthy.actor), new Uint8Array([0xff]));
+  } finally { await malformedSender.drain(); }
+  const partial = await run([...args, "--json"]);
+  check("a partial candidate receipt keeps the same deliver command identity and withholds unreadable data",
+    partial.code === 4 && parse(partial)?.command === "deliver" && parse(partial)?.outcome === "partial" &&
+      parse(partial)?.warnings?.some((warning: { code: string }) => warning.code === "CANDIDATE_UNREADABLE") &&
+      JSON.stringify(parse(partial)?.result?.candidates) === JSON.stringify(expectedCandidates), partial);
 } finally {
   await holder?.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
