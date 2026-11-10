@@ -42,6 +42,7 @@ p { margin: 0 0 16px; }
 .muted, .footnote { color: var(--muted); font-size: 12px; }
 .eyebrow { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .6px; margin: 0 0 8px; }
 .connection-card { transition: height var(--slow) var(--ease); position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 24px 28px; box-shadow: 0 4px 24px #18271006, 0 1px 2px #18271005; }
+.connection-card.height-changing { overflow: clip; }
 .connection-icon { display: grid; place-items: center; width: 40px; height: 40px; background: var(--tint); color: var(--accent); border-radius: var(--radius); margin-bottom: 16px; }
 #step-caption { display: none; }
 .connected-space { font-size: 14px; font-weight: 600; margin: 0 0 16px; color: var(--accent); }

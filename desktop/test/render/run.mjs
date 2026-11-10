@@ -79,6 +79,8 @@ try {
           await page.evaluate(time => { for (const a of window.__motion) a.currentTime = time; }, time);
           await page.screenshot({ path: `${output}/${name}-${time}ms.png` });
           const top = await page.locator(".connection-card").evaluate(el => el.getBoundingClientRect().top);
+          const contained = await page.locator(".connection-card").evaluate(el => !el.classList.contains("height-changing") || getComputedStyle(el).overflowY === "clip");
+          assert.ok(contained, `${name}: growing card contains incoming content at ${time}ms`);
           const opacity = await page.locator("#connection-title").evaluate(el => Number(getComputedStyle(el).opacity));
           assert.ok(opacity >= .3, `${name}: nonblank content at ${time}ms`);
           assert.ok(scenario.name === "notice" || top === initialTop, `${name}: card anchor at ${time}ms`);
