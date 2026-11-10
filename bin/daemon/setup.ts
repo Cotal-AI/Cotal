@@ -145,7 +145,10 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
         if (hosted) await managerViaDaemon(opts, { op: "managers-prepare-restart" });
         try { restartInstalled(opts.paths); }
         catch (error) {
-          if (hosted) await managerViaDaemon(opts, { op: "managers-abort-restart" });
+          if (hosted) {
+            try { await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
+            catch { /* The native restart failure remains the primary outcome. */ }
+          }
           throw error;
         }
         detail = `${unit} restarted through its recorded service to load Cotal ${opts.version}`;

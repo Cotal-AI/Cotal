@@ -393,7 +393,8 @@ export function restartInstalled(paths: DaemonPaths): UninstallPlan {
   if (service) service.restart(receipt);
   else {
     submitSystemdUnitControl("stop", plan.unit);
-    submitSystemdUnitControl("start", plan.unit);
+    const result = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "start", plan.unit]);
+    if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the native daemon start did not confirm completion (${result.detail}); it was not retried`, { target: { unit: plan.unit }, remedy: "correct the native service error, then run cotal daemon start" });
   }
   return plan;
 }

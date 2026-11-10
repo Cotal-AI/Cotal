@@ -638,6 +638,9 @@ with the ordinary Manager continuity and installation checks.
 Update reports and skips hosted records with no live child, including stopped or refused Managers.
 A live child whose custody cannot be confirmed still blocks update and names service-disconnect
 for that space before retrying.
+If a native restart stops the daemon but cannot start it, the failure retains the native cause
+and names `cotal daemon start` after correcting that cause. A failed preservation rollback does
+not replace the restart failure.
 `--no-manager` keeps the machine-service-only setup path and waits for owner approval.
 `--wait` without `--no-manager` refuses `USAGE_INVALID` before setup starts.
 On the connection-only path `--wait <seconds>` bounds the wait, 900 by default; `--wait 0`

@@ -66,7 +66,10 @@ const composed: Command = { ...command, async run(args) {
     if (hosted) await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
     try { restartInstalled(paths); }
     catch (error) {
-      if (hosted) await managerViaDaemon({ paths }, { op: "managers-abort-restart" });
+      if (hosted) {
+        try { await managerViaDaemon({ paths }, { op: "managers-abort-restart" }); }
+        catch { /* The native restart failure remains the primary outcome. */ }
+      }
       throw error;
     }
   }

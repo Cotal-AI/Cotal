@@ -49,6 +49,7 @@ const control = createServer(async (request, response) => {
     calls.push(request.url!);
     if (request.url === "/stop") await old.close();
     else if (request.url === "/start") {
+      if (process.argv.includes("--start-fails")) { response.writeHead(500).end("owned native start denied"); return; }
       replacement = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "serve"], { cwd: root, env, stdio: "ignore" });
       for (let i = 0; ; i++) {
         try { await status(); break; } catch { if (i >= 100) throw new Error("replacement not ready"); }
@@ -69,7 +70,7 @@ await new Promise<void>(resolve => control.listen(0, "127.0.0.1", resolve));
 await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
 const port = (control.address() as AddressInfo).port;
 env.npm_config_registry = `http://127.0.0.1:${(registry.address() as AddressInfo).port}`;
-writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nconst op=process.argv.at(-2); if(!['stop','start'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
+writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nconst op=process.argv.at(-2); if(!['stop','start'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(async r=>{if(!r.ok){console.error(await r.text());process.exit(99)}}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
 const foreign = process.argv.includes("--foreign");
 const bytes = `[Service]\nExecStart="${process.execPath}" "${foreign ? join(root, "another-install/dist/cotal.js") : join(repo, "bin/dist/cotal.js")}" daemon serve\nRestart=always\n`;
 const unitPath = join(root, "cotal-daemon.service");
@@ -80,6 +81,11 @@ try {
   let output = "";
   child.stdout.on("data", b => output += String(b)); child.stderr.on("data", b => output += String(b));
   const code = await new Promise(resolve => child.once("exit", resolve));
+  if (process.argv.includes("--start-fails")) {
+    console.log("R2-12 failed native start", JSON.stringify({ code, calls, output }));
+    if (!output.includes("owned native start denied") || !output.includes("cotal daemon start")) throw new Error("R2-12 native failure or recovery command missing");
+    console.log("PASS R2-12 native error and daemon start recovery retained");
+  } else {
   const after = await status();
   if (process.argv.includes("--childless") && !output.includes("no live child")) throw new Error(`R2-10 childless refusal blocked update: ${output}`);
   if (foreign) {
@@ -91,6 +97,7 @@ try {
   } else {
     if (!calls.includes("/stop") || !calls.includes("/start") || after.result.version === "0.0.0") throw new Error(`R2-5 empty daemon not reloaded: ${JSON.stringify({ code, calls, after, output })}`);
     console.log("PASS R2-5 empty default daemon reload through shipped update");
+  }
   }
 } finally {
   await old.close();

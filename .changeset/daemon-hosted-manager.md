@@ -19,7 +19,8 @@ Setup and update never restart a service pinned to another installation. Setup r
 hosting operations or names both installations and the reinstall choices. Update reports the
 other daemon's installation and version after reconciling its own installation.
 Update reports and skips hosted records without a live child, and gives a disconnect remedy for
-live custody that cannot be confirmed.
+live custody that cannot be confirmed. Native restart failures retain their cause and name
+`cotal daemon start`; a failed rollback no longer hides the primary failure.
 Update keeps its ordinary continuity checks when Linux has no runtime directory for a daemon.
 Setup reconciles the stock connectors before hosting and prepares the default persona in the
 Manager's own catalog. A bare npm upgrade reconciles the replacement connectors before activation
