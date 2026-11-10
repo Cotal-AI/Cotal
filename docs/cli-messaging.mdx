@@ -209,6 +209,12 @@ and it writes its punctuation in ASCII as every plain report does.
 diagnostics on stderr. Closing stdin ends the session. `--stdio` does not combine with `--plain`,
 and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
 
+In the terminal view, Tab opens the recipient picker. Type `#<channel>`, `@<name>`,
+`@<owner>.<actor>` or `role:<role>`, then Enter to choose. A `:to` line is refused without
+sending it, clears the previous recipient and opens the picker. Choose a recipient before
+sending anything else. A send already in flight still reports its outcome without restoring
+the previous recipient. Enter sends to the recipient shown above the composer.
+
 In `--plain`, a line you type becomes the draft, and it is sent only when you answer `y` to the
 question that follows. Any other answer keeps the draft unsent. A slash command typed as the answer
 runs, and the question is asked again. A new draft that replaces a kept one says so, with the kept

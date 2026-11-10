@@ -248,7 +248,7 @@ export async function runPlain(opts: {
             state = addNotice(state, "waiting", "not connected: only /reconnect, /connection, /whoami, /reply and /help run now");
             return;
           }
-          const { state: next, ack } = await runSlash(session, state, parsed.command);
+          const { state: next, ack } = await runSlash(session, () => state, parsed.command);
           state = next;
           unacked.push(...ack);
           return;

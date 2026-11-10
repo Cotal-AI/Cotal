@@ -204,6 +204,18 @@ const keys = (s: ChatState, ks: Parameters<typeof applyKey>[1][], distinct = tru
   check("a second Enter while pending does not send", again.intent === undefined && again.state.draft === "more");
 }
 check("whitespace-only drafts do not send", keys(s0(), [{ kind: "char", text: "  \n " }, { kind: "enter", shift: false }]).intent === undefined);
+for (const text of [":to", ":to @ana", ":to #general", ":to role:reviewer", ":to invalid", ":to\t@ana", ":to @ana\nprivate hi ana"]) {
+  const r = keys(initialState(identity, { kind: "channel", channel: "general" }), [{ kind: "paste", text }, { kind: "enter", shift: false }]);
+  check(`${JSON.stringify(text)} refuses, clears the previous destination and opens the picker`,
+    r.intent?.kind === "pick-recipient" && r.state.recipient === undefined && r.state.draft === "" && r.state.pending === undefined
+    && r.state.transcript.some((e) => e.kind === "notice" && e.text.startsWith(":to is only available in --plain")));
+  const next = keys(r.state, [{ kind: "char", text: "private hi ana" }, { kind: "enter", shift: false }]);
+  check("the next private line is held until a recipient is chosen", next.intent?.kind === "pick-recipient" && next.state.draft === "private hi ana" && next.state.pending === undefined);
+}
+{
+  const r = keys(s0(), [{ kind: "char", text: ":today is sunny" }, { kind: "enter", shift: false }]);
+  check("ordinary colon-prefixed text is still message data", r.intent?.kind === "publish" && r.intent.text === ":today is sunny");
+}
 {
   const r = keys(s0(), [{ kind: "char", text: "//etc" }, { kind: "enter", shift: false }]);
   check("//text sends a message beginning with /", r.intent?.kind === "publish" && r.intent.text === "/etc");
@@ -288,7 +300,7 @@ check("Ctrl-D with no draft leaves at once", keys(s0(), [{ kind: "ctrl-d" }]).in
 console.log("5. /help lists every slash command");
 {
   // /help talks to no one, so a session that answers nothing is enough.
-  const { state: helped } = await runSlash({} as never, s0(), { name: "help" });
+  const { state: helped } = await runSlash({} as never, s0, { name: "help" });
   const shown = transcriptRows(helped, 1000).map((r) => r.text).join("\n");
   check("/help lists every slash command with its arguments", ["/who", "/history [n]", "/leave <channel>", "/help", "/quit"].every((c) => shown.includes(c)), shown);
 }

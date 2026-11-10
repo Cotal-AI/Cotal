@@ -307,6 +307,7 @@
     "smoke:chat-leave": "tsx implementations/cli/smoke/chat-leave.smoke.ts",
     "smoke:chat-stand-in": "tsx implementations/cli/smoke/chat-stand-in.smoke.ts",
     "smoke:chat-static:live": "tsx implementations/cli/smoke/chat-static-live.smoke.ts",
+    "smoke:chat-recipient:live": "tsx implementations/cli/smoke/chat-recipient-live.smoke.ts",
     "smoke:stdout-owner": "tsx implementations/cli/smoke/stdout-owner.smoke.ts",
     "smoke:manager-status-metadata": "tsx implementations/manager/smoke/status-metadata.smoke.ts",
     "smoke:manager-delegated-config": "tsx implementations/manager/smoke/delegated-config.smoke.ts",
