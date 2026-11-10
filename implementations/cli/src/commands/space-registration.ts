@@ -22,6 +22,8 @@ import {
   isMeshRegistryError,
   keepsRegistration,
   loadMeshes,
+  localWriteFailure,
+  personaDir,
   pinnedFetch,
   PinnedFetchRefused,
   preparedRecordSpace,
@@ -427,7 +429,17 @@ export async function spaceCreate(rest: readonly string[], rootFlag: string | un
   const adoptedFrom = adopt ? adoptStackJournal(root, name) : undefined;
   const prepared = recordLocalSpace(name, root);
   const written = [...(adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : []), { what: "prepared space", path: prepared.file }];
-  const persona = seedDefaultPersona(root);
+  const personaPath = join(personaDir(root), "default.md");
+  let persona: ReturnType<typeof seedDefaultPersona>;
+  try { persona = seedDefaultPersona(root); }
+  catch (error) {
+    const failure = localWriteFailure(error, personaPath);
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", `prepared ${name} at ${prepared.file}, but ${failure.message}; the persona file may be incomplete`, {
+      target: { space: name, path: personaPath },
+      changed: written, native: failure.native, cause: error,
+      remedy: `${failure.remedy}; check and repair ${personaPath} before running \`cotal up\` in ${root}`,
+    });
+  }
   if (persona) written.push(persona);
   const result: SpaceCreated = { kind: "space-created", space: name, root, preparedAt: prepared.preparedAt, current: getCurrent() === name, written };
   writeResult(presentation, { command: "space", target: { space: name }, result }, createdView);
@@ -533,7 +545,7 @@ export function recordLocalSpace(name: string, root: string): { file: string; pr
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT" && lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink())
       throw refuse("TARGET_NOT_FOUND", `${dir} links to ${resolve(root, readlinkSync(dir))}, which does not exist; nothing was written`, target, "remove the link or make the folder it names, then run this create again");
-    if (!unwritable(error)) throw error;
+    if (!unwritable(error)) throw localWriteFailure(error, dir, { requested: name, root });
     throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, "create the space in a folder you own, or pass --root <dir>");
   }
   protectedLocalDirectory(dir, "the project's .cotal directory");
