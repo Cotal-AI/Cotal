@@ -75,12 +75,12 @@ let caseNumber = 0;
 try {
   for (const explicit of [false, true]) {
     for (const json of [false, true]) {
-      for (const timeout of ["invalid", "0", "-1", "Infinity", ""]) {
+      for (const timeout of ["invalid", "0", "-1", "Infinity", "", "1.5", "2147483648", "4294967295", "4294967296"]) {
         const name = `${explicit ? "explicit" : "default"}-${json ? "json" : "text"}-${timeout || "empty"}`;
         await runCase(name, explicit, json, timeout, false);
       }
     }
-    for (const timeout of ["5000", undefined]) {
+    for (const timeout of ["5000", "5e3", "2147483647", undefined]) {
       await runCase(`${explicit ? "explicit" : "default"}-valid-${timeout ?? "unset"}`, explicit, true, timeout, true);
     }
   }
@@ -139,7 +139,7 @@ async function runCase(name: string, explicit: boolean, json: boolean, timeout: 
         assert.equal(doc.error.code, "USAGE_INVALID");
       }
       const text = doc ? doc.error.message : daemon.err();
-      assert.ok(text.includes("COTAL_IDP_TIMEOUT_MS must be a positive number of milliseconds"), "startup must name the malformed setting");
+      assert.ok(text.includes("COTAL_IDP_TIMEOUT_MS must be a whole number of milliseconds from 1 to 2147483647"), "startup must name the malformed setting and supported range");
       assert.ok(!text.includes("provider's answer") && !text.includes("session may have been saved"));
       assert.ok(!existsSync(join(dir, "rt", "cotal")), "invalid configuration must not create endpoint state");
     } else assert.ok(ready, "valid timeout must allow startup");
