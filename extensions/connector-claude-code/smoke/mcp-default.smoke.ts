@@ -95,7 +95,7 @@ try {
   }
   assert.throws(() => build({ mcpServers: { unset: { command: "node", env: { INPUT: "${COTAL_UNSET_SEAT_INPUT:-default}" } } } }), /MCP environment references cannot list "COTAL_UNSET_SEAT_INPUT"/);
   check("reserved references are refused even when the parent has no value", true);
-  writeFileSync(profileFile, JSON.stringify({ mcpServers: { reserved: { command: "node", env: { INPUT: "${COTAL_ROLE}" } } } }));
+  writeFileSync(profileFile, JSON.stringify({ mcpServers: { cotal: { command: "node" }, reserved: { command: "node", env: { INPUT: "${COTAL_ROLE}" } } } }));
   assert.throws(() => build(), /MCP environment references cannot list "COTAL_ROLE"/);
   check("native user MCP references cannot add per-seat COTAL names", true);
   check("an exclusive selection ignores unselected native reserved references", build({ mcpServersExclusive: true }).env?.COTAL_ROLE === undefined);
