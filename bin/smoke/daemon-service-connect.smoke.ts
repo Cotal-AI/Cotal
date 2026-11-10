@@ -161,6 +161,7 @@ let deviceFailure: "denied" | "expired" | "unreachable" | undefined;
 let catalogUnavailable = false;
 let catalogAuthorityDown = false;
 let standingRenewals = 0;
+let catalogAuthorityRequests = 0;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/device/code") { deviceCodeRequests++; if (deviceFailure === "unreachable") { req.socket.destroy(); return; } return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 })); }
@@ -169,6 +170,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
   if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(catalog));
   if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
+    catalogAuthorityRequests++;
     if (catalogAuthorityDown) { res.writeHead(503); res.end("{}"); return; }
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
@@ -844,6 +846,19 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, selected.server, "stop", { name: "dashboard_owned" }, selected.auth, "owner", 10_000, { instanceId: manager.instanceId });
           return;
         }
+        if (process.argv.includes("--ipc-health-repro")) {
+          await sleep(1500);
+          const before = catalogAuthorityRequests;
+          await sleep(11_000);
+          check("3A periodic hosted liveness makes no authority calls", catalogAuthorityRequests === before, { before, after: catalogAuthorityRequests });
+          catalogAuthorityDown = true;
+          try { await sleep(8000); }
+          finally { catalogAuthorityDown = false; }
+          let after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 5000));
+          for (let i = 0; i < 80 && after.state !== "answering"; i++) { await sleep(250); after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 5000)); }
+          check("3A authority outage never restarts a healthy IPC-responsive hosted Manager", after.state === "answering" && after.pid === manager.pid && after.restarts === manager.restarts, after);
+          return;
+        }
         if (process.argv.includes("--fresh-status-repro")) {
           process.kill(manager.pid, "SIGSTOP");
           try {
@@ -988,21 +1003,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             check("HM007 occupied seat survives health outage", reply.ok && (reply.data as { agentCount?: number })?.agentCount === 1, reply);
             await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, selected.server, "stop", { name: "default_agent" }, selected.auth, "owner", 10_000, { instanceId: manager.instanceId });
             catalogAuthorityDown = true;
-            let empty: any;
-            try {
-              for (let i = 0; i < 160; i++) {
-                empty = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
-                if (empty?.restarts > 0) break;
-                await sleep(250);
-              }
-              check("HM007 failed probe restarts an empty child only after native preservation", empty?.restarts > 0, empty);
-            } finally { catalogAuthorityDown = false; }
-            for (let i = 0; i < 160; i++) {
-              empty = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
-              if (empty?.state === "answering" && empty?.pid !== manager.pid) break;
-              await sleep(250);
-            }
-            check("HM007 empty replacement answers automatically after authority returns", empty?.state === "answering" && empty?.pid !== manager.pid, empty);
+            try { await sleep(8000); }
+            finally { catalogAuthorityDown = false; }
+            const empty = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
+            check("HM007 authority outage keeps empty IPC-responsive child custody", empty?.pid === manager.pid && empty?.restarts === recovered?.restarts, empty);
+            check("HM007 same empty Manager answers after authority returns", empty?.state === "answering" && empty?.instanceId === manager.instanceId, empty);
             return;
           }
           if (process.argv.includes("--generation-cause-repro")) {

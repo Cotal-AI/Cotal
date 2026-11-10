@@ -41,6 +41,7 @@ interface Live {
   healthTask?: Promise<void>;
   stopping: boolean;
   failures: number;
+  healthFailures?: number;
 }
 
 export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion()) {
@@ -130,8 +131,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     l.healthTimer = setTimeout(() => {
       l.healthTimer = undefined;
       const child = l.child;
-      const selected = l.view.instanceId;
-      if (!child || !selected || l.starting || closed || generationPending || l.stopping) { observe(l); return; }
+      if (!child || l.starting || closed || generationPending || l.stopping) { observe(l); return; }
       const current = () => !closed && !generationPending && !l.stopping && l.child === child;
       l.healthTask = (async () => {
         try {
@@ -140,12 +140,14 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
             try { await generationCall(child, pending, "abort"); generationAttempts.delete(child); }
             catch { return; }
           }
-          const reply = await probe(l.view.space, selected);
-          if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager did not answer status");
-          if (current()) l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+          // Parent IPC proves child responsiveness without the daemon obtaining mesh credentials.
+          await generationCall(child, randomUUID(), "inspect");
+          if (current()) l.healthFailures = 0;
         } catch (error) {
           if (!current()) return;
-          l.view = { ...l.view, state: "starting", reason: safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500), observedAt: new Date().toISOString(), next: `inspect cotal daemon status --space ${l.view.space}; restore the Manager connection or stop its seats before running cotal daemon setup --space ${l.view.space}` };
+          l.healthFailures = (l.healthFailures ?? 0) + 1;
+          l.view = { ...l.view, state: "starting", reason: "the hosted Manager parent IPC probe did not answer", observedAt: new Date().toISOString(), next: `inspect cotal daemon status --space ${l.view.space}; restore the Manager connection or stop its seats before running cotal daemon setup --space ${l.view.space}` };
+          if (l.healthFailures < 3) return;
           const attempt = randomUUID();
           try {
             // The native parent fence confirms no seats and blocks new admission. A failed or
@@ -166,7 +168,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         }
       })().finally(() => { l.healthTask = undefined; observe(l); });
       void l.healthTask.catch(() => {});
-    }, 5000);
+    }, 5000 + Math.floor(Math.random() * 1000));
     l.healthTimer.unref();
   };
   async function stopChild(l: Live): Promise<void> {

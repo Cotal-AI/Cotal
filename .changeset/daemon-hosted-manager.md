@@ -30,8 +30,9 @@ restarts first. The new daemon refuses stale connectors with a repair command an
 retry, so the old generation never reopens launches after a partial shared-store reconciliation.
 Uninstall removes only per-space hosting records and works with the default daemon home's lock file.
 Corrupt hosting records refuse only their space and setup repairs them after readiness succeeds.
-Periodic pinned probes withdraw stale readiness and restart live children only under an empty-seat
-preservation fence. Stopped status retains the Manager identity and observation, and daemon sign-in
-refusals consistently name the daemon login command.
+Periodic liveness uses the parent IPC channel without auth callouts and never restarts for the
+daemon's own authority outage. Fresh pinned status probes withdraw stale readiness. Child recovery
+requires repeated IPC misses and an empty-seat preservation fence. Stopped status retains the
+Manager identity and observation, and daemon sign-in refusals consistently name daemon login.
 Pending upgrades count seats without fencing admission, back off activation attempts, and show the
 installed version and waiting cause in status. Foreground daemons stay running after replacement.
