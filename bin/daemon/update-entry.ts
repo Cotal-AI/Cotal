@@ -12,11 +12,13 @@ const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
   let hostedSpaces: string[] = [];
+  let daemonObserved = false;
   await update(args, { ...updateRuntime, async reportRunningManager(flags) {
     let managers;
     try {
       const reply = await queryDaemon({ paths: daemonPaths() });
       if (!reply.ok) throw new Error(`machine daemon custody is unreadable: ${reply.error.message}`);
+      daemonObserved = true;
       managers = reply.result.managers ?? [];
     } catch (error) {
       if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") return updateRuntime.reportRunningManager(flags);
@@ -47,15 +49,16 @@ const composed: Command = { ...command, async run(args) {
     }
     return "none";
   } });
-  if (args.values.check === true || process.exitCode || !hostedSpaces.length) return;
+  if (args.values.check === true || process.exitCode || !daemonObserved) return;
   const paths = daemonPaths();
   const current = await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");
   if (current.result.version !== updateRuntime.version()) {
-    await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
+    const hosted = (current.result.managers ?? []).some((manager) => manager.state !== "stopped");
+    if (hosted) await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
     try { restartInstalled(paths); }
     catch (error) {
-      await managerViaDaemon({ paths }, { op: "managers-abort-restart" });
+      if (hosted) await managerViaDaemon({ paths }, { op: "managers-abort-restart" });
       throw error;
     }
   }
