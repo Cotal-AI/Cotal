@@ -1125,9 +1125,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("H1 restart fence denies admission and rollback restores fresh readiness", prepared.ok === true && fenced.ok === false && aborted.ok === true && resumed.code === 0 && resumed.doc.result?.manager?.instanceId === manager.instanceId, { prepared, fenced, aborted, resumed });
         }
         if (process.argv.includes("--setup-upgrade-repro")) {
-          const nextPrefix = join(root, "next-cli");
-          await npmRun(["install", "-g", "--prefix", nextPrefix, "--ignore-scripts", join(upgradeFixture!, "cotal-ai-0.151.3.tgz")]);
-          cliEntry = join(nextPrefix, "lib/node_modules/cotal-ai/dist/cotal.js");
+          // Setup only replaces its recorded installation. A different prefix is foreign reuse.
+          await npmRun(["install", "-g", "--prefix", globalPrefix, "--ignore-scripts", join(upgradeFixture!, "cotal-ai-0.151.3.tgz")]);
           const setupNew = await cli("setup", "--space", ON);
           const after = await cli("status", "--space", ON);
           check("U3 setup restarts recorded old-generation daemon and restores readiness", setupNew.code === 0 && after.doc.result?.version === "0.151.3" && setupNew.doc.result?.manager?.state === "answering", { setupNew, after });
