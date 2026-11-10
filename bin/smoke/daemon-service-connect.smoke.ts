@@ -695,7 +695,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: fixtureVersion }));
         writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: fixtureVersion }));
       }
-      const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+      const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
       if (process.argv.includes("--daemon-seed-repro")) env.COTAL_ALLOW_CHECKOUT_SEED = "1";
       if (process.argv.includes("--hosted-seed-repro")) {
         delete env.COTAL_SKIP_CONNECTOR_SEED;
@@ -996,7 +996,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           const intent = join(home, "daemon", spaceSegment(ON), "manager-host.json");
           const recorder = join(root, "corrupt-native");
           mkdirSync(recorder, { mode: 0o700 });
-          writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\nif(process.argv.slice(2).join(' ')!=='--user --no-ask-password --no-pager start cotal-daemon.service')process.exit(99);\n`, { mode: 0o700 });
+          writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\nif(process.argv.slice(2).join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}\nif(process.argv.slice(2).join(' ')!=='--user --no-ask-password --no-pager start cotal-daemon.service')process.exit(99);\n`, { mode: 0o700 });
           env.PATH = `${recorder}:${env.PATH}`;
           writeFileSync(intent, "not-json", { mode: 0o600 });
           const repaired = await cli("setup", "--space", ON);
