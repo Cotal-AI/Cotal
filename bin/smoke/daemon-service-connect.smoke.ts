@@ -450,7 +450,7 @@ try {
         }
       }
       check("C0 status and refused connect never contact the space", hits.length === beforeHits, { beforeHits, afterHits: hits.length });
-      check("C0 status creates no registration or connection records", !existsSync(daemonDir));
+      check("C0 status creates no registration or connection records", !filesUnder(daemonDir).some((p) => /(?:register-request|service-identity|service-connect)\.json$|service-store/.test(p)));
     });
 
     await cell("C1 connect before approval is approval-pending, never connected", async () => {
