@@ -9,6 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
+    "smoke:server-intent:live": "tsx implementations/cli/smoke/server-intent-live.smoke.ts",
     "smoke:no-manager-credential-warning:live": "tsx implementations/cli/smoke/no-manager-credential-warning-live.smoke.ts",
     "typecheck": "pnpm build && pnpm -r typecheck",
     "build": "pnpm -r build",
@@ -195,6 +196,7 @@
     "smoke:ps-mesh-column": "tsx implementations/cli/smoke/ps-mesh-column.smoke.ts",
     "smoke:seat-locality-honesty": "tsx implementations/cli/smoke/seat-locality-honesty.smoke.ts",
     "smoke:status-provenance": "pnpm --filter @cotal-ai/connector-claude-code... build && tsx implementations/cli/smoke/status-provenance.smoke.ts",
+    "smoke:status-default-agent": "tsx bin/smoke/status-default-agent.smoke.ts",
     "smoke:jcode-host": "pnpm --filter @cotal-ai/connector-core build && tsx extensions/connector-jcode/smoke/jcode-host.smoke.ts",
     "smoke:jcode-private-state": "tsx extensions/connector-jcode/smoke/private-state.smoke.ts",
     "smoke:jcode-session-resume": "tsx extensions/connector-jcode/smoke/session-resume.smoke.ts",
@@ -944,6 +946,7 @@
     "smoke:down-lease-tombstone": "tsx implementations/cli/smoke/down-lease-tombstone.smoke.ts",
     "smoke:down-target": "tsx implementations/cli/smoke/down-target.smoke.ts",
     "smoke:down-pidfile-liveness:live": "tsx implementations/cli/smoke/down-pidfile-liveness-live.smoke.ts",
+    "smoke:down-host-auth:live": "tsx implementations/cli/smoke/down-host-auth-live.smoke.ts",
     "smoke:flag-inventory": "tsx bin/smoke/flag-inventory.smoke.ts",
     "smoke:capability-census": "tsx bin/smoke/capability-census.smoke.ts",
     "smoke:connector-bundle-text": "tsx bin/smoke/connector-bundle-text.smoke.ts",

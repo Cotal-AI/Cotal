@@ -1,5 +1,5 @@
 import { isAbsolute, join, relative } from "node:path";
-import { cachedPreferences, canonicalRoot, describeLayer, isWorkspaceTargetError, preparedNeverStarted, resolveMeshTarget, resolvePreference, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, resolveMeshTarget, resolvePreference, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
 import { defaultPersonaFix } from "./default-persona.js";
 
 /** Persona selection shared by foreground and detached spawn: `--config`, then the positional, then
@@ -24,6 +24,13 @@ export function callerHarness(space: string): string | undefined {
 /** Whether a spawn runs through a manager: only when the caller asks for one with `--detach` or
  *  `--on`. Any other spawn runs the application in this terminal, on every kind of mesh. */
 export const spawnUsesManager = (values: { detach?: boolean; on?: string }): boolean => values.detach === true || values.on !== undefined;
+
+/** The refusal for a harness with no installed connector, naming the package when it is official. */
+export function missingConnector(name: string, target: object): CommandFailure {
+  const pkg = OFFICIAL_CONNECTORS[name];
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no connector "${name}" is installed`, { target,
+    remedy: pkg ? `add it with \`cotal ext add ${pkg}\`` : "install its integration with `cotal ext add <npm-package>`, or check the name" });
+}
 
 /** The space a launch from `cwd` targets when no `--space` or `--server` names one: the space the mesh
  *  target resolves to, or the space prepared in this folder that no `up` has started, which

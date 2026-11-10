@@ -41,6 +41,7 @@ export * from "./registration-policy.js";
 export * from "./broker-policy.js";
 export * from "./idp-url.js";
 export * from "./broker-display.js";
+export * from "./broker-url.js";
 export * from "./mesh-target.js";
 export * from "./messaging.js";
 export * from "./preflight.js";

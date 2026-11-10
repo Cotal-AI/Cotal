@@ -705,7 +705,11 @@ unit name, path and the sha256 of the bytes it would write, and writes, enables 
 `install` for the same daemon refuses `CONFLICT` and names `cotal daemon uninstall`. Outside a
 terminal `uninstall` needs `--yes`. `uninstall` acts on the unit `install` recorded: a unit file
 that is gone refuses `TARGET_NOT_FOUND`, and one whose bytes changed refuses `CONFLICT`, with
-nothing removed either way. On macOS and Windows, a plist, task definition, loaded label or
+nothing removed either way. On Linux, `start` and both forms of `uninstall` also require the
+receipt to name the selected daemon home, its derived unit name and that file in the user manager's
+unit directory. A copied receipt, changed unit name or redirected path refuses `CONFLICT` before
+service control or file removal, even when the file's bytes match the recorded digest.
+On macOS and Windows, a plist, task definition, loaded label or
 registered task that no install recorded refuses the install `CONFLICT` with nothing written, and a
 registered task that no longer runs the recorded command refuses `uninstall` `CONFLICT`.
 
@@ -765,9 +769,12 @@ freed, so a socket with the recorded numbers that a process answers on belongs t
 process answers on, removes nothing and refuses `CONFLICT` (`ALREADY_RUNNING`), naming the path.
 When a process answers, the refusal says another process is listening at that path and `serve` does
 not start until it releases it, and Next names `ss -xlp` and `fuser <path>` to find that process. A
-clean shutdown clears the record, and so does a refused `serve`, so a socket at the path afterwards
-is refused the same way, and the reason says the record names no socket. A non-socket entry there refuses `PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) and is left
-alone.
+clean shutdown or a refused socket check clears the record, so a socket at the path afterwards
+is refused the same way, and the reason says the record names no socket. A start that fails before
+checking the socket, such as a runtime-directory permission refusal, preserves its predecessor's
+record while releasing the lock. Once the directory is corrected, the next start can recover the
+same dead socket. A non-socket entry there refuses `PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) and
+is left alone.
 
 `--daemon-home <dir>` runs or reaches a separate daemon whose own state lives in `<dir>`: its
 sign-in session, its per-space identity, register request and service store, all at the paths

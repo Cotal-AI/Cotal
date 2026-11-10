@@ -19,6 +19,7 @@ import {
 import { ProtectedRecordStore, shellPath, unsearchableFolder } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
 import { codeSpan } from "./text-wrap.js";
+import { tlsIntent } from "./broker-url.js";
 
 /**
  * One coherent answer to "which mesh does this command act on, and where do its creds + personas
@@ -312,7 +313,7 @@ export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget
     server,
     space: m.space,
     mode: m.mode,
-    tlsRequired: m.tlsRequired === true,
+    tlsRequired: tlsIntent(server, m.tlsRequired === true),
     ...(m.policy ? { policy: m.policy } : {}),
     auth,
     ...(userAuth ? { userAuth } : {}),
@@ -357,8 +358,7 @@ function localTarget(root: string, server: string, source: MeshTarget["source"],
       `space "${userSpace}" has user auth enabled on disk but no usable registry entry`,
       { space: userSpace, root },
     );
-  // No mesh record on this path, so there is no recorded TLS decision to honour.
-  return { root, server, space, mode: auth ? "auth" : "open", tlsRequired: false, auth, personaRoot: personaDir(root), source };
+  return { root, server, space, mode: auth ? "auth" : "open", tlsRequired: tlsIntent(server, false), auth, personaRoot: personaDir(root), source };
 }
 
 /** A `.cotal/` that a user actually created here — not the machine-home dir the cwd walk-up lands on

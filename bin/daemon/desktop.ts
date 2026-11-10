@@ -76,7 +76,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     }
     if (req.op === "install") {
       let existing = false;
-      try { planUninstall(opts.paths); existing = true; }
+      try { planUninstall(opts.paths, opts.daemonHome); existing = true; }
       catch (e) { if (!(e instanceof CommandFailure) || e.code !== "TARGET_NOT_FOUND") throw e; }
       let answering: Awaited<ReturnType<typeof queryDaemon>> | undefined;
       try { answering = await queryDaemon(opts); }
@@ -87,7 +87,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         emit({ v: 1, event: "result", ok: true, result: { installed: true, status: answering.result } });
         return;
       }
-      if (existing) startInstalled(opts.paths);
+      if (existing) startInstalled(opts.paths, opts.daemonHome);
       else applyInstall(opts.paths, opts.daemonHome);
       const deadline = Date.now() + 15_000;
       for (;;) {

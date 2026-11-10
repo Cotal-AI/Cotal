@@ -8,6 +8,13 @@ audience: operators
 The CLI reports its selected space, discovers commands, and returns receipts for operations.
 Its help describes the flags and output formats each command supports.
 
+`--server` takes one broker URL with a `nats://`, `tls://`, `ws://` or `wss://` scheme.
+Scheme names are case-insensitive. Missing or unsupported schemes, inline credentials, queries,
+fragments and TCP paths refuse with `USAGE_INVALID` before connecting. WebSocket paths are allowed
+for proxy routes. Commands using the shared target connection, including `send`, `history` and
+`who`, require TLS for `tls://` and `wss://`, including with an unregistered space or explicit
+`--creds`. Registry-resolved connections also keep the registered space's TLS requirement.
+
 
 ## Invocation [#running-it]
 

@@ -77,6 +77,7 @@ if (process.platform !== "linux") skipSuite(`daemon-service-connect smoke: Linux
 const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
 const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
 const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
+const originalPath = process.env.PATH;
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -306,13 +307,16 @@ try {
   /** Where a space's resume intent is recorded, read the way the daemon derives it. */
   const intentFile = (space: string) => daemonConnectIntentFile(space, home);
   const filesUnder = (dir: string) => existsSync(dir) ? readdirSync(dir, { recursive: true }).map(String) : [];
-  /** Put this machine in the state `cotal daemon install` leaves: a real unit file plus the receipt
-   *  naming it, in the product's own format, which `planUninstall` reads exactly as `uninstall`
-   *  does. Only `applyInstall` is left out, because it writes into the operator's own
-   *  `~/.config/systemd/user`; a container covers that half. */
-  const seedUnitReceipt = (entry = join(repo, "bin/dist/cotal.js"), native = false): string => {
-    const unitPath = join(root, "cotal-daemon.service");
-    const unitBytes = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nExecStart="${process.execPath}" "${entry}" daemon serve\n${native ? "Environment=COTAL_DAEMON_NATIVE_SERVICE=1\n" : ""}Restart=always\n\n[Install]\nWantedBy=default.target\n`;
+  /** A real unit and receipt in the fixture manager's reported directory. Operational native
+   *  calls reach only an owned recorder; the default fixture admits directory reads only. */
+  const seedUnitReceipt = (entry = join(repo, "bin/dist/cotal.js"), marked = false): string => {
+    const native = join(root, "native"), config = join(root, "config");
+    mkdirSync(native, { recursive: true, mode: 0o700 });
+    mkdirSync(join(config, "systemd", "user"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(" ") !== "--user show-environment") process.exit(89);\nconsole.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});\n`, { mode: 0o700 });
+    process.env.PATH = `${native}:${originalPath ?? ""}`;
+    const unitPath = join(config, "systemd", "user", "cotal-daemon.service");
+    const unitBytes = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nExecStart="${process.execPath}" "${entry}" daemon serve\n${marked ? "Environment=COTAL_DAEMON_NATIVE_SERVICE=1\n" : ""}Restart=always\n\n[Install]\nWantedBy=default.target\n`;
     writeFileSync(unitPath, unitBytes, { mode: 0o600 });
     mkdirSync(join(home, "daemon"), { recursive: true, mode: 0o700 });
     writeFileSync(join(home, "daemon", "service-unit.json"), `${JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
@@ -1389,6 +1393,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
   idp.close();
   if (nats) await killAndAwaitExit(nats, "SIGTERM").catch(() => {});
   release?.();
+  if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
   rmSync(jsDir, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 }

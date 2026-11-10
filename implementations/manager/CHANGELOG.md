@@ -1,5 +1,18 @@
 # @cotal-ai/manager
 
+## 0.152.0
+
+### Patch Changes
+
+- 4bd669c: Show an open checkpoint's declared schema in workflow status views.
+  Record it with the question and include it in both text and JSON output, without validating checkpoint answers against it.
+- Updated dependencies [4bd669c]
+- Updated dependencies [1f4700a]
+- Updated dependencies [1fec76f]
+  - @cotal-ai/core@0.152.0
+  - @cotal-ai/workspace@0.152.0
+  - @cotal-ai/seat@0.152.0
+
 ## 0.151.3
 
 ### Patch Changes

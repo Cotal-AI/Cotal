@@ -44,7 +44,6 @@ export interface SocketGeneration {
   readonly ino: number;
 }
 
-/** What a holder writes through its locked descriptor. `socket` is absent until it publishes one. */
 /**
  * The kernel's start token for process `pid`, so a pid reused by a later process never matches:
  * `/proc/<pid>/stat` starttime on Linux, the process table's start time on macOS, the creation
@@ -68,10 +67,13 @@ export interface LockRecord {
 export interface HeldLifetime {
   /** The record the previous holder left, when it is readable and well-formed. */
   readonly previous: LockRecord | undefined;
+  /** Stop preserving a predecessor whose socket was rejected, removed or already absent. */
+  discardPrevious(): void;
   /** Record the socket this daemon is about to publish, before it publishes it. */
   publishing(generation: SocketGeneration): void;
-  /** Clear the record and close the descriptor, which releases the lock. Idempotent. */
-  release(): void;
+  /** Clear the record and release the lock. A failed start may restore its unconsumed predecessor
+   *  before closing the descriptor. Idempotent. */
+  release(opts?: { preservePrevious?: boolean }): void;
 }
 
 function parse(raw: string): LockRecord | undefined {
@@ -131,6 +133,7 @@ export function holdLifetime(path: string): HeldLifetime {
   const token = processBirth(process.pid);
   const identity = { v: 1 as const, pid: process.pid, ...(token !== undefined ? { start: token } : {}), startedAt };
   let released = false;
+  let recoverable = previous;
   const write = (record: LockRecord): void => {
     const bytes = `${JSON.stringify(record)}\n`;
     ftruncateSync(fd, 0);
@@ -139,16 +142,24 @@ export function holdLifetime(path: string): HeldLifetime {
   write(identity);
   return {
     previous,
+    discardPrevious() {
+      recoverable = undefined;
+    },
     publishing(generation) {
+      recoverable = undefined;
       write({ ...identity, socket: generation });
     },
-    release() {
+    release(opts = {}) {
       if (released) return;
       released = true;
-      // Clearing the record first means a clean exit leaves no generation to recover, so a later
-      // socket at the path can only ever be another daemon's and is refused rather than removed.
-      try { ftruncateSync(fd, 0); } catch { /* the close below still releases the lock */ }
-      closeSync(fd);
+      // A startup preflight failure has not consumed the dead socket. Keep its evidence under
+      // the lock so another attempt can recover it. Clean shutdown still leaves no generation.
+      try {
+        if (opts.preservePrevious && recoverable?.socket) write(recoverable);
+        else {
+          try { ftruncateSync(fd, 0); } catch { /* closing still releases the lock */ }
+        }
+      } finally { closeSync(fd); }
     },
   };
 }
@@ -203,12 +214,12 @@ export async function claimSocketPath(path: string, previous: SocketGeneration |
       `${path} has the device and inode numbers this daemon home's last daemon published, but a connect to it failed with ${outcome}, so it is not that daemon's dead socket; nothing was removed`,
     );
   }
-  // A refused start clears the record as a clean stop does, so a socket that one refused is not
-  // compared with anything the next time.
+  // A rejected socket claim clears the record as a clean stop does, so the next attempt does
+  // not reuse evidence that failed this check.
   throw new EndpointRefusal(
     "ALREADY_RUNNING",
     previous
       ? `${path} already exists (uid ${st.uid}) and is not the socket this daemon home's last daemon published; nothing was removed`
-      : `${path} already exists (uid ${st.uid}), and this daemon home's lock record names no socket to compare it with: a clean stop clears that record, and so does a refused serve; nothing was removed`,
+      : `${path} already exists (uid ${st.uid}), and this daemon home's lock record names no socket to compare it with: a clean stop or a refused socket check clears that record; nothing was removed`,
   );
 }
