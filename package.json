@@ -933,6 +933,7 @@
     "smoke:join-target": "tsx implementations/cli/smoke/join-target.smoke.ts",
     "smoke:join-dial-entry": "tsx implementations/cli/smoke/join-dial-entry.smoke.ts",
     "smoke:join-denial-guidance": "tsx implementations/cli/smoke/join-denial-guidance.smoke.ts",
+    "smoke:join-creds-grants:live": "tsx implementations/cli/smoke/join-creds-grants-live.smoke.ts",
     "smoke:join-external:live": "tsx implementations/cli/smoke/join-external-broker-live.smoke.ts",
     "smoke:join-durable-dedup:live": "tsx implementations/cli/smoke/join-durable-dedup-live.smoke.ts",
     "smoke:join-session-lost:live": "tsx implementations/cli/smoke/join-session-lost-live.smoke.ts",
