@@ -54,6 +54,12 @@ rather than implying those inputs narrowed anything.
 
 ### Private credential output
 
+After `reset space` and a new `up`, credentials the previous local identity issued no longer
+work on that space. A rejected `--creds` file for the registered static-auth space names the
+identity mismatch and an `auth mint` replacement with the file's channel grants and role, or its
+profile. The broker still decides whether to accept the credential. Without matching local trust,
+the refusal keeps the broker's generic credential guidance.
+
 The default credential is created through its canonical secret-store kind. An existing label is
 not overwritten. Use another label or an explicit private output. `--replace` replaces the label's
 standing credential when it has expired, has no expiry claim or has a key that
