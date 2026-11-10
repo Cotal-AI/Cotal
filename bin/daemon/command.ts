@@ -25,7 +25,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, homeCotalDir, jsonFlag, plainFlag, presentationOf, renderReport, spaceFlag, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, homeCotalDir, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, spaceFlag, writeResult, type Report } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
@@ -141,6 +141,7 @@ async function login(args: ParsedArgs): Promise<void> {
   let idp: string;
   try { idp = normalizeIdpUrl(values.idp); }
   catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
+  recordOperationContext({ target: { idp } });
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
   const { paths } = resolveTarget(args);
   const abort = new AbortController();
@@ -377,12 +378,15 @@ async function serve(args: ParsedArgs): Promise<void> {
 
 async function run(args: ParsedArgs): Promise<void> {
   const [mode, ...rest] = args.positionals;
-  if (rest.length) throw new CommandFailure("refused", "USAGE_INVALID", `cotal daemon ${mode} takes no positionals`);
   const subcommand = daemonCommand.subcommands?.find((command) => command.name === mode);
+  if (subcommand) recordOperationContext({ command: `${daemonCommand.name} ${subcommand.name}` });
+  if (rest.length) throw new CommandFailure("refused", "USAGE_INVALID", `cotal daemon ${mode} takes no positionals`);
   if (subcommand) {
     for (const name of Object.keys(args.values)) {
       if (!subcommand.flagNames?.includes(name)) throw new CommandFailure("refused", "USAGE_INVALID", `--${name} does not belong to cotal daemon ${mode}`, { remedy: `run \`cotal help daemon ${mode}\`` });
     }
+    const space = args.values.space;
+    if (subcommand.flagNames?.includes("space") && typeof space === "string" && space.trim()) recordOperationContext({ target: { space } });
   }
   if (mode === "desktop") {
     const { paths, home } = resolveTarget(args);

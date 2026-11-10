@@ -558,6 +558,11 @@ before any daemon or service action, including `--dry-run` on `serve`. Bare `cot
 the declared modes and points to `cotal help daemon`, which works without a running daemon.
 `desktop` serves the desktop app's bounded JSON request on stdin; it has its own protocol output.
 
+Once a daemon mode begins, its JSON failure names that mode in `command`, as success does.
+It retains the selected space or normalized login provider in `target` once that value is accepted.
+A failure's more specific target takes precedence; a target not yet established remains `null`.
+Rejected provider URLs are never copied into the failure target. Outcomes and exit codes are unchanged.
+
 This release serves a local endpoint for status, sign-in, a connection check, a registration request
 and the daemon's own service connection, and installs itself as the user's own service: a systemd
 user service on Linux, a LaunchAgent on macOS, or a scheduled task on Windows. It does not

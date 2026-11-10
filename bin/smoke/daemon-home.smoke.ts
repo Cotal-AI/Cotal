@@ -138,7 +138,7 @@ function track(child: ChildProcess): ChildProcess {
   return child;
 }
 
-type Doc = { outcome?: string; result?: Record<string, any>; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
+type Doc = { command?: string; target?: { space?: string; idp?: string } | null; outcome?: string; result?: Record<string, any>; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
 /** One CLI invocation to completion. */
 async function cli(args: string[], timeoutMs = 30_000): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
   const child = track(spawn(process.execPath, daemonArgv(args), { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] }));
@@ -211,6 +211,18 @@ try {
     const help = await cli(["--help"]);
     check("G0 scoped help succeeds before any daemon starts", help.status === 0 && help.out.includes("desktop"), { status: help.status });
     check("G0 discovery creates no runtime entries or lifetime lock", runtimeEntries().length === 0 && !existsSync(lockFile(home)) && !existsSync(lockFile(managed)));
+  });
+
+  await cell("G2 failure documents retain their selected operation", async () => {
+    const absent = await cli(["status", "--daemon-home", managed, "--json"]);
+    check("G2 absent status retains its mode and null local target", absent.status === 2 && absent.doc.command === "daemon status" && absent.doc.target === null, absent.doc);
+    for (const mode of ["connect-check", "register", "service-connect", "service-disconnect", "service-status", "setup"]) {
+      const result = await cli([mode, "--daemon-home", managed, "--space", "missing", "--json", ...(mode === "setup" ? ["--wait", "bad"] : [])]);
+      check(`G2 ${mode} refuses with its selected space and command`, result.status === (mode === "setup" ? 1 : 2) && result.doc.command === `daemon ${mode}` && result.doc.target?.space === "missing", result.doc);
+    }
+    const invalid = await cli(["login", "--daemon-home", managed, "--idp", "http://user:PRIVATE_MARKER@127.0.0.1/api/auth", "--json"]);
+    check("G2 a rejected provider URL is not recorded as a target or echoed", invalid.status === 1 && invalid.doc.command === "daemon login" && invalid.doc.target === null && !(invalid.out + invalid.err).includes("PRIVATE_MARKER"), { status: invalid.status, command: invalid.doc.command, target: invalid.doc.target });
+    check("G2 failure-context reads create no runtime entries or daemon lock", runtimeEntries().length === 0 && !existsSync(lockFile(managed)));
   });
 
   await cell("H0 control: no flag keeps the fixed legacy socket", async () => {
