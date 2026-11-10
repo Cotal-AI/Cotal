@@ -13,7 +13,7 @@
  * It composes the existing commands and adds no new authority. Pausing, renaming and disconnecting
  * stay separate commands; this one does not absorb them.
  */
-import { CommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, resolveOnPath } from "@cotal-ai/workspace";
 import type { DaemonPaths } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
 import { loginFromCli } from "./cli-login.js";
@@ -21,7 +21,7 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, RegisterResult, ServiceConnectionState } from "./protocol.js";
-import { applyInstall, installedDaemonIdentity, planUninstall, startInstalled, restartInstalled } from "./install.js";
+import { applyInstall, installedDaemonIdentity, planUninstall, planInstalledPathRefresh, startInstalled, restartInstalled } from "./install.js";
 import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
 
@@ -284,18 +284,53 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
   }
   if (!discoveredSignIn) await ensureSignedIn(opts, steps);
   if (!opts.noManager) {
-    const manager = await managerViaDaemon(opts, { op: "manager-start", space: opts.space }) as HostedManager;
+    let manager = await managerViaDaemon(opts, { op: "manager-status", space: opts.space }) as HostedManager;
+    const inspectedExisting = manager.state === "answering";
+    if (!inspectedExisting) manager = await managerViaDaemon(opts, { op: "manager-start", space: opts.space }) as HostedManager;
+    let refreshed = false;
+    const newlyResolvable = manager.connectors?.some(connector => connector.state !== "available"
+      && (/ harness needs (.+) on PATH/.exec(connector.reason ?? "")?.[1]?.split(", ") ?? [])
+        .some(binary => resolveOnPath(binary) !== undefined));
+    if (newlyResolvable) {
+      const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
+      if (!installation.same) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} cannot refresh applications from this installation`, { remedy: `run cotal daemon setup --space ${opts.space} from ${installation.installed}` });
+      const refresh = planInstalledPathRefresh(opts.paths, opts.daemonHome);
+      if (refresh) {
+        // The daemon fences every hosted Manager, including spaces other than this setup target.
+        try { await managerViaDaemon(opts, { op: "managers-prepare-restart" }); }
+        catch (error) {
+          if (error instanceof CommandFailure && error.native?.code === "SEATS_ACTIVE") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${error.message}. The new application will become available after the seats stop and setup runs again. No service was changed or restarted`, { native: error.native, remedy: error.remedy });
+          throw error;
+        }
+        try {
+          refresh();
+          restartInstalled(opts.paths, opts.daemonHome, true);
+        } catch (error) {
+          try { await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
+          catch { /* Preserve the installation or native service failure. */ }
+          throw error;
+        }
+        const detail = "refreshed the pinned PATH from this terminal, keeping existing directories";
+        steps.push({ step: "install", outcome: "path-refreshed", detail });
+        opts.report(`service: ${detail}`);
+        await waitForDaemon(opts, 60);
+        refreshed = true;
+      }
+    }
+    if (inspectedExisting || refreshed) manager = await managerViaDaemon(opts, { op: "manager-start", space: opts.space }) as HostedManager;
     steps.push({ step: "manager", outcome: manager.state, detail: manager.reason ?? manager.instanceId ?? manager.state });
     opts.report(`manager: ${manager.state}${manager.instanceId ? `, instance ${manager.instanceId}` : ""}`);
     if (manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", manager.reason ?? "the hosted Manager is not answering yet", { remedy: manager.next ?? `read cotal daemon status --space ${opts.space}`, native: { code: manager.state.toUpperCase() } });
     const available = manager.connectors?.filter(connector => connector.state === "available") ?? [];
     opts.report(`connectors: ${available.length} available`);
     if (!available.length) {
+      const names: Record<string, string> = { claude: "Claude Code", codex: "Codex", hermes: "Hermes", jcode: "Jcode", opencode: "OpenCode", pi: "pi" };
       const applications = [...new Set((manager.connectors ?? []).flatMap(connector => {
+        if (names[connector.agent]) return [names[connector.agent]!];
         const missing = / harness needs (.+) on PATH/.exec(connector.reason ?? "");
         return missing ? missing[1]!.split(", ") : connector.agent === "(inventory)" ? [] : [connector.agent];
       }))];
-      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no available connector in the hosted Manager's environment", { remedy: `install ${applications.length ? applications.join(" or ") : "an agent application reported by Manager status"} on the daemon's PATH, then run setup again`, native: { code: "NO_AVAILABLE_CONNECTOR" } });
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no available connector in the hosted Manager's environment", { remedy: `install ${applications.length ? applications.join(" or ") : "Claude Code, Codex, Hermes, Jcode, OpenCode or pi"} and make sure the application runs in this terminal, then run the same setup command again`, native: { code: "NO_AVAILABLE_CONNECTOR" } });
     }
     const registration = await requestRegistration(opts, steps);
     // A pending registration has no service credential yet. Report it without polling its owner.

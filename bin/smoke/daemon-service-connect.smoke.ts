@@ -52,7 +52,7 @@ import { connect as netConnect, createServer as createNetServer, type AddressInf
 import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
@@ -847,7 +847,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       };
       const startDaemon = async (managedHome = explicitHome) => {
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
-        const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading && (!process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro")) ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] });
+        const servicePath = process.argv.includes("--setup-path-repro") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
+        const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading && (!process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro")) ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] });
         child.stdout.resume(); child.stderr.on("data", (chunk) => { if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) console.log("  owned daemon", String(chunk).trim()); });
         for (let i = 0; i < 100; i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
         await killAndAwaitExit(child, "SIGTERM");
@@ -857,6 +858,31 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["cotal-owned-missing-harness"],buildLaunch:()=>{throw new Error("unavailable connector must not launch")}});`);
         const manifest = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8"));
         manifest.extensions[0].connectors[0].requires = ["cotal-owned-missing-harness"];
+        writeFileSync(join(prefix, "extensions.json"), JSON.stringify(manifest));
+      }
+      const pathRecovery = process.argv.includes("--setup-path-repro");
+      const pathRecording = pathRecovery || process.argv.includes("--setup-no-connectors-repro");
+      const pathCalls: string[] = [];
+      let pathControl: ReturnType<typeof createHttpServer> | undefined;
+      const pathUnit = join(root, "config/systemd/user/cotal-daemon.service");
+      const pathReceipt = unitReceiptFile(paths);
+      const pathBin = join(root, "path-native");
+      const oldBin = join(root, "old-application-bin");
+      if (pathRecording) {
+        for (const dir of [pathBin, oldBin]) mkdirSync(dir, { mode: 0o700 });
+        env.PATH = `${pathBin}:${oldBin}:${env.PATH}`;
+        const bytes = readFileSync(pathUnit, "utf8").replace("[Service]\n", `[Service]\nEnvironment=PATH=${JSON.stringify(env.PATH)}\n`);
+        writeFileSync(pathUnit, bytes);
+        const receipt = JSON.parse(readFileSync(pathReceipt, "utf8"));
+        writeFileSync(pathReceipt, JSON.stringify({ ...receipt, unitSha256: createHash("sha256").update(bytes).digest("hex") }));
+      }
+      if (pathRecovery) {
+        writeFileSync(join(oldBin, "old-application"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+        const source = readFileSync(join(pkg, "index.js"), "utf8");
+        writeFileSync(join(pkg, "index.js"), source.replace('requires:["node"]', 'requires:["cotal-owned-first-app"]') + "\n" + source.slice(source.indexOf("registry.register")).replace('name:"daemon-smoke"', 'name:"daemon-second"').replace('requires:["node"]', 'requires:["cotal-owned-second-app"]'));
+        const manifest = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8"));
+        manifest.extensions[0].provides.push({ kind: "connector", name: "daemon-second" });
+        manifest.extensions[0].connectors = [{ name: "daemon-smoke", requires: ["cotal-owned-first-app"], eventPlane: false, setup: null }, { name: "daemon-second", requires: ["cotal-owned-second-app"], eventPlane: false, setup: null }];
         writeFileSync(join(prefix, "extensions.json"), JSON.stringify(manifest));
       }
       const recoveryBin = join(root, "application-bin");
@@ -883,6 +909,18 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\n(async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}if(!['--user --no-ask-password --no-pager stop cotal-daemon.service','--user --no-ask-password --no-pager start cotal-daemon.service'].includes(args))process.exit(99);const op=args.includes(' stop ')?'stop':'start';const r=await fetch('http://127.0.0.1:${controlPort}/'+op);if(!r.ok)process.exit(99);})();\n`, { mode: 0o700 });
         env.PATH = `${recorder}:${env.PATH}`;
       }
+      if (pathRecording) {
+        pathControl = createHttpServer(async (request, response) => {
+          pathCalls.push(request.url!);
+          if (request.url === "/stop") await killAndAwaitExit(child, "SIGTERM");
+          else if (request.url === "/start") child = await startDaemon();
+          else if (!["/daemon-reload", "/disable"].includes(request.url!)) { response.writeHead(500).end(); return; }
+          response.end("done");
+        });
+        await new Promise<void>(resolve => pathControl!.listen(0, "127.0.0.1", resolve));
+        const port = (pathControl.address() as AddressInfo).port;
+        writeFileSync(join(pathBin, "systemctl"), `#!${process.execPath}\nconst args=process.argv.slice(2);if(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}const op=args.includes('daemon-reload')?'daemon-reload':args.at(-2);if(!['stop','start','disable','daemon-reload'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
+      }
       try {
         if (explicitHome) {
           saveIdpSession(explicitHome, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
@@ -892,6 +930,49 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           ? { code: 0, doc: { result: { launchReady: true, manager: resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 100_000)) } } as Record<string, any>, err: "" }
           : await cli("setup", "--space", ON, "--idp", idpUrl);
         console.log("  H1 setup", JSON.stringify(setup));
+        if (pathRecovery) {
+          check("P1 initial setup refuses without applications", setup.code === 2 && setup.doc.error?.cause?.code === "NO_AVAILABLE_CONNECTOR", setup);
+          check("P1 remedy names applications in the setup terminal", setup.doc.error?.remedy?.includes("terminal") && !setup.doc.error?.remedy?.includes("daemon's PATH"), setup.doc.error);
+          const daemonBefore = child.pid;
+          writeFileSync(join(recoveryBin, "cotal-owned-first-app"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+          // The terminal has a new directory and no longer carries the old application's directory.
+          env.PATH = env.PATH!.split(":").filter(entry => entry !== oldBin).join(":");
+          const recovered = await cli("setup", "--space", ON);
+          console.log("  P1 setup after PATH addition", JSON.stringify(recovered));
+          check("P1 same setup becomes launch-ready after terminal PATH addition", recovered.code === 0 && recovered.doc.result?.launchReady === true && child.pid !== daemonBefore, recovered);
+          if (recovered.code !== 0) return;
+          let manager = recovered.doc.result.manager;
+          const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+          const client = { versionSkew: (s: string) => s, roster: async () => [] };
+          const launched = await askManager(client, ON, servers, "start", { name: "path_seat", agent: "daemon-smoke", events: false, persona: { prompt: "Owned PATH test", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, target.auth, "owner", 40_000, { instanceId: manager.instanceId });
+          check("P2 first discovered application launches a real seat", launched.ok, launched.error);
+          const secondBin = join(root, "second-application-bin"); mkdirSync(secondBin, { mode: 0o700 });
+          writeFileSync(join(secondBin, "cotal-owned-second-app"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+          env.PATH = `${secondBin}:${env.PATH}`;
+          const beforeCalls = pathCalls.length, occupiedPid = child.pid;
+          const beforeUnit = readFileSync(pathUnit, "utf8"), beforeReceipt = readFileSync(pathReceipt, "utf8");
+          const blocked = await cli("setup", "--space", ON);
+          console.log("  P2 occupied setup", JSON.stringify(blocked));
+          const status = await askManager(client, ON, servers, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
+          check("P2 occupied seat prevents any service mutation or restart", launched.ok && blocked.code === 2 && child.pid === occupiedPid && pathCalls.length === beforeCalls && readFileSync(pathUnit, "utf8") === beforeUnit && readFileSync(pathReceipt, "utf8") === beforeReceipt && status.ok && (status.data as { agentCount?: number })?.agentCount === 1, blocked);
+          check("P2 refusal says stop seats then rerun setup", /after the seats stop/.test(blocked.doc.error?.message ?? "") && /setup/.test(blocked.doc.error?.remedy ?? ""), blocked);
+          await askManager(client, ON, servers, "stop", { name: "path_seat" }, target.auth, "owner", 10_000, { instanceId: manager.instanceId });
+          const second = await cli("setup", "--space", ON);
+          console.log("  P3 second application setup", JSON.stringify(second));
+          manager = second.doc.result?.manager;
+          check("P3 setup discovers second application while first was already available", second.code === 0 && manager?.connectors?.filter((entry: any) => entry.state === "available").length === 2, second);
+          const pin = JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(pathUnit, "utf8"))![1]!) as string;
+          check("P4 terminal entries lead and old PATH entries survive", pin.startsWith([...new Set(env.PATH!.split(":"))].join(":")) && pin.split(":").includes(oldBin) && new Set(pin.split(":")).size === pin.split(":").length, pin);
+          check("P4 old application still executes through refreshed service PATH", spawnSync("old-application", [], { env: { ...env, PATH: pin } }).status === 0);
+          const receipt = JSON.parse(readFileSync(pathReceipt, "utf8"));
+          check("P5 receipt digest names actual refreshed unit", receipt.unitPath === pathUnit && receipt.unitSha256 === createHash("sha256").update(readFileSync(pathUnit)).digest("hex"));
+          const idlePid = child.pid, idleCalls = pathCalls.length;
+          const repeated = await cli("setup", "--space", ON);
+          check("P6 no new application leaves service running unchanged", repeated.code === 0 && child.pid === idlePid && pathCalls.length === idleCalls, repeated);
+          const removed = await cli("uninstall", "--yes");
+          check("P5 uninstall accepts refreshed receipt and removes unit and daemon", removed.code === 0 && !existsSync(pathUnit) && !existsSync(pathReceipt) && !existsSync(paths.socket), removed);
+          return;
+        }
         if (process.argv.includes("--setup-no-connectors-repro")) {
           check("3A setup refuses no available connector", setup.code === 2 && setup.doc.error?.message?.includes("no available connector") && !!setup.doc.error?.remedy, setup);
           check("setup remedy names the missing agent application", setup.doc.error?.remedy?.includes("cotal-owned-missing-harness"), setup);
@@ -1615,6 +1696,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         await killAndAwaitExit(child, "SIGTERM");
         npmRegistry?.close();
         upgradeControl?.close();
+        pathControl?.close();
         recordMesh(original);
         catalog = undefined; catalogSpace = undefined; catalogTarget = undefined;
         await delivery.close();

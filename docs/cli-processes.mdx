@@ -598,9 +598,16 @@ the stock default persona in its own catalog, without replacing an existing file
 `cotal spawn --on <instance> --space <space>` can launch it. Setup succeeds when that registered
 instance answers `status` with an available connector. With no available connector it refuses with
 `no available connector` and a harness-install next step. Connector availability is read from the
-daemon-hosted Manager, not from the invoking shell. Running setup again refreshes an idle hosted
-Manager's application inventory by restarting that child. If it holds seats, setup refuses with the
-seat cause instead. Install one of the agent applications named in the remedy on the daemon's PATH.
+daemon-hosted Manager. Install an application named in the remedy and confirm it runs in the
+terminal that runs setup, then run the same setup command again. On Linux and macOS, when that
+terminal resolves an application the Manager cannot find, setup refreshes the service's pinned PATH.
+Terminal directories come first, followed by existing service directories without duplicates.
+Setup updates the recorded service source and digest, reloads it, and checks availability again.
+It restarts only after every hosted Manager confirms it has no seats and blocks new launches.
+If any seat is active, nothing is changed or restarted. Stop the seats and run the setup command
+named in the refusal from the same terminal. Windows scheduled tasks do not pin PATH.
+When no new application is found, setup keeps the service running. A Manager with no available
+connector still refreshes its inventory by restarting its idle child.
 The separate `ai.cotal.machine` registration and connection are reported even while owner approval
 is pending. That approval never holds up agent launches. JSON reports `launchReady: true`, the
 registered Manager at `manager.instanceId`, its `manager` status and the separate machine

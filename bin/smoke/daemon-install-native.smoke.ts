@@ -39,7 +39,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CommandFailure } from "@cotal-ai/workspace";
 import type { DaemonPaths } from "../daemon/endpoint.js";
-import { planUninstall, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
+import { planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
 import { launchAgentLabel, launchAgentService, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
 
@@ -86,6 +86,15 @@ try {
     check("KeepAlive and RunAtLoad are true", text.includes("<key>KeepAlive</key><true/>") && text.includes("<key>RunAtLoad</key><true/>"));
     check("PATH is pinned", text.includes("<key>PATH</key><string>/usr/bin:/bin</string>") && text.includes("<key>COTAL_DAEMON_NATIVE_SERVICE</key><string>1</string>"));
     check("digest is of the exact bytes", sha256 === sha(text));
+    const refreshed = refreshedDaemonPath("launchd-agent", text, "/new &<bin>:/bin:/bin")!;
+    check("N1 PATH refresh prepends terminal entries and retains previous directories", refreshed.includes("<key>PATH</key><string>/new &amp;&lt;bin&gt;:/bin:/usr/bin</string>"));
+    check("N1 PATH refresh changes no other plist field", refreshed.replace(/<key>PATH<\/key><string>[^<]*<\/string>/, "PATH") === text.replace(/<key>PATH<\/key><string>[^<]*<\/string>/, "PATH"));
+    check("N1 PATH refresh refuses relative terminal entries", code(() => refreshedDaemonPath("launchd-agent", text, "/bin:relative")) === "UNSUPPORTED");
+    const unit = '[Service]\nEnvironment=PATH="/old %%bin:/bin"\nExecStart="/fixed"\n';
+    const linux = refreshedDaemonPath("systemd-user", unit, '/new "bin:/bin:/bin')!;
+    check("N1 systemd refresh preserves specifiers and escapes terminal quotes", linux === '[Service]\nEnvironment=PATH="/new \\"bin:/bin:/old %%bin"\nExecStart="/fixed"\n');
+    check("N1 refresh refuses a missing PATH pin", code(() => refreshedDaemonPath("systemd-user", "[Service]\n", "/bin")) === "CONFLICT");
+    check("N1 Windows tasks have no PATH pin to rewrite", refreshedDaemonPath("scheduled-task", "task", "relative") === undefined);
     check("a control character refuses", code(() => renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, "a\nb"], searchPath: "/bin", workingDirectory: "/", logPath: "/l" })) === "USAGE_INVALID");
     check("a relative executable refuses", code(() => renderLaunchAgent({ label: "ai.cotal.daemon", argv: ["node", "x"], searchPath: "/bin", workingDirectory: "/", logPath: "/l" })) === "USAGE_INVALID");
   }
@@ -169,6 +178,16 @@ try {
     check("restarting a loaded owned job force-kickstarts only its exact target", JSON.stringify(r.calls.map(c => [c.file, ...c.args])) === JSON.stringify([
       ["/bin/launchctl", "print", target], ["/bin/launchctl", "kickstart", "-k", target],
     ]), r.calls);
+    r.calls.length = 0;
+    const refreshed = refreshedDaemonPath("launchd-agent", readFileSync(plist, "utf8"), "/new-bin:/bin")!;
+    writeFileSync(plist, refreshed, { mode: 0o600 });
+    const refreshedReceipt = { ...receipt, unitSha256: sha(refreshed) };
+    service.restart(refreshedReceipt, true);
+    check("N2 refreshed PATH reload boots out then bootstraps the verified plist", JSON.stringify(r.calls.map(c => [c.file, ...c.args])) === JSON.stringify([
+      ["/bin/launchctl", "print", target], ["/bin/launchctl", "bootout", target], ["/bin/launchctl", "bootstrap", `gui/${uid}`, plist],
+    ]), r.calls);
+    check("N2 refreshed receipt remains accepted for uninstall", code(() => service.check(refreshedReceipt)) === "none");
+    writeFileSync(plist, plan.bytes, { mode: 0o600 });
     printStatus = 113;
     r.calls.length = 0;
     service.restart(receipt);

@@ -33,11 +33,11 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
-import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { assertSystemdSource, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import type { DaemonPaths } from "./endpoint.js";
-import { launchAgentService } from "./install-darwin.js";
+import { launchAgentService, xmlText } from "./install-darwin.js";
 import { scheduledTaskService } from "./install-win32.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
@@ -92,8 +92,7 @@ function unitValue(value: string, exec = false): string {
 
 /** The invocation's own `PATH`, pinned absolute. A relative or empty entry would resolve against
  *  whichever directory the unit happens to start in, so it refuses instead. */
-function pinnedPath(): string {
-  const value = process.env.PATH ?? "";
+function pinnedPath(value = process.env.PATH ?? ""): string {
   const entries = value.split(delimiter).filter((entry) => entry !== "");
   if (!entries.length || entries.some((entry) => !isAbsolute(entry))) throw new CommandFailure("refused", "UNSUPPORTED", "the daemon unit needs an absolute, pinned PATH; a relative or empty entry was not inherited");
   return entries.join(delimiter);
@@ -196,7 +195,7 @@ export interface NativeService {
   register(plan: NativePlan): void;
   check(receipt: UnitReceipt): void;
   start(receipt: UnitReceipt): void;
-  restart(receipt: UnitReceipt): void;
+  restart(receipt: UnitReceipt, reload?: boolean): void;
   remove(receipt: UnitReceipt): void;
 }
 
@@ -350,6 +349,38 @@ export function planUninstall(paths: DaemonPaths, daemonHome: string | undefined
   return recordedUnit(paths, daemonHome).plan;
 }
 
+/** Update only the PATH field the installer wrote. Windows tasks have no PATH pin. */
+export function refreshedDaemonPath(mechanism: ServiceMechanism, source: string, terminalPath = process.env.PATH ?? ""): string | undefined {
+  if (mechanism === "scheduled-task") return undefined;
+  const pattern = mechanism === "systemd-user" ? /^Environment=PATH="((?:\\.|[^"\\])*)"$/m : /(<key>PATH<\/key>\s*<string>)([^<]*)(<\/string>)/;
+  const match = pattern.exec(source);
+  if (!match) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon service has no readable pinned PATH; nothing was changed");
+  const old = mechanism === "systemd-user"
+    ? match[1]!.replace(/\\([\\"])/g, "$1").replaceAll("%%", "%")
+    : match[2]!.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
+  const merged = [...new Set([...pinnedPath(terminalPath).split(delimiter), ...pinnedPath(old).split(delimiter)])].join(delimiter);
+  return source.replace(pattern, () => mechanism === "systemd-user" ? `Environment=PATH=${unitValue(merged)}` : `${match[1]}${xmlText(merged)}${match[3]}`);
+}
+
+/** Prepare without changing disk or service state. The caller must hold the hosted seat fence
+ *  before applying this installer-owned rewrite and restarting the service. */
+export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string): (() => void) | undefined {
+  const { receipt, plan } = recordedUnit(paths, daemonHome);
+  if (plan.mechanism === "scheduled-task") return undefined;
+  const source = readFileSync(receipt.unitPath, "utf8");
+  const next = refreshedDaemonPath(plan.mechanism, source)!;
+  const sha256 = createHash("sha256").update(next).digest("hex");
+  return () => {
+    const current = recordedUnit(paths, daemonHome).receipt;
+    if (current.unitSha256 !== receipt.unitSha256) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon service changed during setup; run setup again");
+    writeSecretFileAtomic(receipt.unitPath, next);
+    try { writeSecretFileAtomic(unitReceiptFile(paths), `${JSON.stringify({ ...receipt, unitSha256: sha256 })}\n`); }
+    catch (error) { writeSecretFileAtomic(receipt.unitPath, source); throw error; }
+    assertSystemdSource(receipt.unitPath, sha256);
+    if (plan.mechanism === "systemd-user") submitSystemdUnitRegistration("reload", receipt.unit);
+  };
+}
+
 /** Start only the recorded, unchanged service. This does not restart an already-running daemon. */
 export function startInstalled(paths: DaemonPaths, daemonHome: string | undefined): UninstallPlan {
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
@@ -406,9 +437,9 @@ export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: str
 }
 
 /** Restart only the source and native job recorded for this daemon. */
-export function restartInstalled(paths: DaemonPaths, daemonHome?: string): UninstallPlan {
+export function restartInstalled(paths: DaemonPaths, daemonHome?: string, reload = false): UninstallPlan {
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
-  if (service) service.restart(receipt);
+  if (service) service.restart(receipt, reload);
   else {
     submitSystemdUnitControl("stop", plan.unit);
     const result = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "start", plan.unit]);
