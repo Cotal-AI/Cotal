@@ -1,6 +1,6 @@
 <!-- Based on Tauri CLI 2.12.4 main.wxs (MIT/Apache-2.0).
      Keeps its generated resource, binary, protocol and signing inputs.
-     Adds desktop shortcut identity and per-user login removal without a script custom action. -->
+     Adds desktop shortcut identity and fixed native per-user login removal. -->
 <?if $(sys.BUILDARCH)="x86"?>
   <?define Win64 = "no" ?>
   <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
@@ -66,8 +66,6 @@
     <DirectoryRef Id="INSTALLDIR">
       <Component Id="RegistryEntries" Guid="*">
         <RegistryValue Root="HKCU" Key="Software\{{manufacturer}}\{{product_name}}" Name="InstallDir" Type="string" Value="[INSTALLDIR]" KeyPath="yes" />
-        <!-- The autostart plugin writes this value only after connection. Never create it on install. -->
-        <RemoveRegistryValue Id="RemoveCotalLogin" Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="Cotal" Action="removeOnUninstall" />
         {{#each deep_link_protocols as |protocol| ~}}
         <RegistryKey Root="HKLM" Key="Software\Classes\{{protocol}}">
           <RegistryValue Type="string" Name="URL Protocol" Value="" />
@@ -115,8 +113,10 @@
     {{/if}}
     <InstallExecuteSequence>
       <RemoveShortcuts>Installed AND NOT UPGRADINGPRODUCTCODE</RemoveShortcuts>
+      <Custom Action="RemoveCotalLogin" Before="RemoveFiles">REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="LaunchApplication" After="InstallFinalize">AUTOLAUNCHAPP AND NOT Installed</Custom>
     </InstallExecuteSequence>
+    <CustomAction Id="RemoveCotalLogin" FileKey="Path" ExeCommand="--remove-login" Execute="deferred" Impersonate="yes" Return="check" />
     <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLDIR]" After="CostFinalize" />
   </Product>
 </Wix>

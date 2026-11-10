@@ -30,7 +30,7 @@ fn save(app: &AppHandle, preferences: &Preferences) -> Result<(), String> {
 fn bundle() -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     executable.ancestors().find(|p| p.extension().is_some_and(|ext| ext == "app"))
-        .map(PathBuf::from).ok_or("Run the packaged Cotal application to install it.")
+        .map(PathBuf::from).ok_or_else(|| "Run the packaged Cotal application to install it.".to_string())
 }
 
 fn transient(app: &AppHandle) -> Result<bool, String> {

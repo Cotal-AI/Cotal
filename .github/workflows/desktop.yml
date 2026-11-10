@@ -248,8 +248,8 @@ jobs:
           dpkg-deb --contents "$deb" | tee "$RUNNER_TEMP/desktop-presence/deb-files.txt"
           rpm -qlp "$rpm" | tee "$RUNNER_TEMP/desktop-presence/rpm-files.txt"
           for manifest in "$RUNNER_TEMP/desktop-presence/"*-files.txt; do
-            rg 'share/applications/.*\.desktop' "$manifest"
-            rg 'share/icons/.*\.png' "$manifest"
+            grep -E 'share/applications/.*\.desktop' "$manifest"
+            grep -E 'share/icons/.*\.png' "$manifest"
           done
       - name: Upload native presence evidence
         if: always()

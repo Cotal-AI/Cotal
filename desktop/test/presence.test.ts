@@ -59,5 +59,6 @@ test("presence configuration narrows renderer grants and keeps platform identity
   assert.ok(!grants.some((grant: string) => /autostart|shell|fs:/.test(grant)));
   const wix = read("../src-tauri/installers/main.wxs");
   assert.equal([...wix.matchAll(/ShortcutProperty Key="System.AppUserModel.ID"/g)].length, 2);
-  assert.match(wix, /RemoveRegistryValue[^>]*Name="Cotal"[^>]*removeOnUninstall/);
+  assert.match(wix, /CustomAction Id="RemoveCotalLogin"[^>]*ExeCommand="--remove-login"/);
+  assert.match(wix, /Before="RemoveFiles">REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE/);
 });
