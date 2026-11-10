@@ -21,6 +21,9 @@
     "@tauri-apps/plugin-deep-link": "2.6.3"
   },
   "devDependencies": {
+    "@fontsource-variable/bricolage-grotesque": "^5.2.8",
+    "@fontsource-variable/geist": "^5.2.8",
+    "@fontsource-variable/geist-mono": "^5.2.8",
     "@tauri-apps/cli": "2.12.4",
     "@types/node": "^22.20.0",
     "axe-core": "^4.14.0",

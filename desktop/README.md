@@ -12,7 +12,7 @@ While waiting for the browser, copy the approval code with **Copy** and watch it
 
 Step changes fade in with a small movement. Progress markers show waiting, running and completion, and the running row says what is being checked. Details and notices expand in height. Reduced motion removes movement and continuous animation. Enter invokes the current primary action, Escape closes Details, and one polite live region announces state changes. Background refresh preserves focus, typed fields and unchanged progress nodes.
 
-Later opens show the computer, space and verified connection, with Open dashboard, Disconnect, Open at login and the version. The window defaults to 880×660, with a 560×660 minimum. The computer name sits beside the connection status in the header, and later opens use the same single-column layout without a stepper. Local stroke SVGs render consistently in light and dark themes. The connected view lists the Manager's available agent applications. **Connect another space** and **Sign in again** return to the relevant step. The background service runs as the operating-system user and keeps running after the window closes. Authorized people in the space can launch agent applications with that user's permissions. Disconnect stops the selected space's Manager and closes its machine-service connection without revoking remote grants.
+Later opens show the computer, space and verified connection, with Open dashboard, Disconnect, Open at login and the version. The window defaults to 880×660, with a 560×660 minimum. The computer name sits beside the connection status in the header, and later opens use the same single-column layout without a stepper. Local stroke SVGs render consistently in the paper theme. The connected view lists the Manager's available agent applications. **Connect another space** and **Sign in again** return to the relevant step. The background service runs as the operating-system user and keeps running after the window closes. Authorized people in the space can launch agent applications with that user's permissions. Disconnect stops the selected space's Manager and closes its machine-service connection without revoking remote grants.
 
 Refresh and the ten-second status poll read hosted Manager readiness. A connected machine service alone is not launch-ready. While the selected space is launch-ready, Connect this computer is disabled. Delayed status replies cannot replace a newer action or selection. A missing application refusal names the supported applications and offers **Check again**, which runs the same setup again.
 
@@ -31,6 +31,10 @@ A dashboard can open `cotal://connect?idp=<encoded-provider-url>&space=<space>`.
 The equivalent terminal controls are `cotal daemon install`, `cotal daemon start`, `cotal daemon login --idp <url>`, `cotal daemon spaces --refresh`, and `cotal daemon setup --space <space> --idp <url>`. The app does not maintain a second configuration or login store. The lower-level `register` and `service-connect` adapter requests remain available for machine-service connections.
 
 Registration requires the space owner's approval and the space operator's binding for `ai.cotal.machine`. No shipped command or page provides those approval controls. Once both are complete, rerun `cotal daemon register --space <space>` until it reports `registered`, then run `cotal daemon service-connect --space <space>`. See the [daemon registration prerequisites](../docs/cli-processes.mdx#daemon) for the approval states and refusals.
+
+## Design
+
+The cotal.ai site design system is the visual source: cream paper, navy ink, hard offset shadows and the three-ring mark. The app uses one paper theme in either OS appearance. Bricolage Grotesque, Geist and Geist Mono are bundled as latin WOFF2 files with their SIL Open Font License texts in `dist/licenses/`. No font host is contacted. The existing same-origin CSP covers fonts through `default-src 'self'`.
 
 ## Develop
 

@@ -4,13 +4,21 @@ import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import "./style.css";
+import "./components.css";
 
 const el = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
   if (!node) throw new Error(`Missing element ${id}`);
   return node as T;
 };
-const text = (id: string, value: string) => { if (el(id).textContent !== value) el(id).textContent = value; };
+const text = (id: string, value: string) => {
+  const node = el(id);
+  if (node.textContent === value) return;
+  if (id === "connection-title" && value === "This computer is connected") {
+    const highlight = document.createElement("span"); highlight.className = "connected-highlight"; highlight.textContent = "connected";
+    node.replaceChildren(document.createTextNode("This computer is "), highlight);
+  } else node.textContent = value;
+};
 function setIcon(node: Element, name: Icon): void {
   if (node.getAttribute("data-icon") === name) return;
   node.setAttribute("data-icon", name); node.replaceChildren(icon(name));
@@ -182,6 +190,7 @@ function showStage(next: Stage, focus = false): void {
     }
   }
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery) && issue !== "APPROVAL_PENDING");
+  el("connection-icon").dataset.tone = recovery ? ["EXPIRED", "VERSION_MISMATCH", "NO_AVAILABLE_CONNECTOR", "APPROVAL_PENDING", "SEATS_ACTIVE"].includes(issue!) ? "waiting" : "error" : finished ? "success" : loginActive ? "waiting" : "neutral";
   text("connection-title", title); text("connection-description", description);
   setIcon(el("connection-icon"), recovery ? issue === "APPROVAL_PENDING" ? "clock" : "warning" : finished ? "check" : next === "welcome" ? "computer" : next === "sign-in" ? "browser" : next === "space" ? "space" : setupActive ? "spinner" : "connect");
   text("selected-space", `Space: ${spaceLabel()}`); text("connected-space", `Connected to ${spaceLabel()}`);

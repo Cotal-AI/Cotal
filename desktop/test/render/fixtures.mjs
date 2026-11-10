@@ -68,6 +68,7 @@ export const scenarios = [
     assert.ok(await page.locator(".connection-card").evaluate(el => el.getBoundingClientRect().height) < 100);
   } },
   { name: "welcome", state: {} },
+  { name: "four-steps", state: {}, prepare: page => page.locator('#journey [data-stage="space"]').evaluate(el => el.remove()) },
   { name: "link", state: { link } },
   { name: "custom-host", state: {}, act: page => page.click("#other-host") },
   { name: "waiting", state: { waiting: true }, act: page => page.click("#login") },
