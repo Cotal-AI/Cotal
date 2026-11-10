@@ -150,7 +150,9 @@ control request. Connection or authorization failure is an error, not an empty c
 
 `watch --view` accepts `feed`, `events`, `messages`, `roster`, `channels`, `waiting`, `dms` and
 `topology`; `activity` remains the feed spelling. The terminal cycles available views with `f`.
-Roster and waiting rows show reported state without inventing blocked duration. Channel counts
+The roster includes agents and endpoints, including chat sessions and the manager, with each
+participant's kind and identity. Waiting rows cover agents reporting a waiting state.
+Both views show reported state without inventing blocked duration. Channel counts
 keep retained messages separate from observed arrivals. Topology displays broker-sourced live
 patterns and durable channels, not task dependencies or permission grants. A durable family
 membership such as `team.>` links to each durable-class channel under it. Missing or unreadable
