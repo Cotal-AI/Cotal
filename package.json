@@ -867,6 +867,7 @@
     "smoke:callout-shape": "tsx implementations/auth/smoke/callout-shape.smoke.ts",
     "smoke:callout-xkey": "tsx implementations/auth/smoke/callout-xkey.smoke.ts",
     "smoke:user-auth-launch:live": "tsx implementations/auth/smoke/user-auth-launch.smoke.ts",
+    "smoke:down-inventory:live": "tsx implementations/auth/smoke/down-inventory.smoke.ts",
     "smoke:remote-exchange:live": "tsx implementations/auth/smoke/remote-exchange.smoke.ts",
     "smoke:auth-http-errors:live": "tsx implementations/auth/smoke/http-errors.smoke.ts",
     "smoke:interactive-manager-options": "tsx implementations/auth/smoke/interactive-manager-options.smoke.ts",

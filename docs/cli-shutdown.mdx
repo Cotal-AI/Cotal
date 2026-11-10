@@ -399,6 +399,10 @@ seats, and it reports the agents left behind plus `cotal down --with-agents` as 
 When the manager had no managed agents, it prints no report. When they cannot be listed, for
 example on a user-auth mesh with no login on this machine, it prints
 `could not list managed agents (<reason>)` and the stop continues.
+When listing is denied, the warning says access was denied and shutdown checks continue without an
+agent inventory. It points to `cotal ps` with an authorized account before stopping. On a per-user
+auth mesh, listing all agents requires `admin`; a `--full` actor grant alone does not include it.
+The warning does not claim that any agent has stopped. Other shutdown safety checks still apply.
 The built-in pty runtime keeps each PTY inside the manager process, so those seats cannot outlive
 it: every manager stop stops and deprovisions them, and `down` reports them as stopped. A manager
 retires at most 8 seats and chat sessions at a time, and the rest wait their turn. Every manager
