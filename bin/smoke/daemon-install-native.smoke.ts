@@ -159,6 +159,23 @@ try {
     }
     observedJob = originalJob;
     r.calls.length = 0;
+    service.restart(receipt);
+    check("restarting a loaded owned job force-kickstarts only its exact target", JSON.stringify(r.calls.map(c => [c.file, ...c.args])) === JSON.stringify([
+      ["/bin/launchctl", "print", target], ["/bin/launchctl", "kickstart", "-k", target],
+    ]), r.calls);
+    printStatus = 113;
+    r.calls.length = 0;
+    service.restart(receipt);
+    check("restarting an unloaded owned job bootstraps only its recorded plist", JSON.stringify(r.calls.map(c => [c.file, ...c.args])) === JSON.stringify([
+      ["/bin/launchctl", "print", target], ["/bin/launchctl", "bootstrap", `gui/${uid}`, plist],
+    ]), r.calls);
+    printStatus = 0;
+    observedJob = { state: "loaded", job: { label, program: "/foreign", programArguments: loadedArgv } };
+    r.calls.length = 0;
+    check("restarting a job with changed ownership refuses CONFLICT", code(() => service.restart(receipt)) === "CONFLICT");
+    check("refused restart sends no native mutation and preserves the plist", r.calls.every(c => c.file === "/bin/launchctl" && c.args[0] === "print") && sha(readFileSync(plist)) === receipt.unitSha256, r.calls);
+    observedJob = originalJob;
+    r.calls.length = 0;
     service.start(receipt);
     check("starting a loaded job never force-restarts it", r.calls.some((call) => call.args[0] === "kickstart") && !r.calls.some((call) => call.args.includes("-k")));
     const newSource = readFileSync(plist, "utf8");
@@ -283,6 +300,21 @@ try {
     r.calls.length = 0;
     service.start(receipt);
     check("starting a running task does not restart it", schtasks(r.calls) === "");
+    r.calls.length = 0;
+    service.restart(receipt);
+    check("restarting a running owned task ends then runs only that task", schtasks(r.calls) === `/End /TN ${name} | /Run /TN ${name}`, r.calls);
+    task = { present: true, ...security, state: "Ready", actions: 1, ...recorded };
+    r.calls.length = 0;
+    service.restart(receipt);
+    check("restarting an inactive owned task runs without ending it", schtasks(r.calls) === `/Run /TN ${name}`, r.calls);
+    task = { present: true, ...security, state: "Running", actions: 1, ...recorded, userId: "S-1-5-18" };
+    r.calls.length = 0;
+    check("restarting a task with changed ownership refuses CONFLICT", code(() => service.restart(receipt)) === "CONFLICT");
+    check("refused restart sends no schtasks mutation and preserves the definition", schtasks(r.calls) === "" && sha(readFileSync(plan.unitPath)) === receipt.unitSha256, r.calls);
+    task = { present: false };
+    r.calls.length = 0;
+    check("restarting an absent task refuses TARGET_NOT_FOUND", code(() => service.restart(receipt)) === "TARGET_NOT_FOUND");
+    check("absent restart neither creates nor runs a task", schtasks(r.calls) === "" && sha(readFileSync(plan.unitPath)) === receipt.unitSha256, r.calls);
     task = { present: true, ...security, state: "Ready", actions: 1, ...recorded };
     r.calls.length = 0;
     service.start(receipt);

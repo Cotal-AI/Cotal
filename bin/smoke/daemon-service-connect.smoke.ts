@@ -154,10 +154,14 @@ const jwtsIssued: string[] = [];
 /** R11: the IdP rejects the session handle, as for an expired or revoked session. */
 let idpRevoked = false;
 let deviceCodeRequests = 0;
+let deviceFailure: "denied" | "expired" | "unreachable" | undefined;
+let catalogUnavailable = false;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
-  if (req.url === "/api/auth/device/code") { deviceCodeRequests++; return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 })); }
+  if (req.url === "/api/auth/device/code") { deviceCodeRequests++; if (deviceFailure === "unreachable") { req.socket.destroy(); return; } return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 })); }
+  if (req.url === "/api/auth/device/token" && deviceFailure) { res.writeHead(400); return void res.end(JSON.stringify({ error: deviceFailure === "denied" ? "access_denied" : "expired_token" })); }
   if (req.url === "/api/auth/device/token") return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
+  if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
   if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(catalog));
   if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
     const chunks: Buffer[] = [];
@@ -706,8 +710,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
         return { code, doc: JSON.parse(out) as Record<string, any>, err };
       };
-      const plainSetup = async () => {
-        const process = spawn(globalThis.process.execPath, [cliEntry, "daemon", "setup", "--space", ON, "--plain"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+      const plainCommand = async (...args: string[]) => {
+        const process = spawn(globalThis.process.execPath, [cliEntry, "daemon", ...args, "--plain"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let out = "", err = "";
         process.stdout.on("data", (b) => { out += String(b); }); process.stderr.on("data", (b) => { err += String(b); });
         const code = await new Promise<number | null>((resolve) => process.once("exit", resolve));
@@ -755,17 +759,32 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         const deviceBeforeMissing = deviceCodeRequests;
         const missing = await cli("setup", "--space", `${ON}-missing`, "--idp", idpUrl);
         check("H0 absent space does not repeat a valid provider device sign-in", missing.code === 2 && missing.doc.error?.code === "TARGET_NOT_FOUND" && deviceCodeRequests === deviceBeforeMissing, { missing, deviceCodeRequests, deviceBeforeMissing });
+        catalogUnavailable = true;
+        try {
+          const failedCatalog = await cli("setup", "--space", `${ON}-missing`, "--idp", idpUrl);
+          check("H0 failed catalog refresh is dependency refusal, not missing target or new sign-in", failedCatalog.code === 2 && failedCatalog.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && deviceCodeRequests === deviceBeforeMissing, failedCatalog);
+        } finally { catalogUnavailable = false; }
         if (process.argv.includes("--discovery-repro")) return;
         check("H1 setup retains machine-service instanceId separately from Manager", setup.doc.result.instanceId === setup.doc.result.registration?.instanceId && setup.doc.result.instanceId !== manager.instanceId);
         const badWait = await cli("setup", "--space", ON, "--wait", "0");
         check("H1 wait without no-manager refuses usage", badWait.code === 1 && badWait.doc.error?.code === "USAGE_INVALID");
         const log = join(home, "daemon", spaceSegment(ON), "manager", "manager.log");
         check("H1 hosted Manager keeps a private bounded diagnostic log", existsSync(log) && (statSync(log).mode & 0o777) === 0o600 && statSync(log).size <= 1024 * 1024);
-        const plain = await plainSetup();
+        const plain = await plainCommand("setup", "--space", ON);
         check("H1 human success names launch-ready computer, space and instance", plain.code === 0 && plain.out.includes(`Agents can now be launched on this computer from space ${ON} through Manager instance ${manager.instanceId}.`));
+        check("H1 human fields distinguish Manager and machine-service instances", plain.out.includes(`Manager instance: ${manager.instanceId}`) && /Instance:\s+/.test(plain.out));
+        const plainStatus = await plainCommand("service-status", "--space", ON);
+        check("H1 service-status names independent machine service and answering Manager", plainStatus.code === 0 && plainStatus.out.includes("Machine service and Manager") && !plainStatus.out.includes("\nDisconnected\n") && plainStatus.out.includes(manager.instanceId));
         const daemonStatus = await cli("status", "--space", ON);
         console.log("  H1 status JSON", JSON.stringify(daemonStatus.doc));
         check("H1 per-space status carries the same Manager instance", daemonStatus.doc.result?.managers?.[0]?.instanceId === manager.instanceId);
+        if (!upgrading) {
+          const prepared = await ask(paths.socket, { op: "managers-prepare-restart" });
+          const fenced = await ask(paths.socket, { op: "manager-start", space: ON });
+          const aborted = await ask(paths.socket, { op: "managers-abort-restart" });
+          const resumed = await cli("setup", "--space", ON);
+          check("H1 restart fence denies admission and rollback restores fresh readiness", prepared.ok === true && fenced.ok === false && aborted.ok === true && resumed.code === 0 && resumed.doc.result?.manager?.instanceId === manager.instanceId, { prepared, fenced, aborted, resumed });
+        }
         if (process.argv.includes("--setup-upgrade-repro")) {
           const nextPrefix = join(root, "next-cli");
           await npmRun(["install", "-g", "--prefix", nextPrefix, "--ignore-scripts", join(upgradeFixture!, "cotal-ai-0.151.3.tgz")]);
@@ -881,6 +900,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: cliLifecycle, scope: [], allowSubscribe: [], allowPublish: [] });
         const refused = await cli("setup", "--space", ON);
         const before = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+        const plainRefused = await plainCommand("service-status", "--space", ON);
+        check("H5 service-status refusal includes Manager state, cause and next action", plainRefused.code === 2 && plainRefused.err.includes("Manager refused") && plainRefused.err.includes("supervise") && plainRefused.err.includes("Next"), plainRefused);
         await sleep(3500);
         const after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
         check("H5 missing supervise scope refuses with native cause and remedy", refused.code === 2 && /supervise|scope/i.test(refused.doc.error?.message ?? "") && /supervise/.test(refused.doc.error?.remedy ?? ""), refused);
@@ -905,6 +926,13 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         writeFileSync(join(managedHome, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon-0123456789abcdef.service", unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString(), daemonHome: managedHome }), { mode: 0o600 });
         let managedChild = await startDaemon(managedHome);
         try {
+          for (const failure of ["denied", "expired", "unreachable"] as const) {
+            deviceFailure = failure;
+            try {
+              const rejected = await cli("setup", "--space", `${ON}-missing`, "--idp", idpUrl, "--daemon-home", managedHome);
+              check(`H7 discovery ${failure} retains native reason and actionable refusal`, rejected.code === 2 && rejected.doc.error?.code === (failure === "unreachable" ? "DEPENDENCY_UNAVAILABLE" : "PERMISSION_DENIED") && rejected.doc.error?.cause?.code === failure.toUpperCase() && rejected.doc.error?.remedy?.includes("daemon login"), rejected);
+            } finally { deviceFailure = undefined; }
+          }
           const setupManaged = await cli("setup", "--space", ON, "--idp", idpUrl, "--daemon-home", managedHome);
           let managed = setupManaged.doc.result?.manager;
           const managedIntent = join(managedHome, "daemon", spaceSegment(ON), "manager-host.json");
