@@ -1014,7 +1014,10 @@ never reached connected records nothing, so a space that refuses is not retried 
 The resume runs after the local endpoint is published, so a space that is slow or unreachable does
 not delay `status`, and `service-status` reports what each one actually reached. An ended
 connection is remembered only until the daemon stops.
-`service-status` reads the daemon's current answer without contacting the space. A registration
+`service-status` reads the daemon's current answer without contacting the space. With no current
+answer, it reports `NOT_REQUESTED` (`TARGET_NOT_FOUND`) when this daemon has no saved register
+request for the space, including after a restart. A saved request alone reports `disconnected`;
+it does not prove approval or a connection. A registration
 awaiting approval reports `approval-pending` for the rest of that daemon process, until another
 registration or connection attempt updates it or an explicit disconnect clears it. Registration
 alone never claims a connection and does not replace a live connection's state. `service-disconnect`

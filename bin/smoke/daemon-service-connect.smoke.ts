@@ -9,6 +9,8 @@
  * stock host, as the register smoke does. That is fixture authority over a fixture space.
  *
  * Cells (each asserts counts):
+ *  C0  a space without a register request reports not-requested before and after a refused connect,
+ *      an explicit disconnect and a daemon restart, through the socket and CLI, without space calls;
  *  C1  register and connect before approval: `approval-pending`, never connected; no renewal record; the space
  *      reports no ready status;
  *  C2  after the owner's approval: `connected`, and the space independently reads this instance as
@@ -47,6 +49,7 @@
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
  * Account pin regression only: add --account-mismatch-only (C1, C2, C7b and C10).
+ * Offline status regression only: add --status-only (C0, C1, C2, C3, C5, C6, C10 and C15).
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
@@ -111,6 +114,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--hosting-only") && !title.startsWith("H1")) return;
   if (process.argv.includes("--account-mismatch-only") && !/^(C1 |C2 |C7b |C10 )/.test(title)) return;
+  if (process.argv.includes("--status-only") && !/^C(0|1|2|3|5|6|10|15) /.test(title)) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
 }
@@ -423,6 +427,32 @@ try {
   let d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
   let assignmentDigest = "";
   try {
+    await cell("C0 offline status without a register request is independent of connect history", async () => {
+      const missing = "no-such-space";
+      const beforeHits = hits.length;
+      for (const phase of ["initial", "after refused connect", "after disconnect", "after restart"]) {
+        if (phase === "after refused connect") {
+          const r = await cli(["service-connect", "--space", missing]);
+          check("C0 connect without a request refuses NOT_REQUESTED", r.status === 2 && r.doc?.error?.code === "TARGET_NOT_FOUND" && r.doc?.error?.cause?.code === "NOT_REQUESTED", r.doc);
+        } else if (phase === "after disconnect") {
+          check("C0 disconnect remains an explicit successful operation", stateOf(await disconnectS(missing)) === "disconnected");
+        } else if (phase === "after restart") {
+          await d.close();
+          d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+        }
+        for (const space of [missing, OFF]) {
+          const socket = await statusS(space);
+          check(`C0 ${phase}: socket status for ${space} is not-requested`, stateOf(socket) === "not-requested", socket);
+          const json = await cli(["service-status", "--space", space]);
+          check(`C0 ${phase}: JSON status for ${space} refuses NOT_REQUESTED`, json.status === 2 && json.doc?.error?.code === "TARGET_NOT_FOUND" && json.doc?.error?.cause?.code === "NOT_REQUESTED", json.doc);
+          const plain = await cli(["service-status", "--space", space], "--plain");
+          check(`C0 ${phase}: text status for ${space} names the missing request`, plain.status === 2 && plain.err.includes("NOT_REQUESTED") && plain.err.includes("TARGET_NOT_FOUND") && plain.err.includes("cotal daemon register --space <s>"), plain.err);
+        }
+      }
+      check("C0 status and refused connect never contact the space", hits.length === beforeHits, { beforeHits, afterHits: hits.length });
+      check("C0 status creates no registration or connection records", !existsSync(daemonDir));
+    });
+
     await cell("C1 connect before approval is approval-pending, never connected", async () => {
       await ask(paths.socket, { op: "register", space: ON });
       check("C1 registration alone retains approval-pending for offline status", stateOf(await statusS(ON)) === "approval-pending");
@@ -543,7 +573,7 @@ try {
       check("C6 instrument: an explicit disconnect forgets the intent", stateOf(await disconnectS(ON)) === "disconnected" && !existsSync(intentFile(ON)));
       await d.close();
       d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
-      check("C6 a restart after an explicit disconnect resumes 0 connections and is not connected", d.counters.connectionsResumed === 0 && stateOf(await statusS(ON)) !== "connected", { counters: d.counters, state: stateOf(await statusS(ON)) });
+      check("C6 a restart after an explicit disconnect resumes 0 connections and is disconnected", d.counters.connectionsResumed === 0 && stateOf(await statusS(ON)) === "disconnected", { counters: d.counters, state: stateOf(await statusS(ON)) });
       check("C6 instrument: connected again for the cells that follow", stateOf(await connectS(ON)) === "connected");
     });
 
