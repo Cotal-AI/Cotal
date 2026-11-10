@@ -337,6 +337,7 @@ export const cotalLangRunHost: RunHost = {
       runId: req.runId,
       source: req.source,
       kv: runRecordView(planes.kv, records, planes.space),
+      statusConnection: planes.nc,
       lease: req.lease,
       handler,
       pause,
