@@ -180,7 +180,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       // A persona that cannot be used names its file and the command that says why; its values stay unprinted.
       const unusable = (problem: string, remedy: string) => new CommandFailure("refused", "SCHEMA_INVALID", `the persona file ${path} for this label ${problem}, so no credential was minted; file values and secret material were not printed`, { target: { ...target, persona: path }, remedy });
       let definition;
-      try { definition = existsSync(path) ? loadAgentFile(path) : undefined; }
+      try { definition = !values["no-persona"] && existsSync(path) ? loadAgentFile(path) : undefined; }
       catch { throw unusable("could not be read as a persona", `see what is wrong with it with \`cotal persona show ${name}\`, then fix it and mint again`); }
       // A flag wins, then the grants of the --identity credential, then the persona.
       const readFlag = parseCommaList(values["allow-subscribe"]);

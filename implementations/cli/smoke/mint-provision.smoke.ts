@@ -661,7 +661,7 @@ try {
     const droppedEnvelope = JSON.parse(dropped.out.split("\n").find((text) => text.startsWith('{"schemaVersion"')) ?? "{}") as { warnings?: { code: string; message: string; target: { replacedGrants?: unknown } }[] };
     const grantsWarning = droppedEnvelope.warnings?.find((warning) => warning.code === "REPLACED_GRANTS_CHANGED");
     check("--replace with no grant flag warns that the replaced credential's grants were not carried, naming them and the flags that name them",
-      dropped.code === 0 && grantsWarning?.message === "the credential this replaced held read general, post general and role board, and this one holds read no channel, post no channel and no role: a replacement holds only the grants its persona file, --identity or its grant flags name, and `--allow-subscribe general --allow-publish general --role board` names the replaced ones"
+      dropped.code === 0 && grantsWarning?.message === "the credential this replaced held read general, post general and role board, and this one holds read no channel, post no channel and no role: a replacement holds only the grants its persona file, --identity or its grant flags name, and `--allow-subscribe general --allow-publish general --role board --no-persona` names the replaced ones"
         && JSON.stringify(grantsWarning.target.replacedGrants) === JSON.stringify({ read: ["general"], post: ["general"], role: "board" }), dropped.out);
     await runMint(["acl2", ...grantFlags, "--no-expiry"]);
     const sameGrants = await runMint(["acl2", "--replace", ...grantFlags]);

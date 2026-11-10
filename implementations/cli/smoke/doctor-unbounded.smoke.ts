@@ -161,7 +161,7 @@ try {
     assert.ok(item(incarnation)?.repair?.includes(`Or bound it: stop what uses it, remove ${incarnation} and mint a replacement without --no-expiry`), "an unbounded incarnation file is bounded by removing it");
     assert.ok(!item(incarnation)?.repair?.includes("--replace"), "  and its guidance names no --replace");
     assert.equal(item(expiredLabel)?.state, "expired", "fixture: erin.creds has expired");
-    assert.ok(item(expiredLabel)?.repair?.includes(`If \`${displayCmd()} auth mint\` wrote it, replace it with ${replaceFor("erin", " --allow-subscribe 'general,ops' --allow-publish general --role rev")}`), "an expired label's file names --replace for that label, with the grants the file holds");
+    assert.ok(item(expiredLabel)?.repair?.includes(`If \`${displayCmd()} auth mint\` wrote it, replace it with ${replaceFor("erin", " --allow-subscribe 'general,ops' --allow-publish general --role rev --no-persona")}`), "an expired label's file names --replace for that label, with the grants the file holds");
     assert.match(item(expiredLabel)?.repair ?? "", /^if a manager runs this agent, inspect this original lifecycle under it; supported managed renewal can re-sign the same nkey/, "  after the managed renewal that re-signs its nkey");
     assert.equal(item(expiredIncarnation)?.state, "expired", "fixture: the incarnation file has expired");
     assert.match(item(expiredIncarnation)?.repair ?? "", /^inspect this original lifecycle under its manager/, "an expired incarnation keeps the managed guidance");
