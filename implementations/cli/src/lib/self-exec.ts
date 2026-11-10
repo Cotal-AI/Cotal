@@ -171,8 +171,16 @@ function isEphemeralNpxBin(dir: string): boolean {
 export function displayCmd(): string {
   if (cotalOnPath()) return "cotal";
   if (isNpx()) return "npx cotal-ai";
-  if (runsCliEntry() && seedWriterKind() === "released")
-    return [process.execPath, entryScript()].map(shellWord).join(" ");
+  if (runsCliEntry() && seedWriterKind() === "released") {
+    const command = [process.execPath, entryScript()].map(shellWord).join(" ");
+    if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
+      const prefix = process.env.npm_config_prefix;
+      if (!prefix) throw new Error("the installer launcher did not provide its npm prefix");
+      // Match install.sh's pinned runtime and install destination without copying the whole PATH.
+      return `PATH=${shellWord(join(prefix, "nodebin"))}:"$PATH" npm_config_prefix=${shellWord(prefix)} COTAL_LAUNCHER=1 ${command}`;
+    }
+    return command;
+  }
   return "pnpm cotal";
 }
 
