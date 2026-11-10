@@ -1,5 +1,22 @@
 # @cotal-ai/cli
 
+## 0.155.2
+
+### Patch Changes
+
+- 12fb034: Preserve the POSIX installer's Node/npm PATH and npm prefix in off-PATH command suggestions so setup can install its connectors.
+- ded3180: Self-updates wait for the daemon and its hosted Managers to return on the new version before reconciling connectors.
+  
+  The verified replacement allows up to 120 seconds for automatic activation and retains the continuity check before connector writes. A timeout names the last observed state and the recovery command.
+- f06e8cc: Space creation now reports disk quota failures while creating its local directories.
+  The error keeps the native storage cause and retry remedy, and reports the saved prepared
+  record when default persona directory creation fails afterwards.
+- a1b0ee1: Show recovery commands when running agents block an update, without suggesting another update that would also be refused.
+  
+  The daemon-hosted Manager refusal explains the restart impact and names how to list and stop the agents on that Manager and space. Update keeps classified recovery guidance and offers a CLI upgrade only after successful reconciliation.
+- @cotal-ai/core@0.155.2
+  - @cotal-ai/workspace@0.155.2
+
 ## 0.155.1
 
 ### Patch Changes
