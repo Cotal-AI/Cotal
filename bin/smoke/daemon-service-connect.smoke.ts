@@ -206,6 +206,7 @@ let accountBindingRevision = 1;
 let accountHttp = 200;
 let intentConflicts = 0;
 let intentWrites = 0;
+let intentHttp = 200;
 let accountHang = false;
 let accountHangs = 0;
 let catalog: unknown;
@@ -239,6 +240,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const intent = JSON.parse(Buffer.concat(chunks).toString()) as { enabled: boolean; expectedRevision: number };
     intentWrites++;
+    if (intentHttp !== 200) { res.writeHead(intentHttp); res.end("{}"); return; }
     if (intentConflicts > 0) { intentConflicts--; accountRevision++; res.writeHead(409); res.end(JSON.stringify({ revision: accountRevision })); return; }
     if (intent.expectedRevision !== accountRevision) { res.writeHead(409); res.end(JSON.stringify({ revision: accountRevision })); return; }
     if (accountDesired !== intent.enabled) { accountDesired = intent.enabled; accountBindingRevision = ++accountRevision; }
@@ -1771,6 +1773,13 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             accountDesired = false; accountRevision++;
             await waitIntent(false);
             check("I4 dashboard removal disconnects without a local action", true);
+            intentConflicts = 2;
+            const beforeConflict = intentWrites;
+            const conflict = await ask(paths.socket, { op: "space-intent", space: ON, enabled: true }, 100_000);
+            check("I5 a second conflict refuses without a third write", !conflict.ok && intentWrites === beforeConflict + 2 && !accountDesired, conflict);
+            intentHttp = 401;
+            const refused = await ask(paths.socket, { op: "space-intent", space: ON, enabled: true }, 100_000);
+            check("I6 intent authentication refusal preserves desired set and asks for sign-in", !refused.ok && JSON.stringify(refused).includes("Sign in again") && !accountDesired, refused);
             return;
           }
           accountDesired = true;
