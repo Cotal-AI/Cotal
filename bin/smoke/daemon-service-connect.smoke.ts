@@ -811,9 +811,39 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("3A daemon reconciles seven stock packages even when setup skips first-use seed", installed.filter((entry: { source?: string }) => entry.source === "seeded").length === 7, installed);
           return;
         }
+        if (process.argv.includes("--stock-persona-repro")) {
+          const showDefault = async (instanceId: string) => {
+            const process_ = spawn(process.execPath, [cliEntry, "persona", "show", "default", "--on", instanceId, "--space", ON, "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+            let output = "";
+            process_.stdout.on("data", (chunk) => { output += String(chunk); });
+            process_.stderr.on("data", (chunk) => { output += String(chunk); });
+            const code = await new Promise<number | null>((resolve) => process_.once("exit", resolve));
+            return { code, output };
+          };
+          const hosted = await showDefault(manager.instanceId);
+          await cli("service-disconnect", "--space", ON);
+          const stock = spawn(process.execPath, [cliEntry, "manager", "start", "--foreground", "--space", ON], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+          let diagnostics = "";
+          stock.stdout.on("data", (chunk) => { diagnostics += String(chunk); });
+          stock.stderr.on("data", (chunk) => { diagnostics += String(chunk); });
+          try {
+            let selected: Awaited<ReturnType<typeof resolveControlTarget>> | undefined;
+            for (let i = 0; i < 120 && stock.exitCode === null; i++) {
+              try { selected = await resolveControlTarget({ space: ON }, "control-caller-privileged", undefined, { onRefusal: "throw", readOnly: true }); if (selected.auth.managerInstanceId) break; } catch { /* original stock entry has not answered yet */ }
+              await sleep(250);
+            }
+            if (!selected?.auth.managerInstanceId) throw new Error(`stock manager start never answered: ${diagnostics.slice(-1500)}`);
+            const fresh = await showDefault(selected.auth.managerInstanceId);
+            console.log("  3A stock default parity", JSON.stringify({ hosted, stock: fresh, stockInstance: selected.auth.managerInstanceId }));
+            check("3A stock manager-start and hosted default have the same owner readability", hosted.code === 2 && fresh.code === hosted.code && hosted.output.includes("TARGET_NOT_FOUND") && fresh.output.includes("TARGET_NOT_FOUND"), { hosted, fresh });
+          } finally { await killAndAwaitExit(stock, "SIGTERM"); }
+          return;
+        }
         if (process.argv.includes("--dashboard-shape-repro")) {
-          const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
-          const options = standaloneConnectOpts(target.auth.creds ? { creds: target.auth.creds, tls: false } : { bearer: target.auth.bearer!, sentinelCreds: target.auth.sentinelCreds!, tls: false });
+          const webLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "web", scope: ["spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
+          const view = await cotalAuthProvider.userCredentials({ store: workspaceSecretStore(findMesh(ON)!.root), dir: userAuthStateDir(findMesh(ON)!.root, ON), space: ON, actor: "web", view: "manager-caller", managerInstanceId: manager.instanceId });
+          const target = { server: findMesh(ON)!.server, auth: { bearer: view.bearer, sentinelCreds: view.sentinelCreds, epCaller: { owner: fixture.owner, actor: "web", uid: webLifecycle } } };
+          const options = standaloneConnectOpts({ bearer: target.auth.bearer, sentinelCreds: target.auth.sentinelCreds, tls: false });
           const nc = await connectNats({ servers: target.server, ...options });
           try {
             const caller = await issuedUserCaller(nc, ON, String(options.name), target.auth.epCaller!);
@@ -823,14 +853,17 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               check(`Dashboard ${command} answers from pinned hosted instance`, reply.reply.ok && reply.responder.instanceId === manager.instanceId, reply.reply);
               return reply.reply.ok ? reply.reply.data as any : undefined;
             };
+            const personaName = `cloud_${createHash("sha256").update("owned dashboard proof").digest("hex").slice(0, 16)}`;
+            check("Dashboard caller uses owner web actor distinct from daemon cli", caller.owner === fixture.owner && caller.actor === "web", caller);
             await call("list-personas");
-            await call("define-persona", { name: "dashboard_owned", persona: "Owned dashboard launch proof." });
-            await call("show-persona", { name: "dashboard_owned" });
-            await call("resolve-agent", { name: "dashboard_owned", agent: "daemon-smoke" });
+            await call("define-persona", { name: personaName, persona: "Owned dashboard launch proof." });
+            const saved = await call("show-persona", { name: personaName });
+            check("Dashboard defined persona is readable by its owner web caller", JSON.stringify(saved).includes("Owned dashboard launch proof."), saved);
+            await call("resolve-agent", { name: personaName, agent: "daemon-smoke" });
             await call("models", {});
             const liveStatus = await call("status");
             check("Dashboard resolved harness is available before Launch", liveStatus?.connectors?.some((row: any) => row.agent === "daemon-smoke" && row.state === "available"), liveStatus);
-            const launched = await call("spawn", { name: "dashboard_owned", agent: "daemon-smoke" });
+            const launched = await call("spawn", { name: personaName, agent: "daemon-smoke" });
             console.log("  Dashboard exact spawn result", JSON.stringify(launched));
             let terminal: any;
             for (let i = 0; i < 120 && launched?.goalId; i++) {
@@ -843,7 +876,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             check("Dashboard exact spawn shape observes owned seat join", terminal?.result?.state === "succeeded" && terminal?.result?.committer?.instanceId === manager.instanceId, terminal);
           } finally { await nc.drain(); }
           const selected = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
-          await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, selected.server, "stop", { name: "dashboard_owned" }, selected.auth, "owner", 10_000, { instanceId: manager.instanceId });
+          await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, selected.server, "stop", { name: `cloud_${createHash("sha256").update("owned dashboard proof").digest("hex").slice(0, 16)}` }, selected.auth, "owner", 10_000, { instanceId: manager.instanceId });
           return;
         }
         if (process.argv.includes("--ipc-health-repro")) {
