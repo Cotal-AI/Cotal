@@ -26,6 +26,7 @@
  * COTAL_HOME + the workspace root are sandboxed to temp dirs; kills ONLY the pids it starts (NEVER
  * pkill nats-server). Needs nats-server on PATH. Run: pnpm smoke:user-spawn:live  (pnpm build first —
  * the pty-launched agent child imports @cotal-ai/core from dist).
+ * Set COTAL_SMOKE_RETAIN_FIXTURES=1 to keep the private fixture directories after processes stop.
  */
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -965,6 +966,9 @@ try {
   // use its real channel grant, include its own send and refuse a channel outside that grant.
   grantActor(dir, { ...cliRow0, scope: [] });
   try {
+  const narrowAttach = await cliResult(["attach", "--name", "alpha", "--no-reconnect", "--space", SPACE]);
+  check("the shipped attach CLI reports permission denial after its actor loses spawn scope",
+    !narrowAttach.timedOut && narrowAttach.status !== null && narrowAttach.status !== 0 && /Code:\s+PERMISSION_DENIED/.test(narrowAttach.plain) && !/attached to alpha/.test(narrowAttach.plain), narrowAttach);
   const nativeText = `narrow native history ${Date.now()}`;
   const postedHistory = await cliResult(["send", "-c", "general", nativeText, "--space", SPACE]);
   check("narrow user sends its own history fixture message", postedHistory.status === 0 && !postedHistory.timedOut, postedHistory);
@@ -1968,7 +1972,8 @@ try {
   // Main adds three shared-Manager status cells; the redesign adds five focused CLI cells.
   // These combined expectations still require an actual integrated run.
   // 148 -> 151: D2's spawn and admin views also read ps.
-  const EXPECTED = endpointCliFocus ? 62 : 151;
+  // One CLI attach denial after the operator loses spawn scope.
+  const EXPECTED = endpointCliFocus ? 63 : 152;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
@@ -1994,7 +1999,11 @@ try {
   broker?.kill("SIGKILL");
   idpSrv.close();
   exchangeProxy.close();
-  rmSync(home, { recursive: true, force: true });
-  rmSync(root, { recursive: true, force: true });
+  if (process.env.COTAL_SMOKE_RETAIN_FIXTURES === "1") {
+    console.log(`user-spawn retained fixtures: ${home}, ${root}`);
+  } else {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 process.exit(process.exitCode ?? 0);
