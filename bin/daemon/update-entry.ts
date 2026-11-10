@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
 import { update, updateRuntime } from "@cotal-ai/cli/update";
 import { withIdpSessionDir } from "@cotal-ai/auth";
-import { CommandFailure, homeCotalDir, resolveControlTarget } from "@cotal-ai/workspace";
+import { CommandFailure, homeCotalDir, resolveControlTarget, shellPath } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
@@ -39,8 +39,11 @@ const composed: Command = { ...command, async run(args) {
         return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
       });
       if (!reply.ok) throw new Error(reply.error ?? "hosted Manager status did not answer");
-      const status = reply.data as { agentCount?: number; custody?: string };
-      if (status.custody === "legacy" && status.agentCount !== 0) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager ${manager.instanceId} has active legacy seats; update cannot preserve their terminal custody`, { remedy: `stop those seats through Manager ${manager.instanceId}, then run cotal update again` });
+      const status = reply.data as { agentCount?: number; custody?: string; stopImpact?: { agents: { name: string }[] } };
+      if (status.custody === "legacy" && status.agentCount !== 0) {
+        const names = status.stopImpact?.agents.map((agent) => agent.name);
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager ${manager.instanceId} cannot preserve running agents on this computer during update${names?.length ? ` (${names.join(", ")})` : ""}; restarting it would end them`, { remedy: `save their work; stop each with cotal stop <name> --on ${manager.instanceId} --space ${shellPath(manager.space)}, then rerun the same update command. To list agents, use cotal ps --on ${manager.instanceId} --space ${shellPath(manager.space)} (requires admin scope)` });
+      }
       console.log(`hosted Manager ${manager.space}: instance ${manager.instanceId} answered; ${status.agentCount ?? "unknown"} seat(s)`);
     }
     // The stock resolver still inspects other locally hosted spaces when one is not selected.
