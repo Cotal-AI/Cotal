@@ -21,6 +21,7 @@ import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, RegisterResult, ServiceConnectionState } from "./protocol.js";
 import { applyInstall, installedDaemonIdentity, planUninstall, startInstalled, restartInstalled } from "./install.js";
+import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
 
 /** How each step ended, in the order they ran. A reader sees what this did and what it skipped. */
@@ -167,10 +168,8 @@ async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<v
   const check = await connectCheckViaDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, space: opts.space });
   if (!check.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the connection check: ${check.code} ${check.message}`, { native: { code: check.code } });
   if (check.result.outcome !== "not-signed-in") {
-    // Only `not-signed-in` is a statement about the sign-in. Every other answer, `ready-to-register`
-    // or a refusal the register step will report in full, is recorded as what the check actually
-    // said rather than as a sign-in this never verified.
-    const signedIn = check.result.outcome === "ready-to-register";
+    // These outcomes occur only after connect-check has loaded the daemon's provider session.
+    const signedIn = ["ready-to-register", "unsupported-by-space", "account-mismatch", "unreachable", "refused"].includes(check.result.outcome);
     steps.push({ step: "sign-in", outcome: signedIn ? "already-signed-in" : "not-needed-here", detail: `the connection check answered ${check.result.outcome}` });
     opts.report(signedIn
       ? "sign-in: already signed in; no approval was needed"
@@ -292,7 +291,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     if (manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", manager.reason ?? "the hosted Manager is not answering yet", { remedy: manager.next ?? `read cotal daemon status --space ${opts.space}`, native: { code: manager.state.toUpperCase() } });
     const registration = await requestRegistration(opts, steps);
     // A pending registration has no service credential yet. Report it without polling its owner.
-    let state: ServiceConnectionState = registration.outcome === "approval-required" || registration.outcome === "pending" ? "approval-pending" : "refused";
+    let state: ServiceConnectionState = fromRegister(registration);
     let message = registration.message;
     if (registration.outcome === "registered") {
       const connected = await serviceViaDaemon({ ...opts, op: "service-connect" });

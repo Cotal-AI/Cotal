@@ -590,7 +590,8 @@ is pending. That approval never holds up agent launches. JSON reports `launchRea
 registered Manager at `manager.instanceId`, its `manager` status and the separate machine
 `registration`. The top-level `instanceId`, when present, identifies the machine-service registration.
 The human report prints `Manager instance: <id>` and the machine-service connection state using
-the same words as `service-status`.
+the same words as `service-status`. A space without machine-service endpoints reports `unsupported`
+while the sign-in step retains the session check's result.
 Progress goes to stderr, so `--json` writes one document on stdout. Missing `supervise` scope
 refuses with the Manager's reason and next step.
 
