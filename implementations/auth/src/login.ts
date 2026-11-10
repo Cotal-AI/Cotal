@@ -125,7 +125,13 @@ interface OAuthError {
 }
 async function oauthError(res: Response, cancel?: AbortSignal): Promise<OAuthError> {
   try {
-    return (await res.json()) as OAuthError;
+    const body: unknown = await res.json();
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return {};
+    const fields = body as Record<string, unknown>;
+    return {
+      ...(typeof fields.error === "string" ? { error: fields.error } : {}),
+      ...(typeof fields.error_description === "string" ? { error_description: fields.error_description } : {}),
+    };
   } catch {
     // An unreadable error body is treated as "no detail", unless the caller cancelled mid-read.
     throwIfCancelled(cancel);
@@ -151,6 +157,9 @@ export function idpTimeoutMs(): number {
 
 /** An IdP request that got no answer: the transport failed or the per-request timeout fired. */
 export class IdpUnreachableError extends Error {}
+
+/** The provider refused the initial device-code request, before approval or persistence. */
+export class IdpDeviceAuthorizationRefusedError extends Error {}
 
 /** The IdP answered 401 to a cached session: it expired or was revoked there. */
 export class IdpSessionRejectedError extends Error {}
@@ -267,7 +276,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   }, opts.signal);
   if (!res.ok) {
     const e = await oauthError(res, opts.signal);
-    throw new Error(
+    throw new IdpDeviceAuthorizationRefusedError(
       `idp login: ${base} refused the device authorization (${e.error ?? `HTTP ${res.status}`}: ${e.error_description ?? "no detail"})`,
     );
   }

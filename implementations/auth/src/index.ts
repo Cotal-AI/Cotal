@@ -82,6 +82,7 @@ export {
   IdpConfigurationError,
   IdpLoginCancelled,
   IdpUnreachableError,
+  IdpDeviceAuthorizationRefusedError,
   IdpSessionRejectedError,
   type IdpSession,
   type DeviceLoginOpts,
