@@ -80,12 +80,20 @@ guard !windows.contains(where: { ($0[kCGWindowOwnerPID as String] as? Int32) == 
 print("close kept app running with no visible top-level window")
 SWIFT
 swift "$out/hidden.swift" | tee "$out/hidden-before-reopen.txt"
-# Open the actual NSStatusItem menu while the main window is hidden.
-/usr/bin/osascript <<'APPLESCRIPT' > "$out/menu-bar.txt"
+# Capture the actual AX tree and desktop immediately after pressing the status item.
+/usr/bin/osascript <<'APPLESCRIPT' > "$out/menu-bar-tree.txt"
 tell application "System Events"
   tell process "cotal-desktop"
     click menu bar item 1 of menu bar 2
     delay 1
+    get entire contents
+  end tell
+end tell
+APPLESCRIPT
+/usr/bin/screencapture -x "$out/menu-bar-open.png"
+/usr/bin/osascript <<'APPLESCRIPT' > "$out/menu-bar.txt"
+tell application "System Events"
+  tell process "cotal-desktop"
     set titles to name of every menu item of menu 1 of menu bar item 1 of menu bar 2
     repeat with requiredTitle in {"Settings…", "Open dashboard", "Quit Cotal"}
       if titles does not contain (requiredTitle as text) then error "Missing tray menu action: " & requiredTitle
@@ -94,7 +102,6 @@ tell application "System Events"
   end tell
 end tell
 APPLESCRIPT
-/usr/bin/screencapture -x "$out/menu-bar-open.png"
 /usr/bin/osascript <<'APPLESCRIPT'
 tell application "System Events"
   tell process "cotal-desktop"
