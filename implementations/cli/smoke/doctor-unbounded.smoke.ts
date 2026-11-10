@@ -46,7 +46,7 @@ writeFileSync(join(sysDir, "connection-evictor.creds"), await mintConnectionEvic
 const credsDir = agentCredsDir(root, SPACE);
 // A replacement is a new key, which holds only the grants its mint names, so the hint names the
 // file's grants; a file with none names both ACLs empty.
-const NO_GRANTS = " --allow-subscribe '' --allow-publish ''";
+const NO_GRANTS = " --allow-subscribe '' --allow-publish '' --no-persona";
 const replaceFor = (label: string, grants = NO_GRANTS) => `\`${displayCmd()} auth mint ${label} --replace --space ${SPACE}${grants}\`, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
 mkdirSync(credsDir, { recursive: true, mode: 0o700 });
 // alice: an unbounded credential nobody recorded asking for. bob: the same mint with an expiry.
