@@ -79,7 +79,7 @@
     "smoke:lang-journal": "tsx packages/lang/smoke/journal.smoke.ts",
     "smoke:lang-fuzz-journal": "tsx packages/lang/smoke/fuzz-journal.smoke.ts",
     "smoke:runtime-journal-store": "tsx implementations/runtime/smoke/journal-store.smoke.ts",
-    "smoke:runtime-run-driver": "tsx implementations/runtime/smoke/run-driver.smoke.ts",
+    "smoke:runtime-run-driver": "tsx implementations/runtime/smoke/run-driver.smoke.ts && tsx implementations/runtime/smoke/run-status-recovery.smoke.ts && tsx implementations/runtime/smoke/run-status-controls.smoke.ts",
     "smoke:runtime-mesh-wait": "tsx implementations/runtime/smoke/mesh-wait.smoke.ts",
     "smoke:runtime-mesh-checkpoint": "tsx implementations/runtime/smoke/mesh-checkpoint.smoke.ts",
     "smoke:runtime-mesh-sleep": "tsx implementations/runtime/smoke/mesh-sleep.smoke.ts",

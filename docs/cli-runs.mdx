@@ -113,6 +113,13 @@ manager's log.
 The failure records no line or column in the program: a source position belongs to a problem
 `run validate` reports before the program runs.
 
+If a broker outage prevents a hosted run's final status write, the manager retries that write
+while the attempt's connection remains open, including when NATS returns before JetStream
+can answer. The program does not advance during this repair.
+Once JetStream answers, `run` and `run show` report the recorded terminal state. A newer
+attempt's status is never overwritten. If the manager stops first, its next boot takes back
+runs still recorded `running`.
+
 A run recorded `released` has no recorded reason. Its `Released` section points to the executing
 manager's log for a hosted run or the driving process's output for a locally driven run. A journal
 read does not establish that execution host or log location, so the view does not guess one.
