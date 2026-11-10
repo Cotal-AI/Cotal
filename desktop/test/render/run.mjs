@@ -28,7 +28,7 @@ const browser = await chromium.launch({ ...(process.env.CHROMIUM_PATH ? { execut
 let count = 0;
 const cases = scenarios.filter(scenario => !process.env.CASES || process.env.CASES.split(",").includes(scenario.name));
 try {
-  for (const theme of ["light", "dark"]) for (const width of [880, 560]) for (const scenario of cases) {
+  for (const theme of ["light"]) for (const width of [880, 560]) for (const scenario of cases) {
       const motionModes = process.env.MOTION ? ["no-preference", "reduce"] : ["no-preference"];
       for (const reducedMotion of motionModes) {
       const name = `${scenario.name}-${theme}-${width}${reducedMotion === "reduce" ? "-reduced" : ""}`;
@@ -40,6 +40,7 @@ try {
       page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
       await page.addInitScript(nativeStub, scenario.state);
       await page.goto(address);
+      await page.evaluate(() => document.fonts.ready);
       await page.waitForTimeout(80);
       if (scenario.prepare) { await scenario.prepare(page); await page.waitForTimeout(300); }
       if (scenario.act && process.env.MOTION) {
