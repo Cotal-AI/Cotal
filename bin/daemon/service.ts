@@ -53,7 +53,7 @@ const SENTENCE: Record<ServiceConnectionState, string> = {
   connecting: "the daemon is connecting to the space; it is not connected yet",
   connected: "connected: the broker accepted this daemon's service connection and the space accepted it as ready",
   unavailable: "the space or its broker could not be reached; nothing is connected, and connecting again retries the same requests",
-  "local-state-error": "the daemon could not use its local identity or registration record; inspect service-identity.json and register-request.json and their permissions, and restore the original record if damaged; nothing is connected",
+  "local-state-error": "the daemon could not use its local service records; inspect its identity, registration, ready and renewal records and their permissions, and restore the original record if damaged; nothing is connected",
   ended: "the space ended this daemon's service authority; nothing is connected, and connecting again will not reconnect it",
   disconnected: "not connected",
 };
@@ -195,7 +195,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     if (!flush) { l.state = "unavailable"; return; }
     await flush();
     const requestId = await readyRequestId(store, witness);
-    if (requestId === undefined) { l.state = "unavailable"; return; }
+    if (requestId === undefined) { l.state = "local-state-error"; return; }
     let token: string;
     try { token = await l.source!.bearer(); } catch { return sourceFailed(l); }
     let answer;
@@ -227,6 +227,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   function sourceFailed(l: Live): void {
     const s = l.source?.state();
     if (s?.state === "ended") { l.state = "ended"; l.reason = ENDED.has(s.reason) ? s.reason : "unrecognized"; }
+    else if (s?.state === "unavailable" && s.cause === "store") l.state = "local-state-error";
     else l.state = "unavailable";
   }
 
