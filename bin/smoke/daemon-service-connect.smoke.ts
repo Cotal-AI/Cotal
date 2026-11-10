@@ -470,7 +470,7 @@ try {
           const json = await cli(["service-status", "--space", space]);
           check(`C0 ${phase}: JSON status for ${space} refuses NOT_REQUESTED`, json.status === 2 && json.doc?.error?.code === "TARGET_NOT_FOUND" && json.doc?.error?.cause?.code === "NOT_REQUESTED", json.doc);
           const plain = await cli(["service-status", "--space", space], "--plain");
-          check(`C0 ${phase}: text status for ${space} names the missing request`, plain.status === 2 && plain.err.includes("NOT_REQUESTED") && plain.err.includes("TARGET_NOT_FOUND") && plain.err.includes("cotal daemon register --space <s>"), plain.err);
+          check(`C0 ${phase}: text status for ${space} names the missing request`, plain.status === 2 && plain.err.includes("NOT_REQUESTED") && plain.err.includes("TARGET_NOT_FOUND") && plain.err.includes(`cotal daemon register --space ${space}`), plain.err);
         }
       }
       check("C0 status and refused connect never contact the space", hits.length === beforeHits, { beforeHits, afterHits: hits.length });
@@ -804,7 +804,8 @@ try {
         finally { clearTimeout(timer); }
       };
       const setup = await cli(["daemon", "setup", "--no-manager", `--space=${ON}`, "--wait", "0", "--plain"]);
-      check("C17 shipped setup attaches its space to both follow-up options", setup.code === 0 && setup.out.includes(`cotal daemon service-status --space=${ON}`) && setup.out.includes(`cotal daemon service-disconnect --space=${ON}`), setup);
+      const spaceOption = ON.startsWith("-") ? `--space=${ON}` : `--space ${ON}`;
+      check("C17 shipped setup retains its space in both follow-up options, attaching leading-hyphen values", setup.code === 0 && setup.out.includes(`cotal daemon service-status ${spaceOption}`) && setup.out.includes(`cotal daemon service-disconnect ${spaceOption}`), setup);
       const suggested = [...setup.out.matchAll(/`(cotal daemon service-(?:status|disconnect) [^`]+)`/g)].map((match) => match[1]!);
       check("C17 setup offers two copyable follow-up commands", suggested.length === 2, suggested);
       for (const command of suggested) {
@@ -1904,6 +1905,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           const managedIntent = join(managedHome, "daemon", spaceSegment(ON), "manager-host.json");
           check("H7 explicit home signs in and hosts its own answering Manager", setupManaged.code === 0 && setupManaged.doc.result?.launchReady === true && managed?.state === "answering" && existsSync(managedIntent), setupManaged);
           check("H7 never-approved machine registration does not delay readiness", setupManaged.code === 0 && setupManaged.doc.result?.state === "approval-pending" && ["approval-required", "pending"].includes(setupManaged.doc.result?.registration?.outcome), setupManaged);
+          const pendingManaged = await cli("setup", "--no-manager", "--space", ON, "--wait", "0", "--daemon-home", managedHome);
+          check("H7 pending setup remedy keeps the selected daemon and service-only mode", pendingManaged.code === 4 && pendingManaged.doc.error?.remedy === `ask the space owner to approve this machine, then run \`cotal daemon setup --space ${ON} --no-manager --daemon-home ${managedHome}\` again`, pendingManaged);
           check("H7 explicit home does not host in the default daemon", resultOf(await ask(paths.socket, { op: "manager-status", space: ON })).state === "stopped" && !existsSync(intent));
           const recorder = join(root, "native-recorder");
           mkdirSync(recorder, { mode: 0o700 });

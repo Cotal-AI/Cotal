@@ -34,11 +34,12 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import type { DaemonPaths } from "./endpoint.js";
 import { launchAgentService, xmlText } from "./install-darwin.js";
 import { scheduledTaskService } from "./install-win32.js";
+import { daemonCommandCopy } from "./guidance.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
 export type ServiceMechanism = "systemd-user" | "launchd-agent" | "scheduled-task";
@@ -247,13 +248,15 @@ function directive(bytes: string, name: string): string {
   return new RegExp(`\n${name}=(.*)\n`).exec(bytes)?.[1] ?? "absent";
 }
 
-function refuseInstalled(paths: DaemonPaths): void {
+function refuseInstalled(paths: DaemonPaths, daemonHome: string | undefined): void {
   const existing = readReceipt(paths);
-  if (existing) throw new CommandFailure("refused", "CONFLICT", `this daemon already has an installed unit (${existing.unit}); remove it with \`cotal daemon uninstall\` before installing again`);
+  if (existing) throw new CommandFailure("refused", "CONFLICT", `this daemon already has an installed unit (${existing.unit})`, {
+    remedy: `remove it with ${codeSpan(daemonCommandCopy("uninstall", daemonHome))} before installing again`,
+  });
 }
 
 function nativeInstallPlan(service: NativeService, paths: DaemonPaths, daemonHome: string | undefined): NativePlan {
-  refuseInstalled(paths);
+  refuseInstalled(paths, daemonHome);
   return service.plan(paths, daemonHome, daemonServeArgv(daemonHome), pinnedPath);
 }
 
@@ -266,7 +269,7 @@ export function planInstall(paths: DaemonPaths, daemonHome: string | undefined):
   }
   const user = invokingUser();
   const rendered = renderDaemonUnit(systemdUserUnitDirectory(), daemonHome);
-  refuseInstalled(paths);
+  refuseInstalled(paths, daemonHome);
   let present = false;
   try { lstatSync(rendered.unitPath); present = true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${rendered.unitPath} could not be inspected; no absent unit was inferred`); }
