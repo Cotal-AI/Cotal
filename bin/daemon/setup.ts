@@ -128,7 +128,7 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
   } else if (outcome === "already-installed" && opts.version) {
     const reply = await queryDaemon(opts);
     if (reply.ok) {
-      const installation = installedDaemonIdentity(opts.paths);
+      const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
       if (!installation.same) {
         const remedy = `run setup from ${installation.installed}, or run cotal daemon uninstall then setup from ${installation.current}`;
         if (reply.result.protocol !== DAEMON_PROTOCOL_VERSION) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; its protocol is incompatible and it was not restarted`, { remedy });
@@ -144,7 +144,7 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
       if (reply.result.version !== opts.version || reply.result.protocol !== DAEMON_PROTOCOL_VERSION) {
         const hosted = (reply.result.managers ?? []).some((manager) => manager.state !== "stopped");
         if (hosted) await managerViaDaemon(opts, { op: "managers-prepare-restart" });
-        try { restartInstalled(opts.paths); }
+        try { restartInstalled(opts.paths, opts.daemonHome); }
         catch (error) {
           if (hosted) {
             try { await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
@@ -289,6 +289,9 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     steps.push({ step: "manager", outcome: manager.state, detail: manager.reason ?? manager.instanceId ?? manager.state });
     opts.report(`manager: ${manager.state}${manager.instanceId ? `, instance ${manager.instanceId}` : ""}`);
     if (manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", manager.reason ?? "the hosted Manager is not answering yet", { remedy: manager.next ?? `read cotal daemon status --space ${opts.space}`, native: { code: manager.state.toUpperCase() } });
+    const available = manager.connectors?.filter(connector => connector.state === "available") ?? [];
+    opts.report(`connectors: ${available.length} available`);
+    if (!available.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no available connector in the hosted Manager's environment", { remedy: "install a supported harness on the daemon's PATH, then run setup again", native: { code: "NO_AVAILABLE_CONNECTOR" } });
     const registration = await requestRegistration(opts, steps);
     // A pending registration has no service credential yet. Report it without polling its owner.
     let state: ServiceConnectionState = fromRegister(registration);

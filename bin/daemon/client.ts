@@ -59,7 +59,8 @@ export async function managerViaDaemon(opts: Pick<QueryOptions, "paths" | "peerU
   try {
     const id = randomUUID().replaceAll("-", "");
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request } as DaemonRequest));
-    const reply = JSON.parse(await readLine(sock, 130_000)) as DaemonResponse;
+    // A start may reconcile connectors for up to 120s, then wait for Manager readiness.
+    const reply = JSON.parse(await readLine(sock, request.op === "manager-start" ? 250_000 : 130_000)) as DaemonResponse;
     if (!reply.ok) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the daemon refused ${request.op}: ${reply.error.code} ${reply.error.message}`, { native: { code: reply.error.code }, remedy: reply.error.remedy ?? (reply.error.code === "UNKNOWN_OP" ? "restart the recorded Cotal daemon user service with this platform's service manager, then retry" : "inspect the daemon's hosting records and retry the operation") });
     if (reply.id !== id || "event" in reply || !("state" in reply.result)) throw new Error("invalid Manager response");
     return reply.result as HostedManager | DaemonStatus;
