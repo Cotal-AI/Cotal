@@ -71,10 +71,11 @@ await new Promise<void>(resolve => control.listen(0, "127.0.0.1", resolve));
 await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
 const port = (control.address() as AddressInfo).port;
 env.npm_config_registry = `http://127.0.0.1:${(registry.address() as AddressInfo).port}`;
-writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nconst op=process.argv.at(-2); if(!['stop','start'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(async r=>{if(!r.ok){console.error(await r.text());process.exit(99)}}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
+writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif(process.argv.slice(2).join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}\nconst op=process.argv.at(-2); if(!['stop','start'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(async r=>{if(!r.ok){console.error(await r.text());process.exit(99)}}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
 const foreign = process.argv.includes("--foreign");
 const bytes = `[Service]\nExecStart="${process.execPath}" "${foreign ? join(root, "another-install/dist/cotal.js") : join(repo, "bin/dist/cotal.js")}" daemon serve\nRestart=always\n`;
-const unitPath = join(root, "cotal-daemon.service");
+const unitPath = join(root, "config", "systemd", "user", "cotal-daemon.service");
+mkdirSync(dirname(unitPath), { recursive: true, mode: 0o700 });
 writeFileSync(unitPath, bytes, { mode: 0o600 });
 writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(bytes).digest("hex"), installedAt: new Date().toISOString() }));
 if (process.argv.includes("--provenance")) {
