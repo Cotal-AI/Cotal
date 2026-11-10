@@ -679,12 +679,13 @@ export function resolveAuthProvider(): AuthProvider {
 }
 
 /** Where a {@link ServiceEndpointRenewal} stands. `unavailable` can be retried with the same request;
- *  `cause: "store"` identifies a persistence problem to inspect before retrying. `ended` is terminal,
+ *  `cause: "store"` identifies a persistence problem; `cause: "credential-expired"` means the
+ *  returned access bearer has expired by the caller's clock. `ended` is terminal,
  *  and every later pull refuses without sending anything. No state carries a token. */
 export type ServiceEndpointRenewalState =
   | { readonly state: "idle" }
   | { readonly state: "current"; readonly accessExpiresAt: number; readonly renewalExpiresAt: number }
-  | { readonly state: "unavailable"; readonly cause?: "store" }
+  | { readonly state: "unavailable"; readonly cause?: "store" | "credential-expired" }
   | { readonly state: "ended"; readonly reason: string }
   | { readonly state: "closed" };
 

@@ -90,7 +90,7 @@ export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: Se
     state = { state: "ended", reason };
     throw new Error(`service renewal ended (${reason}); nothing more will be requested for this registration`);
   };
-  const outage = (sentence: string, cause?: "store"): never => {
+  const outage = (sentence: string, cause?: Extract<ServiceEndpointRenewalState, { state: "unavailable" }>["cause"]): never => {
     state = { state: "unavailable", ...(cause ? { cause } : {}) };
     throw new Error(sentence);
   };
@@ -128,7 +128,7 @@ export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: Se
     }
     if (r.state !== "credential") end("unrecognized");
     const c = r as Credential;
-    if (c.accessExpiresAt <= nowS()) outage("service renewal received an access bearer that has already expired; the next pull replays the same request");
+    if (c.accessExpiresAt <= nowS()) outage("service renewal received an access bearer that has already expired; the next pull replays the same request", "credential-expired");
     const material: Material = { accessBearer: c.accessBearer, accessExpiresAt: c.accessExpiresAt, renewalProof: c.renewalProof, renewalExpiresAt: c.renewalExpiresAt };
     try { await store.put(key, JSON.stringify({ ...rec, material } satisfies RenewalRecord)); }
     catch { outage("service renewal could not store its new material; the next pull replays the same request", "store"); }

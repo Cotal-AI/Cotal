@@ -276,7 +276,7 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
       : r.state === "not-signed-in" ? "AUTH_REQUIRED"
       : r.state === "refused" || r.state === "ended" ? "PERMISSION_DENIED"
       : r.state === "account-mismatch" || r.state === "conflict" || r.state === "local-state-error" ? "CONFLICT"
-      : r.state === "approval-pending" || r.state === "connecting" ? "LIFECYCLE_BLOCKED"
+      : r.state === "approval-pending" || r.state === "connecting" || r.state === "credential-expired" ? "LIFECYCLE_BLOCKED"
       : r.state === "disconnected" ? "TARGET_UNAVAILABLE"
       : "DEPENDENCY_UNAVAILABLE";
     throw new CommandFailure("refused", code, `${r.message}${r.manager ? `; Manager ${r.manager.state}${r.manager.reason ? `: ${r.manager.reason}` : ""}` : ""}`, { ...native, ...(r.manager?.next ? { remedy: r.manager.next } : {}) });

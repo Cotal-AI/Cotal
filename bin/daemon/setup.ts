@@ -226,7 +226,7 @@ async function requestRegistration(opts: SetupOptions, steps: SetupStep[]): Prom
 }
 
 /** States that will not become `connected` however long anyone waits. */
-const TERMINAL = new Set<ServiceConnectionState>(["refused", "ended", "account-mismatch", "conflict", "unsupported", "not-registered", "not-requested", "not-signed-in", "local-state-error"]);
+const TERMINAL = new Set<ServiceConnectionState>(["refused", "ended", "account-mismatch", "conflict", "unsupported", "not-registered", "not-requested", "not-signed-in", "local-state-error", "credential-expired"]);
 
 /**
  * Connect, retrying while the space is still waiting for its owner. Only an answer that cannot
@@ -367,6 +367,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
   const code = end.state === "not-requested" || end.state === "not-registered" ? "TARGET_NOT_FOUND"
     : end.state === "unsupported" ? "UNSUPPORTED"
     : end.state === "not-signed-in" ? "AUTH_REQUIRED"
+    : end.state === "credential-expired" ? "LIFECYCLE_BLOCKED"
     : end.state === "account-mismatch" || end.state === "conflict" || end.state === "local-state-error" ? "CONFLICT"
     : "PERMISSION_DENIED";
   throw new CommandFailure("refused", code, `${end.message}. The daemon is installed and running, and nothing is connected`, {
