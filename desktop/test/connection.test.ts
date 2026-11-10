@@ -8,7 +8,7 @@ import type { Request } from "../src/model.ts";
 
 const { JSDOM } = createRequire(import.meta.url)("jsdom");
 
-test("connection controls follow the selected space across approval, polling and disconnect", async () => {
+test("launch readiness, application retry and polling follow the selected space", async () => {
   const output = await build({ root: fileURLToPath(new URL("..", import.meta.url)), logLevel: "silent", build: { write: false } });
   assert.ok(!Array.isArray(output) && "output" in output);
   const bundle = output.output.find((file) => file.type === "chunk" && file.isEntry);
@@ -20,6 +20,7 @@ test("connection controls follow the selected space across approval, polling and
   const calls: Request[] = [];
   const states = new Map([["first", "approval-pending"], ["second", "disconnected"]]);
   let approved = false;
+  const managers = new Map<string, Record<string, unknown>>();
   let tick: (() => Promise<void>) | undefined;
   const heldStatus: { release?: () => void } = {};
   let holdOperation: string | undefined;
@@ -47,11 +48,14 @@ test("connection controls follow the selected space across approval, polling and
       let result: Record<string, unknown>;
       switch (req.op) {
         case "about": result = { machine: "test", version: "test", platform: "linux", arch: "x64", memoryBytes: 0 }; break;
-        case "status": result = { state: "ready" }; break;
-        case "spaces": result = { spaces: ["first", "second"].map((space) => ({ space, mode: "user" })) }; break;
-        case "register": result = { outcome: approved ? "registered" : "approval-required" }; break;
-        case "service-connect": states.set(req.space!, "connected"); result = { state: "connected" }; break;
-        case "service-disconnect": states.set(req.space!, "disconnected"); result = { state: "disconnected" }; break;
+        case "status": result = { state: "ready", managers: [...managers.values()] }; break;
+        case "spaces": result = { spaces: ["first", "second"].map((space) => ({ space, mode: "user", idp: "https://example.com/auth" })) }; break;
+        case "setup": {
+          if (!approved) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "no available connector in the hosted Manager's environment", native: { code: "NO_AVAILABLE_CONNECTOR" }, remedy: "install Claude Code or Codex and choose Check again" } };
+          const manager = { space: req.space, state: "answering", instanceId: "test-manager", connectors: [{ state: "available" }] };
+          managers.set(req.space!, manager); states.set(req.space!, "connected"); result = { launchReady: true, manager, state: "approval-pending" }; break;
+        }
+        case "service-disconnect": managers.delete(req.space!); states.set(req.space!, "disconnected"); result = { state: "disconnected" }; break;
         case "service-status": {
           result = { state: states.get(req.space!) };
           break;
@@ -76,7 +80,7 @@ test("connection controls follow the selected space across approval, polling and
     doc.getElementById("space")!.dispatchEvent(new win.Event("change"));
     await settle();
   };
-  const holdRefresh = async (op = "service-status", fail = false) => {
+  const holdRefresh = async (op = "status", fail = false) => {
     holdOperation = op;
     rejectHeld = fail;
     heldStatus.release = undefined;
@@ -93,26 +97,28 @@ test("connection controls follow the selected space across approval, polling and
     await select("first");
     button("connect").click();
     await settle();
-    assert.equal(title(), "Waiting for owner approval");
-    assert.equal(button("connect").disabled, false, "approval can be retried");
+    assert.equal(title(), "No agent application found");
+    assert.equal(button("connect").disabled, false, "application discovery can be retried");
+    assert.equal(button("connect").textContent, "Check again");
+    assert.match(doc.getElementById("notice")!.textContent!, /Claude Code or Codex/);
     await tick!();
-    assert.equal(title(), "Waiting for owner approval");
+    assert.equal(title(), "No agent application found");
     await select("second");
     assert.equal(title(), "Disconnected from this space");
     await select("first");
-    assert.equal(title(), "Waiting for owner approval");
+    assert.equal(title(), "No agent application found");
     approved = true;
     button("connect").click();
     await settle();
-    assert.equal(title(), "Connected");
+    assert.equal(title(), "Ready to launch");
     assert.equal(button("connect").disabled, true);
-    const registrations = calls.filter((call) => call.op === "register").length;
+    const registrations = calls.filter((call) => call.op === "setup").length;
     button("connect").click();
     button("connect").dispatchEvent(new win.Event("click"));
     await settle();
-    assert.equal(calls.filter((call) => call.op === "register").length, registrations);
+    assert.equal(calls.filter((call) => call.op === "setup").length, registrations);
     const releaseOldSelection = await holdRefresh();
-    assert.equal(title(), "Connected", "poll does not temporarily replace a verified state with local readiness");
+    assert.equal(title(), "Ready to launch", "poll does not temporarily replace a verified state with local readiness");
     assert.equal(button("connect").disabled, true);
     await select("second");
     assert.equal(button("connect").disabled, false, "another space is not blocked by the connected selection");
@@ -132,15 +138,15 @@ test("connection controls follow the selected space across approval, polling and
     const releaseDisconnected = await holdRefresh();
     button("connect").click();
     await settle();
-    assert.equal(title(), "Connected");
+    assert.equal(title(), "Ready to launch");
     await releaseDisconnected();
-    assert.equal(title(), "Connected", "old disconnected status cannot undo connect");
+    assert.equal(title(), "Ready to launch", "old disconnected status cannot undo connect");
     assert.equal(button("connect").disabled, true);
-    const afterReconnect = calls.filter((call) => call.op === "register").length;
+    const afterReconnect = calls.filter((call) => call.op === "setup").length;
     button("connect").click();
     button("connect").dispatchEvent(new win.Event("click"));
     await settle();
-    assert.equal(calls.filter((call) => call.op === "register").length, afterReconnect);
+    assert.equal(calls.filter((call) => call.op === "setup").length, afterReconnect);
 
     const releaseReady = await holdRefresh("status");
     button("disconnect").click();
@@ -152,7 +158,7 @@ test("connection controls follow the selected space across approval, polling and
     button("connect").click();
     await settle();
 
-    for (const op of ["status", "service-status"]) {
+    for (const op of ["status"]) {
       const releaseError = await holdRefresh(op, true);
       button("disconnect").click();
       await settle();
@@ -162,12 +168,12 @@ test("connection controls follow the selected space across approval, polling and
       assert.notEqual(doc.getElementById("notice")!.textContent, "Error: delayed status failure");
       button("connect").click();
       await settle();
-      assert.equal(title(), "Connected");
+      assert.equal(title(), "Ready to launch");
     }
 
     const releaseBeforeReselect = await holdRefresh();
     await select("second");
-    states.set("first", "disconnected");
+    states.set("first", "disconnected"); managers.delete("first");
     await select("first");
     assert.equal(title(), "Disconnected from this space");
     await releaseBeforeReselect();

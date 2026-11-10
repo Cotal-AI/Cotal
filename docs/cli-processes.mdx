@@ -567,6 +567,12 @@ Each mode accepts only its listed flags. A flag from another mode refuses with `
 before any daemon or service action, including `--dry-run` on `serve`. Bare `cotal daemon` lists
 the declared modes and points to `cotal help daemon`, which works without a running daemon.
 `desktop` serves the desktop app's bounded JSON request on stdin; it has its own protocol output.
+Its closed `setup` request accepts only a space and provider URL, invokes stock setup, streams
+`setup-progress` frames, and returns the same launch-readiness or refusal with its next step.
+The app reads the account's login-shell PATH on Linux and macOS outside the renderer. On Windows
+it reads current machine and user PATH with the system PowerShell. The bundled Node directory is
+added after account directories. Absolute-path validation and the hosted-seat restart fence still apply.
+No renderer-supplied command, argument, path or credential is accepted.
 Its `about` request reads host metadata without resolving or contacting a daemon. Other requests
 resolve the selected daemon only after request validation. A path-resolution refusal returns a
 versioned `result` frame with `ok: false`, rather than ordinary CLI text. On Linux, a missing or
@@ -602,6 +608,9 @@ A damaged canonical registration and its usable legacy duplicate stay untouched,
 failure reporting and catalog removal. A selection naming that registration stays selected.
 The desktop app uses these same controls. Its source and native build instructions are in the
 [desktop README](../desktop/README.md). Closing its tray UI does not stop the installed daemon.
+Connect this computer hosts the selected space's Manager and reports Ready to launch only with an
+answering registered Manager and an available connector. Missing applications keep the refusal and
+its install next step visible, with Check again to rerun setup. Machine-service approval is separate.
 After installing or starting its recorded background service, the app waits up to 15 seconds for
 the daemon to answer. A timeout reports `DEPENDENCY_UNAVAILABLE` and directs you to
 `cotal daemon status` for diagnostics. The service remains installed; the timeout does not ask
@@ -631,7 +640,9 @@ pinned instance for up to 15 seconds before refusing. A refusal names the condit
 the daemon journal records the operation and cause. A recovered observation does not bypass the
 idle-seat fence.
 If any seat is active, nothing is changed or restarted. Stop the seats and run the setup command
-named in the refusal from the same terminal. Windows scheduled tasks do not pin PATH.
+named in the refusal from the same terminal. Windows scheduled tasks do not pin PATH. The native
+entry reads the current machine and user PATH on each start. If setup finds an application that
+the running task cannot resolve, it restarts that recorded service under the same hosted-seat fence.
 When no new application is found, setup keeps the service running. A Manager with no available
 connector still refreshes its inventory by restarting its idle child.
 The separate `ai.cotal.machine` registration and connection are reported even while owner approval

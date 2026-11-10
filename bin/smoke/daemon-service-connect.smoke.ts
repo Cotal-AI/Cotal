@@ -104,6 +104,7 @@ const setupHintsOnly = process.argv.includes("--setup-hints-only");
 const cancelOnly = process.argv.includes("--cancel-only");
 const keepFixture = process.argv.includes("--keep-fixture");
 const desktopGapOnly = process.argv.includes("--desktop-gap-only");
+const desktopSetupOnly = process.argv.includes("--desktop-setup-only");
 const originalPath = process.env.PATH;
 const setupProgressOnly = process.argv.includes("--setup-progress-only");
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
@@ -643,8 +644,8 @@ try {
       try { await resolveControlTarget({ space: ON }, "control-caller-privileged", undefined, { onRefusal: "throw", readOnly: true }); }
       catch (error) { refusal = String(error); }
       check("D0 real launch caller cannot resolve a Manager target", refusal.length > 0, refusal);
-      const setup = await desktop({ op: "setup", space: ON, idp: idpUrl });
-      check("D0 current app boundary refuses the missing stock setup operation", setup.ok === false && setup.error.code === "BAD_REQUEST", setup);
+      const rejected = await desktop({ op: "setup", space: ON, idp: idpUrl, PATH: "/foreign" });
+      check("D0 desktop setup rejects renderer-supplied PATH", rejected.ok === false && rejected.error.code === "BAD_REQUEST", rejected);
     });
 
     await cell("C15 an explicitly granted native caller reaches the daemon's registered command", async () => {
@@ -1473,6 +1474,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: fixtureVersion }));
       }
       const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+      if (desktopSetupOnly) env.PATH = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
       if (process.argv.includes("--daemon-seed-repro")) env.COTAL_ALLOW_CHECKOUT_SEED = "1";
       if (process.argv.includes("--hosted-seed-repro")) {
         delete env.COTAL_SKIP_CONNECTOR_SEED;
@@ -1531,6 +1533,31 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         }
       }
       const cli = async (...args: string[]) => {
+        if (desktopSetupOnly && args[0] === "setup") {
+          const shellPath = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
+          writeFileSync(join(home, ".bash_profile"), `export PATH=${JSON.stringify(shellPath)}\n`, { mode: 0o600 });
+          const child = spawn(process.execPath, [cliEntry, "daemon", "desktop"], { cwd: root, env: { ...env, PATH: "/usr/bin:/bin" }, stdio: ["pipe", "pipe", "pipe"], timeout: 180_000, killSignal: "SIGKILL" });
+          let out = "", err = "";
+          const progress: string[] = [];
+          let buffer = "";
+          child.stdout.on("data", (b) => {
+            out += String(b); buffer += String(b);
+            let newline: number;
+            while ((newline = buffer.indexOf("\n")) >= 0) {
+              const frame = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1);
+              if (frame.event === "setup-progress") progress.push(frame.line);
+            }
+          });
+          child.stderr.on("data", (b) => { err += String(b); });
+          child.stdin.end(`${JSON.stringify({ op: "setup", space: ON, idp: idpUrl })}\n`);
+          const exit = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+          if (exit !== 0) throw new Error(`desktop setup exited ${exit}: ${err}`);
+          const frames = out.trim().split("\n").map(line => JSON.parse(line));
+          const frame = frames.at(-1);
+          check("D1 setup streams reached steps before its final result", progress.length > 0 && frames[0].event === "setup-progress" && frame.event === "result");
+          check("D1 setup frames contain no session or JWT", !out.includes(SESSION) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(out));
+          return { code: frame.ok ? 0 : 2, doc: { result: frame.result, error: frame.error ? { ...frame.error, cause: frame.error.native } : undefined } as Record<string, any>, err: progress.join("\n") };
+        }
         const child = spawn(process.execPath, [cliEntry, "daemon", ...args, ...(explicitHome ? ["--daemon-home", explicitHome] : []), "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let out = "", err = "";
         child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
@@ -1670,6 +1697,17 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           const idlePid = child.pid, idleCalls = pathCalls.length;
           const repeated = await cli("setup", "--space", ON);
           check("P6 no new application leaves service running unchanged", repeated.code === 0 && child.pid === idlePid && pathCalls.length === idleCalls, repeated);
+          if (desktopSetupOnly) {
+            const before = child.pid;
+            await killAndAwaitExit(child, "SIGTERM"); child = await startDaemon();
+            const relaunched = await cli("setup", "--space", ON);
+            check("D2 reopening the app after daemon restart restores launch-readiness", child.pid !== before && relaunched.code === 0 && relaunched.doc.result?.manager?.state === "answering", relaunched);
+            const instanceId = relaunched.doc.result?.manager?.instanceId;
+            const resumedTarget = await resolveControlTarget({ space: ON }, "control-caller-privileged", instanceId, { onRefusal: "throw", readOnly: true });
+            const launch = await askManager(client, ON, servers, "start", { name: "desktop_relaunch", agent: "daemon-smoke", events: false, persona: { prompt: "Owned desktop relaunch", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, resumedTarget.auth, "owner", 40_000, { instanceId });
+            check("D2 dashboard-shaped caller launches on the restarted desktop Manager", launch.ok, launch.error);
+            if (launch.ok) await askManager(client, ON, servers, "stop", { name: "desktop_relaunch" }, resumedTarget.auth, "owner", 10_000, { instanceId });
+          }
           const removed = await cli("uninstall", "--yes");
           check("P5 uninstall accepts refreshed receipt and removes unit and daemon", removed.code === 0 && !existsSync(pathUnit) && !existsSync(pathReceipt) && !existsSync(paths.socket), removed);
           return;

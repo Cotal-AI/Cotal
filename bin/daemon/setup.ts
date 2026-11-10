@@ -53,8 +53,8 @@ export interface SetupOptions {
   readonly space: string;
   readonly idp?: string;
   readonly clientId?: string;
-  readonly peerUid: PeerUid;
-  readonly peerPid: PeerPid;
+  readonly peerUid?: PeerUid;
+  readonly peerPid?: PeerPid;
   /** Seconds to wait for the space owner's approval. 0 reports what it reached and stops. */
   readonly waitSeconds: number;
   /** Progress for a terminal, one line per step. */
@@ -327,7 +327,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
       const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
       if (!installation.same) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} cannot refresh applications from this installation`, { remedy: `run cotal daemon setup --space ${opts.space} from ${installation.installed}` });
       const refresh = planInstalledPathRefresh(opts.paths, opts.daemonHome);
-      if (refresh) {
+      if (refresh || process.platform === "win32") {
         // The daemon fences every hosted Manager, including spaces other than this setup target.
         opts.report("service: waiting for hosted Managers to confirm readiness and an idle restart fence; readiness observation waits up to 15s");
         try { await managerViaDaemon(opts, { op: "managers-prepare-restart" }); }
@@ -336,14 +336,14 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
           throw error;
         }
         try {
-          refresh();
+          refresh?.();
           restartInstalled(opts.paths, opts.daemonHome, true);
         } catch (error) {
           try { await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
           catch { /* Preserve the installation or native service failure. */ }
           throw error;
         }
-        const detail = "refreshed the pinned PATH from this terminal, keeping existing directories";
+        const detail = process.platform === "win32" ? "restarted the service to read the current user PATH" : "refreshed the pinned PATH from this invocation, keeping existing directories";
         steps.push({ step: "install", outcome: "path-refreshed", detail });
         opts.report(`service: ${detail}`);
         await waitForDaemon(opts, 60);

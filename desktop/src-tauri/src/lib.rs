@@ -25,6 +25,8 @@ pub enum DesktopRequest {
     },
     #[serde(rename = "login")]
     Login { idp: String },
+    #[serde(rename = "setup")]
+    Setup { space: String, idp: String },
     #[serde(rename = "connect-check")]
     ConnectCheck { space: String },
     #[serde(rename = "register")]
@@ -40,7 +42,7 @@ pub enum DesktopRequest {
 impl DesktopRequest {
     pub fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Login { idp } => {
+            Self::Login { idp } | Self::Setup { idp, .. } => {
                 let u = browser_url(idp)?;
                 if u.query().is_some() || u.fragment().is_some() {
                     return Err("A provider URL cannot contain a query or fragment.".into());
@@ -62,12 +64,15 @@ impl DesktopRequest {
             }
             _ => {}
         }
+        if let Self::Setup { space, .. } = self {
+            Self::ConnectCheck { space: space.clone() }.validate()?;
+        }
         Ok(())
     }
 
     pub fn timeout_seconds(&self) -> u64 {
-        if matches!(self, Self::Login { .. }) {
-            915
+        if matches!(self, Self::Login { .. } | Self::Setup { .. }) {
+            1200
         } else {
             150
         }

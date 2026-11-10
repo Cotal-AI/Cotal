@@ -1,9 +1,27 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Request = { op: string; space?: string; idp?: string; refresh?: boolean };
-export interface Frame { v: 1; event: "result" | "login-prompt"; ok?: boolean; result?: Record<string, unknown>; prompt?: Record<string, unknown>; error?: { code: string; message: string }; code?: string; message?: string }
+export interface Frame { v: 1; event: "result" | "login-prompt" | "setup-progress"; line?: string; ok?: boolean; result?: Record<string, unknown>; prompt?: Record<string, unknown>; error?: { code: string; message: string; remedy?: string; native?: { code: string } }; code?: string; message?: string }
+
+export class DaemonRefusal extends Error {
+  constructor(readonly code: string, message: string, readonly native?: string) { super(message); }
+}
+
+export function launchReady(manager: unknown): boolean {
+  if (!manager || typeof manager !== "object") return false;
+  const m = manager as Record<string, unknown>;
+  return m.state === "answering" && typeof m.instanceId === "string" && Array.isArray(m.connectors) && m.connectors.some((c) => c?.state === "available");
+}
+
+export function machinesUrl(provider: string, spaceId: string, instanceId: string): string {
+  const url = new URL("/machines", approvalUrl(provider));
+  url.searchParams.set("space", spaceId); url.searchParams.set("machine", instanceId);
+  return url.href;
+}
 
 export function connectionView(state: string): { title: string; description: string; connected: boolean } {
   switch (state) {
+    case "launch-ready": return { title: "Ready to launch", description: "Agents can now be launched on this computer from the dashboard.", connected: true };
+    case "no-application": return { title: "No agent application found", description: "Install a supported application named below, then choose Check again.", connected: false };
     case "connected": return { title: "Connected", description: "The broker accepted this daemon and the space confirmed it is ready.", connected: true };
     case "approval-pending": return { title: "Waiting for owner approval", description: "The space owner must approve this machine. No connection is claimed yet.", connected: false };
     case "connecting": return { title: "Connecting", description: "Waiting for both broker acceptance and space readiness.", connected: false };
@@ -21,7 +39,7 @@ export function approvalUrl(value: unknown): string {
 }
 
 export function requireResult(frame: Frame): Record<string, unknown> {
-  if (frame.v !== 1 || frame.event !== "result" || frame.ok !== true) throw new Error(frame.error?.message ?? frame.message ?? "The daemon did not confirm this operation.");
+  if (frame.v !== 1 || frame.event !== "result" || frame.ok !== true) throw new DaemonRefusal(frame.error?.code ?? "OPERATION_FAILED", [frame.error?.message ?? frame.message ?? "The daemon did not confirm this operation.", frame.error?.remedy ? `Next: ${frame.error.remedy}` : ""].filter(Boolean).join("\n"), frame.error?.native?.code);
   if (!frame.result || typeof frame.result !== "object" || Array.isArray(frame.result)) throw new Error("The daemon returned an unsupported result.");
   return frame.result;
 }
