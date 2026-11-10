@@ -31,7 +31,7 @@ const safeDiagnostic = (text: string) => text.replace(/\u001b\[[0-9;]*m/g, "").r
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const controlClient = { versionSkew: (detail: string) => detail, roster: async () => [] };
 export class HostedManagerRefusal extends Error {
-  constructor(readonly code: "SEATS_ACTIVE" | "GENERATION_PENDING", message: string, readonly remedy: string) { super(message); }
+  constructor(readonly code: "SEATS_ACTIVE" | "GENERATION_PENDING" | "MANAGER_UNAVAILABLE", message: string, readonly remedy: string) { super(message); }
 }
 interface Live {
   view: HostedManager;
@@ -473,9 +473,28 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           const seats = await generationCall(l.child, randomUUID(), "inspect");
           if (seats !== undefined && seats > 0) throw new HostedManagerRefusal("SEATS_ACTIVE", `hosted Manager for ${l.view.space} holds ${seats} active seat(s)`, command(`stop the seats through Manager ${l.view.instanceId} in space ${l.view.space}, then run cotal daemon setup --space ${l.view.space}`));
         }
+        const readinessDeadline = Date.now() + 15_000;
         for (const l of live.values()) {
           if (!l.child) continue;
-          if (l.view.state !== "answering") throw new Error("a hosted Manager is not ready to confirm a safe generation transition");
+          if (l.view.state !== "answering") {
+            const child = l.child, selected = l.view.instanceId;
+            const deadline = readinessDeadline;
+            let reason = l.view.reason ?? `last observed state is ${l.view.state}`;
+            while (l.view.state !== "answering" && l.child === child && !closed && !l.stopping && selected && Date.now() < deadline) {
+              let timer: ReturnType<typeof setTimeout> | undefined;
+              try {
+                const reply = await Promise.race([probe(l.view.space, selected), new Promise<never>((_, reject) => {
+                  timer = setTimeout(() => reject(new Error("the pinned Manager status probe did not answer")), Math.min(3500, deadline - Date.now()));
+                })]);
+                if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager refused status");
+                if (l.child !== child || closed || l.stopping) break;
+                l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+              } catch (error) { reason = safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1000); }
+              finally { if (timer) clearTimeout(timer); }
+              if (l.view.state !== "answering") await pause(Math.min(250, Math.max(0, deadline - Date.now())));
+            }
+            if (l.child !== child || l.view.state !== "answering" || closed || l.stopping) throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", `hosted Manager for ${l.view.space} could not confirm readiness for restart within 15s: ${reason}; no service restart was authorized`, command(`run cotal daemon status --space ${l.view.space}; restore its connection if needed, then run the same setup command again`));
+          }
           const attemptId = randomUUID();
           generationAttempts.set(l.child, attemptId);
           await generationCall(l.child, attemptId, "prepare");

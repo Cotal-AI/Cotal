@@ -620,6 +620,10 @@ On macOS, reload waits up to ten seconds for the old LaunchAgent to unload befor
 If it does not unload, setup reports an unconfirmed outcome. Run the same setup command again to
 start the recorded service.
 It restarts only after every hosted Manager confirms it has no seats and blocks new launches.
+Setup prints this wait. If a recent observation missed a Manager, restart preparation rechecks its
+pinned instance for up to 15 seconds before refusing. A refusal names the condition and a next step;
+the daemon journal records the operation and cause. A recovered observation does not bypass the
+idle-seat fence.
 If any seat is active, nothing is changed or restarted. Stop the seats and run the setup command
 named in the refusal from the same terminal. Windows scheduled tasks do not pin PATH.
 When no new application is found, setup keeps the service running. A Manager with no available

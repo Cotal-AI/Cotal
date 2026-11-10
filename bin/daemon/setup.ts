@@ -304,6 +304,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
       const refresh = planInstalledPathRefresh(opts.paths, opts.daemonHome);
       if (refresh) {
         // The daemon fences every hosted Manager, including spaces other than this setup target.
+        opts.report("service: waiting for hosted Managers to confirm readiness and an idle restart fence; readiness observation waits up to 15s");
         try { await managerViaDaemon(opts, { op: "managers-prepare-restart" }); }
         catch (error) {
           if (error instanceof CommandFailure && error.native?.code === "SEATS_ACTIVE") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${error.message}. The new application will become available after the seats stop and setup runs again. No service was changed or restarted`, { native: error.native, remedy: error.remedy });
