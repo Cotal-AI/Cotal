@@ -456,7 +456,11 @@ under `Not decoded` with its key and the decode error, and the key is left in th
 channel resolves to the default policy, as an endpoint's registry watch does. `show` of that
 channel and `defaults` when the defaults key does not decode say the same. A `set` or `defaults`
 that would write such a key refuses with `CONFLICT` and leaves the bytes as they are. `remove`
-of that key removes the entry. `show` includes inherited replay and delivery settings.
+of that key removes the entry. `show` includes resolved replay, window and delivery settings.
+Each value with no per-channel override is marked `inherited`, whether it comes from space
+defaults or the built-in policy. The inventory uses the same mark for replay and delivery.
+Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the
+mark identifies values supplied by the built-in policy.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
 records. A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
