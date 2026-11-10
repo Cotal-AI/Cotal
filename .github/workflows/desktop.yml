@@ -120,18 +120,18 @@ jobs:
         shell: pwsh
         env:
           RELEASE_BUILD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+          APPLE_CERTIFICATE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_CONTENT: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY_CONTENT || '' }}
+          WINDOWS_CERTIFICATE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_CERTIFICATE || '' }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
+          WINDOWS_TIMESTAMP_URL: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_TIMESTAMP_URL || '' }}
         run: |
           $ErrorActionPreference = 'Stop'
           'signed=false' >> $env:GITHUB_OUTPUT
@@ -176,14 +176,14 @@ jobs:
         shell: pwsh
         env:
           SIGNED_BUILD: ${{ steps.signing.outputs.signed }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_CERTIFICATE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY || '' }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:SIGNED_BUILD -ne 'true') {

@@ -72,16 +72,18 @@ try {
       const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
       try { await closed; } finally { clearTimeout(timer); }
     }
+    const startupDiagnostics = new WeakMap<ChildProcess, string>();
     async function serve(fault: Fault): Promise<ChildProcess> {
       const child = launch(["daemon", "serve", ...homeFlags], fault);
-      child.stdin!.end(); child.stdout!.resume(); child.stderr!.resume();
+      startupDiagnostics.set(child, "");
+      child.stdin!.end(); child.stdout!.resume(); child.stderr!.on("data", chunk => startupDiagnostics.set(child, `${startupDiagnostics.get(child)}${String(chunk)}`));
       for (let i = 0; i < 150 && child.exitCode === null && !existsSync(paths.socket); i++) await sleep(100);
       return child;
     }
     const daemon = await serve("healthy");
     try {
       const control = await call(["daemon", "status", ...homeFlags, "--json"], "healthy");
-      if (control.code !== 0 || control.doc.result?.pid !== daemon.pid) throw new Error(`${name}: healthy daemon control failed: ${control.out} ${control.err}`);
+      if (control.code !== 0 || control.doc.result?.pid !== daemon.pid) throw new Error(`${name}: healthy daemon control failed: ${control.out} ${control.err}; startup: ${startupDiagnostics.get(daemon)}`);
       check(`${name} healthy status reaches the owned daemon`, true);
       for (const fault of ["preferences", "project-file", "parent-file", "removed-folder"] as const) {
         if (fault === "preferences") writeFileSync(preferences, `{${marker}`, { mode: 0o600 });
@@ -103,7 +105,7 @@ try {
       if (fault === "preferences") writeFileSync(preferences, `{${marker}`, { mode: 0o600 });
       const child = await serve(fault);
       try {
-        check(`${name} ${fault} foreground startup creates its endpoint`, child.exitCode === null && child.signalCode === null && existsSync(paths.socket), { exit: child.exitCode });
+        check(`${name} ${fault} foreground startup creates its endpoint`, child.exitCode === null && child.signalCode === null && existsSync(paths.socket), { exit: child.exitCode, diagnostics: startupDiagnostics.get(child) });
         if (child.exitCode === null && existsSync(paths.socket)) {
           const status = await call(["daemon", "status", ...homeFlags, "--json"], fault);
           check(`${name} ${fault} restarted daemon actually answers`, status.code === 0 && status.doc.result?.pid === child.pid, { code: status.code, error: status.doc.error });

@@ -149,6 +149,7 @@ export function daemonServeArgv(daemonHome: string | undefined): string[] {
     const launcher = join(dirname(cli[0]!), "cotal-desktop.exe");
     if (!existsSync(launcher)) throw new CommandFailure("refused", "UNSUPPORTED", "the packaged desktop daemon launcher is missing; no console-program task was substituted");
     assertScheduledEntry(join(dirname(entry), "cotal.js"));
+    assertScheduledEntry(join(dirname(entry), "daemon-native.js"));
     return [launcher, "--daemon", ...(daemonHome !== undefined ? ["--daemon-home", daemonHome] : [])];
   }
   if (process.platform === "win32") {
