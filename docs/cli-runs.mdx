@@ -282,7 +282,9 @@ outcome, or the last step the program settled before its own code failed, and th
 JSON carries this as `result.outcome` and `result.failure`. A simulation does not establish live authority, installed applications or readiness. All three support JSON and
 plain output and contact no broker.
 
-The `--handler` file is one JSON object. Each table maps a step's name to its result: one value
+The `--handler` file is one JSON object in UTF-8. A file that is not valid UTF-8 is refused
+with `SCHEMA_INVALID`, exit 1, before simulation, naming the path and how to save it as UTF-8.
+No invalid bytes are replaced. Each table maps a step's name to its result: one value
 for every occurrence, or a list used in order. A step with no name is keyed by its effect, such as
 `ask`. `spawn`, `sleep`, `notify`, `monitor`, `observe` and conclaves need no entry, and a sleep
 moves the virtual clock forward.
