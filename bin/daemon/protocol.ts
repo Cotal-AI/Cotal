@@ -189,7 +189,7 @@ export function parseRequest(line: string): ParsedRequest {
     if (obj.refresh !== undefined && typeof obj.refresh !== "boolean") return bad(id, "refresh must be a boolean");
     return { ok: true, request: { v, id, op, ...(obj.refresh !== undefined ? { refresh: obj.refresh } : {}) } };
   }
-  if (op === "status" || op === "managers-stop") return { ok: true, request: { v, id, op } };
+  if (op === "status" || op === "managers-stop" || op === "managers-prepare-restart" || op === "managers-abort-restart") return { ok: true, request: { v, id, op } };
   if (op === "login-cancel") {
     if (typeof obj.attempt !== "string" || !ATTEMPT_PATTERN.test(obj.attempt)) return bad(id, "attempt must be the 22-character attempt id from login-prompt");
     return { ok: true, request: { v, id, op, attempt: obj.attempt } };
