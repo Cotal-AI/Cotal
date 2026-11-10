@@ -56,7 +56,15 @@ export async function registerRemoteManagerAuthority(args: {
     const store = await contractStoreContext(nc, args.space);
     const artifacts = managerClusterArtifacts();
     const all = [...managerAuthorityContractSource().artifacts, artifacts.document, artifacts.manifest];
-    for (const value of all) await publishContractArtifact(store, contractArtifactCanonicalBytes(value));
+    console.error(`manager registration: publishing and verifying ${all.length} contract artifacts`);
+    // Each immutable content address has its own native create-only CAS. Overlap independent
+    // acknowledgements, but settle the entire batch before closing this connection on failure.
+    for (let offset = 0; offset < all.length; offset += 32) {
+      const results = await Promise.allSettled(all.slice(offset, offset + 32).map(value =>
+        publishContractArtifact(store, contractArtifactCanonicalBytes(value))));
+      for (const result of results) if (result.status === "rejected") throw result.reason;
+    }
+    console.error("manager registration: contract artifacts verified; acquiring the serving registration");
     const readClusterArtifact = async (digest: string): Promise<unknown> => {
       // `clusterDigests` rows are `sha256:<hex>` references; the store is keyed by the BARE hex.
       const bytes = await fetchContractArtifact(store, contractRefToHex(digest));

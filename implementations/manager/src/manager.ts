@@ -2505,6 +2505,7 @@ export class Manager {
     // (recorded with no presence event) is logged the moment the view can support the verdict.
     this.ep.on("roster", () => this.logSeatMeshTransitions());
     this.ep.on("presence-view", () => this.logSeatMeshTransitions());
+    console.error("manager startup: connecting the supervisor endpoint");
     await this.ep.start();
     await this.ep.setActivity(`supervisor (${this.runtimeKind})`);
     // Per-instance liveness lease (the old per-space singleton is DEMOTED). Acquire
@@ -2517,6 +2518,7 @@ export class Manager {
     // the renew loop puts it back or keeps retrying ({@link renewLease}).
     this.leaseInfo = { holder: this.ep.ref().id, instanceId: this.managerInstanceId, runtime: this.runtimeKind, root: resolve(this.workspaceRoot), pid: process.pid };
     try {
+      console.error("manager startup: acquiring the instance liveness lease");
       this.leaseRevision = await this.acquireInstanceLease(this.leaseInfo);
     } catch (e) {
       await this.ep.stop();
@@ -2631,6 +2633,7 @@ export class Manager {
     // an open mesh runs the same gate/registration ceremony over bare connections and never mints
     // (there is no credential system - the broker enforces nothing, matching the old open-mesh ctl
     // trust). Fail-loud: a manager that cannot register does not start half-registered.
+    console.error("manager startup: binding the service endpoint");
     await this.registerManagerService();
     if (this.staticReconcileStopping) return;
     // Stand up the standing goal-writer connection for spawn-as-action — AFTER
@@ -2643,6 +2646,7 @@ export class Manager {
     // Reconcile any accepted-but-unterminal goals inherited from a predecessor
     // BEFORE spawn-as-action begins accepting (the goalReconcileDone gate) — a fresh incarnation
     // never drops a goal a dead predecessor accepted. Never fatal; the gate opens either way.
+    console.error("manager startup: reconciling predecessor goals");
     await this.reconcileGoalIndex();
     // SPEC 14.3: the manager hosts workflow runs. Stood up AFTER registration (it names this
     // instance's coordinates) and reconciled AFTER the goal index, for the same reason: a fresh

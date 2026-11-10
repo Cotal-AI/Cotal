@@ -673,7 +673,12 @@ The daemon supervises each Manager as a separate child, restarts it with bounded
 crash, and resumes recorded hosting intents after its own restart. A child that exits while a
 generation fence is pending is marked restarting with its exit cause, then rescheduled after rollback.
 It records intent only after
-status answers. A permanent refusal, such as a missing sign-in or scope, stops automatic retries.
+status answers. During startup, status names initialization and registration as the pending work.
+The Manager logs remote authority, contract publication and activation stages. Contract artifacts
+publish with at most 32 independent acknowledgements in flight, keeping their create-only and
+verify-on-read checks. The daemon waits for the child's initialization notice before exchanging a
+pinned caller credential and probing its endpoint. The notice alone never marks it answering.
+A permanent refusal, such as a missing sign-in or scope, stops automatic retries.
 A damaged hosting or refusal record appears as a refusal for that space with the file path. Other
 spaces still answer status. Run `cotal daemon setup --space <space>` to repair the record after a
 successful Manager readiness probe.

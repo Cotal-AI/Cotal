@@ -382,6 +382,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       const agentBearerExchangeUrl = target.agentBearerExchangeUrl;
       if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
         throw new Error(`registered space "${space}" has no pinned public exchange URL for retained managed agents`);
+      console.error(`manager startup: requesting remote authority for ${state.instanceId}`);
       const material = await provider.managerServiceAuthority({ ...providerCall, request });
       const actors = remoteManagerActors(state.instanceId);
       if (material.owner.length === 0 || material.instanceId !== state.instanceId || material.lifecycleUid !== state.lifecycleUid ||
@@ -410,6 +411,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       // schema closure here exceeded the typed protocol's 64-artifact cap as the command set grew.
       const contractArtifacts = [artifacts.document, artifacts.manifest];
       const registrationProof = remoteManagerRegistrationProof(material.owner, state, contractArtifacts);
+      console.error(`manager startup: activating registered instance ${state.instanceId}`);
       const activate = await provider.managerServiceAuthority({
         ...providerCall,
         request: remoteManagerAuthorityRequest(state, "cli", "activate", { registrationProof, contractArtifacts }),
@@ -822,6 +824,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   // managed child already owns its exact starting PID slot; it settles that same process here.
   releaseSettledRecord = recordManagerPid(managerRoot, space);
   publishManagerSpareCapability(managerContext, mgr.spareSeats);
+  if (args.values["machine-parent"] === true && remoteAuthority) process.send?.({ kind: "manager-ready", instanceId: remoteAuthority.instanceId });
   if (v.name !== undefined && name !== undefined) {
     try { if (readManagerName(managerContext) !== name) recordManagerName(managerContext, name); }
     catch (e) { console.error(c.yellow(`! the manager name was not recorded, so the next start does not keep it: ${(e as Error).message}`)); }
