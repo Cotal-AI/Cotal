@@ -26,6 +26,7 @@ import {
   type ParsedArgs,
   type SpaceAuth,
   type UserAuthStatus,
+  type BrokerCheck,
 } from "@cotal-ai/core";
 import {
   stoppedLoopbackListener,
@@ -40,6 +41,8 @@ import {
   targetErrorSpace,
   type RolledBackRun,
   brokerAddressForDisplay,
+  BROKER_NOT_ANSWERING,
+  checkBroker,
   canonicalRoot,
   CLI_USER_ACTOR,
   codeSpan,
@@ -190,6 +193,22 @@ export const statusFlags = [
  *  Resolve once, share the outcome, including the failure. */
 type Selected = { ok: true; target: MeshTarget } | { ok: false; error: unknown };
 
+type SelectedProbe = { check: BrokerCheck; preflight?: Awaited<ReturnType<typeof preflightTarget>> };
+
+/** One connection verdict per report, shared by its responder, registry and selected-space reads. */
+async function probeSelected(selected: Selected): Promise<SelectedProbe | undefined> {
+  if (!selected.ok) return undefined;
+  const target = selected.target;
+  if (target.mode === "user") return { check: await checkBroker(target.server, target.tlsRequired) };
+  const preflight = await preflightTarget(target);
+  // Credential failures can be known locally, before a broker answers. Reuse conclusive transport
+  // failures, but do not turn a dead credential into a positive liveness observation.
+  const check: BrokerCheck = preflight.ok ? "reachable" : preflight.kind === "slow-link" ? "slow-link"
+    : preflight.kind === "unreachable" || preflight.kind === "broker-stopped" ? "unreachable"
+    : await checkBroker(target.server, target.tlsRequired);
+  return { check, preflight };
+}
+
 /** A project root with no registration or prepared space here, such as one whose space was
  *  forgotten. The resolver gives it the default broker address, which any broker may hold, so
  *  status selects no space for it and dials nothing. */
@@ -320,7 +339,7 @@ export interface StatusResult {
       eventsRequired: boolean;
       modeChecked: boolean;
       current: boolean;
-      check: "reachable" | "unreachable" | "not-checked";
+      check: BrokerCheck | "not-checked";
       catalog: { name: string | null; fetchedAt: string | null; error: string | null } | null;
     }[];
     /** `account` is the IdP subject whose catalog this is, which its error line names instead of the
@@ -449,10 +468,11 @@ export async function status(args: ParsedArgs): Promise<void> {
   // THE RESPONDER AXIS (#1576), read ONCE and threaded into the rows that would otherwise claim
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
-  const responder = await readResponderAxis(selected);
+  const probe = await probeSelected(selected);
+  const responder = await readResponderAxis(selected, probe);
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
-  const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline);
-  const target = await readSelected(selected, responder, folder, gaps, hints);
+  const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, probe);
+  const target = await readSelected(selected, responder, folder, gaps, hints, probe);
   // The note under the heading sends here for this folder's own stack cut off with no recorded
   // outcome under another selection. A blocked one is named with its block under `This folder's
   // space` and its step first in Next, so that note is left out here, with its --json warning. One
@@ -743,14 +763,13 @@ async function expectedDeliveryHolder(target: MeshTarget): Promise<string | unde
  *
  *  `leased` says whether the read found a delivery lease record. An open mesh runs no delivery
  *  daemon, so there a missing lease is the normal state rather than an unbound responder. */
-async function readResponderAxis(selected: Selected): Promise<{ state: DeliveryResponderState; leased: boolean }> {
+async function readResponderAxis(selected: Selected, probe: SelectedProbe | undefined): Promise<{ state: DeliveryResponderState; leased: boolean }> {
   let leased = false;
   if (!selected.ok) return { state: "unknown", leased };
   const target = selected.target;
   if (target.mode === "user") return { state: "unknown", leased };
   try {
-    const preflight = await preflightTarget(target);
-    if (!preflight.ok) return { state: "unknown", leased };
+    if (!probe?.preflight?.ok) return { state: "unknown", leased };
     const id = newIdentity();
     const creds = target.auth ? await mintCreds(target.auth, id, "observer") : undefined;
     const ep = new CotalEndpoint({
@@ -1156,7 +1175,7 @@ function deliveryDetail(live: boolean, responder: DeliveryResponderState): strin
  *  with its own recorded TLS requirement. A bare TCP/INFO probe would green-light a plaintext broker
  *  that has substituted for a TLS-required mesh — the FAIL1 attack — so a list that only asks "is
  *  anything listening" cannot report on the one property the record claims. */
-async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps, offline: readonly string[]): Promise<StatusResult["meshes"]> {
+async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps, offline: readonly string[], probe: SelectedProbe | undefined): Promise<StatusResult["meshes"]> {
   // A registry file that cannot be read is named, and the readable records are still listed and
   // checked. Only an absent directory or pointer is an empty registry or no current mesh.
   const unreadable: StatusResult["meshes"]["unreadable"] = [];
@@ -1198,7 +1217,7 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
       eventsRequired: m.policy?.events === "required",
       modeChecked: m.unchecked !== true,
       current: m.space === current,
-      check: checked(m) ? ((await isReachable(m.server, m.tlsRequired ? { tls: true } : {})) ? "reachable" as const : "unreachable" as const) : "not-checked" as const,
+      check: checked(m) ? (m.space === chosen?.space && m.server === chosen.server ? probe!.check : await checkBroker(m.server, m.tlsRequired)) : "not-checked" as const,
       catalog: m.origin === "catalog" ? { name: m.catalogName && m.catalogName !== m.space ? m.catalogName : null, fetchedAt: m.catalogFetchedAt ?? null, error: m.catalogError ?? null } : null,
     })),
   );
@@ -1253,7 +1272,7 @@ function rootStoreProblem(root: string): ReturnType<typeof storeWriteProblem> {
   try { return storeWriteProblem(recorded ?? join(root, ".cotal", "nats")); } catch { return undefined; }
 }
 
-async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[]): Promise<SelectedResult> {
+async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], probe: SelectedProbe | undefined): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
@@ -1341,7 +1360,8 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // machine holds a signed-in AND granted login, a real user-mode connect for the snapshot.
     // Same transport discipline as the open/auth path below: a recorded TLS requirement must
     // not collapse to a bare reachability probe (that green-lights a plaintext substitute).
-    const live = await isReachable(target.server, target.tlsRequired ? { tls: true } : {});
+    const connection = probe!.check;
+    const live = connection === "reachable";
     const stateDir = userAuthStateDir(target.root, target.space);
     let st: UserAuthStatus | undefined;
     try {
@@ -1359,8 +1379,8 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
         }
       : null;
     const granted = Boolean(st?.login && st.grant && st.grant !== "not-granted");
-    const result = { ...base, connection: live ? "reachable" : "unreachable", login };
-    if (!live) return { ...result, snapshot: { state: "skipped", reason: "broker unreachable" } };
+    const result = { ...base, connection, login };
+    if (!live) return { ...result, snapshot: { state: "skipped", reason: connection === "slow-link" ? "broker not answering" : "broker unreachable" } };
     if (!granted) return { ...result, snapshot: { state: "skipped", reason: "needs a signed-in, granted login" } };
     return { ...result, ...(await readSnapshot(() => userSnapshotEndpoint(target, stateDir), target.space, true, gaps)) };
   }
@@ -1371,7 +1391,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     hints.push(moved.remedy);
     return { resolved: false, code: "moved-folder", message: moved.message };
   }
-  const preflight = await preflightTarget(target);
+  const preflight = probe!.preflight!;
   if (!preflight.ok) {
     // A `--server` address that is not the one recorded for the space says nothing about whether its
     // stack runs, so Next names that address as the refusal of other commands does. A stopped stack
@@ -1591,7 +1611,7 @@ function folderSection(f: StatusResult["folder"], selected: SelectedResult): Sec
 }
 
 function meshesSections(m: StatusResult["meshes"]): Section[] {
-  const check = { reachable: cell("reachable", "ok"), unreachable: cell("down", "failed"), "not-checked": cell("not checked", "hint") } as const;
+  const check = { reachable: cell("reachable", "ok"), unreachable: cell("down", "failed"), "slow-link": cell(BROKER_NOT_ANSWERING, "failed"), "not-checked": cell("not checked", "hint") } as const;
   const blocks: Section["blocks"][number][] = [];
   if (!m.items.length && !m.unreadable.length) blocks.push({ kind: "lines", lines: [cell("none", "hint")] });
   else
@@ -1784,7 +1804,7 @@ function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
   if (s.connection === "ok" || s.connection === "reachable") return stateCell("reachable", "ok");
   const states: Readonly<Record<string, string>> = {
     unreachable: "unreachable",
-    "slow-link": "connection timed out",
+    "slow-link": BROKER_NOT_ANSWERING,
     "broker-stopped": `broker process ${s.brokerPid} is stopped`,
     "tls-trust": "TLS could not be verified",
     "tls-unsupported": "listener does not offer required TLS",
@@ -1821,7 +1841,7 @@ function spaceStateCell(r: StatusResult, entry: StatusResult["meshes"]["items"][
   // `--all` with a `--server` that names another, the row shows its own address's check.
   if (selected && r.selected.resolved && entry.check !== "not-checked" && r.selected.server !== null && r.selected.server === entry.server) return connectionCell(r.selected);
   if (entry.check === "not-checked") return "";
-  return stateCell(entry.check === "reachable" ? "reachable" : "unreachable", entry.check === "reachable" ? "ok" : "failed");
+  return stateCell(entry.check === "slow-link" ? BROKER_NOT_ANSWERING : entry.check, entry.check === "reachable" ? "ok" : "failed");
 }
 
 /**

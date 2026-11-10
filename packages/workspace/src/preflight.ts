@@ -1,5 +1,5 @@
 import { createConnection } from "node:net";
-import { mintCreds, newIdentity, probeConnect, isReachable } from "@cotal-ai/core";
+import { mintCreds, newIdentity, probeConnect, probeReachability, type BrokerCheck } from "@cotal-ai/core";
 import { brokerAddressKey, loadMeshes } from "./mesh-registry.js";
 import type { MeshTarget } from "./mesh-target.js";
 import { stoppedLoopbackListener } from "./pid.js";
@@ -250,9 +250,18 @@ export interface MeshSweep {
  *  before it counts, so a slow link reads as live. A miss whose loopback listener is a stopped
  *  process counts at once. */
 export async function brokerAnswers(server: string): Promise<boolean> {
-  if (await isReachable(server)) return true;
+  return await checkBroker(server) === "reachable";
+}
+
+/** Confirm a liveness miss while retaining the distinction between a refusal and a timeout.
+ *  This observation never authorizes removing a registration. */
+export async function checkBroker(server: string, tlsRequired = false): Promise<BrokerCheck> {
+  const auth = tlsRequired ? { tls: true as const } : {};
+  const first = await probeReachability(server, auth);
+  if (first === "reachable") return first;
   // A stopped broker never answers, so the longer confirm is not spent on it.
-  return stoppedLoopbackListener(server) === undefined && await isReachable(server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS });
+  if (stoppedLoopbackListener(server) !== undefined) return first;
+  return probeReachability(server, { ...auth, timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS });
 }
 
 /** Sweep liveness without deleting records. Catalog entries are not probed. Given the `--server` a

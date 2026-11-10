@@ -8819,6 +8819,18 @@ export async function isReachable(
   servers: string = DEFAULT_SERVER,
   opts: AuthOpts & { timeoutMs?: number } = {},
 ): Promise<boolean> {
+  return await probeReachability(servers, opts) === "reachable";
+}
+
+/** A liveness observation, without flattening an inconclusive timeout into a dead address. */
+export type BrokerCheck = "reachable" | "unreachable" | "slow-link";
+
+/** The same credential-free or TLS-aware liveness check as {@link isReachable}, retaining timeouts.
+ *  An authentication refusal still proves that the broker answers. */
+export async function probeReachability(
+  servers: string = DEFAULT_SERVER,
+  opts: AuthOpts & { timeoutMs?: number } = {},
+): Promise<BrokerCheck> {
   const timeoutMs = opts.timeoutMs ?? defaultProbeTimeoutMs(servers);
   if (!opts.creds && !opts.token && !opts.user && !opts.pass && !opts.tls) {
     // A websocket broker rides an HTTPS edge: the plaintext INFO probe reads TLS bytes and
@@ -8831,12 +8843,13 @@ export async function isReachable(
       try {
         const nc = await dialerFor(servers)({ servers, timeout: timeoutMs, reconnect: false, maxReconnectAttempts: 0 });
         await nc.close();
-        return true;
+        return "reachable";
       } catch (e) {
-        return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
+        return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError ? "reachable" : e instanceof TimeoutError ? "slow-link" : "unreachable";
       }
     }
-    return typeof (await tcpInfoProbe(servers, timeoutMs)) === "object";
+    const greeting = await tcpInfoProbe(servers, timeoutMs);
+    return greeting === "silent" ? "slow-link" : greeting ? "reachable" : "unreachable";
   }
   // The credless branch above already owns its socket. This one reaches `connect()`, so it carries
   // the same orphaned-socket defects probeConnect did (#389, and the slow-greeting case #2156) and
@@ -8850,7 +8863,7 @@ export async function isReachable(
   const started = Date.now();
   const gate = opts.tls || wsServers(servers) ? tcpDialable : tcpInfoProbe;
   const reached = await gate(servers, timeoutMs);
-  if (!reached || reached === "silent") return false;
+  if (!reached || reached === "silent") return reached === "silent" ? "slow-link" : "unreachable";
   try {
     const nc = await dialerFor(servers)({
       servers,
@@ -8860,9 +8873,9 @@ export async function isReachable(
       ...authOpts(opts),
     });
     await nc.close();
-    return true;
+    return "reachable";
   } catch (e) {
-    return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
+    return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError ? "reachable" : e instanceof TimeoutError ? "slow-link" : "unreachable";
   }
 }
 

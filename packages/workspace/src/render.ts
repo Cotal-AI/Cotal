@@ -33,6 +33,9 @@ export interface WorkspaceErrorParts {
 
 const parts = (message: string, remedy?: string): WorkspaceErrorParts => (remedy === undefined ? { message } : { message, remedy });
 
+/** The human label for an inconclusive broker timeout, shared by reports and refusals. */
+export const BROKER_NOT_ANSWERING = "not answering";
+
 /** A workspace failure as its message and remedy, for a caller that reports them apart, such as a
  *  structured command's `error.message` and `error.remedy`. */
 export function workspaceErrorParts(e: WorkspaceError): WorkspaceErrorParts {
@@ -189,7 +192,7 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       // trust evidence to diagnose. The broker took the connection, so it is not "not running": it
       // is stopped, overloaded or behind a slow link.
       return parts(
-        `mesh "${t.space}" at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s; the registry entry was kept`,
+        `mesh "${t.space}" at ${server} accepted the connection but is ${BROKER_NOT_ANSWERING}: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s; the registry entry was kept`,
         NOT_ANSWERING_REMEDY,
       );
     case "broker-stopped":

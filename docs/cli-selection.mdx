@@ -30,8 +30,9 @@ cotal use [<space> | --clear] [--json|--plain]
 (`started here`, `registered` or `discovered`) and root, with the selected one marked. Inside a
 project whose root has one running registered space other than the selection, that space is marked as
 this folder's, since a command without `--space` targets it there. It probes
-each broker that this machine started or that was registered by hand, and reports one that does not
-answer as `unreachable`; its registration stays. A discovered space is never dialed by a listing and
+each broker that this machine started or that was registered by hand. A refused connection reads
+`unreachable`; a connection that times out reads `not answering`. Either keeps its registration.
+A discovered space is never dialed by a listing and
 reads `not checked`. `space show [<name>]` shows one space in full and probes only that broker.
 With no name it is about this folder: the space it has registered, else the one it holds prepared or
 stopped, which `show` names although every other command there targets the selection, else the
@@ -42,7 +43,8 @@ read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 `currentRecorded`, `folder` (this folder's space when it is marked, else null), `items` and
 `prepared`; each item is the row `cotal status --json` gives under
 `meshes.items`: `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`,
-`modeChecked`, `current`, `check` (`reachable`, `unreachable` or `not-checked`) and `catalog`. `space show` adds
+`modeChecked`, `current`, `check` (`reachable`, `unreachable`, `slow-link` or `not-checked`) and `catalog`.
+`slow-link` is the JSON value for `not answering`. `space show` adds
 `recordedAt`, `attachHost`, `maxSessions`, `storeDir`, `unencryptedOverlay`, the login pins of a
 user-auth space under `userAuth` and the catalog's `id`, `slug`, `kind` and `role`. It leaves
 credential paths out. A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
@@ -537,6 +539,13 @@ The default persona's `agent:` pin overrides environment and saved harness prefe
 If that persona cannot be read or validated, status reports the application as unresolved
 and includes a warning instead of presenting a harness preference as the launch choice.
 Non-regular persona paths, including named pipes, are refused without reading them.
+
+The selected space has one preflight per report, shared by the connection row, its registry row
+and the delivery responder check. Open and static-auth spaces use the same connect and confirm
+budgets as `send` and `who`, without repeating the confirm wait for each section. A timeout reads
+`not answering` in `status`, `space`, `space show` and connect refusals, with `slow-link` in JSON.
+A refused connection still reads `unreachable`. A stopped loopback broker keeps its separate
+process diagnosis, and a timeout never removes a registration.
 
 This machine shows what is set up and what needs attention. The version line is always there. Agent
 applications is one line: the applications whose required executables are on PATH, and a count of the
