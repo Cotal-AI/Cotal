@@ -1,7 +1,7 @@
 :root {
   color-scheme: light dark;
   --bg: #f5f6f3; --panel: #fff; --text: #22291f; --muted: #596352;
-  --line: #dce2d7; --accent: #416a34; --accent-text: #fff; --tint: #edf4e8; --error: #9b3830;
+  --line: #dce2d7; --accent: #416a34; --accent-text: #fff; --tint: #edf4e8; --error: #946018;
   --radius: 12px; --fast: 160ms; --slow: 240ms; --ease: cubic-bezier(.2, .8, .2, 1);
   font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: var(--bg); color: var(--text);
@@ -41,7 +41,7 @@ h2 { font-size: 14px; margin: 0; }
 p { margin: 0 0 16px; }
 .muted, .footnote { color: var(--muted); font-size: 12px; }
 .eyebrow { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .6px; margin: 0 0 8px; }
-.connection-card { min-height: 420px; position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 24px 28px; box-shadow: 0 4px 24px #18271006, 0 1px 2px #18271005; }
+.connection-card { transition: height var(--slow) var(--ease); position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 24px 28px; box-shadow: 0 4px 24px #18271006, 0 1px 2px #18271005; }
 .connection-icon { display: grid; place-items: center; width: 40px; height: 40px; background: var(--tint); color: var(--accent); border-radius: var(--radius); margin-bottom: 16px; }
 #step-caption { display: none; }
 .connected-space { font-size: 14px; font-weight: 600; margin: 0 0 16px; color: var(--accent); }
@@ -51,6 +51,7 @@ p { margin: 0 0 16px; }
 .code-row strong { margin: 0; }
 .waiting-line { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .waiting-line .dot { background: var(--accent); }
+.loading .connection-card { min-height: 240px; }
 #loading-title { display: none; }
 .loading .connection-card > * { visibility: hidden; }
 .loading #loading-title { display: block; visibility: visible; color: var(--muted); font-size: 16px; margin: 8px 0 0; }
@@ -74,9 +75,9 @@ label { display: block; font-size: 12px; font-weight: 600; margin: 16px 0 8px; }
 input[type=url], select { width: 100%; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-height: 40px; }
 #host-help { margin: 8px 0 0; }
 .footnote { margin: 16px 0 0; line-height: 1.6; }
-.approval { padding: 12px 16px; border: 1px solid var(--line); border-radius: var(--radius); margin-top: 16px; }
+.approval { padding: 16px 0 0; margin-top: 16px; }
 .approval p { margin: 0 0 8px; font-size: 12px; }
-.approval strong { display: block; font: 600 28px/1.4 ui-monospace, monospace; font-variant-numeric: tabular-nums; letter-spacing: 2px; margin-bottom: 8px; }
+.approval strong { display: block; font: 600 36px/1.4 ui-monospace, monospace; font-variant-numeric: tabular-nums; letter-spacing: 2px; margin-bottom: 8px; }
 .approval .button { margin: 4px 0 12px; }
 .approval p:last-child { margin: 0; }
 #notice { padding: 12px; margin: 12px 0; background: var(--tint); border-radius: 8px; font-size: 12px; overflow-wrap: anywhere; }
@@ -95,7 +96,7 @@ details pre { white-space: pre-wrap; font: inherit; }
 details pre, details ol { overflow-wrap: anywhere; max-height: 96px; overflow: auto; }
 details ol { padding-left: 20px; }
 #refresh { margin: 4px 0 -4px -8px; }
-.preferences { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 4px 0; }
+.preferences { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 24px; border-top: 1px solid var(--line); padding: 16px 0 0; }
 .preferences h2 { font-size: 12px; font-weight: 600; }
 .preferences p { margin: 4px 0 0; font-size: 11px; }
 .switch { position: relative; display: grid; place-items: center; min-width: 40px; min-height: 36px; margin: 0; }
@@ -110,7 +111,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; margin: 16px 
 .has-refusal .progress { display: none; }
 /* Only state changes receive stage-enter. Idle status polling never restarts it. */
 .stage-enter > :not(#loading-title) { animation: enter var(--slow) var(--ease) both; }
-@keyframes enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes enter { from { opacity: .35; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 50% { opacity: .35; } }
 @keyframes success { from { opacity: 0; transform: scale(.8); } to { opacity: 1; transform: scale(1); } }
@@ -126,21 +127,21 @@ button:not(:disabled):active { transform: translateY(1px); }
 .switch span:before { transition: transform var(--fast) var(--ease); }
 .notice-wrap, .details-content { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows var(--slow) var(--ease), opacity var(--fast) var(--ease); }
 .notice-wrap > div, .details-content > div { overflow: hidden; min-height: 0; }
-.notice-wrap.expanded, details[open]:not(.closing) .details-content { grid-template-rows: 1fr; opacity: 1; }
+.notice-wrap.expanded, details[open]:not(.closing):not(.opening) .details-content { grid-template-rows: 1fr; opacity: 1; }
 details[open]::details-content { display: block; }
-@starting-style { details[open] .details-content { grid-template-rows: 0fr; opacity: 0; } }
 .progress-copy { display: flex; flex-direction: column; }
 .progress .progress-detail { margin: 2px 0 0; font-size: 11px; }
 .progress li { min-height: 36px; }
 .progress li:not(:last-child)::before { top: 28px; height: calc(100% - 20px); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition-duration: var(--fast) !important; }
+  .notice-wrap, .details-content { transition-property: opacity; }
   .stage-enter > :not(#loading-title) { animation: reduced-enter var(--fast) var(--ease) both !important; }
   button:not(:disabled):active { transform: none; }
   @keyframes reduced-enter { from { opacity: .7; } to { opacity: 1; } }
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #181d18; --panel: #222821; --text: #eef1ea; --muted: #b1bbaa; --line: #3f493a; --accent: #b0ce97; --accent-text: #1c2a13; --tint: #2c3925; --error: #f0a399; }
+  :root { --bg: #181d18; --panel: #222821; --text: #eef1ea; --muted: #b1bbaa; --line: #3f493a; --accent: #b0ce97; --accent-text: #1c2a13; --tint: #2c3925; --error: #e7bc7c; }
   .connection-card { box-shadow: 0 4px 24px #00000014; }
 }
 @media (max-width: 640px) {
@@ -149,7 +150,6 @@ details[open]::details-content { display: block; }
   #journey li { gap: 6px; font-size: 11px; }
   #journey li:not(:last-child)::after { width: 12px; margin-left: 4px; }
   main { padding-top: 24px; }
-  #step-caption:not([hidden]) { display: block; }
   .connection-card { padding: 20px 24px; }
   h1 { font-size: 24px; }
   #connection-description { font-size: 13px; }

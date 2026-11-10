@@ -206,6 +206,9 @@ test("Enter invokes the visible primary and Escape closes Details", async () => 
     a.node("connection-title").focus();
     a.node("connection-title").dispatchEvent(new a.dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await settle(); assert.equal(a.calls.filter(r => r.op === "login").length, 1);
+    const opened = a.urls.length;
+    a.node("connection-title").dispatchEvent(new a.dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true })); await settle();
+    assert.equal(a.urls.length, opened + 1, "Enter reopens approval, not the hidden login button");
     await a.login(); await a.click("connect");
     a.node<HTMLDetailsElement>("details").open = true;
     a.doc.dispatchEvent(new a.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

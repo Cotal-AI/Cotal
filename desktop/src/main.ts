@@ -121,7 +121,24 @@ function setupProgress(frame: Frame): void {
   progress[index] = failed ? "failed" : successes[p.step]?.includes(p.outcome) ? "done" : running || ["manager", "register", "connect"].includes(p.step) ? "running" : "waiting";
   renderProgress();
 }
+let resizeRule: CSSStyleRule | undefined;
+let resizeSheet: CSSStyleSheet | undefined;
+let resizeIndex = -1;
+function resizeCard(previous: number): void {
+  const card = document.querySelector<HTMLElement>(".connection-card")!;
+  card.classList.remove("height-changing");
+  if (resizeSheet && resizeIndex >= 0) { resizeSheet.deleteRule(resizeIndex); resizeIndex = -1; }
+  const target = card.getBoundingClientRect().height;
+  if (!initialized || Math.abs(previous - target) < 1 || !document.styleSheets.length || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  // Insert into our same-origin stylesheet, never a CSP-blocked style attribute.
+  resizeSheet = document.styleSheets[0];
+  resizeIndex = resizeSheet.insertRule(`.connection-card.height-changing { height: ${previous}px; }`, resizeSheet.cssRules.length);
+  resizeRule = resizeSheet.cssRules[resizeIndex] as CSSStyleRule;
+  card.classList.add("height-changing"); void card.offsetHeight;
+  resizeRule.style.height = `${target}px`;
+}
 function showStage(next: Stage, focus = false): void {
+  const previousHeight = document.querySelector(".connection-card")!.getBoundingClientRect().height;
   stage = next;
   const finished = next === "finished" && connected();
   const signIn = next === "welcome" || next === "sign-in";
@@ -158,7 +175,10 @@ function showStage(next: Stage, focus = false): void {
     text("recover", recovery.label); el("recover").dataset.action = recovery.action;
     el<HTMLButtonElement>("recover").disabled = busy && issue !== "EXPIRED" || retrySignIn;
     if (retrySignIn) text("recover", "Getting a new code…");
-    if (issue === "VERSION_MISMATCH") notice("This app and the background service have different versions.");
+    if (!retrySignIn && ["EXPIRED", "VERSION_MISMATCH"].includes(issue!) && !el("recover").querySelector(".icon-refresh")) el("recover").prepend(icon("refresh"));
+    if (issue === "VERSION_MISMATCH") {
+      text("refusal-detail", `App version: ${appVersion}. Background service version differs. Update the connection when agent sessions have stopped.`); el("details").hidden = false;
+    }
   }
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery));
   text("connection-title", title); text("connection-description", description);
@@ -188,6 +208,7 @@ function showStage(next: Stage, focus = false): void {
     if (changed && initialized) { void (card as HTMLElement).offsetWidth; card.classList.add("stage-enter"); }
     if (focus || changed && initialized) el("connection-title").focus({ preventScroll: true });
     announce(title);
+    resizeCard(previousHeight);
   }
   el("tray-indicator").classList.toggle("in-flight", busy);
   buttons();
@@ -201,13 +222,13 @@ function buttons(): void {
   el<HTMLButtonElement>("dashboard").disabled = busy || !connected();
   el<HTMLButtonElement>("sync").disabled = busy || !ready;
   el<HTMLButtonElement>("choose-space").disabled = busy || !selectedSpace();
-  const busyId = el("recovery-panel").hidden ? loginActive ? "login" : setupActive ? "connect" : "" : "recover";
+  const busyId = el("recovery-panel").hidden ? loginActive ? "login" : setupActive ? "connect" : "" : retrySignIn || !loginActive ? "recover" : "";
   for (const id of ["login", "connect", "recover", "sync", "refresh", "disconnect"]) {
     const button = el<HTMLButtonElement>(id);
     const running = busy && id === busyId;
     button.classList.toggle("busy", running); button.setAttribute("aria-busy", String(running));
-    if (running && !button.querySelector(".icon-spinner")) button.prepend(icon("spinner"));
-    if (!running) button.querySelector(".icon-spinner")?.remove();
+    if (running && !button.querySelector(".icon-spinner")) { const spin = icon("spinner"); spin.classList.add("button-spinner"); button.prepend(spin); }
+    if (!running) button.querySelectorAll(".button-spinner").forEach(spin => spin.remove());
   }
   for (const id of ["space", "change-space", "another-space", "sign-in-again", "retry-login", "refresh", "autostart"]) (el(id) as HTMLButtonElement).disabled = busy;
 }
@@ -283,7 +304,7 @@ async function refresh(): Promise<void> {
     upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
     if (upgradeNeeded) {
       state("ready", space);
-      notice("This app and the background service have different versions. Connect this computer to update its service when no agent sessions are using it.");
+      showStage(stage);
       buttons(); return;
     }
     if (space) {
@@ -461,6 +482,11 @@ async function start(): Promise<void> {
   const tick = async () => { if (!busy && !document.hidden) await refresh(); poll = setTimeout(() => void tick(), 10_000); };
   poll = setTimeout(() => void tick(), 10_000);
 }
+document.querySelector(".connection-card")!.addEventListener("transitionend", event => {
+  if ((event as TransitionEvent).propertyName !== "height") return;
+  document.querySelector(".connection-card")!.classList.remove("height-changing");
+  if (resizeSheet && resizeIndex >= 0) { resizeSheet.deleteRule(resizeIndex); resizeIndex = -1; }
+});
 el("notice-wrap").addEventListener("transitionend", () => { if (!el("notice-wrap").classList.contains("expanded")) el("notice").hidden = true; });
 const details = el<HTMLDetailsElement>("details");
 let closingDetails = false;
@@ -470,7 +496,11 @@ function closeDetails(): void {
   closingDetails = true; details.classList.add("closing");
 }
 details.querySelector("summary")!.addEventListener("click", event => {
-  if (details.open) { event.preventDefault(); closeDetails(); }
+  event.preventDefault();
+  if (details.open) { closeDetails(); return; }
+  details.classList.add("opening"); details.open = true;
+  void details.querySelector<HTMLElement>(".details-content")!.offsetHeight;
+  details.classList.remove("opening");
 });
 details.querySelector(".details-content")!.addEventListener("transitionend", () => {
   if (closingDetails) { details.open = false; closingDetails = false; details.classList.remove("closing"); }
@@ -481,8 +511,8 @@ document.addEventListener("keydown", event => {
     el("details").querySelector<HTMLElement>("summary")!.focus();
   }
   if (event.key !== "Enter" || event.defaultPrevented || (event.target as Element).closest("button,input,select,summary")) return;
-  const primary = document.querySelector<HTMLButtonElement>(".connection-card .primary:not(:disabled):not([hidden])");
-  if (primary && !primary.closest("[hidden]")) { event.preventDefault(); primary.click(); }
+  const primary = [...document.querySelectorAll<HTMLButtonElement>(".connection-card .primary:not(:disabled):not([hidden])")].find(button => !button.closest("[hidden]"));
+  if (primary) { event.preventDefault(); primary.click(); }
 });
 window.addEventListener("beforeunload", () => { if (poll) clearTimeout(poll); if (countdown) clearInterval(countdown); });
 void start();

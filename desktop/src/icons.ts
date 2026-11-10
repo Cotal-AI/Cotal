@@ -7,6 +7,7 @@ const paths = {
   warning: '<path d="m10.3 4-8 14a2 2 0 0 0 1.7 3h16a2 2 0 0 0 1.7-3l-8-14a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 4h.01"/>',
   spinner: '<circle class="spinner-track" cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 9 9"/>',
   external: '<path d="M14 3h7v7m0-7L10 14m0-11H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/>',
+  refresh: '<path d="M20 8a8 8 0 1 0 0 8m0-8V3m0 5h-5"/>',
   copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
 } as const;
 export type Icon = keyof typeof paths;
