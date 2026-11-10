@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Manager } from "../src/manager.js";
 import { evictDeniedPrincipalWithCreds, registry, type AgentHandle, type AttachSession, type Connector, type EvictionResult, type LaunchOpts, type LaunchSpec, type Runtime } from "@cotal-ai/core";
@@ -8,7 +8,6 @@ const root = process.env.REPRO_ROOT!;
 const space = process.env.REPRO_SPACE!;
 const servers = process.env.REPRO_SERVERS!;
 const here = dirname(fileURLToPath(import.meta.url));
-const repo = resolve(here, "../../..");
 const stub = join(here, "e2e-stub.mjs");
 const wrapper = join(here, "_orphan-seat-wrapper.mjs");
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -21,7 +20,9 @@ class DetachedRuntime implements Runtime {
   readonly streamsTerminal = true;
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     const child = spawn(spec.command, spec.args, { cwd, env: spec.env, detached: true, stdio: "ignore" });
-    const pid = child.pid!; child.unref();
+    const pid = child.pid!;
+    process.stdout.write(`REPRO_SEAT ${pid}\n`);
+    child.unref();
     return { name, kind: this.kind, pid, status: () => alive(pid) ? "running" : "exited", stop: () => { try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} } }, waitForExit: async () => { for (let i = 0; i < 100 && alive(pid); i++) await wait(50); if (alive(pid)) throw new Error(`seat ${pid} survived stop`); }, interrupt: () => {}, attach: () => session };
   }
 }
@@ -39,8 +40,8 @@ await manager.start();
 const managerInstanceId = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
 process.stdout.write(`REPRO_MANAGER ${JSON.stringify({ managerPid: process.pid, managerInstanceId })}\n`);
 (manager as unknown as { runtime: Runtime }).runtime = new DetachedRuntime();
-let reply = await manager.startAgent({ name: "worker", agent: "orphan-repro", cwd: repo, events: false });
-for (let i = 0; !reply.ok && /reconcil|terminal|standing slot|held/i.test(reply.error ?? "") && i < 320; i++) { await wait(250); reply = await manager.startAgent({ name: "worker", agent: "orphan-repro", cwd: repo, events: false }); }
+let reply = await manager.startAgent({ name: "worker", agent: "orphan-repro", cwd: root, events: false });
+for (let i = 0; !reply.ok && /reconcil|terminal|standing slot|held/i.test(reply.error ?? "") && i < 320; i++) { await wait(250); reply = await manager.startAgent({ name: "worker", agent: "orphan-repro", cwd: root, events: false }); }
 if (!reply.ok) {
   process.stdout.write(`REPRO_SPAWN ${JSON.stringify({ managerPid: process.pid, managerInstanceId, reply, managedNames: [...(manager as unknown as { agents: Map<string, unknown> }).agents.keys()] })}\n`);
   await new Promise<void>(() => {});
