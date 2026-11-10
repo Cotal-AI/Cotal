@@ -257,6 +257,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         }));
         return;
       }
+      if (req.op === "space-intent") {
+        managerResult(async () => { await account.intent(req.space, req.enabled); return status(); });
+        return;
+      }
       if (req.op === "connect-check") {
         replyTask(connectCheck(req.space, machineHome).catch((): ConnectCheckResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the check" }))
           .then((result) => {
@@ -275,7 +279,9 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
         const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
-          : reconciler.serial(() => withIdpSessionDir(machineHome, async () => {
+          : (async () => {
+            if (await account.intent(req.space, req.op === "service-connect")) return services.status(req.space);
+            return reconciler.serial(() => withIdpSessionDir(machineHome, async () => {
             if (req.op === "service-connect") {
               reconciler.localAddition(req.space);
               return services.connect(req.space);
@@ -283,8 +289,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
             reconciler.localRemoval(req.space);
             await managers.disconnect(req.space);
             return services.disconnect(req.space);
-          }))
-            .catch((): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: "the daemon could not complete the request; nothing is connected" }));
+            }));
+          })().catch((error: unknown): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: error instanceof Error ? error.message : "The connection could not be changed. Check daemon status and try again." }));
         managerResult(async () => {
           const result = await run;
           counters.serviceAnswered++;

@@ -316,6 +316,8 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     opts.report("discover: the requested space is registered on this machine", steps.at(-1));
   }
   const prerequisite = discoveredSignIn ? undefined : await ensureSignedIn(opts, steps);
+  const intent = await exchangeDesktopRequest(opts, { op: "space-intent", space: opts.space, enabled: true });
+  if (!intent.ok) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", intent.error.message);
   if (!opts.noManager) {
     let manager = await managerViaDaemon(opts, { op: "manager-status", space: opts.space }) as HostedManager;
     const inspectedExisting = manager.state === "answering";

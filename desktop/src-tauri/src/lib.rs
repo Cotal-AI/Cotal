@@ -27,6 +27,8 @@ pub enum DesktopRequest {
     Login { idp: String },
     #[serde(rename = "setup")]
     Setup { space: String, idp: String },
+    #[serde(rename = "space-intent")]
+    SpaceIntent { space: String, enabled: bool },
     #[serde(rename = "connect-check")]
     ConnectCheck { space: String },
     #[serde(rename = "register")]
@@ -48,7 +50,8 @@ impl DesktopRequest {
                     return Err("A provider URL cannot contain a query or fragment.".into());
                 }
             }
-            Self::ConnectCheck { space }
+            Self::SpaceIntent { space, .. }
+            | Self::ConnectCheck { space }
             | Self::Register { space }
             | Self::Connect { space }
             | Self::Disconnect { space }

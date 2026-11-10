@@ -179,7 +179,7 @@ class MemoryStore implements SecretStore /* the auth services' stores; the daemo
 }
 
 // ---------- owned sandbox ----------
-const root = mkdtempSync(join(scratchParent, process.argv.includes("--account-only") || process.argv.includes("--signin-parity") ? "dacct-" : "cdr-"));
+const root = mkdtempSync(join(scratchParent, process.argv.includes("--account-intent") ? "dcomp-" : process.argv.includes("--account-only") || process.argv.includes("--signin-parity") ? "dacct-" : "cdr-"));
 chmodSync(root, 0o700);
 const home = join(root, "home"), participant = join(root, "participant"), rtDir = join(root, "rt"), jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}a2b2-js-`));
 for (const d of [home, participant, rtDir]) mkdirSync(d, { mode: 0o700 });
@@ -204,6 +204,8 @@ let accountDesired = false;
 let accountRevision = 1;
 let accountBindingRevision = 1;
 let accountHttp = 200;
+let intentConflicts = 0;
+let intentWrites = 0;
 let accountHang = false;
 let accountHangs = 0;
 let catalog: unknown;
@@ -230,6 +232,17 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (req.url === "/api/auth/device/token") {
     if (recoverOnApproval) idpRevoked = false;
     return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
+  }
+  if (accountOnly && req.url?.startsWith("/api/machines/")) {
+    if (req.headers.authorization !== `Bearer ${SESSION}`) { res.writeHead(401); res.end("{}"); return; }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    const intent = JSON.parse(Buffer.concat(chunks).toString()) as { enabled: boolean; expectedRevision: number };
+    intentWrites++;
+    if (intentConflicts > 0) { intentConflicts--; accountRevision++; res.writeHead(409); res.end(JSON.stringify({ revision: accountRevision })); return; }
+    if (intent.expectedRevision !== accountRevision) { res.writeHead(409); res.end(JSON.stringify({ revision: accountRevision })); return; }
+    if (accountDesired !== intent.enabled) { accountDesired = intent.enabled; accountBindingRevision = ++accountRevision; }
+    res.end(JSON.stringify({ v: 1, machineId: req.url.split("/")[3], revision: accountRevision })); return;
   }
   if (accountOnly && req.url?.startsWith("/api/cli/machines/")) {
     const machineId = req.url.split("/")[4];
@@ -1732,6 +1745,15 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           accountTargets.set(DENY, svc[2]!.publicUrl!.replace(/\/$/, ""));
           removeMesh(DENY);
           (catalog as { spaces: unknown[] }).spaces.unshift({ id: DENY, slug: DENY, name: "Pending space", kind: "team", role: "member", registration: { ...pendingPublished, space: DENY, tlsRequired: false, userAuth: { ...pendingPublished.userAuth, endpoints: { url: `${idpOrigin}/account-space/${DENY}` } } } });
+          if (process.argv.includes("--account-intent")) {
+            intentConflicts = 1;
+            const local = await cli("setup", "--space", ON, "--idp", idpUrl);
+            check("I0 setup enables the consented space in the account desired set", accountDesired, local);
+            check("I1 conflict retries once using a fresh revision", intentWrites >= 2 && intentConflicts === 0);
+            const removed = resultOf(await ask(paths.socket, { op: "space-intent", space: ON, enabled: false }, 100_000));
+            check("I2 native removal updates account desired set", !accountDesired && removed.account?.spaces?.every((row: any) => row.space !== ON || !row.desired), removed);
+            return;
+          }
           accountDesired = true;
           const observed = async () => resultOf(await ask(paths.socket, { op: "status" }, 25_000));
           const waitAccount = async (predicate: (s: Record<string, any>) => boolean, label: string) => {
