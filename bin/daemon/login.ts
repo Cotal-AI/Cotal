@@ -10,13 +10,15 @@
  * for an attempt this daemon never started or no longer remembers. Until that delivery the attempt
  * stays in flight, so no second sign-in starts underneath an undelivered result.
  *
- * A failure crosses the endpoint as a fixed sentence per reason. Stock error text can quote the
- * provider's answer, so none of it is relayed.
+ * Provider failures cross the endpoint as a fixed sentence per reason. Only typed local cache
+ * refusals retain stock's safe diagnosis and recovery step.
  *
  * Cancelling stops this local sign-in. It does not revoke anything at the IdP.
  */
 import { randomBytes } from "node:crypto";
-import { establishIdpSession, IdpLoginCancelled, IdpUnreachableError } from "@cotal-ai/auth";
+import { resolve } from "node:path";
+import { deleteIdpSpaceCatalog, establishIdpSession, IdpDeviceAuthorizationRefusedError, IdpLoginCancelled, IdpUnreachableError } from "@cotal-ai/auth";
+import { homeCotalDir, isCommandFailure, removeCatalogMeshes } from "@cotal-ai/workspace";
 import type { CancelResult, LoginPrompt, LoginResult } from "./protocol.js";
 
 /** The client id stock `cotal login` presents by default. */
@@ -24,12 +26,13 @@ export const DEFAULT_CLIENT_ID = "cotal-cli";
 /** How many finished attempt ids are remembered, so a late cancel still gets a truthful answer. */
 const REMEMBERED = 16;
 
-type FailReason = Extract<LoginResult, { outcome: "failed" }>["reason"];
-/** The only failure text a requester sees. It never quotes the provider or a stock error. */
+type FailReason = Exclude<Extract<LoginResult, { outcome: "failed" }>["reason"], "local-state-error">;
+/** Provider failure sentences. They never quote the provider or a stock error. */
 const FAILURE: Record<FailReason, string> = {
   denied: "the sign-in was denied at the verification page",
   expired: "the approval code expired before the sign-in was approved",
   unreachable: "the provider could not be reached",
+  "authorization-refused": "the provider refused device authorization; check --idp uses the auth base URL and --client-id is accepted by the provider",
   refused: "the provider's answer could not be used to sign in",
 };
 const failed = (reason: FailReason): LoginResult => ({ outcome: "failed", reason, message: FAILURE[reason] });
@@ -83,10 +86,19 @@ export function createLoginCoordinator(opts: { readonly sessionDir: string; read
           expiresAt: new Date(Date.now() + p.expiresInSec * 1000).toISOString(),
         }),
       });
+      if (r.previousSub) {
+        const owner = deleteIdpSpaceCatalog(opts.sessionDir, req.idp, r.previousSub);
+        // A separate daemon owns its catalog cache, not the shared registry or its credentials.
+        if (resolve(opts.sessionDir) === resolve(homeCotalDir())) removeCatalogMeshes(owner);
+      }
       return { outcome: "signed-in", idp: req.idp, sub: r.sub, ...(r.label ? { label: r.label } : {}), ...(r.previousSub ? { previousSub: r.previousSub } : {}) };
     } catch (e) {
       if (e instanceof IdpLoginCancelled) return { outcome: "cancelled" };
       if (e instanceof IdpUnreachableError) return failed("unreachable");
+      if (e instanceof IdpDeviceAuthorizationRefusedError) return failed("authorization-refused");
+      // Only stock's typed local-state refusal is safe to relay. Never relay a provider error.
+      if (isCommandFailure(e) && e.code === "DEPENDENCY_UNAVAILABLE")
+        return { outcome: "failed", reason: "local-state-error", message: e.message, remedy: e.remedy };
       // Stock throws plain Errors for these two IdP answers; match their exact sentences.
       const message = e instanceof Error ? e.message : "";
       if (message.startsWith("idp login: the sign-in was denied at the verification page")) return failed("denied");

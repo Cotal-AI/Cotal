@@ -111,6 +111,17 @@ export const INSPECT_INPUT_SCHEMA = deepFreeze({
   properties: { name: { type: "string", minLength: 1 } },
 } as const);
 
+/** A persona's `endpoints` (SPEC 13.15): `[{ endpoint, commands, instanceId? }]`, on the inline
+ *  `spawn` persona and on `define-persona`. The shape is closed here; names, reserved commands and the
+ *  single-label rule are checked where the persona is read. */
+export const PERSONA_ENDPOINTS_SCHEMA = deepFreeze({
+  type: "array",
+  items: {
+    type: "object", additionalProperties: false, required: ["endpoint", "commands"],
+    properties: { endpoint: { type: "string" }, commands: { type: "array", items: { type: "string" } }, instanceId: { type: "string" } },
+  },
+} as const);
+
 /** `spawn` input: EXACTLY the ctl `start` op's coercion surface (manager.ts `opStart`, the
  *  fidelity oracle) — same fields, same types, nothing extra. Deep semantics (connector-specific
  *  launchOptions keys) stay in the SHARED handler/connector validation. */
@@ -152,6 +163,7 @@ export const SPAWN_INPUT_SCHEMA = deepFreeze({
         allowSubscribe: { type: "array", items: { type: "string" } },
         allowPublish: { type: "array", items: { type: "string" } },
         capabilities: { type: "array", items: { type: "string" } },
+        endpoints: PERSONA_ENDPOINTS_SCHEMA,
         save: { type: "boolean" },
       },
     },

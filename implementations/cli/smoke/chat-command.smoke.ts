@@ -154,6 +154,7 @@ console.log("6. a close report sets the exit code");
     (["retired", "requested", "not-applicable"] as const).every((r) => closeExitCode(report(r, "not-confirmed")) === 3));
   check("no close report exits 3", closeExitCode(undefined) === 3);
   check("a confirmed close of a session that could not continue exits 5", closeExitCode({ ...report("retired", "confirmed"), lost: "gone" }) === 5);
+  check("...and 5 when that session's retirement outcome is unknown", closeExitCode({ ...report("unknown", "confirmed"), lost: "gone" }) === 5);
   check("...and 3 when its close is not confirmed", closeExitCode({ ...report("retired", "not-confirmed"), lost: "gone" }) === 3);
 }
 

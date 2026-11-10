@@ -1,9 +1,9 @@
 import { resolve } from "node:path";
 import { accountRevocations, credsClaims, isReachable, isUserNkey, revokeAccountUser, type ParsedArgs } from "@cotal-ai/core";
 import {
-  boundedValue, CommandFailure, ConfirmationRequired, getSpaceAuth, hasUserAuthState, isCommandFailure, isWorkspaceTargetError, oneLine,
+  boundedValue, codeSpan, CommandFailure, ConfirmationRequired, folderSpaceHeld, getCurrent, getSpaceAuth, hasUserAuthState, isCommandFailure, isWorkspaceTargetError, oneLine,
   presentationOf, protectedCredentialReference, putSpaceAuth, readLocalRecordSource, readMaintenanceJournal, releaseMaintenanceLock,
-  resolveMeshTarget, SHOWN_VALUE_MAX, targetErrorCode, workspaceErrorParts, workspaceSecretStore, writeResult, type Report,
+  resolveMeshTarget, shellPath, SHOWN_VALUE_MAX, targetErrorCode, workspaceErrorParts, workspaceSecretStore, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { acquireStackOperationLock, readStackJournal } from "../lib/stack-journal.js";
@@ -12,8 +12,13 @@ import { canPrompt } from "./meshes-wizard.js";
 
 interface RevokeTarget { root: string; space: string; registered: boolean }
 
-/** The space whose trust signs the credential: the registered one, or a stopped one by its root. */
+/** The space whose trust signs the credential: the registered one, or a stopped one by its root.
+ *  A folder whose own stack is stopped is that space even while another space is selected. The
+ *  selection is the target of every other command there, and following it makes the printed
+ *  `down`, revoke, `up` sequence revoke the other space's account. */
 function revokeTarget(values: { space?: string }): RevokeTarget {
+  const held = values.space === undefined && getCurrent() !== null ? folderSpaceHeld(process.cwd()) : undefined;
+  if (held?.state === "stopped") return { root: held.root, space: held.space, registered: false };
   try { const target = resolveMeshTarget(process.cwd(), { ...values, readOnly: true }); return { root: target.root, space: target.space, registered: true }; }
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
@@ -26,7 +31,7 @@ function revokeTarget(values: { space?: string }): RevokeTarget {
 /** The broker loads a revocation only when it starts, so the stack must be stopped by a completed down. */
 async function assertStopped(target: RevokeTarget, subject: string): Promise<void> {
   const { root, space } = target, where = { space, root };
-  const route = `cotal down --yes, then \`cotal auth revoke-credential ${subject} --yes\`, then \`cotal up\`, from ${root}; the store stays`;
+  const route = `cotal down --yes, then ${codeSpan(`cotal auth revoke-credential ${shellPath(subject)} --yes`)}, then ${codeSpan("cotal up")}, from ${shellPath(root)}; the store stays`;
   const maintenance = readMaintenanceJournal(root);
   if (maintenance)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this root retains a maintenance attempt in state ${maintenance.state}; nothing was revoked`, { target: where, remedy: "finish it, or recover it with its recorded restore recovery or fallback cleanup, first" });
@@ -57,7 +62,7 @@ function revokedKey(subject: string, auth: { account: { pub: string }; sys: { pu
   const issuer = claims.nats?.issuer_account ?? claims.iss;
   // The stack's $SYS pair is renewed only by issuing a new system account, which retires this one's.
   if (issuer === auth.sys.pub)
-    throw new CommandFailure("refused", "UNSUPPORTED", `the credential was issued by space ${oneLine(space)}'s system account, and auth revoke-credential revokes only credentials the space's own account issued; nothing was revoked`, { target: { space, path }, remedy: `cotal down --yes, then \`cotal up --rotate-sys\`, from ${root}, issues a new system account and retires this one's credentials; full backups taken before it can no longer be restored` });
+    throw new CommandFailure("refused", "UNSUPPORTED", `the credential was issued by space ${oneLine(space)}'s system account, and auth revoke-credential revokes only credentials the space's own account issued; nothing was revoked`, { target: { space, path }, remedy: `cotal down --yes, then ${codeSpan("cotal up --rotate-sys")}, from ${shellPath(root)}, issues a new system account and retires this one's credentials; full backups taken before it can no longer be restored` });
   if (issuer !== auth.account.pub)
     throw new CommandFailure("refused", "CONFLICT", `the credential was issued by another account than space ${oneLine(space)}'s; nothing was revoked`, { target: { space, path }, remedy: "run it for the space that issued the credential, with --space or from its project folder" });
   return { key: claims.sub, path };
@@ -82,7 +87,7 @@ export async function revokeCredential(args: ParsedArgs): Promise<void> {
     await assertStopped(target, path ?? key);
     if (!yes) {
       if (!canPrompt() || presentation === "json")
-        throw new ConfirmationRequired("auth revoke-credential needs a terminal confirmation or --yes", { target: named, remedy: `run \`cotal auth revoke-credential ${path ?? key} --yes\`` });
+        throw new ConfirmationRequired("auth revoke-credential needs a terminal confirmation or --yes", { target: named, remedy: `run ${codeSpan(`cotal auth revoke-credential ${shellPath(path ?? key)} --yes`)}` });
       const answer = await prompts.confirm({ message: `Revoke ${key} in ${oneLine(space)}? The broker refuses it from the next up.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) {
         writeResult(presentation, { command: "auth revoke-credential", target: named, result: { kind: "credential-revoked", confirmed: false }, noOp: true }, (): Report => ({ sections: [{ title: "Credential kept", blocks: [{ kind: "lines", lines: ["Nothing was revoked."] }] }] }));
@@ -110,6 +115,6 @@ export async function revokeCredential(args: ParsedArgs): Promise<void> {
       { kind: "fields", rows: [["Space", data.space], ["Public key", data.publicKey], ["Revoked at", new Date(data.revokedAt * 1000).toISOString()], ["Takes effect", "when the broker next starts"]] },
       { kind: "lines", lines: ["The broker refuses this key from the next `cotal up`. The store and every other credential stay, and auth mint --identity refuses this key."] },
     ] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: `Start the space from ${data.root}; its broker loads the revocation` }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal up`, description: `Start the space from ${shellPath(data.root)}; its broker loads the revocation` }] }] },
   ] }));
 }

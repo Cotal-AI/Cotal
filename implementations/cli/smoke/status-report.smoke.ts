@@ -324,6 +324,20 @@ if (!brokerDisplayOnly) {
   const restoring = { ...json.envelope!.result!, maintenance: { root: home, space: "held", state: "restore-ready", attemptId: attempt, next: restoreNextStep("restore-ready", attempt) } };
   const report = renderReport(statusView(restoring as unknown as Parameters<typeof statusView>[0]), "plain");
   check("a held restore names its recover command with the full attempt id", new RegExp(`Attempt: +${attempt}`).test(report) && report.includes(`cotal backup recover ${attempt} --yes`), report);
+  for (const [state, next] of [
+    ["restore-ready", restoreNextStep("restore-ready", attempt)],
+    ["claimed", `backup attempt ${attempt} stopped before it finished: release it with \`cotal backup recover ${attempt} --yes\``],
+  ] as const) {
+    const held = { ...restoring, maintenance: { ...restoring.maintenance, state, next }, hints: [next] };
+    const rendered = renderReport(statusView(held as unknown as Parameters<typeof statusView>[0]), "plain");
+    const actions = rendered.split("\nNext\n")[1] ?? "";
+    check(`${state} leads Next with recovery and no ordinary startup or setup`, actions.trim() === next && !/cotal (?:up|setup|spawn|ps)\b/.test(actions), rendered);
+  }
+  for (const state of ["ready", "commit-intent", "active"]) {
+    const settled = { ...restoring, maintenance: { ...restoring.maintenance, state, next: state === "ready" ? "resume with bare `cotal up`" : restoreNextStep(state, attempt) } };
+    const rendered = renderReport(statusView(settled as unknown as Parameters<typeof statusView>[0]), "plain");
+    check(`${state} keeps ordinary Next actions`, /cotal setup/.test(rendered.split("\nNext\n")[1] ?? ""), rendered);
+  }
 }
 
 // ── a launch summary recorded at a folder this one was moved from is listed, not unreadable ──────

@@ -128,9 +128,8 @@ trust gives it: `space-signer` when the root holds the space's signer, as after 
 `space create` again, and `no-credential` before its first `up`. `server` and `mode` are `null`, the
 `target` names the root, and the report says to start it with `cotal up` there. With `--server`, or
 when the prepared folder no longer exists, it still refuses with `TARGET_UNAVAILABLE`.
-In a folder whose `.cotal/` names no space, as after `space forget`, the held default `main` is
-assumed. The report keeps `Mesh: main` and says under it that the default was assumed, and the JSON
-`target` is `{"root": <folder>, "assumed": "main"}`.
+In a folder whose `.cotal/` names no space, as after `space forget`, `whoami` refuses with no space
+selected. The report names the folder and does not assume `main`.
 `--creds <file>` reports what a credential file may do instead, with `kind: "credential"`: the space
 its permissions name, the profile it was minted with, its principal, the agent lifecycle its
 delivery and history grants are keyed to (none for the `observer` and `admin` profiles), when it was
@@ -436,7 +435,9 @@ shows the saved space, native class, full instance pin and storage revision. The
 not connect to a broker or infer registrations from participant presence.
 
 `endpoint add <name> --file <reference.json>` imports a strict version-1 reference object.
-Guided add is available in an interactive terminal. Names use case-safe hexadecimal
+Guided add is available in an interactive terminal. The class, instance pin and credential path
+are checked at their questions. Invalid answers are asked for again without losing earlier answers.
+Names use case-safe hexadecimal
 storage keys under the workstation endpoint directory. Imports are capped at 256 KiB. References
 reject unknown fields, raw inline credentials, target-space mismatches and malformed native pins.
 A credential reference is an owned private regular file; its contents are not read when saving.

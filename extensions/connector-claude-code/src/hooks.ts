@@ -14,6 +14,7 @@
 import type { PresenceCondition, PresenceConditionCode, PresenceStatus } from "@cotal-ai/core";
 import {
   formatInjection,
+  READ_TAKE_ROUNDS,
   fmtFrom,
   fmtChannel,
   fmtKind,
@@ -299,18 +300,33 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
   };
 
-  /** Format the automatic batch WITHOUT acking it; the ids ride on THIS frame's delivery verdict. */
-  const surfaceAutomatic = (agent: MeshAgent, ev: HookEvent, reserved = 0): string | undefined => {
+  /** Format the automatic batch WITHOUT acking it; the ids ride on THIS frame's delivery verdict. A
+   *  role request is taken only when the batch carries it (SPEC §8.1). */
+  const surfaceAutomatic = async (agent: MeshAgent, ev: HookEvent, reserved = 0): Promise<string | undefined> => {
     if (deps.delivery === false) return undefined;
-    const pending = agent.peekInbox("automatic");
-    if (!pending.length) return undefined;
     const budget = HOOK_CONTEXT_CHARS - reserved - WAITING_NOTE_RESERVE - REPEAT_NOTE.length - 1;
-    const items: InboxItem[] = [];
-    for (const item of pending) {
-      const candidate = formatInjection([...items, item]);
-      if (candidate && candidate.length <= budget) items.push(item);
+    const fitting = (pending: readonly InboxItem[]): InboxItem[] => {
+      const items: InboxItem[] = [];
+      for (const item of pending) {
+        const candidate = formatInjection([...items, item]);
+        if (candidate && candidate.length <= budget) items.push(item);
+      }
+      return items;
+    };
+    // A refused take leaves room another message can use, so the frame is chosen again without it, as
+    // cotal_inbox chooses its reply. A take still undecided ends the choosing.
+    let items: InboxItem[] = [];
+    for (let round = 0; round < READ_TAKE_ROUNDS; round++) {
+      let chosen: InboxItem[] = [];
+      items = await agent.takeChosen("automatic", (pending) => (chosen = fitting(pending)));
+      const shown = new Set(items.map((i) => i.recvKey));
+      const missed = chosen.filter((i) => !shown.has(i.recvKey));
+      if (!missed.length) break;
+      const open = new Set(agent.inboxPreview("automatic").map((i) => i.recvKey));
+      if (missed.some((i) => open.has(i.recvKey))) break;
     }
-    const remaining = pending.length - items.length;
+    const remaining = agent.inboxCount("automatic") - items.length;
+    if (!items.length && !remaining) return undefined;
     const waiting = remaining
       ? `${remaining} Cotal message${remaining === 1 ? " is" : "s are"} still waiting. Read with cotal_inbox; messages too large for a hook remain there.`
       : undefined;
@@ -350,14 +366,15 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  fit come next, then peer messages in what is left. The task is claimed once the text is fixed,
    *  with nothing awaited between the claim and the reply. A task that does not fit, whose claim
    *  fails, or whose frame a terminal overtook since `begun` leaves the frame without it, claimed by
-   *  nothing. */
-  const injectFrame = (agent: MeshAgent, ev: HookEvent, event: string, extras: (string | undefined)[], begun: number): Record<string, unknown> => {
+   *  nothing. Taking the role requests the messages carry is the one await, and it comes before the
+   *  claim, so a terminal during it is one that overtook the frame. */
+  const injectFrame = async (agent: MeshAgent, ev: HookEvent, event: string, extras: (string | undefined)[], begun: number): Promise<Record<string, unknown>> => {
     const peek = agent.peekPendingTurns();
     if (peek?.once && peek.text.length <= HOOK_CONTEXT_CHARS) {
       const join = (parts: (string | undefined)[]): string => parts.filter(Boolean).join("\n\n");
       const kept: string[] = [];
       for (const x of extras) if (x && join([...kept, x, peek.text]).length <= HOOK_CONTEXT_CHARS) kept.push(x);
-      const messages = surfaceAutomatic(agent, ev, join([...kept, peek.text]).length + 2);
+      const messages = await surfaceAutomatic(agent, ev, join([...kept, peek.text]).length + 2);
       const text = join([...kept, messages, peek.text]);
       if (terminals === begun && text.length <= HOOK_CONTEXT_CHARS && agent.claimTurns(peek.goalIds)) {
         const rec = inFlight.get(ev);
@@ -370,7 +387,13 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
     // surfaceAutomatic first: it creates this frame's inFlight record, and surfaceTurns extends it.
     const reserved = extras.reduce((n, x) => n + (x?.length ?? 0) + 2, 0) + (peek && !peek.once ? peek.text.length + 2 : 0);
-    const parts = [...extras, surfaceAutomatic(agent, ev, reserved), peek?.once ? undefined : surfaceTurns(agent, ev)].filter(Boolean);
+    const messages = await surfaceAutomatic(agent, ev, reserved);
+    // The take above awaits, so the turns are read again: a once task that arrived meanwhile waits
+    // for the next frame, which claims it, and so does a turn that no longer fits beside the messages
+    // already taken.
+    const late = agent.peekPendingTurns();
+    const fits = late !== undefined && [...extras, messages, late.text].filter(Boolean).join("\n\n").length <= HOOK_CONTEXT_CHARS;
+    const parts = [...extras, messages, peek?.once || late?.once || !fits ? undefined : surfaceTurns(agent, ev)].filter(Boolean);
     return withContextFor(agent, ev, event, parts.length ? parts.join("\n\n") : undefined);
   };
 
@@ -434,7 +457,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // Boot push: the orientation card, a one-line note per subscribed channel (if the
           // registry has loaded), plus any messages waiting and any turn. All advisory context.
           const card = await orientation();
-          return injectFrame(agent, ev, event, [card, agent.channelBriefing()], begun);
+          return await injectFrame(agent, ev, event, [card, agent.channelBriefing()], begun);
         }
         case "UserPromptSubmit": {
           const begun = terminals;
@@ -447,7 +470,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // the frame's delivery verdict is what commits them as surfaced (arming the automatic
           // `done` at the coming Stop).
           const card = cardOwed ? await orientation() : undefined;
-          return injectFrame(agent, ev, event, [card], begun);
+          return await injectFrame(agent, ev, event, [card], begun);
         }
         case "PreToolUse":
           // A channel-started turn can reach its first tool without UserPromptSubmit. The
@@ -682,15 +705,16 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
       // mention retry indefinitely, since the batch nudge kept succeeding and rescheduling itself.
       // The retry stands in for lost notices, so its batch counts only what no live notice announces.
       if (pendingMentionWake) nudge(pendingMentionWake.item, pendingMentionWake.hint, true);
-      else if (owed() > 0) nudge(undefined, undefined, false, agent.peekInbox("automatic").filter((it) => !announced.has(it)));
+      else if (owed() > 0) nudge(undefined, undefined, false, agent.inboxPending("automatic").filter((it) => !announced.has(it)));
     }, delay);
     retryTimer.unref?.(); // a pending retry must never hold the process open
   };
 
   const nudge = (item?: InboxItem, pullHint?: string, isMentionWake = false, batch?: readonly InboxItem[]): void => {
     if (!channelActive) return;
-    // A batch notice announces every automatic item it counts.
-    const covered = item ? [item] : batch ?? agent.peekInbox("automatic");
+    // A batch notice announces every automatic item it counts, role requests held for their take
+    // included: `owed` counts those as well, and the notice shows no body.
+    const covered = item ? [item] : batch ?? agent.inboxPending("automatic");
     const n = covered.length;
     for (const it of covered) announced.set(it, covered);
     const content = pullHint

@@ -24,6 +24,13 @@ must be renewed after a reconnect or manager restart.
 
 ## Spawn ownership [#spawn-ownership-and-cleanup]
 
+Agent arguments take the handle returned by `spawn` or `participant`, not a name such as
+`"bob"`. Keep the returned value and pass it to `turn`, `ask`, `monitor`, `replied` and `down`.
+The same rule applies to members of `notify` and `conclave` and to `message`'s `from` option.
+A malformed handle is refused at evaluation with L3050, naming the argument to repair, before
+the effect is dispatched. The host still checks whether that handle belongs to this run and
+whether the operation supports its kind.
+
 `spawn` is
 the manager's spawn action submitted under the step's own identity: the goal binds under the step's
 request id, so a resumed run re-attaches to the same seat instead of allocating a second one, a
@@ -127,7 +134,10 @@ including one that passes before an attempt's pause is armed.
 
 `checkpoint` binds what it asks on its own entry, so `cotal run show` prints the question under
 the step key an answer is addressed by while the pause is open: the address alone left whoever was
-asked reading the source to find out what "approve" meant. The entry also records the open
+asked reading the source to find out what "approve" meant. When supplied, its schema is recorded
+beside the question and printed as JSON. Checkpoint schemas remain uninterpreted; they guide the
+answerer without restricting the answer. An older entry that recorded no schema carries none.
+The entry also records the open
 attempt's deadline and the `onExpiry` it was armed with, which `run show --json` reports; what
 an expiry does is still decided from the program's source. An escalation's attempt records its own
 deadline, one `timeout` after it opens, and a resumed attempt keeps the deadline it recorded. After a checkpoint or `ask` accepts an

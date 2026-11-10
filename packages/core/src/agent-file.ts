@@ -34,6 +34,7 @@ import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
 import { utf16Problem } from "./text-encoding.js";
 import { assertValidChannel, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 import { assertBoundedOwner } from "./endpoint-subjects.js";
+import { parsePersonaEndpoints, type PersonaEndpoint } from "./persona-endpoints.js";
 
 export interface AgentDef {
   name: string;
@@ -86,6 +87,10 @@ export interface AgentDef {
    *  `--add-dir` / permission flags, OpenCode agent-config keys). Grant it as host-launch authority,
    *  not as a narrow "add a teammate" permission. */
   capabilities?: string[];
+  /** Endpoint commands this agent is handed (SPEC 13.15): `[{ endpoint, commands, instanceId? }]`,
+   *  parsed by {@link parsePersonaEndpoints}. Policy like {@link capabilities}: a spawn is bounded
+   *  against its spawner, an operator instrument is exempt, and omitted or `[]` grants none. */
+  endpoints?: PersonaEndpoint[];
   /** Authenticated id of the agent that first defined this persona via `definePersona` (P6). A
    *  POLICY field, not content: the privileged tier may *redefine* an existing file only if its
    *  `owner` equals the caller; everyone else needs the admin tier. Fail-closed — an ownerless
@@ -124,7 +129,7 @@ export const PROMPT_FRONTMATTER = "prompt-frontmatter";
 
 /** Frontmatter keys {@link AgentDef} models. The parser keeps them out of `meta`, and the writer
  *  refuses a `meta` entry that names one, so a hint can never overwrite a field the file models. */
-const MODELED_KEYS = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "agent", "model", "variant", "launchOptions", "capabilities", "owner"]);
+const MODELED_KEYS = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "agent", "model", "variant", "launchOptions", "capabilities", "endpoints", "owner"]);
 
 /** Pre-ACL field names the parser refuses outright, so the writer must never emit them from `meta`. */
 const RENAMED_KEYS = ["channels", "publish"];
@@ -275,6 +280,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
     variant,
     launchOptions,
     capabilities: list("capabilities"),
+    endpoints: parsePersonaEndpoints(fm["endpoints"], `agent file ${path}`),
     owner: str("owner"),
     meta: Object.keys(meta).length ? meta : undefined,
     persona: persona || undefined,
@@ -331,6 +337,8 @@ export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: 
   if (def.variant) fm.variant = def.variant;
   if (def.launchOptions && Object.keys(def.launchOptions).length) fm.launchOptions = def.launchOptions;
   if (def.capabilities?.length) fm.capabilities = def.capabilities;
+  if (def.endpoints?.length)
+    fm.endpoints = def.endpoints.map((e) => ({ endpoint: e.endpoint, commands: e.commands, ...(e.instanceId !== undefined ? { instanceId: e.instanceId } : {}) }));
   if (def.owner) fm.owner = def.owner;
   if (def.meta) for (const [k, v] of Object.entries(def.meta)) fm[k] = v;
   const frontmatter = stringifyYaml(fm, { lineWidth: 0 }).trimEnd();
@@ -366,11 +374,12 @@ export interface InlinePersona {
   allowSubscribe?: string[];
   allowPublish?: string[];
   capabilities?: string[];
+  endpoints?: PersonaEndpoint[];
   save?: boolean;
 }
 
-/** What a peer may name on `define-persona`: content, plus `capabilities`, which the manager bounds
- *  against the definer before it writes. `owner` has no slot. */
+/** What a peer may name on `define-persona`: content, plus `capabilities` and `endpoints`, which the
+ *  manager bounds against the definer before it writes. `owner` has no slot. */
 export type WirePersonaArgs = {
   name: string;
   /** The principal a fresh file records as its owner; absent, the file is operator-owned. */
@@ -383,6 +392,7 @@ export type WirePersonaArgs = {
   allowSubscribe?: string[];
   allowPublish?: string[];
   capabilities?: string[];
+  endpoints?: PersonaEndpoint[];
 };
 
 /**
@@ -419,8 +429,8 @@ function dropWireDefaultIfScoped(def: AgentDef): void {
 /**
  * Build the AgentDef `definePersona` writes. A leading frontmatter block in `prompt` is parsed
  * and merged: explicit tool arguments win; grants, role, and agent from the prompt survive;
- * `capabilities` and `owner` from the prompt never do, and only an explicit `capabilities`
- * argument sets capabilities. The result is always one frontmatter block
+ * `capabilities`, `endpoints` and `owner` from the prompt never do, and only an explicit
+ * `capabilities` or `endpoints` argument sets that field. The result is always one frontmatter block
  * once {@link saveAgentFile} writes it. On redefine, prompt grants are not applied (the stored
  * file's policy is preserved) except where an explicit tool argument names a field.
  */
@@ -436,6 +446,7 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     if (args.allowSubscribe !== undefined) def.allowSubscribe = args.allowSubscribe;
     if (args.allowPublish !== undefined) def.allowPublish = args.allowPublish;
     if (args.capabilities !== undefined) def.capabilities = args.capabilities;
+    if (args.endpoints !== undefined) def.endpoints = args.endpoints;
     def.persona = parsed.body;
     dropWireDefaultIfScoped(def);
     return def;
@@ -453,6 +464,7 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     allowSubscribe: args.allowSubscribe ?? fromPrompt?.allowSubscribe,
     allowPublish: args.allowPublish ?? fromPrompt?.allowPublish,
     capabilities: args.capabilities,
+    endpoints: args.endpoints,
     description: fromPrompt?.description,
     tags: fromPrompt?.tags,
     variant: fromPrompt?.variant,

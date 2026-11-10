@@ -37,7 +37,7 @@ type ServicePreset = import("@cotal-ai/workspace").ServicePreset;
 const { cacheServicePreset, isCommandFailure, recordMesh } = await import("@cotal-ai/workspace");
 const { execWords } = await import("../../implementations/cli/src/lib/exec-words.js");
 const { serviceDefinitionStore } = await import("../../implementations/cli/src/lib/service-definitions.js");
-const { presetDefaultOptions, presetMaterialPath, servicePresetDefinition, servicePresetFlags } = await import("../../implementations/cli/src/lib/service-presets.js");
+const { presetDefaultOptions, presetMaterialPath, presetOptionRefusal, resolveServicePreset, servicePresetDefinition, servicePresetFlags } = await import("../../implementations/cli/src/lib/service-presets.js");
 const { controlsRecordedAdapter, resolveServiceAdapter } = await import("../../implementations/cli/src/lib/service-adapters.js");
 await import("@cotal-ai/cli");
 await import("@cotal-ai/manager");
@@ -72,6 +72,13 @@ for (const [line, what] of [["echo 'x", "single quote that is never closed"], ["
   const result = words(line);
   check(`--exec ${JSON.stringify(line)} refuses: ${what}`, typeof result === "string" && result.startsWith("USAGE_INVALID: ") && result.includes(what), result);
 }
+
+// A guided answer is checked without requiring the form's other answers yet.
+const guidedAuth = resolveServicePreset("auth-service");
+check("a guided integer answer rejects invalid JSON", presetOptionRefusal(guidedAuth, "port", "abc")?.includes("not valid JSON") === true);
+check("a guided integer answer rejects a fractional value", presetOptionRefusal(guidedAuth, "port", "1.25")?.includes("closed schema") === true);
+check("a guided port answer applies its schema bound", presetOptionRefusal(guidedAuth, "port", "65536")?.includes("closed schema") === true);
+check("a corrected guided port answer needs no other answers", presetOptionRefusal(guidedAuth, "port", "65535") === undefined);
 
 // ---- A preset's defaults are a closed declaration ----------------------------------------------
 const base = { kind: "service-preset" as const, name: "fixture", summary: "fixture", adapter: "fixture-adapter", timeoutMs: 1000 };

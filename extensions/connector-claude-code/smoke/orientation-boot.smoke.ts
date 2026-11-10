@@ -61,6 +61,7 @@ const backlog: InboxItem[] = Array.from({ length: 30 }, (_, i) => ({
 }));
 const full = new MeshAgent(cfg);
 full.peekInbox = () => backlog;
+full.inboxPreview = () => backlog;
 full.holdInFlight = () => true;
 full.inboxCount = () => backlog.length;
 full.peekPendingTurns = () => undefined;

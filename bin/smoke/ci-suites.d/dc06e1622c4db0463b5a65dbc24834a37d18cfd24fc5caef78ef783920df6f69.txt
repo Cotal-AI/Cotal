@@ -1,0 +1,3 @@
+# The connector half of anycast request status: a role request is shown only after its take is
+# recorded, on every read path, and the sender's notice arrives as a daemon notice.
+smoke:anycast-take-gate:auth

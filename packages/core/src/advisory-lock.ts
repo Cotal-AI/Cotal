@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { linkSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
+import { createPrivateRecord } from "./secret-fs.js";
 
 /**
  * A machine-local, crash-safe advisory file lock, shared by every serialized workstation mutation
@@ -181,7 +182,7 @@ function inspectLockSnapshot(path: string): LockInspection & { readonly ino?: nu
  *  success, false if the path already exists. */
 function publishAtomic(path: string, content: string): boolean {
   const tmp = `${path}.${randomBytes(8).toString("hex")}.tmp`;
-  writeFileSync(tmp, content, { mode: 0o600, flag: "wx" });
+  createPrivateRecord(tmp, content);
   try {
     linkSync(tmp, path);
     return true;

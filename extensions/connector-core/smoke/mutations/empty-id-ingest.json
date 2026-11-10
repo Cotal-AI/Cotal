@@ -77,8 +77,8 @@
     {
       "name": "K5 selection reverts to the wire id while the keys stay minted",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    const selected = this.inbox.filter((p) => wanted.has(p.item.recvKey));",
-      "replace": "    const selected = this.inbox.filter((p) => wanted.has(p.item.id));",
+      "find": "    const selected = [...this.inbox.filter((p) => wanted.has(p.item.recvKey)), ...regated];",
+      "replace": "    const selected = [...this.inbox.filter((p) => wanted.has(p.item.id)), ...regated];",
       "expectRed": "the race: the verdict drains exactly the snapshot's delivery",
       "cell": "the race: the verdict drains exactly the snapshot's delivery",
       "note": "The other half of the seam: the keys exist but the drain ignores them. A request holding a minted key matches no wire id, so an id-less delivery can never be drained or acked: it is re-shown on every read and redelivered forever on the durable path, the loop the receive key exists to close. Real ids still match (their key IS their id), so only the id-less cells redden."
@@ -95,8 +95,8 @@
     {
       "name": "K2 only the pending-inbox lookup relapses to the raw id",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    const existing = key === undefined ? undefined : this.inbox.find((p) => p.item.id === key);",
-      "replace": "    const existing = this.inbox.find((p) => p.item.id === m.id);",
+      "find": "    const existing = key === undefined ? undefined : this.inbox.find((p) => p.item.id === key) ?? this.gated.find((p) => p.item.id === key);",
+      "replace": "    const existing = this.inbox.find((p) => p.item.id === m.id) ?? this.gated.find((p) => p.item.id === m.id);",
       "expectRed": "timed out waiting for both empty-id messages to buffer",
       "cell": "two distinct messages with EMPTY ids are both delivered",
       "note": "The partial relapse a later edit could introduce in isolation: the derivation still guards the handled and protected reads, but the pending merge collapses id-less messages while one is still buffered. Same cell reddens, same first observation."

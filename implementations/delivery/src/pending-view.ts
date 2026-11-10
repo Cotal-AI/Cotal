@@ -1,9 +1,10 @@
 import {
-  CotalEndpoint, dialerFor, dmDurable, dmStream, isConsumerNotFound,
+  CotalEndpoint, dialerFor, dmDurable, dmStream, HISTORY_READERS, historyReaderConsumer, idFromCreds, isConsumerAlreadyExists, isConsumerNotFound,
   parsePrincipalKey, parseSubject, standaloneConnectOpts, unicastSubject, type FlagSpec, type ParsedArgs, type Presence,
 } from "@cotal-ai/core";
 import { CommandFailure, connectOrThrow, isConnectRefusal, jsonFlag, plainFlag, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
-import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { randomUUID } from "node:crypto";
 import { parseDmDurable } from "./pending.js";
 
 export const pendingFlags = [jsonFlag, plainFlag,
@@ -33,7 +34,7 @@ async function uniquePresence(ep: CotalEndpoint, name: string): Promise<Presence
 }
 
 /** One finite read receipt. It never acknowledges a DM or claims that candidate IDs prove a hole. */
-export async function pendingView(args: ParsedArgs): Promise<void> {
+export async function pendingView(args: ParsedArgs, command: "pending" | "deliver" = "pending"): Promise<void> {
   validatePendingArguments(args);
   const values = args.values as { space?: string; server?: string; creds?: string; durable?: string; limit?: string };
   const requested = args.positionals[0]!;
@@ -82,15 +83,37 @@ export async function pendingView(args: ParsedArgs): Promise<void> {
       maxMsgsPerSubject: streamInfo.config.max_msgs_per_subject, discard: streamInfo.config.discard,
       candidates: [], candidateRead: "not-checked", candidateLimit: limit };
     if (recipient) {
-      let consumer: Awaited<ReturnType<ReturnType<typeof jetstream>["consumers"]["get"]>> | undefined;
+      if (conn.creds === undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this pending candidate read needs the static admin credential that may delete its own history reader; no unnamed consumer was created", { target: { space, requested, durable } });
+      const readerId = idFromCreds(conn.creds);
+      const description = `cotal pending read ${randomUUID()}`;
+      let owned: string | undefined;
       try {
         const js = jetstream(nc);
-        consumer = await js.consumers.get(stream, { filter_subjects: [unicastSubject(space, recipient.owner, recipient.actor, "*", "*")], opt_start_seq: result.ackFloor + 1 });
-        const cinfo = await consumer.info(true);
-        const count = Math.min(cinfo.num_pending, limit);
+        let created: Awaited<ReturnType<typeof jsm.consumers.add>> | undefined;
+        for (let slot = 0; slot < HISTORY_READERS; slot++) {
+          const name = historyReaderConsumer(readerId, slot);
+          try {
+            const info = await jsm.consumers.add(stream, {
+              name, description, filter_subjects: [unicastSubject(space, recipient.owner, recipient.actor, "*", "*")],
+              deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: result.ackFloor + 1,
+              ack_policy: AckPolicy.None, inactive_threshold: 5 * 60 * 1_000_000_000,
+            });
+            if (info.config.description !== description) continue;
+            created = info;
+            owned = name;
+            break;
+          } catch (error) {
+            if (!isConsumerAlreadyExists(error)) throw error;
+          }
+        }
+        if (!created || owned === undefined) throw new Error("every history reader name this credential may delete is held by a consumer this read did not create");
+        const consumer = js.consumers.getConsumerFromInfo(created);
+        const count = Math.min(created.num_pending, limit);
+        let received = 0;
         if (count) {
           const batch = await consumer.fetch({ max_messages: count, expires: 2_000 });
           for await (const message of batch) {
+            received++;
             try {
               const row = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(message.data)) as Record<string, unknown>;
               const sender = row.from as { id?: unknown } | null;
@@ -102,20 +125,26 @@ export async function pendingView(args: ParsedArgs): Promise<void> {
               if (!warnings.some((warning) => warning.code === "CANDIDATE_UNREADABLE")) warnings.push({ code: "CANDIDATE_UNREADABLE", message: "At least one candidate message could not be decoded safely; its contents were withheld.", target: { space, durable } });
             }
           }
+          // A fetch iterator also ends when its request expires. Count the messages it
+          // received, because ending the loop is not evidence that the bounded read finished.
+          if (batch.getReceived() !== received || received !== count) throw new Error("the bounded candidate fetch ended before the requested messages arrived");
         }
         result.candidateRead = "bounded-from-ack-floor";
       } catch { warnings.push({ code: "CANDIDATE_READ_UNAVAILABLE", message: "The bounded candidate read did not complete; durable counts remain separate facts.", target: { space, durable } }); }
       finally {
-        if (consumer) try { await consumer.delete(); }
-        catch { warnings.push({ code: "EPHEMERAL_CLEANUP_UNCONFIRMED", message: "The transient read consumer's deletion was not confirmed; no DM was acknowledged.", target: { space, durable } }); }
+        if (owned !== undefined) try {
+          if (await jsm.consumers.delete(stream, owned) !== true) warnings.push({ code: "EPHEMERAL_CLEANUP_UNCONFIRMED", message: "The transient read consumer's deletion was not confirmed; no DM was acknowledged.", target: { space, durable } });
+        } catch { warnings.push({ code: "EPHEMERAL_CLEANUP_UNCONFIRMED", message: "The transient read consumer's deletion was not confirmed; no DM was acknowledged.", target: { space, durable } }); }
       }
     } else result.candidateRead = "durable-name-unparseable";
   } finally {
     try { await nc.close(); }
     catch { warnings.push({ code: "READER_CLOSE_UNCONFIRMED", message: "The short-lived inspection connection did not confirm closure; no message was acknowledged.", target: { space, durable } }); }
   }
-  writeResult(presentationOf(args.values), { command: "pending", target: { space, requested, durable }, result,
-    ...(warnings.length || result.candidateRead !== "bounded-from-ack-floor" ? { completeness: "partial" as const, partial: { message: "Candidate message IDs are a bounded read, not proof of complete history, delivery or absence of a hole." } } : {}), warnings }, (data): Report => ({ sections: [
+  const readFailed = result.candidateRead !== "bounded-from-ack-floor" || warnings.some((warning) => warning.code === "CANDIDATE_READ_UNAVAILABLE" || warning.code === "CANDIDATE_UNREADABLE" || warning.code === "EPHEMERAL_CLEANUP_UNCONFIRMED" || warning.code === "READER_CLOSE_UNCONFIRMED");
+  const partialMessage = warnings.find((warning) => warning.code === "EPHEMERAL_CLEANUP_UNCONFIRMED" || warning.code === "READER_CLOSE_UNCONFIRMED" || warning.code === "CANDIDATE_READ_UNAVAILABLE" || warning.code === "CANDIDATE_UNREADABLE")?.message ?? "Candidate message IDs are a bounded read, not proof of complete history, delivery or absence of a hole.";
+  writeResult(presentationOf(args.values), { command, target: { space, requested, durable }, result,
+    ...(readFailed ? { completeness: "partial" as const, partial: { message: partialMessage } } : {}), warnings }, (data): Report => ({ sections: [
     { title: "Held DM durable", blocks: [{ kind: "fields", rows: [["Space", space], ["Durable", data.durable], ["Pending", String(data.pending)], ["Ack pending", String(data.ackPending)], ["Delivered sequence", String(data.delivered)], ["Ack floor", String(data.ackFloor)], ["Created", data.created], ["Frontier", String(data.frontier)], ["Retention max age", String(data.maxAge)], ["Per-subject maximum", String(data.maxMsgsPerSubject)], ["Discard", data.discard], ["Candidate read", data.candidateRead]] }, { kind: "lines", lines: ["Broker-reported consumer facts only. A held message is not proof it was delivered or read by the recipient."] }] },
     { title: "Recent candidate IDs", blocks: [{ kind: "lines", lines: data.candidates.length ? data.candidates.map((row) => `${row.id}  from=${row.from}  ts=${row.ts}`) : [data.candidateRead === "bounded-from-ack-floor" ? "No candidates in this bounded read; history completeness is not established." : "Candidate read unavailable or skipped."] }, { kind: "lines", lines: ["Candidates start after the ack floor and do not prove a hole. No DM was acknowledged or native durable deleted."] }] },
   ] }));

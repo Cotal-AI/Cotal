@@ -66,6 +66,15 @@ class FakeMesh {
     return this.items.filter((value) => scope === "all" || (scope === "pull-only") === this.pullOnly.has(value.id));
   }
 
+  // No role request is held here, so the preview is the inbox and a take changes nothing.
+  inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+    return this.peekInbox(scope);
+  }
+
+  async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+    return [...choose(this.peekInbox(scope))];
+  }
+
   drainInbox(limit?: number): InboxItem[] {
     const count = limit && limit > 0 ? Math.min(limit, this.items.length) : this.items.length;
     const drained = this.items.splice(0, count);
@@ -322,6 +331,215 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   driver.onSessionStart(context());
   ok(mesh.drained[0] === "echo", "only an own channel multicast is treated as an echo");
   ok(host.sent[0]?.details.ids.join() === "self-anycast", "self-selected anycast is surfaced");
+}
+
+// A batch carrying a held role request takes only that batch, then goes out (SPEC §8.1).
+{
+  class HeldMesh extends FakeMesh {
+    gated: InboxItem[] = [];
+    chosen: string[][] = [];
+
+    override inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.gated)];
+    }
+
+    override async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+      const picked = choose(this.inboxPreview(scope));
+      this.chosen.push(picked.map((value) => value.recvKey));
+      const keys = new Set(picked.map((value) => value.recvKey));
+      this.items.push(...this.gated.filter((value) => keys.has(value.recvKey)));
+      this.gated = this.gated.filter((value) => !keys.has(value.recvKey));
+      return [...picked];
+    }
+  }
+  const mesh = new HeldMesh();
+  mesh.items = [item("dm")];
+  mesh.gated = Array.from({ length: 40 }, (_, i) => item(`req${i}`, { kind: "anycast", service: "worker" }));
+  const host = new FakeHost();
+  const driver = new PiDriver(mesh as unknown as MeshAgent);
+  driver.bind(host);
+  driver.onSessionStart(context());
+  ok(host.sent.length === 0, "a batch holding a role request waits for its take before it goes out");
+  await new Promise((resolve) => setImmediate(resolve));
+  ok(mesh.chosen.length === 1 && mesh.chosen[0]!.length === 32, "the take covers only the 32 messages the batch carries");
+  ok(mesh.gated.length === 9, "the role requests past the batch stay held and untaken");
+  ok(
+    host.sent.length === 1 && host.sent[0]!.details.ids.length === 32 && host.sent[0]!.details.ids[0] === "dm",
+    "the batch goes out once taken, carrying what it took",
+  );
+  ok(host.sent[0]!.details.ids.every((id) => mesh.held.has(id)), "a batch that goes out on its take is held for its turn like any other");
+}
+
+// A full batch seats a role request ahead of the channel posts that arrived before it, so the request
+// does not wait behind chatter for a later turn.
+{
+  class HeldMesh extends FakeMesh {
+    gated: InboxItem[] = [];
+    chosen: string[][] = [];
+
+    override inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.gated)];
+    }
+
+    override async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+      const picked = choose(this.inboxPreview(scope));
+      this.chosen.push(picked.map((value) => value.recvKey));
+      const keys = new Set(picked.map((value) => value.recvKey));
+      this.items.push(...this.gated.filter((value) => keys.has(value.recvKey)));
+      this.gated = this.gated.filter((value) => !keys.has(value.recvKey));
+      return [...picked];
+    }
+  }
+  const mesh = new HeldMesh();
+  mesh.attention = "dnd";
+  const posts = Array.from({ length: 40 }, (_, i) => `post${i}`);
+  mesh.items = posts.map((id) => item(id, { kind: "channel", channel: "team" }));
+  mesh.gated = [item("req", { kind: "anycast", service: "worker" })];
+  const host = new FakeHost();
+  const driver = new PiDriver(mesh as unknown as MeshAgent);
+  driver.bind(host);
+  driver.onSessionStart(context());
+  await new Promise((resolve) => setImmediate(resolve));
+  const ids = host.sent[0]?.details.ids ?? [];
+  ok(
+    host.sent.length === 1 && ids.length === 32 && ids.includes("req") && mesh.chosen[0]?.includes("req"),
+    "a full batch takes and carries a role request that arrived after more channel posts than fit",
+  );
+  ok(ids.join() === [...posts.slice(0, 31), "req"].join(), "the batch keeps arrival order and leaves out the latest channel posts");
+
+  // A DM between the posts and the request keeps its seat, so a post gives way to both.
+  const mixed = new HeldMesh();
+  mixed.attention = "dnd";
+  mixed.items = [...posts.slice(0, 31).map((id) => item(id, { kind: "channel", channel: "team" })), item("dm")];
+  mixed.gated = [item("req", { kind: "anycast", service: "worker" })];
+  const mixedHost = new FakeHost();
+  const mixedDriver = new PiDriver(mixed as unknown as MeshAgent);
+  mixedDriver.bind(mixedHost);
+  mixedDriver.onSessionStart(context());
+  await new Promise((resolve) => setImmediate(resolve));
+  ok(
+    mixedHost.sent[0]?.details.ids.join() === [...posts.slice(0, 30), "dm", "req"].join(),
+    "a full batch fits a DM and a role request that arrived after the channel posts",
+  );
+}
+
+// A take that leaves a batch with nothing that wakes, and a user turn that starts during a take.
+{
+  class TakingMesh extends FakeMesh {
+    gated: InboxItem[] = [];
+    /** "out" is a take still waiting for its answer when the read's wait runs out: the request stays
+     *  held and offered, as the real agent's does. */
+    outcome: (key: string) => "taken" | "refused" | "out" = () => "taken";
+    /** How long a read waits on a take that is still out. */
+    waitMs = 10;
+    takes = 0;
+    /** Role requests that arrive while a take is out. */
+    arriving: InboxItem[] = [];
+    /** Resolves when the take may answer. */
+    answer: Promise<void> = Promise.resolve();
+
+    override inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.gated)];
+    }
+
+    override async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+      this.takes++;
+      const picked = choose(this.inboxPreview(scope));
+      await this.answer;
+      for (const value of picked) {
+        if (!this.gated.includes(value)) continue;
+        const how = this.outcome(value.recvKey);
+        if (how === "out") await new Promise((resolve) => setTimeout(resolve, this.waitMs));
+        if (how !== "out") this.gated = this.gated.filter((other) => other !== value);
+        if (how === "taken") this.items.push(value);
+      }
+      this.gated.push(...this.arriving.splice(0));
+      const showable = new Set(this.peekInbox(scope).map((value) => value.recvKey));
+      return picked.filter((value) => showable.has(value.recvKey));
+    }
+  }
+  const chatter = item("c1", { kind: "channel", channel: "team" });
+  const request = (id: string) => item(id, { kind: "anycast", service: "worker" });
+
+  {
+    const mesh = new TakingMesh();
+    mesh.attention = "dnd";
+    mesh.items = [chatter];
+    mesh.gated = [request("r1")];
+    mesh.outcome = () => "out";
+    const host = new FakeHost();
+    const driver = new PiDriver(mesh as unknown as MeshAgent);
+    driver.bind(host);
+    driver.onSessionStart(context());
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    driver.requestShutdown();
+    ok(host.sent.length === 0, "in dnd a batch whose role request's take is still out does not go out with only chatter");
+    ok(mesh.takes >= 2 && mesh.takes <= 12, "and the request is chosen again once each wait on its take runs out");
+  }
+  {
+    const mesh = new TakingMesh();
+    mesh.attention = "dnd";
+    mesh.items = [chatter];
+    mesh.gated = [request("r1")];
+    mesh.outcome = (key) => (key === "r1" ? "refused" : "taken");
+    mesh.arriving = [request("r2")];
+    const host = new FakeHost();
+    const driver = new PiDriver(mesh as unknown as MeshAgent);
+    driver.bind(host);
+    driver.onSessionStart(context());
+    await tick();
+    await tick();
+    ok(
+      host.sent.length === 1 && host.sent[0]!.details.ids.join() === "c1,r2",
+      "in dnd when a refused take leaves only chatter, the batch is chosen again with the request that arrived meanwhile",
+    );
+  }
+  {
+    const mesh = new TakingMesh();
+    mesh.attention = "dnd";
+    mesh.gated = [request("r1")];
+    mesh.outcome = () => "refused";
+    let answer!: () => void;
+    mesh.answer = new Promise((resolve) => { answer = resolve; });
+    const host = new FakeHost();
+    const ctx = context();
+    const driver = new PiDriver(mesh as unknown as MeshAgent);
+    driver.bind(host);
+    driver.onSessionStart(ctx);
+    mesh.items.push(chatter);
+    driver.onAgentStart(ctx);
+    answer();
+    await tick();
+    await tick();
+    ok(
+      host.sent.length === 1 && host.sent[0]!.details.ids.join() === "c1",
+      "a user turn that starts during a take still carries the chatter once the take is refused",
+    );
+  }
+  {
+    // A redelivery between a take's answer and its batch sends the request back to wait for a take
+    // of the new copy.
+    const mesh = new TakingMesh();
+    mesh.items = [item("d1")];
+    mesh.gated = [request("r1")];
+    const takeChosen = mesh.takeChosen.bind(mesh);
+    mesh.takeChosen = async (scope, choose) => {
+      const shown = await takeChosen(scope, choose);
+      mesh.items = mesh.items.filter((value) => value.recvKey !== "r1");
+      mesh.gated.push(request("r1"));
+      return shown;
+    };
+    const host = new FakeHost();
+    const driver = new PiDriver(mesh as unknown as MeshAgent);
+    driver.bind(host);
+    driver.onSessionStart(context());
+    await tick();
+    await tick();
+    ok(
+      host.sent.length === 1 && host.sent[0]!.details.ids.join() === "d1",
+      "a taken batch sends nothing a redelivery sent back to wait for its take",
+    );
+  }
 }
 
 // A buried own echo cannot let older pull-only traffic block a later DM.

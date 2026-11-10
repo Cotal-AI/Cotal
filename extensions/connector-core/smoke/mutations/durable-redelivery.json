@@ -34,8 +34,8 @@
     {
       "name": "R1 a durable redelivery of a still-pending item refreshes the ack handle without re-announcing it",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        if (this.inFlightIds.has(existing.item.recvKey)) this.keepOwned(existing.item.recvKey);\n        this.emit(\"incoming\", existing.item);",
-      "replace": "        if (this.inFlightIds.has(existing.item.recvKey)) this.keepOwned(existing.item.recvKey);",
+      "find": "        else if (existing.take && existing.takenCount !== existing.item.deliveryCount) this.regate(existing);\n        this.emit(\"incoming\", existing.item);",
+      "replace": "        else if (existing.take && existing.takenCount !== existing.item.deliveryCount) this.regate(existing);",
       "expectRed": "live-first/durable-second: the durable pending duplicate re-announces through incoming",
       "cell": "live-first/durable-second: the durable pending duplicate re-announces through incoming",
       "note": "Restores the swallow this branch had before the re-announce landed: the redelivery arrives, the ack handle is refreshed, and nothing tells the wake policy the message is still there. A session in that state sits idle with the message buffered and un-acked for as long as anything waits on it."

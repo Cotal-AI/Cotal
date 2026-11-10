@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { agentFilePath, parseAgentFileSource, token, type AgentDef, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { preflightRuntime } from "../ext-loader.js";
-import { callerHarness, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { callerHarness, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import type { spawnFlags } from "./spawn.js";
@@ -15,15 +15,15 @@ type Values = FlagValues<typeof spawnFlags>;
 const sourceText = (source: string): string =>
   source === "file" ? "a persona file (--file)" : source === "argument" ? "named on the command line" : source === "default" ? "the default persona" : source;
 
-/** A harness this workstation has no connector for, as a warning: the refusal `config set` gives
- *  it. One that only the environment chose is named the way `config` and `status` name it. */
-function unknownHarness(harness: string | undefined, explicit: boolean, space: string, refusal: string): OutputWarning[] {
+/** A managed preview cannot check the execution host's connectors. Warn about an unknown local
+ *  harness, naming an environment choice as `config` and `status` do. */
+function unknownHarness(harness: string | undefined, explicit: boolean, space: string): OutputWarning[] {
   if (harness === undefined) return [];
   try { checkHarness(harness); return []; }
   catch (error) {
     if (!isCommandFailure(error)) throw error;
     const fromEnv = explicit ? [] : invalidEnvironmentValues([resolvePreference("harness", { space, preferences: cachedPreferences() })]);
-    return fromEnv.length ? fromEnv : [{ code: "HARNESS_UNKNOWN", target: { harness }, message: `${error.message}; ${refusal}` }];
+    return fromEnv.length ? fromEnv : [{ code: "HARNESS_UNKNOWN", target: { harness }, message: `${error.message}; the launch is refused unless the selected manager has that connector` }];
   }
 }
 
@@ -36,7 +36,6 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   let space: string;
   let broker: string | null = null;
   let targetMode: string | null = null;
-  let assumed = false;
   // Where a missing persona was looked for. A space that is not started is a local root `up` starts.
   let site: PersonaSite;
   try {
@@ -45,7 +44,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     const flags = { space: values.space, server: values.server };
     const offline = resolveReadsLiveness(process.cwd(), flags) ? (await pruneStaleMeshes(values.server)).offline : [];
     const selected = resolveMeshTarget(process.cwd(), { ...flags, offline, readOnly: true });
-    root = selected.root; space = selected.space; broker = brokerAddressForDisplay(selected.server) ?? null; targetMode = selected.mode; assumed = selected.namesNoSpace === true; site = selected;
+    root = selected.root; space = selected.space; broker = brokerAddressForDisplay(selected.server) ?? null; targetMode = selected.mode; site = selected;
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && error.details.root && error.details.space) { root = error.details.root; space = error.details.space; site = { root, space, personaRoot: personaDir(root), origin: "up" }; }
@@ -61,14 +60,12 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   recordOperationSpace(space);
   const { ref, from } = spawnPersona(values.config, args.positionals, { space, preferences: cachedPreferences() });
   const requested = { persona: ref, source: values.file ? "file" : values.config !== undefined || args.positionals.length ? "argument" : from ?? "default", harness: values.agent ?? null, name: values.name ?? null, model: values.model ?? null, cwd: values.cwd ?? null, instanceId: values.on ?? null, runtime: values.runtime?.trim() ?? null, restarts: values.restarts === undefined ? null : Number(values.restarts), restartWindowMs: values["restart-window"] === undefined ? null : Number(values["restart-window"]) };
-  // A folder whose records name no space was given the held default only to preview it, so the
-  // target names the folder and the space it assumed, and the report says so under that heading.
-  const target = assumed ? { root, assumed: space, broker, authMode: targetMode } : { space, broker, authMode: targetMode };
-  const heading = (report: Report): Report => assumed ? { ...report, space, sections: [{ blocks: [{ kind: "lines", lines: [{ text: `this folder names no space; the held default ${space} was assumed`, tone: "hint" }] }] }, ...report.sections] } : report;
+  // A folder whose records name no space is refused above, so a preview never names an assumed space.
+  const target = { space, broker, authMode: targetMode };
   if (spawnUsesManager(values)) {
     // The manager resolves the persona, harness and working directory on its own host at launch, so
     // the preview shows the request and says what it did not read.
-    const warnings = unknownHarness(values.agent ?? callerHarness(space), values.agent !== undefined, space, "the launch is refused unless the selected manager has that connector");
+    const warnings = unknownHarness(values.agent ?? callerHarness(space), values.agent !== undefined, space);
     // A named runtime is checked with the lookup `up --runtime` uses, on this host only: the launch
     // refuses it here when it goes to this root's own manager, and a manager elsewhere checks its own.
     let runtimeCheck: { host: string; available: boolean; error: string | null } | null = null;
@@ -80,7 +77,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
       runtimeText = `${requested.runtime} · ${error === null ? "available" : "not available"} on ${runtimeCheck.host}; a manager on another host checks its own`;
       if (error !== null) warnings.push({ code: "RUNTIME_UNAVAILABLE", target: { runtime: requested.runtime, host: runtimeCheck.host }, message: `${error}; a launch through this root's own manager is refused, and a manager on another host checks its own` });
     }
-    writeResult(presentationOf(values), { command: "spawn", target, result: { kind: "managed-launch-preview", dryRun: true, requested, executionHost: "manager-selected-at-launch", personaValidation: "not-checked-on-execution-host", effectiveHarness: null, effectiveCwd: null, runtimeCheck, enrollment: "not-read-or-redeemed", allocated: false, launched: false }, completeness: "not-checked", warnings }, (result): Report => heading({ sections: [
+    writeResult(presentationOf(values), { command: "spawn", target, result: { kind: "managed-launch-preview", dryRun: true, requested, executionHost: "manager-selected-at-launch", personaValidation: "not-checked-on-execution-host", effectiveHarness: null, effectiveCwd: null, runtimeCheck, enrollment: "not-read-or-redeemed", allocated: false, launched: false }, completeness: "not-checked", warnings }, (result): Report => ({ sections: [
       { title: "Managed launch preview", blocks: [{ kind: "fields", rows: [["Space", space], ["Broker", broker ?? "not checked"], ["Persona request", result.requested.persona], ["Persona source", sourceText(result.requested.source)], ["Manager pin", result.requested.instanceId ?? "not selected"], ["Harness request", result.requested.harness ?? "manager/persona precedence; not checked"], ["Working-directory request", result.requested.cwd ?? "manager default; not read"], ["Runtime", runtimeText], ["View", values.detach ? "return after readiness" : "attach after readiness"], ["Execution-host validation", { text: "not performed", tone: "waiting" }]] }, { kind: "lines", lines: ["The selected manager reads its own persona, harness and working directory at launch and validates them there; your local files are not used.", "No broker request, connector import, file upload, enrollment redemption, provisioning, identity allocation or launch occurred."] }] },
     ] }));
     return;
@@ -108,9 +105,13 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   try { cwd = realpathSync(values.cwd ? resolve(values.cwd) : process.cwd()); if (!statSync(cwd).isDirectory()) throw new Error(); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the direct launch's local working directory is unavailable; no directory was created"); }
   const harness = resolveAgentType({ flag: values.agent, pin: definition.agent, callerDefault: callerHarness(space) });
+  try { checkHarness(harness); }
+  catch (error) {
+    if (!isCommandFailure(error)) throw error;
+    throw missingConnector(harness, { ...target, path });
+  }
   const result = { kind: "direct-launch-preview", dryRun: true, space, executionHost: hostname(), persona: { path, source: requested.source, write: personaWrite as "none" | "shipped-default" }, requestedName: values.name ?? definition.name, harness, cwd, role: values.role ?? definition.role ?? null, model: values.model ?? definition.model ?? null, variant: values.variant ?? definition.variant ?? null, promptProvided: values.prompt !== undefined, enrollment: "not-read-or-redeemed", connectorAvailability: "not-checked", authorization: "not-checked", allocated: false, launched: false };
-  const warnings = unknownHarness(harness, values.agent !== undefined || definition.agent !== undefined, space, "the launch refuses it");
-  writeResult(presentationOf(values), { command: "spawn", target, result, warnings }, (data): Report => heading({ sections: [
+  writeResult(presentationOf(values), { command: "spawn", target, result }, (data): Report => ({ sections: [
     { title: "Direct launch preview", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Execution host", data.executionHost], ["Persona file", data.persona.write === "shipped-default" ? `${data.persona.path} (the launch writes the shipped default persona here; the preview wrote nothing)` : data.persona.path], ["Source", sourceText(data.persona.source)], ["Requested name", data.requestedName], ["Harness", data.harness], ["Working directory", data.cwd], ["Role", data.role ?? "not declared"], ["Model", data.model ?? "application default; not checked"], ["Variant", data.variant ?? "not declared"], ["Enrollment", "not read or redeemed"], ["Binary/login/authority checks", "not performed"]] }, { kind: "lines", lines: ["Local selection and file validation only. No broker connection, connector import, provisioning, identity allocation or launch occurred. Native foreground execution is not a detachable Cotal view."] }] },
   ] }));
 }

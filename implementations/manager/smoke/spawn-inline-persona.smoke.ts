@@ -31,15 +31,19 @@ import {
   runDriverCaller,
   setupSpaceStreams,
   DEV_OWNER,
+  epRequestSubject,
+  standaloneConnectOpts,
   type AgentDef,
   type AgentHandle,
   type Connector,
+  type LaunchOpts,
   type ControlReply,
   type EpCaller,
   type IssuedCaller,
   type LaunchSpec,
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { connect } from "@nats-io/transport-node";
 import { bootBroker } from "./_boot-broker.js";
 import { credAcl } from "./_cred-acl.js";
 import { requestDeliveryAdminZeroMemberships } from "./_fake-delivery-admin.js";
@@ -68,6 +72,13 @@ const persona = (file: string, body: string) => writeFileSync(join(agentsDir, `$
 // narrower one reads and posts review.
 persona("lead", "allowSubscribe: [review, ops]\nallowPublish: [review]\ncapabilities: [spawn, \"role:scribe\"]\n");
 persona("narrow", "allowSubscribe: [review]\nallowPublish: [review]\ncapabilities: [spawn]\n");
+// An operator's first endpoint grant: the composition root spawns it, so the bound does not apply.
+// It holds two of com.example.orders' commands and may hand them on.
+const ORDERS = "endpoints:\n  - endpoint: com.example.orders\n    commands: [list, create]\n";
+persona("ep_lead", `allowSubscribe: [review]\nallowPublish: [review]\ncapabilities: [spawn]\n${ORDERS}`);
+persona("ep_ok", "subscribe: []\nendpoints:\n  - endpoint: com.example.orders\n    commands: [list]\n");
+persona("ep_wide", "subscribe: []\nendpoints:\n  - endpoint: com.example.orders\n    commands: [refund]\n");
+persona("ep_ref", "subscribe: []\nendpoints:\n  - endpoint: manager\n    commands: [spawn]\n");
 
 /** A fake seat whose exit the cell fires: the real exit watcher subscribes through `attach`. */
 type FakeSeat = AgentHandle & { exit: () => void };
@@ -135,7 +146,9 @@ function managerAt(root: string, opts: { auth?: boolean }) {
   return { mgr, M, seats, spawned, failLaunch, beforeLaunch };
 }
 
-const con: Connector = { kind: "connector", name: "smoke-inline", requires: ["node"], eventChannel, readinessTimeoutMs: 2_000, buildLaunch: () => ({ command: "true", args: [], env: {} }) };
+/** The launch options each seat was built with, by seat name: what the connector forwards to the session. */
+const launched = new Map<string, LaunchOpts>();
+const con: Connector = { kind: "connector", name: "smoke-inline", requires: ["node"], eventChannel, readinessTimeoutMs: 2_000, buildLaunch: (o: LaunchOpts) => { launched.set(o.name, o); return { command: "true", args: [], env: {} }; } };
 registry.register(con);
 
 const S = managerAt(workspaceRoot, { auth: true });
@@ -290,6 +303,117 @@ try {
     check("and a refused record writes no snapshot", JSON.stringify(snapshots(workspaceRoot)) === JSON.stringify(before), snapshots(workspaceRoot));
     const define = S.M.opDefinePersona({ name: "orphan_def", persona: "x", capabilities: ["spawn"] }, principalKey(DEV_OWNER, unissued.actor).key, false, unissued);
     check("a definer with no evidence puts no capability into a persona", refused(await define, /definer holds no issued evidence.*capabilities spawn/) && !existsSync(catalog("orphan_def")));
+    // The record is admitted as the caller passed it. startAgent reaches its ownership seam before
+    // its first await, so a write to the caller's record after the call returns, while the spawn is
+    // still in flight, must change nothing: not the bound, not the mint.
+    const held = { prompt: "x", allowSubscribe: ["review"], allowPublish: ["review"] };
+    const pending = spawnAs(lead, "held_input", { persona: held });
+    held.allowPublish[0] = "ops";
+    held.allowSubscribe.push("general");
+    const heldReply = await pending;
+    const heldAcl = minted(heldReply);
+    check("a caller's write to its inline record after the call changes neither the bound nor the mint",
+      heldReply.ok && posts(heldAcl, "review") && !posts(heldAcl, "ops") && !reads(heldAcl, "general"), heldReply.ok ? heldAcl : heldReply.error);
+  }
+
+  console.log("endpoints (SPEC 13.15)");
+  {
+    // Every publish row a seat's credential carries (credAcl keeps only the chat rows).
+    const mintedPub = (r: ControlReply): string[] | undefined => {
+      const d = okData(r);
+      if (!d) return undefined;
+      const jwt = readFileSync(agentLifecycleSecretFilePaths(workspaceRoot, space, d.name, d.lifecycleUid).creds, "utf8").split("\n").find((l) => l && !l.startsWith("-") && l.split(".").length === 3)!;
+      return (JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8")).nats?.pub?.allow ?? []) as string[];
+    };
+    // A minted row for `command` on com.example.orders' class rail, under the seat's own caller.
+    const hasCommand = (pub: string[] | undefined, command: string) => pub !== undefined && pub.some((r) => r.includes(`.one.com_example_orders.${command}.`));
+    const root = await spawnAs(undefined, "ep_lead");
+    const rootAcl = mintedPub(root);
+    check("an operator persona's endpoints are minted for the seat it starts",
+      root.ok && hasCommand(rootAcl, "list") && hasCommand(rootAcl, "create") && !hasCommand(rootAcl, "refund"), root.ok ? rootAcl?.filter((r) => r.includes("orders")) : root.error);
+    const epLead = issuedCallerOf("ep_lead");
+    // The caller's own endpoints input, changed while the spawn is in flight: the entry's commands
+    // (to one the spawner holds and one it does not), a second entry, and the list on the record.
+    // Every consumer reads the list as it was passed: the bound, the mint, the managed launch, the
+    // saved copy and the session's launch options.
+    const heldEp = { prompt: "x", subscribe: [] as string[], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }], save: true };
+    const heldEntry = heldEp.endpoints[0]!;
+    const pendingEp = spawnAs(epLead, "ep_held", { persona: heldEp });
+    heldEntry.commands[0] = "create";
+    heldEntry.commands.push("refund");
+    heldEp.endpoints.push({ endpoint: "com.example.billing", commands: ["quote"] });
+    (heldEp as { endpoints: unknown }).endpoints = [{ endpoint: "com.example.orders", commands: ["refund"] }];
+    const heldEpReply = await pendingEp;
+    const heldEpAcl = mintedPub(heldEpReply);
+    const passed = JSON.stringify([{ endpoint: "com.example.orders", commands: ["list"] }]);
+    check("a caller's change to its endpoints input in flight changes neither the bound nor the mint",
+      heldEpReply.ok && hasCommand(heldEpAcl, "list") && !hasCommand(heldEpAcl, "create") && !hasCommand(heldEpAcl, "refund") && !(heldEpAcl ?? []).some((r) => r.includes("com_example_billing")),
+      heldEpReply.ok ? heldEpAcl?.filter((r) => r.includes("com_example")) : heldEpReply.error);
+    const heldSeat = seatOf(S.M, "ep_held") as unknown as { launch: { endpoints?: unknown } } | undefined;
+    check("nor the managed launch record", JSON.stringify(heldSeat?.launch.endpoints) === passed, heldSeat?.launch.endpoints);
+    check("nor the saved copy", JSON.stringify(loadAgentFile(join(workspaceRoot, ".cotal", "agents", "ep_held.md")).endpoints) === passed);
+    check("nor the session's launch options", JSON.stringify(launched.get("ep_held")?.endpoints) === passed, launched.get("ep_held")?.endpoints);
+    const inlineOne = await spawnAs(epLead, "ep_inline", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] } });
+    const inlineAcl = mintedPub(inlineOne);
+    check("a seat hands one held command on through an inline persona, and only that one",
+      inlineOne.ok && hasCommand(inlineAcl, "list") && !hasCommand(inlineAcl, "create"), inlineOne.ok ? inlineAcl?.filter((r) => r.includes("orders")) : inlineOne.error);
+    check("and the session is handed the same list it was minted",
+      JSON.stringify(launched.get("ep_inline")?.endpoints) === JSON.stringify([{ endpoint: "com.example.orders", commands: ["list"] }]), launched.get("ep_inline")?.endpoints);
+    const noEp = await spawnAs(epLead, "ep_none_named", { persona: { prompt: "x", subscribe: [] } });
+    check("a persona that names no endpoint commands hands the session an empty list, so it never reads the file for them",
+      noEp.ok && JSON.stringify(launched.get("ep_none_named")?.endpoints) === "[]", noEp.ok ? launched.get("ep_none_named")?.endpoints : noEp.error);
+    // The broker enforces what the mint granted. On the helper's own credential a request on
+    // com.example.orders' `create`, which it was not handed, draws a permission violation, and one on
+    // `list` does not. The broker answers publishes in order, so once the later `create` violation has
+    // arrived, a `list` violation would already be there.
+    {
+      const seat = seatOf(S.M, "ep_inline")!;
+      const helper = { owner: DEV_OWNER, actor: seat.id, uid: seat.lifecycleUid, generation: seat.issued!.generation };
+      const helperCreds = readFileSync(agentLifecycleSecretFilePaths(workspaceRoot, space, seat.name, seat.lifecycleUid).creds, "utf8");
+      const hnc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: helperCreds, tls: false }), maxReconnectAttempts: 0 });
+      const errors: string[] = [];
+      void (async () => { for await (const st of hnc.status()) if (st.type === "error") errors.push(String((st as { error?: unknown }).error)); })();
+      const rail = (command: string) => epRequestSubject(space, { route: { mode: "one" }, endpoint: "com.example.orders", command, caller: helper, nonce: `n${randomUUID().replace(/-/g, "").slice(0, 23)}` });
+      const list = rail("list"), create = rail("create");
+      hnc.publish(list, new TextEncoder().encode("{}"));
+      hnc.publish(create, new TextEncoder().encode("{}"));
+      await hnc.flush().catch(() => undefined);
+      await until(() => errors.some((e) => e.includes(create)), 5_000);
+      check("the broker refuses the helper's request on a command it was not handed", errors.some((e) => /permission/i.test(e) && e.includes(create)), errors);
+      check("and lets its request on the command it was handed through", errors.some((e) => e.includes(create)) && !errors.some((e) => e.includes(list)), errors);
+      await hnc.close();
+    }
+    check("a command the spawner does not hold is refused by name",
+      refused(await spawnAs(epLead, "ep_refund", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["list", "refund"] }] } }), /more than the spawner holds: endpoints com\.example\.orders refund\./));
+    const byName = await spawnAs(epLead, "ep_ok");
+    check("a catalog persona naming a held command spawns with it", byName.ok && hasCommand(mintedPub(byName), "list"), byName.ok ? undefined : byName.error);
+    check("a catalog persona naming a command the spawner lacks is refused by name", refused(await spawnAs(epLead, "ep_wide"), /endpoints com\.example\.orders refund/));
+    check("a spawner holding no endpoint rows hands on none", refused(await spawnAs(lead, "ep_none", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] } }), /endpoints com\.example\.orders list/));
+    const refSpawn = await spawnAs(undefined, "ep_ref");
+    // The manager does not echo a persona file's load error; the parser's own refusal names the rule
+    // (packages/core agent-file smoke).
+    check("a persona file naming a reference endpoint is refused even for an operator instrument, and starts no seat",
+      refused(refSpawn, /invalid native frontmatter/) && seatOf(S.M, "ep_ref") === undefined, refSpawn);
+    check("so is a reserved command on an inline record", refused(await spawnAs(epLead, "ep_desc", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["describe"] }] } }), /reserved command "describe"/));
+    // The record, the resume entry and a renewal keep the same commands, so the renewed ceiling still
+    // equals the evidence the spawn recorded.
+    const seat = seatOf(S.M, "ep_inline") as unknown as { launch: { endpoints?: unknown } } | undefined;
+    const want = JSON.stringify([{ endpoint: "com.example.orders", commands: ["list"] }]);
+    check("the managed row records the minted endpoints", JSON.stringify(seat?.launch.endpoints) === want, seat?.launch.endpoints);
+    const entry = S.M.resumeEntryOf(seatOf(S.M, "ep_inline")!) as unknown as { launch: { endpoints?: unknown } };
+    check("the resume entry carries them", JSON.stringify(entry.launch.endpoints) === want, entry.launch.endpoints);
+    let renewed = "";
+    try { await (S.M as unknown as { renewManagedStaticCred: (a: unknown) => Promise<void> }).renewManagedStaticCred(seatOf(S.M, "ep_inline")); renewed = "ok"; } catch (e) { renewed = (e as Error).message; }
+    check("a renewal re-mints the same rows, which the evidence store confirms", renewed === "ok" && hasCommand(mintedPub(inlineOne), "list"), renewed);
+    const savedEp = await spawnAs(epLead, "ep_saved", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }], save: true } });
+    check("a saved copy keeps the endpoints that were checked", savedEp.ok && JSON.stringify(loadAgentFile(catalog("ep_saved")).endpoints) === want, savedEp.ok ? loadAgentFile(catalog("ep_saved")).endpoints : savedEp.error);
+    // define-persona bounds the field against the definer, and the spawn bounds it again.
+    const definer = principalKey(DEV_OWNER, epLead.actor).key;
+    const defOk = await S.M.opDefinePersona({ name: "ep_def", persona: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["create"] }] }, definer, false, epLead);
+    check("a definer puts a command it holds into a persona", defOk.ok && JSON.stringify(loadAgentFile(catalog("ep_def")).endpoints) === JSON.stringify([{ endpoint: "com.example.orders", commands: ["create"] }]), defOk.ok ? undefined : defOk.error);
+    const defWide = await S.M.opDefinePersona({ name: "ep_def_wide", persona: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["refund"] }] }, definer, false, epLead);
+    check("a definer cannot put in a command it lacks, and nothing is written", refused(defWide, /define-persona: this persona grants more than the definer holds: endpoints com\.example\.orders refund/) && !existsSync(catalog("ep_def_wide")), defWide.ok ? undefined : defWide.error);
+    check("a spawner without the command is refused when it spawns that persona", refused(await spawnAs(lead, "ep_def"), /endpoints com\.example\.orders create/));
   }
 
   console.log("save");
@@ -541,6 +665,18 @@ try {
     S.seats.get("steady")!.exit();
     await until(() => (S.spawned.get("steady") ?? 0) > 1);
     check("control: an unchanged snapshot restarts", (S.spawned.get("steady") ?? 0) > 1, S.spawned.get("steady"));
+    // A seat's endpoint commands survive its record and an in-place restart: the record reads back
+    // through the resume schema with them, and the relaunch hands the session the same list.
+    const epList = [{ endpoint: "com.example.orders", commands: ["list"] }];
+    const steadyEp = okData(await spawnAs(undefined, "steady_ep", { persona: { prompt: "x", endpoints: epList }, supervise }));
+    const epRecord = readSeatRecord(workspaceRoot, space, "steady_ep") as unknown as { agent: { launch: { endpoints?: unknown } } } | undefined;
+    check("a seat's record reads back through the resume schema with its endpoints",
+      steadyEp !== undefined && JSON.stringify(epRecord?.agent.launch.endpoints) === JSON.stringify(epList), epRecord?.agent.launch.endpoints);
+    launched.delete("steady_ep");
+    S.seats.get("steady_ep")!.exit();
+    await until(() => (S.spawned.get("steady_ep") ?? 0) > 1);
+    check("and an in-place restart hands the session the same endpoints",
+      (S.spawned.get("steady_ep") ?? 0) > 1 && JSON.stringify(launched.get("steady_ep")?.endpoints) === JSON.stringify(epList), launched.get("steady_ep")?.endpoints);
     // A seat whose recorded path, or whose relaunch path, names another file. Each is refused alone.
     // The recorded path moves and keeps the digest of the file the relaunch reads.
     const foreign = join(scratch, "foreign.md");
@@ -599,6 +735,14 @@ try {
     // An open mesh mints no credential, so a defined persona's capabilities are not checked there.
     const openDefine = await O.M.opDefinePersona({ name: "anything", persona: "x", capabilities: ["admin"] }, "local.peer", false);
     check("an open mesh writes a defined persona's capabilities without a check", openDefine.ok && JSON.stringify(loadAgentFile(join(root, ".cotal", "agents", "anything.md")).capabilities) === JSON.stringify(["admin"]), openDefine);
+    // An open mesh mints nothing and grants every endpoint, so the list is recorded and forwarded to
+    // the session as launch metadata, unchecked.
+    const freeEp = [{ endpoint: "com.example.orders", commands: ["refund"] }];
+    const openEp = okData(await O.mgr.startAgent({ name: "free_ep", agent: "smoke-inline", events: false, persona: { prompt: "x", endpoints: freeEp } }));
+    check("an open mesh records a persona's endpoints and hands them to the session",
+      openEp !== undefined && JSON.stringify((seatOf(O.M, "free_ep") as unknown as { launch: { endpoints?: unknown } } | undefined)?.launch.endpoints) === JSON.stringify(freeEp) && JSON.stringify(launched.get("free_ep")?.endpoints) === JSON.stringify(freeEp),
+      { seat: (seatOf(O.M, "free_ep") as unknown as { launch: { endpoints?: unknown } } | undefined)?.launch.endpoints, launched: launched.get("free_ep")?.endpoints });
+    O.seats.get("free_ep")?.exit();
     const last = okData(await O.mgr.startAgent({ name: "last", agent: "smoke-inline", events: false, persona: { prompt: "x" } }));
     stoppable(O.mgr);
     const stopped = await O.mgr.stop({ withAgents: true }).then(() => "stopped", (e: unknown) => String(e));
@@ -648,6 +792,21 @@ try {
     check("control: and writes no row for it", findActorUnified(ledger, owner, "wide") === undefined);
     check("a refused user-auth grant leaves no catalog file", !existsSync(join(root, ".cotal", "agents", "wide.md")));
     check("and no snapshot", snapshots(root).length === 0, snapshots(root));
+    // A user-auth mesh grants endpoint access through the service owner's records, so a persona that
+    // names the field is refused at both doors, an empty list included, before anything is written.
+    const userEp = /per-user auth, where endpoint access comes from the service owner's grants/;
+    const epSpawn = await U.mgr.startAgent({ name: "ep_user", agent: "smoke-inline", events: false, persona: { prompt: "x", subscribe: [], endpoints: [] } }, spawner);
+    check("a user-auth spawn naming endpoints, [] included, is refused by name", refused(epSpawn, userEp) && findActorUnified(ledger, owner, "ep_user") === undefined, epSpawn);
+    const epSpawnHeld = await U.mgr.startAgent({ name: "ep_user_held", agent: "smoke-inline", events: false, persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] } }, spawner);
+    check("so is one naming a command, with the same refusal and no ledger row", refused(epSpawnHeld, userEp) && findActorUnified(ledger, owner, "ep_user_held") === undefined, epSpawnHeld);
+    const epDefine = await U.M.opDefinePersona({ name: "ep_user_def", persona: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] }, spawner, false);
+    check("a user-auth definition naming endpoints is refused and writes nothing", refused(epDefine, userEp) && !existsSync(join(root, ".cotal", "agents", "ep_user_def.md")), epDefine);
+    const epDefineEmpty = await U.M.opDefinePersona({ name: "ep_user_empty", persona: "x", subscribe: [], endpoints: [] }, spawner, false);
+    check("so is one naming an empty list", refused(epDefineEmpty, userEp) && !existsSync(join(root, ".cotal", "agents", "ep_user_empty.md")), epDefineEmpty);
+    (U.mgr as unknown as { remoteAuthority?: unknown }).remoteAuthority = {};
+    const epHosted = await U.M.opDefinePersona({ name: "ep_hosted", persona: "x", subscribe: [], endpoints: [] }, spawner, false);
+    (U.mgr as unknown as { remoteAuthority?: unknown }).remoteAuthority = undefined;
+    check("and so is a hosted manager's", refused(epHosted, userEp), epHosted);
     // define-persona reads the same row: the definer puts only capabilities its scope carries.
     const defineAs = (who: string, name: string, capabilities: string[]) => U.M.opDefinePersona({ name, persona: "x", capabilities }, who, false);
     const definedPath = (name: string) => join(root, ".cotal", "agents", `${name}.md`);

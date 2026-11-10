@@ -57,4 +57,8 @@ def format_injection(msg: dict) -> str:
     who = f"{sender} / {attribution_safe(role)}" if role else sender
     # A backfilled item pre-dates this session; say so the way connector-core's fmtItem does (#2205).
     history = "(history) " if msg.get("historical") is True else ""
+    # A notice is the mesh's own word about a request this seat sent, checked against the delivery
+    # lease, so it is labelled as that and not as a peer's DM, as connector-core's fmtItem does.
+    if msg.get("notice") == "anycast":
+        return f"[anycast notice from the delivery daemon] {history}{body_safe(msg.get('text'))}"
     return f"[{kind} from {who}] {history}{body_safe(msg.get('text'))}"

@@ -36,6 +36,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
+import { tlsIntent } from "./broker-url.js";
 import { c, paintFor } from "./colors.js";
 import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
@@ -603,11 +604,8 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
         { code: "TARGET_NOT_FOUND", ...(named ? { target: { space } } : {}) },
       );
     const creds = readCredsFile(flags.creds);
-    // A broker taken from the space's record keeps its recorded TLS requirement. With `--server` the
-    // connect is off-registry: no recorded TLS intent to inherit. It stays non-strict, and that is a
-    // real (documented) gap rather than a safe default - a `--creds` connect to a TLS broker still
-    // upgrades, but is downgradeable.
-    const tls = recorded?.tlsRequired === true;
+    // Keep recorded TLS policy, or require the transport the explicit URL names.
+    const tls = tlsIntent(server, recorded?.tlsRequired === true);
     try {
       await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) });
     } catch (e) {
@@ -621,12 +619,19 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
       const elsewhere = flags.server !== undefined && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
       if (owner === space) {
         if (elsewhere === undefined) {
-          const revokedAt = await recordedRevocation(space, creds);
-          if (revokedAt === undefined) throw e;
-          // The account here records the revocation, so the refusal says so instead of "check your creds".
+          const rejection = await recordedCredentialRejection(space, creds);
+          if (rejection === undefined) throw e;
           const claims = credsClaims(creds);
-          const message = `credentials rejected at ${at}: the key ${claims.sub} in ${flags.creds} was revoked at ${new Date(revokedAt * 1000).toISOString()} with auth revoke-credential`;
           const mint = claims.name === "agent" ? `mint a new key with the grants it held: \`cotal auth mint <label>${grantMintFlags(agentGrants(claims.nats ?? {}, space))} --out <new file>\`` : `mint a new key: \`cotal auth mint <label>${typeof claims.name === "string" ? ` --profile ${claims.name}` : ""} --out <new file>\``;
+          if (rejection.kind === "other-account") {
+            // A local account says nothing about an unrelated broker with the same space name.
+            if (ownerMesh?.mode !== "auth" || ownerMesh.server !== server) throw e;
+            const message = `credentials rejected at ${at}: space "${space}" has a different local identity from the one that issued ${flags.creds}, as after reset space and a new up`;
+            const remedy = `the old credential cannot authenticate to this identity; from ${ownerMesh.root}, ${mint}`;
+            throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path: flags.creds } });
+          }
+          // The account here records the revocation, so the refusal says so instead of "check your creds".
+          const message = `credentials rejected at ${at}: the key ${claims.sub} in ${flags.creds} was revoked at ${new Date(rejection.at * 1000).toISOString()} with auth revoke-credential`;
           const remedy = `a revoked key is not signed again; ${mint}`;
           throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path: flags.creds } });
         }
@@ -656,10 +661,9 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
         undefined,
         { code: "TARGET_NOT_FOUND" },
       );
-    // A raw OPEN remote broker named entirely on the command line: nothing recorded it, so there
-    // is no intent to honour. Non-strict, same documented gap as `--creds`.
-    await reachableOrThrow(flags.server, {});
-    return { server: flags.server, space: flags.space, tls: false };
+    const tls = tlsIntent(flags.server, false);
+    await reachableOrThrow(flags.server, { tls });
+    return { server: flags.server, space: flags.space, tls };
   }
   const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline, readOnly: opts.readOnly });
   return connectTargetOrThrow(target, role, opts);
@@ -932,6 +936,13 @@ export function spaceInCreds(creds: string): string | undefined {
  *  of the revocation, in seconds. The broker refuses a credential issued at or before it. Undefined
  *  when the account is not here, the credential is another account's, or its key is not revoked. */
 export async function recordedRevocation(space: string, creds: string): Promise<number | undefined> {
+  const rejection = await recordedCredentialRejection(space, creds);
+  return rejection?.kind === "revoked" ? rejection.at : undefined;
+}
+
+/** The local account's reason for rejecting this credential, when its trust can be read. This is
+ *  diagnostic metadata only; the connect path consults it after the broker has refused the file. */
+async function recordedCredentialRejection(space: string, creds: string): Promise<{ kind: "other-account" } | { kind: "revoked"; at: number } | undefined> {
   let auth: SpaceAuth | undefined, claims: ReturnType<typeof credsClaims>;
   // An account record this cannot read leaves the caller's own answer standing, such as the
   // broker's refusal.
@@ -939,9 +950,10 @@ export async function recordedRevocation(space: string, creds: string): Promise<
     auth = await getSpaceAuth(workspaceSecretStore(findMesh(space)?.root ?? findCotalRoot()), space);
     claims = credsClaims(creds);
   } catch { return undefined; }
-  if (!auth || claims.sub === undefined || (claims.nats?.issuer_account ?? claims.iss) !== auth.account.pub) return undefined;
+  if (!auth || claims.sub === undefined) return undefined;
+  if ((claims.nats?.issuer_account ?? claims.iss) !== auth.account.pub) return { kind: "other-account" };
   const at = accountRevocations(auth.account.jwt)[claims.sub];
-  return at !== undefined && (claims.iat === undefined || claims.iat <= at) ? at : undefined;
+  return at !== undefined && (claims.iat === undefined || claims.iat <= at) ? { kind: "revoked", at } : undefined;
 }
 
 /** {@link readCredsFile} with the exiting disposition. */

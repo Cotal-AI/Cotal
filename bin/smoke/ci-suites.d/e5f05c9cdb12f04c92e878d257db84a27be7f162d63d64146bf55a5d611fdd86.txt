@@ -1,0 +1,2 @@
+# Local custody inventory read failures retain their path, native cause and next step.
+smoke:manager-seats-inventory

@@ -69,6 +69,7 @@ export {
   revokeIdpSession,
   loadIdpSession,
   hasIdpSessions,
+  listIdpAccounts,
   saveIdpSession,
   deleteIdpSession,
   deleteIdpSpaceCatalog,
@@ -77,8 +78,12 @@ export {
   requireIdpSession,
   normalizeIdpUrl,
   probeIdpJwks,
+  idpTimeoutMs,
+  IdpConfigurationError,
   IdpLoginCancelled,
   IdpUnreachableError,
+  IdpDeviceAuthorizationRefusedError,
+  IdpSessionRejectedError,
   type IdpSession,
   type DeviceLoginOpts,
   type DeviceLoginPrompt,
@@ -224,3 +229,4 @@ export { createToolResultRevocationCustody, recordToolResultRevocation, snapshot
 export * from "./service-host-contract.js";
 
 export { SERVICE_RENEWAL_TYP, validateServiceRenewalProof, type ServiceRenewalClaims, type ValidatedServiceRenewal } from "./service-renewal.js";
+export { withIdpSessionDir } from "./session-context.js";

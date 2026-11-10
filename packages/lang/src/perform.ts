@@ -59,6 +59,22 @@ export function option(bag: unknown, key: string): unknown {
   return bag === null || typeof bag !== "object" ? undefined : (bag as Record<string, unknown>)[key];
 }
 
+/** Check the handle's value shape. The host still enforces ownership and lifecycle identity. */
+function agentHandle(value: unknown, where: string): AgentHandleValue {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const r = value as Record<string, unknown>;
+    if (typeof r.agent === "string" && r.agent.length > 0 && typeof r.persona === "string"
+      && (r.kind === undefined || r.kind === "spawned" || r.kind === "participant")) return value as AgentHandleValue;
+  }
+  throw new RuntimeFault("L3050", `${where} requires an agent handle returned by \`spawn\` or \`participant\`, not an agent name or another value. Pass the returned handle instead.`);
+}
+
+/** Validate a list before a scope or effect projects its members into journal identity. */
+export function agentHandles(value: unknown, where: string): AgentHandleValue[] {
+  if (!Array.isArray(value)) throw new RuntimeFault("L3050", `${where} requires an array of agent handles returned by \`spawn\` or \`participant\`. Pass the returned handles instead of agent names.`);
+  return value.map((member, i) => agentHandle(member, `${where}[${i}]`));
+}
+
 /**
  * Is this value a `spawn` placement: an `{ endpoint, instanceId }` pair of non-empty strings?
  *
@@ -93,7 +109,8 @@ function isPlacementPair(v: unknown): v is { endpoint: string; instanceId: strin
  */
 const INLINE_STRINGS = ["role", "model", "variant", "description"] as const;
 const INLINE_LISTS = ["subscribe", "allowSubscribe", "allowPublish", "capabilities"] as const;
-const INLINE_KEYS: readonly string[] = ["name", "prompt", ...INLINE_STRINGS, ...INLINE_LISTS, "save"];
+const INLINE_KEYS: readonly string[] = ["name", "prompt", ...INLINE_STRINGS, ...INLINE_LISTS, "endpoints", "save"];
+const ENDPOINT_KEYS: readonly string[] = ["endpoint", "commands", "instanceId"];
 
 /**
  * The inline persona a `spawn`'s first argument carries, or `undefined` for a catalog spawn (§6.1).
@@ -125,6 +142,22 @@ function inlineDefinition(subject: unknown): InlineSpawnDefinition | undefined {
     if (!Array.isArray(r[k]) || !(r[k] as unknown[]).every((c) => typeof c === "string"))
       refuse(`\`${k}\` must be a list of strings when present`);
     out[k] = [...(r[k] as string[])];
+  }
+  // The shape only: the manager reads the names (reserved commands, single-label endpoints) and
+  // bounds each command against the run, as it does for a persona file.
+  if (r.endpoints !== undefined) {
+    if (!Array.isArray(r.endpoints)) refuse("`endpoints` must be a list of { endpoint, commands, instanceId? } entries when present");
+    out.endpoints = (r.endpoints as unknown[]).map((e) => {
+      if (e === null || typeof e !== "object" || Array.isArray(e)) refuse("`endpoints` entries must be records of endpoint, commands and an optional instanceId");
+      const entry = e as Record<string, unknown>;
+      const extra = Object.keys(entry).filter((k) => !ENDPOINT_KEYS.includes(k));
+      if (extra.length) refuse(`\`endpoints\` entry carries ${extra.map((k) => `\`${k}\``).join(", ")}; an entry takes ${ENDPOINT_KEYS.join(", ")}`);
+      if (!nonBlank(entry.endpoint)) refuse("`endpoints` entry needs a non-empty `endpoint` string");
+      if (!Array.isArray(entry.commands) || entry.commands.length === 0 || !(entry.commands as unknown[]).every(nonBlank))
+        refuse(`\`endpoints\` entry for ${entry.endpoint as string} needs a non-empty \`commands\` list of strings`);
+      if (entry.instanceId !== undefined && !nonBlank(entry.instanceId)) refuse(`\`endpoints\` entry for ${entry.endpoint as string}: \`instanceId\` must be a non-empty string when present`);
+      return { endpoint: entry.endpoint, commands: [...(entry.commands as string[])], ...(entry.instanceId !== undefined ? { instanceId: entry.instanceId } : {}) };
+    });
   }
   if (r.save !== undefined) {
     if (typeof r.save !== "boolean") refuse("`save` must be true or false when present");
@@ -745,6 +778,8 @@ async function observeUntil(
 export async function dispatchPrimitive(host: EffectHost, name: string, args: unknown[], frame: Frame): Promise<unknown> {
   const spec = PRIMITIVES[name];
   if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
+  if (name === "ask" || name === "turn" || name === "monitor") agentHandle(args[0], `argument 1 of \`${name}\``);
+  if (name === "notify") agentHandles(args[0], "argument 1 of `notify`");
   // Every argument crosses the effect boundary: it is hashed, recorded, or handed to the handler,
   // and a value with no canonical form can be none of those. Refused HERE, before any entry is
   // written, with the argument named: `undefined`, a non-finite number and an opaque object are
@@ -1216,7 +1251,7 @@ export function freeConstructors(run: RunIdentity): ReadonlyArray<readonly [stri
   return [
     ["channel", (a) => deepFreeze({ channel: a[0] as string })],
     ["run", () => deepFreeze({ id: run.runId, programHash: run.programHash, startedAt: run.startedAt })],
-    ["replied", (a) => deepFreeze({ event: "replied", agent: (a[0] as AgentHandleValue).agent })],
+    ["replied", (a) => deepFreeze({ event: "replied", agent: agentHandle(a[0], "argument 1 of `replied`").agent })],
     [
       "message",
       (a) => {
@@ -1225,13 +1260,13 @@ export function freeConstructors(run: RunIdentity): ReadonlyArray<readonly [stri
         return deepFreeze({
           event: "message",
           channel: ch,
-          ...(opts.from !== undefined ? { from: (opts.from as AgentHandleValue).agent } : {}),
+          ...(opts.from !== undefined ? { from: agentHandle(opts.from, "`from` of `message`").agent } : {}),
           ...(opts.matches !== undefined ? { matches: opts.matches as string } : {}),
         });
       },
     ],
     ["idle", (a) => deepFreeze({ event: "idle", channel: (a[0] as ChannelHandleValue).channel, duration: a[1] as string })],
-    ["down", (a) => deepFreeze({ event: "down", agent: (a[0] as AgentHandleValue).agent })],
+    ["down", (a) => deepFreeze({ event: "down", agent: agentHandle(a[0], "argument 1 of `down`").agent })],
   ];
 }
 

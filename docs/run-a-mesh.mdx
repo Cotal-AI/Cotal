@@ -68,6 +68,12 @@ Check the connector rows before launching an agent.
 
 The component check distinguishes absent processes, components that are not serving, and refused requests.
 Follow the report's next action if the stack is incomplete.
+The report also warns if the recorded broker store is missing or its directory was replaced.
+`status --space <name>` checks that local stack's root even from another folder. Coincident folder
+and selected roots produce one warning. The running broker may still serve open files, but a
+restart can lose that retained history.
+`down`, its dry run and the next `up` repeat the warning. A stack journal that cannot be read is
+reported separately, with the permission repair when available.
 [Recover a mesh](recover-a-mesh.mdx) explains the project logs and recovery states.
 [Launch agents](launch-agents.mdx#check-connector-availability) explains how the manager checks installed connectors.
 

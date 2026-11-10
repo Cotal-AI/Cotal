@@ -17,7 +17,7 @@
  * caller's retry started a second seat on the same work.
  *
  * An inline `persona` rides whole to the manager through a closed schema, and its `model` is audited
- * like the override. `cotal_persona` carries `capabilities` for the manager to bound.
+ * like the override. `cotal_persona` carries `capabilities` and `endpoints` for the manager to bound.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -397,9 +397,13 @@ check("a wildcard join is refused before invoke", wildReply.ok === false && /con
 const personaShape = spawnTool?.schema.shape.persona as { safeParse: (value: unknown) => { success: boolean } } | undefined;
 check("cotal_spawn schema exposes the inline persona", personaShape !== undefined);
 check("the inline persona schema takes the documented record", personaShape?.safeParse({ prompt: "You review diffs.", role: "reviewer", allowPublish: [], capabilities: ["spawn"], save: true }).success === true);
+check("the inline persona schema takes endpoints and refuses an entry key it has no slot for",
+  personaShape?.safeParse({ prompt: "x", endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] }).success === true
+    && personaShape?.safeParse({ prompt: "x", endpoints: [{ endpoint: "com.example.orders", commands: ["list"], target: "self" }] }).success === false
+    && personaShape?.safeParse({ prompt: "x", endpoints: [{ endpoint: "com.example.orders", commands: [] }] }).success === false);
 check("the inline persona schema refuses a field it has no slot for", personaShape?.safeParse({ prompt: "x", config: "/etc/passwd" }).success === false && personaShape?.safeParse({ prompt: "x", owner: "u_x.someone" }).success === false);
 check("the inline persona schema refuses an empty body", personaShape?.safeParse({ prompt: "" }).success === false);
-const inline = { prompt: "You review diffs.", role: "reviewer", subscribe: ["general"], allowPublish: [], capabilities: ["spawn"] };
+const inline = { prompt: "You review diffs.", role: "reviewer", subscribe: ["general"], allowPublish: [], capabilities: ["spawn"], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] };
 const inlineAgent = new MeshAgent(reader);
 const callsInline = record(inlineAgent);
 await spawnTool?.run(inlineAgent, reader, { name: "helper", persona: inline, prompt: "Review the diff." });
@@ -439,6 +443,10 @@ const callsDefine = record(definer);
 await personaTool?.run(definer, cfg, { name: "probe", prompt: "You probe.", capabilities: ["spawn"] });
 const recDefine = callsDefine.find((c) => c.command === "define-persona");
 check("cotal_persona forwards capabilities for the manager to bound", JSON.stringify(recDefine?.args?.capabilities) === JSON.stringify(["spawn"]), recDefine?.args);
+const callsDefineEp = record(definer);
+await personaTool?.run(definer, cfg, { name: "probe", prompt: "You probe.", endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] });
+const recDefineEp = callsDefineEp.find((c) => c.command === "define-persona");
+check("and endpoints the same way", JSON.stringify(recDefineEp?.args?.endpoints) === JSON.stringify([{ endpoint: "com.example.orders", commands: ["list"] }]), recDefineEp?.args);
 
 // #5490: the result of a started seat says where it is and the next move. It names only the join the
 // caller passed: the reply carries no channel list, and a persona may list channels the caller
@@ -479,7 +487,7 @@ check(
   onceOn.text,
 );
 
-const EXPECTED_CHECKS = 79;
+const EXPECTED_CHECKS = 81;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);

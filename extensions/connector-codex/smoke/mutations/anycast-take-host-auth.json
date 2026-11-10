@@ -1,0 +1,29 @@
+{
+  "suite": [
+    "extensions/connector-codex/smoke/anycast-take-host-auth.smoke.ts"
+  ],
+  "guard": "The Codex host checks its turn state again after a role request's take, so a drive sends no turn/start into a turn another client started, and a steer whose own turn ended steers nothing into the next one",
+  "command": "pnpm smoke:codex-anycast-take-host:auth",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=4",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-codex/smoke/mutations/anycast-take-host-auth.json",
+  "mutations": [
+    {
+      "name": "a drive checks only for shutdown after its take",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "        if (shuttingDown || driver.busy || awaitingTurnEnd) return;\n        if (items.length === 0 && !turnPeek) return;",
+      "replace": "        if (shuttingDown) return;\n        if (items.length === 0 && !turnPeek) return;",
+      "expectRed": "1a the drive sends no turn/start while the other turn runs, and starts one at its boundary",
+      "cell": "1a the drive sends no turn/start while the other turn runs, and starts one at its boundary",
+      "note": "A turn the TUI started during the take gets a turn/start sent into it, which app-server refuses or runs beside it."
+    },
+    {
+      "name": "a steer checks only that some turn is running after its take",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "        if (items.length === 0 || !driver.busy || !awaitingTurnEnd) return;",
+      "replace": "        if (items.length === 0 || !driver.busy) return;",
+      "expectRed": "2a nothing is steered into the turn this host did not start",
+      "cell": "2a nothing is steered into the turn this host did not start",
+      "note": "The host's turn ended during the take and another client's turn is running, so the request is steered into that turn and then carried again by the boundary drive."
+    }
+  ]
+}

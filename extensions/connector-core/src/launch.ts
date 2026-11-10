@@ -19,6 +19,7 @@
  */
 import {
   eventChannel,
+  type PersonaEndpoint,
   LAUNCH_MATERIAL_ENV,
   parsePrincipalKey,
   principalKey,
@@ -193,6 +194,7 @@ export function aclEnv(opts: {
   allowSubscribe?: string[];
   allowPublish?: string[];
   capabilities?: string[];
+  endpoints?: PersonaEndpoint[];
 }): Record<string, string> {
   const env: Record<string, string> = {};
   if (opts.subscribe) env.COTAL_SUBSCRIBE = opts.subscribe.join(",");
@@ -202,6 +204,9 @@ export function aclEnv(opts: {
   // list. Forward them on the same rail as the read/post ACL, or a manifest-spawned agent (no persona
   // file) gets `config.capabilities = []` and the tools stay hidden even though its creds authorize them.
   if (opts.capabilities?.length) env.COTAL_CAPABILITIES = opts.capabilities.join(",");
+  // The endpoint commands the seat was handed at launch, as JSON, so the session can say what it holds.
+  // An empty list is written too: the session then reads the launch's answer, not the persona file.
+  if (opts.endpoints !== undefined) env.COTAL_ENDPOINTS = JSON.stringify(opts.endpoints);
   return env;
 }
 

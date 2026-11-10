@@ -125,7 +125,13 @@ interface OAuthError {
 }
 async function oauthError(res: Response, cancel?: AbortSignal): Promise<OAuthError> {
   try {
-    return (await res.json()) as OAuthError;
+    const body: unknown = await res.json();
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return {};
+    const fields = body as Record<string, unknown>;
+    return {
+      ...(typeof fields.error === "string" ? { error: fields.error } : {}),
+      ...(typeof fields.error_description === "string" ? { error_description: fields.error_description } : {}),
+    };
   } catch {
     // An unreadable error body is treated as "no detail", unless the caller cancelled mid-read.
     throwIfCancelled(cancel);
@@ -133,19 +139,27 @@ async function oauthError(res: Response, cancel?: AbortSignal): Promise<OAuthErr
   }
 }
 
+/** Local IdP configuration that must be corrected before making a request. */
+export class IdpConfigurationError extends Error {}
+
 /** Per-request timeout budget (ms). Default 30s; `COTAL_IDP_TIMEOUT_MS` overrides for a slow IdP
- *  (or a test). A malformed override fails loud rather than silently reverting to the default. */
-function idpTimeoutMs(): number {
+ *  (or a test). Requires whole milliseconds from 1 to 2147483647, the non-overflowing Node timer
+ *  range. A malformed override fails loud rather than silently reverting to the default. */
+export function idpTimeoutMs(): number {
   const raw = process.env.COTAL_IDP_TIMEOUT_MS;
   if (raw === undefined) return 30_000;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0)
-    throw new Error(`COTAL_IDP_TIMEOUT_MS must be a positive number of milliseconds - got "${raw}"`);
+  // AbortSignal.timeout rejects fractions; its underlying timer clamps larger delays to 1ms.
+  if (!Number.isInteger(n) || n < 1 || n > 2_147_483_647)
+    throw new IdpConfigurationError(`COTAL_IDP_TIMEOUT_MS must be a whole number of milliseconds from 1 to 2147483647 - got "${raw}"`);
   return n;
 }
 
 /** An IdP request that got no answer: the transport failed or the per-request timeout fired. */
 export class IdpUnreachableError extends Error {}
+
+/** The provider refused the initial device-code request, before approval or persistence. */
+export class IdpDeviceAuthorizationRefusedError extends Error {}
 
 /** The IdP answered 401 to a cached session: it expired or was revoked there. */
 export class IdpSessionRejectedError extends Error {}
@@ -262,7 +276,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   }, opts.signal);
   if (!res.ok) {
     const e = await oauthError(res, opts.signal);
-    throw new Error(
+    throw new IdpDeviceAuthorizationRefusedError(
       `idp login: ${base} refused the device authorization (${e.error ?? `HTTP ${res.status}`}: ${e.error_description ?? "no detail"})`,
     );
   }
@@ -441,6 +455,8 @@ export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise
 export async function establishIdpSession(
   opts: DeviceLoginOpts & { dir: string },
 ): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
+  // Refuse damaged local state before asking the person to approve a sign-in.
+  readCatalogPreparationState(opts.dir);
   const previousSub = loadIdpSession(opts.dir, opts.idpUrl)?.sub;
   const session = await deviceLogin(opts);
   const tokenResult = await fetchIdpJwtResponse(opts.idpUrl, session.token, opts.signal);
@@ -469,6 +485,8 @@ export async function establishIdpSession(
   // The persistence fence: a cancel that lands after approval, while the proof was in flight,
   // must leave no session and no catalog entry on disk.
   throwIfCancelled(opts.signal);
+  // Approval can take minutes. Recheck before writing if another process changed the cache.
+  readCatalogPreparationState(opts.dir);
   saveIdpSession(opts.dir, opts.idpUrl, session);
   saveCatalogAdvertisement(opts.dir, opts.idpUrl, claims.iss, sub, tokenResult.response.headers.get("link"));
   return { session, sub, ...(previousSub && previousSub !== sub ? { previousSub } : {}), ...(label ? { label } : {}) };
@@ -579,13 +597,13 @@ function readCatalogPreparationState(dir: string) {
   let file: CatalogsFile;
   try { sessions = readSessionsFile(dir).sessions; }
   catch {
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local sign-in cache could not be read; no catalog refresh or registry application was attempted", {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local sign-in cache (idp-sessions.json) could not be read; no catalog refresh or registry application was attempted", {
       target: { path: join(dir, SESSIONS_FILE) }, remedy: "inspect and restore the sign-in cache before retrying; its contents were not printed or replaced",
     });
   }
   try { file = readCatalogsFile(dir); }
   catch {
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local space catalog cache could not be read; no catalog refresh or registry application was attempted", {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local space catalog cache (space-catalogs.json) could not be read; no catalog refresh or registry application was attempted", {
       target: { path: join(dir, CATALOG_FILE) }, remedy: "inspect and restore the catalog cache before retrying; its contents were not printed or replaced",
     });
   }
@@ -801,15 +819,18 @@ function readSessionsFile(dir: string): SessionsFile {
     throw new Error(`${f}: unknown version ${String(parsed.ver)} (expected ${SESSIONS_VER}) - refusing to guess at a credential file`);
   if (parsed.sessions === null || typeof parsed.sessions !== "object" || Array.isArray(parsed.sessions))
     throw new Error(`${f}: malformed sessions map`);
+  for (const [idp, session] of Object.entries(parsed.sessions)) {
+    if (normalizeIdpUrl(idp) !== idp || !session || typeof session !== "object" || Array.isArray(session)
+      || typeof session.token !== "string" || !session.token
+      || typeof session.expiresAt !== "number" || !Number.isFinite(session.expiresAt))
+      throw new Error(`${f}: malformed session record`);
+  }
   return parsed;
 }
 
 /** Account-picker metadata only. Session tokens never leave this helper. */
 export function listIdpAccounts(dir: string): { idp: string; sub?: string; expiresAt: number }[] {
   return Object.entries(readSessionsFile(dir).sessions).map(([idp, session]) => {
-    const normalized = normalizeIdpUrl(idp);
-    if (normalized !== idp || !session || typeof session.expiresAt !== "number" || !Number.isFinite(session.expiresAt))
-      throw new Error("the cached account metadata is invalid");
     return { idp, expiresAt: session.expiresAt, ...(typeof session.sub === "string" ? { sub: session.sub } : {}) };
   });
 }
@@ -818,8 +839,6 @@ export function loadIdpSession(dir: string, idpUrl: string): IdpSession | undefi
   const key = normalizeIdpUrl(idpUrl);
   const s = readSessionsFile(dir).sessions[key];
   if (s === undefined) return undefined;
-  if (typeof s.token !== "string" || !s.token || typeof s.expiresAt !== "number")
-    throw new Error(`stored idp session for ${key} is malformed - run \`cotal login --idp ${key}\` again`);
   // `sub` rides the cache round-trip (offline owner derivation for the spawn paths) — every
   // consumer of ownerForLogin is a SEPARATE process re-reading this file, so dropping it here
   // broke both user-mode spawn entry points while every in-process test passed.
