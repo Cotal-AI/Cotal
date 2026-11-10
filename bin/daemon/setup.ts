@@ -242,6 +242,7 @@ async function connectWhenApproved(opts: SetupOptions, steps: SetupStep[]): Prom
     const r = reply.result;
     if (r.state === "connected" || TERMINAL.has(r.state) || Date.now() >= deadline) {
       steps.push({ step: "connect", outcome: r.state, detail: r.message });
+      opts.report(`connect: ${r.state}; ${r.message}`);
       return { state: r.state, ...(r.instanceId ? { instanceId: r.instanceId } : {}), message: r.message };
     }
     if (!announced) {

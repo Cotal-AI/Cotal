@@ -47,6 +47,7 @@
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
  * Account pin regression only: add --account-mismatch-only (C1, C2, C7b and C10).
+ * Setup progress regression only: add --setup-progress-only (uses the shipped foreground daemon).
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
@@ -83,6 +84,7 @@ const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
 const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
 const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
 const originalPath = process.env.PATH;
+const setupProgressOnly = process.argv.includes("--setup-progress-only");
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -109,6 +111,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, JSON.stringify(extra ?? "")?.slice(0, 600)); }
 };
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
+  if (setupProgressOnly && !/^(C1 |C1b |C2 |C4 |C17 |C17b |C10 )/.test(title)) return;
   if (process.argv.includes("--hosting-only") && !title.startsWith("H1")) return;
   if (process.argv.includes("--account-mismatch-only") && !/^(C1 |C2 |C7b |C10 )/.test(title)) return;
   console.log(title);
@@ -149,6 +152,13 @@ chmodSync(root, 0o700);
 const home = join(root, "home"), participant = join(root, "participant"), rtDir = join(root, "rt"), jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}a2b2-js-`));
 for (const d of [home, participant, rtDir]) mkdirSync(d, { mode: 0o700 });
 process.env.COTAL_HOME = home;
+if (setupProgressOnly) {
+  process.env.HOME = home;
+  process.env.XDG_CONFIG_HOME = join(root, "config");
+  process.env.XDG_RUNTIME_DIR = rtDir;
+  process.env.XDG_DATA_HOME = join(root, "data");
+  process.env.XDG_CACHE_HOME = join(root, "cache");
+}
 const explicitHome = process.argv.includes("--explicit-home-repro") ? join(root, "explicit-daemon") : undefined;
 const paths = explicitHome ? daemonPathsFor(explicitHome, { XDG_RUNTIME_DIR: rtDir }) : daemonPaths({ XDG_RUNTIME_DIR: rtDir });
 
@@ -356,14 +366,14 @@ try {
   const connectS = (space: string) => askLogged({ op: "service-connect", space }, 90_000);
   const statusS = (space: string) => askLogged({ op: "service-status", space });
   const disconnectS = (space: string) => askLogged({ op: "service-disconnect", space });
-  const cli = async (argv: string[], format: "--plain" | "--json" = "--json") => {
+  const cli = async (argv: string[], format: "--plain" | "--json" = "--json", onStderr?: (text: string) => void) => {
     const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", ...argv, format], {
       cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
       stdio: ["ignore", "pipe", "pipe"], timeout: 90_000, killSignal: "SIGKILL",
     });
     let out = "", err = "";
     child.stdout.on("data", (b) => { out += String(b); });
-    child.stderr.on("data", (b) => { err += String(b); });
+    child.stderr.on("data", (b) => { err += String(b); onStderr?.(err); });
     const status = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
     frames.push(out, err);
     const doc = format === "--json" ? JSON.parse(out) as Record<string, any> : undefined;
@@ -421,8 +431,26 @@ try {
   };
 
   let d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+  let foreground: ChildProcess | undefined;
   let assignmentDigest = "";
   try {
+    if (setupProgressOnly) {
+      await d.close();
+      foreground = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "serve"], {
+        cwd: root, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      await new Promise<void>((resolve, reject) => {
+        let out = "", err = "";
+        const timer = setTimeout(() => reject(new Error(`foreground daemon readiness timeout: ${err}`)), 20_000);
+        foreground!.stdout!.on("data", (b) => {
+          out += String(b);
+          if (out.includes("daemon ready at ")) { clearTimeout(timer); resolve(); }
+        });
+        foreground!.stderr!.on("data", (b) => { err += String(b); });
+        foreground!.once("error", (e) => { clearTimeout(timer); reject(e); });
+        foreground!.once("exit", (code) => { clearTimeout(timer); reject(new Error(`foreground daemon exited ${code}: ${err}`)); });
+      });
+    }
     await cell("C1 connect before approval is approval-pending, never connected", async () => {
       await ask(paths.socket, { op: "register", space: ON });
       check("C1 registration alone retains approval-pending for offline status", stateOf(await statusS(ON)) === "approval-pending");
@@ -447,11 +475,28 @@ try {
       check("C1b it says the registration is already sent, so a rerun continues", String(failure?.message ?? "").includes("registration request is sent"), failure?.message);
       check("C1b its remedy names the owner's approval and the command to rerun", /approve this machine/.test(String((failure?.detail?.remedy ?? failure?.remedy) ?? "")) && /cotal daemon setup --space/.test(String((failure?.detail?.remedy ?? failure?.remedy) ?? "")), failure?.detail?.remedy ?? failure?.remedy);
       check("C1b nothing is connected and no resume intent was recorded", stateOf(await statusS(ON)) !== "connected" && !existsSync(intentFile(ON)));
-      check("C1b it still printed its progress, one line per stage reached", lines.length >= 4 && lines.every((l) => /^(service|sign-in|register|connect): /.test(l)), lines);
+      check("C1b it reported the final pending connect state", lines.filter((l) => l.startsWith("connect: approval-pending;")).length === 1, lines);
+      for (const format of ["--plain", "--json"] as const) {
+        const pending = await cli(["setup", "--no-manager", "--space", ON, "--wait", "0"], format);
+        check(`C1b ${format} exits partial with pending approval`, pending.status === 4 && (format === "--json"
+          ? pending.doc?.error?.code === "OPERATION_PARTIAL" && pending.doc?.error?.cause?.code === "APPROVAL_PENDING"
+          : pending.err.includes("OPERATION_PARTIAL") && pending.err.includes("APPROVAL_PENDING")), pending);
+        check(`C1b ${format} reports every reached stage on stderr`, ["service", "sign-in", "register", "connect"].every((stage) => pending.err.split("\n").some((line) => line.startsWith(`${stage}: `))), pending.err);
+        check(`C1b ${format} reports the final pending connect state once`, pending.err.split("\n").filter((line) => line.startsWith("connect: approval-pending;")).length === 1, pending.err);
+      }
     });
 
     await cell("C2 after approval: connected only with a broker connection and the space's ready", async () => {
-      const a = await approve(host, ON, fixture.owner);
+      seedUnitReceipt();
+      let approval: ReturnType<typeof approve> | undefined;
+      const waiting = await cli(["setup", "--no-manager", "--space", ON, "--wait", "30"], "--plain", (text) => {
+        if (!approval && text.includes("connect: waiting up to 30s")) approval = approve(host, ON, fixture.owner);
+      });
+      if (!approval) throw new Error("setup never reported waiting for approval");
+      const a = await approval;
+      check("C2 setup reports waiting before its terminal connected line", waiting.status === 0 && /^connect: waiting up to 30s/m.test(waiting.err)
+        && waiting.err.split("\n").filter((line) => line.startsWith("connect: connected;")).length === 1
+        && waiting.err.indexOf("connect: connected;") > waiting.err.indexOf("connect: waiting up to 30s"), waiting);
       assignmentDigest = a.decided.approval?.assignment.assignmentDigest ?? "";
       check("C2 instrument: fixture operator bound and fixture owner approved through the stock host", a.bound.state === "bound" && a.decided.state === "approved", a);
       const r = await connectS(ON);
@@ -585,7 +630,16 @@ try {
       check("C17 it skipped the sign-in, because this machine is signed in", r.steps[1]!.outcome === "already-signed-in", r.steps[1]);
       check("C17 it reported the registration the space holds", ["registered", "pending", "approval-required"].includes(r.steps[2]!.outcome), r.steps[2]);
       check("C17 it names the unit and the instance", r.unit === "cotal-daemon.service" && r.instanceId === identityOf(ON)?.instanceId, { unit: r.unit, instanceId: r.instanceId });
-      check("C17 it printed one plain progress line per stage", lines.length >= 4 && lines.every((l) => /^(service|sign-in|register|connect): /.test(l)), lines);
+      check("C17 it reports the final connected state once", lines.filter((l) => l.startsWith("connect: connected;")).length === 1, lines);
+      for (const format of ["--plain", "--json"] as const) {
+        await disconnectS(ON);
+        const connected = await cli(["setup", "--no-manager", "--space", ON, "--wait", "30"], format);
+        check(`C17 ${format} first-poll connection succeeds`, connected.status === 0 && (format !== "--json" || connected.doc?.result?.state === "connected"), connected);
+        check(`C17 ${format} reports every reached stage on stderr`, ["service", "sign-in", "register", "connect"].every((stage) => connected.err.split("\n").some((line) => line.startsWith(`${stage}: `))), connected.err);
+        check(`C17 ${format} reports connected once without waiting`, connected.err.split("\n").filter((line) => line.startsWith("connect: connected;")).length === 1 && !connected.err.includes("connect: waiting"), connected.err);
+      }
+      const status = await cli(["service-status", "--space", ON]);
+      check("C17 independent CLI status agrees with connected setup", status.status === 0 && status.doc?.result?.state === "connected", status);
       check("C17 the connection it made is recorded for resume", existsSync(intentFile(ON)));
       check("C17 the space reads this instance ready", stateOf(await statusS(ON)) === "connected");
       check("C17 nothing secret reached its progress lines", !lines.some((l) => [SESSION, ...jwtsIssued].some((t) => l.includes(t))) && !lines.some((l) => /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(l)));
@@ -625,6 +679,9 @@ try {
       check("C17b it carries the space's own reason as the native code", (failure?.detail?.native?.code ?? failure?.native?.code) === "PROPOSAL_REFUSED", { native: failure?.detail?.native ?? failure?.native });
       check("C17b it stopped before the connect step, so it printed no connect line", !lines.some((l) => l.startsWith("connect: ")), lines);
       check("C17b it recorded no resume intent for a space it never connected", !existsSync(intentFile(DENY)));
+      const refused = await cli(["setup", "--no-manager", "--space", DENY, "--wait", "30"]);
+      check("C17b shipped setup refuses before connect and retains JSON failure", refused.status === 2 && refused.doc?.error?.code === "PERMISSION_DENIED"
+        && refused.doc?.error?.cause?.code === "PROPOSAL_REFUSED" && !/^connect: /m.test(refused.err), refused);
       check("C17b the space it did connect is untouched", stateOf(await statusS(ON)) === "connected");
     });
 
@@ -1804,7 +1861,10 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       const back = await waitState(BRK, (s) => s === "connected", 90_000);
       check("C13 after the broker path returns, connected again and the space reads ready", back === "connected" && (await instanceStatus(BRK)) === "ready", back);
     });
-  } finally { await d.close(); brokerPath.close(); for (const s of pathSockets) s.destroy(); }
+  } finally {
+    if (foreground && foreground.exitCode === null && foreground.signalCode === null) await killAndAwaitExit(foreground, "SIGTERM");
+    await d.close(); brokerPath.close(); for (const s of pathSockets) s.destroy();
+  }
 } catch (e) {
   fail++;
   console.error("  ✗ smoke crashed:", e instanceof Error ? (e.stack ?? e.message) : e);
@@ -1815,8 +1875,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
   if (nats) await killAndAwaitExit(nats, "SIGTERM").catch(() => {});
   release?.();
   if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
-  rmSync(jsDir, { recursive: true, force: true });
-  rmSync(root, { recursive: true, force: true });
+  if (setupProgressOnly) console.log(`Setup progress sandbox retained at ${root}; broker store at ${jsDir}`);
+  else {
+    rmSync(jsDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 console.log(`\nDAEMON SERVICE CONNECT SMOKE ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);

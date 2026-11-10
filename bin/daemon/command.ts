@@ -342,7 +342,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   const { paths, home } = resolveTarget(args);
   const plain = presentation === "plain";
   // Progress goes to stderr so a --json caller still reads one document on stdout.
-  const report = (line: string) => { if (presentation !== "json") process.stderr.write(`${line}\n`); };
+  const report = (line: string) => { process.stderr.write(`${line}\n`); };
   let r;
   try {
     r = await runSetup({
