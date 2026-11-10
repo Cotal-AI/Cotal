@@ -56,11 +56,12 @@ const smokeProofs: Binding[] = [
     sites: [{ path: "implementations/cli/src/console/ui/CommandPalette.tsx", anchors: ['`${row.agent} · ${row.status} · mesh ${meshWord(row)}`'] }],
   },
   {
-    proof: { path: "implementations/cli/smoke/view.smoke.ts", anchor: 'check("the watch roster names a working agent\'s progress as unknown"' },
-    sites: [
-      { path: "implementations/cli/src/watch-json.ts", anchors: ['emit("snapshot", data)'] },
-      { path: "implementations/cli/src/watch-view.tsx", anchors: ['{!shown.length ? <Text dimColor>{connected ? "Waiting for activity in this authorized view." : "No current feed. Events may be missing."}</Text> : shown.map((line, index) => <Text key={index}>{line}</Text>)}'] },
-    ],
+    proof: { path: "implementations/cli/smoke/watch-output.tsx", anchor: 'assert.match(output, /\\balice\\b[^\\n]*working - progress unknown/, "the real watch stream prints working with unknown progress")' },
+    sites: [{ path: "implementations/cli/src/watch-json.ts", anchors: ['emit("snapshot", data)'] }],
+  },
+  {
+    proof: { path: "implementations/cli/smoke/watch-output.tsx", anchor: 'assert.match(frame, /\\balice\\b[^\\n]*working - progress unknown/, "the mounted watch view paints working with unknown progress")' },
+    sites: [{ path: "implementations/cli/src/watch-view.tsx", anchors: ['{!shown.length ? <Text dimColor>{connected ? "Waiting for activity in this authorized view." : "No current feed. Events may be missing."}</Text> : shown.map((line, index) => <Text key={index}>{line}</Text>)}'] }],
   },
   {
     proof: { path: "implementations/web/smoke/panel.smoke.ts", anchor: 'ok("8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn\'s last three steps, and no footer"' },
@@ -91,7 +92,11 @@ const smokeProofs: Binding[] = [
   },
   {
     proof: { path: "implementations/web/smoke/agents-view.smoke.ts", anchor: 'ok("11.6 a working row whose call has finished shows no step line, and keeps View work"' },
-    sites: [{ path: "implementations/web/client/src/ui/views/AgentsView.tsx", anchors: ["runningCall(foldWork(frames, posts), row.status)", "call={running.call}", "{running.call}"] }],
+    sites: [{ path: "implementations/web/client/src/ui/views/AgentsView.tsx", anchors: ["runningCall(foldWork(frames, posts), row.status)"] }],
+  },
+  {
+    proof: { path: "implementations/web/smoke/agents-view.smoke.ts", anchor: 'ok("11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button"' },
+    sites: [{ path: "implementations/web/client/src/ui/views/AgentsView.tsx", anchors: ["call={running.call}", "{running.call}"] }],
   },
   {
     proof: { path: "implementations/web/smoke/views.smoke.ts", anchor: 'ok("3.3 a member whose connector reports no progress reads working with its activity, with no moving dots"' },

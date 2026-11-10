@@ -5,6 +5,7 @@
  * depend on: delivery classification, same-sender/same-text unicast burst coalescing, the
  * status-sorted roster split, and the derived operator signals (counts + DM roll-up).
  */
+import { checkWatchOutput } from "./watch-output.js";
 import { EventEmitter } from "node:events";
 import { renderReport } from "@cotal-ai/workspace";
 // By dist path, the same module the package name resolves to, so a MeshView mutation is graded against the build its command runs.
@@ -224,6 +225,9 @@ await view.stop();
   const stopped = await Promise.race([closed.stop().then(() => true), wait(2_000).then(() => false)]);
   check("stop returns when only the endpoint's stop settles the membership watch (Ctrl-C after the connection is gone)", stopped);
 }
+
+// Exercise the actual watch outputs before runLog registers its long-lived signal handlers.
+await checkWatchOutput();
 
 // ---- the line stream (console --plain and pipes): ASCII on --plain and under a non-UTF-8 locale ----
 /** The lines one runLog prints for a join and two feed entries, under `LC_ALL=locale`. */

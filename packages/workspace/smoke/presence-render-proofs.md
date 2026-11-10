@@ -14,5 +14,8 @@ anchors, missing proofs and unused bindings. The census also checks AST membersh
 and the source-renderer proof allowlist.
 
 Run `pnpm smoke:presence-render-proofs` and the suites containing the cited assertions.
+`pnpm smoke:view` captures `runWatchStream` output and mounts `WatchView` in Ink,
+including presence updates. The live ToolLine sites cite the running-call assertion
+in `pnpm smoke:web-agents-view`; its finished-call assertion is a negative control.
 For a census check without the source-injection scanner probes, run
 `COTAL_PRESENCE_RENDER_PROBE_CHILD=1 pnpm smoke:presence-render-census`.

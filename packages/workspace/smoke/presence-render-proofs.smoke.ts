@@ -57,6 +57,18 @@ for (const entry of manifest.entries.filter((entry) => /\/(SessionPreview|Turn)\
   assert.throws(() => assertSmokeProof(entry.path, helperProof, read(helperProof.path), entry.anchor), /smoke proof has no reviewed output coverage/);
 }
 
+// A negative render control and a formatter-only check cannot prove positive output sinks.
+const liveModule = "implementations/web/client/src/ui/views/AgentsView.tsx";
+const livePath = "implementations/web/smoke/agents-view.smoke.ts";
+const finished = { path: livePath, anchor: 'ok("11.6 a working row whose call has finished shows no step line, and keeps View work"' };
+for (const anchor of ["call={running.call}", "{running.call}"]) {
+  assert.throws(() => assertSmokeProof(liveModule, finished, read(livePath), anchor), /smoke proof has no reviewed output coverage/);
+}
+const watchHelper = { path: "implementations/cli/smoke/view.smoke.ts", anchor: 'check("the watch roster names a working agent\'s progress as unknown"' };
+for (const entry of manifest.entries.filter((entry) => entry.class === "honest-text" && /\/watch-(json\.ts|view\.tsx)$/.test(entry.path))) {
+  assert.throws(() => assertSmokeProof(entry.path, watchHelper, read(watchHelper.path), entry.anchor), /smoke proof has no reviewed output coverage/);
+}
+
 // Invalid in-memory records exercise validation without changing sources or fixtures on disk.
 const selected = manifest.entries.find((entry) => entry.path === dmModule && entry.anchor === sink)!;
 const replace = (replacement: ProofEntry) => manifest.entries.map((entry) => entry === selected ? replacement : entry);

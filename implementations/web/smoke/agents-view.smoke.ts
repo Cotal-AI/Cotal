@@ -499,10 +499,14 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
   const row = rowByName(live.container, "david");
   const step = row.querySelector(".ox-now");
   const link = row.parentElement?.querySelector(":scope > a.ox-act") ?? null;
-  same("11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button",
-    [textOf(step?.querySelector('[data-slot="trace-title"]')), /^Bash · \d+s$/.test(textOf(step?.querySelector('[data-slot="trace-description"]'))), step?.querySelector('[data-slot="spinner"]') !== null,
-      step?.parentElement?.previousElementSibling?.classList.contains("v3-aact"), textOf(link), link?.getAttribute("href"), row.querySelector("a") === null, c.held()],
-    ["Running a command", true, true, true, "View work", formatRoute({ view: "agent", id: "local.dav", tab: "work" }), true, ["local.dav"]]);
+  ok("11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button",
+    textOf(step?.querySelector('[data-slot="trace-title"]')) === "Running a command"
+      && /^Bash · \d+s$/.test(textOf(step?.querySelector('[data-slot="trace-description"]')))
+      && step?.querySelector('[data-slot="spinner"]') !== null
+      && step?.parentElement?.previousElementSibling?.classList.contains("v3-aact")
+      && textOf(link) === "View work" && link?.getAttribute("href") === formatRoute({ view: "agent", id: "local.dav", tab: "work" })
+      && row.querySelector("a") === null && JSON.stringify(c.held()) === JSON.stringify(["local.dav"]),
+    { step: step?.outerHTML, held: c.held() });
   ok("11.4b the step is hidden from assistive tech, so no live region sits inside the row's button and the button's name holds still",
     step !== null && step.parentElement?.getAttribute("aria-hidden") === "true" && [...row.querySelectorAll('[role="status"]')].every((e) => e.closest('[aria-hidden="true"]') !== null));
   ok("11.5 the activity line above it is presence's own text and never shimmers",

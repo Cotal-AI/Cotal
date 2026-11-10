@@ -1986,10 +1986,10 @@
       "kind": "derived-output",
       "anchor": "call={running.call}",
       "class": "honest-text",
-      "rationale": "The Agents view's live step: the call in the open turn with no result marker, drawn as running only while presence says working; the cited assertion reads a finished call drawing no step.",
+      "rationale": "The running ToolLine receives the call in the open turn with no result marker; the cited assertion reads its rendered title, tool description and spinner.",
       "proof": {
         "path": "implementations/web/smoke/agents-view.smoke.ts",
-        "anchor": "ok(\"11.6 a working row whose call has finished shows no step line, and keeps View work\""
+        "anchor": "ok(\"11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button\""
       }
     },
     {
@@ -1997,10 +1997,10 @@
       "kind": "derived-output",
       "anchor": "{running.call}",
       "class": "honest-text",
-      "rationale": "The Agents view's live step: the call in the open turn with no result marker, drawn as running only while presence says working; the cited assertion reads a finished call drawing no step.",
+      "rationale": "The running ToolLine receives the call in the open turn with no result marker; the cited assertion reads its rendered title, tool description and spinner.",
       "proof": {
         "path": "implementations/web/smoke/agents-view.smoke.ts",
-        "anchor": "ok(\"11.6 a working row whose call has finished shows no step line, and keeps View work\""
+        "anchor": "ok(\"11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button\""
       }
     },
     {
@@ -6270,10 +6270,10 @@
       "kind": "derived-output",
       "anchor": "emit(\"snapshot\", data)",
       "class": "honest-text",
-      "rationale": "Watch snapshot event: the JSON presentation emits the machine record for programs, and the plain presentation prints watchReport's roster, whose working rows name unknown progress; the cited output assertion renders that roster.",
+      "rationale": "Watch snapshot event: the JSON presentation emits the machine record for programs, and the plain presentation prints the roster. The cited assertion captures the real stream's output, whose working row names unknown progress.",
       "proof": {
-        "path": "implementations/cli/smoke/view.smoke.ts",
-        "anchor": "check(\"the watch roster names a working agent's progress as unknown\""
+        "path": "implementations/cli/smoke/watch-output.tsx",
+        "anchor": "assert.match(output, /\\balice\\b[^\\n]*working - progress unknown/, \"the real watch stream prints working with unknown progress\")"
       }
     },
     {
@@ -6344,10 +6344,10 @@
       "kind": "derived-output",
       "anchor": "{!shown.length ? <Text dimColor>{connected ? \"Waiting for activity in this authorized view.\" : \"No current feed. Events may be missing.\"}</Text> : shown.map((line, index) => <Text key={index}>{line}</Text>)}",
       "class": "honest-text",
-      "rationale": "Watch body: the empty-feed placeholder, or the rendered view lines; for the roster view those lines are watchReport's table, whose working rows name unknown progress; the cited output assertion renders that roster.",
+      "rationale": "Watch body: the empty-feed placeholder or the rendered view lines. The cited assertion mounts WatchView in Ink and reads the painted working row with unknown progress.",
       "proof": {
-        "path": "implementations/cli/smoke/view.smoke.ts",
-        "anchor": "check(\"the watch roster names a working agent's progress as unknown\""
+        "path": "implementations/cli/smoke/watch-output.tsx",
+        "anchor": "assert.match(frame, /\\balice\\b[^\\n]*working - progress unknown/, \"the mounted watch view paints working with unknown progress\")"
       }
     },
     {
