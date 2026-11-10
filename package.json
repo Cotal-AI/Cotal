@@ -799,6 +799,7 @@
     "smoke:broker-policy": "tsx packages/workspace/smoke/broker-policy.smoke.ts",
     "smoke:protected-paths": "tsx packages/workspace/smoke/protected-paths.smoke.ts",
     "smoke:broker-selection": "tsx implementations/cli/smoke/broker-selection.smoke.ts",
+    "smoke:status-broker-relevance": "tsx implementations/cli/smoke/status-broker-relevance.smoke.ts",
     "smoke:serverconfig-shapes": "tsx packages/core/smoke/serverconfig-shapes.smoke.ts",
     "smoke:tls-intent": "tsx packages/workspace/smoke/tls-intent.smoke.ts",
     "smoke:cross-owner:auth": "tsx packages/core/smoke/cross-owner-auth.smoke.ts",

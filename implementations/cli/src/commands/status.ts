@@ -1770,7 +1770,8 @@ function extensionsCell(e: StatusResult["extensions"]): Cell | undefined {
  * does not have is what `cotal setup` adds, which the applications line already counts. So an
  * application's own rows (the Claude plugin, Desktop and skills) appear only for an application that
  * IS set up, and only when they are not current; the broker executable appears when it is missing or
- * refused; the dashboard, which is optional, appears when its record cannot be read. `--all` and
+ * refused and local broker records make it relevant; the dashboard, which is optional, appears
+ * when its record cannot be read. `--all` and
  * `--wide` print every row, and `--verbose` adds the installation paths ({@link machineSection}).
  *
  * It used to print one row per known connector whether or not it was set up, every extension label
@@ -1792,7 +1793,14 @@ function machineOverview(r: StatusResult, wide: boolean): Section {
       if (m.integrations.some((item) => item.name.toLowerCase().includes(connector.name.toLowerCase()))) continue;
       rows.push([connector.name, stateCell(connector.missing.length ? `${connector.missing.join(", ")} not on PATH` : connector.requires.length ? "available on PATH" : "in-process", connector.missing.length ? "waiting" : "ok")]);
     }
-  if (wide || m.nats === "missing" || m.natsProblem)
+  // A remote registration uses the broker elsewhere. Keep executable readiness in the full
+  // diagnostics, without making a hosted client repair a binary it does not need to run.
+  const localBroker = r.meshes.currentPrepared || r.meshes.unreadable.length > 0 ||
+    r.meshes.items.some((entry) => entry.origin !== "manual" && entry.origin !== "catalog") ||
+    r.folder.controllerStack || r.folder.storedState ||
+    r.folder.processes?.some((row) => row.name === "nats" && (row.pid !== null || row.state === "unreadable")) ||
+    (!r.selected.resolved && r.selected.code === "not-started");
+  if (wide || (localBroker && (m.nats === "missing" || m.natsProblem)))
     rows.push(["Broker executable", stateCell(m.nats === "missing" ? "not installed" : brokerExecutable(m), m.nats === "missing" ? "waiting" : m.natsProblem ? "failed" : "ok")]);
   if (wide || (m.skills.state !== "current" && setUp.length)) rows.push(["Agent skills", skillsCell(m.skills)]);
   if (wide || m.web.installed === null)
