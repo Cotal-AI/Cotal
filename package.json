@@ -943,6 +943,7 @@
     "smoke:down-lease-tombstone": "tsx implementations/cli/smoke/down-lease-tombstone.smoke.ts",
     "smoke:down-target": "tsx implementations/cli/smoke/down-target.smoke.ts",
     "smoke:down-pidfile-liveness:live": "tsx implementations/cli/smoke/down-pidfile-liveness-live.smoke.ts",
+    "smoke:down-host-auth:live": "tsx implementations/cli/smoke/down-host-auth-live.smoke.ts",
     "smoke:flag-inventory": "tsx bin/smoke/flag-inventory.smoke.ts",
     "smoke:capability-census": "tsx bin/smoke/capability-census.smoke.ts",
     "smoke:connector-bundle-text": "tsx bin/smoke/connector-bundle-text.smoke.ts",
