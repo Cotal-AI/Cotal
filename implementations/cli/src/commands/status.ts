@@ -458,6 +458,9 @@ export async function status(args: ParsedArgs): Promise<void> {
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
   const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight);
   const target = await readSelected(selected, responder, folder, gaps, hints, preflight);
+  if (!blocked) readStackStoreWarnings(root, gaps, hints);
+  if (selected.ok && selected.target.origin === "up" && !sameDir(root, selected.target.root))
+    readStackStoreWarnings(selected.target.root, gaps, hints, selected.target.space);
   // The note under the heading sends here for this folder's own stack cut off with no recorded
   // outcome under another selection. A blocked one is named with its block under `This folder's
   // space` and its step first in Next, so that note is left out here, with its --json warning. One
@@ -918,7 +921,6 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     elsewhere = isCommandFailure(error) && error.code === "CONFLICT";
   }
   const noManager = journal !== undefined && controllerStack && stackStartedWithoutManager(journal);
-  if (journal && controllerStack) for (const warning of stackStoreWarnings(journal)) gaps.add(warning.code, warning.message, warning.target);
   // An operation cut off with no recorded outcome can keep up and down from settling it; status names
   // why and the way out their refusal names. A refusal of another kind is left to them.
   let stackBlock: StackOperationBlock | null = null;
@@ -1243,6 +1245,21 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
     items,
     catalogs: preparedCatalogDiagnostics().map((r) => ({ idp: r.account.idpUrl, account: r.account.sub, state: r.state, error: r.state === "failed" ? (r.error ?? "refresh failed") : null })),
   };
+}
+
+/** Diagnose the current folder's store and a selected local stack independently of folder trust. */
+function readStackStoreWarnings(root: string, gaps: Gaps, hints: string[], space?: string): void {
+  try {
+    const journal = readStackJournal(root)?.journal;
+    if (journal && (space === undefined || journal.space === space))
+      for (const warning of stackStoreWarnings(journal)) gaps.add(warning.code, warning.message, warning.target);
+  } catch (error) {
+    if (isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED")) {
+      gaps.add(error.code === "PERMISSION_DENIED" ? "STACK_JOURNAL_UNREADABLE" : "STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
+      if (error.remedy) hints.push(error.remedy);
+    } else if (!isCommandFailure(error) || error.code !== "CONFLICT") throw error;
+    // A copied or moved journal is diagnosed by the folder and selection readers.
+  }
 }
 
 /** The refusal of the stack journal at `root` when it is one no command can use, as `up` and `down`

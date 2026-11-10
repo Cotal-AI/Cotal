@@ -10,16 +10,17 @@ const suite = createSuite();
 const managed = process.env.COTAL_STORE_IDENTITY_MANAGED === "1", custom = process.env.COTAL_STORE_IDENTITY_CUSTOM === "1";
 const bin = resolve(import.meta.dirname, "../../../bin/dist/cotal.js");
 const sandbox = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}store-identity-`));
-const root = join(sandbox, "project"), home = join(sandbox, "home"), xdg = join(sandbox, "xdg");
-for (const dir of [root, home, xdg]) mkdirSync(dir, { mode: 0o700 });
+const root = join(sandbox, "project"), outside = join(sandbox, "outside"), home = join(sandbox, "home"), xdg = join(sandbox, "xdg");
+for (const dir of [root, outside, home, xdg]) mkdirSync(dir, { mode: 0o700 });
 const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && key !== "FORCE_COLOR"));
 const env = { ...inherited, HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, XDG_STATE_HOME: join(sandbox, "state"), XDG_CACHE_HOME: join(sandbox, "cache"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
 const anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: xdg });
+const outsideAnchor = recordSmokeSandbox({ root: outside, cotalHome: home, xdgConfigHome: xdg });
 const space = `store-${randomUUID().slice(0, 8)}`;
-type Envelope = { warnings?: { code: string; message: string }[]; result?: { instances?: { observedProcess?: string }[]; messages?: unknown[] } };
-const run = (...args: string[]) => {
-  const options = { cwd: root, env, encoding: "utf8" as const, timeout: 90_000 };
-  assertSmokeSandboxDown(anchor, args, options);
+type Envelope = { warnings?: { code: string; message: string; target?: { root?: string } }[]; result?: { selected?: { root?: string }; instances?: { observedProcess?: string }[]; messages?: unknown[] } };
+const runAt = (cwd: string, ...args: string[]) => {
+  const options = { cwd, env, encoding: "utf8" as const, timeout: 90_000 };
+  assertSmokeSandboxDown(cwd === root ? anchor : outsideAnchor, args, options);
   const child = spawnSync(process.execPath, [bin, ...args], options);
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(child.stdout) as Envelope; } catch { envelope = undefined; }
@@ -27,6 +28,8 @@ const run = (...args: string[]) => {
   writeFileSync(join(sandbox, `${String(sequence++).padStart(2, "0")}-${args[0]}.json`), JSON.stringify(result, null, 2));
   return result;
 };
+const run = (...args: string[]) => runAt(root, ...args);
+const selectedStatus = (...args: string[]) => runAt(outside, "status", "--space", space, ...args);
 let sequence = 0;
 let started = false;
 const journalPath = join(root, ".cotal", "stack-controller.json");
@@ -47,6 +50,8 @@ try {
   suite.check("the real broker retains the initial post", history.status === 0 && history.text.includes("retained-before-replacement"), history.text);
   const healthy = run("status", "--space", space, "--json");
   suite.check("unchanged store has no identity warning", !warning(healthy, "STORE_REPLACED") && !warning(healthy, "STORE_MISSING"), healthy.text);
+  const outsideHealthy = selectedStatus("--json");
+  suite.check("outside-project selection reaches the healthy stack without a store warning", outsideHealthy.envelope?.result?.selected?.root === root && !warning(outsideHealthy, "STORE_REPLACED") && !warning(outsideHealthy, "STORE_MISSING"), outsideHealthy.text);
 
   const before = lstatSync(store, { bigint: true });
   renameSync(store, `${store}.retained`);
@@ -56,6 +61,11 @@ try {
   writeFileSync(join(sandbox, "identity-change.txt"), `${before.dev}:${before.ino} -> ${after.dev}:${after.ino}\n`);
   const status = run("status", "--space", space, "--json");
   suite.check("status reports the replaced store while the broker runs", Boolean(warning(status, "STORE_REPLACED")), status.text);
+  suite.check("coincident folder and selected roots report replacement once", status.envelope?.warnings?.filter((row) => row.code === "STORE_REPLACED").length === 1, status.text);
+  const outsideReplaced = selectedStatus("--json");
+  suite.check("outside-project JSON status reports the selected store replacement once", outsideReplaced.status === 4 && outsideReplaced.envelope?.warnings?.filter((row) => row.code === "STORE_REPLACED").length === 1 && warning(outsideReplaced, "STORE_REPLACED")?.target?.root === root, outsideReplaced.text);
+  const outsidePlain = selectedStatus("--plain");
+  suite.check("outside-project plain status reports replacement and history uncertainty", outsidePlain.status === 4 && /recorded store.*replaced/.test(outsidePlain.text) && /history/.test(outsidePlain.text), outsidePlain.text);
   const refresh = run("up", ...(managed ? [] : ["--no-manager"]), "--json");
   suite.check("a live up warns without accepting a new store identity", refresh.status === 0 && Boolean(warning(refresh, "STORE_REPLACED")), refresh.text);
   const preview = run("down", "--dry-run", "--json");
@@ -75,12 +85,16 @@ try {
   try {
     const unreadable = run("status", "--space", space, "--json");
     suite.check("status reports an unreadable stack journal", Boolean(warning(unreadable, "STACK_JOURNAL_UNREADABLE")), unreadable.text);
+    const outsideUnreadable = selectedStatus("--json");
+    suite.check("outside-project status names the selected unreadable journal", outsideUnreadable.status === 4 && Boolean(warning(outsideUnreadable, "STACK_JOURNAL_UNREADABLE")), outsideUnreadable.text);
   } finally { chmodSync(journalPath, 0o600); }
 
   const absent = `${store}.absent`;
   renameSync(store, absent);
   const missingStatus = run("status", "--space", space, "--json");
   suite.check("status reports a store that remains absent", Boolean(warning(missingStatus, "STORE_MISSING")), missingStatus.text);
+  const outsideMissing = selectedStatus("--json");
+  suite.check("outside-project status names the selected missing store", outsideMissing.status === 4 && Boolean(warning(outsideMissing, "STORE_MISSING")), outsideMissing.text);
   const missingDown = run("down", "--yes", "--json");
   suite.check("down reports a missing store without preventing shutdown", missingDown.status === 0 && Boolean(warning(missingDown, "STORE_MISSING")), missingDown.text);
   const missingUp = run("up", ...(managed ? [] : ["--no-manager"]), "--json");
