@@ -1,11 +1,12 @@
 /** Local capacity failures through the built CLI, with Linux RLIMIT_FSIZE and unlimited controls. */
 import assertBase from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countedAssert, emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
 import { localWriteFailure, type Envelope } from "@cotal-ai/workspace";
+import { LEGACY_DEFAULT_AGENT } from "../../implementations/cli/src/lib/default-persona.js";
 
 if (process.platform !== "linux") skipSuite("local-write-failure: Linux prlimit is required");
 const counted = countedAssert(assertBase);
@@ -62,6 +63,18 @@ function refused(f: Fixture, args: string[], limit: number, mode: "text" | "plai
   assert.match(r.stderr, /TARGET_UNAVAILABLE/);
   return undefined;
 }
+function copiedJournal(f: Fixture) {
+  const path = join(f.cwd, ".cotal", "stack-controller.json");
+  mkdirSync(join(f.cwd, ".cotal"), { mode: 0o700 });
+  const now = new Date().toISOString();
+  writeFileSync(path, JSON.stringify({
+    schemaVersion: 1, kind: "cotal-stack-controller", root: join(f.dir, "old-project"),
+    space: "adopt-space", server: "nats://127.0.0.1:4222", mode: "open",
+    members: ["broker", "auth", "delivery", "manager"].map(role => ({ role, definition: `stack-${role}`, instanceId: null, state: "not-attempted" })),
+    operation: { id: "60460000-0000-4000-8000-000000000001", kind: "up", phase: "refused", recordedAt: now, withAgents: false }, updatedAt: now,
+  }, null, 2) + "\n", { mode: 0o600 });
+  return path;
+}
 const prompt = "x".repeat(760);
 for (const mode of ["text", "plain", "json"] as const) {
   const s = fixture(`space-${mode}`);
@@ -102,6 +115,59 @@ for (const mode of ["text", "plain", "json"] as const) {
   ok(p, args);
   assert.deepEqual((envelope(p, ["persona"]).result?.items as { name: string }[]).map(item => item.name), ["big", "default"]);
 }
+for (const mode of ["text", "plain", "json"] as const) {
+  for (const limit of [40, 200]) {
+    const f = fixture(`adopt-${mode}-${limit}`);
+    const path = copiedJournal(f);
+    const before = readFileSync(path);
+    const doc = refused(f, ["space", "create", "adopt-space", "--adopt"], limit, mode);
+    if (doc) assert.equal((doc.target as { path: string }).path, path);
+    assert.deepEqual(readFileSync(path), before);
+    assert.deepEqual(readdirSync(join(f.cwd, ".cotal")), ["stack-controller.json"]);
+    assert.deepEqual(envelope(f, ["space"]).result?.prepared, []);
+    ok(f, ["space", "create", "adopt-space", "--adopt"]);
+    assert.equal(JSON.parse(readFileSync(path, "utf8")).root, f.cwd);
+    assert.equal((envelope(f, ["space"]).result?.prepared as unknown[]).length, 1);
+  }
+  // A non-writable parent survives Cotal's permission hardening of its own home.
+  if (process.getuid?.() !== 0) {
+    const f = fixture(`adopt-preparation-${mode}`);
+    const path = copiedJournal(f);
+    const parent = join(f.dir, "home", "sealed");
+    mkdirSync(parent, { mode: 0o700 });
+    f.env.COTAL_HOME = join(parent, "state");
+    chmodSync(parent, 0o500);
+    let r: ReturnType<typeof run>;
+    try { r = run(f, ["space", "create", "adopt-space", "--adopt", ...(mode === "text" ? [] : [`--${mode}`])]); }
+    finally { chmodSync(parent, 0o700); }
+    assert.equal(r.status, 4, r.stdout || r.stderr);
+    const text = mode === "json" ? r.stdout : r.stderr;
+    assert.match(text, /OPERATION_PARTIAL/);
+    assert.match(text, /earlier changes remain/);
+    assert.match(text, /without --adopt/);
+    assert.doesNotMatch(text, /nothing was written/);
+    if (mode === "json") {
+      const receipt = JSON.parse(r.stdout) as Envelope;
+      assert.deepEqual(receipt.changed, [{ what: `stack journal, adopted from ${join(f.dir, "old-project")}`, path }]);
+    }
+    assert.equal(JSON.parse(readFileSync(path, "utf8")).root, f.cwd);
+    assert.deepEqual(envelope(f, ["space"]).result?.prepared, []);
+    ok(f, ["space", "create", "adopt-space"]);
+  }
+}
+const legacy = fixture("legacy-default-partial");
+const legacyPath = join(legacy.cwd, ".cotal", "agents", "default.md");
+mkdirSync(join(legacy.cwd, ".cotal", "agents"), { recursive: true, mode: 0o700 });
+writeFileSync(legacyPath, LEGACY_DEFAULT_AGENT, { mode: 0o600 });
+const migration = run(legacy, ["space", "create", "legacy-space", "--json"], 350);
+assert.equal(migration.status, 4, migration.stdout || migration.stderr);
+const migrationReceipt = JSON.parse(migration.stdout) as Envelope;
+assert.equal(migrationReceipt.error?.code, "OPERATION_PARTIAL");
+assert.match(migrationReceipt.error?.message ?? "", /this file may be incomplete/);
+assert.equal((migrationReceipt.target as { path: string }).path, legacyPath);
+assert.equal(migrationReceipt.changed?.length, 1);
+assert.equal(readFileSync(legacyPath).length, 350);
+
 const late = fixture("space-partial");
 const partial = run(late, ["space", "create", "s", "--json"], 350);
 assert.equal(partial.status, 4, partial.stdout || partial.stderr);

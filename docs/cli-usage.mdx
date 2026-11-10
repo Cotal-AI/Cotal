@@ -345,10 +345,16 @@ A command with a JSON output exits by its outcome, with or without `--json`:
 Local writes for `space create`, `config set` and persona creation that run out of disk space,
 exceed a quota or hit a file-size limit name the destination and the cause, and give a next step.
 When the destination was not saved, they refuse with `TARGET_UNAVAILABLE`, exit 2, and say nothing
-was written to it. Existing preferences and personas stay unchanged. A persona draft write failure
-names its temporary file and is not reported as invalid input. If `space create` recorded the space
-before its default persona write failed, it reports `partial`, exit 4, lists the changed files and
-asks you to inspect them before retrying.
+was written to it. Failed preference replacements and persona catalog commits keep the saved
+destination unchanged. A persona draft write failure names its temporary file and is not reported
+as invalid input. This also covers the journal lock and replacement during `space create --adopt`.
+If adoption succeeds but preparing the space fails, the command reports `partial`, exit 4, lists
+the adopted journal and tells you to retry without `--adopt` after correcting the failure.
+
+If `space create` recorded the space before its default persona write failed, it reports `partial`,
+exit 4, lists the earlier changes and asks you to inspect them before retrying. Default-persona
+seeding and migration write in place: a failed write can leave an incomplete file, including when
+updating an untouched legacy default. Inspect the named persona before retrying.
 
 An error such a command does not classify is `unknown`, exit 3. Other commands still exit 1 on any
 failure. A command run from a folder that no longer exists refuses with `USAGE_INVALID`, exit 1,

@@ -425,9 +425,24 @@ export async function spaceCreate(rest: readonly string[], rootFlag: string | un
     if (blocked) throw refuse("CONFLICT", `${blocked.message}; it was not adopted and nothing was written`, { space: name, root: canonicalRoot(root), recordedRoot: found!.recordedRoot }, blocked.remedy);
   }
   checkLocalSpace(name, root, "--root", false, adopt);
-  const adoptedFrom = adopt ? adoptStackJournal(root, name) : undefined;
-  const prepared = recordLocalSpace(name, root);
-  const written = [...(adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : []), { what: "prepared space", path: prepared.file }];
+  let adoptedFrom: string | undefined;
+  try { adoptedFrom = adopt ? adoptStackJournal(root, name) : undefined; }
+  catch (error) {
+    throw localWriteFailure(error, stackJournalPath(canonicalRoot(root)), { target: { space: name, root } }) ?? error;
+  }
+  const written = adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : [];
+  let prepared: ReturnType<typeof recordLocalSpace>;
+  try { prepared = recordLocalSpace(name, root); }
+  catch (error) {
+    if (written.length === 0) throw error;
+    const failure = isCommandFailure(error) ? error : undefined;
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", "the stack journal was adopted, but the space could not be prepared; earlier changes remain", {
+      target: failure?.target ?? { space: name, root }, changed: written, cause: error,
+      ...(failure?.native ? { native: failure.native } : {}),
+      remedy: `${failure?.remedy ? `${failure.remedy}; then ` : "inspect this machine's Cotal home and the adopted journal, then "}retry ${codeSpan(`cotal space create ${name} --root ${shellWord(root)}`)} without --adopt`,
+    });
+  }
+  written.push({ what: "prepared space", path: prepared.file });
   let persona: ReturnType<typeof seedDefaultPersona>;
   try { persona = seedDefaultPersona(root); }
   catch (error) {
