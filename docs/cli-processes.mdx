@@ -578,7 +578,7 @@ its catalogs. Name collisions and unreadable registrations are reported rather t
 The desktop app uses these same controls. Its source and native build instructions are in the
 [desktop README](../desktop/README.md). Closing its tray UI does not stop the installed daemon.
 
-`setup` makes a computer ready to launch agents from a space with one command. It installs the user
+`setup` validates its arguments before changing connector state. It makes a computer ready to launch agents from a space with one command. It installs the user
 service, discovers the space through the daemon-held sign-in, signs in by device code when needed,
 and starts the space's Manager. Before starting it, setup reconciles the stock connectors through
 the same first-run path as `spawn` and refuses if that preparation fails. The hosted Manager gets

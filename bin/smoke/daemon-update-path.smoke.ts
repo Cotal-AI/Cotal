@@ -23,6 +23,17 @@ const env: NodeJS.ProcessEnv = {
   XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: runtime, TMPDIR: join(root, "tmp"),
   COTAL_HOME: home, COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1", NO_COLOR: "1",
 };
+// Setup must validate usage without the dispatcher's operator-global connector reconcile.
+const usageConfig = join(root, "usage-config");
+const usageEnv: NodeJS.ProcessEnv = { ...env, XDG_CONFIG_HOME: usageConfig };
+delete usageEnv.COTAL_SKIP_CONNECTOR_SEED;
+const usage = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "setup", "--json"], { cwd: root, env: usageEnv, stdio: ["ignore", "pipe", "pipe"] });
+let usageOutput = "";
+usage.stdout.on("data", chunk => usageOutput += String(chunk));
+usage.stderr.on("data", chunk => usageOutput += String(chunk));
+const usageCode = await new Promise(resolve => usage.once("exit", resolve));
+if (usageCode !== 1 || !usageOutput.includes("USAGE_INVALID") || existsSync(join(usageConfig, "cotal", "seed")) || existsSync(join(usageConfig, "cotal", "extensions.json"))) throw new Error(`setup usage error changed connector state: ${usageOutput}`);
+console.log("PASS setup usage error does not reconcile connectors");
 const paths = daemonPaths(env, home);
 if (process.argv.includes("--childless")) {
   const directory = join(home, "daemon", "space.72656675736564");
