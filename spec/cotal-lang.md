@@ -193,6 +193,13 @@ The runtime additionally mints **handles** and **descriptors**, all frozen recor
 | event descriptor (§6.6) | `{ event: "replied", agent }` \| `{ event: "message", channel, from?, matches? }` \| `{ event: "idle", channel, duration }` \| `{ event: "down", agent }` |
 | run metadata (from `run()`) | `{ id, programHash, startedAt }` |
 
+An agent argument MUST be a handle record with a non-empty string `agent`, a string `persona`,
+and an absent `kind` (a legacy spawn handle), `kind: "spawned"`, or `kind: "participant"`.
+`turn`, `ask`, `monitor`, `replied`, `down`, the members of `notify` and `conclave`, and
+`message`'s `from` option MUST refuse any other value with L3050, naming the argument and
+directing the author to the handle returned by `spawn` or `participant`. This check precedes
+identity projection and dispatch. It does not replace the host's ownership or lifecycle checks.
+
 ### 4.2 Members
 
 Member access reaches no host prototype. A **record** answers its own fields and `undefined` for
@@ -1279,6 +1286,7 @@ time, L5xxx durability, L6xxx simulation.
 | L3047 | `waitUntil` cadence is zero, or does not divide its deadline usefully |
 | L3048 | `spawn` placement is not an endpoint and instanceId pair |
 | L3049 | `spawn` inline persona is malformed |
+| L3050 | Agent argument is not a handle |
 | L4001 | Permit exhausted |
 | L4002 | Agent down |
 | L4003 | Turn deadline elapsed |
