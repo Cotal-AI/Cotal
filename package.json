@@ -921,6 +921,7 @@
     "smoke:legacy-packaged-manager": "tsx implementations/cli/smoke/legacy-packaged-manager.smoke.ts",
     "smoke:runtime-contract": "tsx packages/core/smoke/runtime-contract.smoke.ts",
     "smoke:update-remote-custody": "tsx implementations/cli/smoke/update-remote-custody.smoke.ts",
+    "smoke:update-refusal": "tsx implementations/cli/smoke/update-refusal.smoke.ts",
     "smoke:update-concurrency": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/update-concurrency.smoke.ts",
     "smoke:npm-umask": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/npm-umask.smoke.ts",
     "smoke:join-creds": "tsx implementations/cli/smoke/join-creds-pairing.smoke.ts",

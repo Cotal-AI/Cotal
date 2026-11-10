@@ -1483,11 +1483,18 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             const secondCaller = { versionSkew: (text: string) => text, roster: async () => [] };
             const seat = await askManager(secondCaller, OFF, secondTarget.server, "start", { name: "upgrade_custody", agent: "daemon-smoke", events: false, persona: { prompt: "Owned update custody smoke, no model.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, secondTarget.auth, "owner", 40_000, { instanceId: second.instanceId });
             check("U2 unselected Manager has a real legacy seat", seat.ok, seat.error);
-            const blocked = spawn(process.execPath, [cliEntry, "update", "--self", "--space", ON], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
-            let blockedOutput = "";
-            blocked.stdout.on("data", (bytes) => { blockedOutput += String(bytes); }); blocked.stderr.on("data", (bytes) => { blockedOutput += String(bytes); });
-            const blockedCode = await new Promise<number | null>((resolve) => blocked.once("exit", resolve));
-            check("U2 global update refuses unselected legacy custody before install", blockedCode !== 0 && blockedOutput.includes("active legacy seats") && !blockedOutput.includes("installing cotal-ai@"), { blockedCode, blockedOutput });
+            for (const flags of [[], ["--self"]]) {
+              const blocked = spawn(process.execPath, [cliEntry, "update", ...flags, "--space", ON], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+              let stdout = "", stderr = "";
+              blocked.stdout.on("data", (bytes) => { stdout += String(bytes); }); blocked.stderr.on("data", (bytes) => { stderr += String(bytes); });
+              const code = await new Promise<number | null>((resolve) => blocked.once("exit", resolve));
+              check(`U2 update ${flags.join(" ")} refuses unselected running agents with recovery commands`, code === 1
+                && stderr.includes("running agents on this computer") && stderr.includes("restarting it would end them")
+                && stderr.includes(`cotal ps --on ${second.instanceId} --space ${OFF}`)
+                && stderr.includes(`cotal stop <name> --on ${second.instanceId} --space ${OFF}`)
+                && stderr.includes("rerun the same update command")
+                && !stdout.includes("cotal update --self") && !stdout.includes("installing cotal-ai@"), { code, stdout, stderr });
+            }
             await askManager(secondCaller, OFF, secondTarget.server, "stop", { name: "upgrade_custody" }, secondTarget.auth, "owner", 10_000, { instanceId: second.instanceId });
             const seed = join(root, "config", "cotal", "seed");
             mkdirSync(seed, { recursive: true, mode: 0o700 });

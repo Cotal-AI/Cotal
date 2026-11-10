@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
 import { update, updateRuntime } from "@cotal-ai/cli/update";
 import { withIdpSessionDir } from "@cotal-ai/auth";
-import { CommandFailure, homeCotalDir, resolveControlTarget } from "@cotal-ai/workspace";
+import { CommandFailure, homeCotalDir, resolveControlTarget, shellPath } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
@@ -40,7 +40,7 @@ const composed: Command = { ...command, async run(args) {
       });
       if (!reply.ok) throw new Error(reply.error ?? "hosted Manager status did not answer");
       const status = reply.data as { agentCount?: number; custody?: string };
-      if (status.custody === "legacy" && status.agentCount !== 0) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager ${manager.instanceId} has active legacy seats; update cannot preserve their terminal custody`, { remedy: `stop those seats through Manager ${manager.instanceId}, then run cotal update again` });
+      if (status.custody === "legacy" && status.agentCount !== 0) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager ${manager.instanceId} cannot preserve running agents on this computer during update; restarting it would end them`, { remedy: `save their work; list them with cotal ps --on ${manager.instanceId} --space ${shellPath(manager.space)}, stop each with cotal stop <name> --on ${manager.instanceId} --space ${shellPath(manager.space)}, then rerun the same update command` });
       console.log(`hosted Manager ${manager.space}: instance ${manager.instanceId} answered; ${status.agentCount ?? "unknown"} seat(s)`);
     }
     // The stock resolver still inspects other locally hosted spaces when one is not selected.
