@@ -1555,6 +1555,9 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           const frames = out.trim().split("\n").map(line => JSON.parse(line));
           const frame = frames.at(-1);
           check("D1 setup streams reached steps before its final result", progress.length > 0 && frames[0].event === "setup-progress" && frame.event === "result");
+          const reports = frames.filter(frame => frame.event === "setup-progress");
+          check("D1 every report carries structured step metadata", reports.every(frame => typeof frame.progress?.step === "string" && typeof frame.progress?.outcome === "string" && typeof frame.progress?.detail === "string"));
+          check("D1 progress preserves service diagnostics and application inventory", reports.some(frame => frame.progress.step === "install" && frame.line.startsWith("service:")) && (!reports.some(frame => frame.progress.step === "applications") || reports.filter(frame => frame.progress.step === "applications").every(frame => Array.isArray(frame.progress.applications))));
           check("D1 setup frames contain no session or JWT", !out.includes(SESSION) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(out));
           return { code: frame.ok ? 0 : 2, doc: { result: frame.result, error: frame.error ? { ...frame.error, cause: frame.error.native } : undefined } as Record<string, any>, err: progress.join("\n") };
         }

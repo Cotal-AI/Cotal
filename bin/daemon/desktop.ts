@@ -87,7 +87,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     if (req.op === "install" || req.op === "setup") process.env.PATH = await desktopApplicationPath();
     if (req.op === "setup") {
       const result = await runSetup({ ...client, daemonHome: home, space: req.space, idp: req.idp, version: opts.version, waitSeconds: 0,
-        report: (line) => emit({ v: 1, event: "setup-progress", line }),
+        report: (line, progress) => emit({ v: 1, event: "setup-progress", line, progress }),
         onPrompt: (prompt) => emit({ v: 1, event: "login-prompt", prompt }),
       });
       emit({ v: 1, event: "result", ok: true, result });

@@ -147,7 +147,7 @@ pub fn run() {
             let quit = MenuItem::with_id(
                 app,
                 "quit",
-                "Quit app (keep daemon running)",
+                "Quit app (keep background service running)",
                 true,
                 None::<&str>,
             )?;

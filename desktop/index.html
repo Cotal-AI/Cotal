@@ -5,29 +5,42 @@
   <div class="app">
     <aside class="sidebar">
       <div class="brand"><img class="brand-mark" src="../assets/cotal-mark.svg" alt=""><strong>cotal</strong></div>
-      <div class="sidebar-label">YOUR COMPUTER</div>
-      <button class="nav active" type="button" id="machine-tab"><span aria-hidden="true">◉</span> Machine</button>
-      <div class="sidebar-footer"><span id="tray-indicator" class="dot"></span><span id="tray-label">Checking daemon</span></div>
+      <p class="eyebrow">Your computer</p>
+      <ol id="journey" aria-label="Connection steps">
+        <li data-stage="welcome"><span class="step-marker">1</span><span>Welcome<small>Current step</small></span></li>
+        <li data-stage="sign-in"><span class="step-marker">2</span><span>Sign in<small>Upcoming</small></span></li>
+        <li data-stage="space"><span class="step-marker">3</span><span>Space<small>Upcoming</small></span></li>
+        <li data-stage="connect"><span class="step-marker">4</span><span>Connect<small>Upcoming</small></span></li>
+        <li data-stage="finished"><span class="step-marker">5</span><span>Ready<small>Upcoming</small></span></li>
+      </ol>
+      <div class="sidebar-footer"><span id="tray-indicator" class="dot"></span><span id="tray-label">Not connected</span></div>
     </aside>
     <main>
-      <header><div><p class="eyebrow">MACHINE CONNECTION</p><h1 id="machine-name">This computer</h1><p class="muted" id="machine-details">Reading local machine information…</p></div><span class="version" id="version">—</span></header>
+      <header><div><p class="eyebrow">Computer connection</p><h1 id="machine-name">This computer</h1><p class="muted" id="machine-details">Reading computer information…</p></div></header>
       <section class="connection-card" aria-labelledby="connection-title">
-        <div class="connection-heading"><span id="connection-icon" class="connection-icon" aria-hidden="true">◌</span><div><h2 id="connection-title">Checking your connection</h2><p id="connection-description">A running daemon is not yet a connected machine.</p></div><button id="refresh" class="button secondary" type="button">Refresh</button></div>
+        <span id="connection-icon" class="connection-icon" aria-hidden="true">◉</span>
+        <p id="step-caption" class="eyebrow">Let's get started</p>
+        <h2 id="connection-title" tabindex="-1" aria-live="polite">Welcome to Cotal</h2>
+        <p id="connection-description">Connect this computer to launch agent applications from your space's dashboard. People authorized in the space can launch them as your operating-system user, with those applications' own sign-in and file permissions.</p>
+        <p id="link-context" class="context" hidden></p>
         <div id="notice" role="status" aria-live="polite" hidden></div>
-        <ol id="setup-progress" aria-label="Setup progress" aria-live="polite" hidden></ol>
-        <div id="install-panel" hidden><p>The background service keeps your connection running when you close this window. It runs as your operating-system user, not as an administrator.</p><button id="install" class="button primary" type="button">Set up background service</button></div>
+        <div id="sign-in-panel">
+          <form id="login-form">
+            <div id="custom-host" hidden><label for="provider">Cotal host sign-in URL</label><input id="provider" type="url" required autocomplete="url" aria-describedby="host-help"><p id="host-help" class="muted">Ask the person running your Cotal host for its sign-in URL.</p></div>
+            <div id="login-actions" class="actions"><button id="login" class="button primary" type="submit">Continue with Cotal Cloud</button><button id="other-host" class="text-button" type="button">Use another Cotal host</button></div>
+          </form>
+          <div id="approval" class="approval" hidden><p>Enter this code if your browser asks.</p><strong id="approval-code"></strong><p class="muted" id="approval-expiry"></p><button id="open-approval" class="button primary" type="button">Open approval page</button><p class="muted">Do not share the approval link or code.</p></div>
+          <p id="service-explanation" class="footnote">Continuing sets up a background service. It runs as your user, not as an administrator, and keeps running when this window closes. Your login stays in that service, never in this app.</p>
+        </div>
+        <div id="space-panel" hidden><label for="space">Your space</label><select id="space"><option value="">Choose a space</option></select><div class="actions"><button id="choose-space" class="button primary" type="button">Continue</button><button id="sync" class="text-button" type="button">Refresh spaces</button></div></div>
+        <div id="connect-panel" hidden><p class="context" id="selected-space"></p><button id="connect" class="button primary" type="button">Connect this computer</button><button id="change-space" class="text-button" type="button">Choose another space</button><button id="retry-login" class="text-button" type="button">Sign in again</button></div>
+        <ol id="setup-progress" class="progress" aria-label="Connection progress" aria-live="polite" hidden></ol>
+        <div id="connected-panel" hidden><p id="connected-space" class="context"></p><button id="dashboard" class="button primary" type="button">Open dashboard</button><div class="actions secondary-actions"><button id="disconnect" class="text-button" type="button">Disconnect</button><button id="another-space" class="text-button" type="button">Connect another space</button><button id="sign-in-again" class="text-button" type="button">Sign in again</button></div></div>
+        <details id="details" hidden><summary>Details</summary><pre id="refusal-detail"></pre><ol id="setup-lines"></ol></details>
+        <button id="refresh" class="text-button" type="button" hidden>Refresh status</button>
       </section>
-      <section class="panel" aria-labelledby="sign-in-title"><div class="section-heading"><span class="step">1</span><h2 id="sign-in-title">Sign in</h2></div><p class="muted">Approve in your browser. Your login stays in the daemon, never in this app.</p>
-        <form id="login-form"><label for="provider">Cotal sign-in provider</label><div class="input-row"><input id="provider" type="url" placeholder="https://your-cotal-host/api/auth" required autocomplete="url"><button id="login" class="button secondary" type="submit">Continue in browser</button></div></form>
-        <div id="approval" class="approval" hidden><div><p>Enter this code if your browser asks</p><strong id="approval-code"></strong><p class="muted" id="approval-expiry"></p></div><button id="open-approval" class="button primary" type="button">Open approval page</button></div>
-      </section>
-      <section class="panel" aria-labelledby="space-title"><div class="section-heading"><span class="step">2</span><h2 id="space-title">Connect to a space</h2><button id="sync" class="text-button" type="button">Refresh spaces</button></div><p class="muted">Choose a signed-in space to launch agents on this computer from the dashboard.</p>
-        <label for="space">Space</label><select id="space"><option value="">No spaces loaded</option></select>
-        <div class="actions"><button id="connect" class="button primary" type="button" disabled>Connect this computer</button><button id="disconnect" class="button secondary" type="button" disabled>Disconnect from space</button></div>
-        <p class="footnote">Connecting hosts a Manager. Authorized people in this space can launch agent applications as your operating-system user. Agent applications keep their own sign-in and file permissions.</p>
-      </section>
-      <section class="panel preferences"><div><h2>Open at login</h2><p class="muted">Show Cotal in your menu bar or system tray after you sign in.</p></div><label class="switch"><input id="autostart" type="checkbox" aria-label="Open Cotal at login"><span></span></label></section>
-      <footer><span>Closing this window leaves the daemon running.</span><button id="dashboard" class="text-button" type="button">Open dashboard ↗</button></footer>
+      <section id="preferences" class="preferences" hidden><div><h2>Open at login</h2><p class="muted">Show Cotal in your menu bar or system tray after you sign in.</p></div><label class="switch"><input id="autostart" type="checkbox" aria-label="Open Cotal at login"><span></span></label></section>
+      <footer><span id="footer-note">You choose when to connect this computer.</span><span class="version" id="version"></span></footer>
     </main>
   </div>
   <script type="module" src="/src/main.ts"></script>
