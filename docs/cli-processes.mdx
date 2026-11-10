@@ -631,8 +631,11 @@ registered Manager at `manager.instanceId`, its `manager` status and the separat
 The human report prints `Manager instance: <id>` and the machine-service connection state using
 the same words as `service-status`. A space without machine-service endpoints reports `unsupported`
 while the sign-in step retains the session check's result.
-Progress goes to stderr, so `--json` writes one document on stdout. Missing `supervise` scope
-refuses with the Manager's reason and next step.
+Progress goes to stderr in every presentation, including `--json`, which writes one document on
+stdout. With `--no-manager`, the connect stage reports its final state even when it connects on the
+first attempt or `--wait 0` stops at pending approval. When approval arrives during a wait, the final
+state follows the waiting line. A refusal before connect emits no connect line.
+Missing `supervise` scope refuses with the Manager's reason and next step.
 
 The daemon supervises each Manager as a separate child, restarts it with bounded backoff after a
 crash, and resumes recorded hosting intents after its own restart. A child that exits while a
