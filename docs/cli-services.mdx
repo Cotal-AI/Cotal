@@ -117,8 +117,9 @@ A preset's options describe the service and never choose its space. `add` saves 
 `--space` names, or else the selected space or the folder's, as other commands resolve it.
 
 `add` checks the options against the preset's schema, and checks that each declared path exists
-with its required protection. It does not check that a root or credential suits the preset, such
-as a root's auth mode or which credential a file holds. Those are checked when the service starts.
+with its required protection. The `auth-service` preset also requires a user-auth registration and
+prepared user-auth state in its `--root` before saving. Other root and credential checks, such as
+which credential a file holds, run when the service starts.
 A refusal names the option or field at fault, by its flag on a preset add, such as `--log-file`. A
 value the preset's schema refuses gives the preset's help as its Next:
 `cotal service add <name> --preset <preset> --help`. Option values are not printed, except the
@@ -270,9 +271,9 @@ its boolean default; an explicit opposite answer overrides it. An option with no
 required. Text answers are checked at their question; an invalid value is asked for again without
 losing earlier answers. Broker server answers use the same address rules as the final save.
 Input is capped at 256 KiB, checked against the selected native space and its schema before a
-private record is saved. Whether a root or credential suits the preset is checked
-at start. A process definition needs an existing executable and
-absolute working directory. Credential file protection is checked without reading its contents.
+private record is saved. The `auth-service` preset checks its prepared user-auth state before
+saving. Other root and credential suitability checks run at start. A process definition needs an
+existing executable and absolute working directory. Credential file protection is checked without reading its contents.
 Adapter definitions use an installed local-process provider's versioned, closed option schema.
 Adding or previewing a definition validates cached metadata without importing provider code. The
 cache records SHA-256 fingerprints of the declaration and installed package metadata. Missing,
@@ -397,8 +398,9 @@ authority.
 ## Native auth service [#native-auth-service]
 
 The `auth-service` preset requires a registered hosting `root` with its existing prepared
-user-auth projection. It loads the native callout account, issuer, owner secret and service key
-projection. Saving or starting this preset does not generate those keys, create an account or
+user-auth projection. An add without that state refuses `UNSUPPORTED` (exit 2) before saving,
+with `cotal up --user-auth --idp <url>` as the preparation step. It loads the native callout
+account, issuer, owner secret and service key projection. Saving or starting this preset does not generate those keys, create an account or
 start its broker, delivery daemon or manager.
 
 The preset options derive from the native daemon flags. Ports are bounded integers; public

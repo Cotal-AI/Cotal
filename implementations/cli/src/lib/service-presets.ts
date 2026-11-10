@@ -1,7 +1,7 @@
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, isCommandFailure, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, isCommandFailure, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
 import { cliVersion } from "./version.js";
@@ -220,6 +220,12 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
     if (!isCommandFailure(error) || error.code !== "SCHEMA_INVALID" || error.remedy !== undefined) throw error;
     throw new CommandFailure(error.outcome, error.code, error.message, { target: error.target, remedy: `see what each option takes with \`${line} --help\`` });
   }
+  // Saving the native auth preset must not offer a start its hosting root cannot support.
+  // Read only the existing marker, without preparing authority or importing provider code.
+  if (preset.adapter === "auth-service" && (findMesh(space)?.mode !== "user" || !hasUserAuthState(String(options.root), space, { readOnly: true })))
+    throw new CommandFailure("refused", "UNSUPPORTED", "the auth-service preset requires this root's prepared hosting user-auth state; nothing was saved or started, and no issuer or account was generated", {
+      remedy: "prepare user-auth in the hosting root with `cotal up --user-auth --idp <url>`",
+    });
   return { schemaVersion: 1, space, launch: { type: "adapter", adapter: preset.adapter, options }, readiness: { type: "adapter", timeoutMs: preset.timeoutMs } };
 }
 
