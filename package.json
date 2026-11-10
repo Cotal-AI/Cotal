@@ -563,7 +563,7 @@
     "smoke:channel-members:live": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/channel-members-live.smoke.ts",
     "smoke:ledger": "tsx implementations/cli/smoke/ledger.smoke.ts",
     "smoke:manager-singleton:live": "tsx implementations/cli/smoke/manager-singleton-live.smoke.ts",
-    "smoke:component-health": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/component-health.smoke.ts",
+    "smoke:component-health": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/component-health.smoke.ts && tsx implementations/cli/smoke/status-component-width.smoke.ts",
     "smoke:liveness-peer": "tsx packages/core/smoke/liveness-peer.smoke.ts",
     "smoke:delivery-responder-visibility": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/delivery-responder-visibility.smoke.ts",
     "smoke:delivery-boot-honesty": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/delivery-boot-honesty.smoke.ts",
