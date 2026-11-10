@@ -905,6 +905,16 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           return;
         }
         if (process.argv.includes("--hosted-login-repro")) {
+          const managedHome = join(root, "login-home");
+          mkdirSync(managedHome, { mode: 0o700 });
+          const managedPaths = daemonPathsFor(managedHome, env);
+          saveIdpSession(managedHome, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+          const owned = await startDaemon(managedHome);
+          try {
+            idpRevoked = true;
+            const refusal = resultOf(await ask(managedPaths.socket, { op: "manager-start", space: ON }, 100_000));
+            check("3A explicit-home login reason and Next target the owning daemon", refusal.state === "refused" && refusal.reason?.includes(`--daemon-home ${managedHome}`) && refusal.next?.includes(`--daemon-home ${managedHome}`), refusal);
+          } finally { idpRevoked = false; await killAndAwaitExit(owned, "SIGTERM"); }
           await cli("service-disconnect", "--space", ON);
           idpRevoked = true;
           let missing: Record<string, any>;

@@ -137,7 +137,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const machineHome = opts.sessionDir ?? homeCotalDir();
   const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
   const services = createServiceConnections(machineHome);
-  const managers = createHostedManagers(machineHome, opts.version);
+  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir);
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({

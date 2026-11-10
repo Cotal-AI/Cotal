@@ -609,7 +609,8 @@ A Manager that exits before readiness reports its exit code or signal and its la
 A stopped row keeps its instance and last observation, clears the PID, and names setup as its next
 step. Status emits a PID only for a retained child, never from a saved refusal record.
 An expired or revoked daemon session names `cotal daemon login --idp <url>` in both the refusal
-and its next step. Status also includes `logError` if logging fails. The daemon checks the child's
+and its next step. Hosted repair commands carry `--daemon-home <dir>` when the daemon has an
+explicit home. Status also includes `logError` if logging fails. The daemon checks the child's
 parent IPC channel every five to six seconds without an auth callout. Three consecutive missing
 answers make recovery eligible. Recovery restarts a live child only after its native preservation
 fence confirms no seats and blocks new admission. An occupied or unresponsive child stays running

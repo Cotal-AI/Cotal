@@ -44,7 +44,9 @@ interface Live {
   healthFailures?: number;
 }
 
-export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion()) {
+export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string) {
+  const homeArg = daemonHome === undefined ? undefined : /^[A-Za-z0-9_./-]+$/.test(daemonHome) ? daemonHome : JSON.stringify(daemonHome);
+  const command = (text: string) => homeArg === undefined ? text : text.replace(/cotal daemon (setup|status|login)\b(?! --daemon-home)/g, (match) => `${match} --daemon-home ${homeArg}`);
   let reconcileTask: Promise<void> | undefined;
   const reconcile = () => reconcileTask ??= reconcileHostedConnectors(version).finally(() => { reconcileTask = undefined; });
   const connectors = (data: unknown): HostedManager["connectors"] => (data as { connectors?: HostedManager["connectors"] } | undefined)?.connectors;
@@ -95,6 +97,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     return l.view;
   };
   const status = (space: string): HostedManager => {
+    const view = rawStatus(space);
+    return { ...view, ...(view.next ? { next: command(view.next) } : {}), ...(view.reason ? { reason: command(view.reason) } : {}), ...(view.lastRefusal ? { lastRefusal: command(view.lastRefusal) } : {}) };
+  };
+  const rawStatus = (space: string): HostedManager => {
     const current = live.get(space);
     const invalid = recordError(space);
     if (invalid) return { ...(current?.view ?? { space, restarts: 0 }), pid: current?.child?.pid, state: "refused", reason: invalid, lastRefusal: invalid, next: `run cotal daemon setup --space ${space} to repair its hosting records` };
@@ -112,7 +118,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   });
   const refresh = async (space: string): Promise<HostedManager> => {
     const l = live.get(space);
-    if (generationPending && l?.child) return { ...status(space), state: "starting", reason: "an installed generation transition is pending", next: `wait for activation or read cotal daemon status --space ${space}` };
+    if (generationPending && l?.child) return { ...status(space), state: "starting", reason: "an installed generation transition is pending", next: command(`wait for activation or read cotal daemon status --space ${space}`) };
     if (!l?.child || !l.view.instanceId || l.stopping || l.starting || recordError(space)) return status(space);
     const child = l.child, selected = l.view.instanceId;
     let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -350,7 +356,11 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     return { ...l.view };
   }
   const start = async (space: string): Promise<HostedManager> => {
-    if (closed || generationPending) throw new HostedManagerRefusal("GENERATION_PENDING", "the daemon is stopping or preparing an installed generation transition", "wait for the installed generation transition, then retry setup");
+    await startRaw(space);
+    return status(space);
+  };
+  const startRaw = async (space: string): Promise<HostedManager> => {
+    if (closed || generationPending) throw new HostedManagerRefusal("GENERATION_PENDING", "the daemon is stopping or preparing an installed generation transition", command(`wait for the installed generation transition, then run cotal daemon setup --space ${space}`));
     let l = live.get(space);
     if (!l) { const previous = status(space); l = { view: { space, state: "starting", restarts: 0, ...(previous.lastRefusal ? { lastRefusal: previous.lastRefusal } : {}) }, stopping: false, failures: 0 }; live.set(space, l); }
     if (l.starting) return l.starting;
@@ -412,7 +422,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         for (const l of live.values()) {
           if (!l.child) continue;
           const seats = await generationCall(l.child, randomUUID(), "inspect");
-          if (seats !== undefined && seats > 0) throw new HostedManagerRefusal("SEATS_ACTIVE", `hosted Manager for ${l.view.space} holds ${seats} active seat(s)`, `stop the seats through Manager ${l.view.instanceId} in space ${l.view.space}, then retry setup`);
+          if (seats !== undefined && seats > 0) throw new HostedManagerRefusal("SEATS_ACTIVE", `hosted Manager for ${l.view.space} holds ${seats} active seat(s)`, command(`stop the seats through Manager ${l.view.instanceId} in space ${l.view.space}, then run cotal daemon setup --space ${l.view.space}`));
         }
         for (const l of live.values()) {
           if (!l.child) continue;
