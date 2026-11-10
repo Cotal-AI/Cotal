@@ -8,13 +8,14 @@ import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
 import { installedDaemonIdentity, restartInstalled, unitReceiptFile } from "./install.js";
+import { waitForInstalledDaemonGeneration } from "./update-generation.js";
 
 const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
   let hostedSpaces: string[] = [];
   let daemonObserved = false;
-  await update(args, { ...updateRuntime, async reportRunningManager(flags) {
+  await update(args, { ...updateRuntime, waitForInstalledGeneration: waitForInstalledDaemonGeneration, async reportRunningManager(flags) {
     let managers;
     try {
       const reply = await queryDaemon({ paths: daemonPaths() });

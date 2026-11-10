@@ -155,6 +155,15 @@ Update reads the recorded mesh inventory without refreshing account space catalo
 login to a remote mesh does not block the software update. Local manager continuity checks still
 apply before changing the installation.
 
+After `update --self` replaces the installation, its verified replacement waits up to 120 seconds
+for the recorded same-installation daemon to load the new version and its intended hosted Managers
+to answer. It prints this wait before the continuity check. The daemon owns its automatic restart;
+the updater does not start a competing restart. Connector reconciliation still requires the
+continuity check to answer. If activation does not finish, the failure names the last daemon or
+Manager state and asks you to inspect `cotal daemon status` and the recorded user service, restore
+the connection, then run `cotal update` again. A machine without a recorded daemon service keeps
+the existing update path.
+
 After an upgrade, `up`, `down` and the `service` verbs still control the stack members and
 first-party service instances an earlier release recorded, even when that release declared their
 adapter differently, as long as each runs under the stop policy its adapter declares now. A
