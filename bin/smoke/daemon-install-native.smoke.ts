@@ -28,6 +28,10 @@
  *     JSON output; an answering loginctl still plans successfully. Neither writes or mutates.
  *  N8 Linux install planning refuses unrecorded unit paths before any linger or service action,
  *     through both preview formats and apply, for default and explicit daemon homes.
+ *  N9 Linux directory preflight and linger ordering through the built CLI: unsafe ancestors and
+ *     leaves refuse without writes or native changes; protected paths install, and a failed linger
+ *     step leaves a recorded unit for uninstall. Publication rechecks a directory changed after plan.
+ *     A source or ancestor changed during linger refuses before native registration.
  *
  * Real supervisor lifecycle acceptance belongs to daemon-install-real.smoke.mjs on disposable hosts.
  *
@@ -35,7 +39,7 @@
  */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -517,6 +521,76 @@ try {
       check(`N7 ${available ? "ready" : "missing loginctl"} performs only prerequisite reads`, JSON.stringify(operations) === JSON.stringify(available ? ["directory-read", "linger-read", "directory-read", "linger-read"] : ["directory-read", "directory-read"]), operations);
     }
   } else console.log(`  ○ UNTESTED N7: Linux CLI prerequisites; this is ${process.platform}`);
+  console.log("N8 Linux unit-directory preflight and linger ordering through the built CLI");
+  if (process.platform === "linux") {
+    const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
+    const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
+    for (const kind of ["group-ancestor", "world-ancestor", "group-leaf", "symlink", "file-ancestor", "changed-after-plan", "protected-missing", "protected-existing", "linger-denied", "existing-unit", "source-on-enable", "directory-on-enable", "source-on-read", "directory-on-read"]) {
+      const dir = join(root, `preflight-${kind}`);
+      mkdirSync(dir, { mode: 0o700 });
+      for (const name of ["home", "cotal", "config", "runtime", "native"]) mkdirSync(join(dir, name), { mode: 0o700 });
+      const config = join(dir, "config");
+      const unitDir = join(config, "systemd", "user");
+      const unitPath = join(unitDir, "cotal-daemon.service");
+      const receiptFile = join(dir, "cotal", "daemon", "service-unit.json");
+      const lingerFile = join(dir, "linger");
+      writeFileSync(lingerFile, "Linger=no\n", { mode: 0o600 });
+      if (["group-leaf", "protected-existing", "existing-unit"].includes(kind)) mkdirSync(unitDir, { recursive: true, mode: 0o700 });
+      if (kind === "group-ancestor") chmodSync(config, 0o775);
+      if (kind === "world-ancestor") chmodSync(config, 0o777);
+      if (kind === "group-leaf") chmodSync(unitDir, 0o775);
+      if (kind === "symlink") symlinkSync(join(dir, "home"), join(config, "systemd"));
+      if (kind === "file-ancestor") writeFileSync(join(config, "systemd"), "not a directory");
+      if (kind === "existing-unit") writeFileSync(unitPath, "foreign unit", { mode: 0o600 });
+      const changedSource = kind.startsWith("source-on-");
+      const changedDirectory = kind.startsWith("directory-on-");
+      const changedDuringLinger = changedSource || changedDirectory;
+      const phase = kind.endsWith("-enable") ? "enable" : "read";
+      const context = { home: join(dir, "home"), config, calls: join(dir, "calls.jsonl"), units: ["cotal-daemon.service"], lingerFile, publication: [unitPath, receiptFile], denyLinger: kind === "linger-denied", ...(kind === "changed-after-plan" ? { changeDirectoryOnLingerRead: config } : {}), ...(changedSource ? { changeSourceDuringLinger: phase } : {}), ...(changedDirectory ? { changeDirectoryDuringLinger: phase } : {}) };
+      const configFile = join(dir, "context.json");
+      writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
+      for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
+      // Only recording stand-ins can run, including during the private-group proof.
+      const env = { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: join(dir, "runtime"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: join(dir, "native"), DAEMON_UNIT_FIXTURE: configFile, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      const call = (verb: string, flags: string[]) => {
+        const child = spawnSync(process.execPath, [cli, "daemon", verb, ...flags], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
+        if (child.error || child.signal) throw new Error(`N8 ${kind} ${verb} did not exit normally`);
+        return { status: child.status, output: child.stdout + child.stderr };
+      };
+      const operations = (): string[] => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => (JSON.parse(line) as { operation: string }).operation) : [];
+      const effects = () => operations().filter((operation) => !["directory-read", "linger-read"].includes(operation));
+      const unsafe = ["group-ancestor", "world-ancestor", "group-leaf", "symlink", "file-ancestor"].includes(kind);
+      const directoryExisted = existsSync(unitDir);
+      const previewRefusal = kind === "existing-unit" ? "CONFLICT" : kind === "file-ancestor" ? "TARGET_UNAVAILABLE" : unsafe ? "PERMISSION_DENIED" : undefined;
+      for (const format of ["plain", "json"]) {
+        const preview = call("install", ["--dry-run", `--${format}`]);
+        check(`N8 ${kind} ${format} preview`, preview.status === (previewRefusal ? 2 : 0) && (previewRefusal ? preview.output.includes(previewRefusal) : /Would install|would-install/.test(preview.output)), preview);
+        check(`N8 ${kind} ${format} preview writes nothing`, existsSync(unitDir) === directoryExisted && !existsSync(receiptFile) && (kind === "existing-unit" ? readFileSync(unitPath, "utf8") === "foreign unit" : !existsSync(unitPath)) && effects().length === 0 && readFileSync(lingerFile, "utf8") === "Linger=no\n");
+        if (kind === "changed-after-plan") chmodSync(config, 0o700);
+      }
+      const installed = call("install", ["--json"]);
+      const refused = unsafe || changedDuringLinger || ["changed-after-plan", "existing-unit", "linger-denied"].includes(kind);
+      check(`N8 ${kind} apply outcome`, installed.status === (changedSource ? 3 : refused ? 2 : 0) && (previewRefusal === undefined || installed.output.includes(previewRefusal)), installed);
+      if (unsafe || kind === "changed-after-plan" || kind === "existing-unit") {
+        check(`N8 ${kind} refusal changes no linger or native state`, effects().length === 0 && readFileSync(lingerFile, "utf8") === "Linger=no\n", operations());
+        check(`N8 ${kind} refusal publishes no source or receipt`, !existsSync(receiptFile) && (kind === "existing-unit" ? readFileSync(unitPath, "utf8") === "foreign unit" : !existsSync(unitPath)));
+      } else if (changedDuringLinger) {
+        const receipt = JSON.parse(readFileSync(receiptFile, "utf8")) as UnitReceipt;
+        check(`N8 ${kind} detects changed source or protection`, installed.output.includes(changedSource ? "OPERATION_UNKNOWN" : "PERMISSION_DENIED"), installed);
+        check(`N8 ${kind} submits no registration after linger`, effects().join(",") === "enable-linger" && readFileSync(lingerFile, "utf8") === "Linger=yes\n", operations());
+        check(`N8 ${kind} retains source and receipt for inspection`, receipt.unitPath === unitPath && existsSync(unitPath) && (changedSource ? receipt.unitSha256 !== sha(readFileSync(unitPath)) : receipt.unitSha256 === sha(readFileSync(unitPath)) && (lstatSync(config).mode & 0o777) === 0o777));
+        const removal = call("uninstall", ["--dry-run", "--json"]);
+        check(`N8 ${kind} refuses unsafe uninstall without further native effects`, removal.status === 2 && /CONFLICT/.test(removal.output) && effects().join(",") === "enable-linger" && existsSync(unitPath) && existsSync(receiptFile), removal);
+      } else {
+        const receipt = JSON.parse(readFileSync(receiptFile, "utf8")) as UnitReceipt;
+        check(`N8 ${kind} publication matches its receipt`, receipt.unitPath === unitPath && receipt.unitSha256 === sha(readFileSync(unitPath)) && (lstatSync(unitPath).mode & 0o777) === 0o600);
+        check(`N8 ${kind} native ordering`, effects().join(",") === (kind === "linger-denied" ? "enable-linger" : "enable-linger,daemon-reload,enable,start"), operations());
+        if (kind === "linger-denied") check("N8 linger refusal names retained unit recovery", /recorded unit was not enabled or started/.test(installed.output) && /cotal daemon uninstall/.test(installed.output));
+        const removed = call("uninstall", ["--yes", "--json"]);
+        check(`N8 ${kind} uninstall recovers recorded installation`, removed.status === 0 && !existsSync(unitPath) && !existsSync(receiptFile), removed);
+      }
+    }
+  } else console.log(`  ○ UNTESTED N8: Linux unit-directory preflight; this is ${process.platform}`);
 } finally {
   if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
   rmSync(root, { recursive: true, force: true });

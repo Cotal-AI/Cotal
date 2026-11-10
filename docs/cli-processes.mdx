@@ -726,7 +726,9 @@ when it dies, and keeps running after you log out, which on a headless server is
 provides. `install` enables linger for the invoking user and says so in its receipt. A linger it
 cannot enable fails the install, naming `loginctl enable-linger <user>`, because a unit without it
 stops at logout. `uninstall` stops the service, disables autostart and removes the unit, and leaves
-linger enabled, because other user services may rely on it.
+linger enabled, because other user services may rely on it. The unit and its receipt are written
+before enabling linger. If linger cannot be enabled, the unit stays recorded for `uninstall` and
+is not enabled or started.
 
 On macOS it is a LaunchAgent. It writes a plist to `~/Library/LaunchAgents`, then loads it into the
 user's GUI domain with `launchctl enable` and `launchctl bootstrap`. launchd starts the daemon when
@@ -772,6 +774,12 @@ Planning also reads linger with `loginctl show-user <user> --property=Linger --n
 If `loginctl` cannot run or does not answer within its bound, it refuses `DEPENDENCY_UNAVAILABLE`.
 Next says to make `loginctl` available on `PATH` and use a logged-in session where it can reach
 systemd-logind, then retry. This read happens during `--dry-run` too; it does not enable linger.
+Planning checks the unit directory and its existing ancestors for unsafe ownership, permissions
+and symlinks without creating missing directories. An unsafe path refuses `PERMISSION_DENIED`
+before linger is enabled. Publication checks the directory again before any linger change.
+After the linger calls, installation verifies the published unit's digest and directory protection
+again before submitting reload, enable or start. A changed source or unsafe path stops registration
+and keeps the source and receipt for inspection.
 
 `serve` validates `COTAL_IDP_TIMEOUT_MS` in its own environment before opening the endpoint or
 resuming connections. The value must be whole milliseconds from `1` to `2147483647`.
