@@ -807,6 +807,9 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         manifest.extensions[0].connectors[0].requires = ["cotal-owned-missing-harness"];
         writeFileSync(join(prefix, "extensions.json"), JSON.stringify(manifest));
       }
+      const recoveryBin = join(root, "application-bin");
+      mkdirSync(recoveryBin, { mode: 0o700 });
+      env.PATH = `${recoveryBin}:${env.PATH}`;
       let child = await startDaemon();
       let recordingRestart = process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro");
       const watchRecordedRestart = (owned: ChildProcess) => owned.once("exit", (code) => {
@@ -833,6 +836,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         console.log("  H1 setup", JSON.stringify(setup));
         if (process.argv.includes("--setup-no-connectors-repro")) {
           check("3A setup refuses no available connector", setup.code === 2 && setup.doc.error?.message?.includes("no available connector") && !!setup.doc.error?.remedy, setup);
+          check("setup remedy names the missing agent application", setup.doc.error?.remedy?.includes("cotal-owned-missing-harness"), setup);
+          const before = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
+          writeFileSync(join(recoveryBin, "cotal-owned-missing-harness"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+          const recovered = await cli("setup", "--space", ON);
+          console.log("  setup after application install", JSON.stringify(recovered));
+          check("setup after application install restarts idle child and becomes launch-ready", recovered.code === 0 && recovered.doc.result?.launchReady === true && recovered.doc.result?.manager?.pid !== before?.pid && recovered.doc.result?.manager?.connectors?.some((connector: any) => connector.state === "available"), recovered);
           return;
         }
         check("H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);

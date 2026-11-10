@@ -88,7 +88,7 @@ const bytes = `[Service]\nExecStart="${process.execPath}" "${foreign ? join(root
 const unitPath = join(root, "config", "systemd", "user", "cotal-daemon.service");
 mkdirSync(dirname(unitPath), { recursive: true, mode: 0o700 });
 writeFileSync(unitPath, bytes, { mode: 0o600 });
-writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(bytes).digest("hex"), installedAt: new Date().toISOString() }));
+if (!process.argv.includes("--unrecorded")) writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(bytes).digest("hex"), installedAt: new Date().toISOString() }));
 if (process.argv.includes("--provenance")) {
   const argv = process.argv, execArgv = process.execArgv;
   const marker = process.env.COTAL_DAEMON_NATIVE_SERVICE;
@@ -103,7 +103,7 @@ if (process.argv.includes("--provenance")) {
     if (daemonStartedByOwnedService(paths)) throw new Error("unmarked source accepted as native");
     const marked = bytes.replace("[Service]", "[Service]\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1");
     writeFileSync(unitPath, marked, { mode: 0o600 });
-    writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(marked).digest("hex"), installedAt: new Date().toISOString() }));
+    if (!process.argv.includes("--unrecorded")) writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(marked).digest("hex"), installedAt: new Date().toISOString() }));
     if (!daemonStartedByOwnedService(paths)) throw new Error("verified native source refused");
     console.log("PASS native marker requires verified same-install source");
   } finally {
@@ -117,7 +117,12 @@ try {
   let output = "";
   child.stdout.on("data", b => output += String(b)); child.stderr.on("data", b => output += String(b));
   const code = await new Promise(resolve => child.once("exit", resolve));
-  if (process.argv.includes("--start-fails")) {
+  if (process.argv.includes("--unrecorded")) {
+    const after = await status();
+    console.log("unrecorded daemon update", JSON.stringify({ code, calls, after, output }));
+    if (code !== 0 || calls.length || after.result.version !== "0.0.0" || !output.includes("runs Cotal 0.0.0; no recorded user service, left running")) throw new Error("unrecorded daemon blocked update or was restarted");
+    console.log("PASS unrecorded daemon update finishes without native calls");
+  } else if (process.argv.includes("--start-fails")) {
     console.log("R2-12 failed native start", JSON.stringify({ code, calls, output }));
     if (code === 0 || calls.join(",") !== "/stop,/start" || !output.includes("owned native start denied") || !output.includes("cotal daemon start")) throw new Error("R2-12 native failure or recovery command missing");
     console.log("PASS R2-12 native error and daemon start recovery retained");
