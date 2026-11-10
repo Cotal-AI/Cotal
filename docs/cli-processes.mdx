@@ -924,6 +924,12 @@ responder before reporting ready. It succeeds, exit 0, only after the broker acc
 the responder subscriptions are flushed and the space accepts the daemon as ready. The renewal and ready request IDs are kept in
 `<COTAL_HOME>/daemon/<space segment>/service-store/`, mode `0600`, and reused after a restart.
 
+A damaged `daemon-ready/*.json` or `auth/<space segment>/service-renewal/*.json` record in that
+store reports `CONFLICT` (`LOCAL_STATE_ERROR`) on connection or startup resume. Store read,
+creation and write failures use the same local diagnosis. The daemon preserves existing records
+and leaves no connection after a failed connect attempt. Check permissions and restore the original
+record before retrying; restoring it reuses the saved request IDs. No record is silently replaced.
+
 Every other answer is a refusal and nothing is connected. Not yet approved is `LIFECYCLE_BLOCKED`
 (`APPROVAL_PENDING`). A refused registration is `PERMISSION_DENIED`, and so is a space that ended the
 daemon's authority, with its code as the native code, such as `APPROVAL_REVOKED`; connecting again
