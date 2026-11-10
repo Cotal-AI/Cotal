@@ -19,6 +19,7 @@ process.env.XDG_CONFIG_HOME = join(root, "config");
 process.env.COTAL_HOME = join(root, "cotal");
 const machineHome = process.env.COTAL_HOME;
 const runtime = join(root, "rt"); mkdirSync(runtime, { mode: 0o700 });
+let malformed = false;
 let mode = 200, puts = 0, gets = 0;
 let revision = 1;
 let etag = '"one"';
@@ -38,7 +39,7 @@ const fixture = createServer((req, res) => {
   gets++; conditional = req.headers["if-none-match"] as string | undefined;
   if (mode !== 200) { res.writeHead(mode); res.end(mode === 304 ? undefined : "{}"); return; }
   res.setHeader("etag", etag);
-  res.end(JSON.stringify({ v: 1, machineId: machine[1], revision, bindingRevisions: {}, account: { idpUrl, issuer, sub: "owner" }, spaces: [] }));
+  res.end(JSON.stringify({ v: 1, machineId: machine[1], revision, ...(malformed ? {} : { bindingRevisions: {} }), account: { idpUrl, issuer, sub: "owner" }, spaces: [] }));
 });
 await new Promise<void>(resolve => fixture.listen(0, "127.0.0.1", resolve));
 const issuer = `http://127.0.0.1:${(fixture.address() as { port: number }).port}`;
@@ -62,6 +63,10 @@ try {
   const records = readdirSync(join(machineHome, "daemon", "accounts"));
   assert.ok(records.every(key => (statSync(join(machineHome, "daemon", "accounts", key, "computer.json")).mode & 0o777) === 0o600));
   const reply = await queryDaemon({ paths }); assert.ok(reply.ok && reply.result.account?.hostSupport === "supported");
+  malformed = true; revision = 2;
+  await until(() => daemon.status().account?.message === "invalid computer binding revisions", "malformed binding map is reported without applying revision");
+  assert.equal(daemon.status().account!.desiredRevision, 1);
+  malformed = false;
   mode = 304; const before = gets;
   await until(() => gets > before, "conditional 304 poll");
   assert.equal(conditional, etag); assert.equal(daemon.status().account!.desiredRevision, 1);

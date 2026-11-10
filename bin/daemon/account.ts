@@ -24,7 +24,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
       contexts.set(account.ownerKey, context);
       state = context.state;
       if (state.mode === "per-space" || state.mode === "sign-in-required") continue;
-      await poll().catch(() => { context.state.message = "account computer request failed; existing connections are unchanged"; });
+      await poll().catch((error: unknown) => { context.state.message = error instanceof Error && error.message.startsWith("invalid computer") ? error.message : "account computer request failed; existing connections are unchanged"; });
       async function poll() {
     const call = (method: "PUT" | "GET") => requestAccountMachine({ dir: home, idpUrl: account.idpUrl, machineId, method, signal: abort.signal,
       ...(method === "GET" ? { etag: context.etag } : { metadata: { name: hostname().slice(0, 128) || "Computer", platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version } }) });
