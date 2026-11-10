@@ -864,9 +864,9 @@ socket is the live owner (same pid and process start) of its daemon's lock: `<di
 with `--daemon-home`, and `<COTAL_HOME>/daemon/daemon.lock` in the client's own Cotal home without
 it. Otherwise it refuses `PERMISSION_DENIED` (`PEER_NOT_LOCK_OWNER`). So a client whose
 `COTAL_HOME` is not the one the default daemon runs with is refused, because that daemon keeps
-another Cotal home's state. Next says to find the process listening at the socket with `ss -xlp`,
-to run the command with that daemon's `COTAL_HOME` when it is a daemon started with another Cotal
-home, and otherwise to stop it and start the daemon with `cotal daemon serve`.
+another Cotal home's state. Next asks you to inspect the conflicting listener with your operating
+system, use that daemon's `COTAL_HOME` for the default daemon, or use the same directory as the
+intended daemon for an explicit `--daemon-home`. The refusal stops no process and sends no request.
 
 This daemon is a different machine identity. Nothing is copied from the default daemon: it needs
 its own `login`, its own `register`, and the space owner's approval of its own instance.

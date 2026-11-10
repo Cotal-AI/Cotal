@@ -435,7 +435,7 @@ try {
         && json.doc.error?.remedy === expectedRemedy;
     const owner = await cli("status", "--json"), ownerPlain = await cli("status", "--plain");
     check("L4b status refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER with the portable ownership remedy, in plain and --json alike",
-      stepsFor("PEER_NOT_LOCK_OWNER", "use the same --daemon-home as the intended daemon and inspect the conflicting listener with your operating system; no process was stopped", owner, ownerPlain), { status: owner.status, error: owner.doc.error, plain: ownerPlain.out + ownerPlain.err });
+      stepsFor("PEER_NOT_LOCK_OWNER", "inspect the conflicting listener with your operating system. For the default daemon use its COTAL_HOME. For an explicit --daemon-home use the same directory as the intended daemon. No process was stopped", owner, ownerPlain), { status: owner.status, error: owner.doc.error, plain: ownerPlain.out + ownerPlain.err });
     chmodSync(paths.socket, 0o700);
     const mode = await cli("status", "--json"), modePlain = await cli("status", "--plain");
     chmodSync(paths.socket, 0o600);

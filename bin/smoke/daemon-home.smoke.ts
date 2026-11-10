@@ -18,6 +18,8 @@
  * Cells (each asserts counts or exact codes, never just "no error"):
  *  H0 control, no flag: legacy `serve` binds the fixed legacy socket, and `status` answers with
  *     that serve's pid. This is green today and must stay green;
+ *  H0b a different COTAL_HOME refuses the same default listener with advice for both daemon forms,
+ *     identical in plain and JSON. The matching home still reaches the same ready daemon;
  *  H1 a managed `serve --daemon-home D` beside a live legacy daemon: binds a different socket under
  *     `$XDG_RUNTIME_DIR/cotal/`. Both answer their own pid. The legacy socket keeps its inode and
  *     mtime. The no-flag client still reaches legacy. D holds a live lock owned by the managed pid;
@@ -45,7 +47,7 @@
  *     - the smoke process holds `D/daemon.lock` through the same kernel `flock` the daemon takes;
  *     - a different same-uid process listens at the derived path;
  *     - `status --daemon-home D` refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER, exit 2, and the
- *       listener receives 0 bytes.
+ *       listener receives 0 bytes. Plain and JSON give the same conditional explicit-home advice.
  *  H6 managed catalog refresh keeps shared registrations, sentinel files and selection unchanged,
  *     including on provider failure; default refresh still applies additions and removals. An
  *     account switch drops the old catalog cache in either home, but only the default daemon
@@ -237,6 +239,26 @@ try {
     const st = await cli(["status", "--json"]);
     check("H0 no-flag status answers ready with the legacy serve's pid, exit 0", st.status === 0 && st.doc.result?.state === "ready" && st.doc.result?.pid === legacyServe.child.pid, { status: st.status, doc: st.doc });
     check("H0 the runtime dir holds exactly the legacy socket", JSON.stringify(runtimeEntries()) === JSON.stringify(["daemon.sock"]), runtimeEntries());
+  });
+
+  await cell("H0b a default daemon's COTAL_HOME mismatch has actionable recovery advice", async () => {
+    const otherHome = join(root, "other-home");
+    mkdirSync(otherHome, { mode: 0o700 });
+    const before = fileState(legacy.socket);
+    childEnv.COTAL_HOME = otherHome;
+    try {
+      const json = await cli(["status", "--json"]);
+      const plain = await cli(["status", "--plain"]);
+      const remedy = json.doc.error?.remedy ?? "";
+      check("H0b mismatched COTAL_HOME refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER in both formats", json.status === 2 && json.doc.error?.code === "PERMISSION_DENIED" && json.doc.error?.cause?.code === "PEER_NOT_LOCK_OWNER" && plain.status === 2 && plain.err.includes("PEER_NOT_LOCK_OWNER"), { json, plain });
+      check("H0b Next distinguishes default COTAL_HOME from explicit --daemon-home and matches plain output", remedy.includes("For the default daemon use its COTAL_HOME") && remedy.includes("For an explicit --daemon-home use the same directory as the intended daemon") && remedy.includes("inspect the conflicting listener with your operating system") && remedy.endsWith("No process was stopped") && plain.err.includes(remedy), { remedy, plain: plain.err });
+    } finally {
+      childEnv.COTAL_HOME = home;
+    }
+    const json = await cli(["status", "--json"]);
+    const plain = await cli(["status", "--plain"]);
+    check("H0b matching COTAL_HOME still reports the original daemon ready in both formats", json.status === 0 && json.doc.result?.state === "ready" && json.doc.result?.pid === legacyServe?.child.pid && plain.status === 0 && plain.out.includes("ready") && plain.out.includes(String(legacyServe?.child.pid)), { json, plain });
+    check("H0b refusal leaves the default socket unchanged", JSON.stringify(fileState(legacy.socket)) === JSON.stringify(before));
   });
 
   await cell("H1 a managed daemon home binds its own socket beside a live legacy daemon", async () => {
@@ -491,6 +513,9 @@ try {
       const r = await cli(["status", "--daemon-home", managed, "--json"]);
       await sleep(200);
       check("H5 status refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER, exit 2", r.status === 2 && r.doc.error?.code === "PERMISSION_DENIED" && r.doc.error?.cause?.code === "PEER_NOT_LOCK_OWNER", { status: r.status, doc: r.doc });
+      const plain = await cli(["status", "--daemon-home", managed, "--plain"]);
+      const remedy = r.doc.error?.remedy ?? "";
+      check("H5 explicit-home advice is conditional and matches plain output", remedy.includes("For an explicit --daemon-home use the same directory as the intended daemon") && plain.status === 2 && plain.err.includes("PEER_NOT_LOCK_OWNER") && plain.err.includes(remedy), { remedy, plain: plain.err });
       check("H5 the impostor listener received 0 bytes", !out.includes("GOT-BYTES"), out);
     } finally {
       await kill(listener);
