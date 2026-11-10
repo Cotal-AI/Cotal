@@ -26,6 +26,8 @@
  *     before any native mutation or file removal. No real systemd or linger change occurs.
  *  N7 Linux dry-run prerequisites: missing loginctl refuses with recovery guidance in plain and
  *     JSON output; an answering loginctl still plans successfully. Neither writes or mutates.
+ *  N8 Linux install planning refuses unrecorded unit paths before any linger or service action,
+ *     through both preview formats and apply, for default and explicit daemon homes.
  *
  * Real supervisor lifecycle acceptance belongs to daemon-install-real.smoke.mjs on disposable hosts.
  *
@@ -33,7 +35,7 @@
  */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -393,12 +395,12 @@ try {
     check("and the receipt is kept", lstatSync(receiptFile).isFile());
   } else console.log(`  ○ UNTESTED N5: the dispatch cells read a Linux receipt; this is ${process.platform}`);
 
-  console.log("N6 Linux receipt binding through the built CLI and real files");
+  console.log("N6/N7 Linux receipt binding and install conflicts through the built CLI and real files");
   if (process.platform === "linux") {
     const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
     const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
     const runtime = join(root, "rt"); mkdirSync(runtime, { mode: 0o700 });
-    for (const kind of ["default", "managed", "outside-path", "wrong-unit", "copied-home"]) {
+    for (const kind of ["default", "managed", "outside-path", "wrong-unit", "copied-home", "unrecorded-default", "unrecorded-managed", "unrecorded-directory", "unrecorded-symlink", "unrecorded-uninspectable"]) {
       const dir = join(root, kind); mkdirSync(dir, { mode: 0o700 });
       for (const name of ["home", "cotal", "a", "b", "config", "native"]) mkdirSync(join(dir, name), { mode: 0o700 });
       const a = join(dir, "a"), b = join(dir, "b");
@@ -407,19 +409,54 @@ try {
       for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
       const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
       Object.assign(env, { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: `${join(dir, "native")}:/usr/local/bin:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
-      const call = (verb: string, home: string | undefined, flags: string[] = []) => {
-        const child = spawnSync(process.execPath, [cli, "daemon", verb, ...(home ? ["--daemon-home", home] : []), ...flags, "--json"], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
+      const invoke = (verb: string, home: string | undefined, flags: string[] = []) => {
+        const child = spawnSync(process.execPath, [cli, "daemon", verb, ...(home ? ["--daemon-home", home] : []), ...flags], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
         if (child.error || child.signal) throw new Error(`N6 ${verb} did not exit normally`);
-        const doc = JSON.parse(child.stdout) as { outcome: string; error?: { code: string } };
+        return child;
+      };
+      const call = (verb: string, home: string | undefined, flags: string[] = []) => {
+        const child = invoke(verb, home, [...flags, "--json"]);
+        const doc = JSON.parse(child.stdout) as { outcome: string; result?: { state: string; unitPath: string }; error?: { code: string } };
         return { status: child.status, doc };
       };
       const effects = (): number => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { operation: string }).filter((c) => !["directory-read", "linger-read"].includes(c.operation)).length : 0;
-      const home = kind === "default" ? undefined : a;
+      const home = kind === "default" || kind === "unrecorded-default" ? undefined : a;
       const receiptFile = join(home ?? join(dir, "cotal", "daemon"), "service-unit.json");
+      if (kind.startsWith("unrecorded-")) {
+        const unitPath = join(context.config, "systemd", "user", home ? context.units[1]! : context.units[0]!);
+        const preview = call("install", home, ["--dry-run"]);
+        check(`N7 ${kind} absent-path control previews without writing`, preview.status === 0 && preview.doc.outcome === "ok" && preview.doc.result?.state === "would-install" && preview.doc.result.unitPath === unitPath && !existsSync(unitPath) && !existsSync(receiptFile), preview);
+        const foreign = "[Unit]\nDescription=Foreign unit\n";
+        const missing = join(dir, "missing.service");
+        if (kind === "unrecorded-uninspectable") writeFileSync(join(context.config, "systemd"), foreign, { mode: 0o600 });
+        else {
+          mkdirSync(join(context.config, "systemd", "user"), { recursive: true, mode: 0o700 });
+          if (kind === "unrecorded-directory") mkdirSync(unitPath, { mode: 0o700 });
+          else if (kind === "unrecorded-symlink") symlinkSync(missing, unitPath);
+          else writeFileSync(unitPath, foreign, { mode: 0o600 });
+        }
+        const expected = kind === "unrecorded-uninspectable" ? "TARGET_UNAVAILABLE" : "CONFLICT";
+        const before = readFileSync(context.calls, "utf8");
+        const plain = invoke("install", home, ["--dry-run", "--plain"]);
+        const results = [call("install", home, ["--dry-run"]), call("install", home)];
+        check(`N7 ${kind} plain preview refuses ${expected}`, plain.status === 2 && `${plain.stdout}${plain.stderr}`.includes(expected), { status: plain.status, stdout: plain.stdout, stderr: plain.stderr });
+        check(`N7 ${kind} JSON preview and apply refuse ${expected}`, results.every((r) => r.status === 2 && r.doc.outcome === "refused" && r.doc.error?.code === expected), results);
+        const calls = readFileSync(context.calls, "utf8").slice(before.length).trim().split("\n").map((line) => JSON.parse(line) as { operation: string });
+        check(`N7 ${kind} reads only the manager directory before refusing`, calls.length === 3 && calls.every((c) => c.operation === "directory-read"), calls);
+        const unchanged = kind === "unrecorded-uninspectable" ? readFileSync(join(context.config, "systemd"), "utf8") === foreign
+          : kind === "unrecorded-directory" ? lstatSync(unitPath).isDirectory()
+          : kind === "unrecorded-symlink" ? lstatSync(unitPath).isSymbolicLink() && readlinkSync(unitPath) === missing && !existsSync(missing)
+          : readFileSync(unitPath, "utf8") === foreign;
+        check(`N7 ${kind} keeps the foreign path and writes no receipt`, unchanged && !existsSync(receiptFile));
+        continue;
+      }
       const installed = call("install", home);
       if (installed.status !== 0) throw new Error(`N6 ${kind} install fixture refused ${JSON.stringify(installed.doc)}`);
       const receipt = JSON.parse(readFileSync(receiptFile, "utf8")) as UnitReceipt;
       if (kind === "default" || kind === "managed") {
+        const before = effects();
+        const repeats = [call("install", home, ["--dry-run"]), call("install", home)];
+        check(`N7 recorded ${kind} install refuses another preview or apply`, repeats.every((r) => r.status === 2 && r.doc.error?.code === "CONFLICT") && effects() === before, repeats);
         check(`N6 valid ${kind} receipt plans and starts`, call("uninstall", home, ["--dry-run"]).status === 0 && call("start", home).status === 0);
         const removed = call("uninstall", home, ["--yes"]);
         check(`N6 valid ${kind} receipt removes its source and receipt`, removed.status === 0 && !existsSync(receipt.unitPath) && !existsSync(receiptFile));
