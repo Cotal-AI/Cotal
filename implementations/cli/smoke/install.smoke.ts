@@ -9,7 +9,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { daemonArgv, isNpx, cotalOnPath, selfArgv, verifiedCotalExecutables } from "../src/lib/self-exec.js";
+import { daemonArgv, displayCmd, isNpx, cotalOnPath, selfArgv, verifiedCotalExecutables } from "../src/lib/self-exec.js";
 import { renderSystemdServiceUnit } from "../src/lib/service-systemd-unit.js";
 import { renderLaunchdServiceUnit } from "../src/lib/service-launchd-unit.js";
 import { offerGlobalInstall } from "../src/commands/setup.js";
@@ -89,9 +89,11 @@ chmodSync(realCotal, 0o755);
 
 process.env.PATH = npxBin; // only the ephemeral npx shim is reachable
 check("npx `_npx/.../.bin/cotal` shim on PATH ⇒ cotalOnPath() ignores it (false)", cotalOnPath() === false);
+check("npx display keeps its durable invocation when only the ephemeral shim is on PATH", displayCmd() === "npx cotal-ai");
 
 process.env.PATH = [npxBin, realBin].join(delimiter); // ephemeral shim + a durable install
 check("a durable `cotal` alongside the npx shim ⇒ cotalOnPath() true", cotalOnPath() === true);
+check("a durable PATH executable keeps concise command suggestions", displayCmd() === "cotal");
 
 const recoveryHome = mkdtempSync(join(tmpdir(), "cotal-install-recovery-home-"));
 const ephemeralRecovery = verifiedCotalExecutables({ ...cleanEnv, HOME: recoveryHome, PATH: npxBin });
