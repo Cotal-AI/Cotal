@@ -2124,10 +2124,16 @@ function nextActions(r: StatusResult): Section {
   if (r.store?.state === "write-failed") {
     const repair = storeWriteRepair(r.store, r.selected.resolved ? r.selected.root : undefined, r.selected.space ?? "");
     const first = `First ${repair}`;
-    // A broker without JetStream cannot record the manager's stop, and it stops only after the manager.
-    if (r.store.jetStreamDisabled && r.stackManager && r.selected.resolved)
+    // A broker that disabled JetStream or keeps its issuance store unavailable cannot record the
+    // manager's stop, and stops only after the manager.
+    if (r.selected.resolved && r.stackManager && (r.store.jetStreamDisabled || r.store.issuanceWriteFailed && r.selected.mode === "auth"))
       items.unshift(
-        { command: `kill -TERM ${r.stackManager.pid}`, description: "The broker disabled JetStream after the write failure and serves none until it restarts, which needs the manager stopped first. On this host, end the manager; it stops its agents by its default policy" },
+        {
+          command: `kill -TERM ${r.stackManager.pid}`,
+          description: r.store.jetStreamDisabled
+            ? "The broker disabled JetStream after the write failure and serves none until it restarts, which needs the manager stopped first. On this host, end the manager; it stops its agents by its default policy"
+            : "The broker keeps its issuance store unavailable until it restarts, so `down` cannot record the manager's stop first. On this host, end the manager; it stops its agents by its default policy",
+        },
         { command: own ? `${cmd} down --yes` : `${cmd} down --space ${r.selected.space} --yes`, description: "Then stop the other members" },
         { command: own ? `${cmd} up` : `${cmd} up --root ${shellWord(r.selected.root)}`, description: `${first}; then up starts the broker again with the history it kept` },
       );

@@ -1,10 +1,12 @@
 import * as prompts from "../lib/prompts.js";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, oneLine, presentationOf, renderReport, writeResult, type Report, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, codeSpan, findMesh, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, recordOperationSpace, renderReport, writeResult, type Report, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
+import { fullStoreStopRefusal, issuanceUnwritable, recordedStore, storeRefusedWrite, storeWriteFailed, storeWriteFailedRefusal } from "../lib/broker-store-health.js";
 import { personaCatalog } from "../lib/persona-files.js";
+import { resolveServiceAdapter } from "../lib/service-adapters.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
-import { preflightProcessServiceStop, prepareNativeServiceStop, selectServiceInstance, stopProcessService } from "../lib/service-process.js";
+import { preflightProcessServiceStop, prepareNativeServiceStop, retainedStopRequest, selectServiceInstance, stopProcessService } from "../lib/service-process.js";
 import { STACK_DEFINITION, stackMemberFor } from "../lib/stack-journal.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { yesRequired } from "../lib/confirmation-required.js";
@@ -85,6 +87,30 @@ function sameImpact(before: ServiceAdapterStopPlan | undefined, after: ServiceAd
     && before.native.lifecycleUid === after.native.lifecycleUid && before.native.epoch === after.native.epoch;
 }
 
+async function prepareSetMemberStop(root: string, space: string, member: Member, target: Record<string, unknown>, retry: string): Promise<ServiceAdapterStopPlan | undefined> {
+  const launch = member.definition.record.value.launch;
+  const declared = launch.type === "adapter" ? resolveServiceAdapter(launch.adapter, launch.options) : undefined;
+  if (declared?.declaration.stop === "native" && !retainedStopRequest(member.instance.record.value) && observeServiceProcess(member.instance.record.value) === "running" && findMesh(space)?.mode === "auth") {
+    const pre = storeWriteFailed(root, space);
+    if (pre && issuanceUnwritable(pre) && !processStopped(pre.pid))
+      throw storeWriteFailedRefusal(pre, root, space, `stopping ${oneLine(member.definition.name)} needs a credential whose issuance record the broker cannot store`, "no service was stopped", target, member.instance.record.value.process?.pid, retry);
+  }
+  try { return await prepareNativeServiceStop(member.definition, member.instance); }
+  catch (caught) {
+    if (storeRefusedWrite(caught)) {
+      let store: { path: string; cap?: number } | undefined;
+      try { store = recordedStore(root, space); } catch { store = undefined; }
+      const pid = member.instance.record.value.process?.pid;
+      throw fullStoreStopRefusal(oneLine(member.definition.name), store, "no service was stopped", target, `make room with \`cotal history clear --space ${space} --yes\`, which purges all of this space's channel history, then run ${codeSpan(retry)}${pid !== undefined ? `; to keep that history, end it on this host with kill -TERM ${pid}, which stops its agents by its default policy` : ""}`);
+    }
+    const error = isConnectRefusal(caught) ? caught.failure() : caught;
+    const write = storeWriteFailed(root, space);
+    if (write && !(isCommandFailure(error) && error.outcome !== "unknown"))
+      throw storeWriteFailedRefusal(write, root, space, `stopping ${oneLine(member.definition.name)} needs a credential whose issuance record the broker cannot store`, "no service was stopped", target, member.instance.record.value.process?.pid, retry);
+    throw caught;
+  }
+}
+
 /** All members resolve before preflight. Reservations are acquired in sorted definition order
  *  only after confirmation; every member/impact is rechecked before the first stop. Native
  *  per-member guards still recheck at effect, and a later failure stops the sequence. */
@@ -127,9 +153,10 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "down", target, result: { kind: "service-set-stop-preview", rows: preview, dryRun: true, reserved: false, nativeImpactChecked: false, stopped: false } }, (result) => ({ sections: [...setView(result.rows, "Named service stop preview").sections, { blocks: [{ kind: "lines", lines: ["Metadata and owned process roles only. No provider code, native impact query, reservation, process signal or instance-record write was requested. This preview does not authorize a stop."] }] }] }));
     return;
   }
+  const retry = `cotal down ${args.positionals.map(oneLine).join(" ")} --space ${space} --yes`;
   if (!args.values.yes && !interactive) throw new ConfirmationRequired(yesRequired("stopping a named service set", presentation === "json"), { target, remedy: `run \`cotal down ${args.positionals.join(" ")} --yes\` to stop them; \`cotal down ${args.positionals.join(" ")} --dry-run\` shows what it stops` });
   for (const [index, member] of members.entries()) {
-    member.impact = await prepareNativeServiceStop(member.definition, member.instance);
+    member.impact = await prepareSetMemberStop(root, space, member, target, retry);
     rows[index]!.impact = member.impact ?? null;
   }
   distinctNativeTargets(members);
@@ -149,7 +176,7 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
     for (const hold of holds.values()) hold.check();
     membersStillEligible(members);
     for (const member of members) {
-      const fresh = await prepareNativeServiceStop(member.definition, member.instance);
+      const fresh = await prepareSetMemberStop(root, space, member, target, retry);
       if (!sameImpact(member.impact, fresh)) throw new CommandFailure("refused", "CONFLICT", "the complete reviewed native impact changed before the first stop; no service was stopped", { target });
       member.impact = fresh;
     }
@@ -174,7 +201,8 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
     }
   } catch (error) {
     const classified = isCommandFailure(error) ? error : undefined;
-    failure = new CommandFailure(classified?.outcome ?? "unknown", classified?.code ?? "OPERATION_UNKNOWN", "whole-set reservation or impact preflight did not finish; no member stop was submitted", { target, remedy: "inspect the selected records and native impact before deciding another action; no target or policy was substituted" });
+    failure = classified?.code === "DEPENDENCY_UNAVAILABLE" ? classified
+      : new CommandFailure(classified?.outcome ?? "unknown", classified?.code ?? "OPERATION_UNKNOWN", "whole-set reservation or impact preflight did not finish; no member stop was submitted", { target, remedy: "inspect the selected records and native impact before deciding another action; no target or policy was substituted" });
   } finally {
     for (const [name, hold] of [...holds.entries()].reverse()) {
       try { hold.release(); } catch { releaseUnconfirmed.push(name); }

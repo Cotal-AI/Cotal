@@ -47,7 +47,15 @@
  *     `history clear` makes room it starts the daemon. A store that refused a
  *     write for permission makes the broker disable JetStream: `down`, `service stop stack-manager`
  *     and `up` refuse `DEPENDENCY_UNAVAILABLE` naming the logged failure and the manager's SIGTERM on
- *     its host, `status` leads with that SIGTERM, and once it ends the manager `down` and `up` work. Damage the broker
+ *     its host, `status` leads with that SIGTERM, and once it ends the manager `down` and `up` work. When
+ *     the broker logs a store write failure without disabling JetStream (a process file-size limit),
+ *     a non-issuance failure warns `STORE_WRITE_LOGGED` with `blockedBy` null on `down --dry-run`,
+ *     leads `status` Next with `cotal down`, and lets `down --yes` succeed cleanly; when
+ *     `KV_cotal_issued_<space>` itself hits the limit, `down`, `service stop stack-manager`,
+ *     `down delivery manager`, `up` and `down --dry-run` refuse or predict `DEPENDENCY_UNAVAILABLE`,
+ *     name `kill -TERM <pid>` with no retry even after lifting the limit while the broker runs,
+ *     and leave the running manager record intact until `SIGTERM` ends the manager and `down`/`up`
+ *     restart cleanly. Damage the broker
  *     logged in a stored file since it started makes `history` and `up` warn `STORE_DAMAGE_LOGGED` in its
  *     words, and the history read stays complete. A project folder renamed while its stack runs: the broker names
  *     its store relative to the root, so it does not create the old path again; `send`, `up` and
@@ -769,6 +777,139 @@ try {
     const kept = await channelMessages(root, space, "general");
     check("every message stored before the failure is kept", stored !== undefined && stored >= 1 && kept !== undefined && kept >= stored, { stored, kept });
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
+  // 3k. A broker that logged a store write failure without disabling JetStream (RLIMIT_FSIZE).
+  // Part 1 caps only CHAT_<space>, so control issuance keeps working (`issuanceWriteFailed: false`):
+  // `down --dry-run` warns `STORE_WRITE_LOGGED`, `status` leads Next with `cotal down`, and
+  // `down --yes` succeeds without lifting the limit. Part 2 caps `KV_cotal_issued_<space>` itself:
+  // nats-server latches that stream's write error until restart, so `down`, `service stop`,
+  // `down <names>` and `up` refuse `DEPENDENCY_UNAVAILABLE` with `kill -TERM` (and no false retry)
+  // even after lifting the limit, until `SIGTERM` ends the manager and `down` + `up` restart it.
+  if (process.platform === "linux" && spawnSync("prlimit", ["--version"]).status === 0) {
+    const space = "fsize";
+    const root = prepare(space);
+    const up = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
+    track(space);
+    check("3k: up starts", up.status === 0, shown(up));
+    check("3k: a first message is stored", cli(root, "send", "-c", "general", "before file size limit", "--json").status === 0);
+    const stored = await channelMessages(root, space, "general");
+    const storeDir = readStackJournal(root)!.journal.broker!.storeDir;
+    const findBlk = (prefix: string): number => {
+      const files = readdirSync(storeDir, { recursive: true, encoding: "utf8" });
+      const match = files.find((file) => file.includes(prefix) && file.endsWith("1.blk"));
+      return match ? statSync(join(storeDir, match)).size : 0;
+    };
+
+    // Part 1: non-issuance failure (`CHAT_<space>` EFBIG while `KV_cotal_issued_<space>` stays under limit).
+    const status1 = cli(root, "status", "--json").env?.result?.store as { log?: string } | undefined;
+    const logPath1 = status1?.log;
+    const logSize1 = logPath1 ? statSync(logPath1).size : 0;
+    const issuedBytes1 = findBlk(`KV_cotal_issued_${space}`);
+    const limit1 = Math.max(logSize1, issuedBytes1, 16_384) + 65_536;
+    const brokerPid1 = runningPidOf(space, "stack-broker");
+    const limited1 = brokerPid1 !== null && spawnSync("prlimit", [`--fsize=${limit1}:`, `--pid=${brokerPid1}`]).status === 0;
+    const failedSend1 = cli(root, "send", "-c", "general", "a".repeat(limit1 + 8192), "--json");
+    const store1 = cli(root, "status", "--json").env?.result?.store as { state?: string; cause?: string; jetStreamDisabled?: boolean; issuanceWriteFailed?: boolean } | undefined;
+    check("3k part 1: EFBIG on CHAT stream logs write failure with jetStreamDisabled false and issuanceWriteFailed false",
+      limited1 && failedSend1.status === 3 && store1?.state === "write-failed" && /file too large/i.test(store1.cause ?? "") && store1.jetStreamDisabled === false && store1.issuanceWriteFailed === false,
+      { limited1, limit1, issuedBytes1, failedSend1: shown(failedSend1), store1 });
+    const plain1 = cli(root, "status", "--plain");
+    check("3k part 1: status leads Next with down (not kill -TERM) when only CHAT stream failed",
+      /^Next\n +(?:\S+ )?cotal down /m.test(plain1.stdout) && !/^Next\n +kill -TERM /m.test(plain1.stdout), plain1.stdout);
+    const preview1 = cli(root, "down", "--dry-run", "--json");
+    check("3k part 1: down --dry-run keeps blockedBy null and warns STORE_WRITE_LOGGED",
+      preview1.status === 0 && preview1.env?.result?.blockedBy === null && Boolean(preview1.env?.warnings?.some((warning) => warning.code === "STORE_WRITE_LOGGED")),
+      shown(preview1));
+    const down1 = cli(root, "down", "--yes", "--json");
+    check("3k part 1: down --yes stops cleanly without lifting prlimit when issuance was untouched",
+      down1.status === 0, shown(down1));
+    const up1 = cli(root, "up", "--json");
+    track(space);
+    check("3k part 1: up restarts broker cleanly", up1.status === 0, shown(up1));
+    const kept1 = await channelMessages(root, space, "general");
+    check("3k part 1: messages stored before EFBIG survive down and up",
+      stored !== undefined && stored >= 1 && kept1 !== undefined && kept1 >= stored, { stored, kept1 });
+
+    // Part 2: issuance failure (`KV_cotal_issued_<space>` EFBIG latches until broker restart).
+    check("3k part 2: store another message on the restarted stack", cli(root, "send", "-c", "general", "before issuance file limit", "--json").status === 0);
+    const stored2 = await channelMessages(root, space, "general");
+    const logPath2 = (cli(root, "status", "--json").env?.result?.store as { log?: string } | undefined)?.log;
+    let limit2 = logPath2 ? statSync(logPath2).size + 2048 : 4096;
+    for (let i = 0; i < 15 && findBlk(`KV_cotal_issued_${space}`) <= limit2; i++) {
+      cli(root, "ps", "--json");
+      if (logPath2) limit2 = statSync(logPath2).size + 2048;
+    }
+    const issuedBytes2 = findBlk(`KV_cotal_issued_${space}`);
+    const brokerPid2 = runningPidOf(space, "stack-broker");
+    const managerPid2 = runningPidOf(space, "stack-manager");
+    const limited2 = brokerPid2 !== null && spawnSync("prlimit", [`--fsize=${limit2}:`, `--pid=${brokerPid2}`]).status === 0;
+    const preStatus = cli(root, "status", "--json").env?.result?.store as { state?: string } | undefined;
+    const down2 = cli(root, "down", "--yes", "--json");
+    const remedy2 = `end the manager on this host with kill -TERM ${managerPid2}, which stops its agents by its default policy, then run \`cotal down\`; fix what failed the write to ${storeDir}: file too large, then run \`cotal up\``;
+    check("3k part 2: rig + down --yes hitting KV_cotal_issued EFBIG refuses DEPENDENCY_UNAVAILABLE (exit 2) naming issuance unavailability and kill -TERM without false retry",
+      limited2 && issuedBytes2 > limit2 && preStatus?.state === "none-recorded" && down2.status === 2 && down2.env?.error?.code === "DEPENDENCY_UNAVAILABLE"
+        && /and keeps its issuance store unavailable until it restarts/.test(down2.env.error.message ?? "")
+        && /file too large/i.test(down2.env.error.message ?? "")
+        && down2.env.error.remedy === remedy2 && managerPid2 !== null && alive(managerPid2) && !gone(space, "stack-delivery"),
+      { limited2, issuedBytes2, limit2, preStatus, down2: shown(down2), remedy2 });
+    const store2 = cli(root, "status", "--json").env?.result?.store as { state?: string; cause?: string; jetStreamDisabled?: boolean; issuanceWriteFailed?: boolean } | undefined;
+    check("3k part 2: status reports write-failed with jetStreamDisabled false and issuanceWriteFailed true",
+      store2?.state === "write-failed" && /file too large/i.test(store2.cause ?? "") && store2.jetStreamDisabled === false && store2.issuanceWriteFailed === true,
+      store2);
+    const plain2 = cli(root, "status", "--plain");
+    check("3k part 2: status leads Next with kill -TERM when issuance failed",
+      /^Next\n +kill -TERM \d+ /m.test(plain2.stdout) && managerPid2 !== null && plain2.stdout.includes(`kill -TERM ${managerPid2}`),
+      plain2.stdout);
+    const preview2 = cli(root, "down", "--dry-run", "--json");
+    const blocked2 = preview2.env?.result?.blockedBy as { code?: string; remedy?: string } | null | undefined;
+    check("3k part 2: down --dry-run predicts DEPENDENCY_UNAVAILABLE with kill -TERM remedy",
+      preview2.status === 0 && blocked2?.code === "DEPENDENCY_UNAVAILABLE" && blocked2.remedy === remedy2,
+      shown(preview2));
+    const stopSvc = cli(root, "service", "stop", "stack-manager", "--space", space, "--yes", "--json");
+    check("3k part 2: service stop stack-manager refuses fast with kill -TERM and leaves manager running",
+      stopSvc.status === 2 && stopSvc.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && stopSvc.env.error.remedy === remedy2
+        && /and keeps its issuance store unavailable until it restarts/.test(stopSvc.env.error.message ?? "")
+        && managerPid2 !== null && alive(managerPid2),
+      shown(stopSvc));
+    const stopSet = cli(root, "down", "delivery", "manager", "--space", space, "--yes", "--json");
+    check("3k part 2: down delivery manager refuses fast with kill -TERM and stops neither service",
+      stopSet.status === 2 && stopSet.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && stopSet.env.error.remedy === remedy2
+        && managerPid2 !== null && alive(managerPid2) && !gone(space, "stack-delivery"),
+      shown(stopSet));
+    const upBlocked = cli(root, "up", "--json");
+    const mgrAfterUpBlocked = serviceInstances(space, "stack-manager").map((row) => row.record.value);
+    check("3k part 2: up refuses fast with kill -TERM and keeps running manager record intact",
+      upBlocked.status === 2 && upBlocked.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && upBlocked.env.error.remedy === remedy2
+        && mgrAfterUpBlocked.length === 1 && mgrAfterUpBlocked[0]!.state === "running" && mgrAfterUpBlocked[0]!.readiness !== "not-checked",
+      { upBlocked: shown(upBlocked), mgrAfterUpBlocked });
+
+    // Lifting RLIMIT_FSIZE does NOT unlatch KV_cotal_issued in nats-server; down and up must still refuse fast cleanly.
+    const lifted = brokerPid2 !== null && spawnSync("prlimit", ["--fsize=unlimited:", `--pid=${brokerPid2}`]).status === 0;
+    const downStillBlocked = cli(root, "down", "--yes", "--json");
+    check("3k part 2: after lifting prlimit, down --yes still refuses fast because KV_cotal_issued stays latched",
+      lifted && downStillBlocked.status === 2 && downStillBlocked.ms < 5000 && downStillBlocked.env?.error?.code === "DEPENDENCY_UNAVAILABLE"
+        && downStillBlocked.env.error.remedy === remedy2 && managerPid2 !== null && alive(managerPid2),
+      { lifted, ...shown(downStillBlocked) });
+    const upStillBlocked = cli(root, "up", "--json");
+    const mgrAfterUpStill = serviceInstances(space, "stack-manager").map((row) => row.record.value);
+    check("3k part 2: after lifting prlimit, up still refuses fast and preserves manager record",
+      upStillBlocked.status === 2 && upStillBlocked.ms < 5000 && upStillBlocked.env?.error?.code === "DEPENDENCY_UNAVAILABLE"
+        && upStillBlocked.env.error.remedy === remedy2
+        && mgrAfterUpStill.length === 1 && mgrAfterUpStill[0]!.state === "running" && mgrAfterUpStill[0]!.readiness !== "not-checked",
+      { upStillBlocked: shown(upStillBlocked), mgrAfterUpStill });
+
+    if (managerPid2 !== null) process.kill(managerPid2, "SIGTERM");
+    check("3k part 2: manager exits on SIGTERM", managerPid2 !== null && await until(() => !alive(managerPid2), 30_000), managerPid2);
+    check("3k part 2: down --yes stops delivery and latched broker once manager exited", cli(root, "down", "--yes", "--json").status === 0);
+    const restarted2 = cli(root, "up", "--json");
+    track(space);
+    check("3k part 2: up restarts clean stack after SIGTERM teardown", restarted2.status === 0, shown(restarted2));
+    const kept2 = await channelMessages(root, space, "general");
+    check("3k part 2: stored messages survive SIGTERM teardown and restart",
+      stored2 !== undefined && stored2 >= 1 && kept2 !== undefined && kept2 >= stored2,
+      { stored2, kept2 });
+    check("3k part 2: final down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 
   // 3e. A journal removed after `down` dropped the registration, as the way out of a damaged one

@@ -28,6 +28,7 @@ import {
   hasUserAuthState,
   homeCotalDir,
   isCommandFailure,
+  isConnectRefusal,
   loadMeshes,
   localMeshesForRoot,
   NATS_PIDFILE,
@@ -57,7 +58,7 @@ import {
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
-import { brokerStoreWrite, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, storeDamageNotice, storeFull } from "../lib/broker-store-health.js";
+import { brokerStoreWrite, issuanceUnwritable, readStoredBytes, storeDamageNotice, storeFull, storeWriteFailed, storeWriteFailedRefusal, storeWriteRepair, type StoreWriteObservation } from "../lib/broker-store-health.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
@@ -522,14 +523,31 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   });
 }
 
-/** The refusal of an up whose running broker disabled JetStream after a store write failure: no
- *  stream check or later member start reaches it. Undefined for an error already classified. */
-function reusedWithoutJetStream(caught: unknown, brokerReused: boolean, root: string, space: string): CommandFailure | undefined {
-  if (!brokerReused || isCommandFailure(caught) && caught.outcome !== "unknown") return undefined;
-  const disabled = jetStreamDisabled(root, space);
-  if (!disabled) return undefined;
+class BrokerStoreUnwritable extends Error {
+  constructor(readonly write: Extract<StoreWriteObservation, { state: "write-failed" }>) {
+    super("broker store unwritable");
+  }
+}
+
+/** The refusal of an up whose running broker logged a store write failure (whether JetStream stayed
+ *  enabled or was disabled): a stream check or member readiness write did not finish. Undefined for
+ *  a failure already classified with a non-unknown outcome. */
+function reusedWithStoreWriteFailure(caught: unknown, brokerReused: boolean, root: string, space: string): CommandFailure | undefined {
+  let write: Extract<StoreWriteObservation, { state: "write-failed" }> | undefined;
+  if (caught instanceof BrokerStoreUnwritable) write = caught.write;
+  else {
+    const error = isConnectRefusal(caught) ? caught.failure() : caught;
+    if (!brokerReused || isCommandFailure(error) && error.outcome !== "unknown") return undefined;
+    write = storeWriteFailed(root, space);
+  }
+  if (!write) return undefined;
   const manager = serviceInstances(space, STACK_DEFINITION.manager).map((row) => row.record.value).find((value) => observeServiceProcess(value) === "running");
-  return jetStreamDisabledRefusal(disabled, root, space, "up cannot check the space's streams on it", "its running members were left as they are", { root, space }, manager?.process?.pid);
+  const needs = write.jetStreamDisabled
+    ? "up cannot check the space's streams on it"
+    : write.issuanceWriteFailed
+      ? "up cannot issue credentials to run or check the stack on it"
+      : "up cannot update or read the space on it";
+  return storeWriteFailedRefusal(write, root, space, needs, "its running members were left as they are", { root, space }, manager?.process?.pid, ["cotal down --yes", "cotal up"]);
 }
 
 /** What holds a stopped stack's recorded broker address, as bare up's own bind check finds it, with
@@ -556,6 +574,16 @@ async function storeFullAfterStart(root: string, space: string): Promise<ReturnT
   let used: number | undefined;
   try { used = await readStoredBytes(resolveMeshTarget(root, { space, readOnly: true }), "up-diagnosis"); } catch { used = undefined; }
   return used === undefined ? undefined : storeFull(root, space, used);
+}
+
+/** The way out of a logged store write failure for an up whose member failed after starting or trying
+ *  to write to the broker (such as delivery writing its lease). */
+function storeWriteUpRemedy(root: string, space: string, write: Extract<StoreWriteObservation, { state: "write-failed" }>): string {
+  const pid = serviceInstances(space, STACK_DEFINITION.manager).map((row) => row.record.value).find((value) => observeServiceProcess(value) === "running")?.process?.pid;
+  if (issuanceUnwritable(write)) {
+    return `${pid !== undefined ? `end the manager on this host with kill -TERM ${pid}, which stops its agents by its default policy, then ` : ""}run \`cotal down --yes\` from ${root}; ${storeWriteRepair(write, root, space)}, then run \`cotal up\``;
+  }
+  return `${storeWriteRepair(write, root, space)}, then run \`cotal down --yes\` and \`cotal up\` from ${root}${pid !== undefined ? `; or end the manager on this host with kill -TERM ${pid}, which stops its agents by its default policy, then run \`cotal down --yes\`, fix the cause, and run \`cotal up\`` : ""}`;
 }
 
 /** The way out of a full store for an up whose member could not start: a larger cap, which keeps the
@@ -929,12 +957,14 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       native.recordMesh({ space, server, root, mode, tlsRequired: prepared.transport.kind === "tls-required", storeDir: prepared.storeDir, ...(prepared.user ? { userAuth: provisionalUserAuth(prepared.user) } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(brokerHost ? { attachHost: brokerHost } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}) });
       failedStage = undefined;
       failedRole = undefined;
-    } else if (mode !== "user") {
+    } else if (brokerReused) {
       // `cotal space delete` removes the streams from a broker that keeps running; it has no user-auth
       // route. When every one is gone they are created again here, as a broker start would, and a
       // partial loss is left alone.
       failedRole = "broker";
-      streamsRecreated = await native.recreateDeletedStreams({ root, space, server, mode, ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
+      const pre = storeWriteFailed(root, space);
+      if (pre?.jetStreamDisabled && !processStopped(pre.pid)) throw new BrokerStoreUnwritable(pre);
+      if (mode !== "user") streamsRecreated = await native.recreateDeletedStreams({ root, space, server, mode, ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
       failedRole = undefined;
     }
     // Auth service, user stacks only. Its native preparation came from this broker preparation, so
@@ -996,6 +1026,10 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       }
     }
     if (!request.noManager && !loginBlock) {
+      if (brokerReused && mode === "auth") {
+        const pre = storeWriteFailed(root, space);
+        if (pre && issuanceUnwritable(pre) && !processStopped(pre.pid)) throw new BrokerStoreUnwritable(pre);
+      }
       const options: Record<string, unknown> = { root, runtime: request.runtime, server };
       if (prepared?.setup?.wsPort !== undefined) options["ws-port"] = prepared.setup.wsPort;
       if (maxSessions !== undefined) options["max-sessions"] = maxSessions;
@@ -1018,9 +1052,11 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   } catch (caught) {
     // A reused broker that lost some of the space's streams, but not all of them as `cotal space delete`
     // leaves it, gets none back here; a broker start creates the missing ones.
-    const error = brokerReused && isJetStreamMissing(caught, JetStreamApiCodes.StreamNotFound)
+    const missingStreams = brokerReused && isJetStreamMissing(caught, JetStreamApiCodes.StreamNotFound);
+    const reusedWrite = missingStreams ? undefined : reusedWithStoreWriteFailure(caught, brokerReused, root, space);
+    const error = missingStreams
       ? new CommandFailure("refused", "TARGET_NOT_FOUND", "the running broker is missing some of this space's streams, and up creates them on a running broker only when every one is gone, as after `cotal space delete`", { remedy: "restart the stack with `cotal down --yes`, then `cotal up`, which creates the missing ones" })
-      : reusedWithoutJetStream(caught, brokerReused, root, space) ?? caught;
+      : reusedWrite ?? caught;
     // A broker this call started that could not create the space's streams serves no stack, and a
     // later up would reuse it and fail the same way. It is stopped again here, so the next up starts
     // a fresh broker, and the run is a failure whose cause its log names.
@@ -1074,10 +1110,11 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     // A member that writes to the store, as delivery writes its lease, cannot start while the store
     // is over its cap: the broker refuses that write as every other until there is room.
     const full = pending && failure && pending.role !== "broker" && starved === undefined ? await storeFullAfterStart(root, space) : undefined;
-    const cause = pending && failure ? ` (${pending.role}: ${failure.message}${starved !== undefined ? `; the broker's log${starved ? ` at ${starved}` : ""} records that it ran out of open files` : full ? `; the broker's JetStream store ${full.path} is full at its --max-file-store cap of ${full.cap} bytes, so it refuses every write` : ""})` : "";
+    const writeFailed = pending && failure && pending.role !== "broker" && starved === undefined && !full && !reusedWrite ? storeWriteFailed(root, space) : undefined;
+    const cause = pending && failure ? ` (${pending.role}: ${failure.message}${starved !== undefined ? `; the broker's log${starved ? ` at ${starved}` : ""} records that it ran out of open files` : full ? `; the broker's JetStream store ${full.path} is full at its --max-file-store cap of ${full.cap} bytes, so it refuses every write` : writeFailed ? `; the broker logged a store write failure at ${writeFailed.at}: ${writeFailed.cause}${writeFailed.jetStreamDisabled ? " and disabled JetStream until it restarts" : writeFailed.issuanceWriteFailed ? " and keeps its issuance store unavailable until it restarts" : ""}` : ""})` : "";
     // A refusal or failure with no member started or reused leaves nothing of the stack running.
     const none = !uncertain && !journal.members.some((row) => row.state === "started" || row.state === "reused");
-    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, none ? `the controller stack started no member${cause}; nothing was retried` : `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: starved !== undefined ? `stop the stack with \`cotal down --yes\` from ${root}, raise the open-file limit (ulimit -n) of the shell that runs \`cotal up\`, then run \`cotal up\` there again` : full ? fullStoreUpRemedy(root, space) : !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with ${codeSpan(`cotal service --space ${shellWord(space)}`)} before another \`cotal up\`; a later bare \`cotal down\` stops only the recorded members` });
+    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, none ? `the controller stack started no member${cause}; nothing was retried` : `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: starved !== undefined ? `stop the stack with \`cotal down --yes\` from ${root}, raise the open-file limit (ulimit -n) of the shell that runs \`cotal up\`, then run \`cotal up\` there again` : full ? fullStoreUpRemedy(root, space) : writeFailed ? storeWriteUpRemedy(root, space, writeFailed) : !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with ${codeSpan(`cotal service --space ${shellWord(space)}`)} before another \`cotal up\`; a later bare \`cotal down\` stops only the recorded members` });
   }
   if (loginBlock) {
     mark("manager", { state: "not-attempted", code: "AUTH_REQUIRED" });

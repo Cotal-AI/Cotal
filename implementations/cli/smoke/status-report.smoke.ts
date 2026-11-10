@@ -52,7 +52,7 @@ type Envelope = {
     meshes: { current: string | null; folder?: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
     selected: { resolved: boolean; code?: string; space?: string; server?: string | null; connection?: string };
     maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null } | null;
-    store?: { state: string; at?: string; cause?: string; path?: string | null };
+    store?: { state: string; at?: string; cause?: string; path?: string | null; jetStreamDisabled?: boolean; issuanceWriteFailed?: boolean };
     hints: string[];
   } | null;
   warnings: { code: string; target: unknown; message: string }[];
@@ -508,13 +508,31 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   appendFileSync(log, `[${pid}] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: write /store/msgs/1.blk: no space left on device\n`);
   const failed = run(["status", ...server, "--json"]);
   const store = failed.envelope?.result?.store;
-  check("status --json names this broker's store write failure with its time, cause and file", store?.state === "write-failed" && store.at === "2026/10/23 19:38:44" && store.cause === "no space left on device" && store.path === "/store/msgs/1.blk", shown(failed));
+  check("status --json names this broker's store write failure with its time, cause and file", store?.state === "write-failed" && store.at === "2026/10/23 19:38:44" && store.cause === "no space left on device" && store.path === "/store/msgs/1.blk" && store.jetStreamDisabled === false && store.issuanceWriteFailed === false, shown(failed));
   const plain = run(["status", ...server, "--plain"]);
   check("the report shows a Store row and leads Next with down, after freeing space on the disk for a full one", /Store: +write failed at 2026\/10\/23 19:38:44: no space left on device - \/store\/msgs\/1\.blk/.test(plain.stdout) && /cotal down +First free space on the disk that holds \S+; then .*`pnpm cotal up` starts the broker again with the history it kept/.test(plain.stdout), plain.stdout);
   // The repair follows the cause: a permission is given back, not disk space freed.
   appendFileSync(log, `[${pid}] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: open /store/msgs/2.blk: permission denied\n`);
   const denied = run(["status", ...server, "--plain"]);
   check("for a permission denied, Next makes the store writable by this account again and says nothing of disk space", /cotal down +First make \S+ writable by this account again/.test(denied.stdout) && !/Free space|free space/.test(denied.stdout), denied.stdout);
+  // Issuance stream errors stay latched until JetStream reloads or the broker restarts, even when
+  // a later non-issuance error is the newest failure line in the log.
+  appendFileSync(log, `[${pid}] ${stamp} [ERR] Filestore [KV_cotal_issued_main] Critical write error: write /store/kv_issued/1.blk: file too large\n`);
+  const issuedFail = run(["status", ...server, "--json"]).envelope?.result?.store;
+  check("a Filestore error on KV_cotal_issued_<space> sets issuanceWriteFailed without disabling JetStream",
+    issuedFail?.state === "write-failed" && issuedFail.issuanceWriteFailed === true && issuedFail.jetStreamDisabled === false, issuedFail);
+  appendFileSync(log, `[${pid}] ${stamp} [ERR] Filestore [KV_cotal_manager_main] Critical write error: write /store/kv_mgr/1.blk: file too large\n`);
+  const laterOther = run(["status", ...server, "--json"]).envelope?.result?.store;
+  check("a later error on another stream still preserves issuanceWriteFailed since JetStream started",
+    laterOther?.state === "write-failed" && laterOther.path === "/store/kv_mgr/1.blk" && laterOther.issuanceWriteFailed === true, laterOther);
+  appendFileSync(log, `[${pid}] ${stamp} [INF] Starting JetStream\n`);
+  const reloaded = run(["status", ...server, "--json"]).envelope?.result?.store;
+  check("a JetStream reload clears issuanceWriteFailed until a newer issuance write fails",
+    reloaded?.state === "write-failed" && reloaded.issuanceWriteFailed === false, reloaded);
+  appendFileSync(log, `[${pid}] ${stamp} [ERR] JetStream stream 'A > KV_cotal_accepted_main' critical write error: write /store/kv_acc/1.blk: file too large\n`);
+  const acceptedFail = run(["status", ...server, "--json"]).envelope?.result?.store;
+  check("a JetStream stream line on KV_cotal_accepted_<space> sets issuanceWriteFailed",
+    acceptedFail?.state === "write-failed" && acceptedFail.issuanceWriteFailed === true, acceptedFail);
 }
 
 // ── damage the running local broker found in a stored file is shown in its own words ────────────

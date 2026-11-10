@@ -152,6 +152,18 @@ refusal as a warning. Each names the way out: end the manager on the stack's hos
 `kill -TERM <pid>`, which stops every agent it runs by its default policy, then run `cotal down`,
 fix the logged cause, and run `cotal up`. Fixing the cause alone does not bring JetStream back.
 
+When the broker logs a store write failure without disabling JetStream, such as exceeding a file
+size limit, nats-server keeps that write error latched in memory per stream until the broker
+restarts or reloads JetStream. If the failure hit an issuance stream (`KV_cotal_issued_<space>` or
+`KV_cotal_accepted_<space>`), issuing a control credential fails even after the cause on disk is
+cleared, so in static-auth mode `down`, `service stop`, `restart`, `down <names>`, `up` and
+`down --dry-run` refuse or warn the same way as when JetStream is disabled, naming the manager's
+`kill -TERM <pid>`, `cotal down`, fixing the cause and `cotal up`, without offering a retry. When
+only other streams hit the failure, `down --dry-run` warns `STORE_WRITE_LOGGED` and stops or
+restarts whose control writes still fit succeed; any step whose JetStream write still fails
+refuses `DEPENDENCY_UNAVAILABLE`, exit 2, names the logged failure, and offers both fixing the
+cause before retrying and ending the manager on this host with `kill -TERM <pid>`.
+
 Controller roots refuse
 preservation and manifest flags rather than switching to the legacy launcher. Outside a terminal,
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that

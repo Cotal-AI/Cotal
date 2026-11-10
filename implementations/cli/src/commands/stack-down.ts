@@ -15,7 +15,7 @@ import {
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
-import { fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite } from "../lib/broker-store-health.js";
+import { fullStoreStopRefusal, issuanceUnwritable, readStoredBytes, recordedStore, storeFull, storeRefusedWrite, storeWriteFailed, storeWriteFailedRefusal } from "../lib/broker-store-health.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { releaseDeadForegroundHold } from "../lib/foreground-hold.js";
@@ -139,6 +139,10 @@ function readMembers(journal: StackJournal): Member[] {
  *  greeting, as a suspended one does, is named with its pid; the broker stops last, so it is not
  *  signalled here. */
 async function managerImpact(journal: StackJournal, members: readonly Member[], manager: Member, withAgents: boolean): Promise<ServiceAdapterStopPlan | undefined> {
+  if (journal.mode === "auth") {
+    const pre = storeWriteFailed(journal.root, journal.space);
+    if (pre && issuanceUnwritable(pre)) throw storeWriteStop(journal, manager, pre);
+  }
   try { return await prepareNativeServiceStop(manager.definition, manager.instance, withAgents); }
   catch (caught) {
     if (storeRefusedWrite(caught)) {
@@ -146,11 +150,11 @@ async function managerImpact(journal: StackJournal, members: readonly Member[], 
       try { store = recordedStore(journal.root, journal.space); } catch { store = undefined; }
       throw fullStoreStop(journal, manager, store);
     }
-    // Nothing was submitted: the stop's credential could not be recorded on a broker without JetStream.
-    const disabled = jetStreamDisabled(journal.root, journal.space);
-    if (disabled && !(isCommandFailure(caught) && caught.outcome !== "unknown")) throw disabledJetStreamStop(journal, manager, disabled);
     // The read connects through the broker, so a gone broker surfaces as the connect refusal.
     const error = isConnectRefusal(caught) ? caught.failure() : caught;
+    // Nothing was submitted: the stop's credential could not be recorded on a broker whose store write failed.
+    const write = storeWriteFailed(journal.root, journal.space);
+    if (write && !(isCommandFailure(error) && error.outcome !== "unknown")) throw storeWriteStop(journal, manager, write);
     const broker = members.find((member) => member.role === "broker" && member.live);
     const pid = broker?.instance.record.value.process?.pid;
     if (pid !== undefined && isCommandFailure(error) && !await readNatsInfoGreeting(journal.server, 2000)) {
@@ -170,11 +174,11 @@ function fullStoreStop(journal: StackJournal, manager: Member, store: { path: st
     `make room with \`cotal history clear --yes\`, which purges all of this space's channel history, then run \`cotal down\`${pid !== undefined ? `; to keep that history, end the manager on this host with kill -TERM ${pid}, which stops its agents by its default policy, then run \`cotal down\`, and \`cotal up --max-file-store <bytes>\` with a larger cap` : ""}`);
 }
 
-/** The refusal of a stack's manager stop while its broker has JetStream disabled, before any member
- *  is stopped. */
-function disabledJetStreamStop(journal: StackJournal, manager: Member, write: NonNullable<ReturnType<typeof jetStreamDisabled>>): CommandFailure {
-  return jetStreamDisabledRefusal(write, journal.root, journal.space, "stopping the manager needs a credential whose issuance record the broker cannot store", "no member was stopped",
-    { root: journal.root, space: journal.space, manager: manager.instance.name }, manager.instance.record.value.process?.pid);
+/** The refusal of a stack's manager stop while its broker logged a store write failure, before any
+ *  member is stopped. */
+function storeWriteStop(journal: StackJournal, manager: Member, write: NonNullable<ReturnType<typeof storeWriteFailed>>): CommandFailure {
+  return storeWriteFailedRefusal(write, journal.root, journal.space, "stopping the manager needs a credential whose issuance record the broker cannot store", "no member was stopped",
+    { root: journal.root, space: journal.space, manager: manager.instance.name }, manager.instance.record.value.process?.pid, "cotal down");
 }
 
 /** Everything outside the recorded members that would be cut off refuses before the first signal.
@@ -381,17 +385,25 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
   // A live manager's stop needs room in the store, so the preview reads how much the space holds.
   const manager = members.find((member) => member.role === "manager" && member.live);
   const brokerPid = members.find((member) => member.role === "broker" && member.live)?.instance.record.value.process?.pid;
+  let loggedWrite: OutputWarning | undefined;
   if (!blocked && manager && brokerPid !== undefined && !processStopped(brokerPid)) {
-    // A broker that disabled JetStream answers no read of the store, so its own log decides first.
-    const disabled = jetStreamDisabled(root, journal0.space);
+    // A broker whose JetStream or issuance store is unwritable fails before a stop credential can
+    // be recorded, so its own log decides first.
+    const write = storeWriteFailed(root, journal0.space);
+    const unwritable = write !== undefined && issuanceUnwritable(write) && (write.jetStreamDisabled || journal0.mode === "auth");
     let used: number | undefined;
-    if (!disabled) try { used = await readStoredBytes(resolveMeshTarget(root, { space: journal0.space, readOnly: true }), "down-preview"); } catch { used = undefined; }
+    if (!write?.jetStreamDisabled) try { used = await readStoredBytes(resolveMeshTarget(root, { space: journal0.space, readOnly: true }), "down-preview"); } catch { used = undefined; }
     const full = used === undefined ? undefined : storeFull(root, journal0.space, used);
-    if (disabled) blocked = disabledJetStreamStop(journal0, manager, disabled);
+    if (unwritable) blocked = storeWriteStop(journal0, manager, write);
     else if (full) blocked = fullStoreStop(journal0, manager, full);
+    else if (write) loggedWrite = {
+      code: "STORE_WRITE_LOGGED",
+      target: { ...target, brokerLog: write.log },
+      message: `the broker logged a store write failure at ${write.at}: ${write.cause}; stopping the manager may refuse if its issuance record cannot be stored (${write.log})`,
+    };
   }
   const warnings = [...stackStoreWarnings(journal0), ...(blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }]
-    : [...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleWarning(root, row, true))])];
+    : [...(loggedWrite ? [loggedWrite] : []), ...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleWarning(root, row, true))])];
   // A preview that changes nothing succeeds. It is partial only in what it read: no provider and
   // no manager impact, which the real stop reads and confirms before any signal.
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop-preview", ...target, withAgents, members: members.map((member) => ({ role: member.role, definition: member.definition.name, instanceId: member.instance.name, process: member.live ? "running" : "gone" })), settlesOperation: settlement ?? null, blockedBy: blocked?.detail() ?? null, nativeImpactChecked: false, dryRun: true, signalled: false, admittedRestore: restore ?? null }, completeness: "partial", warnings }, () => {
