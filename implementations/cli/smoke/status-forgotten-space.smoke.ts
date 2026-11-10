@@ -8,7 +8,7 @@
  * Run: pnpm smoke:status-forgotten-space
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -67,6 +67,16 @@ mkdirSync(join(fresh, ".cotal"));
 const freshPlain = run(["status", "--plain"], fresh);
 check("control: an empty project still names a bare up", read(freshPlain) && freshPlain.stdout.includes(`cotal up\` in ${realpathSync.native(fresh)} to start one`) && !freshPlain.stdout.includes("space create <name>"), shown(freshPlain));
 check("its selection is stated once, with the step only under Next", (freshPlain.stdout.match(/no space is registered or prepared here/g) ?? []).length === 1 && /Selected space\n\s+no space is registered or prepared here for \S+\n/.test(freshPlain.stdout), shown(freshPlain));
+
+// Entry help discovers the same project-root manifest from a child directory as the command readers.
+const manifestPath = join(root, "cotal.yaml");
+writeFileSync(manifestPath, "kind: Mesh\nspace: revived\nagents: []\n");
+const child = join(root, "child");
+mkdirSync(child);
+for (const [label, cwd] of [["root", root], ["child", child]] as const) {
+  const entry = run([], cwd);
+  check(`entry help from the ${label} names the forgotten project's manifest and actions`, entry.status === 0 && entry.stdout.includes(manifestPath) && entry.stdout.includes("revived") && entry.stdout.includes("team check") && entry.stdout.includes("team boot") && entry.stdout.includes("up -f"), shown(entry));
+}
 
 finish();
 process.exit(process.exitCode ?? 0);
