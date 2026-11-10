@@ -1,5 +1,25 @@
 # @cotal-ai/runtime
 
+## 0.152.0
+
+### Minor Changes
+
+- d26134d: Workflow commands now require a regular source file and promptly refuse devices, FIFOs and sockets with their kind named.
+  Symlinks to regular files still work. Pipe and process substitution inputs, including pipes with a writer, must be saved to a regular file first.
+
+### Patch Changes
+
+- 4bd669c: Show an open checkpoint's declared schema in workflow status views.
+  Record it with the question and include it in both text and JSON output, without validating checkpoint answers against it.
+- 4b75e8b: Refuse simulation results files that are not valid UTF-8 instead of silently replacing their bytes.
+  The refusal names the handler file and asks for UTF-8 text before any simulation runs.
+- Updated dependencies [4bd669c]
+- Updated dependencies [1f4700a]
+- Updated dependencies [1fec76f]
+  - @cotal-ai/core@0.152.0
+  - @cotal-ai/workspace@0.152.0
+  - @cotal-ai/lang@0.152.0
+
 ## 0.151.3
 
 ### Patch Changes
