@@ -2487,6 +2487,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       runtime: values.runtime,
       noManager,
       onDeliveryExit,
+      isStopping: () => stopping,
     });
     if (noManager && setup && controlPlane) recordOperationWarning(await noManagerCredentialWarning(cotalRoot(), space));
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
@@ -3905,6 +3906,7 @@ async function startDeliveryWithBroker(
     onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
   },
   afterDelivery?: () => Promise<void>,
+  isStopping?: () => boolean,
 ): Promise<Awaited<ReturnType<typeof ensureControlPlane>> | undefined> {
   try {
     const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) }, afterDelivery);
@@ -3921,10 +3923,9 @@ async function startDeliveryWithBroker(
       );
     return plane;
   } catch (e) {
-    // Non-fatal (live messaging is unaffected) — but never SILENT: without the manager,
-    // `spawn --detach` / cotal_spawn have no responder, and the operator must hear it here,
-    // not as an unexplained "no manager reachable" later.
-    reportDegradedControlPlane((e as Error).message);
+    // A running mesh must report its missing control plane. A foreground stop can remove the
+    // manager while this startup observation is still pending; that is intentional teardown.
+    if (!isStopping?.()) reportDegradedControlPlane((e as Error).message);
     return undefined;
   }
 }
@@ -4055,6 +4056,8 @@ async function serveReadyListener(l: {
   noManager?: boolean;
   quietBoot?: boolean;
   onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
+  /** Suppress startup failure diagnostics while a foreground guarded stop is in progress. */
+  isStopping?: () => boolean;
 }): Promise<{ authService: boolean; controlPlane: Awaited<ReturnType<typeof ensureControlPlane>> | undefined }> {
   const { child, server, space, setup, transport } = l;
   if (l.resumeAttempt) await recreateMemoryBuckets(server, space, setup);
@@ -4124,7 +4127,7 @@ async function serveReadyListener(l: {
   }, async () => {
     svc = await startUserAuthService(space, server, setup, [...(l.publicExchange ?? []), ...authTimeoutArgs(setup?.authTimeout)], l.quietBoot);
     if (svc.userAuth) recordOurMesh({ space, server, root: cotalRoot(), mode: "user", userAuth: svc.userAuth, ts: new Date().toISOString() }, "refresh", true);
-  });
+  }, l.isStopping);
   seedPersonaAfterUp(cotalRoot(), l.quietBoot);
   return { authService: svc.ok, controlPlane };
 }
