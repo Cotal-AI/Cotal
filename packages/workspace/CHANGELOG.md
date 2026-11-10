@@ -1,5 +1,16 @@
 # @cotal-ai/workspace
 
+## 0.156.0
+
+### Patch Changes
+
+- f167bea: Chat reports broker disconnects promptly, including outages that recover before reconnect attempts finish.
+  The shared chat session follows transport events while keeping full-bind readiness separate, so a socket reconnect does not mark an unfinished rebuild connected.
+- Updated dependencies [24bf62a]
+- Updated dependencies [80b1c38]
+- Updated dependencies [ccc9d7e]
+  - @cotal-ai/core@0.156.0
+
 ## 0.155.2
 
 ### Patch Changes
