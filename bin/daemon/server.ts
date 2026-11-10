@@ -172,6 +172,26 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       if (sock.destroyed || !sock.writable) return resolve();
       sock.write(encode(r), () => resolve());
     });
+    const pendingReplies = new Set<Promise<unknown>>();
+    const replyTask = (task: Promise<unknown>): void => {
+      pendingReplies.add(task);
+      void task.finally(() => pendingReplies.delete(task)).catch(() => {});
+    };
+    const closeAfterReplies = async (): Promise<void> => {
+      // Stop parsing immediately, but let already accepted finite operations flush their answers.
+      // Device sign-in streams are not finite replies and are cancelled when this socket closes.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.allSettled([...pendingReplies]),
+          new Promise<void>((resolve) => { timer = setTimeout(resolve, 5000); }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      sock.end();
+      sock.destroySoon();
+    };
     const refuse = (id: string | null, code: "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS", message: string) => {
       counters.requestsRefused++;
       return write({ v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code, message } });
@@ -190,11 +210,11 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       const req = parsed.request;
       const managerResult = (run: () => DaemonStatus | HostedManager | ServiceConnectionResult | Promise<DaemonStatus | HostedManager | ServiceConnectionResult>) => {
-        void Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), (error: unknown) => {
+        replyTask(Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), (error: unknown) => {
           counters.requestsRefused++;
           if (error instanceof HostedManagerRefusal) return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) } });
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "MANAGER_UNAVAILABLE", message: "the daemon could not complete the Manager operation; inspect its hosting records and retry" } });
-        });
+        }));
       };
       if (req.op === "manager-start" || req.op === "manager-status") {
         managerResult(() => req.op === "manager-start" ? managers.start(req.space) : managers.refresh(req.space));
@@ -218,29 +238,29 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "spaces") {
-        void desktopSpaces(machineHome, req.refresh === true).then((result) => {
+        replyTask(desktopSpaces(machineHome, req.refresh === true).then((result) => {
           counters.spacesAnswered++;
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
         }, () => {
           counters.requestsRefused++;
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "SPACES_UNAVAILABLE", message: "the daemon could not read its spaces" } });
-        });
+        }));
         return;
       }
       if (req.op === "connect-check") {
-        void connectCheck(req.space, machineHome).catch((): ConnectCheckResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the check" }))
+        replyTask(connectCheck(req.space, machineHome).catch((): ConnectCheckResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the check" }))
           .then((result) => {
             counters.connectChecksAnswered++;
             return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
-          });
+          }));
         return;
       }
       if (req.op === "register") {
-        void withIdpSessionDir(machineHome, () => registerDaemon(req.space, machineHome)).catch((): RegisterResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the registration request; nothing is connected" }))
+        replyTask(withIdpSessionDir(machineHome, () => registerDaemon(req.space, machineHome)).catch((): RegisterResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the registration request; nothing is connected" }))
           .then((result) => {
             counters.registersAnswered++;
             return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
-          });
+          }));
         return;
       }
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
@@ -259,10 +279,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "login-cancel") {
-        void login.cancel(req.attempt).then((result) => {
+        replyTask(login.cancel(req.attempt).then((result) => {
           counters.cancelsAnswered++;
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
-        });
+        }));
         return;
       }
       const started = login.start({
@@ -294,8 +314,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           counters.requestsRefused++;
           const r: DaemonResponse = { v: DAEMON_PROTOCOL_VERSION, id: null, ok: false, error: { code: "LINE_TOO_LONG", message: `request exceeds ${MAX_LINE_BYTES} bytes` } };
           sock.removeAllListeners("data");
-          sock.end(encode(r));
-          sock.destroySoon();
+          replyTask(write(r));
+          void closeAfterReplies();
           buf = "";
           bufBytes = 0;
           return;
@@ -312,7 +332,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           sock.removeAllListeners("data");
           buf = "";
           bufBytes = 0;
-          void refuse(null, "TOO_MANY_REQUESTS", `a connection may send at most ${MAX_REQUESTS_PER_CONNECTION} requests`).then(() => sock.end());
+          replyTask(refuse(null, "TOO_MANY_REQUESTS", `a connection may send at most ${MAX_REQUESTS_PER_CONNECTION} requests`));
+          void closeAfterReplies();
           return;
         }
         handle(line);

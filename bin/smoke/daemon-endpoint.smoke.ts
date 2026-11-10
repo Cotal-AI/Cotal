@@ -170,7 +170,7 @@ try {
     let sdoc: { outcome?: string; error?: { code?: string; remedy?: string; cause?: { code?: string } } } = {};
     try { sdoc = JSON.parse(cliServe.stdout); } catch { /* reported below */ }
     check("E5 CLI serve over a stale socket refuses CONFLICT/ALREADY_RUNNING with rc 2", cliServe.status === 2 && sdoc.outcome === "refused" && sdoc.error?.code === "CONFLICT" && sdoc.error?.cause?.code === "ALREADY_RUNNING", { status: cliServe.status, sdoc, err: cliServe.stderr.slice(0, 200) });
-    check("E5 its remedy names the manual recovery and says the daemon never removes it", /remove the socket path/.test(sdoc.error?.remedy ?? "") && /never removes it/.test(sdoc.error?.remedy ?? ""), sdoc.error?.remedy);
+    check("E5 its remedy names the manual recovery and says the daemon never removes it", /cotal daemon status/.test(sdoc.error?.remedy ?? "") && /inspect the conflicting endpoint/.test(sdoc.error?.remedy ?? "") && /No foreign endpoint was removed/.test(sdoc.error?.remedy ?? ""), sdoc.error?.remedy);
     check("E5 the stale socket is untouched by the CLI (same inode)", lstatSync(sp.socket).ino === staleIno);
   }
 

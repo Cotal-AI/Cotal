@@ -41,3 +41,5 @@ requires repeated IPC misses and an empty-seat preservation fence. Stopped statu
 Manager identity and observation, and daemon sign-in refusals consistently name daemon login.
 Pending upgrades count seats without fencing admission, back off activation attempts, and show the
 installed version and waiting cause in status. Foreground daemons stay running after replacement.
+Endpoint limit refusals stop parsing immediately and allow already accepted finite replies a bounded
+flush before closing the connection.

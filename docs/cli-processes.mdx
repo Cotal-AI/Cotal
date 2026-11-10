@@ -764,6 +764,8 @@ process running as you can use the local controls, including sign-in and cancell
 Each local JSON request line is limited to 64 KiB of UTF-8 text, including its newline. An oversized
 line receives `LINE_TOO_LONG` and the connection closes without processing later requests. This
 also applies to an unfinished tail after valid requests. Multiple valid lines are checked separately.
+Already accepted finite replies have up to five seconds to flush before close. Device sign-in streams
+are cancelled on close.
 
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
 SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
