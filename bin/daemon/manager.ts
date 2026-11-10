@@ -180,9 +180,11 @@ export function createHostedManagers(home = homeCotalDir()) {
     let ended = false;
     l.exited = new Promise<void>((resolve) => {
       child.once("error", (error) => { nativeReason = safeDiagnostic(error.message).slice(0, 1500); ended = true; resolve(); });
-      child.once("close", (code, signal) => {
+      child.once("exit", (code, signal) => {
         stdoutLine("", true);
         stderrLine("", true);
+        child.stdout?.destroy();
+        child.stderr?.destroy();
         ended = true;
         if (l.child === child) l.child = undefined;
         resolve();
