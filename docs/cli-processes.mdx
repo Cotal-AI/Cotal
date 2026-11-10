@@ -596,7 +596,9 @@ Progress goes to stderr, so `--json` writes one document on stdout. Missing `sup
 refuses with the Manager's reason and next step.
 
 The daemon supervises each Manager as a separate child, restarts it with bounded backoff after a
-crash, and resumes recorded hosting intents after its own restart. It records intent only after
+crash, and resumes recorded hosting intents after its own restart. A child that exits while a
+generation fence is pending is marked restarting with its exit cause, then rescheduled after rollback.
+It records intent only after
 status answers. A permanent refusal, such as a missing sign-in or scope, stops automatic retries.
 A damaged hosting or refusal record appears as a refusal for that space with the file path. Other
 spaces still answer status. Run `cotal daemon setup --space <space>` to repair the record after a
@@ -604,15 +606,18 @@ successful Manager readiness probe.
 Manager state stays under the daemon's own per-space directory. Its `manager.log` captures stdout
 and stderr with mode `0600`, rotates at 1 MiB, and retains one previous file as `manager.log.1`.
 Status includes `lastExit` after a crash and `lastStop` for graceful, terminated or killed shutdowns.
+A Manager that exits before readiness reports its exit code or signal and its last stderr line.
 A stopped row keeps its instance and last observation, clears the PID, and names setup as its next
-step. An expired or revoked daemon session names `cotal daemon login --idp <url>` in both the refusal
+step. Status emits a PID only for a retained child, never from a saved refusal record.
+An expired or revoked daemon session names `cotal daemon login --idp <url>` in both the refusal
 and its next step. Status also includes `logError` if logging fails. Every five seconds the daemon
 probes the recorded Manager instance.
 A failed probe advances `observedAt`, withdraws `answering`, and makes `service-status` refuse with
 a next step. Recovery restarts a live child only after its native preservation fence confirms no
 seats and blocks new admission. An occupied or unresponsive child stays running for recovery without
-losing custody. Hosted Manager status is the last observed state with `observedAt`; reading status
-does not perform a fresh readiness probe. No project folder or selected space is
+losing custody. Status, per-space Manager status and service status make a fresh instance-pinned
+probe, bounded to 3.5 seconds. They never reuse an earlier answering result as fresh success.
+`observedAt` names the latest completed observation. No project folder or selected space is
 changed. `service-disconnect` stops that space's hosted Manager and removes its hosting intent.
 `uninstall` stops all hosted Managers and removes their intents from per-space directories, leaving
 the lifetime lock file and unrelated records alone. A later install has no Manager to resume from
@@ -626,11 +631,23 @@ restarts its recorded native service, and waits for the matching daemon. A diffe
 is never restarted. Setup uses it when its protocol and hosting operations are compatible.
 Otherwise the refusal names both installations and asks you to run setup from the daemon's
 installation, or run `cotal daemon uninstall` and then setup from this installation.
-An occupied legacy Manager blocks
-that preparation and remains running. Stop its seats before retrying setup.
-A bare npm replacement reconciles the new generation's connectors under the preservation fence
-before the daemon exits for native restart. A failed reconcile leaves activation pending with its
-cause and repair command. The serving daemon and its Manager children never run first-use seeding.
+An occupied legacy Manager blocks that preparation and remains running. Stop its seats before
+retrying setup. Aborting preparation restores the Manager's standing-credential and run-hosting
+renewal schedules. Active seats refuse `SEATS_ACTIVE` with the space and the command to stop them.
+Admission during an installed generation transition refuses `GENERATION_PENDING` and asks the
+operator to wait before retrying setup.
+An occupied Manager is counted without entering preservation. Activation waits with retries doubling
+from five seconds to five minutes, and status shows the installed and running versions with the
+seat count and space. Only changed waiting causes are logged. A foreground daemon reports the
+pending version and stays running. A daemon started by its recorded native service can activate
+once every Manager is empty.
+Generation activation prepares idle Managers, then restarts the daemon. The new daemon reconciles
+before admitting a hosted Manager. The old generation never reopens admission after changing the
+shared connector store.
+The daemon reconciles stock connectors in its own environment before starting or restarting a
+hosted Manager. It compares the seed stamp with its loaded version. A failed reconcile refuses the
+space with its cause and repair command and retries from five seconds up to five minutes.
+The serving Manager never runs first-use seeding.
 This readiness check does not prove login or reboot autostart on any OS.
 After a successful `cotal update --self`, a running default daemon from the same installation
 is restarted when its version differs, including older daemons that host no Managers.
@@ -693,7 +710,11 @@ unit name, path and the sha256 of the bytes it would write, and writes, enables 
 `install` for the same daemon refuses `CONFLICT` and names `cotal daemon uninstall`. Outside a
 terminal `uninstall` needs `--yes`. `uninstall` acts on the unit `install` recorded: a unit file
 that is gone refuses `TARGET_NOT_FOUND`, and one whose bytes changed refuses `CONFLICT`, with
-nothing removed either way. On macOS and Windows, a plist, task definition, loaded label or
+nothing removed either way. On Linux, `start` and both forms of `uninstall` also require the
+receipt to name the selected daemon home, its derived unit name and that file in the user manager's
+unit directory. A copied receipt, changed unit name or redirected path refuses `CONFLICT` before
+service control or file removal, even when the file's bytes match the recorded digest.
+On macOS and Windows, a plist, task definition, loaded label or
 registered task that no install recorded refuses the install `CONFLICT` with nothing written, and a
 registered task that no longer runs the recorded command refuses `uninstall` `CONFLICT`.
 
@@ -753,9 +774,12 @@ freed, so a socket with the recorded numbers that a process answers on belongs t
 process answers on, removes nothing and refuses `CONFLICT` (`ALREADY_RUNNING`), naming the path.
 When a process answers, the refusal says another process is listening at that path and `serve` does
 not start until it releases it, and Next names `ss -xlp` and `fuser <path>` to find that process. A
-clean shutdown clears the record, and so does a refused `serve`, so a socket at the path afterwards
-is refused the same way, and the reason says the record names no socket. A non-socket entry there refuses `PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) and is left
-alone.
+clean shutdown or a refused socket check clears the record, so a socket at the path afterwards
+is refused the same way, and the reason says the record names no socket. A start that fails before
+checking the socket, such as a runtime-directory permission refusal, preserves its predecessor's
+record while releasing the lock. Once the directory is corrected, the next start can recover the
+same dead socket. A non-socket entry there refuses `PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) and
+is left alone.
 
 `--daemon-home <dir>` runs or reaches a separate daemon whose own state lives in `<dir>`: its
 sign-in session, its per-space identity, register request and service store, all at the paths

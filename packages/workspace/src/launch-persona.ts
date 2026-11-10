@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { parseDocument } from "yaml";
 import { parseAgentFileSource, type AgentDef } from "@cotal-ai/core";
 import { MeshManifestSchema } from "./mesh-manifest-schema.js";
@@ -14,9 +14,20 @@ export function personaFileReference(value: string): string {
   return /[\\/]/.test(value) || value.endsWith(".md") ? value : `./${value}`;
 }
 
-/** Read and validate the same bytes on the execution host; never deploy a manifest from this door. */
+/** Read a regular persona file on the execution host; never deploy a manifest from this door. */
 export function loadLaunchPersonaFile(path: string): AgentDef {
-  const source = readFileSync(path, "utf8");
+  const notRegular = () => new PersonaSourceError(`persona is not a regular file: ${path}`);
+  if (!statSync(path).isFile()) throw notRegular();
+  // Follow persona links as before. NONBLOCK keeps a replacement FIFO from hanging the open;
+  // validate and read the same descriptor so a path replacement cannot bypass the type check.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  let source: string;
+  try {
+    if (!fstatSync(fd).isFile()) throw notRegular();
+    source = readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
   let manifest = false;
   try {
     const document = parseDocument(source);

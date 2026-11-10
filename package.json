@@ -9,6 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
+    "smoke:server-intent:live": "tsx implementations/cli/smoke/server-intent-live.smoke.ts",
     "smoke:no-manager-credential-warning:live": "tsx implementations/cli/smoke/no-manager-credential-warning-live.smoke.ts",
     "typecheck": "pnpm build && pnpm -r typecheck",
     "build": "pnpm -r build",
@@ -195,6 +196,7 @@
     "smoke:ps-mesh-column": "tsx implementations/cli/smoke/ps-mesh-column.smoke.ts",
     "smoke:seat-locality-honesty": "tsx implementations/cli/smoke/seat-locality-honesty.smoke.ts",
     "smoke:status-provenance": "pnpm --filter @cotal-ai/connector-claude-code... build && tsx implementations/cli/smoke/status-provenance.smoke.ts",
+    "smoke:status-default-agent": "tsx bin/smoke/status-default-agent.smoke.ts",
     "smoke:jcode-host": "pnpm --filter @cotal-ai/connector-core build && tsx extensions/connector-jcode/smoke/jcode-host.smoke.ts",
     "smoke:jcode-private-state": "tsx extensions/connector-jcode/smoke/private-state.smoke.ts",
     "smoke:jcode-session-resume": "tsx extensions/connector-jcode/smoke/session-resume.smoke.ts",
@@ -944,6 +946,7 @@
     "smoke:down-lease-tombstone": "tsx implementations/cli/smoke/down-lease-tombstone.smoke.ts",
     "smoke:down-target": "tsx implementations/cli/smoke/down-target.smoke.ts",
     "smoke:down-pidfile-liveness:live": "tsx implementations/cli/smoke/down-pidfile-liveness-live.smoke.ts",
+    "smoke:down-host-auth:live": "tsx implementations/cli/smoke/down-host-auth-live.smoke.ts",
     "smoke:flag-inventory": "tsx bin/smoke/flag-inventory.smoke.ts",
     "smoke:capability-census": "tsx bin/smoke/capability-census.smoke.ts",
     "smoke:connector-bundle-text": "tsx bin/smoke/connector-bundle-text.smoke.ts",
@@ -955,7 +958,7 @@
     "smoke:daemon-login": "pnpm --filter @cotal-ai/auth... --filter @cotal-ai/seat build && tsx bin/smoke/daemon-login.smoke.ts",
     "smoke:daemon-connect": "pnpm --filter @cotal-ai/auth... --filter @cotal-ai/seat build && tsx bin/smoke/daemon-connect.smoke.ts",
     "smoke:daemon-register": "pnpm --filter @cotal-ai/auth... --filter @cotal-ai/seat build && tsx bin/smoke/daemon-register.smoke.ts",
-    "smoke:daemon-service-connect": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-update-path.smoke.ts && tsx bin/smoke/daemon-update-path.smoke.ts --foreign && tsx bin/smoke/daemon-update-path.smoke.ts --foreign --setup-foreign && tsx bin/smoke/daemon-update-path.smoke.ts --childless && tsx bin/smoke/daemon-update-path.smoke.ts --start-fails && tsx bin/smoke/daemon-update-path.smoke.ts --start-fails --setup-start-fails && tsx bin/smoke/daemon-update-path.smoke.ts --provenance && tsx bin/smoke/daemon-manager-failures.smoke.ts && tsx bin/smoke/daemon-manager-log.smoke.ts && tsx bin/smoke/daemon-compat.smoke.ts && tsx bin/smoke/daemon-compat.smoke.ts --default-home && tsx bin/smoke/daemon-service-connect.smoke.ts && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --hosted-seed-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --hosted-corrupt-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --hosted-health-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --hosted-stopped-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --hosted-login-repro",
+    "smoke:daemon-service-connect": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-update-path.smoke.ts && tsx bin/smoke/daemon-update-path.smoke.ts --foreign && tsx bin/smoke/daemon-update-path.smoke.ts --foreign --setup-foreign && tsx bin/smoke/daemon-update-path.smoke.ts --childless && tsx bin/smoke/daemon-update-path.smoke.ts --start-fails && tsx bin/smoke/daemon-update-path.smoke.ts --start-fails --setup-start-fails && tsx bin/smoke/daemon-update-path.smoke.ts --provenance && tsx bin/smoke/daemon-manager-failures.smoke.ts && tsx bin/smoke/daemon-manager-log.smoke.ts && tsx bin/smoke/daemon-manager-startup.smoke.ts && tsx bin/smoke/daemon-compat.smoke.ts && tsx bin/smoke/daemon-compat.smoke.ts --default-home && tsx bin/smoke/daemon-service-connect.smoke.ts && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --daemon-seed-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --hosted-seed-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --hosted-corrupt-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --hosted-health-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --hosted-stopped-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --hosted-login-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --fresh-status-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --renewal-abort-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --fence-exit-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --generation-cause-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --dashboard-shape-repro && tsx bin/smoke/daemon-generation-live.smoke.ts && tsx bin/smoke/daemon-generation-live.smoke.ts --upgrade-connectors-repro --generation-cold-seed-repro",
     "smoke:daemon-home": "pnpm --filter @cotal-ai/auth... --filter @cotal-ai/seat build && tsx bin/smoke/daemon-home.smoke.ts",
     "smoke:daemon-lifetime": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-lifetime.smoke.ts",
     "smoke:manager-preset:live": "tsx bin/smoke/manager-preset-live.smoke.ts",

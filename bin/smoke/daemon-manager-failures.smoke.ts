@@ -51,6 +51,12 @@ try {
         if (!ready) throw new Error("owned daemon never became ready");
         const state = join(home, "daemon", spaceSegment("corrupt"));
         mkdirSync(state, { recursive: true, mode: 0o700 });
+        if (name === "manager-refusal.json" && (op === "status" || op === "manager-status")) {
+          writeFileSync(join(state, name), JSON.stringify({ space: "corrupt", state: "refused", restarts: 0, pid: 12345, reason: "historical fixture refusal" }), { mode: 0o600 });
+          const saved = await request(paths.socket, op);
+          const row = op === "status" ? saved?.result?.managers?.find((item: { space: string }) => item.space === "corrupt") : saved?.result;
+          check(`${name} ${op} never emits a historical PID without a retained child`, saved?.ok === true && row?.state === "refused" && row.pid === undefined, row);
+        }
         writeFileSync(join(state, name), "not-json", { mode: 0o600 });
         const frame = await request(paths.socket, op);
         const manager = op === "status" ? frame?.result?.managers?.find((row: { space: string }) => row.space === "corrupt") : frame?.result;

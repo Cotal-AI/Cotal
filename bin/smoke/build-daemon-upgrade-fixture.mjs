@@ -3,7 +3,8 @@
 // node bin/smoke/build-daemon-upgrade-fixture.mjs <new-output-directory>
 // Both private fixture versions contain the SAME current source, not historical releases.
 // Requires installed workspace dependencies, pnpm, npm and the local TypeScript compiler.
-// Deployment is offline. Native dependencies remain specific to the build host.
+// Deployment is offline. --workspace-source copies the installed workspace dependency closure.
+// Native dependencies remain specific to the build host.
 // No cleanup is performed on failure: retain the output for inspection, then use a new path.
 import {
   copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync,
@@ -16,8 +17,8 @@ import { execFileSync } from 'node:child_process';
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const versions = ['0.151.2', '0.151.3'];
 const args = process.argv.slice(2);
-if (args.length !== 1 || args[0].startsWith('-')) {
-  throw new Error('Usage: node bin/smoke/build-daemon-upgrade-fixture.mjs <new-output-directory> (run pnpm build first)');
+if (args.length < 1 || args.length > 2 || args[0].startsWith('-') || (args[1] !== undefined && args[1] !== '--workspace-source')) {
+  throw new Error('Usage: node bin/smoke/build-daemon-upgrade-fixture.mjs <new-output-directory> [--workspace-source] (run pnpm build first)');
 }
 const out = resolve(args[0]);
 const json = (path) => JSON.parse(readFileSync(path, 'utf8'));
@@ -46,8 +47,9 @@ for (const name of ['@cotal-ai/cli', '@cotal-ai/auth']) {
 // Exclusive mkdir rejects existing directories AND symlinks, including dangling ones.
 // All descendants below are created by this invocation. Never merge into an old tree.
 mkdirSync(out);
-const deployed = join(out, 'deployment');
-run('pnpm', ['--filter', 'cotal-ai', 'deploy', '--legacy', '--prod', '--offline', deployed]);
+const fromWorkspace = args[1] === '--workspace-source';
+const deployed = fromWorkspace ? join(repo, 'bin') : join(out, 'deployment');
+if (!fromWorkspace) run('pnpm', ['--filter', 'cotal-ai', 'deploy', '--legacy', '--prod', '--offline', deployed]);
 
 function locate(root, name) {
   let dir = root;
@@ -55,11 +57,12 @@ function locate(root, name) {
     const candidate = join(dir, 'node_modules', name);
     if (stat(join(candidate, 'package.json'))) {
       const target = realpathSync(candidate);
-      if (!target.startsWith(`${realpathSync(deployed)}${sep}`)) throw new Error(`Dependency escapes deployment: ${candidate}`);
+      if (!fromWorkspace && !target.startsWith(`${realpathSync(deployed)}${sep}`)) throw new Error(`Dependency escapes deployment: ${candidate}`);
+      if (fromWorkspace && !target.startsWith(`${realpathSync(repo)}${sep}`)) throw new Error(`Dependency escapes workspace install: ${candidate}`);
       return target;
     }
-    // Do not accidentally borrow dependencies from the checkout or host.
-    if (dir === out) return undefined;
+    // Stop at the explicitly selected source boundary, never borrow host dependencies.
+    if (dir === out || (fromWorkspace && dir === repo)) return undefined;
     const parent = dirname(dir);
     if (parent === dir) return undefined;
     dir = parent;

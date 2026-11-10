@@ -30,11 +30,11 @@ import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { connectCheckViaDaemon, loginViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { applyInstall, applyUninstall, planInstall, planUninstall, startInstalled } from "./install.js";
+import { applyInstall, applyUninstall, daemonStartedByOwnedService, planInstall, planUninstall, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runSetup } from "./setup.js";
 import { forgetHostedManagerIntents } from "./manager.js";
-import { reconcileInstalledGeneration, watchDaemonGeneration } from "./generation.js";
+import { watchDaemonGeneration } from "./generation.js";
 import type { ConnectCheckResult, DaemonStatus, LoginResult, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
@@ -118,7 +118,7 @@ function asFailure(e: unknown): unknown {
 }
 
 function statusView(s: DaemonStatus): Report {
-  return { sections: [{ title: "Daemon", blocks: [{ kind: "fields", rows: [["State", s.state], ["Version", s.version], ["Protocol", String(s.protocol)], ["PID", String(s.pid)], ["Started", s.startedAt], ["Uptime", `${Math.round(s.uptimeMs / 1000)}s`]] }] },
+  return { sections: [{ title: "Daemon", blocks: [{ kind: "fields", rows: [["State", s.state], ["Version", s.version], ["Protocol", String(s.protocol)], ["PID", String(s.pid)], ["Started", s.startedAt], ["Uptime", `${Math.round(s.uptimeMs / 1000)}s`]] }, ...(s.generation ? [{ kind: "lines" as const, lines: [`Installed ${s.generation.installed}, running ${s.generation.running}, ${s.generation.waiting}`] }] : [])] },
     ...(s.managers ?? []).map((manager) => ({ title: `Manager: ${manager.space}`, blocks: [{ kind: "fields" as const, rows: [["Last observed state", manager.state], ["Observed at", manager.observedAt ?? "not yet probed"], ["Instance", manager.instanceId ?? "not registered"], ["PID", String(manager.pid ?? "none")], ["Restarts", String(manager.restarts)], ...(manager.lastStop ? [["Last stop", manager.lastStop]] : []), ...(manager.lastExit ? [["Last exit", manager.lastExit]] : []), ...(manager.logError ? [["Log error", manager.logError]] : []), ...(manager.lastRefusal || manager.reason ? [["Last refusal", manager.lastRefusal ?? manager.reason!]] : []), ...(manager.next ? [["Next", manager.next]] : [])] as [string, string][] }] })),
   ] };
 }
@@ -314,9 +314,9 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
   const dry = values["dry-run"] === true;
   if (!dry && values.yes !== true && !process.stdout.isTTY) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon uninstall needs --yes outside a terminal; nothing was removed");
   if (!dry) {
-    planUninstall(paths);
+    planUninstall(paths, home);
   }
-  const r = dry ? { ...planUninstall(paths), state: "would-remove" as const } : applyUninstall(paths);
+  const r = dry ? { ...planUninstall(paths, home), state: "would-remove" as const } : applyUninstall(paths, home);
   if (!dry) forgetHostedManagerIntents(home ?? homeCotalDir());
   writeResult(presentation, { command: "daemon uninstall", target: { unit: r.unit }, result: r }, () => ({ sections: [
     { title: dry ? "Would remove" : "Removed", blocks: [
@@ -386,15 +386,19 @@ async function serve(args: ParsedArgs): Promise<void> {
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
   await new Promise<void>((resolve, reject) => {
     const stopWatching = watchDaemonGeneration(binVersion(), async (version) => {
-      planUninstall(paths);
+      if (!daemonStartedByOwnedService(paths, home)) throw new Error("foreground daemon remains running; restart it from the installed CLI to activate");
+      planUninstall(paths, home);
+      const seats = await running.generationSeats();
+      const occupied = seats.filter((row) => row.seats > 0);
+      if (occupied.length) throw new Error(`waiting for ${occupied.reduce((sum, row) => sum + row.seats, 0)} seat(s) on ${occupied.map((row) => row.space).join(", ")}`);
       await running.prepareGenerationRestart();
-      try { await reconcileInstalledGeneration(); }
-      catch (error) { await running.abortGenerationRestart(); throw error; }
+      // The new daemon reconciles before it launches any Manager. The old generation never
+      // mutates the shared connector store or reopens admission over a partial replacement.
       process.stderr.write(`daemon: installed CLI ${version} validated; stopping owned children for native service restart\n`);
       stopWatching();
       await running.close();
       resolve();
-    }, (line) => process.stderr.write(`${line}\n`));
+    }, (line) => process.stderr.write(`${line}\n`), (version, reason) => running.generationPending(version, reason), daemonStartedByOwnedService(paths, home));
     const stop = () => { stopWatching(); void running.close().then(resolve, reject); };
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);
@@ -434,8 +438,8 @@ async function run(args: ParsedArgs): Promise<void> {
     return;
   }
   if (mode === "start") {
-    const { paths } = resolveTarget(args);
-    const result = startInstalled(paths);
+    const { paths, home } = resolveTarget(args);
+    const result = startInstalled(paths, home);
     writeResult(presentationOf(args.values), { command: "daemon start", target: { unit: result.unit }, result }, () => ({ sections: [
       { title: "Start requested", blocks: [{ kind: "lines", lines: [{ text: "The owned service received the start request. Check `cotal daemon status` for readiness; no connection is assumed.", tone: "hint" }] }] },
     ] }));

@@ -30,7 +30,7 @@ import { createServiceConnections } from "./service.js";
 import { homeCotalDir } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
 import { withIdpSessionDir } from "@cotal-ai/auth";
-import { createHostedManagers } from "./manager.js";
+import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
 export const MAX_REQUESTS_PER_CONNECTION = 64;
@@ -61,6 +61,8 @@ export interface RunningDaemon {
   /** Whether the socket directory was created by this start; `none` for a Windows pipe. */
   readonly dirOutcome: "created" | "existing" | "none";
   status(): DaemonStatus;
+  generationSeats(): Promise<{ space: string; seats: number }[]>;
+  generationPending(installed: string | undefined, waiting?: string): void;
   prepareGenerationRestart(): Promise<void>;
   abortGenerationRestart(): Promise<void>;
   close(): Promise<void>;
@@ -115,8 +117,9 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
   try {
     return await serveLocked(opts, uid, lock);
   } catch (e) {
-    // Every failed start releases the lock it took. A started daemon releases it only in close().
-    lock.release();
+    // A failed start keeps any predecessor socket evidence it has not consumed or rejected.
+    // A started daemon releases the lock only in close(), clearing its own record.
+    lock.release({ preservePrevious: true });
     throw e;
   }
 }
@@ -134,8 +137,9 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const machineHome = opts.sessionDir ?? homeCotalDir();
   const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
   const services = createServiceConnections(machineHome);
-  const managers = createHostedManagers(machineHome);
+  const managers = createHostedManagers(machineHome, opts.version);
   const startedAt = new Date();
+  let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
     state: "ready",
     protocol: DAEMON_PROTOCOL_VERSION,
@@ -144,6 +148,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     startedAt: startedAt.toISOString(),
     uptimeMs: Date.now() - startedAt.getTime(),
     managers: managers.all(),
+    ...(generation ? { generation } : {}),
   });
 
   const sockets = new Set<Socket>();
@@ -185,13 +190,14 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       const req = parsed.request;
       const managerResult = (run: () => DaemonStatus | HostedManager | ServiceConnectionResult | Promise<DaemonStatus | HostedManager | ServiceConnectionResult>) => {
-        void Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), () => {
+        void Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), (error: unknown) => {
           counters.requestsRefused++;
+          if (error instanceof HostedManagerRefusal) return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) } });
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "MANAGER_UNAVAILABLE", message: "the daemon could not complete the Manager operation; inspect its hosting records and retry" } });
         });
       };
       if (req.op === "manager-start" || req.op === "manager-status") {
-        managerResult(() => req.op === "manager-start" ? managers.start(req.space) : managers.status(req.space));
+        managerResult(() => req.op === "manager-start" ? managers.start(req.space) : managers.refresh(req.space));
         return;
       }
       if (req.op === "managers-stop") {
@@ -208,7 +214,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "status") {
         counters.statusAnswered++;
-        managerResult(status);
+        managerResult(async () => { await Promise.all(managers.all().map((manager) => managers.refresh(manager.space))); return status(); });
         return;
       }
       if (req.op === "spaces") {
@@ -248,7 +254,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         managerResult(async () => {
           const result = await run;
           counters.serviceAnswered++;
-          return { ...result, manager: managers.status(req.space) };
+          return { ...result, manager: req.op === "service-status" ? await managers.refresh(req.space) : managers.status(req.space) };
         });
         return;
       }
@@ -367,7 +373,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     return closed;
   };
 
-  return { paths, counters, dirOutcome, status, close, async prepareGenerationRestart() { await managersResumed; await managers.prepareGenerationRestart(); }, abortGenerationRestart: () => managers.abortGenerationRestart() };
+  return { paths, counters, dirOutcome, status, close,
+    generationSeats: () => managers.generationSeats(),
+    generationPending(installed, waiting = "preparing activation") { generation = installed ? { installed, running: opts.version, waiting } : undefined; },
+    async prepareGenerationRestart() { await managersResumed; await managers.prepareGenerationRestart(); }, abortGenerationRestart: () => managers.abortGenerationRestart() };
 }
 
 /** Linux and macOS: publish the unix socket, and on close remove it only if it is still ours. */
@@ -376,8 +385,15 @@ async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime
   // Clear the public path. The lifetime lock is held, so nobody else can be publishing there, and
   // the only socket this may remove is the exact inode the dead predecessor's record names, once a
   // connect to it is refused.
-  if (await claimSocketPath(paths.socket, lock.previous?.socket) === "recover") {
-    unlinkSync(paths.socket);
+  let claim: "clear" | "recover";
+  try { claim = await claimSocketPath(paths.socket, lock.previous?.socket); }
+  catch (error) {
+    lock.discardPrevious();
+    throw error;
+  }
+  if (claim === "recover") unlinkSync(paths.socket);
+  lock.discardPrevious();
+  if (claim === "recover") {
     counters.socketsRecovered++;
     log(`daemon: recovered the socket its predecessor left at ${paths.socket} (its lifetime lock was already released)`);
   }
