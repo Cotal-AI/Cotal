@@ -310,9 +310,9 @@ try {
    *  naming it, in the product's own format, which `planUninstall` reads exactly as `uninstall`
    *  does. Only `applyInstall` is left out, because it writes into the operator's own
    *  `~/.config/systemd/user`; a container covers that half. */
-  const seedUnitReceipt = (): string => {
+  const seedUnitReceipt = (entry = join(repo, "bin/dist/cotal.js"), native = false): string => {
     const unitPath = join(root, "cotal-daemon.service");
-    const unitBytes = "[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nRestart=always\n\n[Install]\nWantedBy=default.target\n";
+    const unitBytes = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nExecStart="${process.execPath}" "${entry}" daemon serve\n${native ? "Environment=COTAL_DAEMON_NATIVE_SERVICE=1\n" : ""}Restart=always\n\n[Install]\nWantedBy=default.target\n`;
     writeFileSync(unitPath, unitBytes, { mode: 0o600 });
     mkdirSync(join(home, "daemon"), { recursive: true, mode: 0o700 });
     writeFileSync(join(home, "daemon", "service-unit.json"), `${JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
@@ -714,6 +714,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       if (upgrading) {
         await npmRun(["install", "-g", "--prefix", globalPrefix, "--ignore-scripts", join(upgradeFixture!, "cotal-ai-0.151.2.tgz")]);
         cliEntry = join(globalPrefix, "lib/node_modules/cotal-ai/dist/cotal.js");
+        seedUnitReceipt(cliEntry, true);
       }
       const connectorUpgrade = process.argv.includes("--upgrade-connectors-repro");
       if (upgrading) {
