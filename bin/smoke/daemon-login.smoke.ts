@@ -33,6 +33,7 @@
  *      body) in any frame, or on the CLI's stdout or stderr;
  *  L15 a damaged catalog refuses sign-in before provider approval or a session write, naming recovery;
  *  L16 a sign-in denied at the verification page exits 2 refused PERMISSION_DENIED through the CLI.
+ *  L17 malformed session records refuse before provider requests, preserving the sign-in cache.
  *
  * Run: tsx bin/smoke/daemon-login.smoke.ts   (Linux only)
  */
@@ -572,6 +573,41 @@ try {
       check("L16 a denied sign-in retains its command and provider target", doc.command === "daemon login" && doc.target?.idp === sBase, doc);
       check("L16 nothing persisted", !sessionSaved(home));
     } finally { await d.close(); }
+  });
+  await cell("L17 malformed session records stay inside the typed cache boundary", async () => {
+    const cases: Array<[string, string, unknown]> = [
+      ["null", sBase, null],
+      ["array", sBase, []],
+      ["string", sBase, SENTINEL],
+      ["empty token", sBase, { token: "", expiresAt: 1 }],
+      ["wrong token type", sBase, { token: 7, expiresAt: 1 }],
+      ["missing expiry", sBase, { token: SENTINEL }],
+      ["wrong expiry type", sBase, { token: SENTINEL, expiresAt: "tomorrow" }],
+      ["unnormalized provider", `${sBase}/`, { token: SENTINEL, expiresAt: 1 }],
+      ["invalid provider", "not-a-provider-url", { token: SENTINEL, expiresAt: 1 }],
+    ];
+    for (const [name, idp, session] of cases) {
+      resetScripted();
+      const { paths, rt, home } = fresh(); await mkRuntime(rt);
+      mkdirSync(home, { mode: 0o700 });
+      const bytes = JSON.stringify({ ver: 1, sessions: { [idp]: session } });
+      const path = join(home, "idp-sessions.json");
+      writeFileSync(path, bytes, { mode: 0o600 });
+      const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home });
+      try {
+        const run = await runCli(rt, sBase);
+        const doc = JSON.parse(run.out) as Record<string, any>;
+        check(`L17 ${name}: CLI refuses with cache diagnosis and recovery`, run.status === 2 && doc.outcome === "refused" && doc.error?.code === "DEPENDENCY_UNAVAILABLE" && doc.error?.message.includes("idp-sessions.json") && doc.error?.remedy.includes("restore"), { status: run.status });
+        const w = await wire(paths.socket);
+        try {
+          w.send({ v: 1, id: rid(), op: "spaces", refresh: true });
+          const reply = await w.next((frame) => frame.ok === false);
+          const error = reply.error as Record<string, unknown>;
+          check(`L17 ${name}: spaces preserves cache diagnosis and recovery`, error.code === "DEPENDENCY_UNAVAILABLE" && String(error.message).includes("idp-sessions.json") && String(error.remedy).includes("restore"));
+        } finally { w.end(); await w.closed; }
+        check(`L17 ${name}: no provider requests, cache unchanged, no secret output`, totalHits() === 0 && readFileSync(path, "utf8") === bytes && !existsSync(join(home, "space-catalogs.json")) && !run.out.includes(SENTINEL) && !run.err.includes(SENTINEL));
+      } finally { await d.close(); }
+    }
   });
 } catch (e) {
   fail++;
