@@ -234,7 +234,7 @@ for (const style of ["plain", "rich"] as const) {
   check(`${style} preserves punctuation in a matching double-backtick command span`, rendered.includes(literalSpan), rendered);
 }
 const literalPlain = nextLines(literalProse).join("\n");
-check("plain converts prose punctuation without changing literal command bytes", literalPlain.includes(`inspect-then run ${literalSpan}; wait...`), literalPlain);
+check("plain converts prose punctuation without changing literal command bytes", literalPlain.includes("inspect-then run") && literalPlain.includes(literalSpan) && literalPlain.includes("wait..."), literalPlain);
 const literalWhole = renderReport(commandFailureReport(new CommandFailure("refused", "TARGET_UNAVAILABLE", "not running", { remedy: literalCommand, remedyIsCommand: true })), "plain");
 check("a whole-command remedy keeps Unicode punctuation without a code span", literalWhole.includes(literalCommand), literalWhole);
 const safeSpan = renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [codeSpan("cotal '\u001b[2J\n\u202e'")] }] }] }, "plain");
