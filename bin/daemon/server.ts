@@ -30,7 +30,7 @@ import { createServiceConnections } from "./service.js";
 import { homeCotalDir } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
 import { withIdpSessionDir } from "@cotal-ai/auth";
-import { createHostedManagers } from "./manager.js";
+import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
 export const MAX_REQUESTS_PER_CONNECTION = 64;
@@ -189,8 +189,9 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       const req = parsed.request;
       const managerResult = (run: () => DaemonStatus | HostedManager | ServiceConnectionResult | Promise<DaemonStatus | HostedManager | ServiceConnectionResult>) => {
-        void Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), () => {
+        void Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), (error: unknown) => {
           counters.requestsRefused++;
+          if (error instanceof HostedManagerRefusal) return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) } });
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "MANAGER_UNAVAILABLE", message: "the daemon could not complete the Manager operation; inspect its hosting records and retry" } });
         });
       };

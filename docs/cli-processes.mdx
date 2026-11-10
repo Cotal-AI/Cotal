@@ -626,7 +626,9 @@ before reporting launch-readiness. If the running daemon's version or protocol d
 invoking CLI, setup prepares all hosted children through the local preservation guard, restarts
 its recorded native service, and waits for the matching daemon. An occupied legacy Manager blocks
 that preparation and remains running. Stop its seats before retrying setup. Aborting preparation
-restores the Manager's standing-credential and run-hosting renewal schedules.
+restores the Manager's standing-credential and run-hosting renewal schedules. Active seats refuse
+`SEATS_ACTIVE` with the space and the command to stop them. Admission during an installed generation
+transition refuses `GENERATION_PENDING` and asks the operator to wait before retrying setup.
 An occupied Manager is counted without entering preservation. Activation waits with retries doubling
 from five seconds to five minutes, and status shows the installed and running versions with the
 seat count and space. Only changed waiting causes are logged. A foreground daemon reports the

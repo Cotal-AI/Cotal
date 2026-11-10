@@ -986,6 +986,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             check("HM007 empty replacement answers automatically after authority returns", empty?.state === "answering" && empty?.pid !== manager.pid, empty);
             return;
           }
+          if (process.argv.includes("--generation-cause-repro")) {
+            const occupied = await ask(paths.socket, { op: "managers-prepare-restart" }, 30_000);
+            console.log("  R2-8 occupied refusal", JSON.stringify(occupied));
+            check("R2-8 occupied fence refusal names actual seats and selected space", occupied.ok === false && errorOf(occupied).code === "SEATS_ACTIVE" && String(errorOf(occupied).message).includes(ON) && String(errorOf(occupied).remedy).includes(ON) && /seat/i.test(String(errorOf(occupied).message)), occupied);
+            await ask(paths.socket, { op: "managers-abort-restart" }, 30_000);
+          }
           const defaultFile = join(home, "daemon", spaceSegment(ON), "manager", ".cotal", "agents", "default.md");
           const editedDefault = `${readFileSync(defaultFile, "utf8")}\nOwned fixture edit.\n`;
           writeFileSync(defaultFile, editedDefault);
@@ -1023,6 +1029,10 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           const fenced = await ask(paths.socket, { op: "manager-start", space: ON });
           const aborted = await ask(paths.socket, { op: "managers-abort-restart" });
           const resumed = await cli("setup", "--space", ON);
+          if (process.argv.includes("--generation-cause-repro")) {
+            check("R2-8 pending generation refusal names transition cause", fenced.ok === false && errorOf(fenced).code === "GENERATION_PENDING" && /generation|transition/.test(String(errorOf(fenced).message)), fenced);
+            return;
+          }
           check("H1 restart fence denies admission and rollback restores fresh readiness", prepared.ok === true && fenced.ok === false && aborted.ok === true && resumed.code === 0 && resumed.doc.result?.manager?.instanceId === manager.instanceId, { prepared, fenced, aborted, resumed });
         }
         if (process.argv.includes("--setup-upgrade-repro")) {

@@ -53,7 +53,7 @@ export type DaemonRequest =
 
 export type ProtocolErrorCode =
   | "BAD_JSON" | "NOT_OBJECT" | "BAD_VERSION" | "UNKNOWN_FIELD" | "BAD_ID" | "UNKNOWN_OP" | "LINE_TOO_LONG"
-  | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE";
+  | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "GENERATION_PENDING";
 
 export interface DaemonStatus {
   readonly generation?: { readonly installed: string; readonly running: string; readonly waiting: string };
@@ -149,7 +149,7 @@ export interface DaemonSpaces {
 type Envelope = { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string | null };
 export type DaemonResponse =
   | (Envelope & { readonly ok: true; readonly result: HostedManager | DaemonSpaces | DaemonStatus | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult })
-  | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode; readonly message: string } })
+  | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode; readonly message: string; readonly remedy?: string } })
   | (Envelope & { readonly ok: true; readonly event: "login-prompt"; readonly attempt: string; readonly prompt: LoginPrompt })
   | (Envelope & { readonly ok: true; readonly event: "login-result"; readonly attempt: string; readonly result: LoginResult });
 

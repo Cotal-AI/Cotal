@@ -27,6 +27,9 @@ export function forgetHostedManagerIntents(home: string): void {
 const safeDiagnostic = (text: string) => text.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>");
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const controlClient = { versionSkew: (detail: string) => detail, roster: async () => [] };
+export class HostedManagerRefusal extends Error {
+  constructor(readonly code: "SEATS_ACTIVE" | "GENERATION_PENDING", message: string, readonly remedy: string) { super(message); }
+}
 interface Live {
   view: HostedManager;
   child?: ChildProcess;
@@ -325,7 +328,7 @@ export function createHostedManagers(home = homeCotalDir()) {
     return { ...l.view };
   }
   const start = async (space: string): Promise<HostedManager> => {
-    if (closed || generationPending) throw new Error("the daemon is stopping or preparing an installed generation transition");
+    if (closed || generationPending) throw new HostedManagerRefusal("GENERATION_PENDING", "the daemon is stopping or preparing an installed generation transition", "wait for the installed generation transition, then retry setup");
     let l = live.get(space);
     if (!l) { const previous = status(space); l = { view: { space, state: "starting", restarts: 0, ...(previous.lastRefusal ? { lastRefusal: previous.lastRefusal } : {}) }, stopping: false, failures: 0 }; live.set(space, l); }
     if (l.starting) return l.starting;
@@ -384,6 +387,11 @@ export function createHostedManagers(home = homeCotalDir()) {
           generationAttempts.delete(child);
         }
         await Promise.all([...live.values()].map((l) => l.starting));
+        for (const l of live.values()) {
+          if (!l.child) continue;
+          const seats = await generationCall(l.child, randomUUID(), "inspect");
+          if (seats !== undefined && seats > 0) throw new HostedManagerRefusal("SEATS_ACTIVE", `hosted Manager for ${l.view.space} holds ${seats} active seat(s)`, `stop the seats through Manager ${l.view.instanceId} in space ${l.view.space}, then retry setup`);
+        }
         for (const l of live.values()) {
           if (!l.child) continue;
           if (l.view.state !== "answering") throw new Error("a hosted Manager is not ready to confirm a safe generation transition");
