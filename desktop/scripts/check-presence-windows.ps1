@@ -15,6 +15,7 @@ public static class PresenceWindow {
   [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint command);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
 }
 '@
 function Screenshot($name) {
@@ -29,7 +30,13 @@ function Screenshot($name) {
 function Wait-Window($path) {
   for ($i = 0; $i -lt 40; $i++) {
     $processes = @(Get-Process 'cotal-desktop' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $path })
-    if ($processes.Count -eq 1 -and $processes[0].MainWindowHandle -ne 0) { return $processes[0] }
+    $handle = [PresenceWindow]::FindWindow($null, 'Cotal')
+    [uint32]$windowPid = 0
+    if ($handle -ne [IntPtr]::Zero) { [PresenceWindow]::GetWindowThreadProcessId($handle, [ref]$windowPid) | Out-Null }
+    if ($processes.Count -eq 1 -and $windowPid -eq $processes[0].Id -and [PresenceWindow]::IsWindowVisible($handle)) {
+      $processes[0] | Add-Member -NotePropertyName PresenceHandle -NotePropertyValue $handle
+      return $processes[0]
+    }
     Start-Sleep 1
   }
   throw 'Cotal did not present one top-level window.'
@@ -69,7 +76,7 @@ foreach ($kind in @('nsis', 'msi')) {
     $links | Set-Content (Join-Path $out "$kind-shortcuts.txt")
     Start-Process -FilePath $path | Out-Null
     $owned = Wait-Window $path
-    $handle = $owned.MainWindowHandle
+    $handle = $owned.PresenceHandle
     if (![PresenceWindow]::IsWindowVisible($handle)) { throw 'Cotal window is hidden.' }
     $style = [PresenceWindow]::GetWindowLong($handle, -20)
     @{ handle = $handle.ToInt64(); style = $style; owner = [PresenceWindow]::GetWindow($handle, 4).ToInt64(); title = $owned.MainWindowTitle } | ConvertTo-Json | Set-Content (Join-Path $out "$kind-window.json")
