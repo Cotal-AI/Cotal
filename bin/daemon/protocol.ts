@@ -129,7 +129,7 @@ export type RegisterResult =
  *  and `reason` is a fixed stock code (or `unrecognized`). */
 export type ServiceConnectionState =
   | "not-requested" | "not-registered" | "not-signed-in" | "unsupported" | "approval-pending" | "refused" | "conflict"
-  | "connecting" | "connected" | "unavailable" | "ended" | "disconnected" | "local-state-error";
+  | "connecting" | "connected" | "unavailable" | "ended" | "disconnected" | "local-state-error" | "credential-time-error";
 export interface ServiceConnectionResult {
   readonly manager?: HostedManager;
   readonly space: string;

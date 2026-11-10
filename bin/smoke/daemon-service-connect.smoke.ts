@@ -42,7 +42,12 @@
  *      identify local state, the damaged bytes stay private and unchanged, no responder is left, and
  *      restoring the original record recovers serving under the same request ids.
  *
+ *  C18 a daemon clock five minutes ahead refuses expired credentials as a local credential-time
+ *      conflict, not an unreachable authority. Synchronized clocks connect, a real authority outage
+ *      stays unavailable, and restoring the clock recovers with the same request ids.
+ *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
+ * Add --clock-only to run C1, C2, C15, C18 and C14 alone.
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
@@ -106,6 +111,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--hosting-only") && !title.startsWith("H1")) return;
+  if (process.argv.includes("--clock-only") && !["C1 ", "C2 ", "C15 ", "C18 ", "C14 "].some((prefix) => title.startsWith(prefix))) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
 }
@@ -637,6 +643,67 @@ try {
       check("C16 restored authority identity permits the same registration", stateOf(r) === "connected", r);
       const reply = await probeMachine();
       check("C16 restored connection actually serves", reply.reply.ok && reply.reply.data === null);
+    });
+
+    await cell("C18 the shipped daemon distinguishes local credential time from an authority outage", async () => {
+      await disconnectS(ON);
+      await d.close();
+      seedUnitReceipt(); // Native service discovery reaches only the owned recorder.
+      const env = { PATH: process.env.PATH ?? "", HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: rtDir,
+        COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      const skew = join(root, "clock-ahead.mjs");
+      writeFileSync(skew, "const now = Date.now.bind(Date); Date.now = () => now() + 300_000;\n", { mode: 0o600 });
+      const cli = async (mode: string, json = true) => {
+        const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", mode, "--space", ON, ...(json ? ["--json"] : ["--plain"])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
+        const timer = setTimeout(() => child.kill("SIGKILL"), 40_000);
+        const status = await new Promise<number | null>((r) => child.once("exit", r)); clearTimeout(timer);
+        frames.push(out, err);
+        return { status, out, err, doc: json ? JSON.parse(out) as Record<string, any> : undefined };
+      };
+      const renewalFiles = filesUnder(daemonDir).filter((p) => p.includes("service-renewal") && p.endsWith(".json"));
+      if (renewalFiles.length !== 1) throw new Error("clock fixture needs one renewal record");
+      const target = join(daemonDir, renewalFiles[0]!);
+      const ids = () => { const r = JSON.parse(readFileSync(target, "utf8")); return JSON.stringify([r.activateRequestId, r.renewRequestId]); };
+      const originalIds = ids();
+      try {
+        for (const ahead of [true, false]) {
+          const child = spawn(process.execPath, [...(ahead ? ["--import", skew] : []), join(repo, "bin/dist/cotal.js"), "daemon", "serve"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+          let childErr = ""; child.stderr!.on("data", (b) => { childErr += String(b); });
+          try {
+            for (let i = 0; i < 100 && !existsSync(paths.socket); i++) await sleep(100);
+            if (ahead) {
+              const before = posts(ON);
+              for (const mode of ["service-connect", "service-status", "service-connect"]) {
+                const r = await cli(mode);
+                check(`C18 ahead ${mode} reports a local credential-time conflict`, r.status === 2 && r.doc?.error?.code === "CONFLICT" && r.doc.error?.cause?.code === "CREDENTIAL_TIME_ERROR", { status: r.status, error: r.doc?.error });
+                check(`C18 ahead ${mode} advises clock synchronization, not an unreachable space`, /clock/.test(r.doc?.error?.message ?? "") && !/could not be reached/.test(r.doc?.error?.message ?? ""));
+              }
+              check("C18 the ahead daemon reached the real authority", posts(ON) >= before + 4, { posts: posts(ON) - before });
+              const plain = await cli("service-connect", false);
+              check("C18 plain refusal names credential time and the clock", plain.status === 2 && /CREDENTIAL_TIME_ERROR/.test(plain.err) && /clock/.test(plain.err), { status: plain.status, err: plain.err });
+              let unanswered = false;
+              try { await probeMachine(); } catch (e) { unanswered = unansweredRequest(e); }
+              check("C18 clock refusal leaves no responder or resume intent", unanswered && !existsSync(intentFile(ON)));
+            } else {
+              relayDown.add(ON);
+              try {
+                const outage = await cli("service-connect");
+                check("C18 real authority outage remains dependency unavailable", outage.status === 2 && outage.doc?.error?.code === "DEPENDENCY_UNAVAILABLE" && outage.doc.error?.cause?.code === "UNAVAILABLE", { status: outage.status, error: outage.doc?.error });
+              } finally { relayDown.delete(ON); }
+              const recovered = await cli("service-connect");
+              check("C18 synchronized recovery connects and the authority reads ready", recovered.status === 0 && recovered.doc?.result?.state === "connected" && await instanceStatus(ON) === "ready", { status: recovered.status, state: recovered.doc?.result?.state });
+              check("C18 synchronized recovery serves an authorized caller", (await probeMachine()).reply.ok);
+              await cli("service-disconnect");
+            }
+            check(`C18 ${ahead ? "ahead" : "synchronized"} keeps the same request ids and secrets private`, ids() === originalIds && ![SESSION, ...jwtsIssued].some((t) => childErr.includes(t)) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(childErr));
+          } finally { await killAndAwaitExit(child, "SIGTERM"); }
+        }
+      } finally {
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+        await connectS(ON);
+      }
     });
 
     await cell("C14 the shipped daemon diagnoses damaged ready and renewal records", async () => {

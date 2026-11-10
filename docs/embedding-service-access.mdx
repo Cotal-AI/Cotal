@@ -59,7 +59,10 @@ or rejected sign-in, or a store failure leaves it `unavailable`, and the next pu
 request; any other denial from the space ends it, and later pulls send nothing. For record read,
 parse, create or write failures, the stock source reports `{ state: "unavailable", cause: "store" }`.
 Inspect the store and restore the original record if damaged; retrying must keep its request IDs.
-The optional cause contains no stored text. `state()` reports lifecycle state, fixed failure
+A received access bearer already expired by the local clock reports
+`{ state: "unavailable", cause: "credential-time" }`. Check clock synchronization on the client and
+space authority before retrying. The source neither returns that bearer nor stores it as new material.
+The optional cause contains no stored or remote text. `state()` reports lifecycle state, fixed failure
 classifications and expiries, never tokens. Errors are fixed sentences, and `close()` aborts a pull
 in flight.
 

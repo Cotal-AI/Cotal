@@ -68,6 +68,7 @@ const SENTENCE: Record<ServiceConnectionState, string> = {
   connected: "connected: the broker accepted this daemon's service connection and the space accepted it as ready",
   unavailable: "the space or its broker could not be reached; nothing is connected, and connecting again retries the same requests",
   "local-state-error": "the daemon could not use its local service records; inspect its identity, registration, ready and renewal records and their permissions, and restore the original record if damaged; nothing is connected",
+  "credential-time-error": "the space answered, but its access bearer has already expired by this machine's clock; check clock synchronization on this machine and the space's authority before connecting again; nothing is connected",
   ended: "the space ended this daemon's service authority; nothing is connected, and connecting again will not reconnect it",
   disconnected: "not connected",
 };
@@ -229,6 +230,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     const s = l.source?.state();
     if (s?.state === "ended") { l.state = "ended"; l.reason = ENDED.has(s.reason) ? s.reason : "unrecognized"; }
     else if (s?.state === "unavailable" && s.cause === "store") l.state = "local-state-error";
+    else if (s?.state === "unavailable" && s.cause === "credential-time") l.state = "credential-time-error";
     else l.state = "unavailable";
   }
 
