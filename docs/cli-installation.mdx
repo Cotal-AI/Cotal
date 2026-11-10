@@ -181,7 +181,28 @@ command, not an automatic install.
 
 ### Manager continuity
 
-Before disk reconciliation, `update` reads the selected running manager. A machine with no recorded
+For Managers hosted by the machine daemon, `update` checks every active hosted instance before
+reconciliation, even with `--space`, because restarting the global installation affects them all.
+It pins each status request to its instance and refuses unreadable custody or a non-answering
+Manager. A hosted `legacy` Manager with active seats blocks update because their
+terminal custody cannot survive replacement. After reconciliation, update waits up to 120 seconds
+for the matching daemon version and the previously active hosted spaces to report answering
+Managers. When the daemon version differs, update prepares every hosted child through the local
+preservation guard before restarting the recorded native service. A refused preparation leaves
+the occupied Managers running.
+
+A direct installed `npm i -g cotal-ai@<version>` replacement is detected by the running daemon.
+It verifies the replacement entry's reported version and its recorded native service, then asks
+every hosted child locally to prepare through the existing preservation fence. Occupied legacy
+Managers keep running while activation waits and retries. Once their seats stop and every child
+confirms preparation, the daemon stops its owned children and exits. The recorded supervisor then
+resumes the daemon and its hosting intents automatically. These are local daemon and child IPC
+operations and require no additional external admin scope. This path does not itself wait for
+restored Manager readiness. Native restart
+requests and endpoint readiness do not establish login or reboot autostart on any OS.
+
+For Managers outside machine-daemon hosting, `update` reads the selected running manager before
+disk reconciliation. A machine with no recorded
 mesh has no running manager to observe, so that read is skipped and the command completes. The same
 holds when every recorded mesh is down and none is selected. A remote user mesh, registered with
 `cotal meshes add --mode user`, is named and skipped when no `cotal manager start` or

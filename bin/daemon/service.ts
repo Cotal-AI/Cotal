@@ -42,6 +42,20 @@ import { FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, 
 import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness } from "./register.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
 
+/** Map registration outcomes consistently for setup and service status. */
+export function fromRegister(r: RegisterResult): ServiceConnectionState {
+  switch (r.outcome) {
+    case "approval-required": case "pending": return "approval-pending";
+    case "refused": return "reason" in r ? "refused" : "unavailable";
+    case "not-signed-in": return "not-signed-in";
+    case "not-registered": return "not-registered";
+    case "not-user-auth": case "unsupported-by-space": return "unsupported";
+    case "account-mismatch": case "conflict": return "conflict";
+    case "local-state-error": return "local-state-error";
+    default: return "unavailable";
+  }
+}
+
 const SENTENCE: Record<ServiceConnectionState, string> = {
   "not-requested": "this daemon has not requested registration with this space; run `cotal daemon register --space <s>` first",
   "not-registered": "this space is not registered on this machine; add it with `cotal meshes add`",
@@ -173,19 +187,6 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     await l.closing;
     l.closing = undefined;
   }
-
-  const fromRegister = (r: RegisterResult): ServiceConnectionState => {
-    switch (r.outcome) {
-      case "approval-required": case "pending": return "approval-pending";
-      case "refused": return "reason" in r ? "refused" : "unavailable";
-      case "not-signed-in": return "not-signed-in";
-      case "not-registered": return "not-registered";
-      case "not-user-auth": case "unsupported-by-space": return "unsupported";
-      case "account-mismatch": case "conflict": return "conflict";
-      case "local-state-error": return "local-state-error";
-      default: return "unavailable";
-    }
-  };
 
   /** Ask the space to accept this witness as ready, on a fresh access bearer from the source, under
    *  one persisted ready request per witness. Sets `connected` only if the broker is still up. */

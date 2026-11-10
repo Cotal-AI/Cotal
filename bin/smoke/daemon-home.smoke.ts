@@ -256,10 +256,12 @@ try {
   });
 
   await cell("G1 flags are scoped before daemon actions", async () => {
-    for (const flags of [["--idp", "not-a-url"], ["--wait", "not-a-number"], ["--refresh"], ["--dry-run"], ["--yes"], ["--space", "nonexistent"], ["--client-id", ""]]) {
+    for (const flags of [["--idp", "not-a-url"], ["--wait", "not-a-number"], ["--refresh"], ["--dry-run"], ["--yes"], ["--client-id", ""]]) {
       const result = await cli(["status", "--daemon-home", managed, "--json", ...flags]);
       check(`G1 status refuses ${flags[0]} from another mode`, result.status === 1 && result.doc.error?.code === "USAGE_INVALID" && result.doc.error.message?.includes(flags[0]!) === true, { status: result.status, doc: result.doc });
     }
+    const filtered = await cli(["status", "--daemon-home", managed, "--space", "nonexistent", "--json"]);
+    check("G1 status accepts the hosted Manager space filter", filtered.status === 0 && filtered.doc.result?.pid === managedServe?.child.pid && filtered.doc.result?.managers?.[0]?.space === "nonexistent" && filtered.doc.result?.managers?.[0]?.state === "stopped", filtered);
     const unused = join(root, "unused"); mkdirSync(unused, { mode: 0o700 });
     const before = runtimeEntries();
     const dry = await cli(["serve", "--daemon-home", unused, "--dry-run", "--json"]);
