@@ -30,6 +30,9 @@
  *  L3 recovery: after SIGKILL the socket survives with inode I, which the suite pins under a second
  *     name; the next serve succeeds, reports `socketsRecovered === 1`, leaves the pin as I's only
  *     link, binds another inode at the path, and `status` answers the new pid;
+ *  L3b a refused runtime-directory preflight preserves the predecessor's record across retries;
+ *     after the mode is corrected, the same dead socket is recovered and clean close clears it.
+ *  L3c a logging failure after the old socket is removed never restores that consumed record.
  *  L4 a socket the record does not name is refused: after SIGKILL the operator replaces the stale
  *     socket with a different same-uid listener's, bound while the dead inode is pinned so its number
  *     differs. The next serve refuses CONFLICT / ALREADY_RUNNING, removes 0 files, the listener's
@@ -41,7 +44,7 @@
  *     connect to it was answered, removes 0 files, and the listener received 0 bytes. It says another
  *     process is listening at that path and serve does not start until that process releases it, and
  *     its Next names `ss -xlp` and `fuser <path>`, in plain and --json. That refusal cleared the record,
- *     so the same serve run again says the record names no socket and that a refused serve clears it.
+ *     so the same serve run again says the record names no socket and that a refused socket check clears it.
  *     `status` refuses PEER_NOT_LOCK_OWNER, and with the socket at 0700 SOCKET_WRONG_MODE, each with a
  *     Next that finds the listener with `ss -xlp` and names `cotal daemon serve`, in plain and --json;
  *  L5 a clean stop leaves no generation to recover: after `close()` the record names no socket and
@@ -320,6 +323,53 @@ try {
     check("L3 a clean close removes its own socket", !existsSync(paths.socket));
   });
 
+  await cell("L3b a refused preflight preserves recovery evidence for the next start", async () => {
+    const predecessor = await serveChild();
+    const stale = ino(paths.socket);
+    await kill(predecessor.proc, "SIGKILL");
+    const record = readFileSync(paths.lock, "utf8");
+    check("L3b instrument: the dead predecessor's record names the stale socket", lockRecord()?.pid === predecessor.pid && lockRecord()?.socket?.ino === stale);
+    const pin = join(paths.dir, "preflight-stale-pin");
+    linkSync(paths.socket, pin);
+    let recovered: Awaited<ReturnType<typeof serve>> | undefined;
+    try {
+      chmodSync(paths.dir, 0o755);
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const refused = await cli("serve", "--json");
+        check(`L3b preflight ${attempt} refuses the unsafe directory`, refused.status === 2 && refused.doc.error?.cause?.code === "DIR_WRONG_MODE");
+        check(`L3b preflight ${attempt} leaves its mode and socket unchanged`, (lstatSync(paths.dir).mode & 0o777) === 0o755 && ino(paths.socket) === stale);
+        check(`L3b preflight ${attempt} preserves the record and releases the kernel lock`, readFileSync(paths.lock, "utf8") === record && lockIsFree());
+      }
+      chmodSync(paths.dir, 0o700);
+      recovered = await serve();
+      check("L3b the repaired start recovers one socket", recovered.status().state === "ready" && recovered.counters.socketsRecovered === 1);
+      check("L3b only the old public link is removed and a new inode is published", lstatSync(pin).nlink === 1 && ino(paths.socket) !== stale);
+      const status = await cli("status", "--json");
+      check("L3b status verifies the replacement holder", status.status === 0 && status.doc.result?.pid === process.pid && lockRecord()?.socket?.ino === ino(paths.socket));
+      await recovered.close(); recovered = undefined;
+      check("L3b clean close still clears the record and removes its socket", lockRecord() === undefined && !existsSync(paths.socket));
+    } finally {
+      chmodSync(paths.dir, 0o700);
+      await recovered?.close();
+      rmSync(pin, { force: true });
+    }
+  });
+
+  await cell("L3c a failure after removing the old socket does not restore its record", async () => {
+    const predecessor = await serveChild();
+    await kill(predecessor.proc, "SIGKILL");
+    let failure: unknown;
+    try {
+      await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home,
+        log: () => { throw new Error("owned recovery log failure"); } });
+    } catch (error) { failure = error; }
+    check("L3c the logging failure happens after the old socket is removed", failure instanceof Error && failure.message === "owned recovery log failure" && !existsSync(paths.socket));
+    check("L3c the consumed predecessor record stays cleared and the lock is free", lockRecord() === undefined && lockIsFree());
+    const retry = await serve();
+    try { check("L3c a retry starts without recovering the consumed socket again", retry.status().state === "ready" && retry.counters.socketsRecovered === 0); }
+    finally { await retry.close(); }
+  });
+
   await cell("L4 a socket the record does not name is refused, never removed", async () => {
     const d = await serveChild();
     const published = ino(paths.socket);
@@ -378,8 +428,8 @@ try {
       remedy.startsWith("find that process with `ss -xlp` or `fuser ") && remedy.includes(paths.socket) && remedy.endsWith("and stop it; then run `cotal daemon serve` again") && plain.status === 2 && sameText(r, plain), { remedy, plain: plain.out + plain.err });
     check("L4b the refused serve cleared the record", cleared === undefined && lockRecord() === undefined, { cleared, now: lockRecord() });
     const again = await cli("serve", "--json");
-    check("L4b the same serve run again says the record names no socket, and that a refused serve clears it",
-      again.status === 2 && again.doc.error?.cause?.code === "ALREADY_RUNNING" && String(again.doc.error?.message ?? "").includes("this daemon home's lock record names no socket to compare it with: a clean stop clears that record, and so does a refused serve"), { status: again.status, message: again.doc.error?.message });
+    check("L4b the same serve run again says the record names no socket, and that a refused socket check clears it",
+      again.status === 2 && again.doc.error?.cause?.code === "ALREADY_RUNNING" && String(again.doc.error?.message ?? "").includes("this daemon home's lock record names no socket to compare it with: a clean stop or a refused socket check clears that record"), { status: again.status, message: again.doc.error?.message });
     const stepsFor = (code: string, json: Awaited<ReturnType<typeof cli>>, text: Awaited<ReturnType<typeof cli>>) =>
       json.status === 2 && json.doc.error?.code === "PERMISSION_DENIED" && json.doc.error?.cause?.code === code && text.status === 2 && sameText(json, text)
         && /find the process listening at (that socket|it) with `ss -xlp`/.test(String(json.doc.error?.remedy)) && String(json.doc.error?.remedy).includes("start the daemon with `cotal daemon serve`");

@@ -111,8 +111,9 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
   try {
     return await serveLocked(opts, uid, lock);
   } catch (e) {
-    // Every failed start releases the lock it took. A started daemon releases it only in close().
-    lock.release();
+    // A failed start keeps any predecessor socket evidence it has not consumed or rejected.
+    // A started daemon releases the lock only in close(), clearing its own record.
+    lock.release({ preservePrevious: true });
     throw e;
   }
 }
@@ -340,8 +341,15 @@ async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime
   // Clear the public path. The lifetime lock is held, so nobody else can be publishing there, and
   // the only socket this may remove is the exact inode the dead predecessor's record names, once a
   // connect to it is refused.
-  if (await claimSocketPath(paths.socket, lock.previous?.socket) === "recover") {
-    unlinkSync(paths.socket);
+  let claim: "clear" | "recover";
+  try { claim = await claimSocketPath(paths.socket, lock.previous?.socket); }
+  catch (error) {
+    lock.discardPrevious();
+    throw error;
+  }
+  if (claim === "recover") unlinkSync(paths.socket);
+  lock.discardPrevious();
+  if (claim === "recover") {
     counters.socketsRecovered++;
     log(`daemon: recovered the socket its predecessor left at ${paths.socket} (its lifetime lock was already released)`);
   }
