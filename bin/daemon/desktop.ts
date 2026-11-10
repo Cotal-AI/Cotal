@@ -101,7 +101,8 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
           emit({ v: 1, event: "result", ok: true, result: { installed: true, status: status.result } });
           return;
         } catch (e) {
-          if (!(e instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(e.code) || Date.now() >= deadline) throw e;
+          if (!(e instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(e.code)) throw e;
+          if (Date.now() >= deadline) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the installed daemon did not answer within 15 seconds of being started", { native: { code: "NOT_ANSWERING" } });
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
@@ -123,6 +124,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
   } catch (e) {
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
     const message = code === "NOT_RUNNING" ? "The daemon is not running. Install its background service first."
+      : e instanceof CommandFailure && e.code === "DEPENDENCY_UNAVAILABLE" && e.native?.code === "NOT_ANSWERING" ? "The background service was installed and a start was requested, but the daemon did not answer within 15 seconds. Use cotal daemon status for diagnostics."
       : code === "NO_RUNTIME_DIR" ? "The daemon runtime path is unavailable or too long. On Linux, check XDG_RUNTIME_DIR for the intended operating-system user."
       : code === "UNSUPPORTED_PLATFORM" ? "This platform does not have the required native daemon support."
       : code === "PEER_UID_MISMATCH" || code === "PEER_NOT_LOCK_OWNER" ? "The local daemon identity could not be verified. The requested change was not sent."
