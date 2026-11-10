@@ -194,17 +194,18 @@ export const statusFlags = [
 type Selected = { ok: true; target: MeshTarget } | { ok: false; error: unknown };
 type SelectedPreflight = Awaited<ReturnType<typeof preflightTarget>> | undefined;
 
-/** A project root with no registration or prepared space here, such as one whose space was
- *  forgotten. The resolver gives it the default broker address, which any broker may hold, so
- *  status selects no space for it and dials nothing. */
+/** A project root with an empty `.cotal/` and no registration or prepared space. The resolver
+ *  gives it the default broker address, which any broker may hold, so status selects no space for
+ *  it and dials nothing. A root whose records name no space is refused by the resolver instead, and
+ *  status uses that refusal. */
 class UnregisteredRoot {
-  constructor(readonly root: string, readonly namesNoSpace: boolean) {}
+  constructor(readonly root: string) {}
 }
 
 function resolveSelected(cwd: string, values: FlagValues<typeof statusFlags>, offline: readonly string[]): Selected {
   try {
     const target = resolveMeshTarget(cwd, { server: values.server, space: values.space, offline });
-    return target.source === "local-space" ? { ok: false, error: new UnregisteredRoot(target.root, target.namesNoSpace === true) } : { ok: true, target };
+    return target.source === "local-space" ? { ok: false, error: new UnregisteredRoot(target.root) } : { ok: true, target };
   } catch (e) {
     return { ok: false, error: e };
   }
@@ -1311,11 +1312,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     }
     if (e instanceof UnregisteredRoot) {
       const message = `no space is registered or prepared here for ${e.root}`;
-      // A bare `up` in a folder whose records name no space starts a space named after the folder,
-      // which then holds it, so the step that brings a forgotten space back is to prepare it again.
-      hints.push(e.namesNoSpace
-        ? `prepare a space with \`${cmd} space create <name> --root ${shellWord(e.root)}\`, or select one with \`${cmd} use <name>\``
-        : `run \`${cmd} up\` in ${e.root} to start one, or select a space with \`${cmd} use <name>\``);
+      hints.push(`run \`${cmd} up\` in ${e.root} to start one, or select a space with \`${cmd} use <name>\``);
       return { resolved: false, code: "unregistered-root", message };
     }
     if (!isWorkspaceTargetError(e)) throw e;

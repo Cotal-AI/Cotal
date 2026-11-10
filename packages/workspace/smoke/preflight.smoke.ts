@@ -49,6 +49,7 @@ const {
   renderWorkspaceError,
   reachableOrThrow,
   ConnectRefusal,
+  isWorkspaceTargetError,
   resolveControlTarget,
   resolveTargetOrThrow,
   setCurrent,
@@ -264,27 +265,27 @@ for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-
 check("message: open-wants-auth does NOT claim a space name", !preflightMessage("open-wants-auth", T, true).includes("alpha"));
 
 // A folder whose `.cotal/` holds records but names no space, as after `space forget` of a prepared
-// space, resolves to the default space with nothing recording it there. An unreachable broker then
-// names the folder and the step that prepares a space in it, not a default mesh recorded there.
+// space, is not resolved to the default space. The refusal names the folder and the step that
+// prepares a space in it.
 {
   const forgotten = mkdtempSync(join(home, "forgotten-"));
   mkdirSync(join(forgotten, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(forgotten, ".cotal", "agents", "default.md"), "---\nname: default\n---\n");
   const empty = mkdtempSync(join(home, "empty-"));
   mkdirSync(join(empty, ".cotal"));
-  const t = resolveMeshTarget(forgotten);
-  check("a folder whose records name no space resolves local-space, flagged as naming no space", t.source === "local-space" && t.namesNoSpace === true, t);
-  check("control: an empty .cotal/ is not flagged", resolveMeshTarget(empty).namesNoSpace === undefined);
-  const m = preflightMessage("unreachable", t, false);
-  check("message: unreachable for that folder names it and space create, not the default mesh or address",
-    m === `✗ no space is registered or prepared here for ${t.root} - prepare one there with \`cotal space create <name> --root ${t.root}\`, or select one with \`cotal use <name>\`` && !m.includes(t.server), m);
-  check("control: the same target without the flag keeps the recorded-mesh sentence", preflightMessage("unreachable", { ...t, namesNoSpace: undefined }, false).includes(`mesh "${t.space}" is recorded at ${t.root}`));
-  // The refusal's target names the folder only, so no report is headed by the assumed space.
-  const refusal = await preflightOrThrow({ ...t, server: DEAD }).then(() => undefined, (e: unknown) => e);
-  check("preflightOrThrow on that folder refuses with a target naming only the folder, not the assumed space",
-    refusal instanceof ConnectRefusal && refusal.code === "TARGET_UNAVAILABLE" && JSON.stringify(refusal.target) === JSON.stringify({ root: t.root }) && !Object.hasOwn(refusal.failure().target as object, "space"), refusal instanceof ConnectRefusal ? refusal.target : String(refusal));
-  const recorded = await preflightOrThrow({ ...t, server: DEAD, namesNoSpace: undefined }).then(() => undefined, (e: unknown) => e);
-  check("control: without the flag the refusal's target keeps the space", recorded instanceof ConnectRefusal && (recorded.target as { space?: string } | undefined)?.space === t.space, recorded instanceof ConnectRefusal ? recorded.target : String(recorded));
+  const refused = (() => { try { return resolveMeshTarget(forgotten); } catch (e) { return e; } })();
+  check("a folder whose records name no space refuses, naming the folder and no assumed space",
+    isWorkspaceTargetError(refused) && refused.code === "no-meshes" && refused.details.root === forgotten && refused.details.manifest === undefined, refused);
+  const emptyRefused = (() => { try { return resolveMeshTarget(empty); } catch (e) { return e; } })();
+  check("an empty .cotal/ refuses without assuming a space",
+    isWorkspaceTargetError(emptyRefused) && emptyRefused.code === "no-meshes" && emptyRefused.details.root === empty && emptyRefused.details.space === undefined, emptyRefused);
+  const declared = mkdtempSync(join(home, "declared-"));
+  mkdirSync(join(declared, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(declared, ".cotal", "agents", "default.md"), "---\nname: default\n---\n");
+  writeFileSync(join(declared, "cotal.yaml"), "apiVersion: cotal/v1\nkind: Mesh\nspace: declared\nchannels:\n  general: {}\n");
+  const named = (() => { try { return resolveMeshTarget(declared); } catch (e) { return e; } })();
+  check("a cotal.yaml in that folder is named with the space it declares, and nothing is launched",
+    isWorkspaceTargetError(named) && named.details.manifest?.path === join(declared, "cotal.yaml") && named.details.manifest.space === "declared", named);
 }
 
 // ── preflightTarget: probe a dead broker, classify, but DO NOT mutate the registry ────────────────

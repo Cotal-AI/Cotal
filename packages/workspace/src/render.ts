@@ -62,6 +62,12 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
   const d = err.details;
   switch (err.code) {
     case "no-meshes":
+      // A folder whose records name no space is not a mesh named the held default. Its next step
+      // prepares a space there, and names the team file in the folder when one declares a space.
+      if (d.root !== undefined && d.manifest !== undefined)
+        return parts(`no space is registered or prepared here for ${d.root}`, `${shellPath(d.manifest.path)} declares space ${shellPath(d.manifest.space)}; check it with \`cotal team check ${shellPath(d.manifest.path)}\`, prepare that space with \`cotal space create ${shellPath(d.manifest.space)} --root ${shellPath(d.root)}\`, then \`cotal team boot ${shellPath(d.manifest.path)}\` or \`cotal up -f ${shellPath(d.manifest.path)}\``);
+      if (d.root !== undefined)
+        return parts(`no space is registered or prepared here for ${d.root}`, `prepare a space with \`cotal space create <name> --root ${shellPath(d.root)}\`, or select one with \`cotal use <name>\``);
       return parts("no mesh running", "run `cotal up` in a project, or pass `--server`");
     case "unknown-space":
       return d.selected
