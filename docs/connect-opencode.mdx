@@ -77,7 +77,10 @@ You can also set `model:` and `variant:` in the agent file.
 Explicit flags override those fields.
 Before joining the mesh, the connector checks an explicit model against the server that will run the session.
 A model visible only in the CLI catalog can still be refused.
-Cold startup has a two-minute readiness window.
+Cold startup waits up to two minutes for the Cotal session, with five more seconds for the manager to receive a boot failure.
+On OpenCode 1.19.5, a model-catalog lookup on a fresh home can leave dependency-install locks that OpenCode recovers after about a minute.
+Each launch keeps its server boot output in `<workspace>/.cotal/opencode/<name>/boot.<token>.log`, including failed launches.
+If startup fails, read that log on the execution host, correct any setup error, then launch again.
 
 ## Work in the session [#how-it-binds]
 
