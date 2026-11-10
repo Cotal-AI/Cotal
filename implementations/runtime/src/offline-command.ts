@@ -16,6 +16,14 @@ export interface OfflineValues {
  *  file as start does. Bytes that are not UTF-8 are refused rather than replaced, so the program a
  *  run records is the file's own text. */
 export function sourceOf(file: string): string {
+  const bytes = readRunFile(file, "workflow source");
+  if (bytes.length === 0) throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow source file is empty, and a run's source must not be empty", { target: { file }, remedy: `write the program into ${file}` });
+  try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
+  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow source file is not valid UTF-8, so it was not read as a program", { target: { file }, remedy: `save ${file} as UTF-8 text` }); }
+}
+
+/** Program and simulation results paths report the same filesystem causes before parsing. */
+function readRunFile(file: string, kind: "workflow source" | "simulation results script"): Buffer {
   let bytes: Buffer;
   try { bytes = readFileSync(file); }
   catch (error) {
@@ -23,23 +31,25 @@ export function sourceOf(file: string): string {
     let link = false;
     try { link = lstatSync(file).isSymbolicLink(); } catch { /* the path itself is absent */ }
     const [refusal, cause] = code === "ENOENT"
-      ? ["TARGET_NOT_FOUND", link ? "is a link whose target does not exist" : file === "-" ? "does not exist; run reads its program from a file, and - does not mean standard input" : "does not exist"] as const
-      : code === "EISDIR" ? ["USAGE_INVALID", "is a directory, not a workflow source file"] as const
+      ? ["TARGET_NOT_FOUND", link ? "is a link whose target does not exist" : file === "-" && kind === "workflow source" ? "does not exist; run reads its program from a file, and - does not mean standard input" : "does not exist"] as const
+      : code === "EISDIR" ? ["USAGE_INVALID", `is a directory, not a ${kind} file`] as const
       : code === "EACCES" || code === "EPERM" ? ["PERMISSION_DENIED", "is not readable with this user's permissions"] as const
       : ["TARGET_NOT_FOUND", `could not be read (${code ?? "unknown error"})`] as const;
-    throw new CommandFailure("refused", refusal, `the workflow source ${file} ${cause}`, { target: { file }, remedy: `check that ${file} exists and this account can read it` });
+    throw new CommandFailure("refused", refusal, `the ${kind} ${file} ${cause}`, { target: { file }, remedy: `check that ${file} exists and this account can read it` });
   }
-  if (bytes.length === 0) throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow source file is empty, and a run's source must not be empty", { target: { file }, remedy: `write the program into ${file}` });
-  try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow source file is not valid UTF-8, so it was not read as a program", { target: { file }, remedy: `save ${file} as UTF-8 text` }); }
+  return bytes;
 }
 
 function scriptOf(file: string | undefined): SimScript {
   if (file === undefined) return {};
+  const bytes = readRunFile(file, "simulation results script");
+  const target = { file };
+  const remedy = `write a JSON results object into ${file}`;
+  if (bytes.length === 0) throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} is empty`, { target, remedy });
   let value: unknown;
-  try { value = JSON.parse(readFileSync(file, "utf8")); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation handler must be a readable JSON results script", { target: { file } }); }
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script must be an object");
+  try { value = JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, "")); }
+  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} is not valid JSON`, { target, remedy }); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} must be an object`, { target, remedy });
   const script = value as Record<string, unknown>;
   const fields = new Set(["turns", "asks", "checkpoints", "events", "clock", "faults"]);
   for (const [key, item] of Object.entries(script)) {
