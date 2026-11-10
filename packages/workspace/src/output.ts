@@ -187,8 +187,9 @@ export function isCommandFailure(e: unknown): e is CommandFailure {
 
 /** The space one command run resolved, as {@link recordOperationSpace} set it, the note
  *  {@link recordOperationSpaceNote} recorded on how it was chosen, and the warnings
- *  {@link recordOperationWarning} recorded. `quiet` keeps those warnings off stderr. */
-export interface OperationScope { space?: string; spaceNote?: { space: string; text: string }; warnings?: OutputWarning[]; quiet?: boolean }
+ *  {@link recordOperationWarning} recorded. {@link recordOperationContext} names the selected command
+ *  and its resolved target. `quiet` keeps warnings off stderr. */
+export interface OperationScope { command?: string; target?: unknown; space?: string; spaceNote?: { space: string; text: string }; warnings?: OutputWarning[]; quiet?: boolean }
 
 // Kept on a global key so two copies of this module share one scope, as the failure brand does.
 const operationScope = ((globalThis as { [key: symbol]: unknown })[Symbol.for("cotal.operationScope")] ??= new AsyncLocalStorage<OperationScope>()) as AsyncLocalStorage<OperationScope>;
@@ -197,6 +198,13 @@ const operationScope = ((globalThis as { [key: symbol]: unknown })[Symbol.for("c
  *  throws, or the rendering of that command's failure, which then reads what the run recorded. */
 export function runOperation<T>(scope: OperationScope, body: () => T): T {
   return operationScope.run(scope, body);
+}
+
+/** Record a selected command or a resolved target for failures after execution starts. Pass only
+ *  validated, non-secret target metadata. Outside {@link runOperation} this does nothing. */
+export function recordOperationContext(context: Pick<OperationScope, "command" | "target">): void {
+  const scope = operationScope.getStore();
+  if (scope) Object.assign(scope, context);
 }
 
 /** Record the one space this command's operation resolved, as soon as it is resolved. A command
@@ -262,12 +270,13 @@ export function inOperationSpace(failure: CommandFailure, space: string | undefi
   return placed;
 }
 
-/** The envelope for a command that did not succeed, with the warnings its run recorded. */
-export function failureEnvelope(command: string, failure: CommandFailure, warnings: readonly OutputWarning[] = operationWarnings()): Envelope<null> {
+/** The envelope for a command that did not succeed, with its recorded warnings and context.
+ *  A failure's own target takes precedence over the operation's target. */
+export function failureEnvelope(command: string, failure: CommandFailure, warnings: readonly OutputWarning[] = operationWarnings(), context?: Pick<OperationScope, "command" | "target">): Envelope<null> {
   return {
     schemaVersion: 1,
-    command,
-    target: failure.target,
+    command: context?.command ?? command,
+    target: failure.target ?? context?.target ?? null,
     outcome: failure.outcome,
     completeness: "not-checked",
     result: null,
