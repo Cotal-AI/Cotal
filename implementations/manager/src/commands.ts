@@ -693,6 +693,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       ...(seatCap !== undefined ? { seatCap } : {}),
       ...(name !== undefined ? { name } : {}),
       installedExtensions: true,
+      ...(typeof v["expected-connector-generation"] === "string" ? { expectedConnectorGeneration: v["expected-connector-generation"] } : {}),
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken,
       remoteAuthority,

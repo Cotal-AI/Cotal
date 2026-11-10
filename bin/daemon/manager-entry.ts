@@ -15,11 +15,13 @@ const stock = registry.resolve<Command>("command", "__daemon-manager");
 const command: Command = {
   ...stock,
   name: "__machine-manager",
-  flags: [...stock.flags ?? [], { name: "session-directory", type: "string", description: "the owning machine daemon's private sign-in directory" }],
+  flags: [...stock.flags ?? [], { name: "session-directory", type: "string", description: "the owning machine daemon's private sign-in directory" }, { name: "expected-connector-generation", type: "string", description: "the generation captured by the owning daemon" }],
   async run(args) {
     const home = args.values["session-directory"];
     if (typeof home !== "string" || !process.connected || parentGone) throw new CommandFailure("refused", "USAGE_INVALID", "the machine Manager requires its daemon's session directory and parent channel");
     checkDir(home);
+    const expected = args.values["expected-connector-generation"];
+    if (typeof expected !== "string" || !expected.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "the machine Manager requires its daemon's captured connector generation");
     const provider = resolveAuthProvider();
     const authority = provider.managerServiceAuthority;
     if (!authority) throw new CommandFailure("refused", "UNSUPPORTED", "the auth provider does not support hosted Manager authority");

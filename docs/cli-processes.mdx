@@ -659,9 +659,19 @@ Generation activation prepares idle Managers, then restarts the daemon. The new 
 before admitting a hosted Manager. The old generation never reopens admission after changing the
 shared connector store.
 The daemon reconciles stock connectors in its own environment before starting or restarting a
-hosted Manager. It compares the seed stamp with its loaded version. A failed reconcile refuses the
+hosted Manager. It checks the installed CLI against its loaded version before using the seed stamp.
+A replaced installation cannot start another child under the old daemon. A verified native service
+activates it after seats stop. Without a verified native launch marker, status names setup from
+the installed CLI for a recorded service, or an explicit foreground stop followed by serve.
+A failed reconcile refuses the
 space with its cause and repair command and retries from five seconds up to five minutes.
-The serving Manager never runs first-use seeding.
+The serving Manager never runs first-use seeding. A child rejects a handed generation that differs
+from the Manager implementation it loaded.
+A hosted Manager also checks each first-party connector's manifest version before a new launch,
+including a connector already loaded in that process. A mismatch names both generations and asks
+you to stop its seats and restart it from the installed CLI. Existing seats stay running.
+Third-party connectors keep their own versions. Stock Managers started by `up` or `manager start`
+keep their existing connector loading policy.
 This readiness check does not prove login or reboot autostart on any OS.
 After a successful `cotal update --self`, a running default daemon from the same installation
 is restarted when its version differs, including older daemons that host no Managers.

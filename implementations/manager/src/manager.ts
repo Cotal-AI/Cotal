@@ -497,6 +497,8 @@ function ownLists<T extends { subscribe?: readonly string[]; allowSubscribe?: re
 
 export interface ManagerOptions {
   space: string;
+  /** Pin first-party connector launches to the embedding process's captured generation. */
+  expectedConnectorGeneration?: string;
   /** Hosted pooled control requires signerless authority and either an explicit non-custodial
    * runtime or explicit execution: none. It never borrows local signing authority. */
   pooled?: boolean;
@@ -1614,6 +1616,7 @@ export class Manager {
   private secretStoreIdentity?: SecretStoreIdentity;
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
+  private readonly expectedConnectorGeneration?: string;
   private readonly executionState: { kind: "none" } | { kind: "runtime" };
   // Declared only: no own Runtime slot exists in the none arm.
   declare private readonly runtime: Runtime;
@@ -1968,6 +1971,8 @@ export class Manager {
   }
 
   constructor(opts: ManagerOptions) {
+    if (opts.expectedConnectorGeneration !== undefined && opts.expectedConnectorGeneration !== MANAGER_VERSION)
+      throw new Error(`expected connector generation ${opts.expectedConnectorGeneration} differs from this Manager's loaded generation ${MANAGER_VERSION}; restart from the installed CLI`);
     if (opts.onServiceIdentity !== undefined && typeof opts.onServiceIdentity !== "function") throw new Error("manager onServiceIdentity must be a trusted embedding callback");
     if (opts.execution !== undefined && opts.execution !== "runtime" && opts.execution !== "none")
       throw new Error(`unknown manager execution capability ${JSON.stringify(opts.execution)}`);
@@ -2001,6 +2006,7 @@ export class Manager {
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
     if (opts.secretStore) this.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
     this.installedExtensions = opts.installedExtensions ?? false;
+    this.expectedConnectorGeneration = opts.expectedConnectorGeneration;
     this.pooled = opts.pooled === true;
     this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
     if (!this.remoteAuthority) {
@@ -6516,12 +6522,14 @@ export class Manager {
    *  on MANIFEST membership FIRST — so a live `cotal ext remove` is honored even though the registry
    *  still holds a connector imported earlier this session — then returns the registry hit or lazily
    *  imports the providing package (transactional + single-flight, via the workspace primitive).
+   *  An expected generation also revalidates cached first-party providers under that lock.
    *  Fail-loud with an install hint; no fallback. */
   private async resolveConnector(name: string): Promise<Connector> {
     if (!this.installedExtensions) return registry.resolve<Connector>("connector", name);
     if (!manifestExtensionNames("connector").includes(name)) throw new Error(connectorInstallHint(name));
     const already = registry.all<Connector>("connector").find((c) => c.name === name);
-    return already ?? materializeFromManifest<Connector>({ kind: "connector", name }, { hint: (ref) => connectorInstallHint(ref.name) });
+    if (this.expectedConnectorGeneration === undefined && already) return already;
+    return materializeFromManifest<Connector>({ kind: "connector", name }, { hint: (ref) => connectorInstallHint(ref.name), expectedGeneration: this.expectedConnectorGeneration });
   }
 
   /** Connector names the manager can spawn WITHOUT importing: the manifest on the published binary,

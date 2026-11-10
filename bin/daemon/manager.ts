@@ -9,7 +9,9 @@ import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
 import { loadIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { findMesh, homeCotalDir, resolveControlTarget, spaceFromSegment, spaceSegment } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
-import { installedGenerationVersion, reconcileHostedConnectors } from "./generation.js";
+import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
+import { daemonPaths, daemonPathsFor } from "./endpoint.js";
+import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
 import type { HostedManager } from "./protocol.js";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
@@ -46,7 +48,7 @@ interface Live {
 
 export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string) {
   const homeArg = daemonHome === undefined ? undefined : /^[A-Za-z0-9_./-]+$/.test(daemonHome) ? daemonHome : JSON.stringify(daemonHome);
-  const command = (text: string) => homeArg === undefined ? text : text.replace(/cotal daemon (setup|status|login)\b(?! --daemon-home)/g, (match) => `${match} --daemon-home ${homeArg}`);
+  const command = (text: string) => homeArg === undefined ? text : text.replace(/cotal daemon (setup|status|login|serve)\b(?! --daemon-home)/g, (match) => `${match} --daemon-home ${homeArg}`);
   let reconcileTask: Promise<void> | undefined;
   const reconcile = () => reconcileTask ??= reconcileHostedConnectors(version).finally(() => { reconcileTask = undefined; });
   const connectors = (data: unknown): HostedManager["connectors"] => (data as { connectors?: HostedManager["connectors"] } | undefined)?.connectors;
@@ -221,6 +223,25 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     try { await reconcile(); }
     catch (error) {
       const reason = `hosted connector reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
+      if (error instanceof ReplacedDaemonGeneration) {
+        const paths = daemonHome === undefined ? daemonPaths(process.env, home) : daemonPathsFor(daemonHome);
+        let next: string;
+        if (daemonStartedByOwnedService(paths, daemonHome)) {
+          next = `the verified recorded native service will activate installed CLI ${error.installed} automatically after all hosted seats stop; read cotal daemon status --space ${space}`;
+        } else if (existsSync(unitReceiptFile(paths))) {
+          let evidence: string;
+          try {
+            const identity = installedDaemonIdentity(paths, daemonHome);
+            evidence = identity.same ? "the recorded service has no verified native launch marker" : "the recorded service points to another installation";
+          } catch {
+            evidence = "the recorded service source could not be verified";
+          }
+          next = `${evidence}, so this daemon cannot activate itself; run cotal daemon setup --space ${space} from the installed CLI to verify the recorded service and restart it`;
+        } else {
+          next = `no recorded native service can activate this foreground daemon; explicitly stop the running foreground daemon, then run cotal daemon serve from the installed CLI`;
+        }
+        return refuse(l, reason, next);
+      }
       refuse(l, reason, "correct the connector cause, run cotal ext seed --repair with the daemon's installed CLI, then retry setup; the daemon will retry automatically");
       if (!closed && !l.stopping && !generationPending) {
         const delay = Math.min(300_000, 5000 * 2 ** Math.min(l.failures++, 6));
@@ -272,7 +293,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       };
     };
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") || ["COTAL_HOME", "COTAL_SKIP_CONNECTOR_SEED", "COTAL_TELEMETRY"].includes(key)));
-    const child = spawn(node!, [...argv, "__machine-manager", "--space", space, "--runtime", "pty", "--console-port", "0", "--session-directory", home], {
+    const child = spawn(node!, [...argv, "__machine-manager", "--space", space, "--runtime", "pty", "--console-port", "0", "--session-directory", home, "--expected-connector-generation", version], {
       cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1" }, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"],
     });
     l.child = child;
