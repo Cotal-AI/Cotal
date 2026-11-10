@@ -38,6 +38,7 @@ import { daemonCommandCopy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { watchDaemonGeneration } from "./generation.js";
 import { SPACE_PATTERN } from "./protocol.js";
+import { nativeDaemonLog } from "./native-log.js";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
@@ -129,11 +130,17 @@ function statusView(s: DaemonStatus): Report {
 
 async function status(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
-  const { paths } = resolveTarget(args);
+  const { paths, home } = resolveTarget(args);
   let reply;
   try {
     reply = await queryDaemon({ paths, peerUid, peerPid });
   } catch (e) {
+    if (process.platform === "win32" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
+        remedy: `start the owned task with ${daemonCommandCopy("start", home)}; read ${nativeDaemonLog(paths.state)} for its last launch output, and inspect the task's state and last result in Task Scheduler if no log was created`,
+        native: { code: e.code },
+      });
+    }
     throw asFailure(e);
   }
   if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the status request: ${reply.error.code} ${reply.error.message}`);
@@ -381,6 +388,7 @@ async function serve(args: ParsedArgs): Promise<void> {
   try {
     running = await serveDaemon({ paths, version: binVersion(), peerUid, log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
   } catch (e) {
+    if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
     throw asFailure(e);
   }
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);

@@ -777,6 +777,12 @@ minute and skips a start while the daemon runs, so a daemon that exits starts ag
 minute. The daemon is a console program, so its console window shows in the user's session.
 `uninstall` disables, ends and deletes the task, then removes the definition.
 
+The task's native entry writes its output to `daemon.log` in the daemon's state directory,
+replacing the previous launch's log and retaining at most 64 KiB of output. When the daemon does
+not answer on Windows, `status` names that log and Task Scheduler's state and last result. If the
+entry cannot load at all, Task Scheduler's last result is the diagnostic and no new log exists.
+Install refuses before preparing a task if its launch entry is missing or is not a file.
+
 The unit is `cotal-daemon.service`, or `cotal-daemon-<16 hex>.service` for a daemon with its own
 `--daemon-home`, derived from that directory as its socket is. The LaunchAgent label is
 `ai.cotal.daemon`, or `ai.cotal.daemon.<16 hex>`. The task is `cotal-daemon-<SID>`, or
