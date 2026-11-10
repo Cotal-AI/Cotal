@@ -54,8 +54,10 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { peerCredentials } from "@cotal-ai/seat";
+import { connect as connectNats } from "@nats-io/transport-node";
 import {
   CotalEndpoint, EpEnvelopeError, SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA, compileContract, epCall, unansweredRequest, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig, setupSpaceStreams,
+  standaloneConnectOpts, issuedUserCaller, resolveService, invokeCommand,
   writeSecretFileAtomic, mintMembershipObserverCreds, mintConnectionEvictorCreds, type SecretStore,
 } from "@cotal-ai/core";
 import {
@@ -676,8 +678,8 @@ try {
       writeFileSync(seatScript, `import {CotalEndpoint} from ${JSON.stringify(coreUrl)}; import {readFileSync} from 'node:fs'; import {execFile} from 'node:child_process';
 const cmd=JSON.parse(process.env.COTAL_BEARER_CMD); const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(e,out)=>e?reject(e):resolve(out.trim())));
 const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(process.env.COTAL_SENTINEL_CREDS,'utf8'),lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,card:{owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,name:process.env.COTAL_NAME,kind:'agent'}});ep.on('error',()=>{});await ep.start();`);
-      writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
-      writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: false }] }] }));
+      writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],${process.argv.includes("--dashboard-shape-repro") ? 'eventChannel: p=>"events."+p.owner+"."+p.actor,' : ""}buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
+      writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: process.argv.includes("--dashboard-shape-repro") }] }] }));
       if (process.argv.includes("--hosted-seed-repro")) rmSync(prefix, { recursive: true });
       const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
       if (process.argv.includes("--hosted-seed-repro")) {
@@ -788,6 +790,54 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--dashboard-shape-repro")) {
+          const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+          const options = standaloneConnectOpts(target.auth.creds ? { creds: target.auth.creds, tls: false } : { bearer: target.auth.bearer!, sentinelCreds: target.auth.sentinelCreds!, tls: false });
+          const nc = await connectNats({ servers: target.server, ...options });
+          try {
+            const caller = await issuedUserCaller(nc, ON, String(options.name), target.auth.epCaller!);
+            const service = await resolveService(nc, ON, "manager", caller, { instanceId: manager.instanceId });
+            const call = async (command: string, args?: Record<string, unknown>) => {
+              const reply = await invokeCommand(nc, ON, service, command, args, { deadlineMs: 40_000 });
+              check(`Dashboard ${command} answers from pinned hosted instance`, reply.reply.ok && reply.responder.instanceId === manager.instanceId, reply.reply);
+              return reply.reply.ok ? reply.reply.data as any : undefined;
+            };
+            await call("list-personas");
+            await call("define-persona", { name: "dashboard_owned", persona: "Owned dashboard launch proof." });
+            await call("show-persona", { name: "dashboard_owned" });
+            await call("resolve-agent", { name: "dashboard_owned", agent: "daemon-smoke" });
+            await call("models", {});
+            const liveStatus = await call("status");
+            check("Dashboard resolved harness is available before Launch", liveStatus?.connectors?.some((row: any) => row.agent === "daemon-smoke" && row.state === "available"), liveStatus);
+            const launched = await call("spawn", { name: "dashboard_owned", agent: "daemon-smoke" });
+            console.log("  Dashboard exact spawn result", JSON.stringify(launched));
+            let terminal: any;
+            for (let i = 0; i < 120 && launched?.goalId; i++) {
+              const result = await invokeCommand(nc, ON, service, "goal-result", { goalId: launched.goalId }, { deadlineMs: 5000 });
+              terminal = result.reply.ok ? result.reply.data : result.reply.error;
+              if (typeof terminal?.result?.state === "string") break;
+              await sleep(250);
+            }
+            console.log("  Dashboard exact spawn terminal", JSON.stringify(terminal));
+            check("Dashboard exact spawn shape observes owned seat join", terminal?.result?.state === "succeeded" && terminal?.result?.committer?.instanceId === manager.instanceId, terminal);
+          } finally { await nc.drain(); }
+          const selected = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+          await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, selected.server, "stop", { name: "dashboard_owned" }, selected.auth, "owner", 10_000, { instanceId: manager.instanceId });
+          return;
+        }
+        if (process.argv.includes("--fresh-status-repro")) {
+          process.kill(manager.pid, "SIGSTOP");
+          try {
+            const service = await cli("service-status", "--space", ON);
+            const direct = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 30_000));
+            console.log("  R2-6 fresh status results", JSON.stringify({ service, direct }));
+            check("R2-6 immediate service-status probes instead of returning remembered success", service.code !== 0 && service.doc.error?.remedy?.includes(ON), service);
+            check("R2-6 manager-status observes failed pinned instance", direct.state !== "answering" && direct.instanceId === manager.instanceId && typeof direct.reason === "string", direct);
+          } finally { process.kill(manager.pid, "SIGCONT"); }
+          const recovered = await cli("service-status", "--space", ON);
+          check("R2-6 next service-status freshly confirms restored same instance", recovered.code === 0 && recovered.doc.result?.manager?.instanceId === manager.instanceId && recovered.doc.result?.manager?.state === "answering", recovered);
+          return;
+        }
         if (process.argv.includes("--fence-exit-repro")) {
           const prepared = await ask(paths.socket, { op: "managers-prepare-restart" }, 30_000);
           check("R2-9 instrument: real hosted generation fence is held", prepared.ok === true, prepared);

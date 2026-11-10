@@ -613,8 +613,9 @@ probes the recorded Manager instance.
 A failed probe advances `observedAt`, withdraws `answering`, and makes `service-status` refuse with
 a next step. Recovery restarts a live child only after its native preservation fence confirms no
 seats and blocks new admission. An occupied or unresponsive child stays running for recovery without
-losing custody. Hosted Manager status is the last observed state with `observedAt`; reading status
-does not perform a fresh readiness probe. No project folder or selected space is
+losing custody. Status, per-space Manager status and service status make a fresh instance-pinned
+probe, bounded to 3.5 seconds. They never reuse an earlier answering result as fresh success.
+`observedAt` names the latest completed observation. No project folder or selected space is
 changed. `service-disconnect` stops that space's hosted Manager and removes its hosting intent.
 `uninstall` stops all hosted Managers and removes their intents from per-space directories, leaving
 the lifetime lock file and unrelated records alone. A later install has no Manager to resume from

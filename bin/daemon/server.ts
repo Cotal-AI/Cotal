@@ -195,7 +195,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         });
       };
       if (req.op === "manager-start" || req.op === "manager-status") {
-        managerResult(() => req.op === "manager-start" ? managers.start(req.space) : managers.status(req.space));
+        managerResult(() => req.op === "manager-start" ? managers.start(req.space) : managers.refresh(req.space));
         return;
       }
       if (req.op === "managers-stop") {
@@ -212,7 +212,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "status") {
         counters.statusAnswered++;
-        managerResult(status);
+        managerResult(async () => { await Promise.all(managers.all().map((manager) => managers.refresh(manager.space))); return status(); });
         return;
       }
       if (req.op === "spaces") {
@@ -252,7 +252,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         managerResult(async () => {
           const result = await run;
           counters.serviceAnswered++;
-          return { ...result, manager: managers.status(req.space) };
+          return { ...result, manager: req.op === "service-status" ? await managers.refresh(req.space) : managers.status(req.space) };
         });
         return;
       }

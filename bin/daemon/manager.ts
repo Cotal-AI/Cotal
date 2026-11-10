@@ -102,6 +102,21 @@ export function createHostedManagers(home = homeCotalDir()) {
     const target = await resolveControlTarget({ space }, "control-caller-privileged", selected, { onRefusal: "throw", readOnly: true });
     return askManager(controlClient, space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: selected });
   });
+  const refresh = async (space: string): Promise<HostedManager> => {
+    const l = live.get(space);
+    if (generationPending && l?.child) return { ...status(space), state: "starting", reason: "an installed generation transition is pending", next: `wait for activation or read cotal daemon status --space ${space}` };
+    if (!l?.child || !l.view.instanceId || l.stopping || l.starting || recordError(space)) return status(space);
+    const child = l.child, selected = l.view.instanceId;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const reply = await Promise.race([probe(space, selected), new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("the pinned Manager status probe did not answer within 3500ms")), 3500); })]);
+      if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager did not answer status");
+      if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "answering", reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+    } catch (error) {
+      if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "starting", reason: safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500), observedAt: new Date().toISOString(), next: `inspect cotal daemon status --space ${space}; restore its connection, then run cotal daemon setup --space ${space}` };
+    } finally { if (deadline) clearTimeout(deadline); }
+    return status(space);
+  };
   const observe = (l: Live) => {
     if (l.healthTimer) clearTimeout(l.healthTimer);
     if (closed || generationPending || l.stopping || !l.child) return;
@@ -347,7 +362,7 @@ export function createHostedManagers(home = homeCotalDir()) {
     });
   };
   return {
-    start, status,
+    start, status, refresh,
     async generationSeats(): Promise<{ space: string; seats: number }[]> {
       return Promise.all([...live.values()].filter((l) => l.child).map(async (l) => {
         const child = l.child!;
