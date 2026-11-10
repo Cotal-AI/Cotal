@@ -211,7 +211,7 @@ function nativeService(): NativeService | undefined {
 /** One bounded `loginctl` read or mutation for the invoking user. */
 function loginctl(args: readonly string[]): { status: number | null; stdout: string } {
   const result = spawnSync("loginctl", [...args, "--no-ask-password", "--no-pager"], { encoding: "utf8", timeout: 15_000, maxBuffer: 32 * 1024, stdio: ["ignore", "pipe", "pipe"] });
-  if (result.error || result.signal) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "loginctl did not answer; linger could not be established and no unit was written");
+  if (result.error || result.signal) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "loginctl did not answer; linger could not be established", { remedy: "make loginctl available on PATH and run from a logged-in session where it can reach systemd-logind, then retry" });
   return { status: result.status, stdout: typeof result.stdout === "string" ? result.stdout : "" };
 }
 

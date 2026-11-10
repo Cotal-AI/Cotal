@@ -750,7 +750,11 @@ daemon. It reads that user from `USER`, or from `LOGNAME` when `USER` is unset, 
 directory from `systemctl --user show-environment`. When neither variable names a user it refuses
 `TARGET_UNAVAILABLE` and names both. When the user manager does not answer, as from a shell whose
 `XDG_RUNTIME_DIR` is not the user manager's runtime directory, it refuses `DEPENDENCY_UNAVAILABLE`
-and names that command. Each refusal's Next says to run it from a logged-in session.
+and names that command. These refusals' Next says to run it from a logged-in session.
+Planning also reads linger with `loginctl show-user <user> --property=Linger --no-ask-password --no-pager`.
+If `loginctl` cannot run or does not answer within its bound, it refuses `DEPENDENCY_UNAVAILABLE`.
+Next says to make `loginctl` available on `PATH` and use a logged-in session where it can reach
+systemd-logind, then retry. This read happens during `--dry-run` too; it does not enable linger.
 
 `serve` validates `COTAL_IDP_TIMEOUT_MS` in its own environment before opening the endpoint or
 resuming connections. The value must be whole milliseconds from `1` to `2147483647`.
