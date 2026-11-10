@@ -651,14 +651,24 @@ the verb exists to inspect); when neither a card nor the durable can be found, i
 `✗ not-found: no agent "<name>" and no DM durable for it in space <s>` and exits non-zero, never
 `pending 0`. On a match it prints the durable name and one fact per line: `pending`,
 `ack-pending`, `delivered`, `ack-floor`, `created`, `frontier`, and the stream's `max_age` /
-`max_msgs_per_subject` / `discard` limits (`--json` prints the same facts as one object), followed
+`max_msgs_per_subject` / `discard` limits, followed
 by a bounded, unacked read of up to `--limit` (default 20) recent candidate message ids under the
 heading `recent candidate ids (from the ack floor; not proof of a hole)`, a list of what is
 there, not proof that nothing was lost. Each plain candidate line prints `from=` with the sender
 principal parsed from the stored message subject, which the broker binds to the sender's
 credential, then `ts=`, then `label=` with the name and role the sender wrote in its own message.
 The label is the sender's claim and can name another agent; control characters and brackets in it
-print as spaces. `--json` keeps its earlier candidate lines.
+print as spaces.
+
+With `--json`, this spelling uses the [`cotal pending`](cli-messaging.mdx#pending) reader and
+returns one versioned receipt, with facts and candidate IDs in `result`. No plain candidate
+heading or lines follow it. A missing name or lifecycle durable returns a `refused` receipt with
+`TARGET_NOT_FOUND` (exit 2). The reader accepts `--limit` from 1 to 100 and a lifecycle-keyed
+`--durable`, and reports an incomplete candidate read or unconfirmed reader cleanup as partial
+(exit 4). The deprecation warning stays on stderr. Without `--json`, the earlier text output and
+refusals remain unchanged. Pending inspection never seeds or repairs installed connectors.
+Receipts for this spelling name `deliver` in `command`, including success, partial reads and
+refusals. Value-taking options may precede `pending`; parser refusals still return one receipt.
 
 The verb needs the `admin` credential profile: it runs through the same static-mesh route as
 `cotal auth mint --profile admin`, and refuses a user-mode mesh, naming the retired static credential,

@@ -42,7 +42,7 @@ export const daemonFlags = [
   plainFlag,
   { name: "idp", type: "string", value: "<auth base URL>", description: "login: the provider's auth base URL, e.g. <origin>/api/auth" },
   { name: "client-id", type: "string", value: "<id>", description: "login: the OAuth device-flow client id" },
-  { name: "daemon-home", type: "string", value: "<abs dir>", description: "run or reach the daemon whose state lives in this directory (absolute, yours, mode 0700, not the Cotal home): its own sign-in, identity and registration, its own socket and lifetime lock. Without it, run or reach the default daemon, whose state lives in the Cotal home." },
+  { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this directory (absolute, yours, mode 0700, not the Cotal home): its own sign-in, identity and registration, its own socket and lifetime lock. Without it, run or reach the default daemon, whose state lives in the Cotal home." },
   { name: "refresh", type: "boolean", description: "spaces: refresh catalogs through the daemon-held sign-in" },
   { name: "dry-run", type: "boolean", description: "install, uninstall: report the unit it would write or remove, and change nothing" },
   { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script" },
@@ -418,8 +418,7 @@ async function run(args: ParsedArgs): Promise<void> {
     if (subcommand.flagNames?.includes("space") && typeof space === "string" && space.trim()) recordOperationContext({ target: { space } });
   }
   if (mode === "desktop") {
-    const { paths, home } = resolveTarget(args);
-    return runDesktopBridge({ paths, version: binVersion(), peerUid, peerPid, ...(home ? { daemonHome: home } : {}) });
+    return runDesktopBridge({ resolveTarget: () => target(args), version: binVersion(), peerUid, peerPid });
   }
   if (mode === "spaces") {
     const { paths } = resolveTarget(args);

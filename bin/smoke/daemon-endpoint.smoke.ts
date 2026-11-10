@@ -160,8 +160,8 @@ try {
     check("E5 after the operator removes it by hand, serve binds", lstatSync(s.socket).isSocket() && (await queryDaemon({ paths: s, peerUid })).ok);
     await d.close();
 
-    // Through the real CLI: a stale (dead) socket left by a SIGKILLed daemon is a typed CONFLICT
-    // refusal whose remedy names the manual recovery; the CLI removes nothing.
+    // Through the real CLI: a dead socket without recorded daemon ownership is a typed CONFLICT
+    // refusal whose remedy names portable endpoint inspection; the CLI removes nothing.
     const st = runtime("e5d"); const sp = paths(st); mkdirSync(sp.dir, { mode: 0o700 });
     const killed = spawn(process.execPath, ["-e", `require("net").createServer().listen(${JSON.stringify(sp.socket)}, () => process.kill(process.pid, "SIGKILL"))`], { stdio: "ignore" });
     await new Promise<void>((r) => killed.once("exit", () => r()));
@@ -170,7 +170,7 @@ try {
     let sdoc: { outcome?: string; error?: { code?: string; remedy?: string; cause?: { code?: string } } } = {};
     try { sdoc = JSON.parse(cliServe.stdout); } catch { /* reported below */ }
     check("E5 CLI serve over a stale socket refuses CONFLICT/ALREADY_RUNNING with rc 2", cliServe.status === 2 && sdoc.outcome === "refused" && sdoc.error?.code === "CONFLICT" && sdoc.error?.cause?.code === "ALREADY_RUNNING", { status: cliServe.status, sdoc, err: cliServe.stderr.slice(0, 200) });
-    check("E5 its remedy names the manual recovery and says the daemon never removes it", /cotal daemon status/.test(sdoc.error?.remedy ?? "") && /inspect the conflicting endpoint/.test(sdoc.error?.remedy ?? "") && /No foreign endpoint was removed/.test(sdoc.error?.remedy ?? ""), sdoc.error?.remedy);
+    check("E5 its remedy names portable endpoint inspection and confirms no removal", sdoc.error?.remedy === "run `cotal daemon status` for the same daemon home; inspect the conflicting endpoint with your operating system before changing it. No foreign endpoint was removed", sdoc.error?.remedy);
     check("E5 the stale socket is untouched by the CLI (same inode)", lstatSync(sp.socket).ino === staleIno);
   }
 

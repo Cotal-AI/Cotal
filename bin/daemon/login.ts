@@ -16,7 +16,9 @@
  * Cancelling stops this local sign-in. It does not revoke anything at the IdP.
  */
 import { randomBytes } from "node:crypto";
-import { establishIdpSession, IdpLoginCancelled, IdpUnreachableError } from "@cotal-ai/auth";
+import { resolve } from "node:path";
+import { deleteIdpSpaceCatalog, establishIdpSession, IdpLoginCancelled, IdpUnreachableError } from "@cotal-ai/auth";
+import { homeCotalDir, removeCatalogMeshes } from "@cotal-ai/workspace";
 import type { CancelResult, LoginPrompt, LoginResult } from "./protocol.js";
 
 /** The client id stock `cotal login` presents by default. */
@@ -83,6 +85,11 @@ export function createLoginCoordinator(opts: { readonly sessionDir: string; read
           expiresAt: new Date(Date.now() + p.expiresInSec * 1000).toISOString(),
         }),
       });
+      if (r.previousSub) {
+        const owner = deleteIdpSpaceCatalog(opts.sessionDir, req.idp, r.previousSub);
+        // A separate daemon owns its catalog cache, not the shared registry or its credentials.
+        if (resolve(opts.sessionDir) === resolve(homeCotalDir())) removeCatalogMeshes(owner);
+      }
       return { outcome: "signed-in", idp: req.idp, sub: r.sub, ...(r.label ? { label: r.label } : {}), ...(r.previousSub ? { previousSub: r.previousSub } : {}) };
     } catch (e) {
       if (e instanceof IdpLoginCancelled) return { outcome: "cancelled" };

@@ -191,6 +191,12 @@ says its recorded folder no longer exists.
 
 ### Forgetting a local record
 
+When a broker registered by hand does not answer, commands such as `send` and the delivery daemon
+name `cotal space forget <name>` as the way to unregister it. The refusal keeps the registration
+and does not start a local replacement. Start the broker where it runs to keep using that space.
+For a discovered space, the next step names removal from the provider's catalog followed by
+`cotal sync`, because `space forget` cannot remove a catalog-owned registration.
+
 `space forget <name>` removes a registration this machine keeps. It stops nothing, deletes nothing on
 the broker, and keeps the files under its root. It refuses a space this machine is running with
 `LIFECYCLE_BLOCKED`, because `cotal down` stops it, and a discovered space with `CONFLICT`, because

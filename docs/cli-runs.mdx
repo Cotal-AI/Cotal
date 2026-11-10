@@ -113,6 +113,13 @@ manager's log.
 The failure records no line or column in the program: a source position belongs to a problem
 `run validate` reports before the program runs.
 
+If a broker outage prevents a hosted run's final status write, the manager retries that write
+while the attempt's connection remains open, including when NATS returns before JetStream
+can answer. The program does not advance during this repair.
+Once JetStream answers, `run` and `run show` report the recorded terminal state. A newer
+attempt's status is never overwritten. If the manager stops first, its next boot takes back
+runs still recorded `running`.
+
 A run recorded `released` has no recorded reason. Its `Released` section points to the executing
 manager's log for a hosted run or the driving process's output for a locally driven run. A journal
 read does not establish that execution host or log location, so the view does not guess one.
@@ -287,7 +294,12 @@ outcome, or the last step the program settled before its own code failed, and th
 JSON carries this as `result.outcome` and `result.failure`. A simulation does not establish live authority, installed applications or readiness. All three support JSON and
 plain output and contact no broker.
 
-The `--handler` file is one JSON object in UTF-8. A file that is not valid UTF-8 is refused
+The `--handler` file is one JSON object in UTF-8, with an optional leading byte-order mark.
+It must be a regular file or a symlink to one, as the program file must be.
+A missing file or dangling link is refused with `TARGET_NOT_FOUND`, and an unreadable file with
+`PERMISSION_DENIED`, exit 2. A directory, device, FIFO or socket is refused with `USAGE_INVALID`,
+exit 1. An empty file or invalid JSON is refused with `SCHEMA_INVALID`, exit 1.
+These refusals name the path, the cause and a next step. A file that is not valid UTF-8 is refused
 with `SCHEMA_INVALID`, exit 1, before simulation, naming the path and how to save it as UTF-8.
 No invalid bytes are replaced. Each table maps a step's name to its result: one value
 for every occurrence, or a list used in order. A step with no name is keyed by its effect, such as
