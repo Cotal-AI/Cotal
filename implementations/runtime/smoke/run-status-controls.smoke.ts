@@ -4,8 +4,8 @@ import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, TimeoutError } from "@nats-io/transport-node";
-import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { connect, RequestError, TimeoutError } from "@nats-io/transport-node";
+import { jetstream, jetstreamManager, JetStreamApiError } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import { createEndpointStreams, isReachable, openRecordsBucket, readRunRecord, writeRunStatus, type RunStatusValue } from "@cotal-ai/core";
 import { SimHandler } from "@cotal-ai/lang";
@@ -31,7 +31,7 @@ const space = "statuscontrols", endpoint = "manager";
 await createEndpointStreams(jsm, new Kvm(nc), space);
 const kv = await openRecordsBucket(nc, space);
 try {
-  for (const mode of ["late-ack", "successor", "closed", "permanent", "completed", "failed"] as const) {
+  for (const mode of ["late-ack", "successor", "closed", "permanent", "wrapped-permanent", "wrapped-other-request", "completed", "failed"] as const) {
     const pause = new PauseToken();
     let attempted!: () => void;
     const firstAttempt = new Promise<void>((resolve) => { attempted = resolve; });
@@ -46,6 +46,12 @@ try {
             if (terminalWrites === 1) {
               if (mode === "late-ack") await target.update(...args);
               attempted();
+              if (mode === "wrapped-permanent") throw new Error("jetstream is not enabled", {
+                cause: new JetStreamApiError({ code: 503, err_code: 10039, description: "JetStream not enabled for account" }),
+              });
+              if (mode === "wrapped-other-request") throw new Error("jetstream is not enabled", {
+                cause: new RequestError("permanent request refusal"),
+              });
               throw mode === "permanent" ? new Error("permanent store refusal") : new TimeoutError();
             }
           }
@@ -80,7 +86,7 @@ try {
       assert.equal(status.holder, "m2");
       assert.equal(status.epoch, 2);
       assert.equal(terminalWrites, 1);
-    } else if (mode === "closed" || mode === "permanent") {
+    } else if (mode === "closed" || mode === "permanent" || mode === "wrapped-permanent" || mode === "wrapped-other-request") {
       assert.equal(status.state, "running");
       assert.equal(terminalWrites, 1, "closed connections and permanent errors must stop recovery");
     } else {

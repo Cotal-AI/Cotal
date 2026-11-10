@@ -851,8 +851,12 @@ async function noteFinal(
       if (recovering) console.error(`run ${req.runId}: the "${state}" status was recorded after the broker became available`);
       return;
     } catch (e) {
+      // JetStream wraps no-responder requests in JetStreamNotEnabled. Its other
+      // variant carries an API refusal, so retry only the native no-responder cause.
+      const requestError = e instanceof RequestError ? e
+        : e instanceof Error && e.cause instanceof RequestError ? e.cause : undefined;
       const transient = e instanceof TimeoutError || e instanceof ConnectionError
-        || (e instanceof RequestError && e.isNoResponders());
+        || requestError?.isNoResponders() === true;
       const retry = req.statusConnection !== undefined && !req.statusConnection.isClosed()
         && (transient || isStatusConflict(e));
       if (!recovering || !retry) {

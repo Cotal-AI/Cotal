@@ -113,8 +113,9 @@ The failure records no line or column in the program: a source position belongs 
 `run validate` reports before the program runs.
 
 If a broker outage prevents a hosted run's final status write, the manager retries that write
-while the attempt's connection remains open. The program does not advance during this repair.
-Once the broker answers, `run` and `run show` report the recorded terminal state. A newer
+while the attempt's connection remains open, including when NATS returns before JetStream
+can answer. The program does not advance during this repair.
+Once JetStream answers, `run` and `run show` report the recorded terminal state. A newer
 attempt's status is never overwritten. If the manager stops first, its next boot takes back
 runs still recorded `running`.
 
