@@ -186,8 +186,9 @@ For Managers hosted by the machine daemon, `update` checks every active hosted i
 reconciliation, even with `--space`, because restarting the global installation affects them all.
 It pins each status request to its instance and refuses unreadable custody or a non-answering
 Manager. A hosted `legacy` Manager with running agents blocks update because restarting it would
-end them. The refusal gives `cotal ps` and `cotal stop <name>` commands pinned to their Manager
-instance and space. Save their work, list and stop them, then rerun the same update command,
+end them. The refusal names agents from the Manager's status and gives `cotal stop <name>` and
+`cotal ps` commands pinned to their Manager instance and space. The list command requires admin
+scope on user-auth spaces. Save their work and stop them, then rerun the same update command,
 including `--self` if you used it. No agent is stopped automatically.
 After reconciliation, update waits up to 120 seconds
 for the matching daemon version and the previously active hosted spaces to report answering

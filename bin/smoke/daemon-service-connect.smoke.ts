@@ -1490,6 +1490,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               const code = await new Promise<number | null>((resolve) => blocked.once("exit", resolve));
               check(`U2 update ${flags.join(" ")} refuses unselected running agents with recovery commands`, code === 1
                 && stderr.includes("running agents on this computer") && stderr.includes("restarting it would end them")
+                && stderr.includes("upgrade_custody") && stderr.includes("requires admin scope")
                 && stderr.includes(`cotal ps --on ${second.instanceId} --space ${OFF}`)
                 && stderr.includes(`cotal stop <name> --on ${second.instanceId} --space ${OFF}`)
                 && stderr.includes("rerun the same update command")
