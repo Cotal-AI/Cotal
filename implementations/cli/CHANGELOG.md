@@ -1,5 +1,79 @@
 # @cotal-ai/cli
 
+## 0.154.0
+
+### Minor Changes
+
+- 488646a: Daemon setup makes a computer ready to launch agents from its space.
+  The machine daemon supervises a stock Manager per space, resumes it after restart, and reports
+  launch-readiness separately from machine-service approval. Setup re-probes the pinned Manager on
+  reruns and reports its identity at `manager.instanceId`, while top-level `instanceId` remains the
+  machine-service registration. Use `--no-manager` for connection-only setup; `--wait` requires it.
+  Hosted status includes observation time, exit and stop diagnostics, and bounded private rotating logs.
+  Setup restarts a mismatched daemon through its recorded native service. Installed npm replacement
+  verifies the new entry before releasing the daemon to its recorded supervisor. `cotal update`
+  checks hosted custody and waits for hosted Manager readiness to return. Self-update also reloads
+  a mismatched default daemon from the same installation when it hosts no Managers.
+  Setup and update never restart a service pinned to another installation. Setup reuses compatible
+  hosting operations or names both installations and the reinstall choices. Update reports the
+  other daemon's installation and version after reconciling its own installation.
+  Update reports and skips hosted records without a live child, and gives a disconnect remedy for
+  live custody that cannot be confirmed. Native restart failures retain their cause and name
+  `cotal daemon start`; a failed rollback no longer hides the primary failure.
+  Update keeps its ordinary continuity checks when Linux has no runtime directory for a daemon.
+  New native jobs mark their launch, and generation activation verifies that marker against the
+  recorded same-install source before exiting for the supervisor.
+  Setup reports unsupported machine-service registration with the same state as service status and
+  preserves the provider session check in its sign-in step.
+  Setup requires an available connector in the hosted Manager's fresh status before reporting launch-ready,
+  and allows time for daemon reconciliation before Manager readiness.
+  Setup validates usage without installing or reconciling connector packages in the invoking shell.
+  The daemon reconciles stock connectors in its own environment before hosting and prepares the
+  default persona in the Manager's own catalog. A bare npm upgrade prepares idle Managers and
+  restarts first. The new daemon refuses stale connectors with a repair command and backed-off
+  retry, so the old generation never reopens launches after a partial shared-store reconciliation.
+  Uninstall removes only per-space hosting records and works with the default daemon home's lock file.
+  Corrupt hosting records refuse only their space and setup repairs them after readiness succeeds.
+  Periodic liveness uses the parent IPC channel without auth callouts and never restarts for the
+  daemon's own authority outage. Fresh pinned status probes withdraw stale readiness. Child recovery
+  requires repeated IPC misses and an empty-seat preservation fence. Stopped status retains the
+  Manager identity and observation, and daemon sign-in refusals consistently name daemon login.
+  Pending upgrades count seats without fencing admission, back off activation attempts, and show the
+  installed version and waiting cause in status. Foreground daemons stay running after replacement.
+  Endpoint limit refusals stop parsing immediately and allow already accepted finite replies a bounded
+  flush before closing the connection.
+- 27c1356: An agent can now give a helper it spawns endpoint commands it holds itself, by listing them in the helper's persona under `endpoints`.
+  
+  Each entry names an endpoint and its commands, such as `{ endpoint: com.example.orders, commands: [list] }`, and may add `instanceId` to hand on the commands on one instance of the endpoint only. The field works in a persona file, in the inline persona on `cotal_spawn`, in `cotal_persona`, and in a cotal-lang inline `spawn`. On a static mesh the manager measures every command against the spawner's own issued credential and refuses, by name, any command the spawner cannot call. A workflow run's spawn is measured against what the run's starter held when the run was admitted. The helper's credential carries the commands from its first mint, and every renewal keeps them. `cotal spawn --foreground` mints them for the operator's own seat. The orientation card lists the commands a seat was handed. `cotal_describe` and `cotal_invoke` take an optional `instance`, so an agent handed a command on one instance can call that instance and no other.
+  
+  For third-party endpoints, an issued static agent credential carries only untargeted, unjournaled commands, and the mint refuses any other shape, because a static despawn has no step that settles accepted work keyed to the retired agent. A despawn revokes the helper's ledger rows and evicts its live connections, but a credential copied off disk before then still works until it expires, as every static credential does.
+  
+  A per-user auth mesh refuses a persona that names `endpoints`, an empty list included, and the refusal points to `cotal service-endpoint grant`, which is how endpoint access is granted there. A manifest launch also refuses such a persona and points to `cotal spawn --detach`. Single-label endpoints such as `manager` and the `describe` and `cancel` commands are refused.
+  
+  A persona file whose `endpoints` key is not a valid list now fails to load, where the key used to be ignored. The manager cluster contract moves to revision 47, which adds `endpoints` to the `spawn` persona record and to `define-persona`. `@cotal-ai/core` exports `parsePersonaEndpoints`, `lowerPersonaEndpoints`, `copyPersonaEndpoints` and the `PersonaEndpoint` type, and `LaunchOpts` gains `endpoints`, which connectors forward to the session as `COTAL_ENDPOINTS`.
+
+### Patch Changes
+
+- ac1afc9: Keep machine-daemon commands available when preferences are malformed or the invoking project folder is missing or has a conflicting .cotal file. Preserve machine-home validation and safety checks for ordinary project commands.
+- f579412: Explain when a local space identity reset invalidates exported credentials.
+  
+  Rejected credentials now name the local identity mismatch and a new mint with the original grants or profile. Reset previews and receipts warn that exported files need replacement after the next startup and remain on disk.
+  
+  Agent replacement commands include `--no-persona` so a preserved persona cannot add read channels or a task role to a replacement. The flag ignores persona defaults while preserving explicit grants and grants carried through `--identity`.
+- 05bb3d3: Status checks a silent broker once and reports it as not answering across space commands.
+  The selected space's connection check is shared by its status rows and delivery probe.
+  Space listings preserve the slow-link diagnosis instead of reporting it as unreachable.
+- f45357d: Show invisible characters in CLI refusals as Unicode escapes so refused names cannot look like a different name.
+  The shared operator renderer now covers format and default-ignorable characters, including astral characters, in both quoted errors and report fields.
+- Updated dependencies [71dbfad]
+- Updated dependencies [ed8962e]
+- Updated dependencies [27c1356]
+- Updated dependencies [f579412]
+- Updated dependencies [05bb3d3]
+- Updated dependencies [f45357d]
+  - @cotal-ai/core@0.154.0
+  - @cotal-ai/workspace@0.154.0
+
 ## 0.153.1
 
 ### Patch Changes

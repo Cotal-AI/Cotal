@@ -1,5 +1,22 @@
 # @cotal-ai/runtime
 
+## 0.154.0
+
+### Patch Changes
+
+- 221cab0: Workflow agent arguments now report a handle requirement instead of an internal error when given an agent name.
+  The refusal names the argument and directs authors to the value returned by spawn or participant before an effect is dispatched.
+- Updated dependencies [221cab0]
+- Updated dependencies [71dbfad]
+- Updated dependencies [ed8962e]
+- Updated dependencies [27c1356]
+- Updated dependencies [f579412]
+- Updated dependencies [05bb3d3]
+- Updated dependencies [f45357d]
+  - @cotal-ai/lang@0.154.0
+  - @cotal-ai/core@0.154.0
+  - @cotal-ai/workspace@0.154.0
+
 ## 0.153.1
 
 ### Patch Changes

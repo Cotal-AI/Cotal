@@ -1,5 +1,27 @@
 # @cotal-ai/workspace
 
+## 0.154.0
+
+### Patch Changes
+
+- ed8962e: Hosted Managers refuse new launches when first-party connector generations differ from their running generation.
+  
+  The daemon checks for a replaced installation before trusting the seed stamp. Refusals name the cause and the restart step for the recorded service or foreground daemon. Existing seats and stock Manager connector loading remain unchanged.
+- f579412: Explain when a local space identity reset invalidates exported credentials.
+  
+  Rejected credentials now name the local identity mismatch and a new mint with the original grants or profile. Reset previews and receipts warn that exported files need replacement after the next startup and remain on disk.
+  
+  Agent replacement commands include `--no-persona` so a preserved persona cannot add read channels or a task role to a replacement. The flag ignores persona defaults while preserving explicit grants and grants carried through `--identity`.
+- 05bb3d3: Status checks a silent broker once and reports it as not answering across space commands.
+  The selected space's connection check is shared by its status rows and delivery probe.
+  Space listings preserve the slow-link diagnosis instead of reporting it as unreachable.
+- f45357d: Show invisible characters in CLI refusals as Unicode escapes so refused names cannot look like a different name.
+  The shared operator renderer now covers format and default-ignorable characters, including astral characters, in both quoted errors and report fields.
+- Updated dependencies [71dbfad]
+- Updated dependencies [27c1356]
+- Updated dependencies [f45357d]
+  - @cotal-ai/core@0.154.0
+
 ## 0.153.1
 
 ### Patch Changes
