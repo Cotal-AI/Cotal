@@ -72,6 +72,7 @@ import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
 import { daemonConnectIntentFile } from "../daemon/service.js";
 import { runSetup } from "../daemon/setup.js";
 import { serveDaemon } from "../daemon/server.js";
+import { unitReceiptFile } from "../daemon/install.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-service-connect smoke: Linux only; skipped on ${process.platform}`);
 const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
@@ -143,7 +144,8 @@ chmodSync(root, 0o700);
 const home = join(root, "home"), participant = join(root, "participant"), rtDir = join(root, "rt"), jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}a2b2-js-`));
 for (const d of [home, participant, rtDir]) mkdirSync(d, { mode: 0o700 });
 process.env.COTAL_HOME = home;
-const paths = daemonPaths({ XDG_RUNTIME_DIR: rtDir });
+const explicitHome = process.argv.includes("--explicit-home-repro") ? join(root, "explicit-daemon") : undefined;
+const paths = explicitHome ? daemonPathsFor(explicitHome, { XDG_RUNTIME_DIR: rtDir }) : daemonPaths({ XDG_RUNTIME_DIR: rtDir });
 
 // A loopback signed-JWT IdP: /jwks and /token (bearer = the session handle).
 const key = await generateKeyPair("EdDSA");
@@ -317,12 +319,13 @@ try {
     mkdirSync(join(config, "systemd", "user"), { recursive: true, mode: 0o700 });
     writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(" ") !== "--user show-environment") process.exit(89);\nconsole.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});\n`, { mode: 0o700 });
     process.env.PATH = `${native}:${originalPath ?? ""}`;
-    const unitPath = join(config, "systemd", "user", "cotal-daemon.service");
-    const unitBytes = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nExecStart="${process.execPath}" "${entry}" daemon serve\n${marked ? "Environment=COTAL_DAEMON_NATIVE_SERVICE=1\n" : ""}Restart=always\n\n[Install]\nWantedBy=default.target\n`;
+    const unit = explicitHome ? `cotal-daemon-${createHash("sha256").update(explicitHome).digest("hex").slice(0, 16)}.service` : "cotal-daemon.service";
+    const unitPath = join(config, "systemd", "user", unit);
+    const unitBytes = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nExecStart="${process.execPath}" "${entry}" daemon serve${explicitHome ? ` --daemon-home "${explicitHome}"` : ""}\n${marked ? "Environment=COTAL_DAEMON_NATIVE_SERVICE=1\n" : ""}Restart=always\n\n[Install]\nWantedBy=default.target\n`;
     writeFileSync(unitPath, unitBytes, { mode: 0o600 });
-    mkdirSync(join(home, "daemon"), { recursive: true, mode: 0o700 });
-    writeFileSync(join(home, "daemon", "service-unit.json"), `${JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
-    return "cotal-daemon.service";
+    mkdirSync(paths.state, { recursive: true, mode: 0o700 });
+    writeFileSync(unitReceiptFile(paths), `${JSON.stringify({ v: 1, unit, unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString(), ...(explicitHome ? { daemonHome: explicitHome } : {}) })}\n`, { mode: 0o600 });
+    return unit;
   };
   const identityOf = (space: string) => {
     const f = filesUnder(daemonDir).find((p) => p.includes(Buffer.from(space).toString("hex")) && p.endsWith("service-identity.json"));
@@ -778,7 +781,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         }
       }
       const cli = async (...args: string[]) => {
-        const child = spawn(process.execPath, [cliEntry, "daemon", ...args, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(process.execPath, [cliEntry, "daemon", ...args, ...(explicitHome ? ["--daemon-home", explicitHome] : []), "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let out = "", err = "";
         child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
         const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
@@ -793,9 +796,9 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         console.log("  H1 plain stderr", JSON.stringify(err));
         return { code, out, err };
       };
-      const startDaemon = async (managedHome?: string) => {
+      const startDaemon = async (managedHome = explicitHome) => {
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
-        const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading && (!process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro")) ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] });
         child.stdout.resume(); child.stderr.on("data", (chunk) => { if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) console.log("  owned daemon", String(chunk).trim()); });
         for (let i = 0; i < 100; i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
         await killAndAwaitExit(child, "SIGTERM");
@@ -829,17 +832,136 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         env.PATH = `${recorder}:${env.PATH}`;
       }
       try {
-        const setup = await cli("setup", "--space", ON, "--idp", idpUrl);
+        if (explicitHome) {
+          saveIdpSession(explicitHome, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+          recordMesh({ ...original, server: published.server, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString(), userAuth: { ...published.userAuth, remote: true, sentinelCredsPath: original.userAuth!.sentinelCredsPath } });
+        }
+        const setup = explicitHome
+          ? { code: 0, doc: { result: { launchReady: true, manager: resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 100_000)) } } as Record<string, any>, err: "" }
+          : await cli("setup", "--space", ON, "--idp", idpUrl);
         console.log("  H1 setup", JSON.stringify(setup));
         if (process.argv.includes("--setup-no-connectors-repro")) {
           check("3A setup refuses no available connector", setup.code === 2 && setup.doc.error?.message?.includes("no available connector") && !!setup.doc.error?.remedy, setup);
           return;
         }
-        check("H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
-        check("H0 fresh setup prints device URL and code on stderr", setup.err.includes(`${idpOrigin}/approve?code=DAEMON`) && setup.err.includes("Approval code") && setup.err.includes("DAEMON"));
-        check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
+        check(explicitHome ? "Explicit-home manager-start returns answering hosted Manager" : "H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
+        if (!explicitHome) {
+          check("H0 fresh setup prints device URL and code on stderr", setup.err.includes(`${idpOrigin}/approve?code=DAEMON`) && setup.err.includes("Approval code") && setup.err.includes("DAEMON"));
+          check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
+        }
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--generation-process-skew-repro")) {
+          if (!upgrading) throw new Error("generation process skew requires a private installed fixture");
+          const metadataFile = join(globalPrefix, "lib/node_modules/cotal-ai/package.json");
+          const originalBytes = readFileSync(metadataFile, "utf8");
+          const installed = JSON.parse(originalBytes);
+          const foreground = process.argv.includes("--generation-foreground-repro");
+          const marked = process.argv.includes("--generation-marked-repro");
+          if (marked) recordingRestart = false;
+          const receipt = unitReceiptFile(paths);
+          const savedReceipt = readFileSync(receipt);
+          if (foreground) rmSync(receipt);
+          try {
+            writeFileSync(metadataFile, JSON.stringify({ ...installed, version: "9.9.9" }));
+            const stamp = JSON.parse(readFileSync(join(root, "config/cotal/seed/stamp.json"), "utf8"));
+            check("Generation instrument: stamp still matches daemon while installation changes", stamp.generation === installed.version, stamp);
+            process.kill(manager.pid, "SIGKILL");
+            let observed: Record<string, any> | undefined;
+            for (let i = 0; i < 40; i++) {
+              await sleep(500);
+              observed = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
+              if (observed?.state === "refused" || observed?.state === "answering" && observed?.pid !== manager.pid) break;
+            }
+            console.log("Generation replaced-tree restart", JSON.stringify({ installed: "9.9.9", stamp, observed }));
+            check("Old daemon refuses replacement-tree child even with matching stamp", observed?.state === "refused" && !observed?.pid && observed.reason.includes(installed.version) && observed.reason.includes("9.9.9"), observed);
+            const next = String(observed?.next);
+            const homeFlag = explicitHome ? ` --daemon-home ${explicitHome}` : "";
+            check("Replacement refusal never prescribes seed repair", !/ext seed/.test(next), observed);
+            check("Replacement refusal names usable case-specific installed restart", process.argv.includes("--generation-marked-repro")
+              ? next.includes("verified recorded native service will activate") && next.includes("after all hosted seats stop") && next.includes(`cotal daemon status${homeFlag} --space ${ON}`)
+              : foreground
+              ? next.includes("explicitly stop") && next.includes(`cotal daemon serve${homeFlag}`) && !next.includes("cotal daemon start")
+              : next.includes("no verified native launch marker") && next.includes(`cotal daemon setup${homeFlag} --space ${ON}`), observed);
+            if (marked) {
+              for (let i = 0; i < 100 && child.exitCode === null; i++) await sleep(100);
+              check("Verified native daemon releases old generation for activation", child.exitCode === 0, { exitCode: child.exitCode });
+            } else {
+              await sleep(2500);
+              const later = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
+              check("Replacement refusal remains childless across later observations", later?.state === "refused" && !later.pid && later.restarts === observed?.restarts, later);
+            }
+          } finally { writeFileSync(metadataFile, originalBytes); if (foreground) writeFileSync(receipt, savedReceipt); }
+          return;
+        }
+        if (process.argv.includes("--connector-generation-scope-repro")) {
+          const launchSeat = async (instance: string, harness: string, name: string) => {
+            const seat = spawn(process.execPath, [cliEntry, "spawn", "--on", instance, "--space", ON, "--harness", harness, "--name", name, "--no-events", "--detach", "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+            let output = "", error = "";
+            seat.stdout.on("data", (chunk) => { output += String(chunk); });
+            seat.stderr.on("data", (chunk) => { error += String(chunk); });
+            const code = await new Promise<number | null>((resolve) => seat.once("exit", resolve));
+            const doc = JSON.parse(output);
+            console.log("3B scope launch", JSON.stringify({ instance, harness, name, code, doc, error }));
+            return { code, doc, output };
+          };
+          const control = async (instance: string, op: string, args?: Record<string, unknown>) => {
+            const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", instance, { onRefusal: "throw", readOnly: true });
+            return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, op, args, target.auth, "owner", 10_000, { instanceId: instance });
+          };
+          const manifestFile = join(prefix, "extensions.json");
+          const manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
+          const installSeeded = (packageName: string, connector: string, version: string) => {
+            const dir = join(prefix, "node_modules", packageName);
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(join(dir, "package.json"), JSON.stringify({ name: packageName, version, type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": ">=0.1.0" } }));
+            writeFileSync(join(dir, "index.js"), readFileSync(join(pkg, "index.js"), "utf8").replace('name:"daemon-smoke"', `name:${JSON.stringify(connector)}`));
+            const entry = { pkg: packageName, version, spec: `${packageName}@${version}`, source: "seeded", provides: [{ kind: "connector", name: connector }], commands: [], connectors: [{ name: connector, requires: ["node"], eventPlane: false }] };
+            const existing = manifest.extensions.findIndex((candidate: { pkg: string }) => candidate.pkg === packageName);
+            if (existing < 0) manifest.extensions.push(entry); else manifest.extensions[existing] = entry;
+            writeFileSync(manifestFile, JSON.stringify(manifest));
+          };
+          const original = await launchSeat(manager.instanceId, "daemon-smoke", "generation_original");
+          check("Hosted generation instrument: existing third-party seat joined", original.code === 0 && original.doc.result?.readiness === "joined", original);
+          installSeeded("@cotal-ai/connector-claude-code", "generation-warm", fixtureVersion);
+          const warm = await launchSeat(manager.instanceId, "generation-warm", "generation_warm");
+          check("Hosted generation instrument: matching first-party connector loads before store moves", warm.code === 0 && warm.doc.result?.readiness === "joined", warm);
+          installSeeded("@cotal-ai/connector-claude-code", "generation-warm", "9.9.9");
+          installSeeded("@cotal-ai/connector-codex", "generation-cold", "9.9.9");
+          writeFileSync(join(root, "config/cotal/seed/stamp.json"), JSON.stringify({ generation: "9.9.9" }));
+          for (const [connector, packageName, name] of [["generation-cold", "@cotal-ai/connector-codex", "generation_cold_refused"], ["generation-warm", "@cotal-ai/connector-claude-code", "generation_warm_refused"]]) {
+            const result = await launchSeat(manager.instanceId, connector!, name!);
+            check(`Hosted generation ${connector} refuses mismatched new launch with cause and restart`, result.code === 2 && result.doc.result === null && result.output.includes(packageName!) && result.output.includes("9.9.9") && /restart/.test(result.output), result);
+            if (result.code === 0) await control(manager.instanceId, "stop", { name });
+          }
+          const live = await control(manager.instanceId, "managerStatus");
+          const row = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
+          check("Hosted generation refuses new work without touching existing seats or Manager custody", live.ok && (live.data as { agentCount?: number }).agentCount === 2 && row?.pid === manager.pid && row?.restarts === manager.restarts, { live, row });
+          await control(manager.instanceId, "stop", { name: "generation_original" });
+          await control(manager.instanceId, "stop", { name: "generation_warm" });
+          const hostedPersona = readFileSync(join(home, "daemon", spaceSegment(ON), "manager", ".cotal", "agents", "default.md"), "utf8");
+          await cli("service-disconnect", "--space", ON);
+          const stockCatalog = join(findMesh(ON)!.root, ".cotal", "agents");
+          mkdirSync(stockCatalog, { recursive: true });
+          writeFileSync(join(stockCatalog, "default.md"), hostedPersona);
+          const stock = spawn(process.execPath, [cliEntry, "manager", "start", "--foreground", "--space", ON], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+          let diagnostics = "";
+          stock.stdout.on("data", (chunk) => { diagnostics += String(chunk); });
+          stock.stderr.on("data", (chunk) => { diagnostics += String(chunk); });
+          try {
+            let selected: Awaited<ReturnType<typeof resolveControlTarget>> | undefined;
+            for (let i = 0; i < 120 && stock.exitCode === null; i++) {
+              try { selected = await resolveControlTarget({ space: ON }, "control-caller-privileged", undefined, { onRefusal: "throw", readOnly: true }); if (selected.auth.managerInstanceId && selected.auth.managerInstanceId !== manager.instanceId) break; } catch { /* stock entry is still starting */ }
+              await sleep(250);
+            }
+            const instance = selected?.auth.managerInstanceId;
+            if (!instance || instance === manager.instanceId) throw new Error(`stock Manager did not answer: ${diagnostics.slice(-1500)}`);
+            const launched = await launchSeat(instance, "generation-cold", "generation_stock");
+            check("Stock Manager preserves launch behavior with the same changed shared store", launched.code === 0 && launched.doc.result?.readiness === "joined", launched);
+            if (launched.code === 0) await control(instance, "stop", { name: "generation_stock" });
+          } finally { await killAndAwaitExit(stock, "SIGTERM"); }
+          return;
+        }
         if (process.argv.includes("--setup-unsupported-repro")) {
           const other = ctx[1]!;
           grantActor(other.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(other.store, OFF))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });

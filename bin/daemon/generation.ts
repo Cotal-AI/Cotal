@@ -11,15 +11,22 @@ export function installedGenerationVersion(): string {
   return pkg.version;
 }
 
+export class ReplacedDaemonGeneration extends Error {
+  constructor(readonly loaded: string, readonly installed: string) {
+    super(`daemon loaded CLI ${loaded}, but the installed CLI is ${installed}; refusing to launch a hosted Manager from the replaced installation`);
+    this.name = "ReplacedDaemonGeneration";
+  }
+}
+
 export async function reconcileHostedConnectors(version: string): Promise<void> {
+  const installed = installedGenerationVersion();
+  if (installed !== version) throw new ReplacedDaemonGeneration(version, installed);
   try {
     const stamp = JSON.parse(readFileSync(join(globalConfigDir(), "seed", "stamp.json"), "utf8"));
     if (stamp?.generation === version) return;
   } catch (error) {
     if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  // A replaced executable cannot reconcile the shared store for an old in-memory generation.
-  if (installedGenerationVersion() !== version) throw new Error("the installed CLI changed; wait for the daemon's recorded service to activate it");
   await reconcileInstalledGeneration();
 }
 
@@ -74,7 +81,7 @@ export function watchDaemonGeneration(version: string, changed: (version: string
     if (next === version) { candidate = undefined; retryAt = 0; delay = 5000; pending(undefined); return; }
     if (candidate !== next) {
       candidate = next; retryAt = 0; delay = 5000;
-      const reason = activate ? "verifying the installed entry" : "foreground daemon remains running; restart it from the installed CLI to activate";
+      const reason = activate ? "verifying the installed entry" : "no verified native launch marker; automatic activation is unavailable; use the installed CLI to restart this daemon";
       pending(next, reason);
       announce(`daemon: installed CLI generation changed to ${next}; ${reason}`);
       return;

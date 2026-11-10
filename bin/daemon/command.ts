@@ -386,7 +386,7 @@ async function serve(args: ParsedArgs): Promise<void> {
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
   await new Promise<void>((resolve, reject) => {
     const stopWatching = watchDaemonGeneration(binVersion(), async (version) => {
-      if (!daemonStartedByOwnedService(paths, home)) throw new Error("foreground daemon remains running; restart it from the installed CLI to activate");
+      if (!daemonStartedByOwnedService(paths, home)) throw new Error("no verified native launch marker; automatic activation is unavailable; use the installed CLI to restart this daemon");
       planUninstall(paths, home);
       const seats = await running.generationSeats();
       const occupied = seats.filter((row) => row.seats > 0);
