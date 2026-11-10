@@ -1,5 +1,22 @@
 # cotal-ai
 
+## 0.157.1
+
+### Patch Changes
+
+- b90b527: Desktop and update checks keep answering hosted Managers available on slower connections.
+  Allow the complete credential exchange and endpoint observation to finish, and verify retained Manager custody before refusing an update.
+- @cotal-ai/connector-core@0.157.1
+  - @cotal-ai/auth@0.157.1
+  - @cotal-ai/cli@0.157.1
+  - @cotal-ai/delivery@0.157.1
+  - @cotal-ai/manager@0.157.1
+  - @cotal-ai/registry@0.157.1
+  - @cotal-ai/runtime@0.157.1
+  - @cotal-ai/core@0.157.1
+  - @cotal-ai/seat@0.157.1
+  - @cotal-ai/workspace@0.157.1
+
 ## 0.157.0
 
 ### Minor Changes
