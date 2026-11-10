@@ -35,9 +35,9 @@ export async function directKvValue<T>(
 }
 
 
-import { awaitLeaseExpiry, dialerFor, deliveryBucket, isReachable, LEASE_EXPIRY_GRACE_MS, LEASE_TTL_MS, leaseRemainingMs, MANAGER_LEASE_KEY, MANAGER_LEASE_TTL_MS, managerBucket, standaloneConnectOpts } from "@cotal-ai/core";
-import { CommandFailure, findMesh, localProcessPath, stderrLine, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
-import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
+import { awaitLeaseExpiry, dialerFor, deliveryBucket, isReachable, LEASE_EXPIRY_GRACE_MS, LEASE_TTL_MS, leaseRemainingMs, MANAGER_LEASE_KEY, MANAGER_LEASE_TTL_MS, managerBucket, mintCreds, mintLifecycleUid, newIdentity, standaloneConnectOpts } from "@cotal-ai/core";
+import { canonicalRoot, CommandFailure, findMesh, getSpaceAuth, localProcessPath, stderrLine, workspaceSecretStore, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
+import { connectOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 
 /** One KV subject's last row as its revision and broker write time, without creating a consumer.
@@ -83,11 +83,23 @@ async function liveUnrecordedDaemonNames(
   if (!watched.length) return [];
   const mesh = findMesh(context.space);
   if (!mesh?.server || !(await isReachable(mesh.server))) return [];
-  const resolved = await connectOrExit({ space: context.space, server: mesh.server }, "deployer");
-  const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
+  let auth: Parameters<typeof standaloneConnectOpts>[0];
+  if (mesh.mode === "user") {
+    // This is a hosting-folder infrastructure check, not a user operation. Use only this
+    // root's own signer, never a login or a signer from another registered root.
+    if (canonicalRoot(mesh.root) !== canonicalRoot(context.root))
+      throw new CommandFailure("refused", "PERMISSION_DENIED", "the registered space belongs to another root; no daemon lease was read and nothing was stopped");
+    const trust = await getSpaceAuth(workspaceSecretStore(context.root), context.space);
+    if (!trust)
+      throw new CommandFailure("refused", "PERMISSION_DENIED", "this root has no signing authority for the daemon lease check; nothing was stopped");
+    auth = { creds: await mintCreds(trust, newIdentity(), "deployer", { lifecycleUid: mintLifecycleUid() }), tls: mesh.tlsRequired === true };
+  } else {
+    const resolved = await connectOrExit({ space: context.space, server: mesh.server }, "deployer");
+    auth = { creds: resolved.creds, tls: resolved.tls };
+  }
   const nc = await dialerFor(mesh.server)({
     servers: mesh.server,
-    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), tls: resolved.tls }),
+    ...standaloneConnectOpts(auth),
     maxReconnectAttempts: 0,
   });
   try {
