@@ -88,13 +88,15 @@ if (process.argv[2] === "--old-endpoint") {
     const intent = daemonManagerIntentFile("compat", stateHome);
     mkdirSync(dirname(intent), { recursive: true, mode: 0o700 });
     writeFileSync(intent, `${JSON.stringify({ v: 1, space: "compat" })}\n`, { mode: 0o600 });
-    const unitPath = join(root, "cotal-daemon.service"), bytes = "[Service]\nExecStart=/owned/fixture\n";
+    const unit = defaultHome ? "cotal-daemon.service" : `cotal-daemon-${createHash("sha256").update(home).digest("hex").slice(0, 16)}.service`;
+    const unitPath = join(root, "config", "systemd", "user", unit), bytes = "[Service]\nExecStart=/owned/fixture\n";
+    mkdirSync(dirname(unitPath), { recursive: true, mode: 0o700 });
     writeFileSync(unitPath, bytes, { mode: 0o600 });
     const receipt = join(paths.state, "service-unit.json");
-    writeFileSync(receipt, JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(bytes).digest("hex"), installedAt: new Date().toISOString() }), { mode: 0o600 });
+    writeFileSync(receipt, JSON.stringify({ v: 1, unit, ...(defaultHome ? {} : { daemonHome: home }), unitPath, unitSha256: createHash("sha256").update(bytes).digest("hex"), installedAt: new Date().toISOString() }), { mode: 0o600 });
     await new Promise<void>((resolve) => control.listen(0, "127.0.0.1", resolve));
     const port = (control.address() as AddressInfo).port;
-    writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\nconst fs=require('node:fs');(async()=>{const args=process.argv.slice(2).join(' ');fs.appendFileSync(${JSON.stringify(nativeLog)},args+'\\n');if(args==='--user --no-ask-password --no-pager stop cotal-daemon.service'){const r=await fetch('http://127.0.0.1:${port}/stop');if(!r.ok)process.exit(99);}else if(!['--user --no-ask-password --no-pager disable cotal-daemon.service','--user --no-ask-password --no-pager daemon-reload'].includes(args))process.exit(99);})().catch(()=>process.exit(99));\n`, { mode: 0o700 });
+    writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\nconst fs=require('node:fs');(async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}fs.appendFileSync(${JSON.stringify(nativeLog)},args+'\\n');if(args==='--user --no-ask-password --no-pager stop ${unit}'){const r=await fetch('http://127.0.0.1:${port}/stop');if(!r.ok)process.exit(99);}else if(!['--user --no-ask-password --no-pager disable ${unit}','--user --no-ask-password --no-pager daemon-reload'].includes(args))process.exit(99);})().catch(()=>process.exit(99));\n`, { mode: 0o700 });
     // PATH contains only the recorder. Neither real systemctl nor loginctl can be reached.
     const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
       const cli = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "uninstall", ...(defaultHome ? [] : ["--daemon-home", home]), "--yes", "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -106,7 +108,7 @@ if (process.argv[2] === "--old-endpoint") {
       cli.once("exit", (code) => { clearTimeout(timer); resolve({ code, output }); });
     });
     assert.equal(result.code, 0, result.output);
-    assert.deepEqual(readFileSync(nativeLog, "utf8").trim().split("\n"), ["--user --no-ask-password --no-pager stop cotal-daemon.service", "--user --no-ask-password --no-pager disable cotal-daemon.service", "--user --no-ask-password --no-pager daemon-reload"]);
+    assert.deepEqual(readFileSync(nativeLog, "utf8").trim().split("\n"), [`--user --no-ask-password --no-pager stop ${unit}`, `--user --no-ask-password --no-pager disable ${unit}`, "--user --no-ask-password --no-pager daemon-reload"]);
     assert.equal(readFileSync(wireLog, "utf8"), before, "uninstall must not send managers-stop or any old-daemon request");
     assert.ok(child.exitCode !== null || child.signalCode !== null, "native stop reaped owned endpoint");
     for (const file of [intent, receipt, unitPath]) assert.equal(existsSync(file), false, `${file} removed`);
