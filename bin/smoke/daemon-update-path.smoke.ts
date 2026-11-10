@@ -84,3 +84,13 @@ try {
   if (existsSync(paths.socket) || control.listening || registry.listening) throw new Error("owned update fixture did not close");
   console.log("PASS owned daemon and loopback listeners closed");
 }
+const noRuntime: NodeJS.ProcessEnv = { ...env, npm_config_offline: "true" };
+delete noRuntime.XDG_RUNTIME_DIR;
+const noDaemon = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "update"], { cwd: root, env: noRuntime, stdio: ["ignore", "pipe", "pipe"] });
+let noRuntimeOutput = "";
+noDaemon.stdout.on("data", chunk => noRuntimeOutput += String(chunk));
+noDaemon.stderr.on("data", chunk => noRuntimeOutput += String(chunk));
+await new Promise(resolve => noDaemon.once("exit", resolve));
+console.log("R2-3 output", noRuntimeOutput);
+if (noRuntimeOutput.includes("running manager continuity check:") || !noRuntimeOutput.includes("Built-in connectors")) throw new Error("R2-3 no runtime directory blocked stock update continuity");
+console.log("PASS R2-3 update without runtime directory reaches stock reconciliation");

@@ -21,7 +21,7 @@ const composed: Command = { ...command, async run(args) {
       daemonObserved = true;
       managers = reply.result.managers ?? [];
     } catch (error) {
-      if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") return updateRuntime.reportRunningManager(flags);
+      if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) return updateRuntime.reportRunningManager(flags);
       throw error;
     }
     // Updating this installation restarts the machine daemon, including spaces not selected by flags.

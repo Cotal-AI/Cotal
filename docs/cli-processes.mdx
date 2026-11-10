@@ -628,6 +628,8 @@ cause and repair command. The serving daemon and its Manager children never run 
 This readiness check does not prove login or reboot autostart on any OS.
 After a successful `cotal update --self`, a running default daemon from the same installation
 is restarted when its version differs, including older daemons that host no Managers.
+On Linux without `XDG_RUNTIME_DIR`, update has no default daemon endpoint to check and continues
+with the ordinary Manager continuity and installation checks.
 `--no-manager` keeps the machine-service-only setup path and waits for owner approval.
 `--wait` without `--no-manager` refuses `USAGE_INVALID` before setup starts.
 On the connection-only path `--wait <seconds>` bounds the wait, 900 by default; `--wait 0`
