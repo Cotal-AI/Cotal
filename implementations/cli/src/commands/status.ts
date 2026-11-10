@@ -147,7 +147,7 @@ import {
   STACK_DEFINITION,
   stackStartedWithoutManager,
   stackOperationBlock,
-  goneStackRoot,
+  stackRootGone,
   unfinishedStackOperation,
   type StackJournal,
   type StackOperationBlock,
@@ -1347,6 +1347,15 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     spaceStreams: { state: "not-checked" as const, root: null, stack: null },
     storedBytes: null,
   };
+  // A moved project keeps its trust under its new path. Prefer that specific diagnosis when
+  // this folder holds the records, otherwise report the missing stack root before any auth probe.
+  const moved = target.mode === "auth" && !target.auth ? movedProject(target.space, target.root) : undefined;
+  if (moved) {
+    hints.push(moved.remedy);
+    return { resolved: false, code: "moved-folder", message: moved.message };
+  }
+  const overridden = (target.source === "flag-server" || target.source === "flag-space-override") && target.recordedServer !== target.server;
+  if (base.rootGone && !overridden) return { ...base, connection: "root-gone", snapshot: { state: "skipped", reason: "the stack's project folder was moved or deleted" } };
   if (target.mode === "user") {
     // Status never static-mints on a user-auth mesh (the flip). Everything here is offline
     // introspection — the login cache + the locally-readable ledger — plus, only when this
@@ -1375,13 +1384,6 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     if (!live) return { ...result, snapshot: { state: "skipped", reason: "broker unreachable" } };
     if (!granted) return { ...result, snapshot: { state: "skipped", reason: "needs a signed-in, granted login" } };
     return { ...result, ...(await readSnapshot(() => userSnapshotEndpoint(target, stateDir), target.space, true, gaps)) };
-  }
-  // A project folder moved after its stack started there keeps the seed under its new path, where a
-  // probe without it reads as authentication required. Name the move and the way back, as send does.
-  const moved = target.mode === "auth" && !target.auth ? movedProject(target.space, target.root) : undefined;
-  if (moved) {
-    hints.push(moved.remedy);
-    return { resolved: false, code: "moved-folder", message: moved.message };
   }
   if (preflight === undefined) throw new Error("status: selected non-user target has no preflight observation");
   if (!preflight.ok) {
@@ -1786,15 +1788,10 @@ function machineOverview(r: StatusResult, wide: boolean): Section {
   };
 }
 
-/** Whether `root` is the gone folder of the stack this machine still records for `space`. */
-function stackRootGone(space: string, root: string): boolean {
-  const gone = goneStackRoot(space);
-  return gone !== undefined && canonicalRoot(gone) === canonicalRoot(root);
-}
-
 function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
   if (s.connection === "ok" || s.connection === "reachable") return stateCell("reachable", "ok");
   const states: Readonly<Record<string, string>> = {
+    "root-gone": "project folder was moved or deleted",
     unreachable: "unreachable",
     "slow-link": "not answering",
     "broker-stopped": `broker process ${s.brokerPid} is stopped`,

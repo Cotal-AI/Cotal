@@ -927,6 +927,7 @@
     "smoke:up-config-write:live": "tsx implementations/cli/smoke/up-config-write-live.smoke.ts",
     "smoke:up-interrupt:live": "tsx implementations/cli/smoke/up-interrupt-live.smoke.ts",
     "smoke:space-teardown:live": "tsx implementations/cli/smoke/space-teardown-live.smoke.ts",
+    "smoke:moved-root:live": "tsx implementations/cli/smoke/moved-root-live.smoke.ts",
     "smoke:auth-revoke-credential:live": "tsx implementations/cli/smoke/auth-revoke-credential-live.smoke.ts",
     "smoke:reset-credential-guidance:live": "tsx implementations/cli/smoke/reset-credential-guidance-live.smoke.ts",
     "smoke:up-refresh-identity:live": "tsx implementations/cli/smoke/up-refresh-identity-live.smoke.ts",

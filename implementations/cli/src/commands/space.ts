@@ -34,6 +34,7 @@ import { SPACE_MODES } from "./meshes-add.js";
 import { ADD_FLAGS, spaceAdd, spaceCreate, spaceForget } from "./space-registration.js";
 import { spaceDelete } from "./space-delete.js";
 import { spaceExport } from "./space-export.js";
+import { stackRootGone } from "../lib/stack-journal.js";
 
 export const spaceFlags = [
   jsonFlag,
@@ -113,6 +114,8 @@ interface PreparedDetail extends PreparedRow {
 /** One registration in full. Pins and endpoints are public; credential paths are left out. */
 export interface SpaceDetail extends Omit<SpaceRow, "catalog"> {
   readonly kind: "space";
+  /** The local stack's journal and broker configuration are no longer at its recorded root. */
+  readonly rootGone: boolean;
   readonly recordedAt: string;
   readonly attachHost: string | null;
   readonly maxSessions: number | null;
@@ -241,6 +244,7 @@ export function detail(m: MeshEntry, current: string | null, check: Check): Spac
   return {
     kind: "space",
     ...base,
+    rootGone: stackRootGone(m.space, m.root),
     recordedAt: m.ts,
     attachHost: m.attachHost ?? null,
     maxSessions: m.maxSessions ?? null,
@@ -349,7 +353,7 @@ function spaceView(s: SpaceDetail): Report {
     ["server", s.server],
     ["mode", s.modeChecked ? s.mode : { text: `${s.mode}, not checked: added with --force`, tone: "waiting" }],
     ["origin", originText(s.origin)],
-    ["root", s.root],
+    ["root", s.rootGone ? { text: `${s.root} · folder was moved or deleted`, tone: "failed" } : s.root],
     ["recorded", s.recordedAt],
   ];
   if (s.tlsRequired) fields.push(["tls", "required"]);
@@ -365,6 +369,7 @@ function spaceView(s: SpaceDetail): Report {
     if (s.catalog.error) fields.push(["catalog error", { text: s.catalog.error, tone: "failed" }]);
   }
   const hints: Cell[] = s.current ? [] : [{ text: `select it with \`cotal use ${s.space}\``, tone: "hint" }];
+  if (s.rootGone) hints.unshift({ text: `stop the stack whose folder was moved or deleted with \`cotal down --space ${s.space} --yes\``, tone: "waiting" });
   if (!s.modeChecked) hints.push({ text: `check its mode by adding it again without --force: \`cotal space forget ${s.space}\`, then \`cotal space add ${s.space} --server ${s.server} --root ${s.root}\``, tone: "hint" });
   return { sections: [{ title: `Space · ${s.space}`, blocks: [{ kind: "fields", rows: fields }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] }] };
 }
