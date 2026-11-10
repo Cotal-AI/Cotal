@@ -214,7 +214,11 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
       l.state = "unavailable";
       return;
     }
-    if (answer.state === "ready") { l.state = l.brokerUp && l.endpoint && l.flush === flush && l.serving.size > 0 ? "connected" : "connecting"; return; }
+    if (answer.state === "ready") {
+      if (l.brokerUp && l.endpoint && l.flush === flush && l.serving.size > 0) l.state = "connected";
+      else if (l.state !== "unavailable") l.state = "connecting";
+      return;
+    }
     if (answer.state === "denied" && answer.reason === "rate-limited") { l.state = "unavailable"; return; }
     l.state = "ended";
     l.reason = answer.state === "denied" && ENDED.has(answer.reason) ? answer.reason : "unrecognized";
@@ -254,7 +258,9 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     if (current?.endpoint && current.state === "connected") return result(space);
     if (current) await teardown(current);
     const l: Live = current ?? { state: "connecting", brokerUp: false, serving: new Set() };
-    l.state = "connecting"; l.reason = undefined;
+    // Keep the last dependency failure visible while retrying it, until a new outcome is known.
+    if (l.state !== "unavailable") l.state = "connecting";
+    l.reason = undefined;
     live.set(space, l);
 
     if (!existsSync(daemonRegisterFile(space, home))) { l.state = "not-requested"; return result(space); }
@@ -321,7 +327,11 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     l.brokerUp = true;
     await readyOnce(l, space, witness, store, dir);
     const after = stateOf(l);
-    if (after !== "connected" && after !== "ended") { await teardown(l); }
+    if (after !== "connected" && after !== "ended") {
+      // There is no surviving endpoint to reconnect a broker lost during startup's ready call.
+      if (after === "connecting") l.state = "unavailable";
+      await teardown(l);
+    }
     return result(space);
   }
 

@@ -22,8 +22,9 @@
  *      same machine home reaches `connected` with nothing run against it, reports exactly 1 resumed
  *      connection, and reuses the same persisted activate and renew ids. After an explicit
  *      disconnect a restart resumes nothing;
- *  C6b shipped startup with authority or broker unavailable retries recorded intent, serves after
- *      recovery without a connect command, and cancels pending retries on disconnect and shutdown;
+ *  C6b shipped startup with authority or broker unavailable retries recorded intent, keeps the
+ *      dependency refusal visible during a held retry, retries broker loss during ready, serves
+ *      after recovery, and cancels pending retries on disconnect and shutdown;
  *  C7  outage: with the authority door unreachable, a fresh connect is not `connected`; once the
  *      door is back it is `connected` again;
  *  C7b a changed authority account stays account-mismatch in the socket, CLI and offline status,
@@ -113,6 +114,7 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--hosting-only") && !title.startsWith("H1")) return;
   if (process.argv.includes("--account-mismatch-only") && !/^(C1 |C2 |C7b |C10 )/.test(title)) return;
   if (process.argv.includes("--service-only") && title.startsWith("H1")) return;
+  if (process.argv.includes("--resume-only") && !/^(C1 |C2 |C15 |C6b )/.test(title)) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
 }
@@ -209,10 +211,13 @@ const hits: Array<{ space: string; method: string; path: string }> = [];
 const relayDown = new Set<string>();
 const changedAccount = new Map<string, string>();
 const droppedRequests = new Map<string, number>();
+const authorityGates = new Map<string, () => Promise<void>>();
+const readyGates = new Map<string, () => Promise<void>>();
 const withoutIssuer = new Set<string>();
 async function relay(space: string, target: string): Promise<string> {
   const s = createHttpServer(async (req, res) => {
     if (relayDown.has(space)) { droppedRequests.set(space, (droppedRequests.get(space) ?? 0) + 1); req.socket.destroy(); return; }
+    if (req.method === "GET" && req.url === "/service-endpoint-authority") await authorityGates.get(space)?.();
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     hits.push({ space, method: req.method ?? "", path: new URL(req.url!, "http://x").pathname });
@@ -227,6 +232,7 @@ async function relay(space: string, target: string): Promise<string> {
       info.accountPublicKey = changedAccount.get(space);
       body = Buffer.from(JSON.stringify(info));
     }
+    if (req.method === "POST" && req.url === "/service-endpoint-authority" && JSON.parse(Buffer.concat(chunks).toString()).request?.operation === "ready") await readyGates.get(space)?.();
     if (withoutIssuer.has(space) && req.method === "GET" && req.url === "/service-endpoint-authority" && up.ok) {
       const info = JSON.parse(body.toString()) as Record<string, unknown>;
       delete info.issuer; delete info.keys;
@@ -578,6 +584,43 @@ try {
         return { code, doc: JSON.parse(out) as Record<string, any> };
       };
       try {
+        // Pause a real retry request so a status sample cannot miss its in-flight state.
+        relayDown.add(ON);
+        await start();
+        check("C6b slow retry instrument: startup is unavailable", (await waitState(ON, (s) => s === "unavailable", 15_000)) === "unavailable");
+        let entered!: () => void, release!: () => void;
+        const requested = new Promise<void>((resolve) => { entered = resolve; });
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        authorityGates.set(ON, async () => { entered(); await held; });
+        relayDown.delete(ON);
+        try {
+          await Promise.race([requested, sleep(15_000).then(() => { throw new Error("C6b retry did not reach authority gate"); })]);
+          const status = await cli("service-status");
+          check("C6b in-flight background retry preserves dependency refusal", status.code === 2 && status.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && status.doc.error?.cause?.code === "UNAVAILABLE", status);
+        } finally { authorityGates.delete(ON); release(); }
+        check("C6b released retry connects and serves", (await waitState(ON, (s) => s === "connected", 15_000)) === "connected" && (await probeMachine()).reply.ok);
+        await stop("SIGKILL");
+
+        // Let the authority accept ready, but drop the broker before delivering that answer.
+        recordMesh({ ...original, server: brokerPathUrl });
+        let readyEntered!: () => void, releaseReady!: () => void;
+        const readyRequested = new Promise<void>((resolve) => { readyEntered = resolve; });
+        const readyHeld = new Promise<void>((resolve) => { releaseReady = resolve; });
+        readyGates.set(ON, async () => { readyEntered(); await readyHeld; });
+        try {
+          await start();
+          await Promise.race([readyRequested, sleep(15_000).then(() => { throw new Error("C6b startup did not reach ready gate"); })]);
+          cutBrokerPath();
+          await sleep(500);
+          readyGates.delete(ON); releaseReady();
+          const state = await waitState(ON, (s) => s === "unavailable", 15_000);
+          check("C6b broker lost during ready leaves retryable unavailable state", state === "unavailable", state);
+          brokerPathUp = true;
+          check("C6b broker lost during ready recovers and serves without service-connect", (await waitState(ON, (s) => s === "connected", 15_000)) === "connected" && (await probeMachine()).reply.ok);
+        } finally { readyGates.delete(ON); releaseReady(); brokerPathUp = true; }
+        await stop("SIGKILL");
+        recordMesh(original);
+
         for (const dependency of ["authority", "broker"]) {
           if (dependency === "authority") relayDown.add(ON);
           else { recordMesh({ ...original, server: brokerPathUrl }); cutBrokerPath(); }
@@ -623,6 +666,7 @@ try {
           } else check("C6b shutdown closes its socket but retains intent", !existsSync(paths.socket) && existsSync(intentFile(ON)));
         }
       } finally {
+        authorityGates.delete(ON); readyGates.delete(ON);
         relayDown.delete(ON); brokerPathUp = true; recordMesh(original);
         await stop("SIGTERM");
         d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
