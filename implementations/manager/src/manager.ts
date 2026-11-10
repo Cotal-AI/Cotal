@@ -517,7 +517,8 @@ function ownPersona(record: InlinePersona): InlinePersona {
 
 export interface ManagerOptions {
   space: string;
-  /** Pin first-party connector launches to the embedding process's captured generation. */
+  /** Assert the embedding generation matches this Manager. Installed first-party connectors
+   *  always use the Manager's captured generation, even when this assertion is omitted. */
   expectedConnectorGeneration?: string;
   /** Hosted pooled control requires signerless authority and either an explicit non-custodial
    * runtime or explicit execution: none. It never borrows local signing authority. */
@@ -1646,7 +1647,7 @@ export class Manager {
   private secretStoreIdentity?: SecretStoreIdentity;
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
-  private readonly expectedConnectorGeneration?: string;
+  private readonly expectedConnectorGeneration: string;
   private readonly executionState: { kind: "none" } | { kind: "runtime" };
   // Declared only: no own Runtime slot exists in the none arm.
   declare private readonly runtime: Runtime;
@@ -2036,7 +2037,7 @@ export class Manager {
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
     if (opts.secretStore) this.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
     this.installedExtensions = opts.installedExtensions ?? false;
-    this.expectedConnectorGeneration = opts.expectedConnectorGeneration;
+    this.expectedConnectorGeneration = MANAGER_VERSION;
     this.pooled = opts.pooled === true;
     this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
     if (!this.remoteAuthority) {
@@ -6553,13 +6554,12 @@ export class Manager {
    *  on MANIFEST membership FIRST — so a live `cotal ext remove` is honored even though the registry
    *  still holds a connector imported earlier this session — then returns the registry hit or lazily
    *  imports the providing package (transactional + single-flight, via the workspace primitive).
-   *  An expected generation also revalidates cached first-party providers under that lock.
+   *  The captured Manager generation is checked for first-party providers under that lock,
+   *  including providers already present in the registry.
    *  Fail-loud with an install hint; no fallback. */
   private async resolveConnector(name: string): Promise<Connector> {
     if (!this.installedExtensions) return registry.resolve<Connector>("connector", name);
     if (!manifestExtensionNames("connector").includes(name)) throw new Error(connectorInstallHint(name));
-    const already = registry.all<Connector>("connector").find((c) => c.name === name);
-    if (this.expectedConnectorGeneration === undefined && already) return already;
     return materializeFromManifest<Connector>({ kind: "connector", name }, { hint: (ref) => connectorInstallHint(ref.name), expectedGeneration: this.expectedConnectorGeneration });
   }
 
