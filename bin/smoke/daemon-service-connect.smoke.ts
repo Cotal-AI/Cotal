@@ -589,6 +589,25 @@ try {
       check("C17 the connection it made is recorded for resume", existsSync(intentFile(ON)));
       check("C17 the space reads this instance ready", stateOf(await statusS(ON)) === "connected");
       check("C17 nothing secret reached its progress lines", !lines.some((l) => [SESSION, ...jwtsIssued].some((t) => l.includes(t))) && !lines.some((l) => /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(l)));
+      const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_STATE_HOME: join(root, "state"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+      const cli = async (args: string[]) => {
+        const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        child.stdout.on("data", (b) => { out += String(b); });
+        child.stderr.on("data", (b) => { err += String(b); });
+        const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+        try { return { code: await new Promise<number | null>((resolve) => child.once("exit", resolve)), out, err }; }
+        finally { clearTimeout(timer); }
+      };
+      const setup = await cli(["daemon", "setup", "--no-manager", "--space", ON, "--wait", "0", "--plain"]);
+      check("C17 shipped setup prints both follow-up commands with its space", setup.code === 0 && setup.out.includes(`cotal daemon service-status --space ${ON}`) && setup.out.includes(`cotal daemon service-disconnect --space ${ON}`), setup);
+      const suggested = [...setup.out.matchAll(/`(cotal daemon service-(?:status|disconnect) [^`]+)`/g)].map((match) => match[1]!);
+      check("C17 setup offers two copyable follow-up commands", suggested.length === 2, suggested);
+      for (const command of suggested) {
+        const result = await cli(command.split(" ").slice(1));
+        check(`C17 suggested ${command.includes("service-status") ? "status" : "disconnect"} command succeeds verbatim`, result.code === 0 && new RegExp(`Machine service:\\s+${command.includes("service-status") ? "connected" : "disconnected"}(?:\\n|$)`).test(result.out), result);
+      }
+      check("C17 restore connection after the suggested disconnect", stateOf(await connectS(ON)) === "connected");
     });
 
     await cell("BASELINE shipped setup connects but provides no Manager to call", async () => {

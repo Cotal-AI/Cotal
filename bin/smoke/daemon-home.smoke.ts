@@ -216,6 +216,22 @@ try {
     check("G0 the remedy names help, not a live status read", missing.err.includes("cotal help daemon") && !missing.err.split("\n")[1]!.includes("cotal daemon status"), missing.err.slice(0, 400));
     const help = await cli(["--help"]);
     check("G0 scoped help succeeds before any daemon starts", help.status === 0 && help.out.includes("desktop"), { status: help.status });
+    for (const mode of ["setup", "connect-check", "register", "service-connect", "service-disconnect", "service-status"]) {
+      const scoped = await cli([mode, "--help"]);
+      check(`G0 ${mode} help requires an explicit space without promising a resolved default`, scoped.status === 0 && scoped.out.includes(`cotal daemon ${mode} --space <s>`) && scoped.out.includes("target space (required") && !scoped.out.includes("the resolved mesh"), scoped.out);
+      const missingSpace = await cli([mode, "--json"]);
+      check(`G0 ${mode} still refuses an omitted space`, missingSpace.status === 1 && missingSpace.doc.error?.code === "USAGE_INVALID" && missingSpace.doc.error.message?.includes("needs --space <s>") === true, missingSpace.doc);
+    }
+    const setupHelp = await cli(["setup", "--help"]);
+    check("G0 setup provider options do not claim to be login-only", !setupHelp.out.includes("login:") && setupHelp.out.includes("--idp <auth base URL>") && setupHelp.out.includes("--client-id <id>"), setupHelp.out);
+    const loginHelp = await cli(["login", "--help"]);
+    check("G0 login usage requires a provider", loginHelp.status === 0 && loginHelp.out.includes("cotal daemon login --idp <auth base URL>"), loginHelp.out);
+    const statusHelp = await cli(["status", "--help"]);
+    check("G0 local status keeps its optional space selector", statusHelp.status === 0 && statusHelp.out.includes("cotal daemon status [--space <s>]"), statusHelp.out);
+    for (const mode of ["spaces", "start", "desktop"]) {
+      const scoped = await cli([mode, "--help"]);
+      check(`G0 ${mode} has scoped usage and examples`, scoped.status === 0 && scoped.out.includes(`cotal daemon ${mode} [`) && scoped.out.includes("Examples"), scoped.out);
+    }
     check("G0 discovery creates no runtime entries or lifetime lock", runtimeEntries().length === 0 && !existsSync(lockFile(home)) && !existsSync(lockFile(managed)));
   });
 
