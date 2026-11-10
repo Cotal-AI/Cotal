@@ -790,7 +790,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const recordedMembers = current ? withSettledMembers(current.journal, undefined).members : [];
   const members: StackMember[] = STACK_ROLES.map((role) => {
     const recorded = recordedMembers.find((row) => row.role === role);
-    return { role, definition: STACK_DEFINITION[role], instanceId: recorded?.instanceId ?? null, process: recorded?.process, state: roles.includes(role) ? "planned" : "not-attempted" };
+    return { role, definition: STACK_DEFINITION[role], instanceId: recorded?.instanceId ?? null, process: roles.includes(role) ? undefined : recorded?.process, state: roles.includes(role) ? "planned" : "not-attempted" };
   });
   let journal: StackJournal = { schemaVersion: 1, kind: "cotal-stack-controller", root, space, server, mode, recovery: { home: resolve(homeCotalDir()), host: stackRecoveryHost() }, ...(recordedBroker ? { broker: recordedBroker } : {}), members, operation: newStackOperation("up"), updatedAt: new Date().toISOString() };
   // The whole scoped plan is durable before the first effect. A crash after this reads as unsettled

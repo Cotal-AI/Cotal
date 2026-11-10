@@ -230,6 +230,8 @@ remain. After recovery, run `cotal space create <space>` in the project, then `c
 If the journal already records a completed stop and every pinned member is gone, repeated `down`
 returns a no-op without confirmation, signals or journal writes. Retiring a stopped instance also
 retires its process pin; `up --no-manager` preserves the pin of an earlier stopped manager.
+A planned member gains its new pin only after readiness succeeds. If that start is interrupted,
+missing-record recovery refuses rather than treating the earlier process's exit as the new one's.
 
 ### Already-stopped stacks
 
