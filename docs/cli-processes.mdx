@@ -745,6 +745,13 @@ command prints only the approval link, code and expiry to stderr, then the signe
 session token crosses the endpoint or reaches the terminal. `--idp` takes an HTTPS auth URL, or an
 HTTP loopback IP URL; `--client-id` defaults to `cotal-cli`.
 
+Signing in as a different account at the same provider removes the previous account's catalog
+cache from the selected daemon home. The default daemon also removes that account's discovered
+space registrations, clearing a selection that named a removed space. Manual registrations and
+credential files stay. This cleanup does not revoke credentials or stop existing connections.
+A separate `--daemon-home` never changes the shared registry or its credentials. Signing in as the
+same account or failing before a replacement session is saved does not remove registrations.
+
 One sign-in runs at a time: a second `login` refuses `CONFLICT` (`LOGIN_IN_PROGRESS`) without
 contacting the provider. Ctrl-C, or the command's connection closing, requests cancellation on this
 machine. If cancellation takes effect before persistence, nothing is saved, even if device approval
