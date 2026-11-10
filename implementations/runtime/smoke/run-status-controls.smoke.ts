@@ -18,7 +18,12 @@ const store = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}status-controls-`
 const broker = spawn("nats-server", ["-js", "-sd", store, "-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(broker, store);
 const servers = `nats://127.0.0.1:${port}`;
-await withDeadline((async () => { while (!(await isReachable(servers))) await wait(50); })(), 10_000, "broker startup");
+const startupDeadline = Date.now() + 10_000;
+while (!(await isReachable(servers))) {
+  assert.equal(broker.exitCode, null, "owned broker must survive startup");
+  assert.ok(Date.now() < startupDeadline, "broker startup timed out");
+  await wait(50);
+}
 const nc = await connect({ servers });
 const jsm = await jetstreamManager(nc);
 const js = jetstream(nc);

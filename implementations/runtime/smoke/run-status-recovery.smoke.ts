@@ -13,6 +13,13 @@ import { freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, withD
 import { startRun } from "../src/run-driver.js";
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+async function until(ready: () => boolean | Promise<boolean>, ms: number, what: string): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!(await ready())) {
+    assert.ok(Date.now() < deadline, `${what} timed out`);
+    await wait(50);
+  }
+}
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const store = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}run-status-recovery-`));
@@ -23,12 +30,10 @@ let releaseBroker: (() => void) | undefined;
 async function boot(): Promise<void> {
   broker = spawn("nats-server", ["-js", "-sd", store, "-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" });
   releaseBroker = teardownOnSignal(broker, store);
-  await withDeadline((async () => {
-    while (!(await isReachable(servers))) {
-      if (broker.exitCode !== null) throw new Error("owned broker exited during startup");
-      await wait(50);
-    }
-  })(), 10_000, "owned broker startup");
+  await until(async () => {
+    assert.equal(broker.exitCode, null, "owned broker must survive startup");
+    return await isReachable(servers);
+  }, 10_000, "owned broker startup");
 }
 await boot();
 const nc = await connect({ servers, maxReconnectAttempts: -1, reconnectTimeWait: 100, pingInterval: 500, maxPingOut: 1 });
@@ -55,21 +60,18 @@ try {
     statusConnection: nc,
   };
   const driven = startRun(js, jsm, request);
-  await withDeadline((async () => {
-    while (!errors.some((line) => line.includes('"released" status write did not land'))) await wait(50);
-  })(), 30_000, "released status failure during outage");
+  await until(() => errors.some((line) => line.includes('"released" status write did not land')),
+    30_000, "released status failure during outage");
   assert.equal(effects, 1, "the released run performs no later effect");
   await boot();
   const out = await withDeadline(driven, 15_000, "run status reconciliation after broker returns");
   assert.ok(out);
   assert.equal(out.status, "released");
   await nc.reconnect();
-  await withDeadline((async () => {
-    for (;;) {
-      try { await nc.flush(); return; }
-      catch { await wait(100); }
-    }
-  })(), 10_000, "driver reconnect after broker restart");
+  await until(async () => {
+    try { await nc.flush(); return true; }
+    catch { return false; }
+  }, 10_000, "driver reconnect after broker restart");
   const record = await readRunRecord(kv, endpoint, "outage");
   assert.equal(record?.status?.value.state, "released", "released status must land after the broker returns");
   assert.equal(record?.status?.value.epoch, 1, "status reconciliation must not activate a new attempt");
