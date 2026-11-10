@@ -189,6 +189,17 @@ test("Ready removes a space and adds another only after confirmation", async () 
   } finally { a.dom.window.close(); }
 });
 
+test("connected and pending spaces retain the connected view and waiting row", async () => {
+  const a = await app({ installed: true, connected: true, count: 2, serviceState: "approval-pending" });
+  try {
+    assert.equal(a.node("connection-title").textContent, "This computer is connected");
+    assert.equal(a.node("connection-icon").dataset.icon, "check");
+    assert.equal(a.node("dashboard").hidden, false);
+    assert.equal(a.doc.querySelectorAll('[data-testid="connected-space-row"]').length, 2);
+    assert.match(a.node("connected-spaces").textContent!, /Other team.*Waiting for owner approval/);
+  } finally { a.dom.window.close(); }
+});
+
 test("loading stays neutral until the native service answers", async () => {
   const a = await app({ loading: true });
   try { assert.ok(a.doc.querySelector(".app.loading")); assert.equal(a.node("tray-label").textContent, "Checking connection"); assert.equal(a.calls.length, 1); }
@@ -281,6 +292,11 @@ test("empty catalog, pending approval, offline and version mismatch expose recov
     try {
       if (options.count === 0) { await a.click("login"); await a.login(); }
       if (options.serviceState === "approval-pending") {
+        assert.equal(a.node("connection-title").textContent, "Waiting for owner approval");
+        assert.equal(a.node("connection-icon").dataset.icon, "clock");
+        assert.equal(a.node("connection-icon").dataset.tone, "waiting");
+        assert.equal(a.node("applications-label").hidden, true);
+        assert.equal(a.node("dashboard").hidden, true);
         assert.equal(a.node("recovery-panel").hidden, true);
         assert.match(a.node("connected-spaces").textContent!, /Waiting for owner approval/);
         assert.equal(a.doc.querySelector(".connection-card")!.classList.contains("has-refusal"), false);

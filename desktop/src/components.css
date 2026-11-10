@@ -7,10 +7,10 @@
 #applications-label { margin: 0 0 4px; font-size: 12px; }
 .application-chips { margin-bottom: 8px; }
 #connected-spaces { list-style: none; padding: 0; margin: 8px 0 16px; }
-#connected-spaces li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 2px solid var(--rule); }
-#connected-spaces li > span { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+#connected-spaces li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 2px solid var(--rule); }
+#connected-spaces li > span { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
 #connected-spaces strong { overflow-wrap: anywhere; }
-#connected-spaces [data-testid=approval-pending] { flex-basis: 100%; color: var(--gold-ink); }
+#connected-spaces [data-testid=approval-pending] { color: var(--gold-ink); }
 #selected-space { display: block; border: 0; padding: 0; font: inherit; background: transparent; }
 #connected-space { display: none; }
 .brand-mark { width: 33px; height: 33px; border-radius: 0; }

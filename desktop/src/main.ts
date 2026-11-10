@@ -154,6 +154,8 @@ function showStage(next: Stage, focus = false): void {
   const previousHeight = document.querySelector(".connection-card")!.getBoundingClientRect().height;
   stage = next;
   const finished = next === "finished";
+  const anyConnected = [...connections.values()].includes("launch-ready");
+  const pending = !anyConnected && [...connections].find(([, value]) => value === "approval-pending");
   const signIn = next === "welcome" || next === "sign-in";
   el("sign-in-panel").hidden = !signIn;
   el("space-panel").hidden = !((next === "connect" || finished && addingSpace) && choosingSpace) || setupActive;
@@ -174,7 +176,8 @@ function showStage(next: Stage, focus = false): void {
   let title: string, description: string;
   if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
-  else if (finished) { title = [...connections.values()].includes("launch-ready") ? connectionView("launch-ready").title : "Spaces using this computer"; description = connectionView("launch-ready").description; }
+  else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${accountSpaces.get(pending[0])?.label ?? pending[0]} needs to approve this computer. It connects by itself once they do.`; }
+  else if (finished) { title = anyConnected ? connectionView("launch-ready").title : "Spaces using this computer"; description = connectionView("launch-ready").description; }
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
@@ -207,9 +210,10 @@ function showStage(next: Stage, focus = false): void {
     if (addingSpace) formParent.append(el("space-panel"), el("connect-panel"));
     else el("setup-progress").before(el("space-panel"), el("connect-panel"));
   }
-  el("applications-label").hidden = addingSpace;
-  el("connected-applications").hidden = addingSpace;
-  el("dashboard").hidden = addingSpace;
+  el("applications-label").hidden = addingSpace || !anyConnected || !el("connected-applications").children.length;
+  el("connected-applications").hidden = addingSpace || !anyConnected;
+  el("dashboard").hidden = addingSpace || !anyConnected;
+  if (finished && pending) { el("connection-icon").dataset.tone = "waiting"; setIcon(el("connection-icon"), "clock"); }
   el("another-space").hidden = addingSpace;
   el("sign-in-again").hidden = addingSpace;
   el("retry-login").hidden = addingSpace;

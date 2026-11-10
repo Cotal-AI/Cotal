@@ -85,7 +85,15 @@ export const scenarios = [
   { name: "declined", state: { loginError: "DENIED" }, act: page => page.click("#login") },
   { name: "offline", state: { installed: true, signedIn: true, offline: true } },
   { name: "no-spaces", state: { empty: true }, act: signIn },
+  { name: "connected-and-pending", state: { installed: true, signedIn: true, connected: true, multiple: true, serviceState: "approval-pending" }, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected");
+    assert.equal(await page.locator('[data-testid="connected-space-row"]').count(), 2);
+  } },
   { name: "approval-pending", state: { installed: true, signedIn: true, serviceState: "approval-pending" }, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "Waiting for owner approval");
+    assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "clock");
+    assert.equal(await page.locator("#dashboard").isVisible(), false);
+    assert.equal(await page.locator("#applications-label").isVisible(), false);
     assert.match(await page.locator("#connected-spaces").textContent(), /Waiting for owner approval/);
     assert.equal(await page.locator(".connection-card.has-refusal").count(), 0);
   } },
