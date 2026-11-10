@@ -31,10 +31,19 @@ export async function reconcileInstalledGeneration(): Promise<void> {
   });
 }
 
-export function watchDaemonGeneration(version: string, changed: (version: string) => Promise<void>, report: (line: string) => void): () => void {
+/** Poll cheap package metadata. Expensive validation and activation attempts back off on failure. */
+export function watchDaemonGeneration(version: string, changed: (version: string) => Promise<void>, report: (line: string) => void, pending: (version: string | undefined, reason?: string) => void = () => {}, activate = true): () => void {
   const file = packageFile();
-  let busy = false, closed = false;
-  let candidate: string | undefined;
+  let busy = false, closed = false, candidate: string | undefined;
+  let retryAt = 0, delay = 5000, lastReport = "";
+  const announce = (line: string) => { if (line !== lastReport) { lastReport = line; report(line); } };
+  const failed = (next: string, reason: string) => {
+    pending(next, reason);
+    announce(`daemon: installed CLI ${next} activation pending: ${reason}; current generation remains loaded and will retry automatically`);
+    retryAt = Date.now() + delay;
+    delay = Math.min(300_000, delay * 2);
+    busy = false;
+  };
   const timer = setInterval(() => {
     if (busy || closed) return;
     let next: string;
@@ -42,20 +51,28 @@ export function watchDaemonGeneration(version: string, changed: (version: string
       const pkg = JSON.parse(readFileSync(file, "utf8"));
       if (pkg.name !== "cotal-ai" || typeof pkg.version !== "string") return;
       next = pkg.version;
-    } catch { return; } // npm may be replacing this owned path, never read a partial generation.
-    if (next === version) { candidate = undefined; return; }
-    if (candidate !== next) { candidate = next; report(`daemon: installed CLI generation changed to ${next}; verifying its entry`); return; }
+    } catch { return; }
+    if (next === version) { candidate = undefined; retryAt = 0; delay = 5000; pending(undefined); return; }
+    if (candidate !== next) {
+      candidate = next; retryAt = 0; delay = 5000;
+      const reason = activate ? "verifying the installed entry" : "foreground daemon remains running; restart it from the installed CLI to activate";
+      pending(next, reason);
+      announce(`daemon: installed CLI generation changed to ${next}; ${reason}`);
+      return;
+    }
+    if (!activate || Date.now() < retryAt) return;
     busy = true;
     const child = spawn(process.execPath, [join(dirname(file), "dist", "cotal.js"), "--version"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    let output = "";
+    let output = "", settled = false;
     child.stdout.on("data", (chunk) => { if (output.length < 1024) output += String(chunk); });
     child.stderr.resume();
     const timeout = setTimeout(() => child.kill("SIGKILL"), 5000);
-    child.once("error", () => { clearTimeout(timeout); busy = false; });
+    child.once("error", () => { clearTimeout(timeout); settled = true; if (!closed) failed(next, "the installed entry could not start"); });
     child.once("close", (code) => {
       clearTimeout(timeout);
-      if (closed || code !== 0 || output.split(/\r?\n/, 1)[0] !== `cotal-ai ${next}`) { if (!closed) report(`daemon: installed CLI ${next} verification did not confirm its version (exit ${code})`); busy = false; return; }
-      void changed(next).catch((error: unknown) => { report(`daemon: installed CLI ${next} activation pending: ${error instanceof Error ? error.message : "the replacement could not be activated"}; current generation remains loaded and will retry automatically`); busy = false; });
+      if (settled || closed) return;
+      if (code !== 0 || output.split(/\r?\n/, 1)[0] !== `cotal-ai ${next}`) { failed(next, `entry verification did not confirm its version (exit ${code})`); return; }
+      void changed(next).catch((error: unknown) => { if (!closed) failed(next, error instanceof Error ? error.message : "the replacement could not be activated"); });
     });
   }, 1000);
   timer.unref();

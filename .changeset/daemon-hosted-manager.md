@@ -22,3 +22,5 @@ Corrupt hosting records refuse only their space and setup repairs them after rea
 Periodic pinned probes withdraw stale readiness and restart live children only under an empty-seat
 preservation fence. Stopped status retains the Manager identity and observation, and daemon sign-in
 refusals consistently name the daemon login command.
+Pending upgrades count seats without fencing admission, back off activation attempts, and show the
+installed version and waiting cause in status. Foreground daemons stay running after replacement.

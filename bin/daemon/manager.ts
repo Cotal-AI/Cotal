@@ -46,19 +46,23 @@ export function createHostedManagers(home = homeCotalDir()) {
   let generationPrepared = false;
   let generationTask: Promise<void> | undefined;
   const generationAttempts = new Map<ChildProcess, string>();
-  const generationCall = (child: ChildProcess, attemptId: string, op: "prepare" | "abort") => new Promise<void>((resolve, reject) => {
-    if (child.exitCode !== null || child.signalCode !== null) { resolve(); return; }
+  const generationCall = (child: ChildProcess, attemptId: string, op: "inspect" | "prepare" | "abort") => new Promise<number | undefined>((resolve, reject) => {
+    if (child.exitCode !== null || child.signalCode !== null) { resolve(undefined); return; }
     const finish = (error?: Error) => {
       clearTimeout(timer);
       child.off("message", receive);
-      error ? reject(error) : resolve();
+      error ? reject(error) : resolve(seats);
     };
     const receive = (raw: unknown) => {
-      const frame = raw as { kind?: unknown; attemptId?: unknown; op?: unknown; ok?: unknown } | null;
-      if (frame?.kind === "machine-generation-result" && frame.attemptId === attemptId && frame.op === op)
+      const frame = raw as { kind?: unknown; attemptId?: unknown; op?: unknown; ok?: unknown; seats?: unknown } | null;
+      if (frame?.kind === "machine-generation-result" && frame.attemptId === attemptId && frame.op === op) {
+        if (op === "inspect" && (!Number.isSafeInteger(frame.seats) || Number(frame.seats) < 0)) { finish(new Error("hosted Manager did not confirm its seat count")); return; }
+        seats = op === "inspect" ? Number(frame.seats) : undefined;
         finish(frame.ok === true ? undefined : new Error("hosted Manager still holds seats or cannot confirm an idle preservation fence"));
+      }
     };
-    const timer = setTimeout(() => finish(new Error("hosted Manager did not confirm the generation fence; retrying without stopping it")), 10_000);
+    let seats: number | undefined;
+    const timer = setTimeout(() => finish(new Error("hosted Manager did not confirm the generation request; retrying without stopping it")), 10_000);
     child.on("message", receive);
     child.send({ kind: "machine-generation", attemptId, op }, (error) => { if (error) finish(new Error("hosted Manager parent channel is unavailable")); });
   });
@@ -340,6 +344,14 @@ export function createHostedManagers(home = homeCotalDir()) {
   };
   return {
     start, status,
+    async generationSeats(): Promise<{ space: string; seats: number }[]> {
+      return Promise.all([...live.values()].filter((l) => l.child).map(async (l) => {
+        const child = l.child!;
+        const seats = await generationCall(child, randomUUID(), "inspect");
+        if (seats === undefined || l.child !== child) throw new Error(`hosted Manager for ${l.view.space} changed during seat observation`);
+        return { space: l.view.space, seats };
+      }));
+    },
     prepareGenerationRestart(): Promise<void> {
       if (generationTask) return generationTask.then(() => { if (!generationPrepared) throw new Error("generation preparation was rolled back; retry the transition"); });
       if (generationPrepared) return Promise.resolve();

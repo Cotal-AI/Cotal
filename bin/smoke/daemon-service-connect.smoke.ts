@@ -750,7 +750,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       };
       const startDaemon = async (managedHome?: string) => {
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
-        const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] });
         child.stdout.resume(); child.stderr.on("data", (chunk) => { if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) console.log("  owned daemon", String(chunk).trim()); });
         for (let i = 0; i < 100; i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
         await killAndAwaitExit(child, "SIGTERM");
@@ -1009,10 +1009,17 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             const held = await cli("status", "--space", ON);
             const status = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "managerStatus", undefined, activeTarget.auth, "owner", 3000, { instanceId: manager.instanceId });
             check("U1 installed replacement waits without killing active legacy custody", held.doc.result?.version === "0.151.2" && status.ok && (status.data as { agentCount?: number }).agentCount === 1, { held, status });
+            if (process.argv.includes("--watcher-seat-repro")) {
+              const waiting = held.doc.result?.generation;
+              check("R2-1 occupied replacement is visible in daemon status", waiting?.installed === "0.151.3" && waiting?.waiting?.includes("1 seat(s)") && waiting?.waiting?.includes(ON), held);
+              const admitted = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "start", { name: "watcher_admission", agent: "daemon-smoke", events: false, persona: { prompt: "Owned admission during pending version.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, activeTarget.auth, "owner", 40_000, { instanceId: manager.instanceId });
+              check("R2-1 waiting version does not block a new seat", admitted.ok, admitted);
+              await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "stop", { name: "watcher_admission" }, activeTarget.auth, "owner", 10_000, { instanceId: manager.instanceId });
+            }
             await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "stop", { name: "npm_upgrade_custody" }, activeTarget.auth, "owner", 10_000, { instanceId: manager.instanceId });
           }
           let after: Awaited<ReturnType<typeof cli>> | undefined;
-          for (let i = 0; i < 80; i++) {
+          for (let i = 0; i < 160; i++) {
             try { after = await cli("status", "--space", ON); if (after.doc.result?.version === "0.151.3" && after.doc.result?.managers?.[0]?.state === "answering") break; } catch { /* recorded restart is between generations */ }
             await sleep(250);
           }

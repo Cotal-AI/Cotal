@@ -61,6 +61,8 @@ export interface RunningDaemon {
   /** Whether the socket directory was created by this start; `none` for a Windows pipe. */
   readonly dirOutcome: "created" | "existing" | "none";
   status(): DaemonStatus;
+  generationSeats(): Promise<{ space: string; seats: number }[]>;
+  generationPending(installed: string | undefined, waiting?: string): void;
   prepareGenerationRestart(): Promise<void>;
   abortGenerationRestart(): Promise<void>;
   close(): Promise<void>;
@@ -136,6 +138,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const services = createServiceConnections(machineHome);
   const managers = createHostedManagers(machineHome);
   const startedAt = new Date();
+  let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
     state: "ready",
     protocol: DAEMON_PROTOCOL_VERSION,
@@ -144,6 +147,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     startedAt: startedAt.toISOString(),
     uptimeMs: Date.now() - startedAt.getTime(),
     managers: managers.all(),
+    ...(generation ? { generation } : {}),
   });
 
   const sockets = new Set<Socket>();
@@ -367,7 +371,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     return closed;
   };
 
-  return { paths, counters, dirOutcome, status, close, async prepareGenerationRestart() { await managersResumed; await managers.prepareGenerationRestart(); }, abortGenerationRestart: () => managers.abortGenerationRestart() };
+  return { paths, counters, dirOutcome, status, close,
+    generationSeats: () => managers.generationSeats(),
+    generationPending(installed, waiting = "preparing activation") { generation = installed ? { installed, running: opts.version, waiting } : undefined; },
+    async prepareGenerationRestart() { await managersResumed; await managers.prepareGenerationRestart(); }, abortGenerationRestart: () => managers.abortGenerationRestart() };
 }
 
 /** Linux and macOS: publish the unix socket, and on close remove it only if it is still ours. */

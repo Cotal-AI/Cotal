@@ -118,7 +118,7 @@ function asFailure(e: unknown): unknown {
 }
 
 function statusView(s: DaemonStatus): Report {
-  return { sections: [{ title: "Daemon", blocks: [{ kind: "fields", rows: [["State", s.state], ["Version", s.version], ["Protocol", String(s.protocol)], ["PID", String(s.pid)], ["Started", s.startedAt], ["Uptime", `${Math.round(s.uptimeMs / 1000)}s`]] }] },
+  return { sections: [{ title: "Daemon", blocks: [{ kind: "fields", rows: [["State", s.state], ["Version", s.version], ["Protocol", String(s.protocol)], ["PID", String(s.pid)], ["Started", s.startedAt], ["Uptime", `${Math.round(s.uptimeMs / 1000)}s`]] }, ...(s.generation ? [{ kind: "lines" as const, lines: [`Installed ${s.generation.installed}, running ${s.generation.running}, ${s.generation.waiting}`] }] : [])] },
     ...(s.managers ?? []).map((manager) => ({ title: `Manager: ${manager.space}`, blocks: [{ kind: "fields" as const, rows: [["Last observed state", manager.state], ["Observed at", manager.observedAt ?? "not yet probed"], ["Instance", manager.instanceId ?? "not registered"], ["PID", String(manager.pid ?? "none")], ["Restarts", String(manager.restarts)], ...(manager.lastStop ? [["Last stop", manager.lastStop]] : []), ...(manager.lastExit ? [["Last exit", manager.lastExit]] : []), ...(manager.logError ? [["Log error", manager.logError]] : []), ...(manager.lastRefusal || manager.reason ? [["Last refusal", manager.lastRefusal ?? manager.reason!]] : []), ...(manager.next ? [["Next", manager.next]] : [])] as [string, string][] }] })),
   ] };
 }
@@ -386,7 +386,11 @@ async function serve(args: ParsedArgs): Promise<void> {
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
   await new Promise<void>((resolve, reject) => {
     const stopWatching = watchDaemonGeneration(binVersion(), async (version) => {
+      if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") throw new Error("foreground daemon remains running; restart it from the installed CLI to activate");
       planUninstall(paths);
+      const seats = await running.generationSeats();
+      const occupied = seats.filter((row) => row.seats > 0);
+      if (occupied.length) throw new Error(`waiting for ${occupied.reduce((sum, row) => sum + row.seats, 0)} seat(s) on ${occupied.map((row) => row.space).join(", ")}`);
       await running.prepareGenerationRestart();
       try { await reconcileInstalledGeneration(); }
       catch (error) { await running.abortGenerationRestart(); throw error; }
@@ -394,7 +398,7 @@ async function serve(args: ParsedArgs): Promise<void> {
       stopWatching();
       await running.close();
       resolve();
-    }, (line) => process.stderr.write(`${line}\n`));
+    }, (line) => process.stderr.write(`${line}\n`), (version, reason) => running.generationPending(version, reason), process.env.COTAL_DAEMON_NATIVE_SERVICE === "1");
     const stop = () => { stopWatching(); void running.close().then(resolve, reject); };
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);

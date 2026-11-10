@@ -622,6 +622,11 @@ before reporting launch-readiness. If the running daemon's version or protocol d
 invoking CLI, setup prepares all hosted children through the local preservation guard, restarts
 its recorded native service, and waits for the matching daemon. An occupied legacy Manager blocks
 that preparation and remains running. Stop its seats before retrying setup.
+An occupied Manager is counted without entering preservation. Activation waits with retries doubling
+from five seconds to five minutes, and status shows the installed and running versions with the
+seat count and space. Only changed waiting causes are logged. A foreground daemon reports the
+pending version and stays running. A daemon started by its recorded native service can activate
+once every Manager is empty.
 A bare npm replacement reconciles the new generation's connectors under the preservation fence
 before the daemon exits for native restart. A failed reconcile leaves activation pending with its
 cause and repair command. The serving daemon and its Manager children never run first-use seeding.

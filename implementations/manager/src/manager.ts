@@ -9312,6 +9312,9 @@ export class Manager {
     }
   }
 
+  /** Parent-local inventory read. It does not enter maintenance or change admission. */
+  hostedSeatCount(): number { return this.agents.size; }
+
   /** The served manager-level health summary. Given an owner, `agentCount` counts only that owner's
    *  seats, as `ps` lists them ({@link psOwnerFilter}), so a person reading a shared Manager does not
    *  learn how many seats other owners hold on it. */

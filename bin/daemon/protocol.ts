@@ -56,6 +56,7 @@ export type ProtocolErrorCode =
   | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE";
 
 export interface DaemonStatus {
+  readonly generation?: { readonly installed: string; readonly running: string; readonly waiting: string };
   readonly managers?: readonly HostedManager[];
   /** The local control listener is bound and verified. It does NOT mean connected to a mesh or Cloud. */
   readonly state: "ready";

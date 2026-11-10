@@ -713,11 +713,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     process.on("message", (raw: unknown) => {
       if (!raw || typeof raw !== "object") return;
       const frame = raw as { kind?: unknown; attemptId?: unknown; op?: unknown };
-      if (frame.kind !== "machine-generation" || typeof frame.attemptId !== "string" || !["prepare", "abort"].includes(String(frame.op))) return;
+      if (frame.kind !== "machine-generation" || typeof frame.attemptId !== "string" || !["inspect", "prepare", "abort"].includes(String(frame.op))) return;
       const attemptId = frame.attemptId;
       pending = pending.then(async () => {
         try {
-          if (frame.op === "abort") {
+          if (frame.op === "inspect") {
+            process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: true, seats: mgr.hostedSeatCount() });
+            return;
+          } else if (frame.op === "abort") {
             if (heldAttempt === attemptId) { mgr.abortPreservation(attemptId); heldAttempt = undefined; }
             else if (heldAttempt) throw new Error("another parent attempt holds the manager");
           } else {
