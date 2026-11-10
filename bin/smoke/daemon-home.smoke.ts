@@ -294,7 +294,7 @@ try {
         check(`H1c ${mode} emits a parseable register command for ${space}`, result.status === 2 && result.doc.error?.cause?.code === "NOT_REQUESTED" && result.doc.error.remedy === remedy, result);
         if (result.doc.error?.remedy !== remedy) throw new Error("unexpected copied registration command");
         const copied = await cli(result.doc.error.remedy.slice(5, -7));
-        check(`H1c copied ${mode} remedy reaches ${space} on the selected daemon`, copied.status === 2 && copied.doc.command === "daemon register" && copied.doc.target?.space === space && copied.doc.error?.cause?.code === "NOT_SIGNED_IN" && copied.doc.error.remedy?.includes(IDP) && copied.doc.error.remedy.includes(quotedHome), copied);
+        check(`H1c copied ${mode} remedy reaches ${space} on the selected daemon`, copied.status === 2 && copied.doc.command === "daemon register" && copied.doc.target?.space === space && copied.doc.error?.cause?.code === "NOT_SIGNED_IN" && copied.doc.error.remedy?.includes(IDP) === true && copied.doc.error.remedy.includes(quotedHome), copied);
       }
       const setup = await cli(["setup", "--no-manager", `--space=${space}`, "--daemon-home", managed, "--wait", "0", "--json"]);
       check(`H1c setup manual recovery retains ${space}`, setup.status === 2 && setup.doc.error?.cause?.code === "RUNNING_WITHOUT_UNIT", setup);
