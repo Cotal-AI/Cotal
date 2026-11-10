@@ -115,6 +115,9 @@ jobs:
       - run: pnpm --filter cotal-ai seeded-connectors
       - run: pnpm --dir desktop prepare:runtime
       - run: pnpm --dir desktop check:runtime
+      - name: Check notarization credential selection
+        shell: pwsh
+        run: ./desktop/scripts/check-notarization.ps1
       - name: Prepare release signing
         id: signing
         shell: pwsh
@@ -145,7 +148,7 @@ jobs:
             if (@($cert | Where-Object { $_ }).Count -ne 3) { throw 'Incomplete macOS signing certificate configuration.' }
             $idCount = @($appleId | Where-Object { $_ }).Count
             $apiCount = @($api | Where-Object { $_ }).Count
-            if (($idCount -ne 0 -and $idCount -ne 3) -or ($apiCount -ne 0 -and $apiCount -ne 3) -or ($idCount -eq 0 -and $apiCount -eq 0)) { throw 'Configure one complete notarization credential set.' }
+            if (($idCount -ne 0 -and $idCount -ne 3) -or ($apiCount -ne 0 -and $apiCount -ne 3) -or ($idCount + $apiCount -ne 3)) { throw 'Configure one complete notarization credential set.' }
             if ($apiCount -eq 3) {
               $keyPath = Join-Path $env:RUNNER_TEMP 'cotal-notary-key.p8'
               [IO.File]::WriteAllText($keyPath, $env:APPLE_API_KEY_CONTENT)

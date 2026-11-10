@@ -37,7 +37,7 @@ interface Frame {
   v: number;
   event: string;
   ok: boolean;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; remedy?: string };
   result?: { installed: boolean; status: { state: string; pid: number } };
 }
 async function request(target: Isolated, op: string): Promise<Frame> {
@@ -69,6 +69,18 @@ function checkInstallation(target: Isolated): void {
   assert.equal(receipt.unitPath, target.unit);
   assert.equal(receipt.unitSha256, createHash("sha256").update(readFileSync(target.unit)).digest("hex"));
 }
+
+// A real account-shell failure must remain actionable before any service operation.
+const shellFailure = isolated("shell-failure");
+writeFileSync(join(shellFailure.dir, "home", ".bash_profile"), "exit 1\n", { mode: 0o600 });
+const refusedPath = await request(shellFailure, "install");
+assert.equal(refusedPath.ok, false);
+assert.equal(refusedPath.error?.code, "DEPENDENCY_UNAVAILABLE");
+assert.equal(refusedPath.error?.message, "the account's application PATH could not be read; no service was changed");
+assert.equal(refusedPath.error?.remedy, "check that your login shell starts successfully, then choose Check again");
+assert.deepEqual(operations(shellFailure.calls), [], "PATH refusal precedes service-manager calls");
+assert.ok(!existsSync(shellFailure.receipt) && !existsSync(shellFailure.unit), "PATH refusal creates no installation");
+console.log("install PATH refusal preserves its message/remedy without service effects");
 
 // First prove that the real installed-service path can reach an answering foreground daemon.
 const control = isolated("control");

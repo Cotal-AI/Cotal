@@ -131,6 +131,10 @@ test("launch readiness, application retry and polling follow the selected space"
     assert.equal(button("connect").disabled, false, "another space is not blocked by the connected selection");
     await releaseOldSelection();
     assert.equal(title(), "Disconnected from this space", "late status for the old selection is ignored");
+    const beforeOtherSpace = browserUrls.length;
+    assert.equal(button("dashboard").disabled, true);
+    button("dashboard").click(); button("dashboard").dispatchEvent(new win.Event("click")); await settle();
+    assert.equal(browserUrls.length, beforeOtherSpace, "a space without a ready Manager cannot open the previous space's dashboard");
     await select("first");
     assert.equal(button("connect").disabled, true);
     const releaseConnected = await holdRefresh();
@@ -141,6 +145,10 @@ test("launch readiness, application retry and polling follow the selected space"
     await releaseConnected();
     assert.equal(title(), "Disconnected from this space", "old connected status cannot undo disconnect");
     assert.equal(button("connect").disabled, false, "reconnect stays available");
+    const beforeDisconnected = browserUrls.length;
+    assert.equal(button("dashboard").disabled, true);
+    button("dashboard").click(); button("dashboard").dispatchEvent(new win.Event("click")); await settle();
+    assert.equal(browserUrls.length, beforeDisconnected, "disconnect clears the old Manager dashboard target");
 
     const releaseDisconnected = await holdRefresh();
     button("connect").click();

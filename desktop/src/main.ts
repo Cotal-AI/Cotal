@@ -16,7 +16,6 @@ let upgradeNeeded = false;
 let busy = false;
 let loginActive = false;
 let approval: string | undefined;
-let dashboard: string | undefined;
 let requestedSpace: string | undefined;
 let poll: ReturnType<typeof setTimeout> | undefined;
 let connection: { space: string; state: string } | undefined;
@@ -37,6 +36,7 @@ function buttons(): void {
   el<HTMLButtonElement>("connect").disabled = busy || !ready || !selectedSpace() || connected();
   text("connect", applicationRefusals.has(selectedSpace()) ? "Check again" : "Connect this computer");
   el<HTMLButtonElement>("disconnect").disabled = busy || !ready || !selectedSpace();
+  el<HTMLButtonElement>("dashboard").disabled = busy || !connected();
   el<HTMLButtonElement>("sync").disabled = busy || !ready;
 }
 async function request(body: Request): Promise<Record<string, unknown>> {
@@ -87,6 +87,7 @@ async function refresh(): Promise<void> {
     if (space) {
       const manager = Array.isArray(status.managers) ? status.managers.find((item) => item.space === space) : undefined;
       if (launchReady(manager)) { instances.set(space, manager.instanceId); state("launch-ready", space); buttons(); return; }
+      instances.delete(space);
       const connection = await request({ op: "service-status", space });
       if (!current()) return;
       state(applicationRefusals.has(space) ? "no-application" : String(connection.state) === "connected" ? "ready" : String(connection.state), space);
@@ -137,7 +138,7 @@ el("login-form").addEventListener("submit", (event) => {
     loginActive = true; buttons();
     try {
       const provider = el<HTMLInputElement>("provider").value.trim();
-      dashboard = new URL(approvalUrl(provider)).origin;
+      approvalUrl(provider);
       if (!ready) { notice("Preparing the background service…"); await request({ op: "install" }); await refresh(); }
       const result = await request({ op: "login", idp: provider });
       if (result.outcome !== "signed-in") throw new Error(String(result.message ?? "Sign-in was not completed."));
@@ -170,20 +171,22 @@ el("connect").addEventListener("click", () => void action(async () => {
 }));
 el("disconnect").addEventListener("click", () => void action(async () => {
   const space = selectedSpace();
+  instances.delete(space);
   const result = await request({ op: "service-disconnect", space });
   applicationRefusals.delete(space);
   state(String(result.state), space); notice(String(result.message ?? "Connection state updated."));
 }));
 el("sync").addEventListener("click", () => void action(() => spaces(true)));
 el("refresh").addEventListener("click", () => void action(refresh));
-el("space").addEventListener("change", () => { buttons(); void refresh(); });
+el("space").addEventListener("change", () => { instances.clear(); connection = undefined; buttons(); void refresh(); });
 el("machine-tab").addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
 el("dashboard").addEventListener("click", () => {
-  const provider = providers.get(selectedSpace()) ?? el<HTMLInputElement>("provider").value.trim();
-  const spaceId = catalogIds.get(selectedSpace()), instanceId = instances.get(selectedSpace());
-  if (spaceId && instanceId && provider) dashboard = machinesUrl(provider, spaceId, instanceId);
-  if (dashboard) void invoke("open_browser", { url: dashboard }).catch((error) => notice(String(error), true));
-  else notice("Sign in to your provider first to choose the dashboard origin.");
+  const space = selectedSpace();
+  const provider = providers.get(space) ?? el<HTMLInputElement>("provider").value.trim();
+  const spaceId = catalogIds.get(space), instanceId = instances.get(space);
+  if (connected() && spaceId && instanceId && provider) {
+    void invoke("open_browser", { url: machinesUrl(provider, spaceId, instanceId) }).catch((error) => notice(String(error), true));
+  } else notice("Connect the selected space before opening its machine dashboard.");
 });
 el("autostart").addEventListener("change", () => void action(async () => {
   const checkbox = el<HTMLInputElement>("autostart");
@@ -198,7 +201,6 @@ function receiveLinks(urls: string[]): void {
     const link = onboardingLink(urls[0]);
     el<HTMLInputElement>("provider").value = link.idp;
     requestedSpace = link.space;
-    dashboard = new URL(link.idp).origin;
     notice("Connection details received. Check the provider, then choose Continue in browser. No sign-in or connection has started.");
   } catch (error) { notice(String(error), true); }
 }
