@@ -81,7 +81,7 @@ Channel `description` and `instructions`, presence `activity`, message bodies, a
 
 Clients must render this text as attributed, advisory data. This is the indirect-prompt-injection risk also present in MCP tool descriptions and A2A agent cards. The reading client is the trust boundary for model-facing text.
 
-The reference client and CLI print a channel description on one line. The client indents every further line of the instructions past its own bullets, and the CLI prints the instructions in their own section. Both print every other control character and Unicode line or paragraph separator as a space. Registry text therefore cannot start a line that reads as the tool's own, and cannot send a control sequence to a terminal.
+The reference client and CLI print a channel description on one line. The client indents every further line of the instructions past its own bullets, and the CLI prints the instructions in their own section. Both print every other control character, Unicode line or paragraph separator, and bidirectional formatting mark as a space. Registry text therefore cannot start a line that reads as the tool's own, and cannot send a control sequence to a terminal.
 
 ## Reporting [#reporting]
 

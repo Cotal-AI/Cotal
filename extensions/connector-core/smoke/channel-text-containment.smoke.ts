@@ -48,6 +48,7 @@ const BREAKS: Record<string, string> = {
   ps: "\u2029",
   esc: "\u001b[2J\u001b]0;title\u0007",
   c1: "\u009b31m",
+  bidi: "\u202e\u2066\u061c",
 };
 /** One joined and one unjoined channel per break: the briefing shows joined channels, while
  *  orientation lists unjoined ones and the seat joins those through cotal_join. */
@@ -64,7 +65,7 @@ const marker = (tag: "D" | "I", id: string) => `FORGED${tag}_${id}_`;
 const start = (tag: "D" | "I", id: string) => `${tag === "D" ? "desc" : "instr"}-start-${id}-`;
 /** Two control cells, then per break: the joined channel on three surfaces and the unjoined one on
  *  four, four cells each plus one more on each surface that carries the instructions. */
-const EXPECTED_CELLS = 312;
+const EXPECTED_CELLS = 343;
 const hostile = (tag: "D" | "I", id: string, brk: string) =>
   `${start(tag, id)} ${FORGERY.replaceAll("%", brk).replaceAll("@@", marker(tag, id))}`;
 
@@ -85,9 +86,9 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   }
 };
 
-/** Every control code point and Unicode line or paragraph separator, other than the LF that
- *  separates the surface's own lines. */
-const STRAY = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029]/u;
+/** Every control code point, Unicode line or paragraph separator and bidirectional mark, other than
+ *  the LF that separates the surface's own lines. */
+const STRAY = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029\p{Bidi_Control}]/u;
 
 /** Every code point a line splitter may honour, as a model reading the text would split it. */
 const ANY_BREAK = /\r\n?|[\n\v\f\u0085\u2028\u2029]/;

@@ -7,18 +7,20 @@
  */
 import { LINE_BREAK } from "./peer-label.js";
 
-/** Control code points and Unicode line and paragraph separators. */
-const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]+/gu;
+/** Control code points, Unicode line and paragraph separators, and bidirectional formatting marks,
+ *  which can make a line read in an order other than the one it is stored in. */
+const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}\p{Bidi_Control}]+/gu;
 
-/** The text on one line: every line break and control character becomes a space. For the
- *  description, which is a one-line purpose, and for any surface that prints one line per channel. */
+/** The text on one line: every line break, control character and bidirectional mark becomes a
+ *  space. For the description, which is a one-line purpose, and for any surface that prints one line
+ *  per channel. */
 export function registryTextLine(text: string): string {
   return text.replace(CONTROL, " ");
 }
 
 /** The text split on every line break a reader may honour (`LINE_BREAK`), with any other control
- *  character in a line made a space. The caller indents every line after the first past its own
- *  structure, so no line of the text can pass for one the surface wrote. */
+ *  character or bidirectional mark in a line made a space. The caller indents every line after the
+ *  first past its own structure, so no line of the text can pass for one the surface wrote. */
 export function registryTextLines(text: string): string[] {
   return text.split(LINE_BREAK).map((line) => line.replace(CONTROL, " "));
 }
