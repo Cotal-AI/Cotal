@@ -11,7 +11,8 @@ export async function desktopSpaces(sessionDir: string, refresh: boolean): Promi
     const { results, diffs } = await prepareCatalogTargets({ sessionDir, force: true });
     const failures = results.filter((result) => result.state === "failed").length;
     collisions = diffs.reduce((count, diff) => count + diff.collisions.length, 0);
-    outcome = failures === 0 ? (collisions ? "partial" : "complete") : failures === results.length ? "failed" : "partial";
+    if (results.length === 0) outcome = "not-signed-in";
+    else outcome = failures === 0 ? (collisions ? "partial" : "complete") : failures === results.length ? "failed" : "partial";
   }
   const { entries, unusable } = readMeshRegistry();
   return {

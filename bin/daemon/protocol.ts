@@ -141,7 +141,7 @@ export interface ServiceConnectionResult {
 
 export interface DaemonSpaces {
   readonly kind: "spaces";
-  readonly refresh: "not-requested" | "complete" | "partial" | "failed";
+  readonly refresh: "not-requested" | "not-signed-in" | "complete" | "partial" | "failed";
   readonly unreadable: number;
   readonly collisions: number;
   readonly signedInProviders?: readonly string[];

@@ -147,7 +147,7 @@ import {
   STACK_DEFINITION,
   stackStartedWithoutManager,
   stackOperationBlock,
-  goneStackRoot,
+  stackRootGone,
   unfinishedStackOperation,
   type StackJournal,
   type StackOperationBlock,
@@ -457,7 +457,14 @@ export async function status(args: ParsedArgs): Promise<void> {
   const responder = await readResponderAxis(selected, preflight);
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
   const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight);
-  const target = await readSelected(selected, responder, folder, gaps, hints, preflight);
+  const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
+  const recovery = backupRecovery(maintenance);
+  const selectedHints: string[] = [];
+  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight);
+  // A held backup must be released before this root can start. Keep the selection's diagnostics,
+  // but replace its ordinary restart advice with the journal's recovery step.
+  if (recovery) hints.unshift(recovery);
+  else hints.push(...selectedHints);
   if (!blocked) readStackStoreWarnings(root, gaps, hints);
   if (selected.ok && selected.target.origin === "up" && !sameDir(root, selected.target.root))
     readStackStoreWarnings(selected.target.root, gaps, hints, selected.target.space);
@@ -467,10 +474,9 @@ export async function status(args: ParsedArgs): Promise<void> {
   // that neither blocks nor stays part way settles from its members' processes when it starts.
   const held = folderStack(folder, target);
   if (held && folder.stackBlock) withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
-  if (held && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
+  if (!recovery && held && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
-  const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
   const logged = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;
   // A store write failure holds until the broker restarts, so it is named before a full store.
   const full = selected.ok && target.resolved && target.storedBytes !== null && logged?.state !== "write-failed" ? storeFull(selected.target.root, selected.target.space, target.storedBytes) : undefined;
@@ -1366,6 +1372,15 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     spaceStreams: { state: "not-checked" as const, root: null, stack: null },
     storedBytes: null,
   };
+  // A moved project keeps its trust under its new path. Prefer that specific diagnosis when
+  // this folder holds the records, otherwise report the missing stack root before any auth probe.
+  const moved = target.mode === "auth" && !target.auth ? movedProject(target.space, target.root) : undefined;
+  if (moved) {
+    hints.push(moved.remedy);
+    return { resolved: false, code: "moved-folder", message: moved.message };
+  }
+  const overridden = (target.source === "flag-server" || target.source === "flag-space-override") && target.recordedServer !== target.server;
+  if (base.rootGone && !overridden) return { ...base, connection: "root-gone", snapshot: { state: "skipped", reason: "the stack's project folder was moved or deleted" } };
   if (target.mode === "user") {
     // Status never static-mints on a user-auth mesh (the flip). Everything here is offline
     // introspection — the login cache + the locally-readable ledger — plus, only when this
@@ -1394,13 +1409,6 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     if (!live) return { ...result, snapshot: { state: "skipped", reason: "broker unreachable" } };
     if (!granted) return { ...result, snapshot: { state: "skipped", reason: "needs a signed-in, granted login" } };
     return { ...result, ...(await readSnapshot(() => userSnapshotEndpoint(target, stateDir), target.space, true, gaps)) };
-  }
-  // A project folder moved after its stack started there keeps the seed under its new path, where a
-  // probe without it reads as authentication required. Name the move and the way back, as send does.
-  const moved = target.mode === "auth" && !target.auth ? movedProject(target.space, target.root) : undefined;
-  if (moved) {
-    hints.push(moved.remedy);
-    return { resolved: false, code: "moved-folder", message: moved.message };
   }
   if (preflight === undefined) throw new Error("status: selected non-user target has no preflight observation");
   if (!preflight.ok) {
@@ -1805,15 +1813,10 @@ function machineOverview(r: StatusResult, wide: boolean): Section {
   };
 }
 
-/** Whether `root` is the gone folder of the stack this machine still records for `space`. */
-function stackRootGone(space: string, root: string): boolean {
-  const gone = goneStackRoot(space);
-  return gone !== undefined && canonicalRoot(gone) === canonicalRoot(root);
-}
-
 function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
   if (s.connection === "ok" || s.connection === "reachable") return stateCell("reachable", "ok");
   const states: Readonly<Record<string, string>> = {
+    "root-gone": "project folder was moved or deleted",
     unreachable: "unreachable",
     "slow-link": "not answering",
     "broker-stopped": `broker process ${s.brokerPid} is stopped`,
@@ -2003,7 +2006,14 @@ function roleList(roles: readonly StackRole[]): string {
   return roles.length > 1 ? `${roles.slice(0, -1).join(", ")} and ${roles.at(-1)}` : roles[0] ?? "";
 }
 
+/** Pre-commit backup claims block ordinary startup; ready cuts and committed restores do not. */
+function backupRecovery(maintenance: StatusResult["maintenance"]): string | null {
+  return maintenance?.state === "claimed" || maintenance?.state === "restore-ready" ? maintenance.next : null;
+}
+
 function nextActions(r: StatusResult): Section {
+  const recovery = backupRecovery(r.maintenance);
+  if (recovery) return { title: "Next", blocks: [...new Set([recovery, ...r.hints])].map((hint) => ({ kind: "lines", lines: [cell(hint, "hint")] })) };
   const cmd = displayCmd();
   const items: { command: string; description: string }[] = [];
   const extra: string[] = [];
