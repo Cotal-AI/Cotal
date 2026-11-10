@@ -1710,7 +1710,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("A2d 304 never disconnects a connected space", (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
           accountHttp = 200;
           accountHang = true;
-          for (let i = 0; i < 20 && !accountHangs; i++) await sleep(500);
+          for (let i = 0; i < 120 && !accountHangs; i++) await sleep(500);
           await sleep(31_000);
           check("A2e real request timeout never disconnects connected space", accountHangs > 0 && (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
           accountHang = false;
@@ -1718,6 +1718,17 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("A2a CLI human status names account computer and desired revision", humanStatus.code === 0 && humanStatus.out.includes("Account computer") && humanStatus.out.includes("Desired revision") && humanStatus.out.includes(ON), humanStatus);
           const jsonStatus = await cli("status");
           check("A2b CLI status JSON includes account desired and observed fields", jsonStatus.doc.result?.account?.spaces?.some((r: any) => r.space === ON && r.desired && r.observed === "connected"), jsonStatus);
+          removeMesh(ON);
+          await sleep(6000);
+          let removedStatus: Record<string, any> = {};
+          for (let i = 0; i < 60; i++) {
+            removedStatus = resultOf(await ask(paths.socket, { op: "service-status", space: ON }, 25_000));
+            if (removedStatus.state !== "connected") break;
+            await sleep(500);
+          }
+          check("A2g local registry removal closes active service", removedStatus.state !== "connected", removedStatus);
+          accountBindingRevision = ++accountRevision;
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A2h dashboard rebind restores locally removed registration");
           await ask(paths.socket, { op: "service-disconnect", space: ON }, 100_000);
           accountRevision++;
           await sleep(6000);

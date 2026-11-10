@@ -65,7 +65,12 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       const prior = saved.spaces[row.slug];
       if (prior && prior.owner !== account.ownerKey) { refusals.set(row.slug, "another account owns the local space connection"); continue; }
       if (prior?.removedAt !== undefined && (!fresh || bindingRevisions[row.id]! <= prior.removedAt)) continue;
-      if (prior && !findMesh(row.slug)) { prior.removedAt = prior.revision; persist(); continue; }
+      if (prior && prior.removedAt === undefined && !findMesh(row.slug)) {
+        prior.removedAt = prior.revision; persist();
+        try { await managers.refresh(row.slug); await managers.disconnect(row.slug); await services.disconnect(row.slug); }
+        catch { refusals.set(row.slug, "local removal could not stop the space; inspect daemon status"); }
+        continue;
+      }
       if (Date.now() < (retryAt.get(row.slug) ?? 0)) continue;
       try {
         if ("unavailable" in row) throw new Error("account space is currently unavailable");
