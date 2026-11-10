@@ -11,7 +11,7 @@ import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { CotalEndpoint, DEFAULT_SPACE, deliveryLeaseHolderFor, mintCreds, newIdentity, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, ConfirmationRequired, canonicalRoot, deliveryCredsKey, findMesh, getSpaceAuth, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, stackHomeRemedy, stackRunsUnderOtherHome, workspaceSecretStore, writeResult,
+  CommandFailure, ConfirmationRequired, canonicalRoot, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, workspaceSecretStore, writeResult,
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
@@ -29,6 +29,7 @@ import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUn
 import { readStackRuns } from "../lib/stack-runs.js";
 import { refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { localProcessSurface } from "../ext-loader.js";
+import { lostRecordsStackDown, stackRecordsLost } from "./stack-lost-records.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -299,6 +300,8 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
   const presentation = presentationOf(values), interactive = canPrompt() && presentation !== "json";
   const withAgents = values["with-agents"] === true;
   const root = canonicalRoot(rootInput);
+  const recorded = readStackJournal(root);
+  if (recorded && stackRecordsLost(recorded)) return lostRecordsStackDown(root, values);
   // The preview reads without the lock and writes nothing. The real stop holds the root's
   // maintenance lock from its first read to its last write, so no other whole-stack operation runs.
   if (values["dry-run"] === true) return await previewStackStop(root, values, presentation, withAgents);
@@ -352,7 +355,6 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
     });
   }
   recordOperationSpace(journal0.space);
-  if (stackRunsUnderOtherHome(root, journal0)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this root's controller stack runs under another Cotal home; this one holds no record of its members, so no member was stopped", { target: { root, space: journal0.space, cotalHome: homeCotalDir() }, remedy: stackHomeRemedy() });
   if (stackOperationUnsettled(journal0) && journal0.operation.kind !== "up" && journal0.operation.kind !== "down")
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an earlier preserve or resume on this root has no settled outcome; it is decided by its own maintenance attempt and no member was stopped", { target: { root, operation: journal0.operation }, remedy: `inspect the root's maintenance attempt and the stack's members with \`cotal service --space ${journal0.space}\`` });
   const settlement = previewStackSettlement(journal0);

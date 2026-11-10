@@ -52,9 +52,9 @@ export function renderWorkspaceError(e: WorkspaceError): string {
   return `✗ ${message}${remedy === undefined ? "" : ` - ${remedy}`}`;
 }
 
-/** The step for a root whose stack runs under another Cotal home (`stackRunsUnderOtherHome`). */
+/** The step when the current home has no records of a root's running stack members. */
 export function stackHomeRemedy(): string {
-  return `run it with COTAL_HOME set to the Cotal home the stack was started under${process.env.COTAL_HOME ? `, or with COTAL_HOME unset if that was the default ${userCotalDir()}` : ""}`;
+  return `if the records are in another home, run it with COTAL_HOME set to the Cotal home the stack was started under${process.env.COTAL_HOME ? `, or with COTAL_HOME unset if that was the default ${userCotalDir()}` : ""}; if that home's records were removed, run \`cotal down --dry-run\` in the stack's folder, then \`cotal down --yes\` to stop its creation-pinned members`;
 }
 
 /** "Which mesh" resolution failures — maps a {@link MeshTargetError}'s `{code, details}` to copy. */
@@ -118,7 +118,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       if (d.lastRun) return parts(`the mesh${d.stackSpace === undefined ? "" : ` "${d.stackSpace}"`} in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and no space is registered for it here`, `start it again with \`cotal up\` in ${d.root}`);
       return d.home === undefined
         ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with ${codeSpan(`cotal space create ${d.stackSpace ?? "<space>"} --root ${shellPath(d.root!)}`)}, then start it with \`cotal up\` there`)
-        : parts(`the stack in ${d.root} recorded ${broker} and runs under another Cotal home; ${d.home} holds no record of its members`, stackHomeRemedy());
+        : parts(`the stack in ${d.root} recorded ${broker}; its member records are missing from ${d.home}`, stackHomeRemedy());
     }
     case "user-auth-unrecorded":
       // U11: without a TRUSTED local record of the space's IdP there is no actionable

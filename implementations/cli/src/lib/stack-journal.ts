@@ -1,7 +1,8 @@
 /** The root-local whole-stack journal: which controller definitions and full instances one local
  *  stack owns, and the last whole-stack operation's per-member outcome. One owner-private file at
  *  `<root>/.cotal/stack-controller.json`. It is not a service record, unit receipt or team ledger,
- *  and it grants no stop authority by itself: every effect still rechecks the instance records. */
+ *  and it grants no PID-only stop authority: recovery requires the launching home, host and exact
+ *  process creation pins; ordinary stops still recheck the instance records. */
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmdirSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
@@ -9,7 +10,7 @@ import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
-import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
+import { observeServiceProcess, processServiceHost, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
 import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, abandonUnresolvedLaunch, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -52,7 +53,7 @@ export type StackMemberState = "planned" | "not-attempted" | "started" | "reused
  *  and the new definition's revision before the launch, so a crash in between is resolved from the
  *  replacement's own record (see {@link withSettledMembers}). */
 export interface StackReplacement { operation: string; instanceId: string; launchRequestId: string; definitionRevision?: string }
-export interface StackMember { role: StackRole; definition: string; instanceId: string | null; state: StackMemberState; code?: string; replacement?: StackReplacement }
+export interface StackMember { role: StackRole; definition: string; instanceId: string | null; state: StackMemberState; code?: string; replacement?: StackReplacement; process?: { pid: number; token: string } }
 export interface StackJournal {
   schemaVersion: 1;
   kind: "cotal-stack-controller";
@@ -62,6 +63,8 @@ export interface StackJournal {
   /** Pinned at the first whole-stack up. An open stack has no delivery member and no credential;
    *  only a user stack has an auth-service member. */
   mode: StackMode;
+  /** Local recovery authority when the home records are lost. Never inferred for older journals. */
+  recovery?: { home: string; host: string };
   members: StackMember[];
   /** The broker inputs this stack's broker was last prepared from. A later preparation of the same
    *  stopped broker reuses them rather than a default store, and an explicit request that differs
@@ -132,7 +135,7 @@ function unreadable(root: string): never {
 }
 
 function validate(input: unknown, root: string): StackJournal {
-  const value = localRecordObject(input, ["schemaVersion", "kind", "root", "space", "server", "mode", "members", "broker", "operation", "updatedAt"]);
+  const value = localRecordObject(input, ["schemaVersion", "kind", "root", "space", "server", "mode", "members", "broker", "operation", "updatedAt", "recovery"]);
   // A journal written before the auth-service role existed carries exactly broker, delivery and
   // manager rows. It is read with an explicit not-attempted auth row for auth/open stacks only;
   // the next write records the current shape. A user stack never has that legacy shape.
@@ -140,11 +143,15 @@ function validate(input: unknown, root: string): StackJournal {
     value.members = [value.members[0], { role: "auth", definition: STACK_DEFINITION.auth, instanceId: null, state: "not-attempted" }, ...value.members.slice(1)];
   if (value.schemaVersion !== 1 || value.kind !== "cotal-stack-controller" || typeof value.root !== "string" || !isAbsolute(value.root) || typeof value.space !== "string" || !value.space || typeof value.server !== "string" || !value.server || !STACK_MODES.includes(value.mode as StackMode) || typeof value.updatedAt !== "string" || !Array.isArray(value.members) || value.members.length !== STACK_ROLES.length) invalid(root);
   const members = (value.members as unknown[]).map((row, index) => {
-    const member = localRecordObject(row, ["role", "definition", "instanceId", "state", "code", "replacement"]);
+    const member = localRecordObject(row, ["role", "definition", "instanceId", "state", "code", "replacement", "process"]);
     const role = STACK_ROLES[index]!;
     if (member.role !== role || member.definition !== STACK_DEFINITION[role] || !STATES.includes(String(member.state)) || member.code !== undefined && (typeof member.code !== "string" || !/^[A-Z_]{1,64}$/.test(member.code))) invalid(root);
     if (member.instanceId !== null) { try { serviceOperationId(member.instanceId); } catch { invalid(root); } }
     if (member.replacement !== undefined) replacementOf(member.replacement, root);
+    if (member.process !== undefined) {
+      const pin = localRecordObject(member.process, ["pid", "token"]);
+      if (member.instanceId === null || !Number.isInteger(pin.pid) || Number(pin.pid) <= 0 || Number(pin.pid) > 2_147_483_647 || typeof pin.token !== "string" || !/^[0-9]{1,20}$/.test(pin.token)) invalid(root);
+    }
     if (!stackRoleApplies(value.mode as StackMode, role) && (member.instanceId !== null || member.state !== "not-attempted" || member.replacement !== undefined)) invalid(root);
     return member as unknown as StackMember;
   });
@@ -155,9 +162,18 @@ function validate(input: unknown, root: string): StackJournal {
   const maintained = operation.kind === "preserve" || operation.kind === "resume";
   if (maintained !== (operation.maintenanceAttemptId !== undefined) || maintained && (operation.withAgents !== false || typeof operation.maintenanceAttemptId !== "string" || !MAINTENANCE_ATTEMPT_ID.test(operation.maintenanceAttemptId))) invalid(root);
   const broker = value.broker === undefined ? undefined : brokerInputs(value.broker, root);
+  if (value.recovery !== undefined) {
+    const recovery = localRecordObject(value.recovery, ["home", "host"]);
+    if (typeof recovery.home !== "string" || !isAbsolute(recovery.home) || typeof recovery.host !== "string" || !/^[0-9a-f]{64}$/.test(recovery.host)) invalid(root);
+  }
   if (value.root !== root) recordedElsewhere(root, value.root as string, value.space as string, members);
   const { broker: _broker, ...rest } = value as unknown as StackJournal;
   return { ...rest, members, ...(broker ? { broker } : {}), operation: operation as unknown as StackJournal["operation"] };
+}
+
+/** The machine, boot and account that may use journal process pins for a local recovery stop. */
+export function stackRecoveryHost(): string {
+  return createHash("sha256").update(JSON.stringify(processServiceHost())).digest("hex");
 }
 
 function replacementOf(input: unknown, root: string): StackReplacement {

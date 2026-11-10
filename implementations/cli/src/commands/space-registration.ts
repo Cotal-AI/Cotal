@@ -475,14 +475,13 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
       ? `forget it with \`cotal space forget ${name}\`, then run this create again`
       : `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
   }
-  // A stack this home cannot see runs here under another Cotal home; a space prepared over it could
-  // not start, and the root's status would stop naming that home.
+  // Missing member records do not prove another home. Do not prepare over the running stack.
   let journal: Parameters<typeof stackRunsUnderOtherHome>[1] | undefined;
   // A journal that is not JSON or has an unsupported shape is named with its way out. The trust it
   // leaves would otherwise read as a space that already holds this root.
   try { journal = readStackJournal(root)?.journal; } catch (error) { if (error instanceof CommandFailure && error.code === "SCHEMA_INVALID") throw error; journal = undefined; }
   if (journal && stackRunsUnderOtherHome(root, journal))
-    throw refuse("TARGET_UNAVAILABLE", `the controller stack in ${root} runs under another Cotal home; ${homeCotalDir()} holds no record of its members`, target, stackHomeRemedy());
+    throw refuse("TARGET_UNAVAILABLE", `the controller stack in ${root} has member records missing from ${homeCotalDir()}`, target, stackHomeRemedy());
   // A stack journal another folder recorded, as a copy or a moved folder keeps it, is taken over only
   // with --adopt, so nothing rewrites it unasked. A linked .cotal is named below.
   let elsewhere: ReturnType<typeof journalRecordedElsewhere>;
