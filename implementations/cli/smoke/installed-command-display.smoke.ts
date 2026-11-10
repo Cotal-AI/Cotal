@@ -1,6 +1,6 @@
 /** Installed command suggestions remain runnable when the installer's launcher is off PATH. */
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { resolveOnPath } from "@cotal-ai/workspace";
@@ -30,7 +30,7 @@ const library = join(sandbox, "installer-library.sh"), driver = join(sandbox, "i
 writeFileSync(library, installer.slice(0, installer.lastIndexOf(entry)));
 writeFileSync(driver, `#!/bin/sh
 . "$1"
-resolve_node() { NODE_BIN="$FIXTURE_NODE"; NPM_BIN="/usr/bin/true"; NODE_LABEL="fixture runtime"; }
+resolve_node() { NODE_BIN="$FIXTURE_NODE"; NPM_BIN="$FIXTURE_NPM"; NODE_LABEL="fixture runtime"; }
 install_cotal() {
   pkg="$INSTALL_DIR/lib/node_modules/cotal-ai"
   mkdir -p "$pkg" "$INSTALL_DIR/bin"
@@ -45,7 +45,9 @@ main --version "$FIXTURE_VERSION" --yes --no-setup --no-modify-path
 `);
 chmodSync(driver, 0o700);
 const version = (JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")) as { version: string }).version;
-const env = { PATH: tools, HOME: home, USERPROFILE: home, SHELL: "/bin/sh", CI: "1", NO_COLOR: "1", DO_NOT_TRACK: "1", COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, XDG_DATA_HOME: join(sandbox, "data"), XDG_STATE_HOME: join(sandbox, "state"), XDG_CACHE_HOME: join(sandbox, "cache"), COTAL_BIN_DIR: join(home, ".local/bin"), COTAL_SKIP_CONNECTOR_SEED: "1", FIXTURE_NODE: process.execPath, FIXTURE_PACKAGE: join(repo, "bin"), FIXTURE_VERSION: version };
+const npm = resolveOnPath("npm");
+if (!npm) throw new Error("fixture npm unavailable");
+const env = { PATH: tools, HOME: home, USERPROFILE: home, SHELL: "/bin/sh", CI: "1", NO_COLOR: "1", DO_NOT_TRACK: "1", COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, XDG_DATA_HOME: join(home, "data"), XDG_STATE_HOME: join(sandbox, "state"), XDG_CACHE_HOME: join(sandbox, "cache"), COTAL_BIN_DIR: join(home, ".local/bin"), COTAL_SKIP_CONNECTOR_SEED: "1", FIXTURE_NODE: process.execPath, FIXTURE_NPM: npm, FIXTURE_PACKAGE: join(repo, "bin"), FIXTURE_VERSION: version };
 const installed = spawnSync("/bin/sh", [driver, library], { env, encoding: "utf8", timeout: 90_000 });
 writeFileSync(join(sandbox, "installer.log"), installed.stdout + installed.stderr);
 if (installed.status !== 0) throw new Error(`owned installer failed: ${installed.stdout}${installed.stderr}`);
@@ -90,6 +92,23 @@ try {
   suite.check("on-PATH installed status keeps concise cotal commands", onPath.code === 0 && psCommand(onPath.stdout) === "cotal ps" && !onPath.stdout.includes("pnpm cotal"), onPath);
   const source = spawnSync(process.execPath, [join(repo, "bin/dist/cotal.js"), "status", "--plain"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   suite.check("off-PATH source checkout retains pnpm cotal guidance", source.status === 0 && source.stdout.includes("pnpm cotal"), { code: source.status, output: source.stdout + source.stderr });
+  const setupCommand = status.stdout.split("\n").find((line) => /\s{2,}Set up an agent application(?: and a space)?$/.test(line))?.trim().split(/\s{2,}Set up an agent application(?: and a space)?$/)[0];
+  suite.check("status prints a setup next step", Boolean(setupCommand), status);
+  const seedEnv: NodeJS.ProcessEnv = { ...env };
+  delete seedEnv.COTAL_SKIP_CONNECTOR_SEED;
+  const setupConfig = join(sandbox, "setup-config"), controlConfig = join(sandbox, "setup-control-config");
+  for (const dir of [setupConfig, controlConfig]) mkdirSync(dir, { mode: 0o700 });
+  if (setupCommand) {
+    // Skills-only setup crosses the same automatic seed boundary without starting a space or app.
+    const seeded = spawnSync("/bin/sh", ["-c", `${setupCommand} --skills`], { cwd: outside, env: { ...seedEnv, XDG_CONFIG_HOME: setupConfig }, encoding: "utf8", timeout: 120_000 });
+    const receipt = { code: seeded.status, output: seeded.stdout + seeded.stderr };
+    writeFileSync(join(sandbox, "setup-from-hint.json"), JSON.stringify(receipt, null, 2));
+    suite.check("printed setup prefix can seed with npm absent from the parent PATH", seeded.status === 0 && existsSync(join(setupConfig, "cotal/seed/stamp.json")), receipt);
+  }
+  const control = spawnSync(launcher, ["setup", "--skills"], { cwd: outside, env: { ...seedEnv, XDG_CONFIG_HOME: controlConfig }, encoding: "utf8", timeout: 120_000 });
+  const controlReceipt = { code: control.status, output: control.stdout + control.stderr };
+  writeFileSync(join(sandbox, "setup-launcher-control.json"), JSON.stringify(controlReceipt, null, 2));
+  suite.check("fresh launcher control completes the same setup seed", control.status === 0 && existsSync(join(controlConfig, "cotal/seed/stamp.json")), controlReceipt);
 } finally {
   if (attempted) {
     const down = run(["down", "--yes", "--json"]);

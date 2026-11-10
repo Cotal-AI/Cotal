@@ -32,13 +32,14 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, posix } from "node:path";
 import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure } from "@cotal-ai/workspace";
-import { assertSystemdSource, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
+import { codeSpan, CommandFailure } from "@cotal-ai/workspace";
+import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import type { DaemonPaths } from "./endpoint.js";
 import { launchAgentService, xmlText } from "./install-darwin.js";
 import { scheduledTaskService } from "./install-win32.js";
+import { daemonCommandCopy } from "./guidance.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
 export type ServiceMechanism = "systemd-user" | "launchd-agent" | "scheduled-task";
@@ -92,10 +93,10 @@ function unitValue(value: string, exec = false): string {
 
 /** The invocation's own `PATH`, pinned absolute. A relative or empty entry would resolve against
  *  whichever directory the unit happens to start in, so it refuses instead. */
-function pinnedPath(value = process.env.PATH ?? ""): string {
-  const entries = value.split(delimiter).filter((entry) => entry !== "");
-  if (!entries.length || entries.some((entry) => !isAbsolute(entry))) throw new CommandFailure("refused", "UNSUPPORTED", "the daemon unit needs an absolute, pinned PATH; a relative or empty entry was not inherited");
-  return entries.join(delimiter);
+function pinnedPath(value = process.env.PATH ?? "", grammar: Pick<typeof posix, "delimiter" | "isAbsolute"> = { delimiter, isAbsolute }): string {
+  const entries = value.split(grammar.delimiter).filter((entry) => entry !== "");
+  if (!entries.length || entries.some((entry) => !grammar.isAbsolute(entry))) throw new CommandFailure("refused", "UNSUPPORTED", "the daemon unit needs an absolute, pinned PATH; a relative or empty entry was not inherited");
+  return entries.join(grammar.delimiter);
 }
 
 export interface RenderedUnit {
@@ -247,13 +248,15 @@ function directive(bytes: string, name: string): string {
   return new RegExp(`\n${name}=(.*)\n`).exec(bytes)?.[1] ?? "absent";
 }
 
-function refuseInstalled(paths: DaemonPaths): void {
+function refuseInstalled(paths: DaemonPaths, daemonHome: string | undefined): void {
   const existing = readReceipt(paths);
-  if (existing) throw new CommandFailure("refused", "CONFLICT", `this daemon already has an installed unit (${existing.unit}); remove it with \`cotal daemon uninstall\` before installing again`);
+  if (existing) throw new CommandFailure("refused", "CONFLICT", `this daemon already has an installed unit (${existing.unit})`, {
+    remedy: `remove it with ${codeSpan(daemonCommandCopy("uninstall", daemonHome))} before installing again`,
+  });
 }
 
 function nativeInstallPlan(service: NativeService, paths: DaemonPaths, daemonHome: string | undefined): NativePlan {
-  refuseInstalled(paths);
+  refuseInstalled(paths, daemonHome);
   return service.plan(paths, daemonHome, daemonServeArgv(daemonHome), pinnedPath);
 }
 
@@ -266,11 +269,12 @@ export function planInstall(paths: DaemonPaths, daemonHome: string | undefined):
   }
   const user = invokingUser();
   const rendered = renderDaemonUnit(systemdUserUnitDirectory(), daemonHome);
-  refuseInstalled(paths);
+  refuseInstalled(paths, daemonHome);
   let present = false;
   try { lstatSync(rendered.unitPath); present = true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${rendered.unitPath} could not be inspected; no absent unit was inferred`); }
   if (present) throw new CommandFailure("refused", "CONFLICT", `${rendered.unitPath} already exists and no install of this daemon recorded it; it was not written over`);
+  assertSystemdSourceDirectory(dirname(rendered.unitPath));
   return { mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, sha256: rendered.sha256, user, lingerAlready: lingerEnabled(user),
     restart: directive(rendered.bytes, "Restart"), wantedBy: directive(rendered.bytes, "WantedBy"), ...(daemonHome !== undefined ? { daemonHome } : {}) };
 }
@@ -301,19 +305,20 @@ export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined)
     return { mechanism, unit, unitPath, sha256, user, restart, wantedBy, ...(daemonHome !== undefined ? { daemonHome } : {}), state: "installed" };
   }
   const plan = planInstall(paths, daemonHome);
-  const rendered = renderDaemonUnit(systemdUserUnitDirectory(), daemonHome);
+  const rendered = renderDaemonUnit(dirname(plan.unitPath), daemonHome);
   // This daemon's own state directory, which holds the receipt below. It is ours, so it is created
   // 0700 and checked; the user manager's unit directory is the operator's and is only created when
   // it is absent, never hardened or repaired when it is already there.
   mkSecretDir(paths.state);
   const unitDir = join(rendered.unitPath, "..");
   mkdirSync(unitDir, { recursive: true, mode: 0o700 });
-  if (!plan.lingerAlready) {
-    const enabled = loginctl(["enable-linger", plan.user]);
-    if (enabled.status !== 0 || !lingerEnabled(plan.user)) throw new CommandFailure("refused", "PERMISSION_DENIED", `linger could not be enabled for ${plan.user}, so a unit would stop at logout; nothing was installed. Enable it with loginctl enable-linger ${plan.user} and run this again`);
-  }
   createSystemdSource(rendered.unitPath, rendered.bytes, rendered.sha256);
   writeReceipt(paths, { v: 1, mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, unitSha256: rendered.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}) });
+  if (!plan.lingerAlready) {
+    const enabled = loginctl(["enable-linger", plan.user]);
+    if (enabled.status !== 0 || !lingerEnabled(plan.user)) throw new CommandFailure("refused", "PERMISSION_DENIED", `linger could not be enabled for ${plan.user}, so the recorded unit was not enabled or started. Remove it with \`cotal daemon uninstall\`, enable linger with loginctl enable-linger ${plan.user} and run this again`);
+  }
+  assertSystemdSource(rendered.unitPath, rendered.sha256);
   submitSystemdUnitRegistration("reload", rendered.unit);
   submitSystemdUnitRegistration("enable", rendered.unit);
   submitSystemdUnitControl("start", rendered.unit);
@@ -362,7 +367,8 @@ export function refreshedDaemonPath(mechanism: ServiceMechanism, source: string,
   const old = mechanism === "systemd-user"
     ? match[1]!.replace(/\\([\\"])/g, "$1").replaceAll("%%", "%")
     : match[2]!.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
-  const merged = [...new Set([...pinnedPath(terminalPath).split(delimiter), ...pinnedPath(old).split(delimiter)])].join(delimiter);
+  // A systemd unit and a launchd plist carry a POSIX search path whatever host reads them.
+  const merged = [...new Set([...pinnedPath(terminalPath, posix).split(posix.delimiter), ...pinnedPath(old, posix).split(posix.delimiter)])].join(posix.delimiter);
   return source.replace(pattern, () => mechanism === "systemd-user" ? `Environment=PATH=${unitValue(merged)}` : `${match[1]}${xmlText(merged)}${match[3]}`);
 }
 

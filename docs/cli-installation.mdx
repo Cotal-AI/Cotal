@@ -155,6 +155,15 @@ Update reads the recorded mesh inventory without refreshing account space catalo
 login to a remote mesh does not block the software update. Local manager continuity checks still
 apply before changing the installation.
 
+After `update --self` replaces the installation, its verified replacement waits up to 120 seconds
+for the recorded same-installation daemon to load the new version and its intended hosted Managers
+to answer. It prints this wait before the continuity check. The daemon owns its automatic restart;
+the updater does not start a competing restart. Connector reconciliation still requires the
+continuity check to answer. If activation does not finish, the failure names the last daemon or
+Manager state and asks you to inspect `cotal daemon status` and the recorded user service, restore
+the connection, then run `cotal update` again. A machine without a recorded daemon service keeps
+the existing update path.
+
 After an upgrade, `up`, `down` and the `service` verbs still control the stack members and
 first-party service instances an earlier release recorded, even when that release declared their
 adapter differently, as long as each runs under the stop policy its adapter declares now. A
@@ -175,8 +184,9 @@ the binary's exact version, after a line that says why. A built-in or extension 
 reported as verified. The extension check reads versions, not file contents. `cotal ext seed --force`
 remains the unconditional reinstall of the built-ins, and `cotal ext add <package>` of one extension.
 Each reinstall runs in an isolated child, so one failure cannot poison later replays. It then
-checks npm; a newer binary is an informational notice with `cotal update --self` as the next
-command, not an automatic install.
+checks npm; after successful reconciliation, a newer binary is an informational notice with
+`cotal update --self` as the next command, not an automatic install. A refused update keeps its
+recovery guidance instead of suggesting another update that would meet the same refusal.
 
 
 ### Manager continuity
@@ -184,8 +194,12 @@ command, not an automatic install.
 For Managers hosted by the machine daemon, `update` checks every active hosted instance before
 reconciliation, even with `--space`, because restarting the global installation affects them all.
 It pins each status request to its instance and refuses unreadable custody or a non-answering
-Manager. A hosted `legacy` Manager with active seats blocks update because their
-terminal custody cannot survive replacement. After reconciliation, update waits up to 120 seconds
+Manager. A hosted `legacy` Manager with running agents blocks update because restarting it would
+end them. The refusal names agents from the Manager's status and gives `cotal stop <name>` and
+`cotal ps` commands pinned to their Manager instance and space. The list command requires admin
+scope on user-auth spaces. Save their work and stop them, then rerun the same update command,
+including `--self` if you used it. No agent is stopped automatically.
+After reconciliation, update waits up to 120 seconds
 for the matching daemon version and the previously active hosted spaces to report answering
 Managers. When the daemon version differs, update prepares every hosted child through the local
 preservation guard before restarting the recorded native service. A refused preparation leaves

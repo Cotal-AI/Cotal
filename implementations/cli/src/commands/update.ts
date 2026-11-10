@@ -77,6 +77,8 @@ export interface UpdateRuntime {
   /** Bring what connectors installed in their harnesses to this release; one line per connector. */
   refreshConnectors(): Promise<readonly string[]>;
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
+  /** The binary may await its daemon's replacement generation before the bound child's read. */
+  waitForInstalledGeneration?(version: string): Promise<void>;
   extensions(): readonly InstalledExtension[];
   /** Why a first-party extension still needs its reinstall at `generation`, or undefined once it is kept. */
   verifyExtension(entry: InstalledExtension, generation: string): string | undefined;
@@ -153,7 +155,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   try {
     assertConfigAncestorProtected();
   } catch (e) {
-    rt.err(c.red(`✗ config folder protection: ${protectionFailure(e)}`));
+    rt.err(c.red(`✗ config folder protection: ${refusal(e)}`));
     process.exitCode = 1;
     return;
   }
@@ -219,6 +221,12 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       rt.err(c.red(`✗ global update child is cotal-ai ${current}, expected ${child.target}; refusing to mutate extensions`));
       return 1;
     }
+    try {
+      await rt.waitForInstalledGeneration?.(current);
+    } catch (error) {
+      rt.err(c.red(`✗ installed daemon generation: ${refusal(error)}`));
+      return 1;
+    }
     return reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
   }
 
@@ -231,7 +239,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
         rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}`));
         return 1;
       }
-      reportVersion(current, latest.version, rt);
+      reportVersion(current, latest.version, rt, reconciled);
       return reconciled ? 0 : 1;
     });
   }
@@ -242,7 +250,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}`));
       return 1;
     }
-    reportVersion(current, latest.version, rt);
+    reportVersion(current, latest.version, rt, reconciled);
     return reconciled ? 0 : 1;
   });
 }
@@ -414,17 +422,11 @@ async function stoppedController(d: MeshTargetErrorDetails): Promise<boolean> {
  *  so its `message` is the resolver's bare, command-agnostic text, with none of the recovery copy
  *  every other surface shows. Render it the way `status` and `ps` do, dropping the rendered line's
  *  own `✗` because this one is already printed under the command's marker; a `ConnectRefusal`
- *  already carries that rendering as its message, and anything else is a real fault printed as is. */
+ *  already carries that rendering as its message. Keep a CommandFailure's recovery step too. */
 function refusal(e: unknown): string {
-  return isWorkspaceTargetError(e)
+  const text = isWorkspaceTargetError(e)
     ? renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "")
     : message(e);
-}
-
-/** The protection error plus its remedy. `refusal` keeps the sentence; the Next step is the
- *  chmod the operator runs, and dropping it leaves the refusal without a way to fix the folder. */
-function protectionFailure(e: unknown): string {
-  const text = refusal(e);
   const remedy = e instanceof CommandFailure ? e.remedy : undefined;
   return remedy === undefined ? text : `${text}\n\nNext\n  ${remedy}`;
 }
@@ -676,7 +678,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   try {
     assertConfigAncestorProtected();
   } catch (e) {
-    rt.err(c.red(`✗ config folder protection: ${protectionFailure(e)}`));
+    rt.err(c.red(`✗ config folder protection: ${refusal(e)}`));
     return 1;
   }
 
@@ -759,11 +761,11 @@ function targetArgv(target: Record<string, unknown>): string[] {
   return argv;
 }
 
-function reportVersion(current: string, latest: string, rt: UpdateRuntime): void {
+function reportVersion(current: string, latest: string, rt: UpdateRuntime, reconciled: boolean): void {
   const available = compareSemver(latest, current) > 0;
   rt.out(renderReport({ sections: [
     { title: "CLI version", blocks: [{ kind: "fields", rows: [["This process", current], ["Registry latest", latest], ["Update", available ? { text: "available", tone: "waiting" } : "no newer latest tag"]] }, { kind: "lines", lines: [{ text: "Running processes keep the generation they loaded. This version report does not prove every live service was upgraded.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: available ? "cotal update --self" : "cotal status", description: !available ? "Inspect the machine and selected space" : rt.checkout() ? "Install the validated CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the validated CLI and reconcile its matching extensions" }] }] },
+    ...(reconciled ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: available ? "cotal update --self" : "cotal status", description: !available ? "Inspect the machine and selected space" : rt.checkout() ? "Install the validated CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the validated CLI and reconcile its matching extensions" }] }] }] : []),
   ] }, "rich", process.stdout));
 }
 

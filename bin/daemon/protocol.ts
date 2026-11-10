@@ -106,9 +106,10 @@ export type CancelResult =
   | { readonly outcome: "not-found"; readonly attempt: string };
 
 /** The answer to `connect-check`: whether this daemon could ask the space to register it. It never
- *  means registered or connected. Every `message` is a fixed sentence; nothing remote is quoted. */
+ *  means registered or connected. Every `message` is a fixed sentence; `remedy` may name the
+ *  registered provider and selected daemon home, never provider response text. */
 export type ConnectCheckResult =
-  | { readonly outcome: "not-registered" | "not-user-auth" | "not-signed-in" | "unsupported-by-space" | "unreachable" | "refused" | "local-state-error"; readonly space: string; readonly message: string }
+  | { readonly outcome: "not-registered" | "not-user-auth" | "not-signed-in" | "unsupported-by-space" | "unreachable" | "refused" | "local-state-error"; readonly space: string; readonly message: string; readonly remedy?: string }
   | { readonly outcome: "account-mismatch"; readonly space: string; readonly pinnedAccountPublicKey: string; readonly observedAccountPublicKey: string; readonly message: string }
   | { readonly outcome: "ready-to-register"; readonly space: string; readonly endpoint: string; readonly instanceId: string; readonly accountPublicKey: string; readonly message: string };
 
@@ -132,6 +133,7 @@ export type ServiceConnectionState =
   | "not-requested" | "not-registered" | "not-signed-in" | "unsupported" | "approval-pending" | "refused" | "account-mismatch" | "conflict"
   | "connecting" | "connected" | "unavailable" | "ended" | "disconnected" | "local-state-error";
 export interface ServiceConnectionResult {
+  readonly remedy?: string;
   readonly manager?: HostedManager;
   readonly space: string;
   readonly state: ServiceConnectionState;
@@ -162,7 +164,12 @@ const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 export const ATTEMPT_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const MAX_CLIENT_ID = 128;
 /** A space name as it appears in a subject token. */
-const SPACE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+export const SPACE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Whether a registry name can be addressed by a scoped daemon request. */
+export function isDaemonSpaceName(space: unknown): space is string {
+  return typeof space === "string" && SPACE_PATTERN.test(space);
+}
 
 export type ParsedRequest = { readonly ok: true; readonly request: DaemonRequest } | { readonly ok: false; readonly id: string | null; readonly code: ProtocolErrorCode; readonly message: string };
 
@@ -199,7 +206,7 @@ export function parseRequest(line: string): ParsedRequest {
     return { ok: true, request: { v, id, op, attempt: obj.attempt } };
   }
   if (op === "manager-start" || op === "manager-status" || op === "connect-check" || op === "register" || op === "service-connect" || op === "service-disconnect" || op === "service-status") {
-    if (typeof obj.space !== "string" || !SPACE_PATTERN.test(obj.space)) return bad(id, "space must be 1-64 characters of [A-Za-z0-9_-]");
+    if (!isDaemonSpaceName(obj.space)) return bad(id, "space must be 1-64 characters of [A-Za-z0-9_-]");
     return { ok: true, request: { v, id, op, space: obj.space } };
   }
   if (typeof obj.idp !== "string") return bad(id, "idp must be the provider's auth base URL");

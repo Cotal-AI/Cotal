@@ -36,9 +36,10 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 `ext seed`, without `--force`.
 
 When an installed CLI is off PATH, `status` and `ps` suggestions use the absolute Node runtime
-and installed entry, with paths quoted for a POSIX shell. They do not require a source checkout or
-pnpm. PATH invocations keep `cotal`, npx invocations keep `npx cotal-ai`, and checkout invocations
-keep `pnpm cotal`.
+and installed entry, with paths quoted for a POSIX shell. For the POSIX installer, the suggestions
+also preserve its private Node/npm PATH and npm install prefix, so setup can seed connectors.
+They do not require a source checkout or pnpm. PATH invocations keep `cotal`, npx invocations keep
+`npx cotal-ai`, and checkout invocations keep `pnpm cotal`.
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
 the space this folder has registered, else the selected space, else, with nothing selected, the space
@@ -246,9 +247,11 @@ failure.
 
 A command whose `structured output` line also names `plain` takes `--plain`, which writes the same
 report as plain lines: no color, ASCII labels, and no marks other than the `!` that begins a warning
-or failure line on stderr. Plain writes these punctuation marks in ASCII wherever they appear: `·`
+or failure line on stderr. Plain writes these punctuation marks in ASCII in prose: `·`
 and long dashes as `-`, `…` as `...`, `→` and `↳` as `->`, and `§` as `section`. Other characters,
-such as the letters of a name or a message, are written as they are.
+such as the letters of a name or a message, are written as they are. Commands and matching
+backtick spans retain their literal punctuation, including punctuation in quoted paths. Control
+and formatting characters are still displayed as escapes for terminal safety.
 Under a locale whose character set is not UTF-8, as `LC_ALL`, then `LC_CTYPE`, then `LANG` decide,
 reports and error lines draw their marks and punctuation as plain does, and keep their color. With
 none of the three set, the marks are drawn in UTF-8. Windows consoles are always treated as UTF-8.
@@ -351,6 +354,19 @@ A command with a JSON output exits by its outcome, with or without `--json`:
 | `unknown`: it may have had an effect that cannot be attributed. Do not retry blindly | 3 | `OPERATION_UNKNOWN` |
 | `partial`: some of the work completed, or cleanup remains | 4 | `OPERATION_PARTIAL` |
 | `failed`: a confirmed failure with no cleanup left | 5 | `OPERATION_FAILED` |
+
+Local saves by `space create`, `config set` and `config unset`, and local persona creation
+report a full disk, an exceeded quota or a file-size limit as `OPERATION_FAILED`, exit 5.
+The error names the file, keeps the native code (`ENOSPC`, `EDQUOT` or `EFBIG`) and gives a
+next step before retrying. This includes a failure to create the project's initial `.cotal`
+directory. A failed atomic save leaves the destination unchanged. A persona
+draft write failure is not invalid input. If `space create` saved its prepared record before
+the default persona failed, including creation of its `agents` directory, it reports
+`OPERATION_PARTIAL`, exit 4, names what was saved and
+warns that the persona file may be incomplete. Repair that file before starting the space.
+On POSIX, a native quota error is reported as `EDQUOT` even when Node does not name it.
+Directory creation preserves that native cause without treating a missing parent or a dangling
+symlink as a quota failure.
 
 An error such a command does not classify is `unknown`, exit 3. Other commands still exit 1 on any
 failure. A command run from a folder that no longer exists refuses with `USAGE_INVALID`, exit 1,

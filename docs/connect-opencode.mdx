@@ -14,7 +14,6 @@ First [start a mesh](run-a-mesh.mdx).
 <Callout type="warn" title="Beta connector">
 Session resume and selected MCP-server sharing are unsupported.
 Spawned OpenCode agents allow tool execution without approval and inherit the operator's configured MCP servers.
-OpenCode 2.x also requires `--no-events`, so it cannot join a registration that requires events.
 </Callout>
 
 ## Prepare OpenCode [#no-install-needed]
@@ -28,16 +27,10 @@ The OpenCode choice in `cotal setup` records your preference, and the connector 
 
 ## Launch OpenCode [#spawn-it]
 
-For OpenCode 1.x, run from the space's project folder:
+Run from the space's project folder:
 
 ```bash
 cotal spawn --harness opencode
-```
-
-For OpenCode 2.x, opt out of the unsupported event plane:
-
-```bash
-cotal spawn --harness opencode --no-events
 ```
 
 A bare spawn runs OpenCode in this terminal. `--on <instance>` selects a manager and attaches when its runtime streams a terminal.
@@ -49,7 +42,6 @@ cotal ps
 cotal attach researcher
 ```
 
-Keep `--no-events` on that launch if you use 2.x.
 For direct execution, add `--foreground` instead of `--detach`.
 To select a persona file, use `--file ./researcher.md`.
 You can also set `agent: opencode` in an [agent file](agent-files.mdx) or a [team manifest](manifest.mdx).
@@ -71,13 +63,16 @@ cotal spawn --harness opencode --model <provider/model> --variant <variant>
 ```
 
 On 2.x, `cotal models` cannot list the catalog.
-Pass a model ID supported by your configured OpenCode server, and keep `--no-events` on the spawn.
+Pass a model ID supported by your configured OpenCode server.
 
 You can also set `model:` and `variant:` in the agent file.
 Explicit flags override those fields.
 Before joining the mesh, the connector checks an explicit model against the server that will run the session.
 A model visible only in the CLI catalog can still be refused.
-Cold startup has a two-minute readiness window.
+Cold startup waits up to two minutes for the Cotal session, with five more seconds for the manager to receive a boot failure.
+On OpenCode 1.19.5, a model-catalog lookup on a fresh home can leave dependency-install locks that OpenCode recovers after about a minute.
+Each launch keeps its server boot output in `<workspace>/.cotal/opencode/<name>/boot.<token>.log`, including failed launches.
+If startup fails, read that log on the execution host, correct any setup error, then launch again.
 
 ## Work in the session [#how-it-binds]
 
@@ -93,21 +88,20 @@ See the [OpenCode connector reference](opencode-connector-reference.mdx) for con
 
 ## Watch structured events [#event-plane]
 
-OpenCode 1.x publishes run boundaries, assistant text, and tool activity to `events.<owner>.<actor>` by default.
+OpenCode publishes run boundaries, assistant text, and tool activity to `events.<owner>.<actor>` by default, on 1.x and 2.x.
 It excludes user text, tool arguments, and tool results.
 Reasoning publication is off by default.
+On 2.x it publishes the session the connector launched, and a session started with `/new` is not published.
 Use [Watch a mesh](watch-a-mesh.mdx) to observe agents and the [event reference](opencode-connector-reference.mdx#event-plane) for the stream's limits.
 
 On a space that permits opting out, add `--no-events` to disable publication.
-OpenCode 2.x requires that option because its event plane is unsupported.
-A registration that requires events cannot use 2.x.
 
 ## Check the limits [#limits]
 
 - Session resume and exact-session continuation are unsupported.
 - `connectors.opencode.mcpServers` is unsupported. Agents inherit the operator's MCP servers through the config merge, without a Cotal filter for selecting a subset.
 - Spawned agents use `permission: "allow"`. Tool calls do not wait for human approval.
-- OpenCode 2.x has no Cotal event plane, model catalog listing, or `/new` session handoff. Pass `--no-events` and select the model explicitly when needed.
+- OpenCode 2.x has no model catalog listing or `/new` session handoff. Select the model explicitly when needed.
 
 ## Continue [#see-also]
 

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, eventChannel, launchArmsEvents, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 import { opencodeLine } from "./opencode-line.js";
+import { OPENCODE_READINESS_TIMEOUT_MS } from "./startup.js";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin/index.js`). A DIRECTORY target, not a
  *  file: OpenCode 2.x drops a file plugin path (`configured plugin path must be a directory`)
@@ -134,7 +135,7 @@ export const opencodeConnector: Connector = {
   supportsPrompt: true, // OpenCode serves a first turn from an initial message — see buildLaunch
   // OpenCode can spend longer than the generic 30s window bootstrapping a cold server before
   // loading the plugin; readiness also checks that server's provider list before mesh presence.
-  readinessTimeoutMs: 120_000,
+  readinessTimeoutMs: OPENCODE_READINESS_TIMEOUT_MS,
   // Both plugins wake the session for a run turn and hand a once task over at most once.
   supportsTurnRelay: true,
   listModels: listOpenCodeModels,

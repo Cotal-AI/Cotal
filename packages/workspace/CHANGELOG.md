@@ -1,5 +1,28 @@
 # @cotal-ai/workspace
 
+## 0.155.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.155.2
+
+## 0.155.1
+
+### Patch Changes
+
+- 435b339: Daemon recovery commands retain the selected daemon home, space and known sign-in provider.
+  Refusals expose actionable remedies in terminal and JSON output, and service-only setup retries
+  keep their mode.
+  Recovery commands also preserve space names beginning with a hyphen when copied into a shell.
+  Plain terminal output preserves literal command punctuation instead of changing quoted paths.
+- c43bcd9: Local write failures now name the file, explain the storage limit and give a next step.
+  Space preparation, preferences and local persona saves report storage failures separately from
+  invalid input and unknown outcomes. A failed default-persona seed reports the prepared record
+  that was already saved and warns that the persona file may be incomplete. Initial project
+  directory creation failures carry the same storage diagnosis and retry guidance.
+  Native POSIX quota errors are recognized even when Node lacks their symbolic error name.
+- @cotal-ai/core@0.155.1
+
 ## 0.155.0
 
 ### Patch Changes

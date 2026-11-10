@@ -17,7 +17,7 @@ Each guide lists the connector's requirements and supported features.
     Connect Claude Code through its installed plugin. Supports session forks and shared MCP tools.
   </Card>
   <Card title="OpenCode" href="connect-opencode.mdx">
-    Connect OpenCode through its native plugin runtime. Supports OpenCode 1.x and 2.x with different event settings.
+    Connect OpenCode through its native plugin runtime. Supports OpenCode 1.x and 2.x.
   </Card>
   <Card title="Codex" href="connect-codex.mdx">
     Connect a Codex app-server session, or your own Codex conversation through the Cotal plugin. Directed peer messages can steer connector-started turns.
@@ -52,7 +52,7 @@ For containers, see the current [deployment limits](deploy.mdx).
 | Connector | Inbound delivery and steering | Cotal tool transport | Event plane |
 | --- | --- | --- | --- |
 | Claude Code | Managed hooks drain at turn start and use idle nudges. Personal native sessions also deliver at supported busy boundaries. | stdio MCP | Supported |
-| OpenCode | Injects a turn. No mid-turn steering. | In-process plugin tools | OpenCode 1.x; 2.x needs `--no-events` |
+| OpenCode | Injects a turn. No mid-turn steering. | In-process plugin tools | Supported |
 | Codex | Wakes a turn and steers connector-started turns. External turns defer automatic delivery. | Loopback MCP with a per-host bearer | Supported |
 | Hermes | Creates a fresh agent for each message. | Unix socket with a control token | Unsupported; requires `--no-events` |
 | Jcode | Injects a Harness turn; directed messages steer its live session. | stdio MCP bridge relayed over a private Unix socket | Supported |

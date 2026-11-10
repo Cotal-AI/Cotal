@@ -1,5 +1,25 @@
 # @cotal-ai/auth
 
+## 0.155.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.155.2
+  - @cotal-ai/lang@0.155.2
+  - @cotal-ai/workspace@0.155.2
+
+## 0.155.1
+
+### Patch Changes
+
+- 6fb9f63: Daemon sign-in now reports an initial device-authorization refusal without suggesting a session was saved.
+  It exits 2 with guidance to check the provider auth base URL and client ID. Failures that may occur after persistence keep their warning.
+- Updated dependencies [435b339]
+- Updated dependencies [c43bcd9]
+  - @cotal-ai/workspace@0.155.1
+  - @cotal-ai/core@0.155.1
+  - @cotal-ai/lang@0.155.1
+
 ## 0.155.0
 
 ### Patch Changes

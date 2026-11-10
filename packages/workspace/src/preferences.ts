@@ -5,6 +5,7 @@ import { CommandFailure, isCommandFailure, type OutputWarning } from "./output.j
 import { localRecordAccess, protectedLocalDirectory, shellPath } from "./protected-records.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
 import { chatNameProblem } from "./chat-name.js";
+import { localWriteFailure } from "./local-write.js";
 
 /**
  * Personal workstation preferences: defaults a person sets for their own commands, saved for the
@@ -326,7 +327,7 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
         target: { path: dir },
         remedy: existsSync(dir) ? `make ${dir} writable by you, for example with \`chmod u+w ${shellPath(dir)}\`` : `make ${dirname(dir)} writable by you, or create ${dir} yourself`,
       });
-    throw e;
+    throw localWriteFailure(e, preferencesPath(), scope.space === undefined ? {} : { space: scope.space });
   }
   try {
     const current = readPreferences();
@@ -346,7 +347,8 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
     }
     const next: Preferences = { schemaVersion: PREFERENCES_SCHEMA_VERSION, revision: current.revision + 1, defaults, spaces };
     const old = localRecordAccess() === "posix" ? lstatSync(preferencesPath(), { throwIfNoEntry: false }) : undefined;
-    writeSecretFileAtomic(preferencesPath(), `${JSON.stringify(next, null, 2)}\n`);
+    try { writeSecretFileAtomic(preferencesPath(), `${JSON.stringify(next, null, 2)}\n`); }
+    catch (error) { throw localWriteFailure(error, preferencesPath(), scope.space === undefined ? {} : { space: scope.space }); }
     cached = { path: preferencesPath(), prefs: next };
     const oldMode = old ? old.mode & 0o777 : undefined;
     return { changed: true, revision: next.revision, ...(oldMode !== undefined && oldMode !== 0o600 ? { replacedMode: oldMode } : {}) };

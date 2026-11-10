@@ -553,8 +553,8 @@ if (process.platform !== "win32") {
   const json = run(["status", "--space", "nosuch", "--json"], onPath);
   const machine = json.envelope?.result?.machine;
   check("status names the old nats-server on PATH, its version and why up refuses it", json.status === 0 && machine?.nats === "path" && machine.natsServer?.path === old && machine.natsServer.version === "2.2.0" && named.test(machine.natsProblem ?? ""), machine);
-  const plain = run(["status", "--space", "nosuch", "--plain"], onPath);
-  check("the Broker executable row says so", new RegExp(`^ {2}Broker executable: +${named.source}$`, "m").test(plain.stdout), shown(plain));
+  const plain = run(["status", "--space", "nosuch", "--plain", "--wide"], onPath);
+  check("the full Broker executable row says so", new RegExp(`^ {2}Broker executable: +${named.source}$`, "m").test(plain.stdout), shown(plain));
   const port = await freePort();
   const created = run(["space", "create", "gate", "--root", project, "--json"], onPath);
   check("space create prepares the project", created.status === 0, shown(created));

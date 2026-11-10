@@ -7,7 +7,7 @@ import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { loginViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
 import { applyInstall, planUninstall, startInstalled } from "./install.js";
-import { encode, type DaemonResponse } from "./protocol.js";
+import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
 
 export type DesktopRequest =
   | { [K in "about" | "status" | "install"]: { readonly op: K } }["about" | "status" | "install"]
@@ -25,7 +25,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
   if (simple) return { op: o.op as "about" | "status" | "install" };
   if (scoped) {
-    if (typeof o.space !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(o.space)) throw new Error("invalid space");
+    if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
     return { op: o.op as "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status", space: o.space };
   }
   if (o.op === "spaces") {
@@ -101,7 +101,8 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
           emit({ v: 1, event: "result", ok: true, result: { installed: true, status: status.result } });
           return;
         } catch (e) {
-          if (!(e instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(e.code) || Date.now() >= deadline) throw e;
+          if (!(e instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(e.code)) throw e;
+          if (Date.now() >= deadline) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the installed daemon did not answer within 15 seconds of being started", { native: { code: "NOT_ANSWERING" } });
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
@@ -123,6 +124,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
   } catch (e) {
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
     const message = code === "NOT_RUNNING" ? "The daemon is not running. Install its background service first."
+      : e instanceof CommandFailure && e.code === "DEPENDENCY_UNAVAILABLE" && e.native?.code === "NOT_ANSWERING" ? "The background service was installed and a start was requested, but the daemon did not answer within 15 seconds. Use cotal daemon status for diagnostics."
       : code === "NO_RUNTIME_DIR" ? "The daemon runtime path is unavailable or too long. On Linux, check XDG_RUNTIME_DIR for the intended operating-system user."
       : code === "UNSUPPORTED_PLATFORM" ? "This platform does not have the required native daemon support."
       : code === "PEER_UID_MISMATCH" || code === "PEER_NOT_LOCK_OWNER" ? "The local daemon identity could not be verified. The requested change was not sent."
@@ -140,7 +142,8 @@ export async function exchangeDesktopRequest(
   try {
     const id = randomUUID().replaceAll("-", "");
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request }));
-    const reply = JSON.parse(await readLine(sock, 130_000)) as DaemonResponse;
+    // Service connection includes the same cold-readiness exchange as the ordinary CLI client.
+    const reply = JSON.parse(await readLine(sock, 160_000)) as DaemonResponse;
     if (reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || "event" in reply) throw new Error("mismatched daemon reply");
     return reply;
   } finally { sock.destroy(); }

@@ -24,9 +24,11 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { acquireLock } from "@cotal-ai/core/advisory-lock";
+import { openPrivateAppend } from "@cotal-ai/core/secret-fs";
+import { OPENCODE_BOOT_TIMEOUT_MS } from "./startup.js";
 import { opencodeLine } from "./opencode-line.js";
 
 /** The opencode binary to spawn. `COTAL_OPENCODE_BIN` overrides. On Windows, `opencode` on PATH is
@@ -204,7 +206,16 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // the next launch cannot see, so the record has to exist before the serve does: the process writes
   // its own pid and only then becomes the serve, which keeps that pid. Windows has no exec, so there
   // the launcher records it after the spawn.
-  const pidFile = join(agentHome, `serve.${randomBytes(16).toString("hex")}.pid`);
+  const launchToken = randomBytes(16).toString("hex");
+  const pidFile = join(agentHome, `serve.${launchToken}.pid`);
+  const bootLog = join(agentHome, `boot.${launchToken}.log`);
+  const bootFd = openPrivateAppend(bootLog);
+  process.on("exit", () => closeSync(bootFd));
+  const bootOutput = (d: Buffer | string): void => {
+    writeFileSync(bootFd, d);
+    process.stderr.write(d);
+  };
+  bootOutput(`OpenCode boot log: ${bootLog}\n`);
   const serveArgv: [string, ...string[]] = [BIN, "serve", "--hostname", "127.0.0.1", "--port", port];
   const [serveCommand, ...serveArgs]: [string, ...string[]] = process.platform === "win32"
     ? serveArgv
@@ -223,11 +234,13 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   });
   if (process.platform === "win32") writeFileSync(pidFile, String(serve.pid));
   serve.on("exit", () => rmSync(pidFile, { force: true }));
-  // A graceful stop signals only this process and can arrive anywhere in the minute-long boot below,
+  // A graceful stop can arrive anywhere in the two-minute boot below,
   // so its teardown is installed with the serve. The exit handlers below end this process.
   let tui: ChildProcess | undefined;
+  let stopping = false;
   for (const sig of ["SIGINT", "SIGTERM"] as const)
     process.on(sig, () => {
+      stopping = true;
       void terminate(serve);
       if (tui) void terminate(tui);
     });
@@ -238,7 +251,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   let attached = false;
   let onSession: ((id: string) => void) | undefined;
   const scan = (d: Buffer): void => {
-    if (!attached) process.stderr.write(d);
+    if (!attached) bootOutput(d);
     if (!sessionId) {
       const m = d.toString().match(/\[cotal-session\] (\S+)/);
       if (m) {
@@ -252,8 +265,13 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // Set once the boot has failed, so the serve's own clean exit on our SIGTERM cannot turn that
   // failure into exit 0: this handler runs before the abort's own `process.exit(1)` (#3878).
   let bootFailed = false;
-  serve.on("exit", (code, signal) => {
-    if (!attached) process.exit(bootFailed ? 1 : (code ?? (signal ? 1 : 0))); // died before the TUI came up
+  serve.on("close", (code, signal) => {
+    if (!attached) {
+      if (!bootFailed && !stopping) bootOutput(
+        `[cotal-connector] OpenCode exited before its Cotal session was ready (code ${code ?? signal}). Check the retained boot log for setup errors, then launch again.\n`,
+      );
+      process.exit(bootFailed ? 1 : (code ?? (signal ? 1 : 0)));
+    }
   });
 
   // Poke the server until the plugin's session handshake lands (lazy plugin load → mesh join +
@@ -264,8 +282,9 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // the loop on it forever (undici queues later requests behind it on the pooled connection).
   const auth = `Basic ${Buffer.from(`${USERNAME}:${SECRET}`).toString("base64")}`;
   const pokePath = line === 2 ? "/api/config" : "/session";
+  const bootDeadline = Date.now() + OPENCODE_BOOT_TIMEOUT_MS;
   void (async () => {
-    for (let i = 0; i < 300 && !sessionId; i++) {
+    while (Date.now() < bootDeadline && !sessionId && !bootFailed && !stopping) {
       try {
         await fetch(`${url}${pokePath}`, { headers: { authorization: auth }, signal: AbortSignal.timeout(1500) });
       } catch {
@@ -278,16 +297,16 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // Wait for the agent's session, then attach a foreground TUI to it.
   const id = await new Promise<string | undefined>((resolve) => {
     if (sessionId) return resolve(sessionId);
-    onSession = resolve;
-    setTimeout(() => resolve(sessionId), 60_000);
+    const timer = setTimeout(() => resolve(sessionId), Math.max(0, bootDeadline - Date.now()));
+    onSession = (id) => { clearTimeout(timer); resolve(id); };
   });
   if (!id) {
-    process.stderr.write(
-      `[cotal-connector] serve: agent session never came up (~60s) — aborting. Check the boot log above for plugin/mesh errors (OPENCODE_DB=${dbPath})\n`,
-    );
     bootFailed = true;
+    bootOutput(
+      `[cotal-connector] OpenCode session not ready after ${OPENCODE_BOOT_TIMEOUT_MS / 1000}s: first-run dependencies or plugin/mesh setup did not finish. Check the retained boot log, then launch again.\n`,
+    );
     await terminate(serve);
-    process.exit(1);
+    return; // close drains both output pipes and exits with the recorded boot failure
   }
 
   // Headless mode (COTAL_SERVE_HEADLESS=1): no foreground TUI. Hand the running server back to a

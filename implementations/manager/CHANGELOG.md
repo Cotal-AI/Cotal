@@ -1,5 +1,24 @@
 # @cotal-ai/manager
 
+## 0.155.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.155.2
+  - @cotal-ai/seat@0.155.2
+  - @cotal-ai/workspace@0.155.2
+
+## 0.155.1
+
+### Patch Changes
+
+- bfa37d3: Pin installed first-party connectors to the generation loaded by every Manager, including ordinary up and manager-start processes. Recheck the manifest before launches through cached providers and refuse mismatches with the loaded and installed versions and a restart remedy. Existing seats and independently versioned third-party connectors remain available.
+- Updated dependencies [435b339]
+- Updated dependencies [c43bcd9]
+  - @cotal-ai/workspace@0.155.1
+  - @cotal-ai/core@0.155.1
+  - @cotal-ai/seat@0.155.1
+
 ## 0.155.0
 
 ### Patch Changes
