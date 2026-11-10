@@ -6,6 +6,8 @@ The Tauri app controls the stock `cotal daemon`. It bundles that CLI and Node 24
 
 Open Cotal, set up its background service, and sign in through your provider's browser approval page. The daemon receives and stores the login session. Choose a discovered space and request its owner's approval, then connect. Local readiness and pending approval are not shown as a connected machine. Disconnect closes the selected connection; it does not revoke remote grants.
 
+Refresh and the status poll keep the daemon's pending approval state visible. After approval, choose Request connection again. While the selected space is connected, Request connection is disabled and sends no registration request. Delayed status replies cannot replace a newer connection action or selection.
+
 The app's connection controls do not start a Manager. The stock terminal command `cotal daemon setup --space <space> --idp <url>` reconciles stock connectors, prepares the hosted Manager's default persona, and hosts that space's Manager. It finishes when authorized callers can launch agents on this computer. Machine-service owner approval is reported separately and does not delay launch-readiness. `--no-manager` keeps the connection-only path. The daemon restarts hosted Managers after crashes and resumes them after its own restart. Disconnecting a space stops its hosted Manager and removes that intent. Uninstalling does this for every hosted space.
 
 The app does not replace existing daemon identities, change grants, or claim remote vitals that the registered service does not expose. Sign-out, identity-contract migration, remote management and signed automatic updates remain separate from these controls.

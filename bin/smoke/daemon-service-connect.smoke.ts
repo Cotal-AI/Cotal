@@ -9,11 +9,12 @@
  * stock host, as the register smoke does. That is fixture authority over a fixture space.
  *
  * Cells (each asserts counts):
- *  C1  connect before approval: `approval-pending`, never connected; no renewal record; the space
+ *  C1  register and connect before approval: `approval-pending`, never connected; no renewal record; the space
  *      reports no ready status;
  *  C2  after the owner's approval: `connected`, and the space independently reads this instance as
  *      `ready` through the stock door; status agrees offline; the renewal record is 0600;
  *  C3  two concurrent connects while connected share it: both connected, still one renewal record;
+ *      registration replay does not replace the live connection state;
  *  C4  connect for a refused proposal: `refused`; for a space without service endpoints: not
  *      connected;
  *  C5  explicit disconnect: `disconnected`, status agrees, and the recorded connect intent is gone,
@@ -424,6 +425,7 @@ try {
   try {
     await cell("C1 connect before approval is approval-pending, never connected", async () => {
       await ask(paths.socket, { op: "register", space: ON });
+      check("C1 registration alone retains approval-pending for offline status", stateOf(await statusS(ON)) === "approval-pending");
       const r = await connectS(ON);
       check("C1 approval-pending", r.ok === true && stateOf(r) === "approval-pending", r);
       check("C1 no renewal record written for this space", !filesUnder(daemonDir).some((p) => p.includes("service-renewal")), filesUnder(daemonDir));
@@ -494,6 +496,8 @@ try {
       const [x, y] = await Promise.all([connectS(ON), connectS(ON)]);
       check("C3 both connected", stateOf(x) === "connected" && stateOf(y) === "connected", { x, y });
       check("C3 still exactly one renewal record", filesUnder(daemonDir).filter((p) => p.includes("service-renewal") && p.endsWith(".json")).length === 1);
+      await ask(paths.socket, { op: "register", space: ON });
+      check("C3 registration replay keeps the live connection state", stateOf(await statusS(ON)) === "connected");
     });
 
     await cell("C4 a refused proposal is refused, never connected", async () => {

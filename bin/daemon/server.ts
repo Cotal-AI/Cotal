@@ -25,7 +25,6 @@ import { claimSocketPath, generationOf, holdLifetime, type HeldLifetime } from "
 import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
-import { registerDaemon } from "./register.js";
 import { createServiceConnections } from "./service.js";
 import { homeCotalDir, isCommandFailure } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
@@ -260,7 +259,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "register") {
-        replyTask(withIdpSessionDir(machineHome, () => registerDaemon(req.space, machineHome)).catch((): RegisterResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the registration request; nothing is connected" }))
+        replyTask(withIdpSessionDir(machineHome, () => services.register(req.space)).catch((): RegisterResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the registration request; nothing is connected" }))
           .then((result) => {
             counters.registersAnswered++;
             return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
