@@ -534,7 +534,9 @@ const SEAMS: Seam[] = [
   // 390/307 -> 400/314: main landed ten calls without booking them: auth/smoke/registry-host two,
   // cli/smoke/app-identity-live and core/smoke/endpoint-family-scan one each,
   // runtime/smoke/run-command three, and manager/src/manager.ts three. All ten state `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 400, untypecheckedSites: 314 },
+  // 400/314 -> 402/316: main landed two more calls without booking them: bin/smoke/daemon-service-connect
+  // and delivery/smoke/deliver-pending-sender add one each. Both state `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 402, untypecheckedSites: 316 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
