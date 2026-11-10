@@ -284,7 +284,7 @@ try {
   const foreign = await run(["history", "general", "--json", "--creds", sameName, "--space", space, "--server", servers]);
   check("a rejected credential naming this registered space names its different local identity and the same-profile mint",
     foreign.status === 2 && foreign.envelope?.error?.code === "PERMISSION_DENIED" && foreign.envelope.error.message.includes(`space "${space}" has a different local identity`)
-      && foreign.envelope.error.remedy?.includes("cotal auth mint <label> --profile observer --out <new file>"), shown(foreign));
+      && Boolean(foreign.envelope.error.remedy?.includes("cotal auth mint <label> --profile observer --out <new file>")), shown(foreign));
   // With that space registered here at another address, a `--server` at this broker is the mismatch:
   // the next step drops it, and following the first step with `--server` kept says so again.
   const inHome = (f: () => void) => {
