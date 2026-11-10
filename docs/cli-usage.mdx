@@ -355,6 +355,7 @@ directory. A failed atomic save leaves the destination unchanged. A persona
 draft write failure is not invalid input. If `space create` saved its prepared record before
 the default persona failed, it reports `OPERATION_PARTIAL`, exit 4, names what was saved and
 warns that the persona file may be incomplete. Repair that file before starting the space.
+On POSIX, a native quota error is reported as `EDQUOT` even when Node does not name it.
 
 An error such a command does not classify is `unknown`, exit 3. Other commands still exit 1 on any
 failure. A command run from a folder that no longer exists refuses with `USAGE_INVALID`, exit 1,

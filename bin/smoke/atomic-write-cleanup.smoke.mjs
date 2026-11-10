@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSuite, skipSuite } from "./sentinel.mjs";
@@ -105,6 +105,17 @@ try {
       assert.match(result.remedy, /retry/);
     }
     for (const error of [new Error("validation failed"), null, { code: "EACCES" }, { code: "__proto__" }])
+      assert.throws(() => localWriteFailure(error, "/destination/record"), thrown => thrown === error);
+  });
+
+  test("native numeric quota errno is classified without parsing its message", () => {
+    const error = Object.assign(new Error("unmapped native errno"), { code: `Unknown system error ${-constants.errno.EDQUOT}`, errno: -constants.errno.EDQUOT });
+    const result = localWriteFailure(error, "/destination/record");
+    assert.equal(result.code, "OPERATION_FAILED");
+    assert.equal(result.native.code, "EDQUOT");
+    assert.equal(result.cause, error);
+    assert.match(result.remedy, /quota.*retry/);
+    for (const error of [{ code: "Unknown system error", errno: -constants.errno.EIO }, { errno: String(-constants.errno.EDQUOT) }, { errno: constants.errno.EDQUOT }])
       assert.throws(() => localWriteFailure(error, "/destination/record"), thrown => thrown === error);
   });
 

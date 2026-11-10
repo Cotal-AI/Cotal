@@ -1,9 +1,13 @@
+import { constants } from "node:os";
 import { CommandFailure } from "./output.js";
 
 /** Report a failed local save at its destination, keeping storage errors separate from bad input.
  *  Call only where the requested save is known not to have completed. Unrecognized errors propagate. */
 export function localWriteFailure(error: unknown, path: string, target: object = {}): CommandFailure {
-  const code = (error as NodeJS.ErrnoException | null)?.code;
+  const native = error as NodeJS.ErrnoException | null;
+  // libuv may omit EDQUOT from its symbolic error table. On POSIX it still preserves -errno.
+  const quota = constants.errno.EDQUOT;
+  const code = process.platform !== "win32" && typeof quota === "number" && native?.errno === -quota ? "EDQUOT" : native?.code;
   const reasons: Record<string, { reason: string; remedy: string }> = {
     ENOSPC: { reason: "no space left on the device", remedy: "free space on the destination's filesystem, then retry" },
     EDQUOT: { reason: "the disk quota was exceeded", remedy: "free space or raise the disk quota, then retry" },
