@@ -105,7 +105,7 @@ export interface UpdateRuntime {
   stderr(message: string): void;
 }
 
-const runtime: UpdateRuntime = {
+export const updateRuntime: UpdateRuntime = {
   env: process.env,
   pid: process.pid,
   parentPid: process.ppid,
@@ -140,7 +140,7 @@ const runtime: UpdateRuntime = {
   stderr: (message) => void process.stderr.write(message),
 };
 
-export async function update(args: ParsedArgs, rt: UpdateRuntime = runtime): Promise<void> {
+export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime): Promise<void> {
   validateUpdateArguments(args);
   if (args.values.check === true) return checkUpdate(args, rt);
   if (args.values.self === true && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) {
@@ -207,7 +207,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
 }
 
 /** Injectable command body: production keeps one process seam; the smoke covers every decision branch. */
-export async function executeUpdate(self: boolean, rt: UpdateRuntime = runtime, target: Record<string, unknown> = {}): Promise<number> {
+export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}): Promise<number> {
   const current = rt.version();
   const child = childBinding(rt);
   if (child.kind === "invalid") {

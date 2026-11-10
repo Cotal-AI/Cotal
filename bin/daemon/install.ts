@@ -195,6 +195,7 @@ export interface NativeService {
   register(plan: NativePlan): void;
   check(receipt: UnitReceipt): void;
   start(receipt: UnitReceipt): void;
+  restart(receipt: UnitReceipt): void;
   remove(receipt: UnitReceipt): void;
 }
 
@@ -350,6 +351,17 @@ export function startInstalled(paths: DaemonPaths): UninstallPlan {
   const { receipt, plan, service } = recordedUnit(paths);
   if (service) service.start(receipt);
   else submitSystemdUnitControl("start", plan.unit);
+  return plan;
+}
+
+/** Restart only the source and native job recorded for this daemon. */
+export function restartInstalled(paths: DaemonPaths): UninstallPlan {
+  const { receipt, plan, service } = recordedUnit(paths);
+  if (service) service.restart(receipt);
+  else {
+    submitSystemdUnitControl("stop", plan.unit);
+    submitSystemdUnitControl("start", plan.unit);
+  }
   return plan;
 }
 

@@ -22,7 +22,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
 import { claimSocketPath, generationOf, holdLifetime, type HeldLifetime } from "./lifetime.js";
-import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
+import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { registerDaemon } from "./register.js";
@@ -61,6 +61,8 @@ export interface RunningDaemon {
   /** Whether the socket directory was created by this start; `none` for a Windows pipe. */
   readonly dirOutcome: "created" | "existing" | "none";
   status(): DaemonStatus;
+  prepareGenerationRestart(): Promise<void>;
+  abortGenerationRestart(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -182,18 +184,31 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       const req = parsed.request;
+      const managerResult = (run: () => DaemonStatus | HostedManager | ServiceConnectionResult | Promise<DaemonStatus | HostedManager | ServiceConnectionResult>) => {
+        void Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), () => {
+          counters.requestsRefused++;
+          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "MANAGER_UNAVAILABLE", message: "the daemon could not complete the Manager operation; inspect its hosting records and retry" } });
+        });
+      };
       if (req.op === "manager-start" || req.op === "manager-status") {
-        const result = req.op === "manager-start" ? managers.start(req.space) : Promise.resolve(managers.status(req.space));
-        void result.then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }));
+        managerResult(() => req.op === "manager-start" ? managers.start(req.space) : managers.status(req.space));
         return;
       }
       if (req.op === "managers-stop") {
-        void Promise.all(managers.all().map((manager) => managers.disconnect(manager.space))).then(() => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result: status() }));
+        managerResult(async () => { await Promise.all(managers.all().map((manager) => managers.disconnect(manager.space))); return status(); });
+        return;
+      }
+      if (req.op === "managers-prepare-restart" || req.op === "managers-abort-restart") {
+        managerResult(async () => {
+          if (req.op === "managers-prepare-restart") await managers.prepareGenerationRestart();
+          else await managers.abortGenerationRestart();
+          return status();
+        });
         return;
       }
       if (req.op === "status") {
         counters.statusAnswered++;
-        void write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result: status() });
+        managerResult(status);
         return;
       }
       if (req.op === "spaces") {
@@ -230,9 +245,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
             return services.disconnect(req.space);
           })
             .catch((): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: "the daemon could not complete the request; nothing is connected" }));
-        void run.then((result) => {
+        managerResult(async () => {
+          const result = await run;
           counters.serviceAnswered++;
-          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result: { ...result, manager: managers.status(req.space) } });
+          return { ...result, manager: managers.status(req.space) };
         });
         return;
       }
@@ -324,7 +340,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   // Resume what this daemon home was connected to before it stopped. This runs after the endpoint
   // is published, so a space that is slow or unreachable never delays readiness; `service-status`
   // reports each one's real state. A space with no recorded intent is not connected.
-  const managersResumed = managers.resume();
+  const managersResumed = managers.resume().catch(() => { log("daemon: hosted Manager records could not be resumed; inspect daemon status and the hosting records"); });
   const resumed = withIdpSessionDir(machineHome, () => services.resume()).then((spaces) => {
     counters.connectionsResumed = spaces.length;
     if (spaces.length) log(`daemon: resumed ${spaces.length} recorded service connection(s)`);
@@ -351,7 +367,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     return closed;
   };
 
-  return { paths, counters, dirOutcome, status, close };
+  return { paths, counters, dirOutcome, status, close, async prepareGenerationRestart() { await managersResumed; await managers.prepareGenerationRestart(); }, abortGenerationRestart: () => managers.abortGenerationRestart() };
 }
 
 /** Linux and macOS: publish the unix socket, and on close remove it only if it is still ours. */

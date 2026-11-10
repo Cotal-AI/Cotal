@@ -1,6 +1,7 @@
 /** Space discovery stays in the daemon, next to the sign-in that authorizes it. */
 import { prepareCatalogTargets } from "@cotal-ai/cli";
 import { readMeshRegistry } from "@cotal-ai/workspace";
+import { listIdpAccounts } from "@cotal-ai/auth";
 import type { DaemonSpaces } from "./protocol.js";
 
 export async function desktopSpaces(sessionDir: string, refresh: boolean): Promise<DaemonSpaces> {
@@ -18,6 +19,7 @@ export async function desktopSpaces(sessionDir: string, refresh: boolean): Promi
     refresh: outcome,
     unreadable: unusable.length,
     collisions,
+    signedInProviders: listIdpAccounts(sessionDir).filter((account) => account.expiresAt > Math.floor(Date.now() / 1000)).map((account) => account.idp),
     spaces: entries.map((entry) => ({
       space: entry.space,
       label: entry.catalogName ?? entry.space,

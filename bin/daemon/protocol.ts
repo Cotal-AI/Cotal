@@ -14,7 +14,7 @@
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
-export const DAEMON_OPS = ["status", "spaces", "manager-start", "manager-status", "managers-stop", "login-start", "login-cancel", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+export const DAEMON_OPS = ["status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
 export type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
@@ -23,6 +23,8 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "manager-start": { required: ["space"], optional: [] },
   "manager-status": { required: ["space"], optional: [] },
   "managers-stop": { required: [], optional: [] },
+  "managers-prepare-restart": { required: [], optional: [] },
+  "managers-abort-restart": { required: [], optional: [] },
   spaces: { required: [], optional: ["refresh"] },
   "login-start": { required: ["idp"], optional: ["clientId"] },
   "login-cancel": { required: ["attempt"], optional: [] },
@@ -37,6 +39,8 @@ export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-start"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-status"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-stop" }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-prepare-restart" }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-abort-restart" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "spaces"; readonly refresh?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "status" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-start"; readonly idp: string; readonly clientId?: string }
@@ -49,7 +53,7 @@ export type DaemonRequest =
 
 export type ProtocolErrorCode =
   | "BAD_JSON" | "NOT_OBJECT" | "BAD_VERSION" | "UNKNOWN_FIELD" | "BAD_ID" | "UNKNOWN_OP" | "LINE_TOO_LONG"
-  | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "SPACES_UNAVAILABLE";
+  | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE";
 
 export interface DaemonStatus {
   readonly managers?: readonly HostedManager[];
@@ -71,6 +75,10 @@ export interface HostedManager {
   readonly reason?: string;
   readonly lastRefusal?: string;
   readonly next?: string;
+  readonly lastStop?: "graceful" | "terminated" | "killed";
+  readonly observedAt?: string;
+  readonly lastExit?: string;
+  readonly logError?: string;
 }
 
 /** What a person needs to approve the sign-in, and when the code stops working. */
@@ -133,6 +141,7 @@ export interface DaemonSpaces {
   readonly refresh: "not-requested" | "complete" | "partial" | "failed";
   readonly unreadable: number;
   readonly collisions: number;
+  readonly signedInProviders?: readonly string[];
   readonly spaces: readonly { readonly space: string; readonly label: string; readonly mode: "auth" | "open" | "user"; readonly idp?: string }[];
 }
 

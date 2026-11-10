@@ -1,6 +1,6 @@
 /** The stock foreground Manager, scoped to its machine daemon's sign-in and parent lifetime. */
 import { registry, resolveAuthProvider, type Command } from "@cotal-ai/core";
-import { withIdpSessionDir } from "@cotal-ai/auth";
+import { IdpSessionRejectedError, withIdpSessionDir } from "@cotal-ai/auth";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { checkDir } from "./endpoint.js";
 
@@ -29,12 +29,12 @@ const command: Command = {
       catch (error) {
         const status = (error as { status?: unknown }).status;
         const message = error instanceof Error ? error.message : "Manager authority preparation failed";
-        process.send?.({ kind: "manager-refusal", reason: message, terminal: status === 400 || status === 401 || status === 403 || status === 404 || /signed.out|cached session|no cached login/.test(message) });
+        process.send?.({ kind: "manager-refusal", reason: message, terminal: error instanceof IdpSessionRejectedError || status === 400 || status === 401 || status === 403 || status === 404, status });
         throw error;
       }
     };
     const { "session-directory": _, ...values } = args.values;
-    await withIdpSessionDir(home, () => stock.run({ ...args, values }));
+    await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true } }));
   },
 };
 registry.register(command);

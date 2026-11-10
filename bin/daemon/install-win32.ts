@@ -195,6 +195,12 @@ export function scheduledTaskService(run: NativeRun): NativeService {
       if (!task.present) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the recorded scheduled task is absent; no replacement task was created");
       if (task.state !== "Running") step(["/Run", "/TN", receipt.unit]);
     },
+    restart(receipt) {
+      const task = owned(receipt);
+      if (!task.present) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the recorded scheduled task is absent; no replacement task was created");
+      if (task.state === "Running") step(["/End", "/TN", receipt.unit]);
+      step(["/Run", "/TN", receipt.unit]);
+    },
     remove(receipt) {
       const task = owned(receipt);
       if (task.present) {

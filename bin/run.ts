@@ -65,6 +65,7 @@ const argv = process.argv.slice(2);
 const word = commandWord(argv);
 if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
 else await importing(...(Object.keys(surfaces) as Surface[]))();
+if (word === "update") await import("./daemon/update-entry.js");
 
 // A CLI must exit quietly when its stdout is closed early — piped to `head`, a pager that quits,
 // or a shell's process substitution (`source <(cotal completion script bash)`). Node otherwise turns the

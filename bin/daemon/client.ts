@@ -15,6 +15,7 @@ import { connectPipe, windowsUserSid, type PipePeer } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSupportedPlatform, checkDir, checkSocket, defaultPeerPid, defaultPeerUid, type DaemonPaths, type PeerPid, type PeerUid } from "./endpoint.js";
 import { encode, type ConnectCheckResult, type DaemonRequest, type DaemonResponse, type DaemonStatus, type HostedManager, type LoginPrompt, type LoginResult, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { processBirth, readLifetimeRecord } from "./lifetime.js";
+import { CommandFailure } from "@cotal-ai/workspace";
 
 /** Ask the daemon whether it could register with `space`. Nothing is registered either way. */
 export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> & { readonly space: string }): Promise<
@@ -53,13 +54,13 @@ export interface ClientCounters {
 }
 
 /** Send a bounded machine-control request after authenticating the daemon's live process. */
-export async function managerViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">, request: { op: "manager-start" | "manager-status"; space: string } | { op: "managers-stop" }): Promise<HostedManager | DaemonStatus> {
+export async function managerViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">, request: { op: "manager-start" | "manager-status"; space: string } | { op: "managers-stop" | "managers-prepare-restart" | "managers-abort-restart" }): Promise<HostedManager | DaemonStatus> {
   const sock = await openVerified(opts);
   try {
     const id = randomUUID().replaceAll("-", "");
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request } as DaemonRequest));
     const reply = JSON.parse(await readLine(sock, 130_000)) as DaemonResponse;
-    if (!reply.ok) throw new Error(`the daemon refused ${request.op}: ${reply.error.code} ${reply.error.message}`);
+    if (!reply.ok) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the daemon refused ${request.op}: ${reply.error.code} ${reply.error.message}`, { native: { code: reply.error.code }, remedy: reply.error.code === "UNKNOWN_OP" ? "restart the recorded Cotal daemon user service with this platform's service manager, then retry" : "inspect the daemon's hosting records and retry the operation" });
     if (reply.id !== id || "event" in reply || !("state" in reply.result)) throw new Error("invalid Manager response");
     return reply.result as HostedManager | DaemonStatus;
   } finally { sock.destroy(); }

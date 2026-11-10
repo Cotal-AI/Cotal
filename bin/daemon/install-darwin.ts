@@ -202,6 +202,11 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
       if (owned(receipt)) step(["kickstart", `gui/${id}/${receipt.unit}`]);
       else step(["bootstrap", `gui/${id}`, receipt.unitPath]);
     },
+    restart(receipt: UnitReceipt) {
+      const id = uid();
+      if (owned(receipt)) step(["kickstart", "-k", `gui/${id}/${receipt.unit}`]);
+      else step(["bootstrap", `gui/${id}`, receipt.unitPath]);
+    },
     remove(receipt: UnitReceipt) {
       const id = uid();
       if (owned(receipt)) step(["bootout", `gui/${id}/${receipt.unit}`]);

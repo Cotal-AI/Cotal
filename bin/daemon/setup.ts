@@ -20,7 +20,8 @@ import { connectCheckViaDaemon, loginViaDaemon, managerViaDaemon, queryDaemon, r
 import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, RegisterResult, ServiceConnectionState } from "./protocol.js";
-import { applyInstall, planUninstall, startInstalled } from "./install.js";
+import { applyInstall, planUninstall, startInstalled, restartInstalled } from "./install.js";
+import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
 
 /** How each step ended, in the order they ran. A reader sees what this did and what it skipped. */
 export interface SetupStep {
@@ -42,6 +43,7 @@ export interface SetupResult {
 
 export interface SetupOptions {
   readonly noManager?: boolean;
+  readonly version?: string;
   readonly paths: DaemonPaths;
   readonly daemonHome: string | undefined;
   readonly space: string;
@@ -66,8 +68,8 @@ async function waitForDaemon(opts: SetupOptions, seconds: number): Promise<void>
   for (;;) {
     try {
       const reply = await queryDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid });
-      if (reply.ok) return;
-      last = reply.error;
+      if (reply.ok && (!opts.version || reply.result.version === opts.version) && reply.result.protocol === DAEMON_PROTOCOL_VERSION) return;
+      last = reply.ok ? `the daemon still runs Cotal ${reply.result.version}` : reply.error;
     } catch (e) {
       // NOT_RUNNING and PEER_NOT_LOCK_OWNER are both "not up yet" while a unit is starting.
       if (!(e instanceof EndpointRefusal) || (e.code !== "NOT_RUNNING" && e.code !== "PEER_NOT_LOCK_OWNER")) throw e;
@@ -122,6 +124,18 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
     // A start failure is not evidence that no installation was recorded.
     startInstalled(opts.paths);
     detail = `${unit} is already installed; its owned service received a start request`;
+  } else if (outcome === "already-installed" && opts.version) {
+    const reply = await queryDaemon(opts);
+    if (reply.ok && (reply.result.version !== opts.version || reply.result.protocol !== DAEMON_PROTOCOL_VERSION)) {
+      const hosted = (reply.result.managers ?? []).some((manager) => manager.state !== "stopped");
+      if (hosted) await managerViaDaemon(opts, { op: "managers-prepare-restart" });
+      try { restartInstalled(opts.paths); }
+      catch (error) {
+        if (hosted) await managerViaDaemon(opts, { op: "managers-abort-restart" });
+        throw error;
+      }
+      detail = `${unit} restarted through its recorded service to load Cotal ${opts.version}`;
+    }
   }
   steps.push({ step: "install", outcome, detail });
   opts.report(`service: ${detail}`);
@@ -222,23 +236,37 @@ async function connectWhenApproved(opts: SetupOptions, steps: SetupStep[]): Prom
   }
 }
 
-/** Run the whole path. Only a connected machine is a success; every other end is a refusal. */
+/** Run setup through an answering Manager, or a connected machine service with the opt-out. */
 export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
   const steps: SetupStep[] = [];
+  let discoveredSignIn = false;
   const unit = await ensureInstalled(opts, steps);
   if (!opts.noManager) {
     let discovered = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
     const hasSpace = () => discovered.ok && !("event" in discovered) && "spaces" in discovered.result && discovered.result.spaces.some((entry) => entry.space === opts.space);
-    if (!hasSpace() && opts.idp) {
+    const signedInToProvider = () => discovered.ok && !("event" in discovered) && "signedInProviders" in discovered.result && discovered.result.signedInProviders?.includes(opts.idp ?? "");
+    if (!hasSpace() && opts.idp && !signedInToProvider()) {
+      opts.report("sign-in: approve this machine on another device");
       const signed = await loginViaDaemon({ ...opts, idp: opts.idp });
-      if (!signed.ok || signed.result.outcome !== "signed-in") throw new CommandFailure("refused", "AUTH_REQUIRED", "the daemon could not sign in to discover this space", { remedy: `run cotal daemon login --idp ${opts.idp}` });
+      if (!signed.ok) throw new CommandFailure("refused", "AUTH_REQUIRED", `the daemon refused discovery sign-in: ${signed.code} ${signed.message}`, { native: { code: signed.code }, remedy: `run cotal daemon login --idp ${opts.idp}` });
+      if (signed.result.outcome !== "signed-in") {
+        const failed = signed.result;
+        const reason = failed.outcome === "failed" ? failed.reason : "cancelled";
+        throw new CommandFailure("refused", reason === "unreachable" ? "DEPENDENCY_UNAVAILABLE" : reason === "cancelled" ? "USAGE_INVALID" : "PERMISSION_DENIED", failed.outcome === "failed" ? failed.message : "the discovery sign-in was cancelled", { native: { code: reason.toUpperCase() }, remedy: `run cotal daemon login --idp ${opts.idp}` });
+      }
+      steps.push({ step: "sign-in", outcome: "signed-in", detail: `signed in as ${signed.result.label || signed.result.sub}` });
+      opts.report(`sign-in: signed in as ${signed.result.label || signed.result.sub}`);
+      discoveredSignIn = true;
       discovered = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
     }
-    if (!hasSpace()) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this space was not found in the daemon's signed-in catalogs", { remedy: `run cotal daemon setup --space ${opts.space} --idp <url>; ask the space owner to grant this account access` });
+    if (!hasSpace()) {
+      const refreshFailed = !discovered.ok || ("result" in discovered && "refresh" in discovered.result && ["failed", "partial"].includes(discovered.result.refresh));
+      throw new CommandFailure("refused", refreshFailed ? "DEPENDENCY_UNAVAILABLE" : "TARGET_NOT_FOUND", refreshFailed ? "the daemon could not refresh its signed-in space catalogs" : "this space was not found in the daemon's signed-in catalogs", { remedy: `run cotal daemon setup --space ${opts.space} --idp <url>; ask the space owner to grant this account access` });
+    }
     steps.push({ step: "discover", outcome: "registered", detail: "the daemon discovered the requested space" });
     opts.report("discover: the requested space is registered on this machine");
   }
-  await ensureSignedIn(opts, steps);
+  if (!discoveredSignIn) await ensureSignedIn(opts, steps);
   if (!opts.noManager) {
     const manager = await managerViaDaemon(opts, { op: "manager-start", space: opts.space }) as HostedManager;
     steps.push({ step: "manager", outcome: manager.state, detail: manager.reason ?? manager.instanceId ?? manager.state });
@@ -255,7 +283,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     }
     steps.push({ step: "connect", outcome: state, detail: message });
     opts.report(`connect: machine service ${state}; Manager launch-readiness is independent`);
-    return { space: opts.space, launchReady: true, state, manager, registration, instanceId: manager.instanceId, steps, ...(unit ? { unit } : {}) };
+    return { space: opts.space, launchReady: true, state, manager, registration, ...("instanceId" in registration ? { instanceId: registration.instanceId } : {}), steps, ...(unit ? { unit } : {}) };
   }
   await requestRegistration(opts, steps);
   const end = await connectWhenApproved(opts, steps);

@@ -34,6 +34,7 @@ import { applyInstall, applyUninstall, planInstall, planUninstall, startInstalle
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runSetup } from "./setup.js";
 import { forgetHostedManagerIntents } from "./manager.js";
+import { watchDaemonGeneration } from "./generation.js";
 import type { ConnectCheckResult, DaemonStatus, LoginResult, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
@@ -45,7 +46,7 @@ export const daemonFlags = [
   { name: "refresh", type: "boolean", description: "spaces: refresh catalogs through the daemon-held sign-in" },
   { name: "dry-run", type: "boolean", description: "install, uninstall: report the unit it would write or remove, and change nothing" },
   { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script" },
-  { name: "wait", type: "string", value: "<seconds>", description: "setup: how long to wait for the space owner's approval (default 900, 0 reports what it reached)" },
+  { name: "wait", type: "string", value: "<seconds>", description: "setup --no-manager only: how long to wait for machine approval (default 900, 0 reports what it reached)" },
   { name: "no-manager", type: "boolean", description: "setup: connect only the machine service without hosting a Manager" },
   spaceFlag,
 ] as const satisfies readonly FlagSpec[];
@@ -118,7 +119,7 @@ function asFailure(e: unknown): unknown {
 
 function statusView(s: DaemonStatus): Report {
   return { sections: [{ title: "Daemon", blocks: [{ kind: "fields", rows: [["State", s.state], ["Version", s.version], ["Protocol", String(s.protocol)], ["PID", String(s.pid)], ["Started", s.startedAt], ["Uptime", `${Math.round(s.uptimeMs / 1000)}s`]] }] },
-    ...(s.managers ?? []).map((manager) => ({ title: `Manager: ${manager.space}`, blocks: [{ kind: "fields" as const, rows: [["State", manager.state], ["Instance", manager.instanceId ?? "not registered"], ["PID", String(manager.pid ?? "none")], ["Restarts", String(manager.restarts)], ...(manager.lastRefusal || manager.reason ? [["Last refusal", manager.lastRefusal ?? manager.reason!]] : []), ...(manager.next ? [["Next", manager.next]] : [])] as [string, string][] }] })),
+    ...(s.managers ?? []).map((manager) => ({ title: `Manager: ${manager.space}`, blocks: [{ kind: "fields" as const, rows: [["Last observed state", manager.state], ["Observed at", manager.observedAt ?? "not yet probed"], ["Instance", manager.instanceId ?? "not registered"], ["PID", String(manager.pid ?? "none")], ["Restarts", String(manager.restarts)], ...(manager.lastStop ? [["Last stop", manager.lastStop]] : []), ...(manager.lastExit ? [["Last exit", manager.lastExit]] : []), ...(manager.logError ? [["Log error", manager.logError]] : []), ...(manager.lastRefusal || manager.reason ? [["Last refusal", manager.lastRefusal ?? manager.reason!]] : []), ...(manager.next ? [["Next", manager.next]] : [])] as [string, string][] }] })),
   ] };
 }
 
@@ -279,10 +280,10 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
       : r.state === "approval-pending" || r.state === "connecting" ? "LIFECYCLE_BLOCKED"
       : r.state === "disconnected" ? "TARGET_UNAVAILABLE"
       : "DEPENDENCY_UNAVAILABLE";
-    throw new CommandFailure("refused", code, r.message, native);
+    throw new CommandFailure("refused", code, `${r.message}${r.manager ? `; Manager ${r.manager.state}${r.manager.reason ? `: ${r.manager.reason}` : ""}` : ""}`, { ...native, ...(r.manager?.next ? { remedy: r.manager.next } : {}) });
   }
   writeResult(presentation, { command: `daemon ${op}`, target: { space }, result: r }, () => ({ sections: [
-    { title: r.state === "connected" ? "Connected" : "Disconnected", blocks: [
+    { title: "Machine service and Manager", blocks: [
       { kind: "fields", rows: [["Space", r.space], ["Machine service", r.state], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.manager ? [["Manager", r.manager.state], ["Manager instance", r.manager.instanceId ?? "none"], ...(r.manager.reason ? [["Refusal", r.manager.reason]] : []), ...(r.manager.next ? [["Next", r.manager.next]] : [])] as [string, string][] : [])] },
       { kind: "lines", lines: [{ text: r.message, tone: "hint" }] },
     ] },
@@ -311,8 +312,6 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
   if (!dry && values.yes !== true && !process.stdout.isTTY) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon uninstall needs --yes outside a terminal; nothing was removed");
   if (!dry) {
     planUninstall(paths);
-    try { await managerViaDaemon({ paths, peerUid, peerPid }, { op: "managers-stop" }); }
-    catch (error) { if (!(error instanceof EndpointRefusal) || error.code !== "NOT_RUNNING") throw error; }
   }
   const r = dry ? { ...planUninstall(paths), state: "would-remove" as const } : applyUninstall(paths);
   if (!dry) forgetHostedManagerIntents(home ?? homeCotalDir());
@@ -340,6 +339,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
   const waitSeconds = values.wait === undefined ? 900 : Number(values.wait);
   if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > 86400) throw new CommandFailure("refused", "USAGE_INVALID", "--wait takes whole seconds from 0 to 86400");
+  if (values.wait !== undefined && values["no-manager"] !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--wait requires --no-manager; Manager setup never waits for machine approval");
   const { paths, home } = resolveTarget(args);
   const plain = presentation === "plain";
   // Progress goes to stderr so a --json caller still reads one document on stdout.
@@ -347,7 +347,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   let r;
   try {
     r = await runSetup({
-      paths, daemonHome: home, space, peerUid, peerPid, waitSeconds, report, noManager: values["no-manager"] === true,
+      paths, daemonHome: home, space, peerUid, peerPid, waitSeconds, report, version: binVersion(), noManager: values["no-manager"] === true,
       ...(idp !== undefined ? { idp } : {}),
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: (p) => {
@@ -362,7 +362,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   }
   writeResult(presentation, { command: "daemon setup", target: { space }, result: r }, () => ({ sections: [
     { title: r.manager?.state === "answering" ? "Ready to launch" : "Connected", blocks: [
-      { kind: "fields", rows: [["Space", r.space], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.unit ? [["Unit", r.unit] as [string, string]] : [])] },
+      { kind: "fields", rows: [["Space", r.space], ...(r.manager?.instanceId ? [["Manager instance", r.manager.instanceId] as [string, string]] : []), ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.unit ? [["Unit", r.unit] as [string, string]] : [])] },
       { kind: "lines", lines: [
         ...r.steps.map((s) => ({ text: `${s.step}: ${s.outcome}`, tone: "hint" as const })),
         ...(r.manager ? [{ text: `Agents can now be launched on this computer from space ${r.space} through Manager instance ${r.manager.instanceId}.`, tone: "hint" as const }, { text: `Machine service registration: ${r.registration?.outcome ?? r.state}.`, tone: "hint" as const }] : []),
@@ -381,8 +381,16 @@ async function serve(args: ParsedArgs): Promise<void> {
     throw asFailure(e);
   }
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
-  await new Promise<void>((resolve) => {
-    const stop = () => void running.close().then(resolve, resolve);
+  await new Promise<void>((resolve, reject) => {
+    const stopWatching = watchDaemonGeneration(binVersion(), async (version) => {
+      planUninstall(paths);
+      await running.prepareGenerationRestart();
+      process.stderr.write(`daemon: installed CLI ${version} validated; stopping owned children for native service restart\n`);
+      stopWatching();
+      await running.close();
+      resolve();
+    }, (line) => process.stderr.write(`${line}\n`));
+    const stop = () => { stopWatching(); void running.close().then(resolve, reject); };
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);
   });
@@ -441,7 +449,7 @@ const daemonCommand: Command = {
     { name: "spaces", summary: "list registered spaces; optionally refresh catalogs using the daemon-held sign-in", flagNames: ["refresh", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "start", summary: "start the unchanged, recorded daemon service without restarting a running instance", flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "desktop", summary: "serve one bounded JSON request from the desktop app on stdin; credentials remain in the daemon", flagNames: ["daemon-home"], prepareMeshTarget: false },
-    { name: "setup", summary: "make this computer launch-ready for a space: install, sign in, discover and host its Manager; machine-service approval is separate", examples: [{ command: "cotal daemon setup --space <space> --idp <url>", note: "connect a headless machine" }, { command: "cotal daemon setup --space <space> --wait 0", note: "report what it reached without waiting for approval" }], flagNames: ["space", "idp", "client-id", "wait", "no-manager", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "setup", summary: "make this computer launch-ready for a space: install, sign in, discover and host its Manager; machine-service approval is separate", examples: [{ command: "cotal daemon setup --space <space> --idp <url>", note: "connect a headless machine" }, { command: "cotal daemon setup --space <space> --no-manager --wait 0", note: "report machine-service approval without hosting a Manager" }], flagNames: ["space", "idp", "client-id", "wait", "no-manager", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "status", summary: "ask the running daemon for its status and hosted Managers over the local endpoint", examples: [{ command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon status --json", note: "the same as one JSON document" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "serve", summary: "run the daemon in the foreground and serve its local endpoint (refusals honor --json)", examples: [{ command: "cotal daemon serve", note: "run the machine daemon in this terminal" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "install", summary: "install the daemon as this platform's user service; Linux also enables linger", examples: [{ command: "cotal daemon install", note: "run it as a persistent user service" }, { command: "cotal daemon install --dry-run", note: "show the unit it would write" }], flagNames: ["daemon-home", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
