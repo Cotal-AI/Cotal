@@ -76,7 +76,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
   };
   return { start: run,
     signedIn() { for (const context of contexts.values()) context.abort.abort(); contexts.clear(); if (timer) clearTimeout(timer); run(); },
-    status: (): AccountComputerStatus => ({ ...state, accounts: [...contexts.values()].map(context => ({ ...context.state })), spaces: reconciler.view() }),
+    status: (): AccountComputerStatus => ({ ...state, accounts: [...contexts.values()].map(context => ({ ...context.state, spaces: reconciler.view().filter(row => context.snapshot?.spaces.some(space => space.slug === row.space) || !row.desired) })), spaces: reconciler.view() }),
     async close() { stopped = true; if (timer) clearTimeout(timer); abort.abort(); await work; await Promise.all([...tasks]); await reconciler.settled(); },
   };
 }
