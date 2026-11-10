@@ -9,7 +9,7 @@ import {
 } from "@cotal-ai/core";
 import {
   cachedPreferences, CommandFailure, ConfirmationRequired, inputDisabledByFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes, movedProject,
-  resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
+  localWriteFailure, resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -159,9 +159,12 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
   if (oversized) throw oversized;
   const dir = dirname(path);
   assertCatalogWritable(dir);
-  mkSecretDir(dir);
-  const lockPath = join(realpathSync(dirname(path)), `.${basename(path)}.lock`);
-  const lock = acquireLock(lockPath, { label: "local persona write", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another local persona write holds the catalog lock") });
+  let lock: ReturnType<typeof acquireLock>;
+  try {
+    mkSecretDir(dir);
+    const lockPath = join(realpathSync(dirname(path)), `.${basename(path)}.lock`);
+    lock = acquireLock(lockPath, { label: "local persona write", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another local persona write holds the catalog lock") });
+  } catch (error) { throw localWriteFailure(error, path); }
   try {
     const current = readPersonaSource(path);
     if (!sameSource(expected, current))
@@ -170,7 +173,10 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
     if (twin !== undefined)
       throw new CommandFailure("refused", "CONFLICT", `persona '${basename(path, ".md")}' differs from the existing '${twin}' only in case; nothing was written`, { remedy: `choose another name, or change the existing one with \`cotal persona edit ${twin}\`` });
     if (bytes === undefined) unlinkSync(path);
-    else writeSecretFileAtomic(path, bytes);
+    else {
+      try { writeSecretFileAtomic(path, bytes); }
+      catch (error) { throw localWriteFailure(error, path); }
+    }
   } finally { lock.release(); }
 }
 
@@ -185,7 +191,7 @@ function draftFolder(): string {
       throw new CommandFailure("refused", "PERMISSION_DENIED", `the temporary directory ${parent} is not writable by this account (${code}), so no private draft was made; nothing was changed`, { target: { path: parent }, remedy: `make ${parent} writable by you, or set TMPDIR to a folder you own` });
     if (code === "ENOENT" || code === "ENOTDIR")
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the temporary directory ${parent} ${code === "ENOENT" ? "does not exist" : "is not a directory"}, so no private draft was made; nothing was changed`, { target: { path: parent }, remedy: "set TMPDIR to an existing folder you own, or unset it" });
-    throw error;
+    throw localWriteFailure(error, parent);
   }
 }
 
@@ -226,7 +232,11 @@ export function serializePersona(def: AgentDef): Promise<Buffer> {
     throw new CommandFailure("refused", "USAGE_INVALID", "--model is empty", { remedy: "name a model, or leave --model out for the application default" });
   return withDraft(def.name, path => {
     try { writeSecretFile(path, ""); saveAgentFile(path, def); }
-    catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona fields: ${(error as Error).message.replace(/^saveAgentFile: /, "")}`); }
+    catch (error) {
+      // The serializer also writes a private draft. Only validation errors describe bad fields.
+      if ((error as NodeJS.ErrnoException).code !== undefined) throw localWriteFailure(error, path);
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona fields: ${(error as Error).message.replace(/^saveAgentFile: /, "")}`);
+    }
     const bytes = readFileSync(path);
     validatePersona(bytes, path, def.name);
     return bytes;

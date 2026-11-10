@@ -27,6 +27,7 @@ export * from "./flags.js";
 // re-exported here so the package surface is unchanged.
 export { boundedValue, oneLine } from "@cotal-ai/core";
 export * from "./output.js";
+export * from "./local-write.js";
 export * from "./preferences.js";
 export * from "./chat-name.js";
 export * from "./present.js";
