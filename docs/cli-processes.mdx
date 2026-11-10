@@ -611,6 +611,8 @@ It has local transport implementations for Linux, macOS and Windows. On macOS an
 platform; where none is built or shipped, daemon endpoint operations refuse `UNSUPPORTED`
 (`UNSUPPORTED_PLATFORM`), and so do those operations on any other platform.
 
+The default daemon and CLI share the sign-in in the same Cotal home, so signing in through either one does not require a second approval in the other. An explicit `--daemon-home` keeps its own sign-in, separate from the CLI's Cotal home.
+
 `start` starts the recorded, unchanged service without restarting an instance that is already running.
 `spaces` lists the registry through the daemon; `--refresh` uses the daemon-held sign-in to refresh
 its catalogs. Catalog rows in the `spaces` reply include optional `kind` and `role` fields from the saved catalog entry. Local entries omit these fields. With no cached sign-in, a refresh reports `not-signed-in`; the CLI refuses with
