@@ -275,7 +275,7 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
     const code = r.state === "not-requested" || r.state === "not-registered" ? "TARGET_NOT_FOUND"
       : r.state === "unsupported" ? "UNSUPPORTED"
       : r.state === "not-signed-in" ? "AUTH_REQUIRED"
-      : r.state === "refused" || r.state === "ended" ? "PERMISSION_DENIED"
+      : r.state === "refused" || r.state === "ended" || r.state === "credential-not-yet-valid" ? "PERMISSION_DENIED"
       : r.state === "account-mismatch" || r.state === "conflict" || r.state === "local-state-error" ? "CONFLICT"
       : r.state === "approval-pending" || r.state === "connecting" ? "LIFECYCLE_BLOCKED"
       : r.state === "disconnected" ? "TARGET_UNAVAILABLE"

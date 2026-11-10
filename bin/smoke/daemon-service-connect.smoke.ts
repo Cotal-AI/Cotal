@@ -49,12 +49,15 @@
  *  C14 the SHIPPED binary starts with a damaged ready or renewal record: resume and the real CLI
  *      identify local state, the damaged bytes stay private and unchanged, no responder is left, and
  *      restoring the original record recovers serving under the same request ids.
+ *  C18 a shipped daemon whose clock is behind reports a not-yet-valid credential, never a network
+ *      outage; clocks within tolerance connect, and recovery keeps the persisted request ids.
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
  * Account pin regression only: add --account-mismatch-only (C1, C2, C7b and C10).
  * Offline status regression only: add --status-only (C0, C1, C2, C3, C5, C6, C10 and C15).
  * Add --setup-hints-only to run approval and setup follow-up checks with a leading-hyphen space.
  * Setup progress regression only: add --setup-progress-only (uses the shipped foreground daemon).
+ * Clock-behind regression only: add --clock-behind-only (C1, C2, C15, C18 and C10).
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
@@ -119,6 +122,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, JSON.stringify(extra ?? "")?.slice(0, 600)); }
 };
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
+  if (process.argv.includes("--clock-behind-only") && !/^(C1 |C2 |C15 |C18 |C10 )/.test(title)) return;
   if (setupProgressOnly && !/^(C1 |C1b |C2 |C4 |C17 |C17b |C10 )/.test(title)) return;
   if (process.argv.includes("--hosting-only") && !title.startsWith("H1")) return;
   if (process.argv.includes("--account-mismatch-only") && !/^(C1 |C2 |C7b |C10 )/.test(title)) return;
@@ -232,7 +236,7 @@ idpOrigin = `http://127.0.0.1:${(idp.address() as AddressInfo).port}`;
 const idpUrl = `${idpOrigin}/api/auth`;
 
 // Count every request reaching each public face's authority route, through a counting relay.
-const hits: Array<{ space: string; method: string; path: string }> = [];
+const hits: Array<{ space: string; method: string; path: string; operation?: string; status?: number; state?: string }> = [];
 /** C7: spaces whose authority door the relay drops, as an unreachable auth service. */
 const relayDown = new Set<string>();
 const changedAccount = new Map<string, string>();
@@ -249,13 +253,18 @@ async function relay(space: string, target: string): Promise<string> {
     if (req.method === "GET" && req.url === "/service-endpoint-authority") await authorityGates.get(space)?.();
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
-    hits.push({ space, method: req.method ?? "", path: new URL(req.url!, "http://x").pathname });
+    const hit = { space, method: req.method ?? "", path: new URL(req.url!, "http://x").pathname,
+      operation: req.method === "POST" && req.url === "/service-endpoint-authority" ? JSON.parse(Buffer.concat(chunks).toString()).request?.operation as string | undefined : undefined,
+      status: undefined as number | undefined, state: undefined as string | undefined };
+    hits.push(hit);
     let up: Response;
     try { up = await fetch(`${target}${req.url}`, { method: req.method, headers: { "content-type": req.headers["content-type"] ?? "application/json" }, body: chunks.length ? Buffer.concat(chunks) : undefined, redirect: "manual" }); }
     catch { req.socket.destroy(); return; }
     const headers: Record<string, string> = {};
     up.headers.forEach((v, k) => { if (k !== "content-length" && k !== "transfer-encoding") headers[k] = v; });
     let body = Buffer.from(await up.arrayBuffer());
+    hit.status = up.status;
+    if (hit.operation && up.ok) hit.state = (JSON.parse(body.toString()) as { state?: string }).state;
     if (changedAccount.has(space) && req.method === "GET" && req.url === "/service-endpoint-authority" && up.ok) {
       const info = JSON.parse(body.toString()) as Record<string, unknown>;
       info.accountPublicKey = changedAccount.get(space);
@@ -2145,6 +2154,79 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         stateOf(await connectS(ON)) === "connected" && await instanceStatus(ON) === "ready");
     });
 
+    await cell("C18 the shipped daemon identifies a credential issued ahead of its clock", async () => {
+      await disconnectS(ON);
+      await d.close();
+      const clockModule = join(root, "daemon-clock.mjs");
+      writeFileSync(clockModule, "const now = Date.now; Date.now = () => now() + Number(process.env.DAEMON_CLOCK_OFFSET_MS);\n", { mode: 0o600 });
+      const config = join(root, "clock-config"), native = join(root, "clock-native");
+      mkdirSync(config, { mode: 0o700 }); mkdirSync(native, { mode: 0o700 });
+      for (const name of ["systemctl", "loginctl", "launchctl", "schtasks"])
+        writeFileSync(join(native, name), "#!/bin/sh\nexit 89\n", { mode: 0o700 });
+      const env = { PATH: `${native}:${originalPath ?? ""}`, HOME: home, XDG_CONFIG_HOME: config,
+        XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      const renewalFile = filesUnder(daemonDir).find((p) => p.includes(Buffer.from(ON).toString("hex")) && p.includes("service-renewal") && p.endsWith(".json"));
+      if (!renewalFile) throw new Error("C18 needs the renewal record from C2");
+      const requestIds = () => {
+        const record = JSON.parse(readFileSync(join(daemonDir, renewalFile), "utf8")) as { activateRequestId: string; renewRequestId: string };
+        return JSON.stringify([record.activateRequestId, record.renewRequestId]);
+      };
+      const ids = requestIds();
+      try {
+        for (const offset of [-300, -3, 0]) {
+          foreground = spawn(process.execPath, ["--import", clockModule, join(repo, "bin/dist/cotal.js"), "daemon", "serve"], {
+            cwd: root, env: { ...env, DAEMON_CLOCK_OFFSET_MS: String(offset * 1000) }, stdio: ["ignore", "pipe", "pipe"],
+          });
+          let daemonOutput = "";
+          foreground.stdout!.on("data", (b) => { daemonOutput += String(b); });
+          foreground.stderr!.on("data", (b) => { daemonOutput += String(b); });
+          try {
+            let ready = false;
+            for (let i = 0; i < 100; i++) {
+              if (foreground.exitCode !== null) throw new Error("C18 foreground daemon exited before its socket was ready");
+              try { await ask(paths.socket, { op: "status" }, 1000); ready = true; break; } catch { await sleep(100); }
+            }
+            if (!ready) throw new Error("C18 foreground daemon socket did not become ready");
+            const before = hits.length;
+            const connected = await cli(["service-connect", "--space", ON]);
+            const status = await cli(["service-status", "--space", ON]);
+            if (offset === -300) {
+              for (const [mode, answer] of [["connect", connected], ["status", status]] as const) {
+                check(`C18 ${mode} identifies a not-yet-valid credential, not an outage`, answer.status === 2
+                  && answer.doc?.outcome === "refused" && answer.doc?.error?.code === "PERMISSION_DENIED"
+                  && answer.doc?.error?.cause?.code === "CREDENTIAL_NOT_YET_VALID"
+                  && /not yet valid/.test(String(answer.doc?.error?.message))
+                  && /machine.*authority.*clocks/.test(String(answer.doc?.error?.message)), answer.doc);
+              }
+              const plain = await cli(["service-connect", "--space", ON], "--plain");
+              check("C18 plain refusal includes the clock diagnosis", plain.status === 2
+                && /Native code:\s+CREDENTIAL_NOT_YET_VALID/.test(plain.err) && /not yet valid/.test(plain.err)
+                && /machine.*authority.*clocks/.test(plain.err), plain);
+              const during = hits.slice(before).filter((hit) => hit.space === ON);
+              check("C18 the reachable authority returned a fresh credential", during.some((hit) => hit.status === 200 && hit.state === "credential"));
+              check("C18 a rejected credential records no intent and sends no ready request",
+                !existsSync(intentFile(ON)) && !during.some((hit) => hit.operation === "ready"));
+              let unanswered = false;
+              try { await probeMachine(); } catch (e) { unanswered = unansweredRequest(e); }
+              check("C18 a rejected credential leaves no serving responder", unanswered);
+            } else {
+              check(`C18 ${offset}s clock connects and status agrees`, connected.status === 0 && connected.doc?.result?.state === "connected"
+                && status.status === 0 && status.doc?.result?.state === "connected", { connected: connected.doc, status: status.doc });
+              check(`C18 ${offset}s clock reaches ready and serves an authorized caller`, await instanceStatus(ON) === "ready" && (await probeMachine()).reply.ok);
+            }
+            check(`C18 ${offset}s clock preserves activate and renew request ids`, requestIds() === ids);
+            await cli(["service-disconnect", "--space", ON]);
+          } finally {
+            await killAndAwaitExit(foreground, "SIGTERM"); foreground = undefined;
+            check(`C18 ${offset}s clock logs contain no bearer or session`, !daemonOutput.includes(SESSION)
+              && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(daemonOutput));
+          }
+        }
+      } finally {
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home });
+      }
+    });
+
     await cell("C8 the owner revokes: ended, never connected again", async () => {
       check("C8 instrument: connected before the revoke", stateOf(await connectS(ON)) === "connected");
       const id = identityOf(ON)!;
@@ -2222,7 +2304,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
   if (nats) await killAndAwaitExit(nats, "SIGTERM").catch(() => {});
   release?.();
   if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
-  if (setupProgressOnly) console.log(`Setup progress sandbox retained at ${root}; broker store at ${jsDir}`);
+  if (setupProgressOnly || process.argv.includes("--clock-behind-only")) console.log(`Daemon sandbox retained at ${root}; broker store at ${jsDir}`);
   else {
     rmSync(jsDir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });

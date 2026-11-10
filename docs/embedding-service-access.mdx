@@ -40,6 +40,11 @@ another account, a bearer from another issuer, space, subject or key, one that n
 witness or no serve duty, a closure set or artifact that is not the embedded one, and a closure
 that does not read at its digest. `authorizeTrustedServeSnapshot` stays the host's.
 
+A signed bearer issued more than five seconds ahead of the process clock throws
+`ServiceAccessNotYetValidError`, an `EpEnvelopeError` with code `permission-denied` and no bearer
+material. The caller can distinguish this clock refusal from a transport failure without parsing
+error text. Expiry has no clock tolerance.
+
 ## Renewal source [#renewal-source]
 
 For a serving connection, the auth provider's `serviceEndpointRenewal({ store, dir, witness })` hook
