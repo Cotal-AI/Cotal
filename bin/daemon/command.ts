@@ -107,7 +107,7 @@ const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVA
   SOCKET_WRONG_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was removed" },
   SOCKET_WRONG_MODE: { code: "PERMISSION_DENIED", remedy: "inspect the endpoint owner and protection with your operating system; its permissions differ from the daemon contract and were not repaired" },
   PEER_UID_MISMATCH: { code: "PERMISSION_DENIED", remedy: "another user's process holds the daemon endpoint; nothing was sent" },
-  PEER_NOT_LOCK_OWNER: { code: "PERMISSION_DENIED", remedy: "use the same --daemon-home as the intended daemon and inspect the conflicting listener with your operating system; no process was stopped" },
+  PEER_NOT_LOCK_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the conflicting listener with your operating system. For the default daemon use its COTAL_HOME. For an explicit --daemon-home use the same directory as the intended daemon. No process was stopped" },
   LOCK_HELD: { code: "CONFLICT", remedy: "a daemon already holds this lifetime lock; run `cotal daemon status`, with the same --daemon-home when you passed one" },
 };
 
