@@ -369,7 +369,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const status = run("status", "--space", space);
     const statusNext = status.stdout.split("\n").find((line) => line.includes(`cotal backup cleanup-fallback ${active.restore.attemptId}`)) ?? "";
     assert.ok(statusNext.includes("--discard-history") && statusNext.includes(`the only copy of the ${leftOut} it left out`), `${mode} status names the cleanup that retires the restore\n${status.stdout}`);
-    must("down", run("down"));
+    must("down", run("down", "--yes"));
     const stopped = run("up", "-f", "cotal.yaml");
     assert.equal(stopped.status, 2, `${mode} up -f after the restored stack stopped refuses, exit 2\n${stopped.stdout}\n${stopped.stderr}`);
     assert.match(stopped.stderr, /Code: +LIFECYCLE_BLOCKED/);
@@ -383,7 +383,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
         (JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { state: string }).state,
         "active",
       );
-      must("later down", run("down"));
+      must("later down", run("down", "--yes"));
     }
     {
       // The previous store holds the only copy of what the restore left out, so the preview warns and
@@ -430,7 +430,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     assert.ok(repeated.status === 2 && /Code: +TARGET_NOT_FOUND/.test(repeated.stderr) && repeated.stderr.includes(`no maintenance record at this root names restore attempt ${active.restore.attemptId}; nothing was deleted`) &&
       repeated.stderr.includes("a completed restore-fallback retires its journal, so the restore has settled"), `${mode} a repeated clean restore-fallback says the restore settled\n${repeated.stderr}`);
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -460,7 +460,7 @@ async function occupiedRestoreScenario(): Promise<void> {
     assert.equal(existsSync(join(root, ".cotal", "nats.pid")), false);
   } finally {
     if (occupied) await closeServer(occupied).catch(() => {});
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -538,9 +538,9 @@ async function restoreReentryScenario(
       state: "active",
       durableCommitToken: active.details?.managerCommit?.durableCommitToken,
     });
-    assert.equal(run("down").status, 0);
+    assert.equal(run("down", "--yes").status, 0);
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -586,9 +586,9 @@ async function ordinaryResumeReentryScenario(injection: "resume-commit" | "resum
     assert.equal(recovered.status, 0,
       `${injection} ordinary resume recovery\nstdout:\n${recovered.stdout}\nstderr:\n${recovered.stderr}`);
     assert.equal(existsSync(journalPath), false, "finalized ordinary resume retires and consumes maintenance state");
-    assert.equal(run("down").status, 0);
+    assert.equal(run("down", "--yes").status, 0);
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -631,9 +631,9 @@ async function deadBoundListenerReplacementScenario(): Promise<void> {
     assert.notEqual(active.listenerProof.processOwner.pid, first.listenerProof.processOwner.pid);
     assert.equal(active.listenerReplacements.length, 1);
     assert.equal(active.listenerReplacements[0]?.proof.serverNonce, first.listenerProof.serverNonce);
-    assert.equal(run("down").status, 0);
+    assert.equal(run("down", "--yes").status, 0);
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -676,7 +676,7 @@ async function unboundRestoreReentryScenario(detached: boolean): Promise<void> {
       try { process.kill(listenerPid, "SIGTERM"); } catch { /* already gone */ }
       await waitUntil(async () => !(await probeConnect(server, { timeoutMs: 200 })).ok, `${label} unbound listener shutdown`).catch(() => {});
     }
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -724,10 +724,10 @@ async function boundForeignListenerScenario(): Promise<void> {
     const active = JSON.parse(readFileSync(journalPath, "utf8")) as { state: string; listenerReplacements?: unknown[] };
     assert.equal(active.state, "active");
     assert.equal(active.listenerReplacements?.length, 1, "degraded dead owner is retired before fresh activation");
-    assert.equal(run("down").status, 0);
+    assert.equal(run("down", "--yes").status, 0);
   } finally {
     if (foreign) await closeServer(foreign).catch(() => {});
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -772,7 +772,7 @@ async function missingPidfileListenerScenario(): Promise<void> {
     foreign = undefined;
   } finally {
     if (foreign) await closeServer(foreign).catch(() => {});
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -802,7 +802,7 @@ async function preservationCommitCrashScenario(): Promise<void> {
     assert.equal(recovered.status, 0, `post-manager-commit cut recovery\nstdout:\n${recovered.stdout}\nstderr:\n${recovered.stderr}`);
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "ready");
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -842,7 +842,7 @@ async function preservationStopCrashRecoveryScenario(): Promise<void> {
     assert.equal(existsSync(a.journalPath), true, "the preserved cut journal survives recovery (not deleted)");
     assert.equal((JSON.parse(readFileSync(a.journalPath, "utf8")) as { state: string }).state, "ready");
   } finally {
-    a.run("down");
+    a.run("down", "--yes");
     rmSync(a.root, { recursive: true, force: true });
     rmSync(a.home, { recursive: true, force: true });
   }
@@ -856,7 +856,7 @@ async function preservationStopCrashRecoveryScenario(): Promise<void> {
     assert.match(aborted.stderr, /lost its manager before commit; the cut intent was aborted/);
     assert.equal(existsSync(b.journalPath), false, "the pre-commit cut is abandoned (nothing was stopped)");
   } finally {
-    b.run("down");
+    b.run("down", "--yes");
     rmSync(b.root, { recursive: true, force: true });
     rmSync(b.home, { recursive: true, force: true });
   }
@@ -920,9 +920,9 @@ async function restoreClaimRaceScenario(): Promise<void> {
     assert.equal(readMaintenanceJournal(root)?.state, "ready", "explicit stale rollback returns the cut to ready");
     const resumed = run("up", "--detach", "--server", server, "--space", space);
     assert.equal(resumed.status, 0, `ordinary resume after recovery\nstdout:\n${resumed.stdout}\nstderr:\n${resumed.stderr}`);
-    assert.equal(run("down").status, 0);
+    assert.equal(run("down", "--yes").status, 0);
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -980,9 +980,9 @@ async function backupRestoreCycleScenario(): Promise<void> {
     const listed = run("channel", "--space", space);
     must("list twice-restored registry", listed);
     assert.match(listed.stdout, /#cycled/);
-    must("down", run("down"));
+    must("down", run("down", "--yes"));
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -1037,9 +1037,9 @@ async function rolledBackRunsScenario(): Promise<void> {
     // The reopened step is open again and accepts an answer.
     await opens(runId, /\/checkpoint:zahlung#0\s+Bezahlen\?/);
     must("answer again", run("run", "answer", runId, "/checkpoint:zahlung#0", "--value", '"nein"', "--space", space));
-    must("down", run("down"));
+    must("down", run("down", "--yes"));
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -1061,10 +1061,10 @@ async function otherAccountScenario(): Promise<void> {
   };
   try {
     must("static up", run("up", "--detach", "--server", server, "--space", space));
-    must("static down", run("down"));
+    must("static down", run("down", "--yes"));
     must("open up", run("up", "--detach", "--open", "--server", server, "--space", space));
     must("open send", run("send", "-c", "general", "open-account-marker", "--space", space));
-    must("open down", run("down"));
+    must("open down", run("down", "--yes"));
     must("static up again", run("up", "--detach", "--server", server, "--space", space));
     must("preserve cut", run("down", "--preserve-state"));
     const artifact = join(root, "static-backup");
@@ -1087,9 +1087,9 @@ async function otherAccountScenario(): Promise<void> {
     const refused = run("backup", "cleanup-fallback", attemptId, "--yes", "--json");
     assert.ok(refused.status === 1 && (JSON.parse(refused.stdout) as { error?: { code?: string } }).error?.code === "USAGE_INVALID", `cleanup without --discard-history refuses\n${refused.stdout}${refused.stderr}`);
     assert.ok(kept(), "the refused cleanup keeps the open account's message");
-    must("down", run("down"));
+    must("down", run("down", "--yes"));
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -1132,9 +1132,9 @@ async function linkedStoreScenario(): Promise<void> {
     const listed = run("channel", "--space", space);
     must("list the restored registry", listed);
     assert.match(listed.stdout, /#linked/);
-    must("down", run("down"));
+    must("down", run("down", "--yes"));
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }

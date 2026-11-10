@@ -328,7 +328,7 @@ try {
   console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;
 } finally {
-  await cotal(["down"], 60_000); // idempotent — kills by ITS OWN pid files only
+  await cotal(["down", "--yes"], 60_000); // idempotent — kills by ITS OWN pid files only
   idpSrv.close();
   rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

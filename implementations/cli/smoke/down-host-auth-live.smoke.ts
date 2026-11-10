@@ -12,6 +12,7 @@ import { join, resolve } from "node:path";
 import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, AUTH_PIDFILE, NATS_PIDFILE, parsePid } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { clean, cotalPty } from "./_console-pty.js";
 
 const tree = resolve(import.meta.dirname, "../../..");
 const scratch = mkdtempSync(join(tmpdir(), "cotal-down-host-auth-"));
@@ -20,7 +21,7 @@ const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) 
 const wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 let checks = 0;
-const check = (message: string, condition: unknown) => { assert.ok(condition, message); checks++; console.log(`  ✓ ${message}`); };
+const check = (message: string, condition: unknown, detail?: string) => { assert.ok(condition, detail ? `${message}\n${detail}` : message); checks++; console.log(`  ✓ ${message}`); };
 const stacks: Array<{ root: string; space: string; pids: number[] }> = [];
 let requests = 0;
 const idp = createServer((_req, res) => {
@@ -83,12 +84,53 @@ async function cell(user: boolean): Promise<void> {
     } finally { renameSync(`${delivery}.held`, delivery); }
     check("user: local lease check does not contact the IdP", requests === before);
   }
+  const refused = await cli("down");
+  check(`${label}: noninteractive whole-stack stop requires --yes`, refused.code === 1 && refused.out.includes("requires --yes because there is no interactive terminal to ask in") && !refused.out.includes("Usage:"));
+  check(`${label}: confirmation refusal leaves every recorded process alive`, stack.pids.every(alive));
+  const preview = await cli("down", "--dry-run");
+  check(`${label}: preview needs no confirmation and stops nothing`, preview.code === 4 && stack.pids.every(alive));
+  if (!user) {
+    const terminal = async (answer: string | undefined, flags: string[] = [], extraEnv: Record<string, string> = {}) => {
+      assertSmokeSandboxDown(sandbox, ["down", ...flags], { cwd: root, env });
+      const pty = cotalPty(["down", ...flags], { cwd: root, env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? join(home, "run"), TMPDIR: tmpdir(), DO_NOT_TRACK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv } });
+      let out = "", code: number | undefined;
+      pty.onData((data) => { out += data; });
+      pty.onExit((event) => { code = event.exitCode; });
+      try {
+        if (answer !== undefined) {
+          for (let end = Date.now() + 30_000; !clean(out).includes("type y to confirm") && code === undefined && Date.now() < end; await wait(50));
+          check("terminal: the default-No confirmation shows its recorded components", clean(out).includes("type y to confirm") && clean(out).includes("nats-server") && clean(out).includes("delivery daemon"), clean(out));
+          check("terminal: every recorded process stays alive before an answer", stack.pids.every(alive));
+          pty.write(answer);
+        }
+        for (let end = Date.now() + 30_000; code === undefined && Date.now() < end; await wait(50));
+        assert.notEqual(code, undefined, `terminal down did not exit: ${clean(out)}`);
+        return { code, out: clean(out) };
+      } finally {
+        if (code === undefined) {
+          pty.kill();
+          for (let end = Date.now() + 10_000; code === undefined && Date.now() < end; await wait(50));
+          assert.notEqual(code, undefined, "owned terminal process did not exit after cleanup");
+        }
+      }
+    };
+    for (const answer of ["\r", "n\r", "\x03"]) {
+      const cancelled = await terminal(answer);
+      check("terminal: empty, No or cancelled input stops nothing", cancelled.out.includes("Cancelled; no process was stopped.") && stack.pids.every(alive));
+    }
+    const noInput = await terminal(undefined, ["--no-input"]);
+    check("terminal: --no-input refuses without a prompt", noInput.code === 1 && noInput.out.includes("--no-input forbids the prompt") && stack.pids.every(alive));
+    const noPrompt = await terminal(undefined, [], { COTAL_NO_PROMPT: "1" });
+    check("terminal: COTAL_NO_PROMPT refuses without a prompt", noPrompt.code === 1 && noPrompt.out.includes("COTAL_NO_PROMPT=1 forbids the prompt") && stack.pids.every(alive));
+    const confirmed = await terminal("y\r");
+    check("terminal: explicit Yes stops the whole stack", confirmed.code === 0);
+  }
   const stopped = await cli("down", "--yes");
   check(`${label}: hosting-folder stop succeeds without a login`, stopped.code === 0);
   if (leaseRefusal) check("user: live delivery without a pidfile refuses for its renewed lease", leaseRefusal.code === 2 && leaseRefusal.out.includes("LIFECYCLE_BLOCKED") && leaseRefusal.out.includes("still renewing a lease"));
   for (let end = Date.now() + 10_000; stack.pids.some(alive) && Date.now() < end; await wait(100));
   check(`${label}: every recorded process exited`, stack.pids.every((pid) => !alive(pid)));
-  const again = await cli("down", "--yes");
+  const again = await cli("down");
   check(`${label}: repeated stop succeeds without a login`, again.code === 0);
 }
 

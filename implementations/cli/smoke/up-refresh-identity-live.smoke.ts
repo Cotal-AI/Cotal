@@ -83,7 +83,7 @@ function cotal(fixture: Fixture, args: string[]) {
 }
 
 async function stop(fixture: Fixture): Promise<boolean> {
-  const down = cotal(fixture, ["down"]);
+  const down = cotal(fixture, ["down", "--yes"]);
   const stopped = down.status === 0 && !down.error && !down.signal;
   check("the isolated mesh stops cleanly", stopped, {
     status: down.status,
@@ -507,7 +507,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
     // find, so `cotal down` here reports "Nothing running" and exits non-zero even though its
     // registry sweep (which runs unconditionally on a bare down, ahead of that exit) still clears
     // the crash-kept record — the real, documented effect this cell checks.
-    cotal(fixture, ["down"]);
+    cotal(fixture, ["down", "--yes"]);
     check("`stop` (down) also removes the kept record", findMesh(space) === undefined, findMesh(space));
   } finally {
     if (child.exitCode === null) { try { child.kill("SIGKILL"); } catch { /* already gone */ } }

@@ -265,9 +265,9 @@ async function backupStageFaultScenario(): Promise<void> {
     const listed = run("channel", "--space", space);
     must("list registry after every fault", listed);
     assert.match(listed.stdout, /#preserved/, "the faulted attempts never touched the preserved registry");
-    must("down", run("down"));
+    must("down", run("down", "--yes"));
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -389,7 +389,7 @@ async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
       assert.equal(after.state.messages, before.state.messages, `${stream.name} replays with no duplicate messages`);
     }
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -472,9 +472,9 @@ async function interruptedRestoreScenario(): Promise<void> {
     assert.ok(Date.now() < Date.parse(deadline), "recovery ran before the claim deadline");
     assert.equal(journalState(root), "ready", "recovery returns the cut to ready");
     must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
-    must("down", run("down"));
+    must("down", run("down", "--yes"));
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -553,9 +553,9 @@ async function interruptedCreateScenario(): Promise<void> {
     must("create at the same destination after recovery", run("backup", "create", destination));
     assertValidManifest(destination, space, "full");
     must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
-    must("down", run("down"));
+    must("down", run("down", "--yes"));
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }

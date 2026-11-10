@@ -78,7 +78,7 @@ try {
   renameSync(recorded, aside);
   ok("the manager pidfile is gone from the stack root", !existsSync(recorded));
 
-  const refused = cli("down");
+  const refused = cli("down", "--yes");
   const text = `${refused.stdout ?? ""}${refused.stderr ?? ""}`;
   ok(
     "bare down exits 2 and refuses LIFECYCLE_BLOCKED, naming the manager",
@@ -91,7 +91,7 @@ try {
   renameSync(aside, recorded);
   aside = undefined;
   ok("the manager pidfile is back", existsSync(recorded) && readPid(recorded) === managerPid);
-  const stopped = cli("down");
+  const stopped = cli("down", "--yes");
   const stoppedText = `${stopped.stdout ?? ""}${stopped.stderr ?? ""}`;
   ok("bare down with the pidfile restored exits 0", stopped.status === 0, stoppedText);
   let gone = false;
@@ -106,7 +106,7 @@ try {
   if (aside && existsSync(aside) && !existsSync(pidPath())) {
     try { renameSync(aside, pidPath()); } catch { /* the stop below still runs */ }
   }
-  cli("down");
+  cli("down", "--yes");
   if (alive(managerPid)) { try { process.kill(managerPid!, "SIGKILL"); } catch { /* already gone */ } }
   rmSync(home, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
