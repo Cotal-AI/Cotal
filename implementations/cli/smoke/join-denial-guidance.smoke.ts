@@ -157,7 +157,7 @@ try {
   // lifecycle, and running `cotal up` cannot make one for it.
   const unprovisioned = pjoin(root, "unprovisioned.creds");
   const unprovisionedUid = mintLifecycleUid();
-  writeFileSync(unprovisioned, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: unprovisionedUid }), { mode: 0o600 });
+  writeFileSync(unprovisioned, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: unprovisionedUid, allowSubscribe: ["general"] }), { mode: 0o600 });
   const bare = cli("join", "--space", SPACE, "--server", server, "--creds", unprovisioned, "--lifecycle-uid", unprovisionedUid, "--name", "probe");
   check("CELL: a --creds join with no inbox for its lifecycle names that lifecycle and the provisioning mint, not cotal up",
     bare.status === 2 && /Code: +TARGET_NOT_FOUND/.test(bare.text) && bare.text.includes(`no inbox provisioned for this credential's lifecycle ${unprovisionedUid}`) &&

@@ -297,7 +297,7 @@ cotal join --link <url> | --token <t>
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which mesh, and which credential |
 | `--name <n>` | none | Your presence name |
 | `--role <r>` | none | Your role |
-| `--channel <c>` | none | Channel to join |
+| `--channel <c>` | link's first channel, else `general` | Channel to join; a static credential needs a read grant for it |
 | `--kind <k>` | `agent` | Endpoint kind |
 | `--link <url>` | none | Join link (`cotal://…`) |
 | `--token <t>` | none | Join token |
@@ -315,10 +315,22 @@ this folder's, and inside a project whose root has one space other than the sele
 A space not registered here is refused before anything is dialed. The default address is never
 assumed for a credential.
 
-A `--creds` join binds the inbox provisioned for its lifecycle, so the space's owner mints the
-credential with `cotal auth mint <name> --provision` and hands over the lifecycle UID that mint
-reports. A credential minted without `--provision` has no inbox there, and `join` refuses, naming
-that lifecycle and the mint that makes one.
+A `--creds` join needs a provisioned inbox and a read grant for its landing channel. For `general`,
+the space's owner mints the credential with:
+
+```bash
+cotal auth mint <name> --provision --allow-subscribe general --allow-publish general --out <file>
+cotal join --space <s> --creds <file> --lifecycle-uid <uid> --channel general
+```
+
+The owner hands over the file and the lifecycle UID that mint reports. `--allow-subscribe` grants
+reading; `--allow-publish` is optional when the session will not post. Use the intended channel in
+both commands. `--provision` alone grants no channel access. A missing read grant is refused with
+`PERMISSION_DENIED` naming the channel and `--allow-subscribe`. A mismatched lifecycle UID is
+refused separately, naming the UID and the mint that reported its pair. Neither refusal points at
+the delivery daemon. A credential minted without `--provision` has no inbox there; with its paired
+UID and a read grant, the refusal names that lifecycle and the mint that makes one. Without a UID, `join`
+first refuses with the lifecycle-pairing requirement.
 
 On a registered user-auth space, sign in with `cotal login` first. `join` uses your existing `cli`
 actor bearer and renews it through the same login and exchange while the session runs. Its channel
