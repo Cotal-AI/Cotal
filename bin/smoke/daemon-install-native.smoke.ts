@@ -336,6 +336,7 @@ try {
     const plan = service.plan(paths, undefined, posixArgv, () => { throw new Error("a task pins no PATH"); });
     const ps = r.calls.find((c) => c.file.endsWith("powershell.exe"))!;
     const script = Buffer.from(ps.args.at(-1)!, "base64").toString("utf16le");
+    check("task lookup imports ScheduledTasks before command discovery", script.includes("Import-Module ScheduledTasks\n") && script.indexOf("Import-Module ScheduledTasks") < script.indexOf("Get-ScheduledTask"));
     check("the SID comes from whoami", r.calls[0]!.file.endsWith("whoami.exe") && r.calls[0]!.args.join(" ") === "/user /fo csv /nh");
     check("the task read takes the name only from its environment", ps.env?.COTAL_DAEMON_TASK === name && !script.includes(name) && ps.args.slice(0, 4).join(" ") === "-NoLogo -NoProfile -NonInteractive -EncodedCommand");
     check("plan names the task and its definition file", plan.unit === name && plan.unitPath === join(state, "service-task.xml") && plan.mechanism === "scheduled-task");
