@@ -13,7 +13,9 @@ import {
   type OutputWarning,
   type Report,
   loadMeshes,
+  meshFile,
   readMesh,
+  readMeshRegistry,
   recordMeshes,
   removeMeshes,
   userAuthStateDir,
@@ -210,8 +212,11 @@ function consume(result: AuthSpaceCatalogResult, force: boolean): CatalogDiff {
 }
 
 function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
-  const loaded = loadMeshes();
-  const before = loaded.filter((m) => m.origin === "catalog" && m.catalogOwner === result.account.ownerKey);
+  // A usable legacy entry can coexist with a damaged canonical record. Keep that pair out of
+  // failure-metadata writes and removals. Catalog rows still refuse it at their keyed read below.
+  const { entries: loaded, unusable } = readMeshRegistry();
+  const damagedFiles = new Set(unusable.map((error) => error.file));
+  const before = loaded.filter((m) => m.origin === "catalog" && m.catalogOwner === result.account.ownerKey && !damagedFiles.has(meshFile(m.space)));
   const priorByName = new Map(before.map((m) => [m.space, m]));
   const diff = emptyDiff();
   if (result.state === "failed") {
@@ -332,9 +337,8 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
   try {
     meshes = loadMeshes();
   } catch {
-    // Applying a catalog reads this same registry, so none can apply while a record is unusable.
-    // Refusing here would pre-empt the command's own checks; a command that resolves its target
-    // through the registry still refuses the record by name.
+    // Target resolution still needs a usable registry. Refusing here would pre-empt the
+    // command's own checks, which name the damaged record.
     return;
   }
   const named = requested ? meshes.find((m) => m.space === requested) : undefined;

@@ -587,6 +587,10 @@ its catalogs. With no cached sign-in, a refresh reports `not-signed-in`; the CLI
 `AUTH_REQUIRED` (exit 2) and directs you to `cotal daemon login --idp <url>`. Saved spaces remain
 listed, and listing without `--refresh` still works. Name collisions and unreadable registrations
 are reported rather than replaced.
+An unrelated damaged registration does not block catalog refresh: healthy catalog entries still
+update, and the listing reports the unreadable count with a partial outcome (exit 4).
+A damaged canonical registration and its usable legacy duplicate stay untouched, including during
+failure reporting and catalog removal. A selection naming that registration stays selected.
 The desktop app uses these same controls. Its source and native build instructions are in the
 [desktop README](../desktop/README.md). Closing its tray UI does not stop the installed daemon.
 
