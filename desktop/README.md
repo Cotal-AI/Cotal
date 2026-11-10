@@ -74,6 +74,8 @@ The Linux dispatch prepares only the disposable runner's user manager and enable
 
 ### App presence and login
 
+After setup, close the window and use Cotal in the macOS menu bar or the Windows/Linux system tray. Its menu shows verified connected-space status or **Needs attention**, **Settings…**, **Open dashboard**, and **Quit Cotal**. Settings reopens the Ready list after setup, or keeps onboarding available before setup. Open dashboard uses the same verified canonical space and Manager target as the window. If that target is unavailable, the window explains what needs attention. Quit Cotal stops only the app, not the background daemon. Status refresh continues while the window is hidden. Menu item IDs are `status`, `settings`, `dashboard`, and `quit`, on tray `machine`.
+
 On macOS, install **Cotal.app** in Applications. The DMG places Cotal on the left and the Applications alias on the right. When opened from a mounted disk image or Downloads, Cotal offers to copy itself to `/Applications/Cotal.app` and reopen there. It never replaces an existing installation. **Not now** is remembered. Open at login is unavailable from these temporary locations. The running app has a normal Dock icon. Clicking it or reopening the app brings its window back. Dock Quit and Cmd+Q quit the app without stopping the daemon.
 
 To keep the macOS icon after quitting, use the Dock's **Options > Keep in Dock**. Cotal does not edit Dock preferences or restart the Dock. Apple provides user controls and managed Dock profiles, but no supported ordinary-app self-pinning API was found.

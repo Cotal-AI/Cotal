@@ -34,9 +34,42 @@ pub fn has_connected_space(result: &serde_json::Value) -> Option<bool> {
     }))
 }
 
+/// Describe verified Manager inventory without treating service-only connectivity as ready.
+pub fn tray_status(frame: &serde_json::Value) -> String {
+    if frame["ok"].as_bool() != Some(true) {
+        return if frame["error"]["code"] == "NOT_RUNNING" { "Not connected" } else { "Needs attention" }.into();
+    }
+    let result = &frame["result"];
+    if let Some(managers) = result["managers"].as_array() {
+        let ready = managers.iter().filter(|m| m["state"] == "answering"
+            && m["instanceId"].is_string()
+            && m["connectors"].as_array().is_some_and(|cs| cs.iter().any(|c| c["state"] == "available"))).count();
+        let active = managers.iter().filter(|m| m["state"] != "stopped").count();
+        if ready != active { return format!("Needs attention · {ready} connected"); }
+        return match ready {
+            0 => "Not connected".into(),
+            1 => "Connected · 1 space".into(),
+            n => format!("Connected · {n} spaces"),
+        };
+    }
+    if result["launchReady"] == true { "Connected".into() } else { "Needs attention".into() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tray_reports_verified_spaces_and_attention_without_claiming_service_readiness() {
+        use serde_json::json;
+        let ready = json!({"state":"answering", "instanceId":"instance", "connectors":[{"state":"available"}]});
+        assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[]}})), "Not connected");
+        assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[ready.clone()]}})), "Connected · 1 space");
+        assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[ready.clone(),ready.clone()]}})), "Connected · 2 spaces");
+        assert_eq!(tray_status(&json!({"ok":true,"result":{"managers":[ready,{"state":"refused"}]}})), "Needs attention · 1 connected");
+        assert_eq!(tray_status(&json!({"ok":false,"error":{"code":"NOT_RUNNING"}})), "Not connected");
+        assert_eq!(tray_status(&json!({"ok":false,"error":{"code":"NOT_ANSWERING"}})), "Needs attention");
+        assert_eq!(tray_status(&json!({"ok":true,"result":{"state":"connected"}})), "Needs attention");
+    }
     #[test]
     fn login_defaults_only_when_connected_and_opt_out_survives_reconnect() {
         let mut p = Preferences::default();

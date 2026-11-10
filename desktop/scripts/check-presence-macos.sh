@@ -80,6 +80,37 @@ guard !windows.contains(where: { ($0[kCGWindowOwnerPID as String] as? Int32) == 
 print("close kept app running with no visible top-level window")
 SWIFT
 swift "$out/hidden.swift" | tee "$out/hidden-before-reopen.txt"
+# Open the actual NSStatusItem menu while the main window is hidden.
+/usr/bin/osascript <<'APPLESCRIPT' > "$out/menu-bar.txt"
+tell application "System Events"
+  tell process "cotal-desktop"
+    click menu bar item 1 of menu bar 2
+    delay 1
+    set titles to name of every menu item of menu 1 of menu bar item 1 of menu bar 2
+    repeat with requiredTitle in {"Settings…", "Open dashboard", "Quit Cotal"}
+      if titles does not contain (requiredTitle as text) then error "Missing tray menu action: " & requiredTitle
+    end repeat
+    return titles
+  end tell
+end tell
+APPLESCRIPT
+/usr/bin/screencapture -x "$out/menu-bar-open.png"
+/usr/bin/osascript <<'APPLESCRIPT'
+tell application "System Events"
+  tell process "cotal-desktop"
+    click menu item "Settings…" of menu 1 of menu bar item 1 of menu bar 2
+  end tell
+end tell
+APPLESCRIPT
+sleep 2
+swift "$out/query.swift" | tee "$out/visible-after-settings.txt"
+/usr/bin/osascript <<'APPLESCRIPT'
+tell application "System Events"
+  tell process "cotal-desktop" to click button 1 of window 1
+end tell
+APPLESCRIPT
+sleep 2
+swift "$out/hidden.swift" | tee "$out/hidden-after-settings.txt"
 /usr/bin/osascript -e 'tell application id "ai.cotal.desktop" to reopen'
 sleep 2
 swift "$out/query.swift" | tee "$out/visible-after-reopen.txt"
@@ -103,4 +134,4 @@ print("background launch kept window hidden")
 SWIFT
 swift "$out/background.swift" | tee "$out/background.txt"
 /usr/bin/osascript -e 'tell application id "ai.cotal.desktop" to quit'
-printf '{"platform":"macOS","architecture":"%s","result":"passed","checks":["dmg-install","layout-recorded","regular-activation","visible-window","close-hidden","reopen","quit","disconnected-login-absent","background-hidden"]}\n' "$(uname -m)" > "$out/result.json"
+printf '{"platform":"macOS","architecture":"%s","result":"passed","checks":["dmg-install","layout-recorded","regular-activation","visible-window","close-hidden","menu-bar-actions","settings-restore","reopen","quit","disconnected-login-absent","background-hidden"]}\n' "$(uname -m)" > "$out/result.json"

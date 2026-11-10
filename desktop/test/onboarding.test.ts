@@ -19,6 +19,7 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
   const win = dom.window, doc = win.document as Document;
   const calls: Request[] = [], urls: string[] = [];
   const callbacks = new Map<number, (frame: unknown) => void>(); let next = 0;
+  const listeners = new Map<string, number>();
   let installed = options.installed ?? false, connected = options.connected ?? false;
   let releaseLogin: (() => void) | undefined, releaseSetup: (() => void) | undefined;
   const manager = { space: "team", state: "answering", instanceId: "instance", connectors: [{ state: "available" }] };
@@ -33,9 +34,9 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
   win.isTauri = true;
   win.__TAURI_INTERNALS__ = {
     transformCallback(fn: (frame: unknown) => void) { callbacks.set(++next, fn); return next; }, unregisterCallback() {},
-    async invoke(cmd: string, args: { request?: Request; url?: string; onEvent?: { id: number } } = {}) {
+    async invoke(cmd: string, args: { request?: Request; url?: string; onEvent?: { id: number }; event?: string; handler?: number } = {}) {
       if (cmd === "plugin:deep-link|get_current") return options.link ? [options.link] : null;
-      if (cmd === "plugin:event|listen") return ++next;
+      if (cmd === "plugin:event|listen") { listeners.set(args.event!, args.handler!); return ++next; }
       if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "" };
       if (cmd === "set_connection_state") return;
       if (cmd === "open_browser") { urls.push(args.url!); return; }
@@ -77,8 +78,33 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
   win.eval(await bundle); await settle();
   const node = <T extends HTMLElement = HTMLElement>(id: string) => doc.getElementById(id) as T;
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };
-  return { dom, doc, node, click, calls, urls, options, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
+  return { dom, doc, node, click, calls, urls, options, emit: async (event: string) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload: null }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
 }
+
+test("tray Settings returns to Ready and dashboard retains the verified target while hidden polling continues", async () => {
+  const a = await app({ installed: true, connected: true });
+  try {
+    await a.click("another-space");
+    await a.emit("desktop-open-settings");
+    assert.equal(a.node("connected-spaces").hidden, false);
+    assert.equal(a.node("connection-title").textContent, "This computer is connected");
+    await a.emit("desktop-open-dashboard");
+    assert.match(a.urls.at(-1)!, /\/machines\?space=sp_team&machine=instance$/);
+    Object.defineProperty(a.doc, "hidden", { configurable: true, value: true });
+    const before = a.calls.filter(r => r.op === "status").length;
+    await a.tick();
+    assert.ok(a.calls.filter(r => r.op === "status").length > before);
+  } finally { a.dom.window.close(); }
+});
+
+test("tray Settings before setup preserves explicit onboarding consent", async () => {
+  const a = await app();
+  try {
+    await a.emit("desktop-open-settings");
+    assert.equal(a.node("connection-title").textContent, "Welcome to Cotal");
+    assert.ok(!a.calls.some(r => ["install", "login", "setup"].includes(r.op)));
+  } finally { a.dom.window.close(); }
+});
 
 test("first open is a neutral Cloud-default welcome and sign-in is an explicit action", async () => {
   const a = await app();

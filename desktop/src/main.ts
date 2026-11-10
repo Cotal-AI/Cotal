@@ -572,13 +572,25 @@ el("disconnect").addEventListener("click", () => void action(async () => {
 el("sync").addEventListener("click", () => void action(async () => { notice(""); await spaces(true); }));
 el("refresh").addEventListener("click", () => void action(refresh));
 el("space").addEventListener("change", () => { connection = undefined; progress = progressNames.map(() => "waiting"); clearDetails(); notice(""); showStage(stage); void refresh(); });
-el("dashboard").addEventListener("click", () => {
+function openDashboard(): void {
   const space = selectedSpace(); const provider = providers.get(space) ?? el<HTMLInputElement>("provider").value.trim();
   const spaceId = catalogIds.get(space), instanceId = instances.get(space);
   if (computerAccount?.hostSupport === "supported" && computerAccount.mode !== "sign-in-required" && provider) void invoke("open_browser", { url: new URL("/machines", approvalUrl(provider)).href }).catch(refusal);
   else if (connected() && spaceId && instanceId && provider) void invoke("open_browser", { url: machinesUrl(provider, spaceId, instanceId) }).catch(refusal);
-  else notice("The dashboard needs a verified connection and the space's saved address. Refresh spaces before trying again.");
-});
+  else { openSettings(); notice("The dashboard needs a verified connection and the space's saved address. Refresh spaces before trying again."); }
+}
+el("dashboard").addEventListener("click", openDashboard);
+function openSettings(): void {
+  if (busy || loginActive) return;
+  editing = false; addingSpace = false; choosingSpace = false;
+  const select = el<HTMLSelectElement>("space");
+  for (const option of select.options) option.hidden = false;
+  if (!connections.has(select.value)) select.value = connections.keys().next().value ?? select.value;
+  if (connections.size || completedSetup || listOpened) {
+    listOpened = true; showStage("finished");
+  }
+  void refresh();
+}
 el("autostart").addEventListener("change", () => void action(async () => {
   const checkbox = el<HTMLInputElement>("autostart");
   await setLoginPreference(checkbox.checked);
@@ -601,7 +613,7 @@ async function start(): Promise<void> {
     el<HTMLInputElement>("autostart").disabled = true; document.querySelector(".app")!.classList.remove("loading"); return;
   }
   try {
-    await startPresence(notice);
+    await startPresence(notice, { settings: openSettings, dashboard: openDashboard });
     await onOpenUrl(receiveLinks); const initialLinks = await getCurrent(); if (initialLinks?.length) receiveLinks(initialLinks);
     const info = await request({ op: "about" }); appVersion = String(info.version);
     text("machine-name", String(info.machine)); text("version", `v${String(info.version)}`);
@@ -618,7 +630,7 @@ async function start(): Promise<void> {
   initialized = true;
   document.querySelector(".app")!.classList.remove("loading");
   if (computerAccount?.hostSupport !== "supported") text("tray-label", [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");
-  const tick = async () => { if (!busy && !document.hidden) await refresh(); poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000); };
+  const tick = async () => { if (!busy) await refresh(); poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000); };
   poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000);
 }
 document.querySelector(".connection-card")!.addEventListener("transitionend", event => {

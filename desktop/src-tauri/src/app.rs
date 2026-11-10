@@ -14,6 +14,7 @@ use tokio::sync::Semaphore;
 
 const MAX_FRAME: usize = 64 * 1024;
 struct RequestSlots(Arc<Semaphore>);
+struct TrayStatus(MenuItem<tauri::Wry>);
 
 #[tauri::command]
 async fn daemon_request(
@@ -100,6 +101,10 @@ async fn daemon_request(
     }).await;
     let _ = child.kill();
     let frame = answer.map_err(|_| "The daemon client timed out. The operation outcome is unknown; check status before retrying.".to_string())??;
+    if matches!(operation, "status" | "setup") {
+        let status = crate::presence::tray_status(&frame);
+        app.state::<TrayStatus>().0.set_text(&status).map_err(|e| e.to_string())?;
+    }
     // An OS integration refusal does not conceal the completed daemon operation.
     if let Err(message) = native_presence::observe(&app, operation, &frame) {
         app.emit("desktop-presence-error", message).map_err(|e| e.to_string())?;
@@ -168,15 +173,18 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
             app.manage(native_presence::Presence(std::sync::Mutex::new(native_presence::load(app.handle())?)));
-            let open = MenuItem::with_id(app, "open", "Open Cotal", true, None::<&str>)?;
+            let status = MenuItem::with_id(app, "status", "Checking connection…", false, None::<&str>)?;
+            let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+            let dashboard = MenuItem::with_id(app, "dashboard", "Open dashboard", true, None::<&str>)?;
             let quit = MenuItem::with_id(
                 app,
                 "quit",
-                "Quit app (keep background service running)",
+                "Quit Cotal",
                 true,
                 None::<&str>,
             )?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
+            let menu = Menu::with_items(app, &[&status, &settings, &dashboard, &quit])?;
+            app.manage(TrayStatus(status));
             let icon = app
                 .default_window_icon()
                 .ok_or("The packaged application icon is missing.")?
@@ -185,8 +193,10 @@ pub fn run() {
                 .icon(icon)
                 .menu(&menu)
                 .tooltip("Cotal: not connected")
+                .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => show(app),
+                    "settings" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
+                    "dashboard" => { show(app); let _ = app.emit("desktop-open-dashboard", ()); }
                     "quit" => app.exit(0),
                     _ => {}
                 })
