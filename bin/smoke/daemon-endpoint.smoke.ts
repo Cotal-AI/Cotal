@@ -19,6 +19,8 @@
  *  E7  shutdown removes only its own socket (dev+ino-checked), not a replacement at the same path;
  *  E10 N concurrent starters on an empty path: exactly one ready, N-1 refused LOCK_HELD, 0 live unlinks;
  *  E11 an unterminated 1 MiB write is refused at the 64 KiB limit and the connection closed;
+ *  E12 per-line byte limits cover terminated lines, decoded tails and the newline budget, while
+ *      exact-limit lines and multiple valid lines stay usable; oversized connections process no later request;
  *  E8  cross-uid (server side): a peer reported by the kernel as another uid is dropped with zero
  *      frames decoded. Needs an unprivileged user namespace; reported UNTESTED when unavailable;
  *  E9  cross-uid (client side): the client refuses a listener whose kernel uid differs, writing
@@ -34,7 +36,7 @@ import { createServer, type Socket } from "node:net";
 import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
-import { EndpointRefusal, daemonPaths } from "../daemon/endpoint.js";
+import { EndpointRefusal, MAX_LINE_BYTES, daemonPaths } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
 import { queryDaemon, type ClientCounters } from "../daemon/client.js";
 
@@ -261,6 +263,57 @@ try {
     check("E11 counters: 1 refusal, 0 frames decoded, 0 statuses", d.counters.requestsRefused === 1 && d.counters.framesDecoded === 0 && d.counters.statusAnswered === 0, d.counters);
     check("E11 the daemon still answers status afterwards", (await queryDaemon({ paths: p, peerUid })).ok);
     await d.close();
+  }
+
+  // ---- E12: each decoded line is bounded independently of chunks and earlier newlines ----
+  {
+    const p = paths(runtime("e12"));
+    const d = await serveDaemon({ paths: p, version: "x", peerUid });
+    const { connect: rawConnect } = await import("node:net");
+    type Frame = { id?: string | null; ok?: boolean; error?: { code: string } };
+    const status = (id: string) => JSON.stringify({ v: 1, id, op: "status" }) + "\n";
+    const padded = (id: string) => { const line = status(id).slice(0, -1); return line + " ".repeat(MAX_LINE_BYTES - 1 - Buffer.byteLength(line)) + "\n"; };
+    const cases: { name: string; input: string | Buffer; oversized: boolean; tail?: boolean; ids?: string[] }[] = [
+      { name: "exact limit", input: padded("exact"), oversized: false, ids: ["exact"] },
+      { name: "two maximum valid lines", input: padded("one") + padded("two"), oversized: false, ids: ["one", "two"] },
+      { name: "ASCII tail", input: status("prefix") + "x".repeat(MAX_LINE_BYTES + 1), oversized: true, tail: true, ids: ["prefix"] },
+      { name: "decoded tail", input: Buffer.concat([Buffer.from(status("prefix")), Buffer.alloc(24000, 0xff)]), oversized: true, tail: true, ids: ["prefix"] },
+      { name: "terminated oversized line", input: "x".repeat(MAX_LINE_BYTES + 1) + "\n", oversized: true },
+      { name: "UTF-8 oversized line", input: "é".repeat(MAX_LINE_BYTES / 2 + 1) + "\n", oversized: true },
+      { name: "no room for newline", input: "x".repeat(MAX_LINE_BYTES), oversized: true, tail: true },
+    ];
+    try {
+      for (const test of cases) {
+        const c = rawConnect(p.socket);
+        let raw = "", remoteClosed = false, localClose = false;
+        c.setEncoding("utf8"); c.on("data", (b: string) => { raw += b; }); c.on("error", () => {});
+        const closed = new Promise<void>((resolve) => c.once("close", () => { if (!localClose) remoteClosed = true; resolve(); }));
+        const frames = () => raw.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Frame);
+        const wait = async (ready: () => boolean) => {
+          const end = Date.now() + 1500;
+          while (!ready() && Date.now() < end) await new Promise<void>((r) => setTimeout(r, 10));
+        };
+        try {
+          await new Promise<void>((resolve, reject) => { c.once("connect", resolve); c.once("error", reject); });
+          await new Promise<void>((resolve) => c.write(test.input, () => resolve()));
+          await wait(() => remoteClosed || (!test.oversized && test.ids!.every((id) => frames().some((f) => f.id === id))));
+          const before = frames(), closedBefore = remoteClosed;
+          if (!remoteClosed) {
+            c.write((test.tail ? "\n" : "") + status("after"));
+            await wait(() => remoteClosed || frames().some((f) => f.id === "after"));
+          }
+          if (test.oversized) {
+            check(`E12 ${test.name} refuses once and closes without another byte`, closedBefore && before.filter((f) => f.error?.code === "LINE_TOO_LONG").length === 1);
+            check(`E12 ${test.name} processes no later request`, !frames().some((f) => f.id === "after" && f.ok));
+          } else {
+            check(`E12 ${test.name} accepts each valid frame`, test.ids!.every((id) => before.some((f) => f.id === id && f.ok)) && !before.some((f) => f.error));
+            check(`E12 ${test.name} keeps its connection usable`, !closedBefore && frames().some((f) => f.id === "after" && f.ok));
+          }
+          if (test.oversized && test.ids) check(`E12 ${test.name} preserves the preceding valid response`, test.ids.every((id) => before.some((f) => f.id === id && f.ok)));
+        } finally { localClose = true; c.destroy(); await closed; }
+      }
+      check("E12 the daemon still answers a fresh status", (await queryDaemon({ paths: p, peerUid })).ok);
+    } finally { await d.close(); }
   }
 
   // ---- E8/E9: cross-uid via an unprivileged user namespace ----
