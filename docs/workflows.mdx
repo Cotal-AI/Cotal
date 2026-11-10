@@ -112,6 +112,10 @@ This bounds dispatches. It does not guarantee a single external write.
 
 Migration compares edited source with the journal and reports changed or orphaned steps.
 The CLI exposes this read-only check. It does not commit the proposed migration.
+`cotal run check <runId> <program>` identifies an unchanged program, or prints the
+current and candidate hashes when they differ. If no program was recorded, it says
+the current hash is unavailable. It also names a completed or failed run as terminal.
+An admissible comparison does not make a terminal run resumable.
 Fork creates a new run from a recorded prefix, retaining the parent's pins while leaving the parent unchanged.
 
 See [resume, migration, and fork contracts](workflow-runtime.mdx#continuing-a-run), including seat adoption and the `once` example.

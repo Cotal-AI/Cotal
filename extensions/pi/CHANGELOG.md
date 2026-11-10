@@ -1,5 +1,35 @@
 # @cotal-ai/pi
 
+## 0.154.0
+
+No changes in this release.
+
+## 0.153.1
+
+No changes in this release.
+
+## 0.153.0
+
+No changes in this release.
+
+## 0.152.0
+
+No changes in this release.
+
+## 0.151.3
+
+No changes in this release.
+
+## 0.151.2
+
+No changes in this release.
+
+## 0.151.1
+
+### Patch Changes
+
+- f84069e: The docs site now has a TypeScript reference for every published package, generated from source. Each of these packages' entry files gains a `@module index` comment so the reference names the main import path `index` instead of leaving it blank. The published code is otherwise unchanged.
+
 ## 0.151.0
 
 No changes in this release.

@@ -61,6 +61,7 @@ type Surface = keyof typeof SURFACES;
 // workflow run host's.
 const ENTRIES: [string, Surface[]][] = [
   ["supervise", ["manager", "auth", "runtime"]], ["__daemon-manager", ["manager", "auth", "runtime"]], ["__service-manager", ["manager", "auth", "runtime"]],
+  ["__machine-manager", ["manager", "auth", "runtime"]],
   ["deliver", ["delivery", "auth"]], ["__daemon-deliver", ["delivery", "auth"]], ["__service-delivery", ["delivery", "auth"]],
   ["feedback-intake", ["delivery", "auth"]], ["__service-feedback-intake", ["delivery", "auth"]],
   ["auth-service", ["auth"]], ["__daemon-auth-service", ["auth"]], ["__service-auth", ["auth"]],
@@ -90,5 +91,10 @@ const afterValueFlag = loads("--space", "__daemon-deliver");
 check("a daemon word after --space is not the command word: that run loads the whole CLI",
   afterValueFlag.status !== 0 && CLI_SURFACE.every((tail) => has(afterValueFlag.loaded, tail)),
   { status: afterValueFlag.status, stderr: afterValueFlag.stderr.slice(0, 300), missing: CLI_SURFACE.filter((tail) => !has(afterValueFlag.loaded, tail)) });
+
+const machine = loads("daemon");
+check("machine daemon loads no Manager, delivery or runtime surface",
+  has(machine.loaded, "/bin/dist/daemon/command.js") && ![SURFACES.manager, SURFACES.delivery, SURFACES.runtime].some((tail) => has(machine.loaded, tail)),
+  { loaded: machine.loaded.length });
 
 finish();

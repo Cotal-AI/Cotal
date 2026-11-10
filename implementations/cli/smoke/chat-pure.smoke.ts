@@ -204,6 +204,18 @@ const keys = (s: ChatState, ks: Parameters<typeof applyKey>[1][], distinct = tru
   check("a second Enter while pending does not send", again.intent === undefined && again.state.draft === "more");
 }
 check("whitespace-only drafts do not send", keys(s0(), [{ kind: "char", text: "  \n " }, { kind: "enter", shift: false }]).intent === undefined);
+for (const text of [":to", ":to @ana", ":to #general", ":to role:reviewer", ":to invalid", ":to\t@ana", ":to @ana\nprivate hi ana"]) {
+  const r = keys(initialState(identity, { kind: "channel", channel: "general" }), [{ kind: "paste", text }, { kind: "enter", shift: false }]);
+  check(`${JSON.stringify(text)} refuses, clears the previous destination and opens the picker`,
+    r.intent?.kind === "pick-recipient" && r.state.recipient === undefined && r.state.draft === "" && r.state.pending === undefined
+    && r.state.transcript.some((e) => e.kind === "notice" && e.text.startsWith(":to is only available in --plain")));
+  const next = keys(r.state, [{ kind: "char", text: "private hi ana" }, { kind: "enter", shift: false }]);
+  check("the next private line is held until a recipient is chosen", next.intent?.kind === "pick-recipient" && next.state.draft === "private hi ana" && next.state.pending === undefined);
+}
+{
+  const r = keys(s0(), [{ kind: "char", text: ":today is sunny" }, { kind: "enter", shift: false }]);
+  check("ordinary colon-prefixed text is still message data", r.intent?.kind === "publish" && r.intent.text === ":today is sunny");
+}
 {
   const r = keys(s0(), [{ kind: "char", text: "//etc" }, { kind: "enter", shift: false }]);
   check("//text sends a message beginning with /", r.intent?.kind === "publish" && r.intent.text === "/etc");
@@ -246,6 +258,9 @@ check("Ctrl-D with no draft leaves at once", keys(s0(), [{ kind: "ctrl-d" }]).in
   check("while disconnected nothing sends and the draft is kept", r.intent === undefined && r.state.draft === "keep me");
   const slash = keys(s, [{ kind: "char", text: "/who" }, { kind: "enter", shift: false }]);
   check("while disconnected /who waits and its line is kept", slash.intent === undefined && slash.state.draft === "/who");
+  const refused = keys(s, [{ kind: "char", text: "/reply pong back" }, { kind: "enter", shift: false }, { kind: "char", text: "/leave" }]);
+  check("a refused slash command clears its line, so the next command is not appended",
+    refused.intent === undefined && refused.state.draft === "/leave" && refused.state.transcript.some((e) => e.kind === "notice" && e.text.startsWith("/reply takes no arguments; it answers")), refused.state.draft);
   const recon = keys(s, [{ kind: "char", text: "/reconnect" }, { kind: "enter", shift: false }]);
   check("while disconnected /reconnect still runs", recon.intent?.kind === "slash");
   s = applyEvent(s, { type: "connection", state: "connected" });
@@ -269,8 +284,8 @@ check("Ctrl-D with no draft leaves at once", keys(s0(), [{ kind: "ctrl-d" }]).in
   check("unknown keeps the draft and warns not to resend blindly", unk.draft === "hi" && unk.transcript.some((e) => e.kind === "notice" && /not resent/.test(e.text)));
   const toBob = (status: "offline" | "idle") => applyPublishResult(sent, { outcome: "stored", messageId: "m9", seq: 4, recipient: { id: "BOBID", name: "bob" }, recipientStatusAtSend: status });
   check(
-    "a DM stored for an offline recipient adds a notice that bob gets it when he reconnects",
-    toBob("offline").transcript.some((e) => e.kind === "notice" && e.tone === "waiting" && e.text === "bob is offline. The message is stored and delivered when bob reconnects; a new agent spawned as bob does not receive it."),
+    "a DM stored for an offline recipient explains the lifecycle and inbox limits",
+    toBob("offline").transcript.some((e) => e.kind === "notice" && e.tone === "waiting" && e.text === "bob is offline. The message is stored, but delivery is not confirmed. Only the same lifecycle can receive it, while its inbox still exists. If the session ended or its inbox was removed, it cannot receive this message. A new session or agent named bob does not receive it."),
   );
   check("...and a DM to a live recipient adds no such notice", !toBob("idle").transcript.some((e) => e.kind === "notice" && /is offline/.test(e.text)));
 }
@@ -285,7 +300,7 @@ check("Ctrl-D with no draft leaves at once", keys(s0(), [{ kind: "ctrl-d" }]).in
 console.log("5. /help lists every slash command");
 {
   // /help talks to no one, so a session that answers nothing is enough.
-  const { state: helped } = await runSlash({} as never, s0(), { name: "help" });
+  const { state: helped } = await runSlash({} as never, s0, { name: "help" });
   const shown = transcriptRows(helped, 1000).map((r) => r.text).join("\n");
   check("/help lists every slash command with its arguments", ["/who", "/history [n]", "/leave <channel>", "/help", "/quit"].every((c) => shown.includes(c)), shown);
 }

@@ -245,6 +245,12 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--expect-owner <u_…>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the owner the handoff must carry |
 | `--expect-lifecycle-uid <uid>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the lifecycle UID the handoff must carry |
 
+A direct `--dry-run` refuses an unknown effective harness with `DEPENDENCY_UNAVAILABLE` (exit 2),
+whether it came from `--harness`, the persona or a preference. Harness names are case-sensitive.
+Known names can be previewed without importing a connector or checking its binary or login.
+A managed preview warns about an unknown local harness and reports `not-checked`, since the
+selected manager checks its own connectors at launch.
+
 `spawn` refuses `--allow-stale` with "manifest deployment options belong to `cotal team deploy <file>`, not spawn".
 `--runtime` is a per-seat choice on a managed launch. Omitted, the seat uses the runtime that manager
 was started with. `auto` names a manager's own runtime, so it is refused for one seat. Any other
@@ -629,6 +635,11 @@ records under `COTAL_SEAT_ROOT` (default `~/.cotal/seats`), one line per seat:
 | `childless` | The agent has exited, or the record comes from an earlier boot. `--drain` retires the seat |
 | `drained` | `--drain` proved the custodian and the agent gone and removed the record |
 | `refused` | The record cannot be read, carries no start or boot identity, this host publishes no boot identity, or the reap could not prove the processes gone. The record stays on disk |
+
+If the store cannot be listed, the refusal names its path, includes the native read error,
+and gives a next step. Check that `COTAL_SEAT_ROOT` names the intended readable directory
+and that its parents can be entered. A missing store returns an empty census without
+creating it. Only a `--drain` refusal says that no drain was submitted.
 
 A drain signals only a custodian whose recorded start identity still matches the live process, so
 a reused pid is never touched. No process outlives a reboot, so a record from an earlier boot is

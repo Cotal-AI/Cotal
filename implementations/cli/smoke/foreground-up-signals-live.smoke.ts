@@ -7,6 +7,9 @@
  * and again as it writes its start receipt, and another cuts a ready one's stop as a closed terminal
  * does. A third shows that a second foreground `up` refuses while one holds the stack, and that one
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
+ * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
+ * broker running and removes its hold record, and the next `down --yes` stops the stack.
+ * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -183,7 +186,8 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.notEqual(state.code, 0, "unexpected broker loss remains a nonzero CLI exit"); passed++;
       assert.match(err, /exited unexpectedly/); passed++;
     } else {
-      assert.equal(state.code, 0, `guarded shutdown completed (${state.signal ?? "no signal"}): ${err}`); passed++;
+      const signalExit = options.signal === "SIGTERM" ? 143 : 130;
+      assert.equal(state.code, signalExit, `guarded shutdown exits ${signalExit} (${state.signal ?? "no signal"}): ${err}`); passed++;
       assert.match(err, /Trapped "terminated" signal/, "the CLI owner, not terminal SIGINT, stops the broker"); passed++;
       assert.doesNotMatch(err, /Trapped "interrupt" signal|could not list managed agents|control plane degraded|exited unexpectedly|spare.*unavailable/i); passed++;
       if (options.auth) {
@@ -346,6 +350,56 @@ async function controllerHangupCell(): Promise<void> {
   }
 }
 
+/** A hangup of a ready foreground controller stack is not a stop. SIGHUP exits 129, names `cotal down`,
+ *  leaves the broker running and removes the hold record. The next `down --yes` stops the stack. */
+async function controllerSighupCell(): Promise<void> {
+  const name = "controller-sighup";
+  const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
+  for (const p of [root, home, mesh, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
+  const port = await freePort(); assert.notEqual(port, 4222);
+  const space = `foreground-${name}`;
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
+  assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
+  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "", err = "";
+  child.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
+  child.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
+  const state = observeOwnedChild(child);
+  const hold = join(mesh, ".cotal", "stack-foreground.hold");
+  try {
+    await until(() => {
+      if (state.error) throw state.error;
+      if (state.exited) throw new Error(`CLI exited before the stack was ready: ${err}`);
+      return out.includes("Controller stack started") && existsSync(hold) && out.includes("cotal down");
+    }, 120_000, () => err.slice(-3000));
+    assert.ok(child.pid); process.kill(child.pid, "SIGHUP");
+    await until(() => { if (state.error) throw state.error; return state.exited; }, 30_000, () => err.slice(-3000));
+    await waitForOwnedChild(() => state.closed, 3_000, `${root}: hangup owner streams drained`);
+    assert.equal(state.code, 129, `a hangup exits 129 and leaves the stack: ${err}`); passed++;
+    assert.match(err, /The terminal closed\. This stack in .* is still running; `cotal down` stops it\./, "the hangup names cotal down"); passed++;
+    assert.equal(await portOpen(port), true, "the broker keeps running after the hangup"); passed++;
+    assert.equal(existsSync(hold), false, "the hangup removes this process's hold record"); passed++;
+    const status = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--space", space, "--server", `nats://127.0.0.1:${port}`]);
+    assert.ok(status.code === 0 && /reachable/.test(status.out), `status still shows the broker reachable: ${status.out}${status.err}`); passed++;
+    const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
+    assert.equal(down.code, 0, `the next down stops the stack the hangup left: ${down.out}${down.err}`); passed++;
+    assert.equal(await portOpen(port), false, "down closed the broker the hangup left running"); passed++;
+    assert.equal(existsSync(hold), false, "the hold record stays gone after down"); passed++;
+    console.log(`PASS foreground-up-signals ${name}`);
+  } finally {
+    try {
+      if (!state.exited && child.pid) process.kill(-child.pid, "SIGKILL");
+      if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
+    } finally {
+      writeFileSync(join(root, "stdout.log"), out, { mode: 0o600 });
+      writeFileSync(join(root, "stderr.log"), err, { mode: 0o600 });
+      writeFileSync(join(root, "exit.json"), JSON.stringify({ code: state.code, signal: state.signal, closed: state.closed, port }), { mode: 0o600 });
+    }
+  }
+}
+
 async function controllerHoldCell(): Promise<void> {
   const name = "controller-hold";
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
@@ -419,6 +473,7 @@ await cell("crash", { crash: true });
 await controllerStartupCell();
 await controllerStartupCell(true);
 await controllerHangupCell();
+await controllerSighupCell();
 await controllerHoldCell();
 console.log(`foreground-up-signals: ${passed} passed, 0 failed`);
 emitSentinel({ cells: passed, passed, failed: 0 });

@@ -191,13 +191,15 @@ The file is private to its owner and versioned:
 ```
 
 `revision` counts writes that change a value. A write holds a lock and replaces the file atomically.
+If writing the lock or replacement fails, Cotal attempts to remove its temporary file and reports
+the original error. It does not sweep other writers' temporary files.
 If the revision changed after the command read it, the write refuses with `CONFLICT`.
 
 Each write makes the replacement file private with mode `0600`, regardless of its prior mode.
 A changed mode produces `PREFERENCES_MODE_CHANGED`; a read-only file does not prevent `config set` or `unset`.
 
 Invalid JSON, an unsupported schema version, an unknown key, or an invalid value stops commands that use defaults.
-Help, completion, `version`, and `docs` remain available. `status` reports the unreadable part and exits 4.
+Help, completion, `version`, `docs`, and `daemon` remain available. Machine-daemon operations do not use preference defaults. `status` reports the unreadable part and exits 4.
 The error names the file and fix. Cotal never resets it automatically.
 An initial UTF-8 byte order mark is accepted and omitted on the next write. UTF-16 is refused with the instruction to save as UTF-8.
 Symlinks, FIFOs, devices, and folders at `preferences.json` are refused with `PERMISSION_DENIED` before opening them.
@@ -236,6 +238,7 @@ other non-empty value when it starts, naming the variable. A blank value uses th
 | `COTAL_TLS` | connector session | Connect over TLS (`1`); off keeps the join link's choice | off (or the link's) |
 | `COTAL_TOKEN` | connector session | Auth token (token / open modes) | none |
 | `COTAL_CAPABILITIES` | connector session | Control-plane capabilities (e.g. `spawn`) that gate manager tools | agent file's `capabilities:` |
+| `COTAL_ENDPOINTS` | connector session | Endpoint commands the seat was handed at launch, as the JSON list of `{ endpoint, commands, instanceId? }` entries the launcher writes, `[]` when the launch names none; the orientation card lists them. A value that is not a list, empty or `null` included, is refused when the session starts | for a session started with no such variable, the agent file's `endpoints:` |
 | `COTAL_QUIET` / `COTAL_MUTED` | connector session | Per-channel attention defaults (never-wake / drop-on-receive) | agent file's, else none |
 | `COTAL_CHANNEL` | Claude connector | Force channel wake-nudges on (`1`) / off; set to `1` by the Claude launcher | on when the MCP client declares the `claude/channel` capability in `initialize` |
 | `COTAL_EVENTS` | connector session | Arm this session's event plane (`1`); set by the launcher unless the launch used `--no-events` | launcher-managed |

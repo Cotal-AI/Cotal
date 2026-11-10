@@ -7,6 +7,38 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Personas read `endpoints` after 0.153.1
+
+A persona file's `endpoints` key used to be an unmodeled list that loading ignored. It now names the
+endpoint commands the persona hands its agent, as a closed list of `{ endpoint, commands }` entries
+that may add `instanceId` to pin one instance, and a file whose `endpoints` is not that list fails to
+load and names the problem.
+
+On a static mesh the spawn bound from 0.140.8 also measures each listed command against the
+spawner's issued evidence, and refuses one it does not cover as `endpoints <endpoint> <command>`. A
+per-user auth mesh and a manifest launch refuse a persona that names the field, an empty list
+included.
+
+### What changes for you
+
+- A persona file that used an `endpoints` key for something else now refuses to load, or hands on
+  endpoint access. Rename the key.
+- A manifest whose persona lists `endpoints` is refused. Start that agent with
+  `cotal spawn --detach` instead.
+
+## Retained pending JSON uses the common receipt
+
+`cotal deliver pending <name> --json` now uses the `cotal pending` reader. It writes one
+versioned JSON receipt, including a `TARGET_NOT_FOUND` refusal (exit 2) when the name or exact
+lifecycle durable is absent. The deprecation warning still goes to stderr.
+Its `command` field is `deliver` on every outcome. Inspection does not seed or repair connectors.
+
+Scripts that read the old first-line facts object or trailing candidate lines must read
+`result` and `result.candidates` instead. Retention fields are `maxAge` and `maxMsgsPerSubject`.
+The structured reader accepts `--limit` from 1 to 100 and requires a complete lifecycle-keyed
+`--durable`. An incomplete candidate read or unconfirmed reader cleanup returns partial (exit 4).
+Plain output is unchanged. A running mesh needs no migration or restart.
+
 ## Migration commits need pause cleanup custody
 
 Library callers of `commitMigration` that supply journal entries and a handler must provide the
@@ -270,7 +302,8 @@ spawn: this spawn hands its helper more than the spawner holds: <parts>. A spawn
 The persona file, the channel overrides on the spawn request, and the default a channel-less persona
 takes from its spawner are all measured. The operator's own commands, such as `cotal spawn
 --detach`, call the manager with a one-shot instrument and are exempt. So are agents holding
-`capabilities: [admin]`, and anything the manager starts on its own behalf.
+`capabilities: [admin]`, and anything the manager starts on its own behalf. After 0.153.1 the same
+refusal also covers a persona's endpoint commands ([above](#personas-read-endpoints-after-01531)).
 
 ### What changes for you
 
@@ -1434,7 +1467,8 @@ user-auth or open target gets no static-signing fallback.
 
 Use `cotal pending <agent>` to read native DM durable counts and bounded candidate IDs as one JSON
 or plain document. `--durable <exact-dm-durable>` targets an older lifecycle directly. The retained
-`deliver pending` spelling still uses its earlier output shape. Scripts must move to the `result`
+`deliver pending` spelling kept its earlier output shape at that release. Its `--json` now uses
+the common receipt described above. Scripts must move to the `result`
 fields instead of assuming the old per-line format. Candidate IDs do not prove that the recipient
 received a message or that the message history is complete. This route works only with the
 static-auth or open admin read authority. User-auth has no matching view yet.

@@ -47,6 +47,7 @@ import {
   type CotalMessage,
   type GoalResultFact,
   type InlinePersona,
+  type PersonaEndpoint,
   turnNoticeFilter,
   renderOnceTask,
 } from "@cotal-ai/core";
@@ -3372,6 +3373,7 @@ export class MeshAgent extends EventEmitter {
     allowSubscribe?: string[];
     allowPublish?: string[];
     capabilities?: string[];
+    endpoints?: PersonaEndpoint[];
     announce?: string;
   }): Promise<ControlReply & { definitionOutcome?: "unknown"; announceError?: string; announceOutcome?: "denied" | "unknown" }> {
     await this.requireConnected();
@@ -3414,6 +3416,7 @@ export class MeshAgent extends EventEmitter {
       allowSubscribe: def.allowSubscribe,
       allowPublish: def.allowPublish,
       capabilities: def.capabilities,
+      endpoints: def.endpoints,
     };
     const reply = await this.managerInvoke("define-persona", args, pin);
     // A command deadline observes no reply, not a refused write. A paused manager can still

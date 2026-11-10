@@ -1,6 +1,6 @@
 import { basename, isAbsolute, join } from "node:path";
-import { readFileSync, readdirSync, renameSync, rmSync, statSync, type Stats } from "node:fs";
-import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
+import { readFileSync, readdirSync, rmSync, statSync, type Stats } from "node:fs";
+import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { spaceFromSegment, spaceSegment } from "./auth-paths.js";
 import { MeshRegistryError, canonicalRoot, homeCotalDir, isMeshRegistryError } from "./mesh-registry.js";
 import { recordOperationWarning, type OutputWarning } from "./output.js";
@@ -135,9 +135,7 @@ export function recordPreparedSpace(p: PreparedSpace): string {
   prepareCotalHomeForWrite();
   mkSecretDir(preparedSpacesDir());
   const file = preparedFile(p.space);
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeSecretFile(tmp, JSON.stringify(p, null, 2));
-  renameSync(tmp, file);
+  writeSecretFileAtomic(file, JSON.stringify(p, null, 2));
   return file;
 }
 

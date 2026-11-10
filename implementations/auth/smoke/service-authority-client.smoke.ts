@@ -2,10 +2,11 @@ import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cotalAuthProvider } from "../src/provider.js";
+import { saveIdpSession } from "../src/login.js";
 import { authClientSentinelKey, ensurePinnedIdp, saveAuthServiceInfo } from "../src/store.js";
 import type { SecretStore } from "@cotal-ai/core";
 import { createAccount } from "@nats-io/nkeys";
@@ -39,8 +40,16 @@ const info = { v: 1, kind: "service-endpoint-authority-info", space: request.spa
 let mode = "info", requests = 0, redirectRequests = 0;
 let expectedEnvelope = envelope;
 const dir = mkdtempSync(join(tmpdir(), "service-client-"));
+const sessionRequests: string[] = [];
 let base: string;
 const server = createServer(async (req, res) => {
+  if (req.url === "/api/auth/token") {
+    const session = req.headers.authorization === "Bearer fixture-managed-session" ? "managed" : req.headers.authorization === "Bearer fixture-default-session" ? "default" : "unknown";
+    sessionRequests.push(session);
+    res.writeHead(session === "unknown" ? 401 : 200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ token: `fixture-${session}-jwt` }));
+    return;
+  }
   requests++;
   if (req.url === "/redirect-target") { redirectRequests++; res.end("unexpected"); return; }
   assert.equal(req.url, "/s/client-smoke/service-endpoint-authority");
@@ -161,7 +170,27 @@ try {
     proof: { kind: "service-access", token: "fixture-access" }, timeoutMs: 10 }), transportError("not-executed"));
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(requests, beforeSlow, "late preparation cannot dispatch after the original provider deadline");
-  console.log("service-authority-client: live HTTP, provider projection, result binding, read-only Describe/no-store/full-flow deadlines and no-retry checks passed");
+  const defaultHome = join(dir, "default"), managedHome = join(dir, "managed"), emptyHome = join(dir, "empty"), sessionClient = join(dir, "session-client");
+  for (const path of [defaultHome, managedHome, emptyHome, sessionClient]) mkdirSync(path, { mode: 0o700 });
+  for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+  process.env.COTAL_HOME = defaultHome;
+  const idpUrl = `${base}/api/auth`;
+  ensurePinnedIdp(sessionClient, idpUrl);
+  saveAuthServiceInfo(sessionClient, { url: target, pid: process.pid, cap: "fixture-host-capability" });
+  saveIdpSession(defaultHome, idpUrl, { token: "fixture-default-session", sub: "default", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+  saveIdpSession(managedHome, idpUrl, { token: "fixture-managed-session", sub: "managed", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+  mode = "denied";
+  expectedEnvelope = { request, proof: { kind: "idp", token: "fixture-managed-jwt" } };
+  assert.equal((await cotalAuthProvider.serviceEndpointAuthority!({ store, dir: sessionClient, sessionDir: managedHome, request })).result.state, "denied");
+  assert.deepEqual(sessionRequests, ["managed"], "an explicit session directory supplies its own proof");
+  expectedEnvelope = { request, proof: { kind: "idp", token: "fixture-default-jwt" } };
+  const beforeEmpty = requests, beforeEmptySession = sessionRequests.length;
+  await assert.rejects(cotalAuthProvider.serviceEndpointAuthority!({ store, dir: sessionClient, sessionDir: emptyHome, request }), (e: unknown) => (e as { code?: unknown }).code === "signed-out", "an empty explicit directory cannot borrow the default sign-in");
+  assert.equal(requests, beforeEmpty, "missing explicit session sends no authority request");
+  assert.equal(sessionRequests.length, beforeEmptySession, "missing explicit session fetches no other session's JWT");
+  assert.equal((await cotalAuthProvider.serviceEndpointAuthority!({ store, dir: sessionClient, request })).result.state, "denied");
+  assert.equal(sessionRequests.at(-1), "default", "omitting the directory retains the default caller behavior");
+  console.log("service-authority-client: live HTTP, provider projection, session isolation, result binding, read-only Describe/no-store/full-flow deadlines and no-retry checks passed");
   emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   rmSync(dir, { recursive: true, force: true });

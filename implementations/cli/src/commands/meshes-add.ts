@@ -5,8 +5,6 @@ import { mkSecretDir, probeConnect, token, writeSecretFileAtomic, type SpaceAuth
 import {
   assertPinnedFetchUrl,
   authDir,
-  brokerUrlCredentialProblem,
-  brokerUrlHasUserinfo,
   canonicalRoot,
   checkUserBundle,
   classifyJoinTarget,
@@ -41,7 +39,7 @@ import {
 // The bundle validator and the pinned fetch live in the workspace package so a manager start can
 // run the same policy refresh a launch does. Re-exported here because registration is where the
 // CLI's callers and the consumer-contract smokes look for them.
-export { assertPinnedFetchUrl, checkBundleDocument, checkUserBundle, pinnedFetch, pinnedFetchProbe, type Check, type UserBundle } from "@cotal-ai/workspace";
+export { assertPinnedFetchUrl, checkBundleDocument, checkServer, checkUserBundle, pinnedFetch, pinnedFetchProbe, tlsIntent, type Check, type UserBundle } from "@cotal-ai/workspace";
 
 /**
  * The rules behind `cotal meshes add`, as decisions rather than side effects.
@@ -104,43 +102,6 @@ export function checkSpaceName(space: string): Check<string> {
 }
 
 /**
- * The broker URL, checked before it is probed, printed or persisted.
- *
- * Credentials embedded in the URL are refused for the same reason a manifest refuses them
- * (`validateBroker`): this record is written to disk and echoed back by `add` and `meshes`, so an
- * inline password would be copied into the registry and onto the operator's screen. They are
- * checked first, in the words every broker-URL credential refusal uses, so a value that does not
- * parse as a broker URL is not echoed in part either. No message here repeats the input — the
- * commonest malformed broker URL is a half-typed credential one.
- *
- * `what` names where the URL came from (`--server`, or the document that carried it), because a
- * refusal that blames a flag the operator never typed sends them looking in the wrong place.
- */
-export function checkServer(raw: string, what: string): Check<string> {
-  if (brokerUrlHasUserinfo(raw)) {
-    const { message, remedy } = brokerUrlCredentialProblem(what);
-    return { ok: false, message: `✗ ${message}`, code: "USAGE_INVALID", remedy };
-  }
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return bad(`✗ ${what} is not a valid URL (expected something like nats://127.0.0.1:4222)`, "USAGE_INVALID");
-  }
-  if (!["nats:", "tls:", "ws:", "wss:"].includes(u.protocol))
-    return bad(`✗ ${what} scheme "${u.protocol.replace(":", "")}" is not a broker scheme - use nats://, tls://, ws:// or wss://`, "USAGE_INVALID");
-  if (u.search || u.hash)
-    return bad(`✗ ${what} must be a bare broker URL - drop its ${u.search ? "query string" : "fragment"}`, "USAGE_INVALID");
-  // A path is refused on nats:// and tls:// because the NATS wire protocol has no notion of one,
-  // but on ws:// and wss:// it addresses the websocket route (`wss://host/mesh-ws` behind a
-  // reverse proxy) — the same contract classifyJoinTarget and the dial already honour.
-  if (u.pathname && u.pathname !== "/" && u.protocol !== "ws:" && u.protocol !== "wss:")
-    return bad(`✗ ${what} must be a bare broker URL - drop its path`, "USAGE_INVALID");
-  if (!u.hostname) return bad(`✗ ${what} names no host - a broker URL needs one (e.g. nats://127.0.0.1:4222)`, "USAGE_INVALID");
-  return good(raw);
-}
-
-/**
  * May this machine send its credentials to that address?
  *
  * Registering a mesh is how a machine joins a broker it does not run, and every later command then
@@ -168,23 +129,6 @@ export function checkDialPolicy(server: string, policy: DialPolicy): Check<JoinT
     const malformed = e instanceof JoinRefusal && (e.code === "not-a-url" || e.code === "bad-scheme" || e.code === "no-host");
     const remedy = e instanceof JoinRefusal ? e.remedy : undefined;
     return { ok: false, message: `✗ ${(e as Error).message}`, code: malformed ? "USAGE_INVALID" : "UNSUPPORTED", ...(remedy ? { remedy } : {}) };
-  }
-}
-
-/** The TLS intent this registration records, from its two sources: the explicit `--tls` flag, or
- *  a `tls://` scheme. The scheme is typed intent — and today nats.js connects PLAINTEXT to
- *  `tls://host` with empty options, so honoring it here is what converts typed-but-unenforced
- *  intent into enforcement: the record carries `tlsRequired: true`, and every dial resolved
- *  through it requires the handshake rather than tolerating plaintext. */
-export function tlsIntent(server: string, tlsFlag: boolean): boolean {
-  if (tlsFlag) return true;
-  try {
-    const p = new URL(server).protocol;
-    // `wss:` is typed intent the same way `tls:` is - the websocket transport performs the TLS
-    // handshake itself, so recording it strict is stating what the dial already enforces.
-    return p === "tls:" || p === "wss:";
-  } catch {
-    return false; // checkServer refuses the malformed URL; this never decides anything for it
   }
 }
 

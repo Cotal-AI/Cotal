@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { isCredentialTransportUrl, mkSecretDir, registry, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult, type FlagSpec, type FlagValues, type ParsedArgs, type SpaceCatalogConsumer } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -284,13 +284,19 @@ export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boo
   const provider = resolveAuthProvider();
   if (!provider.prepareSpaceCatalogs)
     throw new Error(`auth provider "${provider.name}" does not support space catalogs`);
+  const dir = opts.sessionDir ?? homeCotalDir();
+  // A separate session home owns its catalog cache, not the shared registry or its credentials.
+  const applyToRegistry = resolve(dir) === resolve(homeCotalDir());
   const applied = new Map<string, CatalogDiff>();
   const results = await provider.prepareSpaceCatalogs({
-    dir: opts.sessionDir ?? homeCotalDir(),
+    dir,
     ...(opts.idpUrl ? { idpUrl: opts.idpUrl } : {}),
     ...(opts.force ? { force: true } : {}),
     validate: validateCatalogSnapshot,
-    apply: (result) => void applied.set(result.account.ownerKey, mergeDiff(applied.get(result.account.ownerKey), consume(result, Boolean(opts.force)))),
+    apply: (result) => {
+      if (applyToRegistry)
+        applied.set(result.account.ownerKey, mergeDiff(applied.get(result.account.ownerKey), consume(result, Boolean(opts.force))));
+    },
   });
   return { results, diffs: results.map((result) => applied.get(result.account.ownerKey) ?? emptyDiff()) };
 }

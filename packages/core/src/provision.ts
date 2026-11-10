@@ -1028,6 +1028,22 @@ export async function mintCreds(
   profile: Profile,
   opts: MintOpts = {},
 ): Promise<string> {
+  // For third-party endpoints, an issued static agent credential carries only untargeted,
+  // unjournaled commands. The static lifecycle terminal has no SPEC 13.1 obligation drain, so a
+  // targeted or journaled grant could leave accepted work keyed to a retired lifecycle that nothing
+  // settles. Refused before anything is signed or staged. The guard covers every issued agent mint:
+  // the managed spawn (through provisionAgent), the managed renewal and the foreground spawn. An
+  // unissued mint skips it, so a future caller that hands a static agent endpoint commands must mint
+  // it issued. The guard skips every reference endpoint, meaning any single-label name such as
+  // `manager` (SPEC 13.2). The skip goes by the name and does not check which command a row names.
+  // The rows an instance-pinned caller passes here are the manager's own, the ones the `spawn`,
+  // `run` and `admin` capabilities mint, and issued agent mints carried them before this guard
+  // existed. A persona cannot name a reference endpoint, so the hand-on path never reaches the skip.
+  if (profile === "agent" && opts.issued) {
+    const drained = opts.endpointCapabilities?.find((c) => c.endpoint.includes(".") && (c.target !== undefined || c.journal));
+    if (drained)
+      throw new Error(`mintCreds: for third-party endpoints, an issued static agent credential carries only untargeted, unjournaled commands; "${drained.endpoint} ${drained.command}" is ${drained.target !== undefined ? "targeted" : "journaled"}, and the static lifecycle terminal has no obligation drain to settle what it could leave (SPEC 13.1, 13.15)`);
+  }
   const signer = nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed));
   const pr = principalOf(identity, opts.principal, opts.lifecycleUid);
   // Serve rows are INTERNAL to mintCreds behind the §13.1 fence: the exported permissionsFor

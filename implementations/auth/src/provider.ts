@@ -1,4 +1,5 @@
 import { exchangeRateLimit, readAuthResponseJson, type ExchangeRateLimit } from "./response-json.js";
+import { idpSessionDir } from "./session-context.js";
 /**
  * The core `auth-provider` extension — how a composition root gets user-mode auth WITHOUT importing
  * this package from the CLI (`bin/cotal.ts` imports `@cotal-ai/auth`; `@cotal-ai/cli` resolves the
@@ -248,7 +249,7 @@ export const cotalAuthProvider: AuthProvider = {
     // remote arm consumes exactly what registration pinned - it discovers nothing at connect time.
     if (!idp || !callout) return remoteUserCredentials(request);
     // The no-fallback login gate: throws the exact `cotal login --idp …` line when not signed in.
-    const session = requireIdpSession(homeCotalDir(), idp.url);
+    const session = requireIdpSession(idpSessionDir(), idp.url);
     // Daemon liveness BEFORE the IdP round-trip: a down auth service must surface its exact
     // restart recovery (U10) without spending an IdP /token call — and without an unrelated
     // IdP/network failure masking it. Missing-login stays primary (the session gate above).
@@ -305,7 +306,7 @@ export const cotalAuthProvider: AuthProvider = {
     return serviceEndpointRenewal(cotalAuthProvider, opts);
   },
 
-  async serviceEndpointAuthority({ store, dir, request: raw, proof, timeoutMs, signal }) {
+  async serviceEndpointAuthority({ store, dir, sessionDir, request: raw, proof, timeoutMs, signal }) {
     const startedAt = performance.now(), request = parseServiceAuthorityRequest(raw);
     return withServiceAuthorityBudget(request.operation, { timeoutMs, signal }, async (budget) => {
       const target = serviceClientTarget(store, dir, request.space);
@@ -317,7 +318,7 @@ export const cotalAuthProvider: AuthProvider = {
       budget.check();
       if (!sentinelCreds) throw new Error("service authority client has no sentinel projection; refresh the registered space before setup");
       const actualProof = proof === undefined
-        ? { kind: "idp" as const, token: await fetchIdpJwt(target.idpUrl, requireIdpSession(homeCotalDir(), target.idpUrl).token) }
+        ? { kind: "idp" as const, token: await fetchIdpJwt(target.idpUrl, requireIdpSession(sessionDir ?? homeCotalDir(), target.idpUrl).token) }
         : checked.proof;
       budget.check();
       const result = await postRemoteServiceAuthority(target.base, { request, proof: actualProof }, { signal: budget.signal, timeoutMs: budget.remainingMs() });
@@ -434,7 +435,7 @@ export const cotalAuthProvider: AuthProvider = {
     const secret = await loadOwnerSecret(store, space);
     if (!idp || !secret)
       throw new Error(`space "${space}" has no user-auth material on this machine - spawns for a user-auth space run where \`cotal up --user-auth\` provisioned it`);
-    const session = requireIdpSession(homeCotalDir(), idp.url);
+    const session = requireIdpSession(idpSessionDir(), idp.url);
     if (!session.sub)
       throw new Error(`your cached login for ${idp.url} predates this build (no subject recorded) - re-run \`cotal login --idp ${idp.url}\``);
     return deriveOwnerForIdpSubject(secret, idp.issuer, session.sub);
@@ -447,7 +448,7 @@ export const cotalAuthProvider: AuthProvider = {
    *  could walk the proof onto another host or onto plaintext. */
   async postAgentProvisioning({ url, idpUrl, actor }: { url: string; idpUrl: string; actor: string }): Promise<unknown> {
     // The no-fallback login gate: throws the exact `cotal login --idp …` line when not signed in.
-    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    const session = requireIdpSession(idpSessionDir(), idpUrl);
     let res: Response;
     try {
       res = await fetch(url, {
@@ -479,7 +480,7 @@ export const cotalAuthProvider: AuthProvider = {
   },
 
   async releaseAgentLifecycle({ url, idpUrl, lifecycleUid, actor }: { url: string; idpUrl: string; lifecycleUid: string; actor?: string }): Promise<AgentLifecycleRelease> {
-    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    const session = requireIdpSession(idpSessionDir(), idpUrl);
     const call = async (method: "GET" | "DELETE", target: string): Promise<{ status: number; body: unknown }> => {
       let res: Response;
       try {
@@ -520,7 +521,7 @@ export const cotalAuthProvider: AuthProvider = {
     const endpoint = new URL(url);
     if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.hash)
       throw new Error("conversation identity authority must use HTTPS without userinfo or a fragment");
-    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    const session = requireIdpSession(idpSessionDir(), idpUrl);
     let response: Response;
     try {
       response = await fetch(endpoint, {
@@ -549,7 +550,7 @@ export const cotalAuthProvider: AuthProvider = {
   async postAgentEnrollment({ url, idpUrl }: { url: string; idpUrl?: string }): Promise<unknown> {
     if (!idpUrl && hasIdpSessions(homeCotalDir()))
       throw new Error("both a cached login and an enrollment were supplied - log out first or remove the enrollment input; refusing before redeeming the one-time enrollment");
-    if (idpUrl && loadIdpSession(homeCotalDir(), idpUrl))
+    if (idpUrl && loadIdpSession(idpSessionDir(), idpUrl))
       throw new Error("both a cached login and an enrollment were supplied - log out first or remove the enrollment input; refusing before redeeming the one-time enrollment");
     // WHATWG parsing rewrites many inputs into a different URL than the owner minted: it folds
     // backslashes into slashes, erases empty userinfo, lowercases the scheme and host, drops a
@@ -619,7 +620,7 @@ export const cotalAuthProvider: AuthProvider = {
         `space "${space}" has no user-auth material on this machine - user-mode status reads run where \`cotal up --user-auth\` provisioned the space, or where the discovered/registered entry for it lives`,
       );
     const idpUrl = idp ? idp.url : ua!.idp.url;
-    const session = loadIdpSession(homeCotalDir(), idpUrl);
+    const session = loadIdpSession(idpSessionDir(), idpUrl);
     if (!session?.sub) return { idpUrl };
     const login = { sub: session.sub, expiresAt: session.expiresAt, ...(session.name ? { name: session.name } : {}) };
     if (!idp) return { idpUrl, login };
@@ -646,7 +647,7 @@ export const cotalAuthProvider: AuthProvider = {
   async confirmLogin({ dir, space }) {
     const idpUrl = loadPinnedIdp(dir)?.url ?? remoteUserAuthEntry(dir, space)?.idp.url;
     if (!idpUrl) throw new Error(`space "${space}" has no user-auth material on this machine`);
-    const session = loadIdpSession(homeCotalDir(), idpUrl);
+    const session = loadIdpSession(idpSessionDir(), idpUrl);
     if (!session) return "signed-out";
     try { await fetchIdpJwt(idpUrl, session.token); }
     catch (e) {
@@ -810,7 +811,7 @@ async function postManagerAuthority(
   request: unknown,
   what: string,
 ): Promise<unknown> {
-  const session = requireIdpSession(homeCotalDir(), idpUrl);
+  const session = requireIdpSession(idpSessionDir(), idpUrl);
   const idpJwt = await fetchIdpJwt(idpUrl, session.token);
   const response = await fetch(endpoint, {
     method: "POST",
@@ -956,7 +957,7 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<U
   // mint that is doomed either way (same ordering discipline as the local arm's liveness-first).
   const exchangeUrl = pinnedExchangeUrl(remote.endpoints.url, space);
   // The no-fallback login gate: throws the exact `cotal login --idp ...` line when not signed in.
-  const session = requireIdpSession(homeCotalDir(), remote.idp.url);
+  const session = requireIdpSession(idpSessionDir(), remote.idp.url);
   // Fresh short-lived IdP proof per connect - IdP-side revocation bites HERE, at the next fetch.
   const idpJwt = await fetchIdpJwt(remote.idp.url, session.token);
   let res: Response;
@@ -1125,7 +1126,7 @@ function chatSessionTarget(route: ChatSessionRoute, space: string, op: ChatSessi
  *  proof rides only the request body, never an error string. */
 async function postChatSession(route: ChatSessionRoute, space: string, op: ChatSessionOp, fields: Record<string, unknown>): Promise<object> {
   const target = chatSessionTarget(route, space, op);
-  const session = requireIdpSession(homeCotalDir(), route.idpUrl);
+  const session = requireIdpSession(idpSessionDir(), route.idpUrl);
   const idpToken = await fetchIdpJwt(route.idpUrl, session.token);
   let res: Response;
   try {

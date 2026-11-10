@@ -12,6 +12,7 @@ import {
 } from "./extensions.js";
 import { claimExtensionMutationLockAsync } from "./extension-mutation.js";
 import { diagnosePeerSkew, upgradeRemedy } from "./import-diagnosis.js";
+import { SEEDED_EXTENSIONS } from "./official-connectors.js";
 
 /**
  * The generic manifest-materialize primitive: verify an installed package's version pin, resolve
@@ -195,10 +196,11 @@ export function manifestExtensionNames(kind: string): string[] {
  * "already registered" short-circuit and any composition-root gating stay with the caller — this
  * ALWAYS consults the machine manifest. `hint(ref)` phrases the not-found error (the CLI names the
  * exact `cotal ext add <pkg>` for an official name; a bare caller gets the generic form).
+ * `expectedGeneration` checks first-party manifest pins under the extension lock, even on a cache hit.
  */
 export async function materializeFromManifest<T extends Extension = Extension>(
   ref: ExtensionRef,
-  opts: { hint?: (ref: ExtensionRef) => string } = {},
+  opts: { hint?: (ref: ExtensionRef) => string; expectedGeneration?: string } = {},
 ): Promise<T> {
   await enqueueLoad(() =>
     withExtensionLock(async () => {
@@ -209,6 +211,9 @@ export async function materializeFromManifest<T extends Extension = Extension>(
         throw new Error(
           opts.hint?.(ref) ?? `no installed extension provides ${ref.kind} "${ref.name}" - install it with \`cotal ext add <npm-package>\``,
         );
+      }
+      if (opts.expectedGeneration !== undefined && Object.values(SEEDED_EXTENSIONS).some((seeded) => seeded.pkg === ext.pkg) && ext.version !== opts.expectedGeneration) {
+        throw new Error(`connector ${ext.pkg}@${ext.version} differs from this Manager's loaded generation ${opts.expectedGeneration}; stop its seats and restart the Manager from the installed CLI before launching new agents`);
       }
       await loadOne(ext, ref);
     }),

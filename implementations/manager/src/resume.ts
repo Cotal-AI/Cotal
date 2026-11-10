@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
+import { parsePersonaEndpoints, parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
 import { z } from "zod";
 import type { ManagerResumeInventory } from "./manager.js";
 
@@ -91,6 +91,14 @@ const agent = z.strictObject({
     allowSubscribe: stringList,
     allowPublish: stringList.optional(),
     capabilities: z.array(z.string().min(1).max(256)).max(64).optional(),
+    // The persona's endpoint commands as the seat was minted with them (SPEC 13.15), read under the
+    // same rule a persona is, so renewal re-mints exactly these rows. Absent means none, which is
+    // what every inventory written before the field describes.
+    endpoints: z.array(z.strictObject({ endpoint: z.string(), commands: z.array(z.string()), instanceId: z.string().optional() })).optional()
+      .superRefine((v, ctx) => {
+        // Read under the persona's own rule, so a malformed or reserved retained entry is refused here.
+        try { parsePersonaEndpoints(v, "launch"); } catch (e) { ctx.addIssue({ code: "custom", message: (e as Error).message }); }
+      }),
     // Absent means OFF, and that is the field's meaning rather than a fallback: an inventory
     // written before the event plane existed describes a session that was not publishing one. A
     // required field here would refuse every inventory the previous version wrote, so an upgrade

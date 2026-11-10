@@ -37,6 +37,7 @@ import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, ty
 import { notifyFactViolation } from "./notify-fact.js";
 import { bindPins, resolvePins, WALKER_LANGUAGE_VERSION, type RunPins } from "./pins.js";
 import {
+  agentHandles,
   dispatchPrimitive,
   freeConstructors,
   onceBodyNotCallable,
@@ -52,7 +53,6 @@ import {
   RunHeld,
   EffectError,
   applyCheckpointPolicy,
-  type AgentHandleValue,
   type CancelSignal,
   type RootCancellationSource,
   type ChannelHandleValue,
@@ -1043,7 +1043,7 @@ class Interpreter {
     // resume into a different room. The other three are identified by kind, name and occurrence.
     const subject = spec.hashesSubject
       ? {
-          members: (first as AgentHandleValue[]).map((m) => m.agent),
+          members: agentHandles(first, "argument 1 of `conclave`").map((m) => m.agent),
           channel: (this.option(bag, "channel") as string | undefined) ?? null,
         }
       : undefined;

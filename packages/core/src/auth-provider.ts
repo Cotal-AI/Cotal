@@ -246,6 +246,9 @@ export interface AuthProvider extends Extension {
   serviceEndpointAuthority?(opts: {
     store: SecretStore;
     dir: string;
+    /** The caller's provider-session directory. Omitted uses the provider's default. An explicit
+     *  directory must never fall back to a session from another directory. */
+    sessionDir?: string;
     request: ServiceAuthorityRequest;
     proof?: Exclude<ServiceAuthorityProof, { kind: "idp" }>;
     /** Remaining local query budget. Describe queries are capped at two seconds. */
@@ -256,10 +259,12 @@ export interface AuthProvider extends Extension {
    * A renewal source for one registered service witness: the bearer function a long-lived service
    * endpoint passes as `EndpointOptions.bearer`. Its first pull activates and later pulls renew, each
    * replaying one requestId per operation that is persisted in `store` before its first send. The
-   * source holds the material; it owns no timers, and the endpoint's own schedule drives it. Optional,
-   * so a provider without service endpoints refuses at the caller.
+   * source holds the material; it owns no timers, and the endpoint's own schedule drives it.
+   * `sessionDir` selects the caller's provider-session directory for activation and reactivation,
+   * with the same no-fallback rule as serviceEndpointAuthority. Optional, so a provider without
+   * service endpoints refuses at the caller.
    */
-  serviceEndpointRenewal?(opts: { store: SecretStore; dir: string; witness: ServiceRegistrationWitness }): ServiceEndpointRenewal;
+  serviceEndpointRenewal?(opts: { store: SecretStore; dir: string; sessionDir?: string; witness: ServiceRegistrationWitness }): ServiceEndpointRenewal;
   /**
    * Request the closed remote manager-service authority material from the host's loopback/operator
    * exchange. This is an explicitly typed lifecycle protocol, not a generic profile mint: the
@@ -673,13 +678,13 @@ export function resolveAuthProvider(): AuthProvider {
   return providers[0];
 }
 
-/** Where a {@link ServiceEndpointRenewal} stands. `unavailable` is an outage the next pull retries with
- *  the same request; `ended` is terminal, and every later pull refuses without sending anything. No
- *  state carries a token. */
+/** Where a {@link ServiceEndpointRenewal} stands. `unavailable` can be retried with the same request;
+ *  `cause: "store"` identifies a persistence problem to inspect before retrying. `ended` is terminal,
+ *  and every later pull refuses without sending anything. No state carries a token. */
 export type ServiceEndpointRenewalState =
   | { readonly state: "idle" }
   | { readonly state: "current"; readonly accessExpiresAt: number; readonly renewalExpiresAt: number }
-  | { readonly state: "unavailable" }
+  | { readonly state: "unavailable"; readonly cause?: "store" }
   | { readonly state: "ended"; readonly reason: string }
   | { readonly state: "closed" };
 
@@ -696,7 +701,7 @@ export interface ServiceEndpointRenewal {
    *  Concurrent `bearer()` and `credential()` calls share one request; the persisted request ids
    *  and the terminal behaviour are the same. */
   credential(): Promise<ServiceEndpointCredential>;
-  /** The current state, with expiries only. */
+  /** The current state, with fixed failure classifications and expiries. */
   state(): ServiceEndpointRenewalState;
   /** The space's deny-all sentinel creds the endpoint presents with the bearer, known after the first success. */
   readonly sentinelCreds: string | undefined;

@@ -228,14 +228,19 @@ function savedRow([key, value]: [string, unknown]): [string, string] {
   return [key[0]!.toUpperCase() + key.slice(1), String(value)];
 }
 
+/** Mark a resolved policy value only when this level has no saved override. */
+function policyValue(value: string, override: unknown): string {
+  return `${value}${override === undefined ? " · inherited" : ""}`;
+}
+
 function policyFields(config: ChannelConfig | undefined, defaults: ChannelRegistryFile["defaults"]): [string, string][] {
   const replay = effectiveReplay(config, defaults);
   return [
-    ["Replay", `${replay ? "on" : "off"}${config?.replay === undefined ? " · inherited" : ""}`],
-    ["Window", config?.replayWindow ?? defaults?.replayWindow ?? "retained history"],
+    ["Replay", policyValue(replay ? "on" : "off", config?.replay)],
+    ["Window", policyValue(config?.replayWindow ?? defaults?.replayWindow ?? "retained history", config?.replayWindow)],
     // A chat session holds its replay in an inbox of MAX_BUFFER messages, so it keeps the newest.
     ...(replay ? [["Chat replay", `the newest ${MAX_BUFFER} messages in the window`] as [string, string]] : []),
-    ["Delivery", effectiveDeliveryClass(config, defaults)],
+    ["Delivery", policyValue(effectiveDeliveryClass(config, defaults), config?.deliveryClass)],
   ];
 }
 
@@ -263,7 +268,7 @@ function registryView(result: { action: string; name?: string; space: string; re
   return { sections: [
     { title: `Channels · ${result.space}`, blocks: [entries.length ? {
       kind: "table", columns: [{ key: "name", label: "Channel" }, { key: "description", label: "Description" }, { key: "replay", label: "Replay" }, { key: "delivery", label: "Delivery" }],
-      rows: entries.map(([channel, config]) => ({ name: { text: `#${channel}`, tone: "command" }, description: config.description ?? "not set", replay: `${effectiveReplay(config, registry.defaults) ? "on" : "off"}${config.replay === undefined ? " · default" : ""}`, delivery: effectiveDeliveryClass(config, registry.defaults) })),
+      rows: entries.map(([channel, config]) => ({ name: { text: `#${channel}`, tone: "command" }, description: config.description ?? "not set", replay: policyValue(effectiveReplay(config, registry.defaults) ? "on" : "off", config.replay), delivery: policyValue(effectiveDeliveryClass(config, registry.defaults), config.deliveryClass) })),
     } : { kind: "lines", lines: ["No saved channel metadata."] }, { kind: "lines", lines: [{ text: "Configured entries only. Channels with traffic but no saved metadata are not included.", tone: "hint" }] }] },
     ...(undecodable.length ? [{ title: "Not decoded", blocks: [{ kind: "table" as const, columns: [{ key: "key", label: "Key" }, { key: "error", label: "Error" }], rows: undecodable.map((entry) => ({ key: entry.key === "=defaults" ? "defaults" : `#${entry.key}`, error: entry.error })), }, { kind: "lines" as const, lines: [{ text: "These keys stay in the registry. Their channels resolve to the default policy until the value decodes.", tone: "hint" as const }] }] }] : []),
     { title: "Next", blocks: [{ kind: "commands", items: [

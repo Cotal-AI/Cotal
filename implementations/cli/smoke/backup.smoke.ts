@@ -168,6 +168,8 @@ try {
     symlinkSync(external, join(destination, "stream-a.snap"));
     assert.throws(() => stageArtifact(destination, stagingParent), stageFault("stream-a.snap", "not-regular"));
     assert.throws(verify, verifyFault("stream-a.snap", "not-regular", /^backup artifact file stream-a\.snap is not a regular file/), "verify names a linked snapshot");
+    const inspect = () => backupRead({ positionals: ["inspect", realpathSync(destination)], values: {}, raw: [] });
+    assert.throws(inspect, verifyFault("stream-a.snap", "not-regular", /^backup artifact file stream-a\.snap is not a regular file/), "inspect names a linked snapshot");
     // A FIFO is refused before it is opened, so verify does not wait for a writer.
     rmSync(join(destination, "stream-a.snap"));
     execFileSync("mkfifo", [join(destination, "stream-a.snap")]);

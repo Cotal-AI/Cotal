@@ -526,7 +526,17 @@ const SEAMS: Seam[] = [
   // and core/smoke/delete-space-auth each add one call. core/smoke/chat-history-limit also has
   // a fifth call for its unstamped delivery-copy writer. All four dial their suite's plaintext
   // loopback broker and state `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 386, untypecheckedSites: 303 },
+  // 386/303 -> 390/307: persona endpoints add four smoke calls. manager/smoke/spawn-inline-persona
+  // connects a helper's credential, manager/smoke/persona-endpoints-served connects each credential
+  // it probes and a copy that the despawn evicts, and bin/smoke/run-host-live connects the starter
+  // issued again with a command it gained after admission. All dial the plaintext loopback broker
+  // their suite starts and state `tls: false`.
+  // 390/307 -> 400/314: main landed ten calls without booking them: auth/smoke/registry-host two,
+  // cli/smoke/app-identity-live and core/smoke/endpoint-family-scan one each,
+  // runtime/smoke/run-command three, and manager/src/manager.ts three. All ten state `tls: false`.
+  // 400/314 -> 402/316: main landed two more calls without booking them: bin/smoke/daemon-service-connect
+  // and delivery/smoke/deliver-pending-sender add one each. Both state `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 402, untypecheckedSites: 316 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

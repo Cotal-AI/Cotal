@@ -19,6 +19,7 @@ import {
   outputDeclarationProblems,
   outputFlags,
   plainFlag,
+  recordOperationContext,
   recordOperationWarning,
   renderReport,
   runOperation,
@@ -27,6 +28,7 @@ import {
   type Envelope,
   type ErrorCode,
   type Outcome,
+  type OperationScope,
 } from "@cotal-ai/workspace";
 
 let failed = 0;
@@ -89,6 +91,19 @@ check("changed resources survive a failure", JSON.stringify(env.changed) === JSO
 const bare = JSON.parse(envelopeLine(failureEnvelope("x", new CommandFailure("failed", "OPERATION_FAILED", "boom")))) as Envelope;
 check("an unset remedy, cause and changed list are absent, not null", !("remedy" in bare.error!) && !("cause" in bare.error!) && !("changed" in bare), bare);
 check("an unset target is null", bare.target === null, bare);
+const context: OperationScope = {};
+runOperation(context, () => {
+  recordOperationContext({ command: "account login" });
+  recordOperationContext({ target: { idp: "https://idp.example.test" } });
+});
+const contextual = failureEnvelope("account", new CommandFailure("refused", "PERMISSION_DENIED", "denied"), [], context);
+check("a captured operation retains its command and target after the scope ends", contextual.command === "account login" && JSON.stringify(contextual.target) === JSON.stringify(context.target), contextual);
+const specific = failureEnvelope("account", failure, [], context);
+check("a failure's explicit target wins over the operation context", JSON.stringify(specific.target) === JSON.stringify(failure.target), specific);
+const other: OperationScope = {};
+runOperation(other, () => recordOperationContext({ command: "account status" }));
+const isolated = failureEnvelope("account", new CommandFailure("failed", "OPERATION_FAILED", "unavailable"), [], other);
+check("another operation inherits no earlier target or command", isolated.command === "account status" && isolated.target === null && context.command === "account login", isolated);
 // A failure report prints the attempt id its target carries, so the recovery command can name it.
 const attemptId = "restore-00000000-0000-4000-8000-000000000000";
 const attemptReport = renderReport(commandFailureReport(new CommandFailure("unknown", "OPERATION_UNKNOWN", "the restore did not finish", { target: { attemptId } })), "plain");

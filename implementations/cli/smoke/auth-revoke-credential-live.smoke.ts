@@ -18,12 +18,16 @@
  *     may not make names its post grant, read from the file. A label's own revoked standing file is a
  *     revoked finding in doctor auth, whose repair is --replace with its grants, and --replace gives
  *     the label a new key that posts.
+ *  4. With another space selected, a credential minted under a path a shell would split is refused
+ *     `LIFECYCLE_BLOCKED` while its own space runs, and the refusal quotes that path and the folder.
+ *     After `down` there, the same revoke with `--yes` revokes that space, not the selected one. The
+ *     next `up` makes the broker refuse the key.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:auth-revoke-credential:live
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { accountRevocations, createSpaceAuth, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
@@ -39,7 +43,7 @@ const configDir = join(home, "xdg");
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
-const { getSpaceAuth, shellPath, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { codeSpan, getSpaceAuth, shellPath, workspaceSecretStore } = await import("@cotal-ai/workspace");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
@@ -99,8 +103,8 @@ try {
     const before = accountDigest(root);
     const live = cli(root, "auth", "revoke-credential", leaked, "--yes", "--json");
     check("on a running stack it refuses LIFECYCLE_BLOCKED, exit 2", live.status === 2 && live.env?.error?.code === "LIFECYCLE_BLOCKED", shown(live));
-    check("its next step is down, the revocation, then up, and says the store stays",
-      live.env?.error?.remedy === `cotal down --yes, then \`cotal auth revoke-credential ${leaked} --yes\`, then \`cotal up\`, from ${root}; the store stays`, live.env?.error);
+    check("its next step is down, the revocation, then up, and says the store stays, with each path one shell word",
+      live.env?.error?.remedy === `cotal down --yes, then ${codeSpan(`cotal auth revoke-credential ${shellPath(leaked)} --yes`)}, then ${codeSpan("cotal up")}, from ${shellPath(root)}; the store stays`, live.env?.error);
     check("and the account record is unchanged", accountDigest(root) === before);
   }
 
@@ -128,7 +132,7 @@ try {
     const listed = exported.find((row) => row.path === leaked);
     check("doctor auth lists the revoked file, and its repair is a mint with a new key and the file's grants, since --identity refuses that key",
       listed?.state === "revoked" && listed.repair?.includes("auth mint --identity refuses that key; mint a new key with the grants this file holds:") === true
-        && listed.repair.includes("auth mint leaked --allow-subscribe general --allow-publish general --role rev --out <new file>")
+        && listed.repair.includes("auth mint leaked --allow-subscribe general --allow-publish general --role rev --no-persona --out <new file>")
         && exported.find((row) => row.path === kept)?.state === "unbounded", { exported, doctor: shown(doctor) });
     const heading = cli(root, "doctor", "auth");
     check("  and its heading says there are no findings and that one exported file needs attention",
@@ -157,7 +161,7 @@ try {
       check(`the stack's own ${file} refuses UNSUPPORTED as a system-account credential, with --rotate-sys as its Next`,
         sys.status === 2 && sys.env?.error?.code === "UNSUPPORTED"
           && sys.env.error.message === `the credential was issued by space ${space}'s system account, and auth revoke-credential revokes only credentials the space's own account issued; nothing was revoked`
-          && sys.env.error.remedy === `cotal down --yes, then \`cotal up --rotate-sys\`, from ${root}, issues a new system account and retires this one's credentials; full backups taken before it can no longer be restored`, shown(sys));
+          && sys.env.error.remedy === `cotal down --yes, then ${codeSpan("cotal up --rotate-sys")}, from ${shellPath(root)}, issues a new system account and retires this one's credentials; full backups taken before it can no longer be restored`, shown(sys));
     }
     check("  and none of them changes the account record", accountDigest(root) === unchanged);
     const labelRevoked = cli(root, "auth", "revoke-credential", labelFile, "--yes", "--json");
@@ -180,7 +184,7 @@ try {
     check("doctor auth reports the revoked label file as a revoked finding, with when it was revoked",
       labelRow?.state === "revoked" && typeof labelRow.revokedAt === "number" && labelRow.problem?.startsWith(`REVOKED - its key ${labelKey} was revoked at `) === true && labelDoctor.env?.outcome === "failed", { labelRow, doctor: shown(labelDoctor) });
     check("  and its repair is --replace with a new key and the file's grants",
-      labelRow?.repair?.includes(`auth mint standing --replace --space ${space} --allow-subscribe general --allow-publish general\``) === true && labelRow.repair.startsWith("a revoked key is not signed again"), labelRow);
+      labelRow?.repair?.includes(`auth mint standing --replace --space ${space} --allow-subscribe general --allow-publish general --no-persona\``) === true && labelRow.repair.startsWith("a revoked key is not signed again"), labelRow);
     const replaced = cli(root, "auth", "mint", "standing", "--replace", "--allow-subscribe", "general", "--allow-publish", "general", "--json");
     const replacedBy = replaced.env?.result as { identity?: string; replaced?: { state?: string; publicKey?: string; revokedAt?: number } } | undefined;
     check("auth mint --replace replaces the revoked label credential under a new key, naming the revocation",
@@ -188,7 +192,7 @@ try {
     const labelSend = cli(root, "send", "-c", "general", "with the new label key", "--json", "--creds", labelFile, "--space", space, "--server", server);
     check("  and the label's file posts again", labelSend.status === 0, shown(labelSend));
     check("  and its Next is a new key with the grants the file held",
-      refused.env?.error?.remedy === "a revoked key is not signed again; mint a new key with the grants it held: `cotal auth mint <label> --allow-subscribe general --allow-publish general --role rev --out <new file>`", refused.env?.error);
+      refused.env?.error?.remedy === "a revoked key is not signed again; mint a new key with the grants it held: `cotal auth mint <label> --allow-subscribe general --allow-publish general --role rev --no-persona --out <new file>`", refused.env?.error);
     const sendRevoked = cli(root, "send", "-c", "general", "after the revocation", "--json", "--creds", leaked, "--space", space, "--server", server);
     check("send with the revoked file names the revocation too", sendRevoked.status === 2 && sendRevoked.env?.error?.message === refused.env?.error?.message, shown(sendRevoked));
     const whoRevoked = cli(root, "whoami", "--creds", leaked, "--json");
@@ -213,4 +217,58 @@ try {
 } finally {
   if (anchors.has(root)) cli(root, "down", "--yes", "--json");
 }
+
+// 4. Another space stays selected. The folder's stopped space is still the one revoked, and a path
+//    a shell would split is one word in the printed route.
+{
+  const selected = "revoke-selected", own = "revoke-own";
+  const selectedRoot = folder(selected), ownRoot = folder(`${own} dir`);
+  const selectedServer = `nats://127.0.0.1:${await freePort()}`, ownServer = `nats://127.0.0.1:${await freePort()}`;
+  const credsFile = join(ownRoot, "out dir", "obs.creds");
+  try {
+    const madeSelected = cli(home, "space", "create", selected, "--root", selectedRoot, "--json");
+    check("the selected space is prepared", madeSelected.status === 0, shown(madeSelected));
+    anchors.set(selectedRoot, recordSmokeSandbox({ root: selectedRoot, cotalHome: home, xdgConfigHome: configDir }));
+    const startedSelected = cli(selectedRoot, "up", "--server", selectedServer, "--json");
+    check("the selected space starts, and it is the selection", startedSelected.status === 0, shown(startedSelected));
+    const madeOwn = cli(ownRoot, "space", "create", own, "--json");
+    check("the folder's own space is prepared", madeOwn.status === 0, shown(madeOwn));
+    anchors.set(ownRoot, recordSmokeSandbox({ root: ownRoot, cotalHome: home, xdgConfigHome: configDir }));
+    const startedOwn = cli(ownRoot, "up", "--server", ownServer, "--json");
+    check("the folder's own space starts", startedOwn.status === 0, shown(startedOwn));
+    const minted = cli(ownRoot, "auth", "mint", "observer", "--no-expiry", "--out", credsFile, "--json");
+    const ownKey = String(minted.env?.result?.identity ?? "");
+    check("a credential is minted under a path a shell would split", minted.status === 0 && /^U[A-Z2-7]{55}$/.test(ownKey), shown(minted));
+    const running = cli(ownRoot, "auth", "revoke-credential", credsFile, "--json");
+    check("while that space runs, the revoke refuses LIFECYCLE_BLOCKED and quotes the path and the folder",
+      running.status === 2 && running.env?.error?.code === "LIFECYCLE_BLOCKED"
+        && running.env.error.remedy === `cotal down --yes, then ${codeSpan(`cotal auth revoke-credential ${shellPath(credsFile)} --yes`)}, then ${codeSpan("cotal up")}, from ${shellPath(ownRoot)}; the store stays`
+        && shellPath(credsFile).startsWith("'") && shellPath(ownRoot).startsWith("'"), shown(running));
+    const stoppedOwn = cli(ownRoot, "down", "--yes", "--json");
+    check("down --yes stops the folder's own space and leaves the selection", stoppedOwn.status === 0, shown(stoppedOwn));
+    const revokedOwn = cli(ownRoot, "auth", "revoke-credential", credsFile, "--yes", "--json");
+    check("after down, the revoke in that folder revokes its own space, not the selected one",
+      revokedOwn.status === 0 && revokedOwn.env?.result?.space === own && revokedOwn.env.result.publicKey === ownKey && revokedOwn.env.result.takesEffect === "next-up", shown(revokedOwn));
+    const restartedOwn = cli(ownRoot, "up", "--server", ownServer, "--json");
+    check("the folder's own space starts again", restartedOwn.status === 0, shown(restartedOwn));
+    const refusedOwn = cli(ownRoot, "who", "--json", "--creds", credsFile, "--space", own, "--server", ownServer);
+    check("the broker then refuses that key, PERMISSION_DENIED, naming the revocation",
+      refusedOwn.status === 2 && refusedOwn.env?.error?.code === "PERMISSION_DENIED" && refusedOwn.env.error.message.includes("was revoked") && refusedOwn.env.error.message.includes("auth revoke-credential"), shown(refusedOwn));
+    const tickedDir = join(ownRoot, "it's `id`");
+    const ticked = join(tickedDir, "obs.creds");
+    mkdirSync(tickedDir, { recursive: true, mode: 0o700 });
+    chmodSync(tickedDir, 0o700);
+    const tickedMint = cli(ownRoot, "auth", "mint", "ticked", "--no-expiry", "--out", ticked, "--json");
+    const tickedRun = cli(ownRoot, "auth", "revoke-credential", ticked, "--json");
+    const tickedRoute = `cotal auth revoke-credential ${shellPath(ticked)} --yes`;
+    check("a backtick in the path lengthens the code span instead of closing it",
+      tickedMint.status === 0 && tickedRun.status === 2 && tickedRun.env?.error?.code === "LIFECYCLE_BLOCKED"
+        && tickedRun.env.error.remedy === `cotal down --yes, then ${codeSpan(tickedRoute)}, then ${codeSpan("cotal up")}, from ${shellPath(ownRoot)}; the store stays`
+        && codeSpan(tickedRoute).startsWith("``") && !codeSpan(tickedRoute).slice(2, -2).includes("``"), { mint: shown(tickedMint), run: shown(tickedRun) });
+  } finally {
+    if (anchors.has(ownRoot)) cli(ownRoot, "down", "--yes", "--json");
+    if (anchors.has(selectedRoot)) cli(selectedRoot, "down", "--yes", "--json");
+  }
+}
+
 finish();

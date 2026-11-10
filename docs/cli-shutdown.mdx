@@ -331,13 +331,18 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--file <cotal.yaml>`, `-f` | none | Tear down this manifest's deploy |
 | `--run <id>` | none | Tear down one additive ledger, written by the retired `spawn -f` deploy, by its run id |
 | `--space <name>` | current space | With service names: the space whose saved definitions to stop. With bare `--dry-run`: confirm that space belongs to this root. A bare stop refuses it |
-| `--dry-run` | off | Print the manifest teardown, the named service stop or the bare stack preview, mutate nothing |
+| `--dry-run` | off | Print the manifest teardown, the named service stop or the bare stack preview, mutate nothing. `down -f <file> --dry-run` previews this root's recorded stack when the manifest can be read and no additive ledger exists. An explicit `--run` stays on the ledger lookup, and a ledger teardown has no `--json` or `--plain` output |
 | `--with-agents` | off | Bare whole stack only: also stop and deprovision every managed agent |
 | `--abandon-stop <request-id>` | none | Controller stack, with `--yes`: abandon a member's stop that no receipt settles, then stop the stack. See the settlement rules under [up](cli-startup.mdx#up) |
 | `--abandon-launch <instance-id>` | none | Controller stack, with `--yes`: record failed a member launch whose record names no process, then stop the stack. See the settlement rules under [up](cli-startup.mdx#up) |
 | `--preserve-state` | off | Bare whole stack only: fence the manager, retain principals and durable state, stop and prove the stack down, then publish `ready` |
 | `--store-dir <dir>` | the recorded store, else `.cotal/nats` | With `--preserve-state`: the store to cut. The mesh record names the store the broker runs on, such as a `backup restore --store-dir` target, and a different path refuses `CONFLICT` before anything stops |
 | `--session-store <dir>` | none | With `--preserve-state`: a harness transcript store directory to capture with every continuation-capable retained seat. Repeatable. No default and never inferred from a connector name; a path that does not exist or is not a directory is refused before anything stops |
+
+A legacy ledger preview selects the saved ledger by the manifest's source hash. It does not
+reload launch-time persona files, so a missing persona does not prevent that preview. When this
+root records a stack without an additive ledger, file-form apply refuses `UNSUPPORTED` and
+names bare `cotal down` from that root. It does not require a run ID or stop the stack implicitly.
 
 For an additive ledger from the retired `spawn -f`, `down -f` keeps an authenticated channel when
 membership cannot be read. Its output includes the read failure, rather than calling every failure
@@ -819,6 +824,11 @@ line: a later `up` needs `cotal up --user-auth --idp <auth base URL>`, and each 
 and non-Linux targets refuse. It applies the same maintenance, deployment and
 process-custody guards as store reset. It does not stop a process to become
 eligible.
+
+When the reset removes a static-auth signing account, its preview, confirmation and receipt warn that
+credentials exported with `auth mint --out` stop working on this space after the next `up`.
+The warning is also in the JSON envelope as `EXPORTED_CREDENTIALS_INVALIDATED`. Exported files
+stay where they are. Mint replacements after `up`; no remote credential is revoked by this reset.
 
 Its `--dry-run` validates the existing local trust chain and inventories the
 native identity paths, including provider-declared secret keys, without running
