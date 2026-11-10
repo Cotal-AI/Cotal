@@ -1,5 +1,25 @@
 # cotal-ai
 
+## 0.157.4
+
+### Patch Changes
+
+- 4865117: Connect the desktop app through your account and manage the spaces using this computer from its Ready screen.
+- 560f0b3: Connect computers to signed-in accounts and reconcile dashboard space bindings through the machine daemon.
+- 45beca4: Windows background service installation avoids slow PowerShell command discovery on a new user profile. Task lookup imports ScheduledTasks directly, retaining the existing ownership checks and 30-second budget. Native failures also distinguish timeout, startup errors, output overflow and terminating signals with elapsed time and the native error code.
+- Updated dependencies [560f0b3]
+- Updated dependencies [db0aac7]
+  - @cotal-ai/auth@0.157.4
+  - @cotal-ai/cli@0.157.4
+  - @cotal-ai/connector-core@0.157.4
+  - @cotal-ai/manager@0.157.4
+  - @cotal-ai/delivery@0.157.4
+  - @cotal-ai/registry@0.157.4
+  - @cotal-ai/runtime@0.157.4
+  - @cotal-ai/core@0.157.4
+  - @cotal-ai/seat@0.157.4
+  - @cotal-ai/workspace@0.157.4
+
 ## 0.157.3
 
 ### Patch Changes

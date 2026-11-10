@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.157.4
+
+### Patch Changes
+
+- 560f0b3: Connect computers to signed-in accounts and reconcile dashboard space bindings through the machine daemon.
+- db0aac7: Fit component-health facts to the terminal width. Rows that are too wide stack their facts below the name and verdict, using the existing word wrapping. Piped output, health verdicts and exit codes stay unchanged.
+- @cotal-ai/core@0.157.4
+  - @cotal-ai/workspace@0.157.4
+
 ## 0.157.3
 
 ### Patch Changes
