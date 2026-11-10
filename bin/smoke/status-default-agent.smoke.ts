@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isReachable } from "@cotal-ai/core";
@@ -21,8 +21,8 @@ const env = {
 };
 const bin = join(import.meta.dirname, "..", "dist", "cotal.js");
 const { check, finish } = createSuite();
-function cli(args: string[], extra: NodeJS.ProcessEnv = {}, warnings = ["SNAPSHOT_UNAVAILABLE"]) {
-  const result = spawnSync(process.execPath, [bin, ...args], { cwd: project, env: { ...env, ...extra }, encoding: "utf8", timeout: 30_000 });
+function cli(args: string[], extra: NodeJS.ProcessEnv = {}, warnings = ["SNAPSHOT_UNAVAILABLE"], timeout = 30_000) {
+  const result = spawnSync(process.execPath, [bin, ...args], { cwd: project, env: { ...env, ...extra }, encoding: "utf8", timeout });
   assert.equal(result.error, undefined);
   const brokerOnlyStatus = args[0] === "status" && result.status === 4;
   assert.ok(result.status === 0 || brokerOnlyStatus, `${args.join(" ")}: ${result.stderr}\n${result.stdout}`);
@@ -83,6 +83,24 @@ try {
   writeFileSync(join(project, ".cotal", "agents", "missing.md"), "---\nagent: opencode\n---\ninvalid: no name\n");
   const invalid = JSON.parse(cli(["status", "--json"], {}, ["SNAPSHOT_UNAVAILABLE", "DEFAULT_PERSONA_UNREADABLE"]));
   check("an invalid persona never supplies an apparent harness pin", invalid.result.machine.defaults.harness === null, invalid.result.machine.defaults);
+
+  if (process.platform !== "win32") {
+    const pipe = join(project, ".cotal", "agents", "pipe.md");
+    const made = spawnSync("mkfifo", [pipe], { encoding: "utf8", timeout: 5_000 });
+    assert.equal(made.status, 0, made.stderr);
+    symlinkSync(pipe, join(project, ".cotal", "agents", "pipe-link.md"));
+    for (const persona of ["pipe", "pipe-link"]) {
+      const extra = { COTAL_DEFAULT_PERSONA: persona };
+      const status = JSON.parse(cli(["status", "--json"], extra, ["SNAPSHOT_UNAVAILABLE", "DEFAULT_PERSONA_UNREADABLE"], 5_000));
+      check(`${persona}: status returns bounded partial diagnostics without a writer`, status.result.machine.defaults.harness === null && status.completeness === "partial", status.result.machine.defaults);
+      const preview = spawnSync(process.execPath, [bin, "spawn", "--dry-run", "--json"], { cwd: project, env: { ...env, ...extra }, encoding: "utf8", timeout: 5_000 });
+      assert.equal(preview.error, undefined);
+      check(`${persona}: spawn preview refuses the non-regular persona without blocking`, preview.status === 1 && JSON.parse(preview.stdout).error.code === "SCHEMA_INVALID", preview);
+    }
+    symlinkSync(join(project, ".cotal", "agents", "pinned.md"), join(project, ".cotal", "agents", "pinned-link.md"));
+    const linked = selection({ COTAL_DEFAULT_PERSONA: "pinned-link" });
+    check("regular persona symlinks still select their pin", linked.defaults.harness === "opencode" && linked.harness === "opencode", linked);
+  }
 } finally {
   await killAndAwaitExit(broker);
   assert.ok(broker.exitCode !== null || broker.signalCode !== null, "owned broker must exit before the suite ends");

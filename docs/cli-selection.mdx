@@ -536,6 +536,7 @@ For the selected space, `Default agent` reports the harness a bare `cotal spawn`
 The default persona's `agent:` pin overrides environment and saved harness preferences.
 If that persona cannot be read or validated, status reports the application as unresolved
 and includes a warning instead of presenting a harness preference as the launch choice.
+Non-regular persona paths, including named pipes, are refused without reading them.
 
 This machine shows what is set up and what needs attention. The version line is always there. Agent
 applications is one line: the applications whose required executables are on PATH, and a count of the
