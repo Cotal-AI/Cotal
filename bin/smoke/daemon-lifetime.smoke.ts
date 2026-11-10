@@ -30,20 +30,23 @@
  *  L3 recovery: after SIGKILL the socket survives with inode I, which the suite pins under a second
  *     name; the next serve succeeds, reports `socketsRecovered === 1`, leaves the pin as I's only
  *     link, binds another inode at the path, and `status` answers the new pid;
+ *  L3b a refused runtime-directory preflight preserves the predecessor's record across retries;
+ *     after the mode is corrected, the same dead socket is recovered and clean close clears it.
+ *  L3c a logging failure after the old socket is removed never restores that consumed record.
  *  L4 a socket the record does not name is refused: after SIGKILL the operator replaces the stale
  *     socket with a different same-uid listener's, bound while the dead inode is pinned so its number
  *     differs. The next serve refuses CONFLICT / ALREADY_RUNNING, removes 0 files, the listener's
- *     inode is unchanged and it received 0 bytes. Its Next names `cotal daemon status` and
- *     `cotal daemon serve` in plain and --json;
+ *     inode is unchanged and it received 0 bytes. Its Next names the same daemon home and portable
+ *     endpoint inspection in plain and --json;
  *  L4b a live socket with the recorded numbers is refused: after SIGKILL a same-uid listener replaces
  *     the stale socket and the record names its device and inode numbers, as a filesystem that reuses
  *     a freed inode number leaves it. The next serve refuses CONFLICT / ALREADY_RUNNING because a
  *     connect to it was answered, removes 0 files, and the listener received 0 bytes. It says another
  *     process is listening at that path and serve does not start until that process releases it, and
  *     its Next names `ss -xlp` and `fuser <path>`, in plain and --json. That refusal cleared the record,
- *     so the same serve run again says the record names no socket and that a refused serve clears it.
+ *     so the same serve run again says the record names no socket and that a refused socket check clears it.
  *     `status` refuses PEER_NOT_LOCK_OWNER, and with the socket at 0700 SOCKET_WRONG_MODE, each with a
- *     Next that finds the listener with `ss -xlp` and names `cotal daemon serve`, in plain and --json;
+ *     Next naming the portable ownership or protection check, in plain and --json;
  *  L5 a clean stop leaves no generation to recover: after `close()` the record names no socket and
  *     `status` refuses NOT_RUNNING naming `cotal daemon serve`, so a foreign socket placed at the path
  *     is refused ALREADY_RUNNING and kept;
@@ -76,7 +79,7 @@
  *
  * Run: tsx bin/smoke/daemon-lifetime.smoke.ts   (Linux only)
  */
-import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { constants } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
@@ -141,9 +144,12 @@ const children: ChildProcess[] = [];
  *  cells that read the user manager use it, and they write nothing outside the sandbox. */
 const realRuntimeDir = process.env.XDG_RUNTIME_DIR;
 /** The daemon as a real child whose own pid is the daemon's, so a SIGKILL kills the holder. */
-function child(args: string[], opts: { userManager?: boolean; env?: NodeJS.ProcessEnv } = {}): ChildProcess {
+function child(args: string[], opts: { userManager?: boolean; env?: NodeJS.ProcessEnv; directory?: string } = {}): ChildProcess {
   const runtime = opts.userManager && realRuntimeDir ? realRuntimeDir : rtDir;
-  const c = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(repo, "bin", "cotal.ts"), "daemon", ...args], {
+  const entry = opts.directory === undefined
+    ? ["--import", import.meta.resolve("tsx"), join(repo, "bin", "cotal.ts")]
+    : [join(repo, "bin", "dist", "daemon-cwd.js"), opts.directory];
+  const c = spawn(process.execPath, [...entry, "daemon", ...args], {
     cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: runtime, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", ...opts.env }, stdio: ["ignore", "pipe", "pipe"],
   });
   children.push(c);
@@ -194,8 +200,8 @@ async function cliUserManager(...args: string[]): Promise<{ status: number | nul
 }
 
 /** Start a serving child and wait for its ready line, returning its pid and what it printed so far. */
-async function serveChild(): Promise<{ proc: ChildProcess; pid: number; out: () => string; err: () => string }> {
-  const c = child(["serve"]);
+async function serveChild(directory?: string): Promise<{ proc: ChildProcess; pid: number; out: () => string; err: () => string }> {
+  const c = child(["serve"], { ...(directory === undefined ? {} : { directory }) });
   let out = "", err = "";
   c.stdout!.on("data", (b) => { out += String(b); });
   c.stderr!.on("data", (b) => { err += String(b); });
@@ -244,6 +250,25 @@ const unitDirAvailable = realRuntimeDir !== undefined && spawnSync("systemctl", 
 console.log(`daemon lifetime smoke in ${root}`);
 
 try {
+  await cell("L0 the shipped bootstrap sets cwd before the daemon starts", async () => {
+    if (!existsSync(join(repo, "bin", "dist", "daemon-cwd.js"))) throw new Error("build the shipped daemon cwd entry before running this cell");
+    const directory = join(root, "service-home");
+    mkdirSync(directory, { mode: 0o700 });
+    const linked = join(root, "linked-home");
+    symlinkSync(directory, linked);
+    for (const [invalid, reason] of [["relative", "needs an absolute directory"], [linked, "must be a real directory owned by this user"]] as const) {
+      const c = child(["serve"], { directory: invalid });
+      let err = "";
+      c.stderr!.on("data", b => { err += String(b); });
+      const status = await Promise.race([new Promise<number | null>(r => c.once("exit", r)), sleep(10_000).then(() => -1)]);
+      check("L0 relative or symlink cwd refuses before serving", status === 1 && err.includes(reason) && !existsSync(paths.lock));
+    }
+    const d = await serveChild(directory);
+    check("L0 kernel cwd is the requested directory, not the launching cwd", realpathSync(`/proc/${d.pid}/cwd`) === realpathSync(directory));
+    const st = await cli("status", "--json");
+    check("L0 the unchanged CLI serves and authenticates the bootstrap process", st.status === 0 && st.doc.result?.pid === d.pid);
+    await kill(d.proc, "SIGTERM");
+  });
   await cell("L1 the lifetime lock serializes serve", async () => {
     const first = await serveChild();
     const st = await cli("status", "--json");
@@ -298,6 +323,53 @@ try {
     check("L3 a clean close removes its own socket", !existsSync(paths.socket));
   });
 
+  await cell("L3b a refused preflight preserves recovery evidence for the next start", async () => {
+    const predecessor = await serveChild();
+    const stale = ino(paths.socket);
+    await kill(predecessor.proc, "SIGKILL");
+    const record = readFileSync(paths.lock, "utf8");
+    check("L3b instrument: the dead predecessor's record names the stale socket", lockRecord()?.pid === predecessor.pid && lockRecord()?.socket?.ino === stale);
+    const pin = join(paths.dir, "preflight-stale-pin");
+    linkSync(paths.socket, pin);
+    let recovered: Awaited<ReturnType<typeof serve>> | undefined;
+    try {
+      chmodSync(paths.dir, 0o755);
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const refused = await cli("serve", "--json");
+        check(`L3b preflight ${attempt} refuses the unsafe directory`, refused.status === 2 && refused.doc.error?.cause?.code === "DIR_WRONG_MODE");
+        check(`L3b preflight ${attempt} leaves its mode and socket unchanged`, (lstatSync(paths.dir).mode & 0o777) === 0o755 && ino(paths.socket) === stale);
+        check(`L3b preflight ${attempt} preserves the record and releases the kernel lock`, readFileSync(paths.lock, "utf8") === record && lockIsFree());
+      }
+      chmodSync(paths.dir, 0o700);
+      recovered = await serve();
+      check("L3b the repaired start recovers one socket", recovered.status().state === "ready" && recovered.counters.socketsRecovered === 1);
+      check("L3b only the old public link is removed and a new inode is published", lstatSync(pin).nlink === 1 && ino(paths.socket) !== stale);
+      const status = await cli("status", "--json");
+      check("L3b status verifies the replacement holder", status.status === 0 && status.doc.result?.pid === process.pid && lockRecord()?.socket?.ino === ino(paths.socket));
+      await recovered.close(); recovered = undefined;
+      check("L3b clean close still clears the record and removes its socket", lockRecord() === undefined && !existsSync(paths.socket));
+    } finally {
+      chmodSync(paths.dir, 0o700);
+      await recovered?.close();
+      rmSync(pin, { force: true });
+    }
+  });
+
+  await cell("L3c a failure after removing the old socket does not restore its record", async () => {
+    const predecessor = await serveChild();
+    await kill(predecessor.proc, "SIGKILL");
+    let failure: unknown;
+    try {
+      await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home,
+        log: () => { throw new Error("owned recovery log failure"); } });
+    } catch (error) { failure = error; }
+    check("L3c the logging failure happens after the old socket is removed", failure instanceof Error && failure.message === "owned recovery log failure" && !existsSync(paths.socket));
+    check("L3c the consumed predecessor record stays cleared and the lock is free", lockRecord() === undefined && lockIsFree());
+    const retry = await serve();
+    try { check("L3c a retry starts without recovering the consumed socket again", retry.status().state === "ready" && retry.counters.socketsRecovered === 0); }
+    finally { await retry.close(); }
+  });
+
   await cell("L4 a socket the record does not name is refused, never removed", async () => {
     const d = await serveChild();
     const published = ino(paths.socket);
@@ -322,7 +394,7 @@ try {
     // The refused serve cleared the record, as a clean stop does, so the plain run gets it back.
     writeFileSync(paths.lock, `${JSON.stringify(rec)}\n`);
     const plain = await cli("serve", "--plain");
-    check("L4 its Next names `cotal daemon status` and `cotal daemon serve` in backticks, in plain and --json alike", /^run `cotal daemon status`: .*confirm no `cotal daemon serve` process is running/.test(String(r.doc.error?.remedy)) && plain.status === 2 && sameText(r, plain), { remedy: r.doc.error?.remedy, plain: plain.out + plain.err });
+    check("L4 its Next names the same daemon home and portable endpoint inspection, in plain and --json alike", r.doc.error?.remedy === "run `cotal daemon status` for the same daemon home; inspect the conflicting endpoint with your operating system before changing it. No foreign endpoint was removed" && plain.status === 2 && sameText(r, plain), { remedy: r.doc.error?.remedy, plain: plain.out + plain.err });
     check("L4 that socket keeps its inode and 0 entries were removed", ino(paths.socket) === foreign && readdirSync(paths.dir).length === before);
     check("L4 the other process received 0 bytes", !other.gotBytes());
     await kill(other.proc, "SIGTERM");
@@ -356,19 +428,19 @@ try {
       remedy.startsWith("find that process with `ss -xlp` or `fuser ") && remedy.includes(paths.socket) && remedy.endsWith("and stop it; then run `cotal daemon serve` again") && plain.status === 2 && sameText(r, plain), { remedy, plain: plain.out + plain.err });
     check("L4b the refused serve cleared the record", cleared === undefined && lockRecord() === undefined, { cleared, now: lockRecord() });
     const again = await cli("serve", "--json");
-    check("L4b the same serve run again says the record names no socket, and that a refused serve clears it",
-      again.status === 2 && again.doc.error?.cause?.code === "ALREADY_RUNNING" && String(again.doc.error?.message ?? "").includes("this daemon home's lock record names no socket to compare it with: a clean stop clears that record, and so does a refused serve"), { status: again.status, message: again.doc.error?.message });
-    const stepsFor = (code: string, json: Awaited<ReturnType<typeof cli>>, text: Awaited<ReturnType<typeof cli>>) =>
+    check("L4b the same serve run again says the record names no socket, and that a refused socket check clears it",
+      again.status === 2 && again.doc.error?.cause?.code === "ALREADY_RUNNING" && String(again.doc.error?.message ?? "").includes("this daemon home's lock record names no socket to compare it with: a clean stop or a refused socket check clears that record"), { status: again.status, message: again.doc.error?.message });
+    const stepsFor = (code: string, expectedRemedy: string, json: Awaited<ReturnType<typeof cli>>, text: Awaited<ReturnType<typeof cli>>) =>
       json.status === 2 && json.doc.error?.code === "PERMISSION_DENIED" && json.doc.error?.cause?.code === code && text.status === 2 && sameText(json, text)
-        && /find the process listening at (that socket|it) with `ss -xlp`/.test(String(json.doc.error?.remedy)) && String(json.doc.error?.remedy).includes("start the daemon with `cotal daemon serve`");
+        && json.doc.error?.remedy === expectedRemedy;
     const owner = await cli("status", "--json"), ownerPlain = await cli("status", "--plain");
-    check("L4b status refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER, and its Next finds the listener with `ss -xlp` and names `cotal daemon serve`, in plain and --json alike",
-      stepsFor("PEER_NOT_LOCK_OWNER", owner, ownerPlain) && String(owner.doc.error?.remedy).includes("`COTAL_HOME`"), { status: owner.status, error: owner.doc.error, plain: ownerPlain.out + ownerPlain.err });
+    check("L4b status refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER with the portable ownership remedy, in plain and --json alike",
+      stepsFor("PEER_NOT_LOCK_OWNER", "use the same --daemon-home as the intended daemon and inspect the conflicting listener with your operating system; no process was stopped", owner, ownerPlain), { status: owner.status, error: owner.doc.error, plain: ownerPlain.out + ownerPlain.err });
     chmodSync(paths.socket, 0o700);
     const mode = await cli("status", "--json"), modePlain = await cli("status", "--plain");
     chmodSync(paths.socket, 0o600);
-    check("L4b with the socket at 0700, status refuses PERMISSION_DENIED / SOCKET_WRONG_MODE, and its Next finds the listener with `ss -xlp` and names `cotal daemon serve`, in plain and --json alike",
-      stepsFor("SOCKET_WRONG_MODE", mode, modePlain), { status: mode.status, error: mode.doc.error, plain: modePlain.out + modePlain.err });
+    check("L4b with the socket at 0700, status refuses PERMISSION_DENIED / SOCKET_WRONG_MODE with the portable protection remedy, in plain and --json alike",
+      stepsFor("SOCKET_WRONG_MODE", "inspect the endpoint owner and protection with your operating system; its permissions differ from the daemon contract and were not repaired", mode, modePlain), { status: mode.status, error: mode.doc.error, plain: modePlain.out + modePlain.err });
     check("L4b that socket keeps its inode and 0 entries were removed", ino(paths.socket) === live.ino && readdirSync(paths.dir).length === before);
     check("L4b the other process received 0 bytes", !other.gotBytes());
     await kill(other.proc, "SIGTERM");

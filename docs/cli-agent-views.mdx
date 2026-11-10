@@ -29,13 +29,16 @@ caller's files. A named `--runtime` is checked on this machine only, through the
 uses: `result.requested.runtime` names it, and `result.runtimeCheck` gives the `host` it was checked
 on, whether it is `available` there, and the `error` when it is not. A runtime this machine cannot
 run is a `RUNTIME_UNAVAILABLE` warning, because a manager on another host checks its own.
-`--runtime auto` is refused as the launch refuses it. With `--foreground`, the preview resolves the
-local persona, harness precedence and physical working directory. Binary, login, model-policy and live authority checks are labeled not
-performed. Both previews say where the persona came from: `--file`, the command line, a preference
-or the default. A harness that names no connector this workstation knows is a `HARNESS_UNKNOWN`
-warning, or the `PREFERENCE_INVALID` warning `config` gives when only `COTAL_DEFAULT_AGENT` chose
-it. In a folder whose `.cotal/` names no space, as after `space forget`, the preview refuses
-with no space selected and names the folder. It does not keep `Mesh: main`.
+`--runtime auto` is refused as the launch refuses it. A direct preview resolves the local persona,
+harness precedence and physical working directory. An unknown effective harness is refused with
+`DEPENDENCY_UNAVAILABLE` (exit 2), whether it came from a flag, the persona or a preference.
+Harness names are case-sensitive. Binary, login, model-policy and live authority checks are labeled
+not performed. Both previews say where the persona came from: `--file`, the command line, a
+preference or the default. Only a managed preview reports an unknown local harness as a
+`HARNESS_UNKNOWN` warning, or the `PREFERENCE_INVALID` warning `config` gives when only
+`COTAL_DEFAULT_AGENT` chose it. Its `completeness` remains `not-checked`, because the selected
+manager checks its own connectors at launch. In a folder whose `.cotal/` names no space, as after
+`space forget`, the preview refuses with no space selected and names the folder.
 
 `spawn --foreground --enrollment-file <private-file> --space <name>` uses the existing one-seat
 foreground enrollment path. The file is opened with protected ownership/mode and bounded input

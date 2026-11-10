@@ -98,7 +98,7 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
   const outcome = journalOutcomeOf(e);
   // A held step's question is its hold's, which is what the hold's checkpoint bound.
   const external = e.state === "pending"
-    ? ((e.hold ?? e.external) as { asks?: unknown; addressee?: unknown; deadlineAt?: unknown; onExpiry?: unknown } | undefined)
+    ? ((e.hold ?? e.external) as { asks?: unknown; schema?: unknown; addressee?: unknown; deadlineAt?: unknown; onExpiry?: unknown } | undefined)
     : undefined;
   const result = e.state === "settled" && e.result !== null && typeof e.result === "object"
     ? e.result as { outcome?: unknown; value?: unknown; by?: unknown; artifact?: unknown; at?: unknown; answerId?: unknown }
@@ -136,6 +136,7 @@ export function journalStepRow(n: number, e: JournalEntry): StepJournalRow {
     ...(e.endedAt !== undefined ? { endedAt: e.endedAt } : {}),
     ...(typeof winner === "string" ? { winner } : {}),
     ...(typeof external?.asks === "string" ? { asks: external.asks } : {}),
+    ...(external?.schema !== undefined ? { schema: external.schema } : {}),
     ...(typeof external?.addressee === "string" ? { addressee: external.addressee } : {}),
     ...(typeof external?.deadlineAt === "number" ? { deadlineAt: external.deadlineAt } : {}),
     ...(typeof external?.onExpiry === "string" ? { onExpiry: external.onExpiry } : {}),
@@ -336,6 +337,7 @@ export const cotalLangRunHost: RunHost = {
       runId: req.runId,
       source: req.source,
       kv: runRecordView(planes.kv, records, planes.space),
+      statusConnection: planes.nc,
       lease: req.lease,
       handler,
       pause,

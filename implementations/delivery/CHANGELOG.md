@@ -1,5 +1,80 @@
 # @cotal-ai/delivery
 
+## 0.154.0
+
+### Patch Changes
+
+- Updated dependencies [71dbfad]
+- Updated dependencies [ed8962e]
+- Updated dependencies [27c1356]
+- Updated dependencies [f579412]
+- Updated dependencies [05bb3d3]
+- Updated dependencies [f45357d]
+  - @cotal-ai/core@0.154.0
+  - @cotal-ai/workspace@0.154.0
+
+## 0.153.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.153.1
+  - @cotal-ai/workspace@0.153.1
+
+## 0.153.0
+
+### Minor Changes
+
+- 3646835: Return one JSON receipt from `cotal deliver pending --json`, including candidate IDs and not-found refusals.
+  The retained spelling uses the `cotal pending` reader, its bounded limits and its exit codes.
+  Read facts and candidates from `result` instead of the old first-line object and trailing text.
+  Plain output is unchanged.
+  Inspection skips connector installation, and parser refusals remain structured when value-taking
+  options precede the pending mode. Receipts consistently name the invoked command.
+
+### Patch Changes
+
+- b4eba66: Offline registered spaces now name `cotal space forget` as the command to unregister them.
+  The connection refusal and delivery daemon no longer suggest the hidden legacy `cotal meshes rm` command.
+  Discovered spaces instead name removal from the provider's catalog followed by `cotal sync`, since their registrations cannot be forgotten locally.
+- Updated dependencies [b4eba66]
+- Updated dependencies [8d15e70]
+- Updated dependencies [7aaa5bf]
+- Updated dependencies [9bdc7f4]
+  - @cotal-ai/workspace@0.153.0
+  - @cotal-ai/core@0.153.0
+
+## 0.152.0
+
+### Patch Changes
+
+- Updated dependencies [4bd669c]
+- Updated dependencies [1f4700a]
+- Updated dependencies [1fec76f]
+  - @cotal-ai/core@0.152.0
+  - @cotal-ai/workspace@0.152.0
+
+## 0.151.3
+
+### Patch Changes
+
+- Updated dependencies [6b64880]
+- Updated dependencies [35ddf95]
+- Updated dependencies [15b04d7]
+- Updated dependencies [97e0466]
+  - @cotal-ai/workspace@0.151.3
+  - @cotal-ai/core@0.151.3
+
+## 0.151.2
+
+### Patch Changes
+
+- 9d727ad: `cotal pending <agent>` now exits 0 when its bounded candidate read finishes and the temporary reader is deleted.
+  
+  The read uses one of the admin credential's own history readers and deletes only the reader it created. A reader already under one of those names is left in place, and a read that cannot find a free name stays partial. A fetch that returns fewer messages than it requested, including one that expires, also stays partial.
+- Updated dependencies [0adb23c]
+  - @cotal-ai/workspace@0.151.2
+  - @cotal-ai/core@0.151.2
+
 ## 0.151.1
 
 ### Patch Changes

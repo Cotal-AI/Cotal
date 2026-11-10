@@ -46,6 +46,7 @@ import {
   RunAlreadyStarted,
   RunJournalPrefixTruncated,
 } from "@cotal-ai/core";
+import { TimeoutError, RequestError, ConnectionError, type NatsConnection } from "@nats-io/transport-node";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
@@ -282,6 +283,9 @@ export interface DriveRequest {
    * mode both exist to prevent.
    */
   readonly kv: KV;
+  /** Keep a hosted attempt's terminal status pending across transport failures until its
+   *  connection closes. The host keeps this connection and its credential alive until drive ends. */
+  readonly statusConnection?: Pick<NatsConnection, "isClosed">;
   readonly seed?: string;
   readonly file?: string;
   readonly effectCeiling?: number;
@@ -814,14 +818,10 @@ function isStatusConflict(e: unknown): boolean {
 }
 
 /**
- * The TERMINAL status write, where failing to make it must not replace the answer the caller
- * is owed.
- *
- * By the time one of these runs the engine has already produced the run's outcome and the journal
- * already holds it. The record is a projection of that journal; a driver that could not write the
- * projection has still observed what it observed, and throwing here would replace a real answer
- * (a completion, a release, the program's own failure) with a store error about a derived record.
- * Loud on the way past, because a projection silently lagging its journal is worth knowing about.
+ * Persist the terminal projection without replacing the engine's answer with a store error.
+ * A hosted attempt retains its connection while transport failures are retried. Every retry
+ * reads the current status first: a timed-out write may have landed, and a successor's status
+ * must never be overwritten. Closing the attempt's connection ends recovery on host shutdown.
  */
 async function noteFinal(
   req: DriveRequest,
@@ -831,12 +831,43 @@ async function noteFinal(
   expectedRevision: number | undefined,
   failure?: RunFailure,
 ): Promise<void> {
-  try {
-    await note(req, state, journalHigh, observedSpecRevision, expectedRevision, failure);
-  } catch (e) {
-    console.error(
-      `run ${req.runId}: the "${state}" status write did not land (${(e as Error).message}); `
-      + "the journal is the authority and already holds the outcome",
-    );
+  let recovering = false;
+  for (;;) {
+    if (recovering && req.statusConnection!.isClosed()) return;
+    try {
+      if (recovering) {
+        const current = await readRunRecord(req.kv, req.endpoint, req.runId);
+        const status = current?.status;
+        if (current?.spec.revision !== observedSpecRevision || status === undefined
+          || status.value.holder !== req.lease.holder || status.value.epoch !== req.lease.epoch
+          || status.value.fencingToken !== req.lease.fencingToken) return;
+        // An acknowledged-late terminal write needs no second write. A terminal record is
+        // never reopened, and a higher tail anchor must not be rolled back by this attempt.
+        if (status.value.state !== "running") return;
+        expectedRevision = status.revision;
+        journalHigh = Math.max(journalHigh, status.value.journalHigh);
+      }
+      await note(req, state, journalHigh, observedSpecRevision, expectedRevision, failure);
+      if (recovering) console.error(`run ${req.runId}: the "${state}" status was recorded after the broker became available`);
+      return;
+    } catch (e) {
+      // JetStream wraps no-responder requests in JetStreamNotEnabled. Its other
+      // variant carries an API refusal, so retry only the native no-responder cause.
+      const requestError = e instanceof RequestError ? e
+        : e instanceof Error && e.cause instanceof RequestError ? e.cause : undefined;
+      const transient = e instanceof TimeoutError || e instanceof ConnectionError
+        || requestError?.isNoResponders() === true;
+      const retry = req.statusConnection !== undefined && !req.statusConnection.isClosed()
+        && (transient || isStatusConflict(e));
+      if (!recovering || !retry) {
+        console.error(
+          `run ${req.runId}: the "${state}" status write did not land (${(e as Error).message}); `
+          + (retry ? "retrying while this attempt's connection remains open" : "the recorded status may be stale"),
+        );
+      }
+      if (!retry) return;
+      recovering = true;
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+    }
   }
 }

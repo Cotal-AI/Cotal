@@ -31,8 +31,16 @@ export function scriptLine(ts: number | string, sender: string, destination: str
   return oneLine(`${feedTime(ts)}  ${sender}  ${destination}  ${text}`);
 }
 
+/** The `cotal history` read whose JSON document carries a cut message's whole text. A text or plain
+ *  history row cuts again, so the line names the read that does not. */
+export function wholeTextRead(entry: { channel?: string; events?: boolean; delivery?: string }): string {
+  if (entry.channel && !entry.events) return `\`cotal history ${entry.channel} --json\``;
+  if (entry.delivery === "unicast") return "`cotal history --dms --json`";
+  return "";
+}
+
 /** One feed entry as a line. Text past {@link WATCH_TEXT_LIMIT} is cut, and the line says how much
- *  was not shown and which `cotal history` read shows it whole. A stream row whose text was already
+ *  was not shown and which `cotal history` read carries the whole text. A stream row whose text was already
  *  cut carries that count as `omittedCodeUnits`. */
 export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }): string {
   const time = feedTime(entry.ts);
@@ -46,19 +54,19 @@ export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }): stri
     } catch { /* A non-JSON event remains attributed text. */ }
   }
   const notShown = body.omittedCodeUnits + (entry.omittedCodeUnits ?? 0);
-  const whole = entry.channel && !entry.events ? `; \`cotal history ${entry.channel}\` shows it whole` : entry.delivery === "unicast" ? "; `cotal history --dms` shows it whole" : "";
-  return scriptLine(entry.ts, sender, destination, `${body.text}${notShown ? ` [${notShown} text code units not shown${whole}]` : ""}`);
+  const whole = wholeTextRead(entry);
+  return scriptLine(entry.ts, sender, destination, `${body.text}${notShown ? ` [${notShown} text code units not shown${whole ? `; ${whole} carries the whole text` : ""}]` : ""}`);
 }
 
 /** Read views use facts already normalized by MeshView, without inferring task or membership state. */
 export function watchReport(snapshot: MeshSnapshot, filter: WatchFilter): Report {
   const hint = "This observer's snapshot, not a complete history or proof of task completion.";
   if (filter === "roster" || filter === "waiting") {
-    const rows = filter === "waiting" ? snapshot.signals.waiting : snapshot.agents;
-    return { sections: [{ title: filter === "waiting" ? "Reported waiting" : "Agent roster", blocks: [rows.length ? {
-      kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "role", label: "Role" }, { key: "state", label: "Reported state" }, { key: "activity", label: "Reported activity" }, { key: "id", label: "Identity" }],
-      rows: rows.map((row) => ({ name: row.card.name, role: row.card.role ?? "none", state: { text: row.status === "working" ? "working · progress unknown" : row.status, tone: row.status === "waiting" ? "waiting" : "hint" }, activity: row.activity || "not reported", id: row.card.id })),
-    } : { kind: "lines", lines: [filter === "waiting" ? "No waiting report in this observer snapshot." : "No agents in this observer snapshot."] },
+    const rows = filter === "waiting" ? snapshot.signals.waiting : [...snapshot.agents, ...snapshot.endpoints];
+    return { sections: [{ title: filter === "waiting" ? "Reported waiting" : "Participant roster", blocks: [rows.length ? {
+      kind: "table", columns: [{ key: "name", label: filter === "roster" ? "Participant" : "Agent" }, ...(filter === "roster" ? [{ key: "kind", label: "Kind" }] : []), { key: "role", label: "Role" }, { key: "state", label: "Reported state" }, { key: "activity", label: "Reported activity" }, { key: "id", label: "Identity" }],
+      rows: rows.map((row) => ({ name: row.card.name, kind: row.card.kind, role: row.card.role ?? "none", state: { text: row.status === "working" ? "working · progress unknown" : row.status, tone: row.status === "waiting" ? "waiting" : "hint" }, activity: row.activity || "not reported", id: row.card.id })),
+    } : { kind: "lines", lines: [filter === "waiting" ? "No waiting report in this observer snapshot." : "No participants in this observer snapshot."] },
     { kind: "lines", lines: [{ text: filter === "waiting" ? "Presence carries heartbeat time, not how long a task has waited. No blocked-duration estimate is made." : hint, tone: "hint" }] }] }] };
   }
   if (filter === "channels") return { sections: [{ title: "Observed channels", blocks: [snapshot.channels.length ? {

@@ -22,13 +22,15 @@ import { createServer, type Server, type Socket } from "node:net";
 import { listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
 import { claimSocketPath, generationOf, holdLifetime, type HeldLifetime } from "./lifetime.js";
-import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
+import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { registerDaemon } from "./register.js";
 import { createServiceConnections } from "./service.js";
 import { homeCotalDir } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
+import { idpTimeoutMs, withIdpSessionDir } from "@cotal-ai/auth";
+import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
 export const MAX_REQUESTS_PER_CONNECTION = 64;
@@ -59,6 +61,10 @@ export interface RunningDaemon {
   /** Whether the socket directory was created by this start; `none` for a Windows pipe. */
   readonly dirOutcome: "created" | "existing" | "none";
   status(): DaemonStatus;
+  generationSeats(): Promise<{ space: string; seats: number }[]>;
+  generationPending(installed: string | undefined, waiting?: string): void;
+  prepareGenerationRestart(): Promise<void>;
+  abortGenerationRestart(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -101,6 +107,8 @@ function listen(server: Server, path: string): Promise<void> {
 
 export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
   assertSupportedPlatform();
+  // Refuse local IdP configuration before publishing readiness or resuming any connection.
+  idpTimeoutMs();
   const uid = process.platform === "win32" ? undefined : (opts.uid ?? process.geteuid!());
   const { paths } = opts;
   // The lifetime lock comes before any endpoint path, for both daemon forms. A second serve for the
@@ -111,8 +119,9 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
   try {
     return await serveLocked(opts, uid, lock);
   } catch (e) {
-    // Every failed start releases the lock it took. A started daemon releases it only in close().
-    lock.release();
+    // A failed start keeps any predecessor socket evidence it has not consumed or rejected.
+    // A started daemon releases the lock only in close(), clearing its own record.
+    lock.release({ preservePrevious: true });
     throw e;
   }
 }
@@ -130,7 +139,9 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const machineHome = opts.sessionDir ?? homeCotalDir();
   const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
   const services = createServiceConnections(machineHome);
+  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir);
   const startedAt = new Date();
+  let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
     state: "ready",
     protocol: DAEMON_PROTOCOL_VERSION,
@@ -138,6 +149,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     pid: process.pid,
     startedAt: startedAt.toISOString(),
     uptimeMs: Date.now() - startedAt.getTime(),
+    managers: managers.all(),
+    ...(generation ? { generation } : {}),
   });
 
   const sockets = new Set<Socket>();
@@ -161,6 +174,26 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       if (sock.destroyed || !sock.writable) return resolve();
       sock.write(encode(r), () => resolve());
     });
+    const pendingReplies = new Set<Promise<unknown>>();
+    const replyTask = (task: Promise<unknown>): void => {
+      pendingReplies.add(task);
+      void task.finally(() => pendingReplies.delete(task)).catch(() => {});
+    };
+    const closeAfterReplies = async (): Promise<void> => {
+      // Stop parsing immediately, but let already accepted finite operations flush their answers.
+      // Device sign-in streams are not finite replies and are cancelled when this socket closes.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.allSettled([...pendingReplies]),
+          new Promise<void>((resolve) => { timer = setTimeout(resolve, 5000); }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      sock.end();
+      sock.destroySoon();
+    };
     const refuse = (id: string | null, code: "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS", message: string) => {
       counters.requestsRefused++;
       return write({ v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code, message } });
@@ -178,52 +211,80 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       const req = parsed.request;
+      const managerResult = (run: () => DaemonStatus | HostedManager | ServiceConnectionResult | Promise<DaemonStatus | HostedManager | ServiceConnectionResult>) => {
+        replyTask(Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), (error: unknown) => {
+          counters.requestsRefused++;
+          if (error instanceof HostedManagerRefusal) return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) } });
+          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "MANAGER_UNAVAILABLE", message: "the daemon could not complete the Manager operation; inspect its hosting records and retry" } });
+        }));
+      };
+      if (req.op === "manager-start" || req.op === "manager-status") {
+        managerResult(() => req.op === "manager-start" ? managers.start(req.space) : managers.refresh(req.space));
+        return;
+      }
+      if (req.op === "managers-stop") {
+        managerResult(async () => { await Promise.all(managers.all().map((manager) => managers.disconnect(manager.space))); return status(); });
+        return;
+      }
+      if (req.op === "managers-prepare-restart" || req.op === "managers-abort-restart") {
+        managerResult(async () => {
+          if (req.op === "managers-prepare-restart") await managers.prepareGenerationRestart();
+          else await managers.abortGenerationRestart();
+          return status();
+        });
+        return;
+      }
       if (req.op === "status") {
         counters.statusAnswered++;
-        void write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result: status() });
+        managerResult(async () => { await Promise.all(managers.all().map((manager) => managers.refresh(manager.space))); return status(); });
         return;
       }
       if (req.op === "spaces") {
-        void desktopSpaces(machineHome, req.refresh === true).then((result) => {
+        replyTask(desktopSpaces(machineHome, req.refresh === true).then((result) => {
           counters.spacesAnswered++;
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
         }, () => {
           counters.requestsRefused++;
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "SPACES_UNAVAILABLE", message: "the daemon could not read its spaces" } });
-        });
+        }));
         return;
       }
       if (req.op === "connect-check") {
-        void connectCheck(req.space, machineHome).catch((): ConnectCheckResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the check" }))
+        replyTask(connectCheck(req.space, machineHome).catch((): ConnectCheckResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the check" }))
           .then((result) => {
             counters.connectChecksAnswered++;
             return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
-          });
+          }));
         return;
       }
       if (req.op === "register") {
-        void registerDaemon(req.space, machineHome).catch((): RegisterResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the registration request; nothing is connected" }))
+        replyTask(withIdpSessionDir(machineHome, () => registerDaemon(req.space, machineHome)).catch((): RegisterResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the registration request; nothing is connected" }))
           .then((result) => {
             counters.registersAnswered++;
             return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
-          });
+          }));
         return;
       }
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
         const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
-          : (req.op === "service-connect" ? services.connect(req.space) : services.disconnect(req.space))
+          : withIdpSessionDir(machineHome, async () => {
+            if (req.op === "service-connect") return services.connect(req.space);
+            await managers.disconnect(req.space);
+            return services.disconnect(req.space);
+          })
             .catch((): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: "the daemon could not complete the request; nothing is connected" }));
-        void run.then((result) => {
+        managerResult(async () => {
+          const result = await run;
           counters.serviceAnswered++;
-          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
+          return { ...result, manager: req.op === "service-status" ? await managers.refresh(req.space) : managers.status(req.space) };
         });
         return;
       }
       if (req.op === "login-cancel") {
-        void login.cancel(req.attempt).then((result) => {
+        replyTask(login.cancel(req.attempt).then((result) => {
           counters.cancelsAnswered++;
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
-        });
+        }));
         return;
       }
       const started = login.start({
@@ -245,31 +306,36 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     };
     sock.setEncoding("utf8");
     sock.on("data", (chunk: string) => {
-      buf += chunk;
-      bufBytes += Buffer.byteLength(chunk, "utf8");
-      // Enforce the line limit while buffering: an unterminated stream is cut off at the limit,
-      // never accumulated.
-      if (bufBytes > MAX_LINE_BYTES && !buf.includes("\n")) {
-        counters.requestsRefused++;
-        const r: DaemonResponse = { v: DAEMON_PROTOCOL_VERSION, id: null, ok: false, error: { code: "LINE_TOO_LONG", message: `request exceeds ${MAX_LINE_BYTES} bytes` } };
-        sock.removeAllListeners("data");
-        sock.end(encode(r));
-        sock.destroySoon();
+      let offset = 0;
+      while (offset < chunk.length) {
+        const nl = chunk.indexOf("\n", offset);
+        const part = chunk.slice(offset, nl === -1 ? chunk.length : nl);
+        const bytes = Buffer.byteLength(part, "utf8");
+        // Check this line before appending, reserving its newline even while it is incomplete.
+        if (bufBytes + bytes + 1 > MAX_LINE_BYTES) {
+          counters.requestsRefused++;
+          const r: DaemonResponse = { v: DAEMON_PROTOCOL_VERSION, id: null, ok: false, error: { code: "LINE_TOO_LONG", message: `request exceeds ${MAX_LINE_BYTES} bytes` } };
+          sock.removeAllListeners("data");
+          replyTask(write(r));
+          void closeAfterReplies();
+          buf = "";
+          bufBytes = 0;
+          return;
+        }
+        buf += part;
+        bufBytes += bytes;
+        if (nl === -1) return;
+        const line = buf;
         buf = "";
         bufBytes = 0;
-        return;
-      }
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) !== -1) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        bufBytes = Buffer.byteLength(buf, "utf8");
+        offset = nl + 1;
         if (++requests > MAX_REQUESTS_PER_CONNECTION) {
           // Bounded per connection: one refusal, then the connection closes and its unread input is dropped.
           sock.removeAllListeners("data");
           buf = "";
           bufBytes = 0;
-          void refuse(null, "TOO_MANY_REQUESTS", `a connection may send at most ${MAX_REQUESTS_PER_CONNECTION} requests`).then(() => sock.end());
+          replyTask(refuse(null, "TOO_MANY_REQUESTS", `a connection may send at most ${MAX_REQUESTS_PER_CONNECTION} requests`));
+          void closeAfterReplies();
           return;
         }
         handle(line);
@@ -307,7 +373,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   // Resume what this daemon home was connected to before it stopped. This runs after the endpoint
   // is published, so a space that is slow or unreachable never delays readiness; `service-status`
   // reports each one's real state. A space with no recorded intent is not connected.
-  const resumed = services.resume().then((spaces) => {
+  const managersResumed = managers.resume().catch(() => { log("daemon: hosted Manager records could not be resumed; inspect daemon status and the hosting records"); });
+  const resumed = withIdpSessionDir(machineHome, () => services.resume()).then((spaces) => {
     counters.connectionsResumed = spaces.length;
     if (spaces.length) log(`daemon: resumed ${spaces.length} recorded service connection(s)`);
   }, () => {});
@@ -319,6 +386,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       await resumed;
       // An in-flight sign-in is cancelled through the stock fence before the listener goes away.
       await login.close();
+      await managers.close();
+      await managersResumed;
       // Every service connection, its endpoint and its renewal source close before the socket does.
       await services.close();
       for (const s of sockets) s.destroy();
@@ -331,7 +400,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     return closed;
   };
 
-  return { paths, counters, dirOutcome, status, close };
+  return { paths, counters, dirOutcome, status, close,
+    generationSeats: () => managers.generationSeats(),
+    generationPending(installed, waiting = "preparing activation") { generation = installed ? { installed, running: opts.version, waiting } : undefined; },
+    async prepareGenerationRestart() { await managersResumed; await managers.prepareGenerationRestart(); }, abortGenerationRestart: () => managers.abortGenerationRestart() };
 }
 
 /** Linux and macOS: publish the unix socket, and on close remove it only if it is still ours. */
@@ -340,8 +412,15 @@ async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime
   // Clear the public path. The lifetime lock is held, so nobody else can be publishing there, and
   // the only socket this may remove is the exact inode the dead predecessor's record names, once a
   // connect to it is refused.
-  if (await claimSocketPath(paths.socket, lock.previous?.socket) === "recover") {
-    unlinkSync(paths.socket);
+  let claim: "clear" | "recover";
+  try { claim = await claimSocketPath(paths.socket, lock.previous?.socket); }
+  catch (error) {
+    lock.discardPrevious();
+    throw error;
+  }
+  if (claim === "recover") unlinkSync(paths.socket);
+  lock.discardPrevious();
+  if (claim === "recover") {
     counters.socketsRecovered++;
     log(`daemon: recovered the socket its predecessor left at ${paths.socket} (its lifetime lock was already released)`);
   }

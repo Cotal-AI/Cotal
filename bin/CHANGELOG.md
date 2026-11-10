@@ -1,5 +1,226 @@
 # cotal-ai
 
+## 0.154.0
+
+### Minor Changes
+
+- 488646a: Daemon setup makes a computer ready to launch agents from its space.
+  The machine daemon supervises a stock Manager per space, resumes it after restart, and reports
+  launch-readiness separately from machine-service approval. Setup re-probes the pinned Manager on
+  reruns and reports its identity at `manager.instanceId`, while top-level `instanceId` remains the
+  machine-service registration. Use `--no-manager` for connection-only setup; `--wait` requires it.
+  Hosted status includes observation time, exit and stop diagnostics, and bounded private rotating logs.
+  Setup restarts a mismatched daemon through its recorded native service. Installed npm replacement
+  verifies the new entry before releasing the daemon to its recorded supervisor. `cotal update`
+  checks hosted custody and waits for hosted Manager readiness to return. Self-update also reloads
+  a mismatched default daemon from the same installation when it hosts no Managers.
+  Setup and update never restart a service pinned to another installation. Setup reuses compatible
+  hosting operations or names both installations and the reinstall choices. Update reports the
+  other daemon's installation and version after reconciling its own installation.
+  Update reports and skips hosted records without a live child, and gives a disconnect remedy for
+  live custody that cannot be confirmed. Native restart failures retain their cause and name
+  `cotal daemon start`; a failed rollback no longer hides the primary failure.
+  Update keeps its ordinary continuity checks when Linux has no runtime directory for a daemon.
+  New native jobs mark their launch, and generation activation verifies that marker against the
+  recorded same-install source before exiting for the supervisor.
+  Setup reports unsupported machine-service registration with the same state as service status and
+  preserves the provider session check in its sign-in step.
+  Setup requires an available connector in the hosted Manager's fresh status before reporting launch-ready,
+  and allows time for daemon reconciliation before Manager readiness.
+  Setup validates usage without installing or reconciling connector packages in the invoking shell.
+  The daemon reconciles stock connectors in its own environment before hosting and prepares the
+  default persona in the Manager's own catalog. A bare npm upgrade prepares idle Managers and
+  restarts first. The new daemon refuses stale connectors with a repair command and backed-off
+  retry, so the old generation never reopens launches after a partial shared-store reconciliation.
+  Uninstall removes only per-space hosting records and works with the default daemon home's lock file.
+  Corrupt hosting records refuse only their space and setup repairs them after readiness succeeds.
+  Periodic liveness uses the parent IPC channel without auth callouts and never restarts for the
+  daemon's own authority outage. Fresh pinned status probes withdraw stale readiness. Child recovery
+  requires repeated IPC misses and an empty-seat preservation fence. Stopped status retains the
+  Manager identity and observation, and daemon sign-in refusals consistently name daemon login.
+  Pending upgrades count seats without fencing admission, back off activation attempts, and show the
+  installed version and waiting cause in status. Foreground daemons stay running after replacement.
+  Endpoint limit refusals stop parsing immediately and allow already accepted finite replies a bounded
+  flush before closing the connection.
+
+### Patch Changes
+
+- 71dbfad: Expose an optional non-secret store-failure classification in service renewal state. Report damaged daemon ready and renewal records as local-state conflicts rather than remote outages, preserving records and request IDs for deliberate recovery.
+- 72b307b: Daemon setup recovers when no agent application was available.
+  After one is installed, running setup again restarts an idle hosted Manager under its seat-preservation fence and reads application availability again. A Manager with active seats stays running and reports the seat cause. Missing-application remedies name the applications to install.
+  
+  Updating Cotal succeeds when a running machine daemon has no recorded user service. The update reports its PID and version and leaves it running.
+- ac1afc9: Keep machine-daemon commands available when preferences are malformed or the invoking project folder is missing or has a conflicting .cotal file. Preserve machine-home validation and safety checks for ordinary project commands.
+- ed8962e: Hosted Managers refuse new launches when first-party connector generations differ from their running generation.
+  
+  The daemon checks for a replaced installation before trusting the seed stamp. Refusals name the cause and the restart step for the recorded service or foreground daemon. Existing seats and stock Manager connector loading remain unchanged.
+- Updated dependencies [221cab0]
+- Updated dependencies [488646a]
+- Updated dependencies [71dbfad]
+- Updated dependencies [ac1afc9]
+- Updated dependencies [ed8962e]
+- Updated dependencies [27c1356]
+- Updated dependencies [f579412]
+- Updated dependencies [05bb3d3]
+- Updated dependencies [f45357d]
+  - @cotal-ai/runtime@0.154.0
+  - @cotal-ai/auth@0.154.0
+  - @cotal-ai/cli@0.154.0
+  - @cotal-ai/manager@0.154.0
+  - @cotal-ai/core@0.154.0
+  - @cotal-ai/workspace@0.154.0
+  - @cotal-ai/connector-core@0.154.0
+  - @cotal-ai/delivery@0.154.0
+  - @cotal-ai/registry@0.154.0
+  - @cotal-ai/seat@0.154.0
+
+## 0.153.1
+
+### Patch Changes
+
+- 058a3e6: Run checks now identify unchanged programs, show both hashes for edits, and name terminal runs.
+  The read-only comparison no longer implies that it moves a run to another program or makes a completed or failed run resumable.
+- Updated dependencies [058a3e6]
+  - @cotal-ai/runtime@0.153.1
+  - @cotal-ai/manager@0.153.1
+  - @cotal-ai/connector-core@0.153.1
+  - @cotal-ai/auth@0.153.1
+  - @cotal-ai/cli@0.153.1
+  - @cotal-ai/delivery@0.153.1
+  - @cotal-ai/registry@0.153.1
+  - @cotal-ai/core@0.153.1
+  - @cotal-ai/seat@0.153.1
+  - @cotal-ai/workspace@0.153.1
+
+## 0.153.0
+
+### Patch Changes
+
+- 5a54686: Clear the previous account's cached catalog and discovered registrations when the default daemon signs in as a different account. Separate daemon homes clean only their own cache. Credential files are retained.
+- 05bfec0: Enable shell path completion for the daemon's `--daemon-home` option.
+- 63f38d9: Distinguish unreadable or unwritable daemon identity and registration records from remote outages. Report a local-state conflict without replacing records or exposing their contents, and stop setup rather than waiting for approval.
+- 33995bb: Enforce the daemon request-line byte limit before buffering each fragment, including unfinished tails after valid requests. Close oversized connections consistently while accepting multiple valid lines independently.
+- 0224fc9: Read desktop host metadata without requiring a daemon runtime directory. Return daemon-path failures through the bounded desktop JSON protocol instead of unframed CLI errors.
+- 9bdc7f4: Failed preference and prepared-space writes now clean up their temporary files.
+  Exclusive private-record writes also remove a newly created partial file on failure without
+  removing a file that already belonged to another writer.
+- Updated dependencies [f98799a]
+- Updated dependencies [be11326]
+- Updated dependencies [ba1d826]
+- Updated dependencies [b2f7b0b]
+- Updated dependencies [05bfec0]
+- Updated dependencies [c967868]
+- Updated dependencies [bd1008e]
+- Updated dependencies [e8b4a5f]
+- Updated dependencies [b4eba66]
+- Updated dependencies [8d15e70]
+- Updated dependencies [3646835]
+- Updated dependencies [d7888be]
+- Updated dependencies [853378d]
+- Updated dependencies [3d2e1f4]
+- Updated dependencies [7aaa5bf]
+- Updated dependencies [9bdc7f4]
+  - @cotal-ai/cli@0.153.0
+  - @cotal-ai/manager@0.153.0
+  - @cotal-ai/workspace@0.153.0
+  - @cotal-ai/delivery@0.153.0
+  - @cotal-ai/runtime@0.153.0
+  - @cotal-ai/core@0.153.0
+  - @cotal-ai/auth@0.153.0
+  - @cotal-ai/connector-core@0.153.0
+  - @cotal-ai/registry@0.153.0
+  - @cotal-ai/seat@0.153.0
+
+## 0.152.0
+
+### Patch Changes
+
+- c7b64d4: Keep a separate daemon's catalog refresh from changing shared registrations, sentinel files or the default selected space.
+- 3b0dae8: Preserve a dead daemon's socket recovery record when a startup preflight refuses, so correcting the runtime directory lets the next start recover normally. Rejected socket claims and clean shutdown still clear the record.
+- 1f4700a: Use the selected daemon home's sign-in for service registration and activation. Authority and renewal calls carry an explicit provider-session directory, so a separate daemon cannot borrow the default home's account; callers that omit the directory keep their existing behavior.
+- 362c59b: Refuse Linux daemon service receipts whose home, unit name or path differs from the selected daemon and the user manager's unit directory before starting or removing a service.
+- Updated dependencies [d6e7b75]
+- Updated dependencies [4bd669c]
+- Updated dependencies [c7b64d4]
+- Updated dependencies [1f4700a]
+- Updated dependencies [1fec76f]
+- Updated dependencies [e044ab0]
+- Updated dependencies [4b75e8b]
+- Updated dependencies [f40b049]
+- Updated dependencies [d26134d]
+  - @cotal-ai/cli@0.152.0
+  - @cotal-ai/core@0.152.0
+  - @cotal-ai/runtime@0.152.0
+  - @cotal-ai/manager@0.152.0
+  - @cotal-ai/auth@0.152.0
+  - @cotal-ai/workspace@0.152.0
+  - @cotal-ai/connector-core@0.152.0
+  - @cotal-ai/delivery@0.152.0
+  - @cotal-ai/registry@0.152.0
+  - @cotal-ai/seat@0.152.0
+
+## 0.151.3
+
+### Patch Changes
+
+- 35ddf95: A connected chat session ends and says its inbox is gone when a manager restart removes that inbox.
+  
+  The endpoint warns as soon as the broker reports that DM consumer deleted, and the session closes with that reason instead of staying connected with no record. The process exits 5 when the connection close is confirmed, including when the old manager does not answer the retirement. A later send to the old name is refused rather than stored (#6017).
+- 97e0466: Keep the daemon mode and accepted target in JSON failure reports. The shared operation scope carries this context to the existing error renderer without changing outcomes, exit codes or credential handling.
+- 635d9d2: Refuse daemon flags that do not belong to the selected mode before performing any action. The missing-mode error now lists the declared modes, including desktop, and points to help that works without a running daemon.
+- d948e5e: A membership follow stays running through a broker outage that lasts longer than the connection's own reconnect.
+  
+  When the watch closes, the follow reports the lost connection once and reads the feed again once the endpoint re-establishes it. The gap and the current census follow, and the follow ends on an interrupt or a credential that can no longer connect (#6041).
+- Updated dependencies [6b64880]
+- Updated dependencies [35ddf95]
+- Updated dependencies [15b04d7]
+- Updated dependencies [97e0466]
+- Updated dependencies [a0eaa04]
+- Updated dependencies [d948e5e]
+- Updated dependencies [de5f4e4]
+- Updated dependencies [1ed400a]
+  - @cotal-ai/workspace@0.151.3
+  - @cotal-ai/cli@0.151.3
+  - @cotal-ai/core@0.151.3
+  - @cotal-ai/auth@0.151.3
+  - @cotal-ai/delivery@0.151.3
+  - @cotal-ai/manager@0.151.3
+  - @cotal-ai/runtime@0.151.3
+  - @cotal-ai/connector-core@0.151.3
+  - @cotal-ai/registry@0.151.3
+  - @cotal-ai/seat@0.151.3
+
+## 0.151.2
+
+### Patch Changes
+
+- 3b551a1: Fix start and uninstall for newly installed macOS daemons.
+  
+  New LaunchAgents bind their working directory through the verified argument vector and set it before the CLI loads. Existing plists with a WorkingDirectory property keep their original native verification requirement; this does not migrate or force-remove them.
+- f2f0a2b: Guided service and endpoint forms validate answers at each question so invalid input can be corrected without losing earlier answers.
+  
+  Preset answers use the option schema and path checks, including the broker server's existing address restrictions. Imports and endpoint references are checked before the form advances, and whole-definition validation remains in place before saving.
+- 014d1d3: Let a file-form teardown dry-run inspect the recorded stack when no additive ledger exists, with consistent text and structured output. Keep explicit run selection and legacy ledger previews on their existing teardown path without requiring launch-time persona files. When file-form apply finds a recorded stack without an additive ledger, name the bare stack stop instead of suggesting an unknown run ID.
+- 9d727ad: `cotal pending <agent>` now exits 0 when its bounded candidate read finishes and the temporary reader is deleted.
+  
+  The read uses one of the admin credential's own history readers and deletes only the reader it created. A reader already under one of those names is left in place, and a read that cannot find a free name stays partial. A fetch that returns fewer messages than it requested, including one that expires, also stays partial.
+- Updated dependencies [1d47635]
+- Updated dependencies [0adb23c]
+- Updated dependencies [f2f0a2b]
+- Updated dependencies [b709d87]
+- Updated dependencies [014d1d3]
+- Updated dependencies [9d727ad]
+  - @cotal-ai/cli@0.151.2
+  - @cotal-ai/workspace@0.151.2
+  - @cotal-ai/delivery@0.151.2
+  - @cotal-ai/auth@0.151.2
+  - @cotal-ai/manager@0.151.2
+  - @cotal-ai/runtime@0.151.2
+  - @cotal-ai/connector-core@0.151.2
+  - @cotal-ai/registry@0.151.2
+  - @cotal-ai/core@0.151.2
+  - @cotal-ai/seat@0.151.2
+
 ## 0.151.1
 
 ### Patch Changes

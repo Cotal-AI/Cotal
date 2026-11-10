@@ -86,13 +86,15 @@ export function latestDirected<T extends Answerable>(messages: readonly T[]): T 
   return undefined;
 }
 
-/** What Enter does with a draft. `slash` and `leave` consume the line; every `hold` keeps it, and a
- *  `hold` with `pick` asks the front end to choose a recipient. */
+/** What Enter does with a draft. `slash` and `leave` consume the line. A `hold` with `clear` is a
+ *  slash command the grammar refused: the line is shown as the refusal and then cleared, so the next
+ *  command is not typed onto it. Every other `hold` keeps the line, and a `hold` with `pick` asks the
+ *  front end to choose a recipient. */
 export type Submit =
   | { readonly kind: "nothing" }
   | { readonly kind: "leave" }
   | { readonly kind: "slash"; readonly command: SlashCommand }
-  | { readonly kind: "hold"; readonly tone: "waiting" | "failed" | "hint"; readonly text: string; readonly pick?: true }
+  | { readonly kind: "hold"; readonly tone: "waiting" | "failed" | "hint"; readonly text: string; readonly pick?: true; readonly clear?: true }
   | { readonly kind: "publish"; readonly to: Recipient; readonly text: string };
 
 /**
@@ -108,7 +110,7 @@ export function submitDraft(
   if (draft.trim() === "") return { kind: "nothing" };
   if (draft.startsWith("/") && !draft.startsWith("//")) {
     const parsed = parseSlash(draft);
-    if (!parsed.ok) return { kind: "hold", tone: "failed", text: parsed.error };
+    if (!parsed.ok) return { kind: "hold", tone: "failed", text: parsed.error, clear: true };
     if (parsed.command.name === "quit") return { kind: "leave" };
     if (at.connection !== "connected" && !runsOffline(parsed.command)) return { kind: "hold", tone: "waiting", text: "not connected: only /reconnect, /connection, /whoami, /reply and /help run now; your line is kept" };
     return { kind: "slash", command: parsed.command };
@@ -221,7 +223,9 @@ export function parseSlash(line: string): { ok: true; command: SlashCommand } | 
     case "/help":
     case "/quit":
     case "/exit":
-      if (rest.length) return { ok: false, error: `${head} takes no arguments` };
+      if (rest.length) return { ok: false, error: head === "/reply"
+        ? "/reply takes no arguments; it answers the latest direct message or role task, and the message is typed after it"
+        : `${head} takes no arguments` };
       return { ok: true, command: { name: head === "/exit" ? "quit" : (head.slice(1) as "who" | "whoami" | "connection" | "reconnect" | "reply" | "help" | "quit") } };
     case "/status": {
       if (arg !== "idle" && arg !== "working" && arg !== "waiting") return { ok: false, error: "usage: /status <idle|working|waiting> [activity]" };

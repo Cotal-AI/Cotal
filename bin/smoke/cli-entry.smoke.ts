@@ -31,6 +31,7 @@
  * Run: pnpm smoke:cli-entry
  */
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -904,6 +905,50 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const envelope = (() => { try { return JSON.parse(json.stdout) as { target?: { file?: string }; error?: { code?: string; remedy?: string } }; } catch { return undefined; } })();
   check("team check --json of a folder gives USAGE_INVALID with the folder as target.file and the Next",
     json.status === 1 && envelope?.error?.code === "USAGE_INVALID" && envelope.target?.file === dir && envelope.error.remedy === "name the manifest file in it, such as its cotal.yaml", shown(json));
+}
+
+// A retained teardown ledger uses the manifest source hash, without reading launch-time personas.
+{
+  let ledgerPath = "", ledgerBefore = "";
+  const prepare = (home: string, ledger: boolean): void => {
+    const root = dirname(home), file = join(root, "old.yaml");
+    mkdirSync(join(root, ".cotal", "manifests"), { recursive: true });
+    mkdirSync(join(home, "meshes"), { recursive: true });
+    writeFileSync(join(home, "meshes", `${spaceSegment("retiredledger")}.json`), JSON.stringify({
+      space: "retiredledger", server: "nats://127.0.0.1:1", root, mode: "open", origin: "up", ts: "2026-11-09T00:00:00.000Z",
+    }));
+    const source = "apiVersion: cotal/v1\nkind: Mesh\nspace: retiredledger\nagent: claude\nagents:\n  worker: ./removed-persona.md\nchannels: {}\n";
+    writeFileSync(file, source);
+    if (ledger) {
+      ledgerPath = join(root, ".cotal", "manifests", "oldrun.json");
+      ledgerBefore = JSON.stringify({ apiVersion: "cotal-ledger/v1", kind: "MeshLedger", runId: "oldrun",
+        space: "retiredledger", server: "nats://127.0.0.1:1", manifestPath: file,
+        manifestHash: createHash("sha256").update(source).digest("hex").slice(0, 16), teardownMode: "ledger-scoped",
+        created: { channels: ["oldchannel"], agents: [] } });
+      writeFileSync(ledgerPath, ledgerBefore);
+    }
+  };
+  for (const run of [[], ["--run", "oldrun"]]) {
+    const r = cotal(["down", "-f", "old.yaml", "--dry-run", ...run], (home) => prepare(home, true), noSeed);
+    check(`ledger dry-run ${run.length ? "by explicit run" : "by source hash"} needs no launch persona`,
+      r.status === 0 && r.stdout.includes("Would remove (dry run)") && r.stdout.includes("#oldchannel")
+        && readFileSync(ledgerPath, "utf8") === ledgerBefore, shown(r));
+  }
+  for (const format of ["--json", "--plain"]) {
+    const r = cotal(["down", "-f", "old.yaml", "--dry-run", format], (home) => prepare(home, true), noSeed);
+    check(`ledger preview retains its ${format} refusal without loading personas`,
+      r.status === 2 && (r.stdout + r.stderr).includes("UNSUPPORTED") && !(r.stdout + r.stderr).includes("SCHEMA_INVALID")
+        && readFileSync(ledgerPath, "utf8") === ledgerBefore, shown(r));
+  }
+  for (const format of [[], ["--json"], ["--plain"]]) {
+    const r = cotal(["down", "-f", "old.yaml", ...format], (home) => prepare(home, false), noSeed);
+    check(`file-form apply ${format[0] ?? "text"} names the recorded stack's stop without inventing a run ID`,
+      r.status === 2 && (r.stdout + r.stderr).includes("UNSUPPORTED") && (r.stdout + r.stderr).includes("no run ID is needed")
+        && !(r.stdout + r.stderr).includes("--run <id>"), shown(r));
+  }
+  const noLedger = cotal(["down", "-f", "old.yaml", "--dry-run", "--json"], (home) => prepare(home, false), noSeed);
+  check("no-ledger recorded-stack preview still validates the manifest's persona",
+    noLedger.status === 1 && noLedger.stdout.includes("SCHEMA_INVALID") && noLedger.stdout.includes("removed-persona.md"), shown(noLedger));
 }
 
 // ── Every alias is its command: same help, same refusal ───────────────────────────────────────────

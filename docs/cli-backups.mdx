@@ -88,7 +88,9 @@ or 129 and names its attempt, the partial artifact it left and `cotal backup rec
 That claim follows the restore claim's rule below: it holds the cut until its backup process and
 brokers are proven gone, or for 30 minutes when they cannot be. Until then `up`, another create and
 `backup recover` refuse `LIFECYCLE_BLOCKED` and name the backup process and the deadline, and
-`cotal status` names the attempt and its next step. Once it is stale, `backup recover` removes the
+`cotal status` names the attempt and its next step. While a create or pre-commit restore holds
+the cut, its Next section leads with recovery instead of offering a restart that would refuse.
+The JSON report leads its hints with the same step. Once it is stale, `backup recover` removes the
 partial artifact, the clone and the broker files, each matched by inode, and a create to another
 directory does the same before it starts, then backs up the cut's recorded store, a custom
 `--store-dir` one included. A create naming the partial artifact refuses `CONFLICT`
@@ -98,12 +100,12 @@ and names that recovery. The release's receipt names `cotal backup create <direc
 
 ## Artifact inspection
 
-`backup inspect` reads the bounded manifest and exact declared file-name inventory. It does not
-hash snapshot or checkpoint contents. `backup verify` additionally reads each named regular file
-and compares its size and SHA-256. Both are read-only: no staging directory, broker, restore or
-secret upload. A path through a linked folder is read at its real path, as `backup restore` reads
-it, and the report names that path. Reports omit snapshot bytes, configuration bodies and trust
-material. JSON retains
+`backup inspect` reads the bounded manifest and exact declared file-name inventory, and refuses a
+declared file that is not a regular file. It does not hash snapshot or checkpoint contents.
+`backup verify` additionally reads each named regular file and compares its size and SHA-256. Both
+are read-only: no staging directory, broker, restore or secret upload. A path through a linked
+folder is read at its real path, as `backup restore` reads it, and the report names that path.
+Reports omit snapshot bytes, configuration bodies and trust material. JSON retains
 the declared metadata; terminal file lists are bounded and state their omissions. When a declared
 file is missing, an undeclared file is present, a declared file is not a regular file, such as a
 symbolic link or a FIFO, or a file does not match its declared size and SHA-256, the refusal names

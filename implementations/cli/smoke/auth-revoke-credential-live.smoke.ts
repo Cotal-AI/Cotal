@@ -132,7 +132,7 @@ try {
     const listed = exported.find((row) => row.path === leaked);
     check("doctor auth lists the revoked file, and its repair is a mint with a new key and the file's grants, since --identity refuses that key",
       listed?.state === "revoked" && listed.repair?.includes("auth mint --identity refuses that key; mint a new key with the grants this file holds:") === true
-        && listed.repair.includes("auth mint leaked --allow-subscribe general --allow-publish general --role rev --out <new file>")
+        && listed.repair.includes("auth mint leaked --allow-subscribe general --allow-publish general --role rev --no-persona --out <new file>")
         && exported.find((row) => row.path === kept)?.state === "unbounded", { exported, doctor: shown(doctor) });
     const heading = cli(root, "doctor", "auth");
     check("  and its heading says there are no findings and that one exported file needs attention",
@@ -184,7 +184,7 @@ try {
     check("doctor auth reports the revoked label file as a revoked finding, with when it was revoked",
       labelRow?.state === "revoked" && typeof labelRow.revokedAt === "number" && labelRow.problem?.startsWith(`REVOKED - its key ${labelKey} was revoked at `) === true && labelDoctor.env?.outcome === "failed", { labelRow, doctor: shown(labelDoctor) });
     check("  and its repair is --replace with a new key and the file's grants",
-      labelRow?.repair?.includes(`auth mint standing --replace --space ${space} --allow-subscribe general --allow-publish general\``) === true && labelRow.repair.startsWith("a revoked key is not signed again"), labelRow);
+      labelRow?.repair?.includes(`auth mint standing --replace --space ${space} --allow-subscribe general --allow-publish general --no-persona\``) === true && labelRow.repair.startsWith("a revoked key is not signed again"), labelRow);
     const replaced = cli(root, "auth", "mint", "standing", "--replace", "--allow-subscribe", "general", "--allow-publish", "general", "--json");
     const replacedBy = replaced.env?.result as { identity?: string; replaced?: { state?: string; publicKey?: string; revokedAt?: number } } | undefined;
     check("auth mint --replace replaces the revoked label credential under a new key, naming the revocation",
@@ -192,7 +192,7 @@ try {
     const labelSend = cli(root, "send", "-c", "general", "with the new label key", "--json", "--creds", labelFile, "--space", space, "--server", server);
     check("  and the label's file posts again", labelSend.status === 0, shown(labelSend));
     check("  and its Next is a new key with the grants the file held",
-      refused.env?.error?.remedy === "a revoked key is not signed again; mint a new key with the grants it held: `cotal auth mint <label> --allow-subscribe general --allow-publish general --role rev --out <new file>`", refused.env?.error);
+      refused.env?.error?.remedy === "a revoked key is not signed again; mint a new key with the grants it held: `cotal auth mint <label> --allow-subscribe general --allow-publish general --role rev --no-persona --out <new file>`", refused.env?.error);
     const sendRevoked = cli(root, "send", "-c", "general", "after the revocation", "--json", "--creds", leaked, "--space", space, "--server", server);
     check("send with the revoked file names the revocation too", sendRevoked.status === 2 && sendRevoked.env?.error?.message === refused.env?.error?.message, shown(sendRevoked));
     const whoRevoked = cli(root, "whoami", "--creds", leaked, "--json");

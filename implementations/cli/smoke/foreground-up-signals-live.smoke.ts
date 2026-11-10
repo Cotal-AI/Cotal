@@ -9,6 +9,7 @@
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
+ * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -185,7 +186,8 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.notEqual(state.code, 0, "unexpected broker loss remains a nonzero CLI exit"); passed++;
       assert.match(err, /exited unexpectedly/); passed++;
     } else {
-      assert.equal(state.code, 0, `guarded shutdown completed (${state.signal ?? "no signal"}): ${err}`); passed++;
+      const signalExit = options.signal === "SIGTERM" ? 143 : 130;
+      assert.equal(state.code, signalExit, `guarded shutdown exits ${signalExit} (${state.signal ?? "no signal"}): ${err}`); passed++;
       assert.match(err, /Trapped "terminated" signal/, "the CLI owner, not terminal SIGINT, stops the broker"); passed++;
       assert.doesNotMatch(err, /Trapped "interrupt" signal|could not list managed agents|control plane degraded|exited unexpectedly|spare.*unavailable/i); passed++;
       if (options.auth) {

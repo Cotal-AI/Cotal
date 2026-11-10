@@ -70,7 +70,7 @@ import {
   type RunHostPlanes,
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
-import { CATALOG, CheckpointNotAmendable, CheckpointNotOpen, DurationError, isDuration, LangErrors, parseDuration, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
+import { CATALOG, CheckpointNotAmendable, CheckpointNotOpen, DurationError, isDuration, LangErrors, parseDuration, programHashOf, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import {
   boundedValue,
   CommandFailure,
@@ -620,6 +620,7 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
   // A run ID nothing records is refused as `run show` refuses it; the check writes nothing either way.
   if (record === undefined)
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`, { target: { space: planes.space, endpoint, run: runId }, remedy: "list the recorded runs with `cotal run`" });
+  const recorded = await readRunProgram(planes.kv, endpoint, runId);
   const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
   const source = sourceOf(values.file);
   let report: MigrateReport;
@@ -628,6 +629,7 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
       endpoint,
       runId,
       source,
+      ...(recorded !== undefined ? { fromHash: programHashOf(recorded.source) } : {}),
       file: values.file,
       entries: replay.records.flatMap((r) => (r.record.kind === "step" ? [r.record.entry as JournalEntry] : [])),
       pins: record.spec.value.pins as RunPins,
@@ -642,15 +644,23 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
     for (const item of e.errors) console.error(`  ${item.code} ${item.title} (${item.span.file}:${item.span.line}:${item.span.column})\n    ${item.cause}\n    fix: ${item.fix}`);
     process.exit(1);
   }
-  printMigrateReport(report);
+  printMigrateReport(report, record.status?.value.state);
   if (!report.admissible) process.exitCode = 1;
 }
 
 /** The report an operator reads: admissible or not, how far the walk accounted for the journal,
  *  every orphan with its verdict (and its code, on a rejection), the divergence and the unwalkable
  *  step when there is one, and the one line that says what this verb did NOT do. */
-function printMigrateReport(r: MigrateReport): void {
-  console.log(`run ${r.run}: ${r.admissible ? "admissible" : "not admissible"} — the edited program accounts for ${r.consumedThrough} journal row(s); moves to ${r.toHash}`);
+function printMigrateReport(r: MigrateReport, state: RunStatusValue["state"] | undefined): void {
+  console.log(`run ${r.run}: ${r.admissible ? "admissible" : "not admissible"}. The candidate program accounts for ${r.consumedThrough} journal row(s).`);
+  if (r.fromHash === r.toHash) {
+    console.log(`  program unchanged: identical to the run's current program (${r.toHash})`);
+  } else {
+    console.log(`  current program: ${r.fromHash ?? "not recorded (no program is recorded for this run)"}`);
+    console.log(`  candidate program: ${r.toHash}`);
+  }
+  if (state === "completed" || state === "failed")
+    console.log(`  run is already ${state} (terminal). This check only compares the program with its journal, it does not make the run resumable.`);
   for (const o of r.orphans) {
     console.log(`  orphan  ${o.step}  ${o.kind}  ${o.verdict}${o.code !== undefined ? ` (${o.code})` : ""}`);
     console.log(`          ${o.why}`);

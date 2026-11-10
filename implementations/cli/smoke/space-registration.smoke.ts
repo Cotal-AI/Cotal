@@ -15,8 +15,8 @@
  * registration an earlier release made under such a name is still headed with it.
  * On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A stack journal
- * whose members this home has no record of, with a live manager, stands for a stack running under
- * another Cotal home: create, down and status there name that home, and so do ps and who with
+ * whose members this home has no record of, with a live manager, reports missing member
+ * records: create, down and status name that fact, and so do ps and who with
  * another space selected. A folder path with a control
  * character or a bidirectional formatting mark is refused by create and up before anything is written. A stopped stack whose broker
  * bind does not serve its recorded address refuses up and is started again with the --host it names.
@@ -154,8 +154,9 @@ for (let i = 0; i < 50; i++) {
 // An open space must be one the broker serves, so the open broker serves the names added below.
 const SERVED = ["open1", "open3", "open4", "open5"];
 {
-  const { setupSpaceStreams } = await import("@cotal-ai/core");
+  const { setupSpaceStreams, seedChannelRegistry } = await import("@cotal-ai/core");
   for (const space of SERVED) await setupSpaceStreams({ servers: LIVE, space });
+  await seedChannelRegistry({ servers: LIVE, space: "open1", file: { channels: { general: { description: "General" } } } });
 }
 
 const root = projectRoot("proj");
@@ -221,10 +222,22 @@ setCurrent("keep");
   check("the registry holds it", findMesh("open1")?.server === LIVE && findMesh("open1")?.origin === "manual");
   check("the selection is unchanged", getCurrent() === "keep" && r?.space?.current === false, getCurrent());
 
+  const sent = await json(["send", "--space", "open1", "-c", "general", "x"]);
+  check("control: send to an answering registered broker stores the message", sent.status === 0 && sent.env?.outcome === "ok" && sent.env.result?.stored === true, shown(sent));
+
   const again = await json(["space", "add", "open1", "--server", LIVE, "--root", root]);
   check("adding a registered name is CONFLICT, exit 2, naming forget and --force", refused(again, 2, "CONFLICT") && /space forget open1/.test(again.env?.error?.remedy ?? "") && /--force/.test(again.env?.error?.remedy ?? ""), shown(again));
   const replaced = await json(["space", "add", "open1", "--server", DEAD, "--root", root, "--force"]);
   check("--force replaces a registration added by hand, unchecked", replaced.status === 0 && replaced.env?.result.replaced === true && replaced.env.result.verified === false && replaced.env.result.space.check === "not-checked" && findMesh("open1")?.server === DEAD, shown(replaced));
+
+  const beforeSend = registryFiles();
+  const offline = await json(["send", "--space", "open1", "-c", "general", "x"]);
+  check("send to an unreachable registration refuses with space forget in its JSON remedy",
+    refused(offline, 2, "TARGET_UNAVAILABLE") && offline.env?.error?.remedy === "start it where it runs, or `cotal space forget open1` to unregister it", shown(offline));
+  const offlineHuman = await run(["send", "--space", "open1", "-c", "general", "x"]);
+  check("the human refusal names space forget, not legacy removal or local startup, and keeps the registrations",
+    offlineHuman.status === 2 && offlineHuman.stderr.includes("cotal space forget open1") && !offlineHuman.stderr.includes("cotal meshes rm") && !offlineHuman.stderr.includes("cotal up") &&
+      JSON.stringify(registryFiles()) === JSON.stringify(beforeSend), shown(offlineHuman));
 
   recordMesh({ space: "started", server: LIVE, root, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const overUpBare = await json(["space", "add", "started", "--server", LIVE, "--root", root]);
@@ -553,7 +566,7 @@ if (process.platform === "linux") {
   writeFileSync(awayRecord, String(awayManager.pid), { mode: 0o600 });
   const journal = readFileSync(stackJournalPath(awayRoot), "utf8"), before = registryFiles();
   const otherHome = (r: Awaited<ReturnType<typeof json>>) =>
-    refused(r, 2, "TARGET_UNAVAILABLE") && /another Cotal home/.test(r.env?.error?.message ?? "") && /COTAL_HOME set to the Cotal home the stack was started under/.test(r.env?.error?.remedy ?? "");
+    refused(r, 2, "TARGET_UNAVAILABLE") && /member records.*missing|member records are missing/.test(r.env?.error?.message ?? "") && /COTAL_HOME set to the Cotal home the stack was started under/.test(r.env?.error?.remedy ?? "");
   const unchanged = () => readFileSync(stackJournalPath(awayRoot), "utf8") === journal && JSON.stringify(registryFiles()) === JSON.stringify(before) && awayManager.exitCode === null;
   const create = await json(["space", "create", "away", "--root", awayRoot]);
   check("space create over a stack running under another Cotal home refuses TARGET_UNAVAILABLE with the COTAL_HOME step, and prepares nothing",
@@ -572,13 +585,13 @@ if (process.platform === "linux") {
     if (selected === undefined) clearCurrent(); else setCurrent(selected);
     removeMesh("awaysel");
     check("ps and who there with another space selected still refuse with the COTAL_HOME step, naming no stopped space of this folder",
-      otherHome(read) && text.status === 2 && /another Cotal home/.test(text.stderr) && !/this folder holds|restart it with `cotal up`/.test(text.stdout + text.stderr) && unchanged(), { ps: shown(read), who: shown(text) });
+      otherHome(read) && text.status === 2 && /member records.*missing|member records are missing/.test(text.stderr) && !/this folder holds|restart it with `cotal up`/.test(text.stdout + text.stderr) && unchanged(), { ps: shown(read), who: shown(text) });
   }
   // A space this home prepared at the root does not hide the other home.
   recordPreparedSpace({ space: "away", root: awayRoot, ts });
   const status = await json(["status"], awayRoot);
   check("status there names the other home even when this home prepared a space at the root",
-    status.status === 0 && status.env?.result?.selected?.code === "not-started" && /runs under another Cotal home/.test(status.env.result.selected.message ?? ""), shown(status));
+    status.status === 0 && status.env?.result?.selected?.code === "not-started" && /member records are missing/.test(status.env.result.selected.message ?? ""), shown(status));
   removePreparedSpace("away");
   await new Promise((done) => { awayManager.once("exit", done); awayManager.kill("SIGKILL"); });
   rmSync(awayRecord);

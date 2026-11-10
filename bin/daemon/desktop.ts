@@ -52,9 +52,10 @@ export async function readDesktopRequest(input: Readable): Promise<DesktopReques
   } finally { clearTimeout(timer); }
 }
 
-export interface DesktopBridgeOptions extends Pick<QueryOptions, "paths" | "peerUid" | "peerPid"> {
+export interface DesktopBridgeOptions extends Pick<QueryOptions, "peerUid" | "peerPid"> {
   readonly version: string;
-  readonly daemonHome?: string;
+  /** Resolve only for a valid request that needs the daemon, inside the framed error boundary. */
+  readonly resolveTarget: () => { readonly paths: QueryOptions["paths"]; readonly home?: string };
   readonly input?: Readable;
   readonly output?: Writable;
 }
@@ -74,12 +75,14 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       emit({ v: 1, event: "result", ok: true, result: { version: opts.version, machine: hostname(), platform: platform(), arch: arch(), release: release(), memoryBytes: totalmem() } });
       return;
     }
+    const { paths, home } = opts.resolveTarget();
+    const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     if (req.op === "install") {
       let existing = false;
-      try { planUninstall(opts.paths); existing = true; }
+      try { planUninstall(paths, home); existing = true; }
       catch (e) { if (!(e instanceof CommandFailure) || e.code !== "TARGET_NOT_FOUND") throw e; }
       let answering: Awaited<ReturnType<typeof queryDaemon>> | undefined;
-      try { answering = await queryDaemon(opts); }
+      try { answering = await queryDaemon(client); }
       catch (e) { if (!(e instanceof EndpointRefusal) || e.code !== "NOT_RUNNING") throw e; }
       if (answering !== undefined) {
         if (!existing) throw new CommandFailure("refused", "CONFLICT", "an unowned daemon is already running; no service was installed");
@@ -87,12 +90,12 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         emit({ v: 1, event: "result", ok: true, result: { installed: true, status: answering.result } });
         return;
       }
-      if (existing) startInstalled(opts.paths);
-      else applyInstall(opts.paths, opts.daemonHome);
+      if (existing) startInstalled(paths, home);
+      else applyInstall(paths, home);
       const deadline = Date.now() + 15_000;
       for (;;) {
         try {
-          const status = await queryDaemon(opts);
+          const status = await queryDaemon(client);
           if (!status.ok) throw new Error("daemon refused status");
           if (status.result.version !== opts.version) throw new Error("daemon version mismatch");
           emit({ v: 1, event: "result", ok: true, result: { installed: true, status: status.result } });
@@ -103,7 +106,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
     }
-    const status = await queryDaemon(opts);
+    const status = await queryDaemon(client);
     if (!status.ok) { emit({ ...status, event: "result" }); return; }
     if (req.op === "status") { emit({ ...status, event: "result" }); return; }
     if (status.result.version !== opts.version) {
@@ -111,15 +114,16 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       return;
     }
     if (req.op === "login") {
-      const result = await loginViaDaemon({ ...opts, idp: req.idp, onPrompt: (prompt) => emit({ v: 1, event: "login-prompt", prompt }) });
+      const result = await loginViaDaemon({ ...client, idp: req.idp, onPrompt: (prompt) => emit({ v: 1, event: "login-prompt", prompt }) });
       emit({ v: 1, event: "result", ...result });
       return;
     }
-    const reply = await exchangeDesktopRequest(opts, req);
+    const reply = await exchangeDesktopRequest(client, req);
     emit({ ...reply, event: "result" });
   } catch (e) {
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
     const message = code === "NOT_RUNNING" ? "The daemon is not running. Install its background service first."
+      : code === "NO_RUNTIME_DIR" ? "The daemon runtime path is unavailable or too long. On Linux, check XDG_RUNTIME_DIR for the intended operating-system user."
       : code === "UNSUPPORTED_PLATFORM" ? "This platform does not have the required native daemon support."
       : code === "PEER_UID_MISMATCH" || code === "PEER_NOT_LOCK_OWNER" ? "The local daemon identity could not be verified. The requested change was not sent."
       : "The operation could not be completed. Use the matching cotal daemon command for diagnostics; no success is assumed.";

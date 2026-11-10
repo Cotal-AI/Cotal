@@ -3837,8 +3837,8 @@ as true. A client that knows the space requires events can therefore refuse a co
 
 **Manager inline persona.** The reference manager's `spawn` input takes an optional closed `persona`
 record: `prompt` (required, the persona body), `role`, `model`, `variant`, `description`,
-`subscribe`, `allowSubscribe`, `allowPublish`, `capabilities` and `save`. The top-level `prompt`
-stays the first-turn kickoff. With `persona`, `name` is the helper's name, numbered on a collision
+`subscribe`, `allowSubscribe`, `allowPublish`, `capabilities`, `endpoints` and `save`. The top-level
+`prompt` stays the first-turn kickoff. With `persona`, `name` is the helper's name, numbered on a collision
 as a persona identity is, and the request MUST NOT carry `config` or `identity`. The manager MUST
 read the record as it reads a catalog file: the same validation, the same rule that a record naming
 no channel field takes the caller's default while one that names `[]` takes none, the same
@@ -3850,8 +3850,8 @@ when the lifecycle retires. A static manager whose removal fails keeps the name 
 with the retirement; an open or user-auth manager logs the failure and leaves the file. A spawn
 that names a snapshot as its persona file MUST be refused. With
 `save: true` the manager also writes a create-only catalog copy under the requested name. The copy
-holds the grant that was checked (every channel field named, `[]` included, and the capabilities),
-never the helper's own event channel, plus role, model, variant, description and body. Its owner is
+holds the grant that was checked (every channel field named, `[]` included, the capabilities and the
+endpoint commands), never the helper's own event channel, plus role, model, variant, description and body. Its owner is
 the one `define-persona` would record for the spawner, and for a run's spawn the run's starter, whose
 catalog reads then find it. A name the catalog already holds is refused before anything starts, and a
 refused grant leaves neither file. A copy that loses a create race after that check fails the spawn,
@@ -3863,6 +3863,21 @@ the persona would carry that the definer does not hold under the same delegation
 includes a saved list a redefine keeps by omitting the field. The check and the write MUST see the
 same catalog entry. A spawn of the persona is bounded again against its spawner. Revision 45 of the manager cluster adds both fields; both inputs
 are closed, so a revision-44 contract rejects either.
+`endpoints`, on the inline record, on `define-persona` and in a catalog file, is a list of closed
+`{ endpoint, commands, instanceId? }` entries naming the endpoint commands the helper is handed. The
+manager MUST refuse, whatever the caller's standing, a single-label endpoint (§13.2), a reserved
+command (`describe`, `cancel`), a command that is not a command token, an empty `commands` list and
+any other key. Entries with the same endpoint and instance merge, so the order of the list does not
+change what it grants. Each command lowers to one untargeted, unjournaled caller capability (§13.9):
+on the endpoint's class rail, or with `instanceId` on that instance's rail alone, never the class
+rail. An entry with `instanceId` also lowers to that instance's `describe`, which a call that names
+the instance resolves through and the class baseline does not cover. The delegation bound measures
+every lowered capability (§13.15), the helper's mint grants it, and a renewal grants it again.
+`define-persona` checks `endpoints` against the definer as it checks `capabilities`, a kept list
+included. A user-auth manager MUST refuse a spawn or definition that names `endpoints`, `[]`
+included, because endpoint access there comes from the service owner's caller grants (§13.15).
+Revision 47 of the manager cluster adds `endpoints` to both inputs; both are closed, so a
+revision-46 contract rejects it.
 
 **Effect.** A command declaration carries `effect`, one of `read` or `write`.
 
@@ -5458,14 +5473,37 @@ host's retirement barrier.
 **Delegation bound.** On a static space, a manager that mints a credential for an agent a caller
 spawned MUST first resolve that caller's issued authority and bound the grant it hands on against
 the evidence. The grant is every channel the helper may read, its subscribe set included,
-every channel it may post to, its role, and every capability token. Each part is projected through the agent
+every channel it may post to, its role, every capability token, and every endpoint command its
+persona names (§13.7). Each part is projected through the agent
 mint at the spawner's own coordinate, the projection of an empty grant is subtracted, and every
 remaining row MUST be covered by the evidence's `permissions` with no overlapping deny. A part
 whose projection adds no row is refused, so a token no agent mint maps is never read as an empty
 grant. `run` carries the whole `spawn` set, so a `run` holder may hand on `spawn`. A role, and a
 `role:<r>` token, project to the rows that bind the role's task-queue durable. An agent mint grants
 those rows for the agent's own role and for each `role:<r>` token in its capabilities, so a spawner
-hands on a role it was given either way. The helper's own
+hands on a role it was given either way. An endpoint command projects to the request rows an agent
+mint grants for its caller capability, with the reply rail and, for a goal-bearing command, the
+progress read, so a spawner hands on a command only when its own credential carries the same request
+row; a spawner whose grant pins one instance cannot hand on the class command. An instance-pinned
+entry projects to that instance's request row and its `describe` row, so a spawner hands it on only
+when its credential carries both; a class grant covers neither, and one instance does not cover
+another. This is row containment, not the handle containment of §13.6, which lets a child pin an
+instance under a class grant. A manager minting a helper's standing grant under this bound confers
+no authority in the sense of §13.3: that sentence is about envelope content and the `auth` slot,
+whose conferral exists only as trusted redemption. A static agent mint MUST refuse a third-party
+endpoint capability with a `target` or `journal`, on issue and on renewal: the static lifecycle
+terminal has no obligation drain (§13.1), and an untargeted request keys the `ep` sentinel, which no
+retirement drain reads (the `oblig` record, §13.7), so a retired caller leaves nothing that drain
+would settle. The rule does not cover a reference endpoint (§13.2), which it tells apart by its
+single-label name, whatever command the row names. The reference-endpoint rows an instance-pinned
+caller passes are the manager's own, the ones the `spawn`, `run` and `admin` capabilities carry, and
+the persona field refuses a single-label name, so the hand-on path never reaches that exemption. The static
+terminal revokes the helper's ledger rows and evicts its live connections, but a static credential
+copied off disk before the despawn stays valid until it expires, up to the managed credential's
+lifetime after its last renewal, and can reconnect and call the endpoint commands it carries. This
+is a known gap against the enforced revocation §13.1 requires, the same one every static credential
+has, not a way of meeting it, and handing a helper endpoint commands widens what such a copy can
+call. The helper's own
 event channel is minted after allocation, keyed on a principal that does not exist when the bound
 runs, so it is measured as the spawner's own: a spawn that arms the helper's event plane is within
 only when the evidence permits a publish on the spawner's own event channel. A caller whose
@@ -5479,7 +5517,9 @@ and happens before any name, credential or durable exists. A user-auth space bou
 on its actor ledger, at the managed row's write and at every bearer exchange. There a scope token is
 within when the spawner's scope lists it, or when it is `spawn` and the scope lists `run`, and a
 role needs the spawner's scope to list `role:<r>`. On a user-auth space a `role:<r>` scope token
-mints no task-queue row: the agent binds only its row's own role.
+mints no task-queue row: the agent binds only its row's own role. Endpoint commands are not part of
+a user-auth grant: endpoint access there comes from the service owner's caller grants, which a spawn
+cannot write, so the manager refuses a persona that names `endpoints` (§13.7).
 
 **Compatibility.** A command whose semantics require the binding (this revision: `run-start`
 and `run-cancel`, §14.8, and `run-start-keyed` and `run-submission-status`, §14) MUST refuse a legacy-rail request
@@ -6467,7 +6507,7 @@ addressed notices and is not channel publication; turn keeps its separately chec
 authority.
 
 **Spawn.** On a static mesh every spawn a hosted run makes is bounded by its admission (§13.15's
-spawn bound): the helper's channels, role, capabilities and own event plane must be held by `ceiling` at
+spawn bound): the helper's channels, role, capabilities, endpoint commands and own event plane must be held by `ceiling` at
 the admitted caller's coordinate, so a grant the caller gained after admission is never handed on.
 `spawnExempt: true` is written at admission when the caller's evidence then classified it as an
 operator instrument or as holding the admin set, and the run's spawns are then exempt, as that
@@ -6575,6 +6615,11 @@ recorded program, which is the value the run list carries for that run. It is re
 program record alone. It is absent when the run has no recorded program. A program record that
 cannot be read or parsed MUST be reported as `programUnreadable: string`, with no `programHash`,
 and never as a hash or as an absent program.
+
+An open checkpoint's journal step row MAY carry `schema`, the uninterpreted value recorded with
+its question. A status reader MUST preserve a recorded schema, including an empty record or
+`null`, and MUST NOT infer one from the program when the entry recorded none. This field provides
+answer guidance and does not impose checkpoint answer validation.
 
 A `run-status` request MAY carry `journal: { offset }`, a row offset into the journal. The reply
 then carries `journalTotal`, the journal's row count, and its `journal` holds the rows from
@@ -7093,6 +7138,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-09 | **A spawner hands on endpoint commands it holds (§13.7, §13.15, §14.8).** A persona's `endpoints` list names `{ endpoint, commands, instanceId? }` entries on the inline `spawn` record, on `define-persona` and in a catalog file. On a static space each command lowers to an untargeted caller capability, on the class rail or, with `instanceId`, on that instance's rail alone plus that instance's `describe`; the delegation bound measures it against the spawner's issued evidence (a run's spawn against its admission's ceiling), and the helper's mint and renewals grant it. A static agent mint refuses a targeted or journaled endpoint capability, because the static terminal has no obligation drain, and a copied static credential's reach until expiry is named as a known gap. A single-label endpoint and a reserved command are refused. A user-auth manager refuses the field, `[]` included. Manager cluster revision 47. |
 | 2026-11-09 | **A spawn result says when its seat is not woken by mesh traffic (§13.6 item 6), additive.** A connector MAY declare that an idle seat is woken only after a confirmed startup. A plain spawn of such a seat whose startup watch ended `ready` succeeds, and its result's `startupNotice` carries the connector's clause; the seat's `ps` row carries the same field. A `once` spawn of such a seat is refused as before. A reader that does not read `startupNotice` sees an ordinary success. |
 | 2026-11-03 | **History limits for DMs and the backstop, and none (§4, §8).** `DM_<space>` gets a history limit like the chat stream's, with no age limit and no count limit by default, and unicast is at-least-once within it. Either part of a limit may be none (`max_age` 0, `max_msgs_per_subject` -1), and a reader MUST accept any limit an operator may set. In the reference the INBOX and DLV streams share an operator-set limit with a 2-hour age floor and 1000 per lifecycle by default, the trusted writer stamps each DLV copy with the count it wrote under (`Cotal-Delivery-Limit`, 1000 when absent), and the stored-copies notice compares against that stamp. |
 | 2026-11-03 | **A participant that reads presence on demand reads the channel registry on demand (§7, Appendix B), additive.** It reads with batched Direct Gets, which bind no consumer, before it shows the registry and before it resolves a join's or leave's delivery class. The agent's `$JS.API.DIRECT.GET.<CHKV>` row now also serves this read. |

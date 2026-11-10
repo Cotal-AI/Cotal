@@ -120,6 +120,9 @@ export interface Orientation {
   };
   /** Control-plane capabilities (e.g. `spawn`). Empty ⇒ none beyond the defaults granted to all. */
   capabilities: string[];
+  /** Endpoint commands this session was handed at launch, `<endpoint> <command>` (plus the instance
+   *  for a pinned entry). Launch metadata: `cotal_endpoints` lists what the credential's grants cover. */
+  endpoints: string[];
   /** The tools available to you, grouped so the surface reads small: `core` is the everyday loop. */
   tools: { core: OrientationTool[]; more: OrientationTool[] };
   peers: { present: number; summary: string };
@@ -227,6 +230,7 @@ export function buildOrientation(
         }),
     },
     capabilities: config.capabilities ?? [],
+    endpoints: (config.endpoints ?? []).flatMap((e) => e.commands.map((c) => `${e.endpoint} ${c}${e.instanceId !== undefined ? ` (instance ${e.instanceId})` : ""}`)),
     tools: { core, more },
     peers: { present: peers.length, summary },
     presence: presenceLiveness(agent, read),
@@ -272,6 +276,7 @@ export function renderOrientation(o: Orientation): string {
   lines.push(
     `  • post: ${o.access.post.length ? fmt(o.access.post) : "— (read-only; no post channels)"}`,
     `  • capabilities: ${o.capabilities.length ? o.capabilities.join(", ") : "none beyond defaults"}`,
+    ...(o.endpoints.length ? [`  • endpoint commands handed at launch: ${o.endpoints.join(", ")} (cotal_endpoints lists what your credential's grants cover${o.endpoints.some((e) => e.includes("(instance ")) ? "; pass a command's instance to cotal_describe and cotal_invoke as instance" : ""})`] : []),
     "",
     `Tools — core loop: ${o.tools.core.map((t) => t.name).join(", ") || "—"}`,
     `Tools — more: ${o.tools.more.map((t) => t.name).join(", ") || "—"}`,

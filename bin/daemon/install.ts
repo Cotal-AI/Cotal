@@ -31,7 +31,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { CommandFailure } from "@cotal-ai/workspace";
@@ -124,6 +124,7 @@ export function renderDaemonUnit(unitDirectory: string, daemonHome: string | und
     "[Service]",
     "Type=simple",
     `Environment=PATH=${unitValue(pinnedPath())}`,
+    "Environment=COTAL_DAEMON_NATIVE_SERVICE=1",
     `ExecStart=${argv.map((part) => unitValue(part, true)).join(" ")}`,
     "Restart=always",
     "RestartSec=2",
@@ -195,6 +196,7 @@ export interface NativeService {
   register(plan: NativePlan): void;
   check(receipt: UnitReceipt): void;
   start(receipt: UnitReceipt): void;
+  restart(receipt: UnitReceipt): void;
   remove(receipt: UnitReceipt): void;
 }
 
@@ -209,7 +211,7 @@ function nativeService(): NativeService | undefined {
 /** One bounded `loginctl` read or mutation for the invoking user. */
 function loginctl(args: readonly string[]): { status: number | null; stdout: string } {
   const result = spawnSync("loginctl", [...args, "--no-ask-password", "--no-pager"], { encoding: "utf8", timeout: 15_000, maxBuffer: 32 * 1024, stdio: ["ignore", "pipe", "pipe"] });
-  if (result.error || result.signal) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "loginctl did not answer; linger could not be established and no unit was written");
+  if (result.error || result.signal) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "loginctl did not answer; linger could not be established", { remedy: "make loginctl available on PATH and run from a logged-in session where it can reach systemd-logind, then retry" });
   return { status: result.status, stdout: typeof result.stdout === "string" ? result.stdout : "" };
 }
 
@@ -323,7 +325,7 @@ export interface UninstallPlan {
 }
 
 /** The recorded unit, refused unless this OS runs its mechanism and its source and job are unchanged. */
-function recordedUnit(paths: DaemonPaths): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined } {
+function recordedUnit(paths: DaemonPaths, daemonHome: string | undefined): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined } {
   const service = nativeService();
   const receipt = readReceipt(paths);
   if (!receipt) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this daemon has no installed unit recorded by `cotal daemon install`; nothing was removed");
@@ -334,6 +336,9 @@ function recordedUnit(paths: DaemonPaths): { receipt: UnitReceipt; plan: Uninsta
   if (mechanism === "scheduled-task" && receipt.unitPath !== join(paths.state, "service-task.xml")) throw new CommandFailure("refused", "CONFLICT", "the scheduled-task receipt names a definition outside this daemon state; nothing was changed");
   if (service) service.check(receipt);
   else {
+    const unit = daemonUnitName(daemonHome);
+    if (receipt.daemonHome !== daemonHome || receipt.unit !== unit || receipt.unitPath !== join(systemdUserUnitDirectory(), unit))
+      throw new CommandFailure("refused", "CONFLICT", "the systemd receipt does not name this daemon home's unit in the user manager's unit directory; nothing was changed");
     try { assertSystemdSource(receipt.unitPath, receipt.unitSha256); }
     catch { throw new CommandFailure("refused", "CONFLICT", `${receipt.unitPath} is not the unit this daemon installed; nothing was removed`); }
   }
@@ -341,15 +346,74 @@ function recordedUnit(paths: DaemonPaths): { receipt: UnitReceipt; plan: Uninsta
 }
 
 /** The exact recorded unit `uninstall` would remove, refusing a receipt that no longer matches. */
-export function planUninstall(paths: DaemonPaths): UninstallPlan {
-  return recordedUnit(paths).plan;
+export function planUninstall(paths: DaemonPaths, daemonHome: string | undefined): UninstallPlan {
+  return recordedUnit(paths, daemonHome).plan;
 }
 
 /** Start only the recorded, unchanged service. This does not restart an already-running daemon. */
-export function startInstalled(paths: DaemonPaths): UninstallPlan {
-  const { receipt, plan, service } = recordedUnit(paths);
+export function startInstalled(paths: DaemonPaths, daemonHome: string | undefined): UninstallPlan {
+  const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) service.start(receipt);
   else submitSystemdUnitControl("start", plan.unit);
+  return plan;
+}
+
+/** The executable and entry pinned by the verified native source, compared with this CLI. */
+export function installedDaemonIdentity(paths: DaemonPaths, daemonHome?: string): { same: boolean; installed: string; current: string } {
+  const { receipt, plan } = recordedUnit(paths, daemonHome);
+  const bytes = readFileSync(receipt.unitPath);
+  const decode = (value: string) => value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
+  let argv: string[];
+  if (plan.mechanism === "systemd-user") {
+    const line = /^ExecStart=(.*)$/m.exec(bytes.toString("utf8"))?.[1];
+    if (!line) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon unit has no readable executable and entry");
+    argv = [...line.matchAll(/"((?:\\.|[^"\\])*)"|([^\s"]+)/g)].map(match => (match[1] ?? match[2]!).replace(/\\([\\"])/g, "$1").replaceAll("%%", "%").replaceAll("$$", "$"));
+  } else if (plan.mechanism === "launchd-agent") {
+    const array = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(bytes.toString("utf8"))?.[1] ?? "";
+    argv = [...array.matchAll(/<string>([^<]*)<\/string>/g)].map(match => decode(match[1]!));
+  } else {
+    const text = bytes.subarray(2).toString("utf16le");
+    const executable = decode(/<Command>([^<]*)<\/Command>/.exec(text)?.[1] ?? "");
+    const args = decode(/<Arguments>([^<]*)<\/Arguments>/.exec(text)?.[1] ?? "");
+    argv = [executable, ...[...args.matchAll(/"([^"]*)"|(\S+)/g)].map(match => match[1] ?? match[2]!)];
+  }
+  const expected = daemonServeArgv(receipt.daemonHome);
+  const coordinate = (args: string[]) => {
+    const daemon = args.indexOf("daemon");
+    const entry = daemon >= 2 ? args[daemon - 1]! : args[0]!;
+    return { executable: args[0], entry };
+  };
+  const installed = coordinate(argv), current = coordinate(expected);
+  // launchd pins the adjacent cwd bootstrap instead of cotal.js itself.
+  if (plan.mechanism === "launchd-agent") installed.entry = argv[argv.indexOf("daemon") - 2]!.replace(/daemon-cwd\.js$/, "cotal.js");
+  if (plan.mechanism === "scheduled-task") installed.entry = installed.entry.replace(/daemon-native\.js$/, "cotal.js");
+  if (!installed.executable || !installed.entry) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon installation could not be identified");
+  const canonical = (path: string) => { try { return realpathSync(path); } catch { return path; } };
+  return { same: canonical(installed.executable) === canonical(current.executable!) && canonical(installed.entry) === canonical(current.entry), installed: `${installed.executable} ${installed.entry}`, current: `${current.executable} ${current.entry}` };
+}
+
+/** A native launch marker is trusted only with this installation's verified recorded source. */
+export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string): boolean {
+  if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return false;
+  try {
+    if (!installedDaemonIdentity(paths, daemonHome).same) return false;
+    const { receipt, plan } = recordedUnit(paths, daemonHome);
+    const source = readFileSync(receipt.unitPath).toString(plan.mechanism === "scheduled-task" ? "utf16le" : "utf8");
+    return plan.mechanism === "systemd-user" ? source.includes("Environment=COTAL_DAEMON_NATIVE_SERVICE=1")
+      : plan.mechanism === "launchd-agent" ? source.includes("<key>COTAL_DAEMON_NATIVE_SERVICE</key><string>1</string>")
+      : source.includes("daemon-native.js");
+  } catch { return false; }
+}
+
+/** Restart only the source and native job recorded for this daemon. */
+export function restartInstalled(paths: DaemonPaths, daemonHome?: string): UninstallPlan {
+  const { receipt, plan, service } = recordedUnit(paths, daemonHome);
+  if (service) service.restart(receipt);
+  else {
+    submitSystemdUnitControl("stop", plan.unit);
+    const result = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "start", plan.unit]);
+    if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the native daemon start did not confirm completion (${result.detail}); it was not retried`, { target: { unit: plan.unit }, remedy: "correct the native service error, then run cotal daemon start" });
+  }
   return plan;
 }
 
@@ -359,8 +423,8 @@ export interface UninstallResult extends UninstallPlan {
 
 /** Stop it, disable autostart, remove the unit and its receipt, and reload the user manager (on
  *  macOS and Windows, the adapter's own stop and deregistration). */
-export function applyUninstall(paths: DaemonPaths): UninstallResult {
-  const { receipt, plan, service } = recordedUnit(paths);
+export function applyUninstall(paths: DaemonPaths, daemonHome: string | undefined): UninstallResult {
+  const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) {
     service.remove(receipt);
     rmSync(unitReceiptFile(paths), { force: true });
