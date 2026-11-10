@@ -24,6 +24,8 @@
  *      disconnect a restart resumes nothing;
  *  C7  outage: with the authority door unreachable, a fresh connect is not `connected`; once the
  *      door is back it is `connected` again;
+ *  C7b a changed authority account stays account-mismatch in the socket, CLI and offline status,
+ *      with no POST or changed identity or request; restoring the account reconnects;
  *  C8  terminal: the owner revokes; the state becomes `ended approval-revoked`, never connected again;
  *  C9  daemon shutdown: the socket is gone and nothing answers;
  *  C10 no IdP session, JWT, access bearer or renewal proof in any frame or CLI output;
@@ -43,6 +45,7 @@
  *      restoring the original record recovers serving under the same request ids.
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
+ * Account pin regression only: add --account-mismatch-only (C1, C2, C7b and C10).
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
@@ -106,6 +109,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--hosting-only") && !title.startsWith("H1")) return;
+  if (process.argv.includes("--account-mismatch-only") && !/^(C1 |C2 |C7b |C10 )/.test(title)) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
 }
@@ -200,6 +204,7 @@ const idpUrl = `${idpOrigin}/api/auth`;
 const hits: Array<{ space: string; method: string; path: string }> = [];
 /** C7: spaces whose authority door the relay drops, as an unreachable auth service. */
 const relayDown = new Set<string>();
+const changedAccount = new Map<string, string>();
 const withoutIssuer = new Set<string>();
 async function relay(space: string, target: string): Promise<string> {
   const s = createHttpServer(async (req, res) => {
@@ -213,6 +218,11 @@ async function relay(space: string, target: string): Promise<string> {
     const headers: Record<string, string> = {};
     up.headers.forEach((v, k) => { if (k !== "content-length" && k !== "transfer-encoding") headers[k] = v; });
     let body = Buffer.from(await up.arrayBuffer());
+    if (changedAccount.has(space) && req.method === "GET" && req.url === "/service-endpoint-authority" && up.ok) {
+      const info = JSON.parse(body.toString()) as Record<string, unknown>;
+      info.accountPublicKey = changedAccount.get(space);
+      body = Buffer.from(JSON.stringify(info));
+    }
     if (withoutIssuer.has(space) && req.method === "GET" && req.url === "/service-endpoint-authority" && up.ok) {
       const info = JSON.parse(body.toString()) as Record<string, unknown>;
       delete info.issuer; delete info.keys;
@@ -345,6 +355,19 @@ try {
   const connectS = (space: string) => askLogged({ op: "service-connect", space }, 90_000);
   const statusS = (space: string) => askLogged({ op: "service-status", space });
   const disconnectS = (space: string) => askLogged({ op: "service-disconnect", space });
+  const cli = async (argv: string[], format: "--plain" | "--json" = "--json") => {
+    const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", ...argv, format], {
+      cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
+      stdio: ["ignore", "pipe", "pipe"], timeout: 90_000, killSignal: "SIGKILL",
+    });
+    let out = "", err = "";
+    child.stdout.on("data", (b) => { out += String(b); });
+    child.stderr.on("data", (b) => { err += String(b); });
+    const status = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
+    frames.push(out, err);
+    const doc = format === "--json" ? JSON.parse(out) as Record<string, any> : undefined;
+    return { status, doc, out, err };
+  };
   const stateOf = (f: Frame) => resultOf(f).state as string | undefined;
   const waitState = async (space: string, want: (s: string | undefined) => boolean, ms = 60_000) => {
     const t0 = Date.now(); let last: string | undefined;
@@ -1600,6 +1623,38 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       }
     });
 
+    await cell("C7b account mismatch survives service connection and CLI presentation", async () => {
+      check("C7b instrument: connected and independently ready before the account change",
+        stateOf(await connectS(ON)) === "connected" && await instanceStatus(ON) === "ready");
+      await disconnectS(ON);
+      const records = ["service-identity.json", "register-request.json"].map((name) => join(home, "daemon", spaceSegment(ON), name));
+      const before = records.map((path) => readFileSync(path));
+      const beforePosts = posts(ON);
+      changedAccount.set(ON, accounts[2]!.account.pub);
+      try {
+        const checkResult = resultOf(await askLogged({ op: "connect-check", space: ON }));
+        const connection = resultOf(await connectS(ON));
+        check("C7b socket preserves account-mismatch and the readiness explanation",
+          checkResult.outcome === "account-mismatch" && connection.state === "account-mismatch" && connection.message === checkResult.message, connection);
+        check("C7b offline status retains account-mismatch", stateOf(await statusS(ON)) === "account-mismatch");
+        const plain = await cli(["service-connect", "--space", ON], "--plain");
+        check("C7b plain CLI names CONFLICT and native ACCOUNT_MISMATCH with the account explanation",
+          plain.status === 2 && /Code:\s+CONFLICT/.test(plain.err) && /Native code:\s+ACCOUNT_MISMATCH/.test(plain.err)
+          && plain.err.includes(String(checkResult.message)), plain);
+        for (const op of ["service-connect", "service-status"]) {
+          const json = await cli([op, "--space", ON]);
+          const doc = json.doc!;
+          check(`C7b JSON ${op} names CONFLICT and native ACCOUNT_MISMATCH`, json.status === 2 && doc.outcome === "refused"
+            && doc.error?.code === "CONFLICT" && doc.error?.cause?.code === "ACCOUNT_MISMATCH"
+            && String(doc.error?.message).startsWith(String(checkResult.message)), doc);
+        }
+        check("C7b no registration or credential POST reached the changed account", posts(ON) === beforePosts);
+        check("C7b pinned identity and register request remain byte-identical", records.every((path, i) => readFileSync(path).equals(before[i]!)));
+      } finally { changedAccount.delete(ON); }
+      check("C7b restoring the account reconnects and the space reads ready",
+        stateOf(await connectS(ON)) === "connected" && await instanceStatus(ON) === "ready");
+    });
+
     await cell("C8 the owner revokes: ended, never connected again", async () => {
       check("C8 instrument: connected before the revoke", stateOf(await connectS(ON)) === "connected");
       const id = identityOf(ON)!;
@@ -1623,28 +1678,16 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
     });
 
     await cell("C11 the CLI through the composition root", async () => {
-      const cli = async (...argv: string[]) => {
-        const child = spawn(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "bin", "cotal.ts"), "daemon", ...argv, "--json"], {
-          cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
-        });
-        let out = "", err = "";
-        child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
-        const status = await Promise.race([new Promise<number | null>((r) => child.once("exit", (c) => r(c))), sleep(90_000).then(() => { child.kill("SIGKILL"); return -1; })]);
-        frames.push(out, err);
-        let doc: Record<string, any> = {};
-        try { doc = JSON.parse(out) as Record<string, any>; } catch { /* reported */ }
-        return { status, doc, out };
-      };
-      const st = await cli("service-status", "--space", ON);
+      const st = await cli(["service-status", "--space", ON]);
       // The owner revoked in C8, so the restart's own resume cannot reach connected: a revoked
       // registration is refused however the connect was started.
-      check("C11 after a daemon restart `service-status` for the revoked registration is not connected, exit 2", st.status === 2 && st.doc.result === null && st.doc.error?.code !== undefined && st.doc.error.code !== "OK", { status: st.status, out: st.out.slice(0, 400) });
-      const re = await cli("service-connect", "--space", ON);
-      check("C11 `service-connect` for the revoked registration refuses (exit 2) and never connects", re.status === 2 && re.doc.outcome === "refused" && re.doc.result === null, { status: re.status, out: re.out.slice(0, 400) });
-      const off = await cli("service-connect", "--space", OFF);
-      check("C11 `service-connect` with no register request refuses TARGET_NOT_FOUND (exit 2)", off.status === 2 && off.doc.error?.code === "TARGET_NOT_FOUND" && off.doc.error?.cause?.code === "NOT_REQUESTED", { status: off.status, out: off.out.slice(0, 400) });
-      const dis = await cli("service-disconnect", "--space", OFF);
-      check("C11 `cotal daemon service-disconnect` answers disconnected (exit 0)", dis.status === 0 && dis.doc.result?.state === "disconnected", { status: dis.status, out: dis.out.slice(0, 400) });
+      check("C11 after a daemon restart `service-status` for the revoked registration is not connected, exit 2", st.status === 2 && st.doc!.result === null && st.doc!.error?.code !== undefined && st.doc!.error.code !== "OK", { status: st.status, out: st.out.slice(0, 400) });
+      const re = await cli(["service-connect", "--space", ON]);
+      check("C11 `service-connect` for the revoked registration refuses (exit 2) and never connects", re.status === 2 && re.doc!.outcome === "refused" && re.doc!.result === null, { status: re.status, out: re.out.slice(0, 400) });
+      const off = await cli(["service-connect", "--space", OFF]);
+      check("C11 `service-connect` with no register request refuses TARGET_NOT_FOUND (exit 2)", off.status === 2 && off.doc!.error?.code === "TARGET_NOT_FOUND" && off.doc!.error?.cause?.code === "NOT_REQUESTED", { status: off.status, out: off.out.slice(0, 400) });
+      const dis = await cli(["service-disconnect", "--space", OFF]);
+      check("C11 `cotal daemon service-disconnect` answers disconnected (exit 0)", dis.status === 0 && dis.doc!.result?.state === "disconnected", { status: dis.status, out: dis.out.slice(0, 400) });
     });
 
     await cell("C10 nothing secret crosses the endpoint or the CLI", async () => {

@@ -128,7 +128,7 @@ export type RegisterResult =
  *  accepted the service connection AND the space accepted it as ready. Every `message` is fixed text,
  *  and `reason` is a fixed stock code (or `unrecognized`). */
 export type ServiceConnectionState =
-  | "not-requested" | "not-registered" | "not-signed-in" | "unsupported" | "approval-pending" | "refused" | "conflict"
+  | "not-requested" | "not-registered" | "not-signed-in" | "unsupported" | "approval-pending" | "refused" | "account-mismatch" | "conflict"
   | "connecting" | "connected" | "unavailable" | "ended" | "disconnected" | "local-state-error";
 export interface ServiceConnectionResult {
   readonly manager?: HostedManager;

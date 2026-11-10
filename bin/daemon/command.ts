@@ -279,7 +279,7 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
       : r.state === "unsupported" ? "UNSUPPORTED"
       : r.state === "not-signed-in" ? "AUTH_REQUIRED"
       : r.state === "refused" || r.state === "ended" ? "PERMISSION_DENIED"
-      : r.state === "conflict" || r.state === "local-state-error" ? "CONFLICT"
+      : r.state === "account-mismatch" || r.state === "conflict" || r.state === "local-state-error" ? "CONFLICT"
       : r.state === "approval-pending" || r.state === "connecting" ? "LIFECYCLE_BLOCKED"
       : r.state === "disconnected" ? "TARGET_UNAVAILABLE"
       : "DEPENDENCY_UNAVAILABLE";
