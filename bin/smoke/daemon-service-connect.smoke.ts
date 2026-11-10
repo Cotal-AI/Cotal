@@ -684,8 +684,17 @@ const cmd=JSON.parse(process.env.COTAL_BEARER_CMD); const bearer=()=>new Promise
 const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(process.env.COTAL_SENTINEL_CREDS,'utf8'),lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,card:{owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,name:process.env.COTAL_NAME,kind:'agent'}});ep.on('error',()=>{});await ep.start();`);
       writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],${process.argv.includes("--dashboard-shape-repro") ? 'eventChannel: p=>"events."+p.owner+"."+p.actor,' : ""}buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
       writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: process.argv.includes("--dashboard-shape-repro") }] }] }));
-      if (process.argv.includes("--hosted-seed-repro")) rmSync(prefix, { recursive: true });
+      const cleanSeed = process.argv.includes("--hosted-seed-repro") || process.argv.includes("--daemon-seed-repro");
+      if (cleanSeed) rmSync(prefix, { recursive: true });
+      else if (!upgrading) {
+        const seed = join(root, "config", "cotal", "seed");
+        mkdirSync(seed, { recursive: true, mode: 0o700 });
+        for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: ["claude", "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
+        writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: fixtureVersion }));
+        writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: fixtureVersion }));
+      }
       const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+      if (process.argv.includes("--daemon-seed-repro")) env.COTAL_ALLOW_CHECKOUT_SEED = "1";
       if (process.argv.includes("--hosted-seed-repro")) {
         delete env.COTAL_SKIP_CONNECTOR_SEED;
         env.COTAL_ALLOW_CHECKOUT_SEED = "1";
@@ -795,6 +804,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--daemon-seed-repro")) {
+          const installed = existsSync(join(prefix, "extensions.json")) ? JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions : [];
+          check("3A daemon reconciles seven stock packages even when setup skips first-use seed", installed.filter((entry: { source?: string }) => entry.source === "seeded").length === 7, installed);
+          return;
+        }
         if (process.argv.includes("--dashboard-shape-repro")) {
           const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
           const options = standaloneConnectOpts(target.auth.creds ? { creds: target.auth.creds, tls: false } : { bearer: target.auth.bearer!, sentinelCreds: target.auth.sentinelCreds!, tls: false });
@@ -1094,6 +1108,25 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             check("U2 update waits for both hosted Managers to answer again", secondAfter.state === "answering");
           } else {
             await npmRun(["install", "-g", "--prefix", globalPrefix, "--ignore-scripts", join(upgradeFixture!, "cotal-ai-0.151.3.tgz")]);
+            if (process.argv.includes("--generation-cold-seed-repro")) {
+              const payload = join(globalPrefix, "lib/node_modules/cotal-ai/seeded-connectors/claude");
+              renameSync(payload, `${payload}.held`);
+              try {
+                await sleep(8000);
+                const held = await cli("status", "--space", ON);
+                const row = held.doc.result?.managers?.[0];
+                check("3A replacement restarts before reconcile and refuses stale connectors without an old Manager", held.doc.result?.version === "0.151.3" && row?.state === "refused" && row?.pid === undefined && /reconcil|seed/i.test(String(row?.reason)), held);
+              } finally { renameSync(`${payload}.held`, payload); }
+              // Recovery must happen on the daemon's backed-off retry, without another setup.
+              let recovered: Awaited<ReturnType<typeof cli>> | undefined;
+              for (let i = 0; i < 240; i++) {
+                recovered = await cli("status", "--space", ON);
+                if (recovered.doc.result?.managers?.[0]?.state === "answering") break;
+                await sleep(500);
+              }
+              check("3A failed startup reconciliation retries into an answering new-generation Manager", recovered?.doc.result?.version === "0.151.3" && recovered?.doc.result?.managers?.[0]?.state === "answering", recovered);
+              return;
+            }
             if (connectorUpgrade) {
               const payload = join(globalPrefix, "lib/node_modules/cotal-ai/seeded-connectors/claude");
               renameSync(payload, `${payload}.held`);

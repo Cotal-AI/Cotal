@@ -34,7 +34,7 @@ import { applyInstall, applyUninstall, daemonStartedByOwnedService, planInstall,
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runSetup } from "./setup.js";
 import { forgetHostedManagerIntents } from "./manager.js";
-import { reconcileInstalledGeneration, watchDaemonGeneration } from "./generation.js";
+import { watchDaemonGeneration } from "./generation.js";
 import type { ConnectCheckResult, DaemonStatus, LoginResult, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
@@ -392,8 +392,8 @@ async function serve(args: ParsedArgs): Promise<void> {
       const occupied = seats.filter((row) => row.seats > 0);
       if (occupied.length) throw new Error(`waiting for ${occupied.reduce((sum, row) => sum + row.seats, 0)} seat(s) on ${occupied.map((row) => row.space).join(", ")}`);
       await running.prepareGenerationRestart();
-      try { await reconcileInstalledGeneration(); }
-      catch (error) { await running.abortGenerationRestart(); throw error; }
+      // The new daemon reconciles before it launches any Manager. The old generation never
+      // mutates the shared connector store or reopens admission over a partial replacement.
       process.stderr.write(`daemon: installed CLI ${version} validated; stopping owned children for native service restart\n`);
       stopWatching();
       await running.close();

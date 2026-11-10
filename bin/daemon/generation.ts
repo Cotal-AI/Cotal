@@ -2,7 +2,26 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { globalConfigDir } from "@cotal-ai/core";
 import { fileURLToPath } from "node:url";
+
+export function installedGenerationVersion(): string {
+  const pkg = JSON.parse(readFileSync(packageFile(), "utf8"));
+  if (typeof pkg.version !== "string" || !pkg.version) throw new Error("the daemon's CLI version is not identifiable");
+  return pkg.version;
+}
+
+export async function reconcileHostedConnectors(version: string): Promise<void> {
+  try {
+    const stamp = JSON.parse(readFileSync(join(globalConfigDir(), "seed", "stamp.json"), "utf8"));
+    if (stamp?.generation === version) return;
+  } catch (error) {
+    if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  // A replaced executable cannot reconcile the shared store for an old in-memory generation.
+  if (installedGenerationVersion() !== version) throw new Error("the installed CLI changed; wait for the daemon's recorded service to activate it");
+  await reconcileInstalledGeneration();
+}
 
 function packageFile(): string {
   let dir = dirname(fileURLToPath(import.meta.url));

@@ -9,6 +9,7 @@ import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
 import { loadIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { findMesh, homeCotalDir, resolveControlTarget, spaceFromSegment, spaceSegment } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
+import { installedGenerationVersion, reconcileHostedConnectors } from "./generation.js";
 import type { HostedManager } from "./protocol.js";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
@@ -42,7 +43,10 @@ interface Live {
   failures: number;
 }
 
-export function createHostedManagers(home = homeCotalDir()) {
+export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion()) {
+  let reconcileTask: Promise<void> | undefined;
+  const reconcile = () => reconcileTask ??= reconcileHostedConnectors(version).finally(() => { reconcileTask = undefined; });
+  const connectors = (data: unknown): HostedManager["connectors"] => (data as { connectors?: HostedManager["connectors"] } | undefined)?.connectors;
   const live = new Map<string, Live>();
   let closed = false;
   let generationPending = false;
@@ -114,7 +118,7 @@ export function createHostedManagers(home = homeCotalDir()) {
     try {
       const reply = await Promise.race([probe(space, selected), new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("the pinned Manager status probe did not answer within 3500ms")), 3500); })]);
       if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager did not answer status");
-      if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "answering", reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+      if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
     } catch (error) {
       if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "starting", reason: safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500), observedAt: new Date().toISOString(), next: `inspect cotal daemon status --space ${space}; restore its connection, then run cotal daemon setup --space ${space}` };
     } finally { if (deadline) clearTimeout(deadline); }
@@ -138,7 +142,7 @@ export function createHostedManagers(home = homeCotalDir()) {
           }
           const reply = await probe(l.view.space, selected);
           if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager did not answer status");
-          if (current()) l.view = { ...l.view, state: "answering", reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+          if (current()) l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
         } catch (error) {
           if (!current()) return;
           l.view = { ...l.view, state: "starting", reason: safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500), observedAt: new Date().toISOString(), next: `inspect cotal daemon status --space ${l.view.space}; restore the Manager connection or stop its seats before running cotal daemon setup --space ${l.view.space}` };
@@ -206,6 +210,22 @@ export function createHostedManagers(home = homeCotalDir()) {
     if (!entry) return refuse(l, "this space is no longer registered on this machine", `run cotal daemon setup --space ${space} --idp <url> to discover it again`);
     if (entry.mode !== "user" || entry.userAuth?.remote !== true) return refuse(l, "hosted Managers require a registered user-auth participant space", "use cotal manager start from the folder that hosts the space");
     if (!loadIdpSession(home, entry.userAuth.idp.url)) return refuse(l, "the daemon has no sign-in for this space's provider", `run cotal daemon login --idp ${entry.userAuth.idp.url}, then cotal daemon setup --space ${space}`);
+    try { await reconcile(); }
+    catch (error) {
+      const reason = `hosted connector reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
+      refuse(l, reason, "correct the connector cause, run cotal ext seed --repair with the daemon's installed CLI, then retry setup; the daemon will retry automatically");
+      if (!closed && !l.stopping && !generationPending) {
+        const delay = Math.min(300_000, 5000 * 2 ** Math.min(l.failures++, 6));
+        l.timer = setTimeout(() => {
+          l.timer = undefined;
+          if (closed || l.stopping || generationPending) return;
+          l.starting = launch(l).catch((cause) => refuse(l, String(cause), `correct the cause and run cotal daemon setup --space ${space}`)).finally(() => { l.starting = undefined; });
+        }, delay);
+        l.timer.unref();
+      }
+      return { ...l.view };
+    }
+    if (closed || generationPending || l.stopping) return l.view;
     const root = daemonManagerRoot(space, home);
     mkSecretDir(root); mkSecretDir(join(root, ".cotal"));
     writeDefaultPersonaForLaunch(root);
@@ -307,7 +327,7 @@ export function createHostedManagers(home = homeCotalDir()) {
             const path = daemonManagerIntentFile(space, home);
             writeSecretFileAtomic(path, JSON.stringify({ v: 1, space }));
             rmSync(refusalFile(space), { force: true });
-            l.view = { ...l.view, state: "answering", reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+            l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
             l.failures = 0;
             observe(l);
             return { ...l.view };
@@ -339,7 +359,7 @@ export function createHostedManagers(home = homeCotalDir()) {
         if (closed || l.stopping || !l.child) throw new Error("the hosted Manager is stopping");
         writeSecretFileAtomic(daemonManagerIntentFile(space, home), JSON.stringify({ v: 1, space }));
         rmSync(refusalFile(space), { force: true });
-        l.view = { ...l.view, state: "answering", reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+        l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
       } catch (error) {
         l.view = { ...l.view, state: "starting", reason: error instanceof Error ? safeDiagnostic(error.message).slice(0, 1500) : "the hosted Manager did not answer status", next: `read cotal daemon status --space ${space}; correct its connection or restart the daemon`, observedAt: new Date().toISOString() };
       }
