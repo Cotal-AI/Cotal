@@ -93,6 +93,10 @@ try {
   recordMesh({ space: "saved-local", server: "nats://127.0.0.1:4222", mode: "open", root, ts: new Date().toISOString() });
   const savedList = await request({ op: "spaces", refresh: true });
   check("unsigned-in desktop refresh retains saved spaces", savedList.ok === true && savedList.result.refresh === "not-signed-in" && savedList.result.spaces[0]?.space === "saved-local");
+  check("local spaces omit catalog kind and role", !("kind" in savedList.result.spaces[0]) && !("role" in savedList.result.spaces[0]));
+  recordMesh({ space: "saved-local", server: "nats://127.0.0.1:4222", mode: "open", root, ts: new Date().toISOString(), catalogId: "sp_saved", catalogKind: "personal", catalogRole: "owner" });
+  const metadata = await request({ op: "spaces" });
+  check("desktop reply carries saved catalog kind and role", metadata.ok === true && metadata.result.spaces[0]?.kind === "personal" && metadata.result.spaces[0]?.role === "owner");
   for (const flags of [[], ["--plain"]]) {
     const refused = await request({}, { cli: ["spaces", "--refresh", ...flags], exit: 2 });
     check(`unsigned-in CLI refresh ${flags.join(" ") || "default"} refuses with a sign-in step`, refused.stdout.includes("saved-local") && refused.stdout.includes("Catalog refresh: not-signed-in") && !refused.stdout.includes("Catalog refresh: complete") && refused.stderr.includes("No provider is signed in") && refused.stderr.includes("cotal daemon login --idp <url>"));

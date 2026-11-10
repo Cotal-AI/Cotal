@@ -1,7 +1,7 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, type Frame, type Request } from "./model";
+import { approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import "./style.css";
 import "./components.css";
@@ -26,7 +26,7 @@ function setIcon(node: Element, name: Icon): void {
 setIcon(el("machine-icon"), "computer");
 setIcon(el("loading-icon"), "spinner");
 el("dashboard").append(icon("external"));
-type Stage = "welcome" | "sign-in" | "space" | "connect" | "finished";
+type Stage = "welcome" | "sign-in" | "connect" | "finished";
 let initialized = false;
 let retrySignIn = false;
 let approvalExpires = 0;
@@ -48,20 +48,24 @@ let observedReadySpaces: string[] = [];
 let poll: ReturnType<typeof setTimeout> | undefined;
 let connection: { space: string; state: string } | undefined;
 let refreshGeneration = 0;
+const accountSpaces = new Map<string, AccountSpace>();
+const connections = new Map<string, string>();
+let choosingSpace = false;
+let addingSpace = false;
+let listOpened = false;
 const providers = new Map<string, string>();
 const catalogIds = new Map<string, string>();
 const instances = new Map<string, string>();
 const applicationRefusals = new Set<string>();
 let applications: readonly string[] = [];
 const selectedSpace = () => el<HTMLSelectElement>("space").value;
-const spaceLabel = () => el<HTMLSelectElement>("space").selectedOptions[0]?.textContent ?? selectedSpace();
 const connected = () => !upgradeNeeded && connection?.space === selectedSpace() && connection?.state === "launch-ready";
-const welcome = "Launch agent applications from your space’s dashboard. People authorized in that space can launch them as your operating-system user, with your applications’ sign-in and file permissions.";
+const welcome = "Connect this computer to your Cotal account. People authorized in a connected space can launch applications as your operating-system user, with your applications’ sign-in and file permissions.";
 const progressNames = ["Background service", "Sign-in", "Space", "Agent applications", "Ready"];
 type ProgressState = "waiting" | "running" | "done" | "failed";
 let problem: string | undefined;
 let progress: ProgressState[] = progressNames.map(() => "waiting");
-const progressDetails = ["Starting your background service.", "Checking your sign-in.", "Finding your space.", "Checking installed agent applications.", "Verifying your connection."];
+const progressDetails = ["Starting your background service.", "Checking your sign-in.", "Finding your account’s spaces.", "Checking installed agent applications.", "Verifying your connection."];
 let lastView = "";
 function announce(message: string): void { text("announcer", message); }
 
@@ -149,14 +153,16 @@ function resizeCard(previous: number): void {
 function showStage(next: Stage, focus = false): void {
   const previousHeight = document.querySelector(".connection-card")!.getBoundingClientRect().height;
   stage = next;
-  const finished = next === "finished" && connected();
+  const finished = next === "finished";
+  const anyConnected = [...connections.values()].includes("launch-ready");
+  const pending = !anyConnected && [...connections].find(([, value]) => value === "approval-pending");
   const signIn = next === "welcome" || next === "sign-in";
   el("sign-in-panel").hidden = !signIn;
-  el("space-panel").hidden = next !== "space";
-  el("connect-panel").hidden = next !== "connect" || setupActive;
+  el("space-panel").hidden = !((next === "connect" || finished && addingSpace) && choosingSpace) || setupActive;
+  el("connect-panel").hidden = !(next === "connect" || finished && addingSpace) || setupActive;
   el("connected-panel").hidden = !finished;
-  el("preferences").hidden = !finished;
-  el("setup-progress").hidden = (!setupActive && !progress.some(value => value !== "waiting")) || finished;
+  el("preferences").hidden = !finished || addingSpace;
+  el("setup-progress").hidden = (!setupActive && !progress.some(value => value !== "waiting")) || finished && !setupActive;
   document.querySelector(".app")!.classList.toggle("later-open", finished && !completedSetup);
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", el("notice").classList.contains("error"));
   el("link-context").hidden = !linked || next !== "welcome";
@@ -164,18 +170,18 @@ function showStage(next: Stage, focus = false): void {
   el("custom-host").hidden = !customHost || loginActive;
   el("login-actions").hidden = loginActive;
   el("service-explanation").hidden = loginActive;
-  text("step-caption", finished ? "Ready for your next agent" : `Step ${["welcome", "sign-in", "space", "connect", "finished"].indexOf(next) + 1} of 5`);
+  text("step-caption", finished ? "Ready for your next agent" : `Step ${["welcome", "sign-in", "connect", "finished"].indexOf(next) + 1} of 4`);
   el("step-caption").hidden = finished;
   if (finished) el("details").hidden = true;
   let title: string, description: string;
   if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
-  else if (next === "space") { title = "Choose your space"; description = "A space is where your team and agent applications work together. Choose which one can use this computer."; }
-  else if (finished) { title = connectionView("launch-ready").title; description = connectionView("launch-ready").description; }
+  else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${accountSpaces.get(pending[0])?.label ?? pending[0]} needs to approve this computer. It connects by itself once they do.`; }
+  else if (finished) { title = anyConnected ? connectionView("launch-ready").title : "Spaces using this computer"; description = connectionView("launch-ready").description; }
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
-  else if (connection?.space === selectedSpace() && connection.state !== "ready") { const view = connectionView(connection.state); title = view.title; description = view.description; }
-  else { title = "Ready to connect"; description = "You are signed in. Connect this computer to make it available to your space."; }
-  const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && selectedSpace() ? "VERSION_MISMATCH" : !setupActive && connection?.state === "approval-pending" ? "APPROVAL_PENDING" : undefined);
+  else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
+  else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
+  const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && selectedSpace() ? "VERSION_MISMATCH" : undefined);
   const recovery = issue ? refusalView(issue, applications) : undefined;
   if (recovery) { title = recovery.title; description = recovery.description; }
   el("recovery-panel").hidden = !recovery;
@@ -192,14 +198,35 @@ function showStage(next: Stage, focus = false): void {
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery) && issue !== "APPROVAL_PENDING");
   el("connection-icon").dataset.tone = recovery ? ["EXPIRED", "VERSION_MISMATCH", "NO_AVAILABLE_CONNECTOR", "APPROVAL_PENDING", "SEATS_ACTIVE"].includes(issue!) ? "waiting" : "error" : finished ? "success" : loginActive ? "waiting" : "neutral";
   text("connection-title", title); text("connection-description", description);
-  setIcon(el("connection-icon"), recovery ? issue === "APPROVAL_PENDING" ? "clock" : "warning" : finished ? "check" : next === "welcome" ? "computer" : next === "sign-in" ? "browser" : next === "space" ? "space" : setupActive ? "spinner" : "connect");
-  text("selected-space", `Space: ${spaceLabel()}`); text("connected-space", `Connected to ${spaceLabel()}`);
-  el("connected-space").hidden = !finished;
+  setIcon(el("connection-icon"), recovery ? issue === "APPROVAL_PENDING" ? "clock" : "warning" : finished ? "check" : next === "welcome" ? "computer" : next === "sign-in" ? "browser" : setupActive ? "spinner" : "connect");
+  const target = accountSpaces.get(selectedSpace());
+  if (next === "connect" && !setupActive && !recovery) description = target ? `Connect this computer to ${target.kind === "personal" ? "your personal space, " : ""}${target.label}. You can add it to other spaces afterwards.` : "Choose which space can use this computer.";
+  text("connection-description", description);
+  el("selected-space").hidden = !addingSpace;
+  text("selected-space", target ? addingSpace ? `People authorized in ${target.label} will be able to launch agent applications on this computer as you.` : `Connect this computer to ${target.kind === "personal" ? "your personal space, " : ""}${target.label}. You can add it to other spaces afterwards.` : "Choose which space can use this computer.");
+  el("connected-space").hidden = true;
+  const formParent = addingSpace ? el("add-space-panel") : document.querySelector(".connection-card")!;
+  if (el("space-panel").parentElement !== formParent) {
+    if (addingSpace) formParent.append(el("space-panel"), el("connect-panel"));
+    else el("setup-progress").before(el("space-panel"), el("connect-panel"));
+  }
+  el("applications-label").hidden = addingSpace || !anyConnected || !el("connected-applications").children.length;
+  el("connected-applications").hidden = addingSpace || !anyConnected;
+  el("dashboard").hidden = addingSpace || !anyConnected;
+  if (finished && pending) { el("connection-icon").dataset.tone = "waiting"; setIcon(el("connection-icon"), "clock"); }
+  el("another-space").hidden = addingSpace;
+  el("sign-in-again").hidden = addingSpace;
+  el("retry-login").hidden = addingSpace;
+  el("choose-space").hidden = true;
+  el("sync").hidden = addingSpace;
+  el("connection-icon").hidden = addingSpace;
+  document.querySelector(".connection-card")!.classList.toggle("adding-space", addingSpace);
+  renderConnections();
   text("login", linked || customHost || next === "sign-in" ? "Continue in browser" : "Continue with Cotal Cloud");
   el("other-host").hidden = customHost || linked;
-  el("change-space").hidden = el<HTMLSelectElement>("space").options.length <= 2;
+  el("change-space").hidden = !addingSpace;
   text("footer-note", finished ? "Closing this window keeps your connection running." : "You choose when to connect this computer.");
-  const stages: Stage[] = ["welcome", "sign-in", "space", "connect", "finished"];
+  const stages: Stage[] = ["welcome", "sign-in", "connect", "finished"];
   for (const item of document.querySelectorAll<HTMLElement>("#journey li")) {
     const index = stages.indexOf(item.dataset.stage as Stage), active = stages.indexOf(next);
     const done = index < active || finished;
@@ -223,11 +250,35 @@ function showStage(next: Stage, focus = false): void {
   el("tray-indicator").classList.toggle("in-flight", busy);
   buttons();
 }
+function renderConnections(): void {
+  const list = el("connected-spaces");
+  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), busy]));
+  if (list.dataset.rows === signature) return;
+  list.dataset.rows = signature;
+  list.replaceChildren(...[...connections].map(([space, state]) => {
+    const row = document.createElement("li"); row.dataset.testid = "connected-space-row"; row.dataset.space = space;
+    const copy = document.createElement("span");
+    const name = document.createElement("strong"); name.textContent = accountSpaces.get(space)?.label ?? space;
+    const kind = document.createElement("small"); kind.className = "application-chip"; kind.textContent = accountSpaces.get(space)?.kind ?? "Space";
+    copy.append(name, kind);
+    if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = "Remove"; remove.disabled = busy; remove.setAttribute("aria-label", `Remove ${name.textContent}`);
+    remove.addEventListener("click", () => void action(async () => { await removeSpace(space); }));
+    row.append(copy, remove); return row;
+  }));
+}
+async function removeSpace(space: string): Promise<void> {
+  await request({ op: "service-disconnect", space });
+  connections.delete(space); instances.delete(space); applicationRefusals.delete(space);
+  if (space === selectedSpace()) connection = { space, state: "disconnected" };
+  progress = progressNames.map(() => "waiting"); clearDetails(); notice("");
+  listOpened = true; state(connection?.state ?? "ready"); showStage("finished");
+}
 function buttons(): void {
   el<HTMLButtonElement>("login").disabled = busy || loginActive || !isTauri();
   el<HTMLButtonElement>("other-host").disabled = busy;
   el<HTMLButtonElement>("connect").disabled = busy || !ready || !selectedSpace() || connected();
-  text("connect", applicationRefusals.has(selectedSpace()) || el("notice").classList.contains("error") ? "Check again" : "Connect this computer");
+  text("connect", addingSpace ? `Add to ${accountSpaces.get(selectedSpace())?.label ?? "space"}` : applicationRefusals.has(selectedSpace()) || el("notice").classList.contains("error") ? "Check again" : "Connect this computer");
   el<HTMLButtonElement>("disconnect").disabled = busy || !ready || !selectedSpace();
   el<HTMLButtonElement>("dashboard").disabled = busy || !connected();
   el<HTMLButtonElement>("sync").disabled = busy || !ready;
@@ -293,13 +344,16 @@ async function request(body: Request): Promise<Record<string, unknown>> {
 function state(value: string, space = selectedSpace()): void {
   if (space !== selectedSpace()) return;
   connection = { space, state: value };
-  const verified = connected();
-  if (verified) problem = undefined;
+  if (value === "launch-ready" || value === "approval-pending") connections.set(space, value);
+  else connections.delete(space);
+  const verified = !upgradeNeeded && [...connections.values()].includes("launch-ready");
+  if (connected()) problem = undefined;
   text("tray-label", initialized ? verified ? "Connected" : "Not connected" : "Checking connection");
   el("tray-indicator").classList.toggle("connected", verified);
   if (isTauri()) void invoke("set_connection_state", { connected: verified }).catch(() => undefined);
-  if (verified && !editing) showStage("finished");
-  else if (stage === "finished") showStage(selectedSpace() ? "connect" : "welcome");
+  if (connected() && !editing) { listOpened = true; showStage("finished"); }
+  else if ((value === "approval-pending" || listOpened) && !editing) { listOpened = true; showStage("finished"); }
+  else if (stage === "finished" && !listOpened) showStage(selectedSpace() ? "connect" : "welcome");
   else showStage(stage);
 }
 async function refresh(): Promise<void> {
@@ -311,6 +365,15 @@ async function refresh(): Promise<void> {
     if (!current()) return;
     ready = status.state === "ready";
     observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
+    for (const name of observedReadySpaces) connections.set(name, "launch-ready");
+    for (const name of accountSpaces.keys()) {
+      if (observedReadySpaces.includes(name) || name === space) continue;
+      const service = await request({ op: "service-status", space: name });
+      if (!current()) return;
+      if (service.state === "approval-pending") connections.set(name, "approval-pending");
+      else connections.delete(name);
+    }
+    if (connections.size && !editing && !linked) listOpened = true;
     upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
     if (upgradeNeeded) {
       state("ready", space);
@@ -325,7 +388,7 @@ async function refresh(): Promise<void> {
       if (!current()) return;
       state(applicationRefusals.has(space) ? "no-application" : String(service.state) === "connected" ? "ready" : String(service.state), space);
       if (manager?.reason) refusal(new DaemonRefusal("DEPENDENCY_UNAVAILABLE", `${manager.reason}${manager.next ? `\nNext: ${manager.next}` : ""}`));
-    } else { state("ready", space); if (stage === "space") showStage("space"); }
+    } else { state("ready", space); if (stage === "connect") showStage("connect"); }
   } catch (error) {
     if (!current()) return;
     ready = false; state("unavailable");
@@ -336,18 +399,18 @@ async function refresh(): Promise<void> {
 async function spaces(refreshCatalog: boolean): Promise<void> {
   const result = await request({ op: "spaces", refresh: refreshCatalog });
   const select = el<HTMLSelectElement>("space"); const previous = select.value;
-  select.replaceChildren(new Option("Choose a space", "")); providers.clear(); catalogIds.clear();
+  select.replaceChildren(new Option("Choose a space", "")); providers.clear(); catalogIds.clear(); accountSpaces.clear();
   if (!Array.isArray(result.spaces)) throw new Error("The background service returned no space list.");
   for (const item of result.spaces) {
     if (!item || typeof item.space !== "string" || item.mode !== "user") continue;
+    accountSpaces.set(item.space, { space: item.space, label: String(item.label ?? item.space), ...(typeof item.catalogId === "string" ? { catalogId: item.catalogId } : {}), ...(typeof item.kind === "string" ? { kind: item.kind } : {}), ...(typeof item.role === "string" ? { role: item.role } : {}) });
     select.add(new Option(String(item.label ?? item.space), item.space));
     if (typeof item.idp === "string") providers.set(item.space, item.idp);
     if (typeof item.catalogId === "string") catalogIds.set(item.space, item.catalogId);
   }
-  const preferred = requestedSpace || previous || observedReadySpaces.find(space => [...select.options].some(option => option.value === space));
-  const option = [...select.options].find(option => option.value && (option.value === preferred || catalogIds.get(option.value) === preferred));
-  if (option) select.value = option.value;
-  else if (!requestedSpace && select.options.length === 2) select.selectedIndex = 1;
+  const preferred = initialSpace([...accountSpaces.values()], requestedSpace) ?? (accountSpaces.has(previous) ? previous : undefined) ?? observedReadySpaces.find(space => accountSpaces.has(space));
+  if (preferred) select.value = preferred;
+  choosingSpace = !preferred;
   if (result.refresh === "failed" || result.refresh === "partial") throw new Error("Some space catalogs could not be refreshed. Saved entries may be out of date.");
   if (Number(result.collisions) > 0) throw new Error("Some space names conflict with existing registrations. No conflicting registration was replaced.");
   if (Number(result.unreadable) > 0) throw new Error("Some local space registrations could not be read. They were not changed.");
@@ -364,11 +427,11 @@ async function action(fn: () => Promise<void>): Promise<void> {
 function nextAfterSignIn(): void {
   editing = false;
   connection = undefined;
-  if (selectedSpace() && (requestedSpace || el<HTMLSelectElement>("space").options.length === 2)) showStage("connect", true);
+  if (selectedSpace()) showStage("connect", true);
   else {
-    showStage("space", true);
+    showStage("connect", true);
     if (requestedSpace && !selectedSpace()) notice("The requested space is not available to this account. Ask its owner for access, then refresh spaces.");
-    else if (!el<HTMLSelectElement>("space").options[1]) { problem = "NO_SPACES"; showStage("space", true); }
+    else if (!el<HTMLSelectElement>("space").options[1]) { problem = "NO_SPACES"; showStage("connect", true); }
   }
 }
 el<HTMLInputElement>("provider").value = COTAL_CLOUD_IDP;
@@ -406,10 +469,17 @@ function beginSignIn(): void {
   notice(""); clearDetails(); progress = progressNames.map(() => "waiting"); showStage("sign-in", true);
 }
 el("choose-space").addEventListener("click", () => {
-  if (!busy && selectedSpace()) { editing = false; notice(""); connection = undefined; showStage("connect", true); void refresh(); }
+  if (!busy && selectedSpace()) { choosingSpace = false; notice(""); connection = undefined; showStage(addingSpace ? "finished" : "connect", true); void refresh(); }
 });
-el("change-space").addEventListener("click", () => { if (!busy) { editing = true; showStage("space", true); } });
-el("another-space").addEventListener("click", () => { if (!busy) { editing = true; notice(""); clearDetails(); progress = progressNames.map(() => "waiting"); showStage("space", true); } });
+el("change-space").addEventListener("click", () => { if (!busy) { addingSpace = false; choosingSpace = false; editing = false; showStage("finished", true); } });
+el("another-space").addEventListener("click", () => {
+  if (busy) return;
+  editing = true; addingSpace = true; choosingSpace = true;
+  const select = el<HTMLSelectElement>("space");
+  for (const option of select.options) option.hidden = connections.has(option.value);
+  select.value = ""; connection = undefined;
+  notice(""); clearDetails(); progress = progressNames.map(() => "waiting"); showStage("finished", true); select.focus();
+});
 el("retry-login").addEventListener("click", beginSignIn);
 el("sign-in-again").addEventListener("click", beginSignIn);
 el("connect").addEventListener("click", () => void action(async () => {
@@ -423,14 +493,16 @@ el("connect").addEventListener("click", () => void action(async () => {
     applicationRefusals.delete(space); upgradeNeeded = false;
     instances.set(space, (result.manager as { instanceId: string }).instanceId); showApplications(result.manager);
     progress = progressNames.map(() => "done"); renderProgress();
-    completedSetup = true;
+    completedSetup = true; addingSpace = false; choosingSpace = false; listOpened = true;
     state("launch-ready", space); notice(""); showStage("finished", true);
   } catch (error) {
     const failed = progress.indexOf("failed");
     const active = progress.indexOf("running");
     if (failed < 0) progress[active < 0 ? 4 : active] = "failed"; renderProgress();
     if (error instanceof DaemonRefusal && error.native === "NO_AVAILABLE_CONNECTOR") { applicationRefusals.add(space); state("no-application", space); }
-    else state("unavailable", space);
+    else if (error instanceof DaemonRefusal && (error.code === "APPROVAL_PENDING" || error.native === "APPROVAL_PENDING")) {
+      addingSpace = false; choosingSpace = false; listOpened = true; problem = undefined; state("approval-pending", space); showStage("finished"); return;
+    } else state("unavailable", space);
     throw error;
   } finally { setupActive = false; }
 }));
@@ -442,7 +514,7 @@ el("disconnect").addEventListener("click", () => void action(async () => {
 }));
 el("sync").addEventListener("click", () => void action(async () => { notice(""); await spaces(true); }));
 el("refresh").addEventListener("click", () => void action(refresh));
-el("space").addEventListener("change", () => { instances.clear(); connection = undefined; progress = progressNames.map(() => "waiting"); clearDetails(); notice(""); buttons(); void refresh(); });
+el("space").addEventListener("change", () => { connection = undefined; progress = progressNames.map(() => "waiting"); clearDetails(); notice(""); showStage(stage); void refresh(); });
 el("dashboard").addEventListener("click", () => {
   const space = selectedSpace(); const provider = providers.get(space) ?? el<HTMLInputElement>("provider").value.trim();
   const spaceId = catalogIds.get(space), instanceId = instances.get(space);
@@ -460,7 +532,7 @@ function receiveLinks(urls: string[]): void {
   try {
     const link = onboardingLink(urls[0]); el<HTMLInputElement>("provider").value = link.idp;
     requestedSpace = link.space; linked = true; editing = true;
-    text("link-context", `${link.space ? "Connecting to your space at" : "Connecting with"} ${new URL(link.idp).host}. Sign in below to continue.`); el("link-context").hidden = false;
+    text("link-context", `${link.space ? "Connecting your account at" : "Connecting with"} ${new URL(link.idp).host}. Sign in below to continue.`); el("link-context").hidden = false;
     notice(""); showStage("welcome");
   } catch (error) { refusal(error); }
 }
@@ -483,12 +555,12 @@ async function start(): Promise<void> {
     if (ready) {
       await spaces(false);
       if (selectedSpace()) { if (!linked) showStage("connect"); await refresh(); }
-      else if (!linked && el<HTMLSelectElement>("space").options.length > 1) showStage("space");
+      else if (!linked && el<HTMLSelectElement>("space").options.length > 1) showStage("connect");
     }
   } catch (error) { refusal(error); }
   initialized = true;
   document.querySelector(".app")!.classList.remove("loading");
-  text("tray-label", connected() ? "Connected" : "Not connected");
+  text("tray-label", [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");
   const tick = async () => { if (!busy && !document.hidden) await refresh(); poll = setTimeout(() => void tick(), 10_000); };
   poll = setTimeout(() => void tick(), 10_000);
 }

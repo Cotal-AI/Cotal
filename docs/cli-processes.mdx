@@ -598,7 +598,7 @@ platform; where none is built or shipped, daemon endpoint operations refuse `UNS
 
 `start` starts the recorded, unchanged service without restarting an instance that is already running.
 `spaces` lists the registry through the daemon; `--refresh` uses the daemon-held sign-in to refresh
-its catalogs. With no cached sign-in, a refresh reports `not-signed-in`; the CLI refuses with
+its catalogs. Catalog rows in the `spaces` reply include optional `kind` and `role` fields from the saved catalog entry. Local entries omit these fields. With no cached sign-in, a refresh reports `not-signed-in`; the CLI refuses with
 `AUTH_REQUIRED` (exit 2) and directs you to `cotal daemon login --idp <url>`. Saved spaces remain
 listed, and listing without `--refresh` still works. Name collisions and unreadable registrations
 are reported rather than replaced.
@@ -612,8 +612,12 @@ failure reporting and catalog removal. A selection naming that registration stay
 The desktop app uses these same controls. Its source and native build instructions are in the
 [desktop README](../desktop/README.md). Closing its tray UI does not stop the installed daemon.
 Its first run offers Continue with Cotal Cloud or a custom host, opens browser approval after a
-click, selects a space, and then offers Connect this computer. A connection link prefills its host
-and space without starting setup. A requested space or an account's only space skips the selector.
+click, then offers Connect this computer. Its four steps are Welcome, Sign in, Connect and Ready.
+A connection link prefills its host and space without starting setup. The app selects the linked
+space, then the personal space, then an account's only space. Several team spaces without a
+personal space show a choice on Connect. Nothing connects before the person's click.
+Ready lists the spaces using this computer, with Remove and Add to another space controls.
+Adding a space requires its own confirmation. Owner approval appears in that space's row.
 The app reports This computer is connected only with an answering registered Manager and an
 available connector. Open dashboard is the primary action on that screen and on later opens.
 Sign-in and space forms appear only when needed. Five named progress steps use structured setup

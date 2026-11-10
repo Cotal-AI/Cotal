@@ -29,7 +29,7 @@ export function nativeStub(scenario) {
       if (request.op === "status" && state.offline) return fail("NOT_ANSWERING", "The background service did not answer. Check the host connection before retrying.");
       if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.connected ? [manager()] : [] });
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
-      if (request.op === "spaces") return ok({ spaces: state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research" }] : [])] : [] });
+      if (request.op === "spaces") return ok({ spaces: state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : [] });
       if (request.op === "service-status") return ok({ state: state.serviceState ?? "disconnected" });
       if (request.op === "service-disconnect") { state.connected = false; return ok({ state: "disconnected" }); }
       if (request.op === "login") {
@@ -59,7 +59,7 @@ export function nativeStub(scenario) {
 }
 
 const link = "cotal://connect?idp=https%3A%2F%2Fcloud.cotal.ai%2Fapi%2Fauth&space=sp_acme";
-const signIn = async page => { await page.click("#login"); await page.locator("#connect-panel:not([hidden]), #space-panel:not([hidden]), #recovery-panel:not([hidden])").waitFor(); };
+const signIn = async page => { await page.click("#login"); await page.locator("#connect-panel:not([hidden]), #space-panel:not([hidden]), #recovery-panel:not([hidden])").first().waitFor(); };
 const connect = async page => { await signIn(page); await page.click("#connect"); };
 export const scenarios = [
   { name: "loading", state: { loading: true }, expect: async page => {
@@ -68,12 +68,14 @@ export const scenarios = [
     assert.ok(await page.locator(".connection-card").evaluate(el => el.getBoundingClientRect().height) < 100);
   } },
   { name: "welcome", state: {} },
-  { name: "four-steps", state: {}, prepare: page => page.locator('#journey [data-stage="space"]').evaluate(el => el.remove()) },
+  { name: "four-steps", state: {}, expect: async page => assert.equal(await page.locator('#journey li').count(), 4) },
   { name: "link", state: { link } },
   { name: "custom-host", state: {}, act: page => page.click("#other-host") },
   { name: "waiting", state: { waiting: true }, act: page => page.click("#login") },
   { name: "signed-in", state: {}, act: signIn },
   { name: "spaces", state: { multiple: true }, act: signIn },
+  { name: "personal", state: { multiple: true, personal: true }, act: signIn },
+  { name: "add-space", state: { installed: true, signedIn: true, connected: true, multiple: true }, act: async page => { await page.click('#another-space'); await page.selectOption('#space', 'research'); } },
   { name: "connecting", state: { connecting: true }, act: connect },
   { name: "ready", state: {}, act: connect },
   { name: "later-open", state: { installed: true, signedIn: true, connected: true }, expect: async page => assert.equal(await page.locator("#journey").isVisible(), false) },
@@ -83,13 +85,21 @@ export const scenarios = [
   { name: "declined", state: { loginError: "DENIED" }, act: page => page.click("#login") },
   { name: "offline", state: { installed: true, signedIn: true, offline: true } },
   { name: "no-spaces", state: { empty: true }, act: signIn },
+  { name: "connected-and-pending", state: { installed: true, signedIn: true, connected: true, multiple: true, serviceState: "approval-pending" }, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected");
+    assert.equal(await page.locator('[data-testid="connected-space-row"]').count(), 2);
+  } },
   { name: "approval-pending", state: { installed: true, signedIn: true, serviceState: "approval-pending" }, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "Waiting for owner approval");
     assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "clock");
+    assert.equal(await page.locator("#dashboard").isVisible(), false);
+    assert.equal(await page.locator("#applications-label").isVisible(), false);
+    assert.match(await page.locator("#connected-spaces").textContent(), /Waiting for owner approval/);
     assert.equal(await page.locator(".connection-card.has-refusal").count(), 0);
   } },
   { name: "version-mismatch", state: { installed: true, signedIn: true, version: "old" } },
   { name: "progress-done", state: { connecting: true }, prepare: connect, act: page => page.evaluate(() => window.__advanceSetup()) },
-  { name: "disconnected", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#disconnect"), expect: async page => assert.equal(await page.locator("#notice").isVisible(), false) },
+  { name: "disconnected", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#connected-spaces button"), expect: async page => assert.equal(await page.locator("#notice").isVisible(), false) },
   { name: "notice", state: { waiting: true, copyFailure: true }, prepare: page => page.click("#login"), act: page => page.click("#copy-code") },
   { name: "details-open", state: { noApp: true }, prepare: connect, act: page => page.locator("#details summary").click() },
 ];

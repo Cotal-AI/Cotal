@@ -1,4 +1,18 @@
 /* Desktop composition of the site's card, pill, button and terminal components. */
+/* Flat account-space rows share the existing chip and secondary-button styles. */
+#space-panel select { margin-bottom: 16px; }
+#space-panel .actions { margin-top: 0; }
+#sync { margin-left: 0; padding-left: 0; }
+#add-space-panel:not(:empty) { margin: 16px 0; }
+#applications-label { margin: 0 0 4px; font-size: 12px; }
+.application-chips { margin-bottom: 8px; }
+#connected-spaces { list-style: none; padding: 0; margin: 8px 0 16px; }
+#connected-spaces li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 2px solid var(--rule); }
+#connected-spaces li > span { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+#connected-spaces strong { overflow-wrap: anywhere; }
+#connected-spaces [data-testid=approval-pending] { color: var(--gold-ink); }
+#selected-space { display: block; border: 0; padding: 0; font: inherit; background: transparent; }
+#connected-space { display: none; }
 .brand-mark { width: 33px; height: 33px; border-radius: 0; }
 .brand strong { font-weight: 800; }
 :focus-visible, .switch input:focus-visible + span { outline: 3px solid var(--blue); outline-offset: 3px; }
@@ -54,6 +68,8 @@ input[type=url], select { border: var(--bw) solid var(--ink); border-radius: var
 .progress li:not(:last-child)::before { width: 2px; background: var(--rule); }
 details { border: var(--bw) solid var(--ink); border-radius: var(--r-md); overflow: hidden; background: var(--card); margin-top: 16px; font: 400 11px/1.5 var(--mono); }
 summary { padding: 8px 16px; background: var(--paper); color: var(--ink); font-weight: 600; }
+details pre { white-space: break-spaces; overflow-wrap: anywhere; }
+details:not([open]) .details-content { display: none; }
 .details-content > div { padding: 0 16px; }
 #refresh { margin: 8px 0 0 -8px; }
 .preferences { border-top: 2px solid var(--rule); margin-top: 16px; }

@@ -26,6 +26,8 @@ export async function desktopSpaces(sessionDir: string, refresh: boolean): Promi
       space: entry.space,
       label: entry.catalogName ?? entry.space,
       ...(entry.catalogId ? { catalogId: entry.catalogId } : {}),
+      ...(entry.catalogKind ? { kind: entry.catalogKind } : {}),
+      ...(entry.catalogRole ? { role: entry.catalogRole } : {}),
       mode: entry.mode,
       ...(entry.mode === "user" && entry.userAuth ? { idp: entry.userAuth.idp.url } : {}),
     })),
