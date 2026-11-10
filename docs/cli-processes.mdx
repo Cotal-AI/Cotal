@@ -952,6 +952,8 @@ on this machine and the space's authority before retrying. The daemon keeps the 
 does not accept the expired bearer or extend its lifetime.
 The same diagnosis applies if the clock advances during the credential pulls used to start the
 broker connection or report ready.
+`setup --no-manager` reports this conflict without entering its approval wait, even with the
+default wait duration. Synchronize the clocks before running it again.
 
 Every other answer is a refusal and nothing is connected. Not yet approved is `LIFECYCLE_BLOCKED`
 (`APPROVAL_PENDING`). A refused registration is `PERMISSION_DENIED`, and so is a space that ended the

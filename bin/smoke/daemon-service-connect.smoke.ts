@@ -46,6 +46,7 @@
  *      conflict, not an unreachable authority. Synchronized clocks connect, a real authority outage
  *      stays unavailable, and restoring the clock recovers with the same request ids. Clock changes
  *      on the endpoint startup and ready credential pulls keep the same local diagnosis.
+ *      No-manager setup refuses that conflict without waiting, including with its default wait.
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
  * Add --clock-only to run C1, C2, C15, C18 and C14 alone.
@@ -661,8 +662,8 @@ try {
         COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
       const skew = join(root, "clock-ahead.mjs");
       writeFileSync(skew, `import { readFileSync } from 'node:fs';\nconst now = Date.now.bind(Date); Date.now = () => now() + Number(readFileSync(${JSON.stringify(clockControl)}, 'utf8'));\n`, { mode: 0o600 });
-      const cli = async (mode: string, json = true) => {
-        const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", mode, "--space", ON, ...(json ? ["--json"] : ["--plain"])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+      const cli = async (mode: string, json = true, extra: string[] = []) => {
+        const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", mode, "--space", ON, ...extra, ...(json ? ["--json"] : ["--plain"])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let out = "", err = "";
         child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
         const timer = setTimeout(() => child.kill("SIGKILL"), 40_000);
@@ -695,6 +696,12 @@ try {
               check("C18 the ahead daemon reached the real authority", posts(ON) >= before + 4, { posts: posts(ON) - before });
               const plain = await cli("service-connect", false);
               check("C18 plain refusal names credential time and the clock", plain.status === 2 && /CREDENTIAL_TIME_ERROR/.test(plain.err) && /clock/.test(plain.err), { status: plain.status, err: plain.err });
+              for (const wait of [[], ["--wait", "0"]]) {
+                const started = Date.now();
+                const setup = await cli("setup", true, ["--no-manager", ...wait]);
+                check(`C18 ${phase} setup ${wait.length ? "zero" : "default"} wait refuses a credential-time conflict`, setup.status === 2 && setup.doc?.outcome === "refused" && setup.doc.error?.code === "CONFLICT" && setup.doc.error?.cause?.code === "CREDENTIAL_TIME_ERROR", { status: setup.status, error: setup.doc?.error });
+                check(`C18 ${phase} setup stops without entering its retry wait`, Date.now() - started < 10_000 && !setup.err.includes("retrying for up to") && /clock/.test(setup.doc?.error?.message ?? ""));
+              }
               let unanswered = false;
               try { await probeMachine(); } catch (e) { unanswered = unansweredRequest(e); }
               check("C18 clock refusal leaves no responder or resume intent", unanswered && !existsSync(intentFile(ON)));
@@ -716,6 +723,9 @@ try {
               const recovered = await cli("service-connect");
               check("C18 synchronized recovery connects and the authority reads ready", recovered.status === 0 && recovered.doc?.result?.state === "connected" && await instanceStatus(ON) === "ready", { status: recovered.status, state: recovered.doc?.result?.state });
               check("C18 synchronized recovery serves an authorized caller", (await probeMachine()).reply.ok);
+              await cli("service-disconnect");
+              const setup = await cli("setup", true, ["--no-manager"]);
+              check("C18 synchronized no-manager setup connects and the authority reads ready", setup.status === 0 && setup.doc?.result?.state === "connected" && await instanceStatus(ON) === "ready", { status: setup.status, error: setup.doc?.error });
               await cli("service-disconnect");
             }
             check(`C18 ${phase} keeps the same request ids and secrets private`, ids() === originalIds && ![SESSION, ...jwtsIssued].some((t) => childErr.includes(t)) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(childErr));
