@@ -1106,8 +1106,10 @@ while the pass runs reads as `absent`.
 The auth-service start, status and stop paths share the same PID-file resolution rules.
 An unreadable record directory refuses the start; it is not treated as an absent pre-upgrade record.
 
-Each component prints on one line. A control character inside a reported reason, such as a newline
-in a stored row's field name, prints as its `\uXXXX` escape.
+Each component keeps one line when piped or when its row fits the terminal. On a narrower terminal,
+its facts stack below the name and verdict, wrapping at spaces. A single identity, path or command
+wider than the terminal stays whole. Verdicts and exit codes do not change. A control character
+inside a reported reason, such as a newline in a stored row's field name, prints as its `\uXXXX` escape.
 
 
 ### Registration [#registration]
