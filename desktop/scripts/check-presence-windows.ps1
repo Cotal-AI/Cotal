@@ -77,6 +77,7 @@ function Shortcuts($path) {
   return $links.FullName
 }
 $results = @()
+$taskbarMissing = @()
 foreach ($kind in @('nsis', 'msi')) {
   $owned = $null
   $launch = $null
@@ -112,11 +113,16 @@ foreach ($kind in @('nsis', 'msi')) {
     $items = $taskbar.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
     $names = @($items | ForEach-Object { $_.Current.Name })
     $names | Set-Content (Join-Path $out "$kind-taskbar-elements.txt")
-    if (!($names | Where-Object { $_ -match '^Cotal(?:\b|$)' })) { throw 'Explorer has no Cotal taskbar button.' }
+    $taskbarNamed = [bool]($names | Where-Object { $_ -match '^Cotal(?:\b|$)' })
+    if (!$taskbarNamed) {
+      $taskbarMissing += $kind
+      Write-Warning 'Explorer did not expose a named Cotal taskbar button. Collecting independent lifecycle and uninstall checks before failing.'
+    }
     Start-Process -FilePath $path | Out-Null
     Start-Sleep 3
     $instances = @(Get-Process 'cotal-desktop' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $path })
     if ($instances.Count -ne 1 -or $instances[0].Id -ne $owned.Id) { throw 'Second launch did not reuse the existing process.' }
+    'Second launch reused the existing process.' | Set-Content (Join-Path $out "$kind-single-instance.txt")
     [PresenceWindow]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
     Start-Sleep 1
     [PresenceWindow]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
@@ -125,6 +131,7 @@ foreach ($kind in @('nsis', 'msi')) {
     Start-Process -FilePath $path | Out-Null
     Start-Sleep 2
     if (![PresenceWindow]::IsWindowVisible($handle)) { throw 'Second launch did not restore hidden window.' }
+    'Close hid the window and second launch restored it.' | Set-Content (Join-Path $out "$kind-hide-restore.txt")
     Stop-Process -Id $owned.Id
     Wait-Process -Id $owned.Id -ErrorAction SilentlyContinue
     $owned = $null
@@ -141,7 +148,10 @@ foreach ($kind in @('nsis', 'msi')) {
     foreach ($link in $links) { if (Test-Path $link) { throw "Shortcut remains: $link" } }
     if (Get-ItemProperty -Path $run -Name Cotal -ErrorAction SilentlyContinue) { throw 'App login entry remains after uninstall.' }
     $installed = $false
-    $results += @{ installer = $kind; result = 'passed'; checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'explorer-taskbar-button', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login') }
+    $checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login')
+    if ($taskbarNamed) { $checks += 'explorer-taskbar-button' }
+    $results += @{ installer = $kind; result = $(if ($taskbarNamed) { 'passed' } else { 'failed-taskbar-name' }); checks = $checks }
+    @{ platform = 'Windows'; results = $results } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'result.json')
   } finally {
     if ($launch -and (Get-Process -Id $launch.Id -ErrorAction SilentlyContinue)) {
       Stop-Process -Id $launch.Id -ErrorAction SilentlyContinue
@@ -151,3 +161,4 @@ foreach ($kind in @('nsis', 'msi')) {
   }
 }
 @{ platform = 'Windows'; results = $results } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'result.json')
+if ($taskbarMissing.Count) { throw "Explorer exposed no named Cotal taskbar button for: $($taskbarMissing -join ', '). Independent check receipts are retained." }
