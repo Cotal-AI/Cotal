@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 997,
+    "total": 998,
     "honest-text": 69,
     "presence-only-glyph/count": 142,
     "command-ack": 10,
-    "non-render/control": 776
+    "non-render/control": 777
   },
   "renderers": [
     {
@@ -38,7 +38,14 @@
     {
       "path": "packages/core/src/resolve.ts",
       "kind": "status-token",
-      "anchor": "\"offline\"",
+      "anchor": "ter((p) => p.status !== \"offline\");\n  const pool = live.l",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "packages/core/src/resolve.ts",
+      "kind": "status-token",
+      "anchor": "ter((p) => p.status !== \"offline\");\n    const pool = live",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
