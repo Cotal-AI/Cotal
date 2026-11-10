@@ -21,6 +21,7 @@ import { serviceDefinitionStore } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstanceStore, type ServiceInstance } from "./service-instances.js";
 import { startProcessService } from "./service-process.js";
 import { readStackJournal, writeStackJournal, type StackJournal } from "./stack-journal.js";
+import { readStoreIdentity } from "./store-identity.js";
 
 function refuse(code: ConstructorParameters<typeof CommandFailure>[1], message: string, target: unknown, remedy?: string): never {
   throw new CommandFailure("refused", code, message, { target, ...(remedy ? { remedy } : {}) });
@@ -311,6 +312,6 @@ export function settleControllerResume(root: string, phase: StackJournal["operat
     if (row.instanceId === null || !done) return row;
     return { ...row, ...(row.role === "broker" && completed.brokerInstanceId ? { instanceId: completed.brokerInstanceId } : {}), state: "started" as const };
   });
-  const broker = done && completed.storeDir && snapshot.journal.broker ? { ...snapshot.journal.broker, storeDir: completed.storeDir } : snapshot.journal.broker;
+  const broker = done && completed.storeDir && snapshot.journal.broker ? { ...snapshot.journal.broker, storeDir: completed.storeDir, storeIdentity: readStoreIdentity(completed.storeDir) } : snapshot.journal.broker;
   writeStackJournal(root, snapshot, { ...snapshot.journal, operation: { ...snapshot.journal.operation, phase }, members, ...(broker ? { broker } : {}), updatedAt: new Date().toISOString() });
 }
