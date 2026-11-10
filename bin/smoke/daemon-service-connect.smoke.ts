@@ -248,6 +248,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   }
   if (accountOnly && req.url?.startsWith("/api/cli/machines/")) {
     const machineId = req.url.split("/")[4];
+    if (req.method === "PUT" && process.argv.includes("--account-unsupported")) { res.writeHead(404); res.end("{}"); return; }
     if (req.method === "PUT") { res.end(JSON.stringify({ v: 1, machine: { id: machineId, lastSeenAt: new Date().toISOString() } })); return; }
     if (accountHang && req.method === "GET") { accountHangs++; return; }
     if (accountHttp !== 200) { res.writeHead(accountHttp); res.end(accountHttp === 304 ? undefined : "{}"); return; }
@@ -1747,6 +1748,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           accountTargets.set(DENY, svc[2]!.publicUrl!.replace(/\/$/, ""));
           removeMesh(DENY);
           (catalog as { spaces: unknown[] }).spaces.unshift({ id: DENY, slug: DENY, name: "Pending space", kind: "team", role: "member", registration: { ...pendingPublished, space: DENY, tlsRequired: false, userAuth: { ...pendingPublished.userAuth, endpoints: { url: `${idpOrigin}/account-space/${DENY}` } } } });
+          if (process.argv.includes("--account-unsupported")) {
+            const setup = await cli("setup", "--space", ON, "--idp", idpUrl);
+            const status = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+            check("I7 explicit unsupported host keeps local setup and makes no intent writes", setup.code === 0 && intentWrites === 0 && status.account?.mode === "per-space", { setup, status, intentWrites });
+            return;
+          }
           if (process.argv.includes("--account-intent")) {
             intentConflicts = 1;
             const local = await cli("setup", "--space", ON, "--idp", idpUrl);
