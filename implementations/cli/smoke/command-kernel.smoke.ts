@@ -30,6 +30,7 @@ function updateRuntime(opts: {
   extensions?: InstalledExtension[];
   env?: NodeJS.ProcessEnv;
   npm?: (args: string[], inherit?: boolean) => { status: number | null; stdout?: string; stderr?: string; error?: string };
+  releaseNpm?: (args: string[]) => { status: number | null; stdout?: string; stderr?: string; error?: string };
   spawn?: (file: string, args: string[], env: NodeJS.ProcessEnv) => { status: number | null; stdout?: string; stderr?: string; error?: string };
   reportRunningManager?: () => Promise<"none" | "legacy">;
   verifyExtension?: UpdateRuntime["verifyExtension"];
@@ -63,6 +64,13 @@ function updateRuntime(opts: {
     installPrefix: () => undefined,
     npm: (args, inherit) => {
       events.push(`npm:${args.join(" ")}${inherit ? ":inherit" : ""}`);
+      if ((args[0] === "view" && args[2] === "--json") || args[0] === "cache") {
+        const spec = args[0] === "view" ? args[1] : args[2];
+        const at = spec.lastIndexOf("@");
+        return { stdout: "", stderr: "", ...opts.releaseNpm?.(args) ?? { status: 0, stdout: JSON.stringify({
+          name: spec.slice(0, at), version: spec.slice(at + 1), dist: { tarball: "https://registry.example/package.tgz", integrity: "sha512-fixture" },
+        }) } };
+      }
       const r = opts.npm?.(args, inherit) ?? { status: 0, stdout: '"0.13.1"' };
       return { stdout: "", stderr: "", ...r };
     },
@@ -1168,6 +1176,58 @@ async function completionOut(positionals: string[]): Promise<string> {
     rmSync(xdg, { recursive: true, force: true });
     if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
+}
+
+// --- #6230: release metadata does not establish archive availability ---------------------------
+{
+  const version = "0.13.2";
+  const manifests: Record<string, Record<string, unknown>> = {
+    "cotal-ai": { dependencies: { "@cotal-ai/cli": version }, devDependencies: { "@cotal-ai/test-only": version } },
+    "@cotal-ai/cli": { dependencies: { "@cotal-ai/core": version }, optionalDependencies: { "@cotal-ai/optional": version } },
+    "@cotal-ai/core": { peerDependencies: { "@cotal-ai/cli": ">=0.1.0" } },
+    "@cotal-ai/optional": {},
+  };
+  for (const scenario of ["ready", "root-404", "transitive-404", "metadata-404", "invalid-json", "wrong-version", "missing-integrity", "skewed-dependency"] as const) {
+    const downloaded: string[] = [], caches = new Set<string>();
+    const fixture = updateRuntime({
+      npm: (args) => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
+      releaseNpm: (args) => {
+        assert.ok(args.includes("--fetch-retries=0") && args.includes("--fetch-timeout=15000"), "registry reads are bounded");
+        const cache = args[args.indexOf("--cache") + 1];
+        assert.ok(existsSync(cache)); caches.add(cache);
+        const spec = args[0] === "view" ? args[1] : args[2];
+        const name = spec.slice(0, spec.lastIndexOf("@"));
+        assert.ok(Object.hasOwn(manifests, name), "only runtime first-party dependencies are queried");
+        if (args[0] === "cache") {
+          downloaded.push(spec);
+          assert.ok(args.includes("--ignore-scripts"));
+          if ((scenario === "root-404" && name === "cotal-ai") || (scenario === "transitive-404" && name === "@cotal-ai/core"))
+            return { status: 1, stderr: "npm error code E404" };
+          return { status: 0 };
+        }
+        if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stderr: "npm error code E404" };
+        if (name === "@cotal-ai/core" && scenario === "invalid-json") return { status: 0, stdout: "not json" };
+        return { status: 0, stdout: JSON.stringify({
+          name, version: scenario === "wrong-version" ? "0.13.3" : version,
+          dist: { tarball: "https://registry.example/package.tgz", ...(scenario === "missing-integrity" ? {} : { integrity: "sha512-fixture" }) },
+          ...manifests[name],
+          ...(scenario === "skewed-dependency" ? { dependencies: { "@cotal-ai/core": "0.13.1" } } : {}),
+        }) };
+      },
+    });
+    assert.equal(await executeUpdate(true, fixture.rt), scenario === "ready" ? 0 : 1, scenario);
+    assert.ok(caches.size === 1 && [...caches].every(cache => !existsSync(cache)), "the private preflight cache is removed");
+    if (scenario === "ready") {
+      assert.deepEqual(downloaded, Object.keys(manifests).map(name => `${name}@${version}`), "transitive and optional archives are fetched once, despite peer cycles");
+      const lastFetch = fixture.events.findLastIndex(event => event.startsWith("npm:cache add"));
+      assert.ok(lastFetch < fixture.events.findIndex(event => event.startsWith("claim-global:")), "readiness precedes global mutation custody");
+    } else {
+      assert.ok(!fixture.events.some(event => /^(global:|claim-global:|reconcile|refresh-connectors)/.test(event)), "refusal starts no installation or reconciliation");
+      const error = fixture.events.filter(event => event.startsWith("err:")).join("\n");
+      assert.ok(error.includes("release is still reaching the registry") && error.includes("again in a few minutes"), error);
+      assert.ok(!error.includes("npm error code E404"), "raw npm errors are not the user-facing diagnostic");
+    }
   }
 }
 
