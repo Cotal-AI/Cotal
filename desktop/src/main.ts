@@ -1,7 +1,7 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { approvalUrl, connectionView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, type Frame, type Request } from "./model";
+import { approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import "./style.css";
 
@@ -16,7 +16,12 @@ function setIcon(node: Element, name: Icon): void {
   node.setAttribute("data-icon", name); node.replaceChildren(icon(name));
 }
 setIcon(el("machine-icon"), "computer");
+el("dashboard").append(icon("external"));
 type Stage = "welcome" | "sign-in" | "space" | "connect" | "finished";
+let initialized = false;
+let retrySignIn = false;
+let approvalExpires = 0;
+let countdown: ReturnType<typeof setInterval> | undefined;
 let stage: Stage = "welcome";
 let ready = false;
 let appVersion: string | undefined;
@@ -45,44 +50,56 @@ const connected = () => !upgradeNeeded && connection?.space === selectedSpace() 
 const welcome = "Launch agent applications from your space’s dashboard. People authorized in that space can launch them as your operating-system user, with your applications’ sign-in and file permissions.";
 const progressNames = ["Background service", "Sign-in", "Space", "Agent applications", "Ready"];
 type ProgressState = "waiting" | "running" | "done" | "failed";
+let problem: string | undefined;
 let progress: ProgressState[] = progressNames.map(() => "waiting");
+const progressDetails = ["Starting your background service.", "Checking your sign-in.", "Finding your space.", "Checking installed agent applications.", "Verifying your connection."];
+let lastView = "";
+function announce(message: string): void { text("announcer", message); }
 
 function notice(message: string, error = false): void {
-  text("notice", message); el("notice").hidden = !message; el("notice").classList.toggle("error", error);
+  if (message) text("notice", message);
+  el("notice-wrap").classList.toggle("expanded", Boolean(message));
+  el("notice").setAttribute("aria-hidden", String(!message));
+  if (message || !window.matchMedia || window.matchMedia("(prefers-reduced-motion: reduce)").matches) { el("notice").hidden = !message; if (!message) text("notice", ""); }
+  el("notice").classList.toggle("error", error);
+  if (message) announce(message);
 }
 function clearDetails(): void {
+  problem = undefined;
   text("refusal-detail", ""); el("setup-lines").replaceChildren(); el("details").hidden = true;
   el<HTMLDetailsElement>("details").open = false;
 }
 function refusal(error: unknown): void {
   const exact = error instanceof Error ? error.message : String(error);
   text("refusal-detail", exact); el("details").hidden = false;
-  if (error instanceof DaemonRefusal && error.native === "NO_AVAILABLE_CONNECTOR") {
-    notice(`No supported agent application was found. Install ${applications.length ? new Intl.ListFormat("en", { type: "disjunction" }).format(applications) : "an application named in Details"}, make sure it runs in your login terminal, then choose Check again.`, true);
-  } else {
-    const code = error instanceof DaemonRefusal ? error.native ?? error.code : undefined;
-    const guidance: Record<string, string> = {
-      SEATS_ACTIVE: "Agent applications are still using this connection. Stop those sessions, then choose Check again.",
-      CREDENTIAL_EXPIRED: "Your sign-in has expired. Choose Sign in again before connecting.",
-      DENIED: "Sign-in approval was denied. Continue in browser to try again when you are ready.",
-      EXPIRED: "Sign-in approval expired. Continue in browser to request a new code.",
-      NOT_ANSWERING: "The background service did not respond in time. Check its status and the next step in Details before trying again.",
-      IDP_MISMATCH: "This space uses a different Cotal host. Sign in with the host named in Details.",
-      PERMISSION_DENIED: "The requested operation was refused. Follow the refusal and next step in Details before trying again.",
-    };
-    notice(guidance[code ?? ""] ?? "The operation did not complete. Read the exact reason and any next step in Details before trying again.", true);
-  }
+  problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
+  notice("", true);
+  showStage(stage);
 }
 function renderProgress(): void {
-  el("setup-progress").replaceChildren(...progressNames.map((name, index) => {
-    const li = document.createElement("li"); li.dataset.state = progress[index];
-    const mark = document.createElement("span"); mark.className = "progress-mark";
-    if (progress[index] === "waiting") mark.textContent = String(index + 1);
+  const list = el("setup-progress");
+  progressNames.forEach((name, index) => {
+    let li = list.children[index] as HTMLElement | undefined;
+    if (!li) {
+      li = document.createElement("li"); li.dataset.testid = `progress-${index}`;
+      const mark = document.createElement("span"); mark.className = "progress-mark"; mark.setAttribute("aria-hidden", "true");
+      const copy = document.createElement("span"); copy.className = "progress-copy";
+      const label = document.createElement("span"); label.textContent = name;
+      const detail = document.createElement("small"); detail.className = "progress-detail";
+      copy.append(label, detail);
+      const status = document.createElement("span"); status.className = "sr-only";
+      li.append(mark, copy, status); list.append(li);
+    }
+    if (li.dataset.state === progress[index]) return;
+    li.dataset.state = progress[index];
+    const mark = li.querySelector(".progress-mark")!;
+    if (progress[index] === "waiting") { mark.removeAttribute("data-icon"); mark.textContent = String(index + 1); }
     else setIcon(mark, progress[index] === "done" ? "check" : progress[index] === "failed" ? "warning" : "spinner");
-    const label = document.createElement("span"); label.textContent = name;
-    const status = document.createElement("small"); status.textContent = progress[index][0].toUpperCase() + progress[index].slice(1);
-    li.append(mark, label, status); return li;
-  }));
+    const detail = li.querySelector<HTMLElement>(".progress-detail")!;
+    detail.textContent = progressDetails[index]; detail.hidden = progress[index] !== "running";
+    li.querySelector(".sr-only")!.textContent = progress[index];
+    if (progress[index] === "running") announce(progressDetails[index]);
+  });
 }
 function setupProgress(frame: Frame): void {
   if (typeof frame.line === "string") {
@@ -132,9 +149,22 @@ function showStage(next: Stage, focus = false): void {
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Connect this computer to make it available to your space."; }
+  const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && selectedSpace() ? "VERSION_MISMATCH" : !setupActive && connection?.state === "approval-pending" ? "APPROVAL_PENDING" : undefined);
+  const recovery = issue ? refusalView(issue, applications) : undefined;
+  if (recovery) { title = recovery.title; description = recovery.description; }
+  el("recovery-panel").hidden = !recovery;
+  if (recovery) {
+    for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "preferences", "refresh"]) el(id).hidden = true;
+    text("recover", recovery.label); el("recover").dataset.action = recovery.action;
+    el<HTMLButtonElement>("recover").disabled = busy && issue !== "EXPIRED" || retrySignIn;
+    if (retrySignIn) text("recover", "Getting a new code…");
+    if (issue === "VERSION_MISMATCH") notice("This app and the background service have different versions.");
+  }
+  document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery));
   text("connection-title", title); text("connection-description", description);
-  setIcon(el("connection-icon"), el("notice").classList.contains("error") ? "warning" : finished ? "check" : next === "welcome" ? "computer" : next === "sign-in" ? "browser" : next === "space" ? "space" : setupActive ? "spinner" : "connect");
+  setIcon(el("connection-icon"), recovery ? "warning" : finished ? "check" : next === "welcome" ? "computer" : next === "sign-in" ? "browser" : next === "space" ? "space" : setupActive ? "spinner" : "connect");
   text("selected-space", `Space: ${spaceLabel()}`); text("connected-space", `Connected to ${spaceLabel()}`);
+  el("connected-space").hidden = !finished;
   text("login", linked || customHost || next === "sign-in" ? "Continue in browser" : "Continue with Cotal Cloud");
   el("other-host").hidden = customHost || linked;
   el("change-space").hidden = el<HTMLSelectElement>("space").options.length <= 2;
@@ -149,7 +179,17 @@ function showStage(next: Stage, focus = false): void {
     if (done) setIcon(marker, "check");
     else if (marker.textContent !== String(index + 1)) { marker.removeAttribute("data-icon"); marker.textContent = String(index + 1); }
   }
-  if (focus) el("connection-title").focus();
+  const view = `${next}:${title}:${loginActive}:${setupActive}:${issue ?? ""}`;
+  if (view !== lastView) {
+    const changed = lastView !== "";
+    lastView = view;
+    const card = document.querySelector(".connection-card")!;
+    card.classList.remove("stage-enter");
+    if (changed && initialized) { void (card as HTMLElement).offsetWidth; card.classList.add("stage-enter"); }
+    if (focus || changed && initialized) el("connection-title").focus({ preventScroll: true });
+    announce(title);
+  }
+  el("tray-indicator").classList.toggle("in-flight", busy);
   buttons();
 }
 function buttons(): void {
@@ -161,13 +201,40 @@ function buttons(): void {
   el<HTMLButtonElement>("dashboard").disabled = busy || !connected();
   el<HTMLButtonElement>("sync").disabled = busy || !ready;
   el<HTMLButtonElement>("choose-space").disabled = busy || !selectedSpace();
+  const busyId = el("recovery-panel").hidden ? loginActive ? "login" : setupActive ? "connect" : "" : "recover";
+  for (const id of ["login", "connect", "recover", "sync", "refresh", "disconnect"]) {
+    const button = el<HTMLButtonElement>(id);
+    const running = busy && id === busyId;
+    button.classList.toggle("busy", running); button.setAttribute("aria-busy", String(running));
+    if (running && !button.querySelector(".icon-spinner")) button.prepend(icon("spinner"));
+    if (!running) button.querySelector(".icon-spinner")?.remove();
+  }
   for (const id of ["space", "change-space", "another-space", "sign-in-again", "retry-login", "refresh", "autostart"]) (el(id) as HTMLButtonElement).disabled = busy;
 }
+function updateCountdown(): void {
+  const remaining = Math.max(0, Math.ceil((approvalExpires - Date.now()) / 1000));
+  text("approval-expiry", remaining ? `Expires in ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}` : "This code has expired.");
+  el<HTMLButtonElement>("copy-code").disabled = remaining === 0;
+  el<HTMLButtonElement>("open-approval").disabled = remaining === 0;
+  if (!remaining && problem !== "EXPIRED") {
+    problem = "EXPIRED";
+    text("refusal-detail", "The approval code expired before sign-in was confirmed."); el("details").hidden = false;
+    showStage("sign-in", true);
+    if (countdown) clearInterval(countdown);
+  }
+}
+el("copy-code").addEventListener("click", () => {
+  void navigator.clipboard.writeText(el("approval-code").textContent ?? "").then(() => { text("copy-code", "Copied"); text("announcer", "Approval code copied."); }).catch(() => notice("The code could not be copied. Select the code and copy it manually.", true));
+});
 function showApplications(manager: unknown): void {
   const names: Record<string, string> = { claude: "Claude Code", codex: "Codex", hermes: "Hermes", jcode: "Jcode", opencode: "OpenCode", pi: "pi" };
   const connectors = (manager as { connectors?: { agent?: string; state?: string }[] })?.connectors ?? [];
   const available = connectors.filter(c => c.state === "available" && typeof c.agent === "string").map(c => names[c.agent!] ?? c.agent!);
-  text("connected-applications", available.length ? `Available to launch: ${new Intl.ListFormat("en").format(available)}.` : "Agent applications are ready to launch from your dashboard.");
+  const container = el("connected-applications");
+  const value = available.join("\n");
+  if (container.dataset.applications === value) return;
+  container.dataset.applications = value;
+  container.replaceChildren(...available.map(name => { const chip = document.createElement("span"); chip.className = "application-chip"; chip.dataset.testid = "application-chip"; chip.textContent = name; return chip; }));
 }
 async function request(body: Request): Promise<Record<string, unknown>> {
   const events = new Channel<Frame>();
@@ -178,11 +245,16 @@ async function request(body: Request): Promise<Record<string, unknown>> {
       approval = approvalUrl(frame.prompt.verificationUriComplete);
       text("approval-code", String(frame.prompt.userCode ?? ""));
       const expiry = new Date(String(frame.prompt.expiresAt ?? ""));
-      text("approval-expiry", Number.isNaN(expiry.valueOf()) ? "" : `Code expires at ${expiry.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`);
+      approvalExpires = expiry.valueOf();
+      if (!Number.isFinite(approvalExpires)) throw new Error("The approval code has no valid expiry.");
+      updateCountdown();
+      if (countdown) clearInterval(countdown);
+      if (approvalExpires > Date.now()) countdown = setInterval(updateCountdown, 1000);
+      el("copy-code").replaceChildren(icon("copy"), document.createTextNode(" Copy"));
       el("approval").hidden = false;
-      notice("Waiting for your browser.");
+      notice("");
       if (loginActive) showStage("sign-in");
-      void invoke("open_browser", { url: approval }).catch(refusal);
+      if (approvalExpires > Date.now()) void invoke("open_browser", { url: approval }).catch(refusal);
     } catch (error) { refusal(error); }
   };
   return requireResult(await invoke<Frame>("daemon_request", { request: body, onEvent: events }));
@@ -191,7 +263,8 @@ function state(value: string, space = selectedSpace()): void {
   if (space !== selectedSpace()) return;
   connection = { space, state: value };
   const verified = connected();
-  text("tray-label", verified ? "Connected" : "Not connected");
+  if (verified) problem = undefined;
+  text("tray-label", initialized ? verified ? "Connected" : "Not connected" : "Checking connection");
   el("tray-indicator").classList.toggle("connected", verified);
   if (isTauri()) void invoke("set_connection_state", { connected: verified }).catch(() => undefined);
   if (verified && !editing) showStage("finished");
@@ -252,7 +325,10 @@ async function spaces(refreshCatalog: boolean): Promise<void> {
 async function action(fn: () => Promise<void>): Promise<void> {
   if (busy) return; busy = true; refreshGeneration++; buttons();
   try { await fn(); } catch (error) { refusal(error); }
-  finally { refreshGeneration++; busy = false; showStage(stage); }
+  finally {
+    refreshGeneration++; busy = false; showStage(stage);
+    if (retrySignIn) { retrySignIn = false; beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+  }
 }
 function nextAfterSignIn(): void {
   editing = false;
@@ -261,7 +337,7 @@ function nextAfterSignIn(): void {
   else {
     showStage("space", true);
     if (requestedSpace && !selectedSpace()) notice("The requested space is not available to this account. Ask its owner for access, then refresh spaces.");
-    else if (!el<HTMLSelectElement>("space").options[1]) notice("This account has no spaces yet. Create a space in your Cotal host's dashboard or ask its owner for access, then refresh spaces.");
+    else if (!el<HTMLSelectElement>("space").options[1]) { problem = "NO_SPACES"; showStage("space", true); }
   }
 }
 el<HTMLInputElement>("provider").value = COTAL_CLOUD_IDP;
@@ -274,10 +350,20 @@ el("login-form").addEventListener("submit", (event) => {
       const provider = el<HTMLInputElement>("provider").value.trim(); approvalUrl(provider);
       if (!ready) { notice("Preparing the background service…"); await request({ op: "install" }); await refresh(); if (!ready) throw new Error("The background service is not ready."); }
       const result = await request({ op: "login", idp: provider });
-      if (result.outcome !== "signed-in") throw new Error(String(result.message ?? "Sign-in was not completed."));
+      problem = undefined;
+      if (result.outcome !== "signed-in") throw new DaemonRefusal(String(result.reason ?? "refused").toUpperCase().replaceAll("-", "_"), String(result.message ?? "Sign-in was not completed."));
       notice(""); await spaces(true); nextAfterSignIn();
-    } finally { loginActive = false; approval = undefined; el("approval").hidden = true; }
+    } finally { loginActive = false; approval = undefined; if (countdown) clearInterval(countdown); el("approval").hidden = true; }
   });
+});
+el("recover").addEventListener("click", () => {
+  if (busy) { if (problem === "EXPIRED" && !retrySignIn) { retrySignIn = true; showStage(stage); } return; }
+  const recovery = el("recover").dataset.action;
+  problem = undefined; notice("");
+  if (recovery === "login") { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
+  else if (recovery === "connect") el<HTMLButtonElement>("connect").click();
+  else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
+  else void action(async () => { clearDetails(); await refresh(); });
 });
 el("open-approval").addEventListener("click", () => { if (approval) void invoke("open_browser", { url: approval }).catch(refusal); });
 function beginSignIn(): void {
@@ -352,7 +438,7 @@ async function start(): Promise<void> {
   if (!isTauri()) {
     text("machine-details", "Computer information is unavailable in browser preview."); text("version", "Preview");
     notice("Browser preview only. Native controls are unavailable here. No connection is simulated.");
-    el<HTMLInputElement>("autostart").disabled = true; return;
+    el<HTMLInputElement>("autostart").disabled = true; document.querySelector(".app")!.classList.remove("loading"); return;
   }
   try {
     await onOpenUrl(receiveLinks); const initialLinks = await getCurrent(); if (initialLinks?.length) receiveLinks(initialLinks);
@@ -369,8 +455,34 @@ async function start(): Promise<void> {
       else if (!linked && el<HTMLSelectElement>("space").options.length > 1) showStage("space");
     }
   } catch (error) { refusal(error); }
+  initialized = true;
+  document.querySelector(".app")!.classList.remove("loading");
+  text("tray-label", connected() ? "Connected" : "Not connected");
   const tick = async () => { if (!busy && !document.hidden) await refresh(); poll = setTimeout(() => void tick(), 10_000); };
   poll = setTimeout(() => void tick(), 10_000);
 }
-window.addEventListener("beforeunload", () => { if (poll) clearTimeout(poll); });
+el("notice-wrap").addEventListener("transitionend", () => { if (!el("notice-wrap").classList.contains("expanded")) el("notice").hidden = true; });
+const details = el<HTMLDetailsElement>("details");
+let closingDetails = false;
+function closeDetails(): void {
+  if (!details.open || closingDetails) return;
+  if (!window.matchMedia || window.matchMedia("(prefers-reduced-motion: reduce)").matches) { details.open = false; return; }
+  closingDetails = true; details.classList.add("closing");
+}
+details.querySelector("summary")!.addEventListener("click", event => {
+  if (details.open) { event.preventDefault(); closeDetails(); }
+});
+details.querySelector(".details-content")!.addEventListener("transitionend", () => {
+  if (closingDetails) { details.open = false; closingDetails = false; details.classList.remove("closing"); }
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && el<HTMLDetailsElement>("details").open) {
+    event.preventDefault(); closeDetails();
+    el("details").querySelector<HTMLElement>("summary")!.focus();
+  }
+  if (event.key !== "Enter" || event.defaultPrevented || (event.target as Element).closest("button,input,select,summary")) return;
+  const primary = document.querySelector<HTMLButtonElement>(".connection-card .primary:not(:disabled):not([hidden])");
+  if (primary && !primary.closest("[hidden]")) { event.preventDefault(); primary.click(); }
+});
+window.addEventListener("beforeunload", () => { if (poll) clearTimeout(poll); if (countdown) clearInterval(countdown); });
 void start();

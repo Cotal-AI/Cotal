@@ -2,7 +2,7 @@
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light dark"><link rel="icon" href="../assets/cotal-mark.svg" type="image/svg+xml"><title>Cotal</title></head>
 <body>
-  <div class="app">
+  <div class="app loading">
     <aside class="sidebar">
       <div class="brand"><img class="brand-mark" src="../assets/cotal-mark.svg" alt=""><strong>cotal</strong></div>
       <ol id="journey" aria-label="Connection steps">
@@ -12,30 +12,32 @@
         <li data-stage="connect"><span class="step-marker">4</span><span>Connect</span></li>
         <li data-stage="finished"><span class="step-marker">5</span><span>Ready</span></li>
       </ol>
-      <div class="sidebar-footer"><span id="tray-indicator" class="dot"></span><span id="tray-label">Not connected</span></div>
+      <div class="sidebar-footer"><div class="machine"><p id="machine-name">This computer</p><p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span></div><span id="tray-indicator" class="dot"></span><span id="tray-label">Checking connection</span></div>
     </aside>
     <main>
-      <header class="machine"><span id="machine-icon" aria-hidden="true"></span><div><p id="machine-name">This computer</p><p class="muted" id="machine-details">Reading computer information…</p></div></header>
       <section class="connection-card" aria-labelledby="connection-title">
+        <h1 id="loading-title" data-testid="loading-title">Checking this computer…</h1>
         <span id="connection-icon" class="connection-icon" aria-hidden="true"></span>
         <p id="step-caption" class="eyebrow">Let's get started</p>
         <h1 id="connection-title" tabindex="-1">Welcome to Cotal</h1>
         <p id="connection-description">Connect this computer to launch agent applications from your space's dashboard. People authorized in the space can launch them as your operating-system user, with those applications' own sign-in and file permissions.</p>
         <p id="link-context" class="context" hidden></p>
-        <div id="notice" hidden></div>
+        <div id="notice-wrap" class="notice-wrap"><div><div id="notice" hidden></div></div></div>
         <div id="sign-in-panel">
           <form id="login-form">
             <div id="custom-host" hidden><label for="provider">Cotal host sign-in URL</label><input id="provider" type="url" required autocomplete="url" aria-describedby="host-help"><p id="host-help" class="muted">Ask the person running your Cotal host for its sign-in URL.</p></div>
             <div id="login-actions" class="actions"><button id="login" class="button primary" type="submit">Continue with Cotal Cloud</button><button id="other-host" class="text-button" type="button">Use another Cotal host</button></div>
           </form>
-          <div id="approval" class="approval" hidden><p>Enter this code if your browser asks.</p><strong id="approval-code"></strong><p class="muted" id="approval-expiry"></p><button id="open-approval" class="button primary" type="button">Open approval page</button><p class="muted">Do not share the approval link or code.</p></div>
+          <div id="approval" class="approval" hidden><p class="waiting-line" data-testid="waiting-line"><span class="dot in-flight" aria-hidden="true"></span>Waiting for your browser</p><p>Enter this code if your browser asks.</p><div class="code-row"><strong id="approval-code"></strong><button id="copy-code" data-testid="copy-code" class="text-button" type="button">Copy</button></div><p class="muted" id="approval-expiry" data-testid="approval-expiry"></p><button id="open-approval" class="button primary" type="button">Open approval page</button><p class="muted">Do not share the approval link or code.</p></div>
           <p id="service-explanation" class="footnote">Continuing prepares a background service that runs as your user, not an administrator, even after this window closes. Your login stays in that service, never in this app.</p>
         </div>
         <div id="space-panel" hidden><label for="space">Your space</label><select id="space"><option value="">Choose a space</option></select><div class="actions"><button id="choose-space" class="button primary" type="button">Continue</button><button id="sync" class="text-button" type="button">Refresh spaces</button></div></div>
         <div id="connect-panel" hidden><p class="context" id="selected-space"></p><div class="actions"><button id="connect" class="button primary" type="button">Connect this computer</button><button id="change-space" class="text-button" type="button">Choose another space</button><button id="retry-login" class="text-button" type="button">Sign in again</button></div></div>
         <ol id="setup-progress" class="progress" aria-label="Connection progress" hidden></ol>
-        <div id="connected-panel" hidden><p id="connected-space" class="context"></p><p id="connected-applications" data-testid="connected-applications" class="muted"></p><button id="dashboard" class="button primary" type="button">Open dashboard</button><div class="actions secondary-actions"><button id="disconnect" class="text-button" type="button">Disconnect</button><button id="another-space" class="text-button" type="button">Connect another space</button><button id="sign-in-again" class="text-button" type="button">Sign in again</button></div></div>
-        <details id="details" hidden><summary>Details</summary><pre id="refusal-detail"></pre><ol id="setup-lines"></ol></details>
+        <p id="connected-space" class="connected-space" hidden></p>
+        <div id="connected-panel" hidden><div id="connected-applications" data-testid="connected-applications" class="application-chips"></div><button id="dashboard" class="button primary" type="button">Open dashboard</button><div class="actions secondary-actions"><button id="disconnect" class="text-button" type="button">Disconnect</button><button id="another-space" class="text-button" type="button">Connect another space</button><button id="sign-in-again" class="text-button" type="button">Sign in again</button></div></div>
+        <div id="recovery-panel" data-testid="recovery-panel" class="actions" hidden><button id="recover" data-testid="recover" class="button primary" type="button">Try again</button></div>
+        <details id="details" hidden><summary>Details</summary><div class="details-content"><div><pre id="refusal-detail"></pre><ol id="setup-lines"></ol></div></div></details>
         <button id="refresh" class="text-button" type="button" hidden>Refresh status</button>
       </section>
       <div id="announcer" data-testid="announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>

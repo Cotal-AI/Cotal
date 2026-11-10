@@ -30,10 +30,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 #journey [data-state=done] .step-marker { color: var(--accent); border-color: var(--accent); background: var(--tint); }
 #journey [data-state=done]::after { background: var(--accent); }
 .later-open #journey { display: none; }
-main { width: 100%; max-width: 600px; margin: auto; padding: 24px 0 0; }
-.machine { display: flex; align-items: center; gap: 12px; margin: 0 4px 16px; color: var(--muted); }
+main { width: 100%; max-width: 600px; margin: 0 auto; padding: 32px 0 0; }
+.machine { display: flex; align-items: center; color: var(--muted); }
 .machine p { margin: 0; }
-#machine-name { color: var(--text); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+#machine-name { color: var(--muted); font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
 #machine-details { font-size: 11px; }
 #machine-icon .icon { width: 24px; height: 24px; }
 h1 { font-size: 26px; line-height: 1.2; letter-spacing: -.65px; margin: 0 0 12px; }
@@ -41,8 +41,21 @@ h2 { font-size: 14px; margin: 0; }
 p { margin: 0 0 16px; }
 .muted, .footnote { color: var(--muted); font-size: 12px; }
 .eyebrow { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .6px; margin: 0 0 8px; }
-.connection-card { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 24px 28px; box-shadow: 0 4px 24px #18271006, 0 1px 2px #18271005; }
+.connection-card { min-height: 420px; position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 24px 28px; box-shadow: 0 4px 24px #18271006, 0 1px 2px #18271005; }
 .connection-icon { display: grid; place-items: center; width: 40px; height: 40px; background: var(--tint); color: var(--accent); border-radius: var(--radius); margin-bottom: 16px; }
+#step-caption { display: none; }
+.connected-space { font-size: 14px; font-weight: 600; margin: 0 0 16px; color: var(--accent); }
+.application-chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 24px; }
+.application-chip { border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; font-size: 12px; color: var(--muted); }
+.code-row { display: flex; align-items: center; gap: 16px; }
+.code-row strong { margin: 0; }
+.waiting-line { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.waiting-line .dot { background: var(--accent); }
+#loading-title { display: none; }
+.loading .connection-card > * { visibility: hidden; }
+.loading #loading-title { display: block; visibility: visible; color: var(--muted); font-size: 16px; margin: 8px 0 0; }
+.loading .connection-card > :not(#loading-title) { display: none !important; }
+.loading #journey { visibility: hidden; }
 .icon { width: 20px; height: 20px; display: block; flex: none; }
 .connection-icon .icon { width: 24px; height: 24px; }
 .step-marker .icon, .progress-mark .icon { width: 14px; height: 14px; }
@@ -95,6 +108,37 @@ details ol { padding-left: 20px; }
 footer { display: flex; justify-content: space-between; gap: 12px; margin: 16px 4px 0; color: var(--muted); font-size: 10px; }
 .version { white-space: nowrap; }
 .has-refusal .progress { display: none; }
+/* Only state changes receive stage-enter. Idle status polling never restarts it. */
+.stage-enter > :not(#loading-title) { animation: enter var(--slow) var(--ease) both; }
+@keyframes enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 50% { opacity: .35; } }
+@keyframes success { from { opacity: 0; transform: scale(.8); } to { opacity: 1; transform: scale(1); } }
+@keyframes draw { from { stroke-dashoffset: 24; } to { stroke-dashoffset: 0; } }
+.icon-spinner { animation: spin calc(var(--slow) * 4) linear infinite; }
+.in-flight { animation: pulse calc(var(--slow) * 6) var(--ease) infinite; }
+.connection-icon[data-icon=check] { animation: success var(--slow) var(--ease) both; }
+.progress [data-state=done] .check-stroke { stroke-dasharray: 24; animation: draw var(--slow) var(--ease) both; }
+button { transition: background-color var(--fast) var(--ease), border-color var(--fast) var(--ease), transform var(--fast) var(--ease); }
+button:not(:disabled):hover { filter: brightness(.95); }
+button:not(:disabled):active { transform: translateY(1px); }
+.text-button:not(:disabled):hover { background: var(--tint); filter: none; }
+.switch span:before { transition: transform var(--fast) var(--ease); }
+.notice-wrap, .details-content { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows var(--slow) var(--ease), opacity var(--fast) var(--ease); }
+.notice-wrap > div, .details-content > div { overflow: hidden; min-height: 0; }
+.notice-wrap.expanded, details[open]:not(.closing) .details-content { grid-template-rows: 1fr; opacity: 1; }
+details[open]::details-content { display: block; }
+@starting-style { details[open] .details-content { grid-template-rows: 0fr; opacity: 0; } }
+.progress-copy { display: flex; flex-direction: column; }
+.progress .progress-detail { margin: 2px 0 0; font-size: 11px; }
+.progress li { min-height: 36px; }
+.progress li:not(:last-child)::before { top: 28px; height: calc(100% - 20px); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition-duration: var(--fast) !important; }
+  .stage-enter > :not(#loading-title) { animation: reduced-enter var(--fast) var(--ease) both !important; }
+  button:not(:disabled):active { transform: none; }
+  @keyframes reduced-enter { from { opacity: .7; } to { opacity: 1; } }
+}
 @media (prefers-color-scheme: dark) {
   :root { --bg: #181d18; --panel: #222821; --text: #eef1ea; --muted: #b1bbaa; --line: #3f493a; --accent: #b0ce97; --accent-text: #1c2a13; --tint: #2c3925; --error: #f0a399; }
   .connection-card { box-shadow: 0 4px 24px #00000014; }
@@ -104,7 +148,8 @@ footer { display: flex; justify-content: space-between; gap: 12px; margin: 16px 
   #journey { margin-top: 20px; }
   #journey li { gap: 6px; font-size: 11px; }
   #journey li:not(:last-child)::after { width: 12px; margin-left: 4px; }
-  main { padding-top: 20px; }
+  main { padding-top: 24px; }
+  #step-caption:not([hidden]) { display: block; }
   .connection-card { padding: 20px 24px; }
   h1 { font-size: 24px; }
   #connection-description { font-size: 13px; }
@@ -112,8 +157,8 @@ footer { display: flex; justify-content: space-between; gap: 12px; margin: 16px 
 }
 @media (max-height: 700px) {
   .app { padding-top: 16px; padding-bottom: 16px; }
-  main { padding-top: 16px; }
-  .machine { margin-bottom: 12px; }
+  main { padding-top: 24px; }
+  .machine { margin-bottom: 0; }
   #journey { margin-top: 16px; }
   .connection-card { padding-top: 20px; padding-bottom: 20px; }
   .connection-icon { margin-bottom: 12px; }
