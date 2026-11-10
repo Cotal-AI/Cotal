@@ -159,8 +159,9 @@ try {
   let r2 = spawnDaemon(["--space", space, "--creds", credsPath], wsRoot);
   let r2Log = await r2.done();
   check(
-    "R2 an unreachable RECORDED broker is refused naming that URL (not the loopback default), without `Run: cotal up` for a manual record",
-    r2Log.includes(deadServer) && !r2Log.includes("nats://127.0.0.1:4222") && !r2Log.includes("Run: `cotal up`"),
+    "R2 an unreachable recorded broker refuses with space forget, not legacy removal or local startup",
+    r2.proc.exitCode === 1 && r2Log.includes(deadServer) && !r2Log.includes("nats://127.0.0.1:4222") &&
+      r2Log.includes(`cotal space forget ${space}`) && !r2Log.includes("cotal meshes rm") && !r2Log.includes("cotal up"),
     r2Log,
   );
 
