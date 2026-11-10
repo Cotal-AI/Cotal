@@ -232,6 +232,8 @@ returns a no-op without confirmation, signals or journal writes. Retiring a stop
 retires its process pin; `up --no-manager` preserves the pin of an earlier stopped manager.
 A planned member gains its new pin only after readiness succeeds. If that start is interrupted,
 missing-record recovery refuses rather than treating the earlier process's exit as the new one's.
+An unconfirmed first launch also refuses when its home records are missing, even if no instance ID
+reached the project journal. Missing launch evidence does not mean that nothing started.
 
 ### Already-stopped stacks
 

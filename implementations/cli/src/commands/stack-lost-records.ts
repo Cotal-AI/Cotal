@@ -5,15 +5,22 @@ import type { ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, ConfirmationRequired, assertRecordIdentity, homeCotalDir, loadMeshes, presentationOf, probeLiveness, recordOperationSpace, releaseMaintenanceLock, stackHomeRemedy, writeResult, type Report } from "@cotal-ai/workspace";
 import { serviceInstances, serviceInstanceStore } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts } from "../lib/service-process.js";
-import { acquireStackOperationLock, newStackOperation, readStackJournal, recordedProcessesUnder, stackMaintenanceFence, stackRecoveryHost, writeStackJournal, type StackJournalSnapshot, type StackMember } from "../lib/stack-journal.js";
+import { acquireStackOperationLock, newStackOperation, readStackJournal, recordedProcessesUnder, stackMaintenanceFence, stackOperationUnsettled, stackRecoveryHost, writeStackJournal, type StackJournalSnapshot, type StackMember } from "../lib/stack-journal.js";
 
 const ORDER = ["manager", "delivery", "auth", "broker"];
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
-/** Only a journal with named instances and at least one absent record needs this recovery check. */
+function unconfirmedLaunches(snapshot: StackJournalSnapshot): StackMember[] {
+  const journal = snapshot.journal;
+  if (journal.operation.kind !== "up" || !stackOperationUnsettled(journal)) return [];
+  return journal.members.filter((row) => row.instanceId === null && (row.state === "planned" || row.state === "unknown"));
+}
+
+/** Missing launch evidence also includes a child whose instance ID never reached the root journal. */
 export function stackRecordsLost(snapshot: StackJournalSnapshot): boolean {
-  const store = serviceInstanceStore(snapshot.journal.space);
-  return snapshot.journal.members.some((row) => row.instanceId !== null && store.read(row.instanceId) === undefined);
+  const space = snapshot.journal.space, store = serviceInstanceStore(space);
+  return snapshot.journal.members.some((row) => row.instanceId !== null && store.read(row.instanceId) === undefined)
+    || (unconfirmedLaunches(snapshot).length > 0 && snapshot.journal.members.every((row) => serviceInstances(space, row.definition).length === 0));
 }
 
 function members(snapshot: StackJournalSnapshot): StackMember[] {
@@ -26,6 +33,8 @@ function members(snapshot: StackJournalSnapshot): StackMember[] {
     refuse("the stack retains a maintenance operation; missing-record recovery cannot decide it and no member was stopped");
   if (journal.members.some((row) => row.replacement !== undefined))
     refuse("the stack retains an unresolved replacement launch; no member was stopped");
+  if (unconfirmedLaunches(snapshot).length)
+    refuse("the stack retains an unconfirmed launch without an instance identity; restore the original instance records before stopping, and no member was stopped");
   const rows = journal.members.filter((row) => row.instanceId !== null);
   const store = serviceInstanceStore(journal.space);
   if (rows.some((row) => store.read(row.instanceId!) !== undefined))
