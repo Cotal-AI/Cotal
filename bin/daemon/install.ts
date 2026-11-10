@@ -32,7 +32,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, posix } from "node:path";
 import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
 import { codeSpan, CommandFailure } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
@@ -93,10 +93,10 @@ function unitValue(value: string, exec = false): string {
 
 /** The invocation's own `PATH`, pinned absolute. A relative or empty entry would resolve against
  *  whichever directory the unit happens to start in, so it refuses instead. */
-function pinnedPath(value = process.env.PATH ?? ""): string {
-  const entries = value.split(delimiter).filter((entry) => entry !== "");
-  if (!entries.length || entries.some((entry) => !isAbsolute(entry))) throw new CommandFailure("refused", "UNSUPPORTED", "the daemon unit needs an absolute, pinned PATH; a relative or empty entry was not inherited");
-  return entries.join(delimiter);
+function pinnedPath(value = process.env.PATH ?? "", grammar: Pick<typeof posix, "delimiter" | "isAbsolute"> = { delimiter, isAbsolute }): string {
+  const entries = value.split(grammar.delimiter).filter((entry) => entry !== "");
+  if (!entries.length || entries.some((entry) => !grammar.isAbsolute(entry))) throw new CommandFailure("refused", "UNSUPPORTED", "the daemon unit needs an absolute, pinned PATH; a relative or empty entry was not inherited");
+  return entries.join(grammar.delimiter);
 }
 
 export interface RenderedUnit {
@@ -367,7 +367,8 @@ export function refreshedDaemonPath(mechanism: ServiceMechanism, source: string,
   const old = mechanism === "systemd-user"
     ? match[1]!.replace(/\\([\\"])/g, "$1").replaceAll("%%", "%")
     : match[2]!.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
-  const merged = [...new Set([...pinnedPath(terminalPath).split(delimiter), ...pinnedPath(old).split(delimiter)])].join(delimiter);
+  // A systemd unit and a launchd plist carry a POSIX search path whatever host reads them.
+  const merged = [...new Set([...pinnedPath(terminalPath, posix).split(posix.delimiter), ...pinnedPath(old, posix).split(posix.delimiter)])].join(posix.delimiter);
   return source.replace(pattern, () => mechanism === "systemd-user" ? `Environment=PATH=${unitValue(merged)}` : `${match[1]}${xmlText(merged)}${match[3]}`);
 }
 
