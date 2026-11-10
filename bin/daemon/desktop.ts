@@ -7,7 +7,7 @@ import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { loginViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
 import { applyInstall, planUninstall, startInstalled } from "./install.js";
-import { encode, type DaemonResponse } from "./protocol.js";
+import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
 
 export type DesktopRequest =
   | { [K in "about" | "status" | "install"]: { readonly op: K } }["about" | "status" | "install"]
@@ -25,7 +25,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
   if (simple) return { op: o.op as "about" | "status" | "install" };
   if (scoped) {
-    if (typeof o.space !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(o.space)) throw new Error("invalid space");
+    if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
     return { op: o.op as "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status", space: o.space };
   }
   if (o.op === "spaces") {

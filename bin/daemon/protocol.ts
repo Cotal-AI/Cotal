@@ -164,6 +164,11 @@ const MAX_CLIENT_ID = 128;
 /** A space name as it appears in a subject token. */
 const SPACE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
+/** Whether a registry name can be addressed by a scoped daemon request. */
+export function isDaemonSpaceName(space: unknown): space is string {
+  return typeof space === "string" && SPACE_PATTERN.test(space);
+}
+
 export type ParsedRequest = { readonly ok: true; readonly request: DaemonRequest } | { readonly ok: false; readonly id: string | null; readonly code: ProtocolErrorCode; readonly message: string };
 
 const bad = (id: string | null, message: string): ParsedRequest => ({ ok: false, id, code: "BAD_FIELD", message });
@@ -199,7 +204,7 @@ export function parseRequest(line: string): ParsedRequest {
     return { ok: true, request: { v, id, op, attempt: obj.attempt } };
   }
   if (op === "manager-start" || op === "manager-status" || op === "connect-check" || op === "register" || op === "service-connect" || op === "service-disconnect" || op === "service-status") {
-    if (typeof obj.space !== "string" || !SPACE_PATTERN.test(obj.space)) return bad(id, "space must be 1-64 characters of [A-Za-z0-9_-]");
+    if (!isDaemonSpaceName(obj.space)) return bad(id, "space must be 1-64 characters of [A-Za-z0-9_-]");
     return { ok: true, request: { v, id, op, space: obj.space } };
   }
   if (typeof obj.idp !== "string") return bad(id, "idp must be the provider's auth base URL");

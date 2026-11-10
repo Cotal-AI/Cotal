@@ -587,6 +587,9 @@ its catalogs. With no cached sign-in, a refresh reports `not-signed-in`; the CLI
 `AUTH_REQUIRED` (exit 2) and directs you to `cotal daemon login --idp <url>`. Saved spaces remain
 listed, and listing without `--refresh` still works. Name collisions and unreadable registrations
 are reported rather than replaced.
+Names outside the daemon's 1-64 letters, digits, underscores or hyphens count as unreadable
+registrations and are not offered in its CLI list or the desktop space selector. Their records
+remain unchanged. Listing them reports a partial outcome (exit 4).
 An unrelated damaged registration does not block catalog refresh: healthy catalog entries still
 update, and the listing reports the unreadable count with a partial outcome (exit 4).
 A damaged canonical registration and its usable legacy duplicate stay untouched, including during
