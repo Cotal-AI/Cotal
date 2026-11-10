@@ -561,15 +561,16 @@ try {
       const effects = () => operations().filter((operation) => !["directory-read", "linger-read"].includes(operation));
       const unsafe = ["group-ancestor", "world-ancestor", "group-leaf", "symlink", "file-ancestor"].includes(kind);
       const directoryExisted = existsSync(unitDir);
+      const previewRefusal = kind === "existing-unit" ? "CONFLICT" : kind === "file-ancestor" ? "TARGET_UNAVAILABLE" : unsafe ? "PERMISSION_DENIED" : undefined;
       for (const format of ["plain", "json"]) {
         const preview = call("install", ["--dry-run", `--${format}`]);
-        check(`N8 ${kind} ${format} preview`, preview.status === (unsafe ? 2 : 0) && (unsafe ? /PERMISSION_DENIED/.test(preview.output) : /Would install|would-install/.test(preview.output)), preview);
+        check(`N8 ${kind} ${format} preview`, preview.status === (previewRefusal ? 2 : 0) && (previewRefusal ? preview.output.includes(previewRefusal) : /Would install|would-install/.test(preview.output)), preview);
         check(`N8 ${kind} ${format} preview writes nothing`, existsSync(unitDir) === directoryExisted && !existsSync(receiptFile) && (kind === "existing-unit" ? readFileSync(unitPath, "utf8") === "foreign unit" : !existsSync(unitPath)) && effects().length === 0 && readFileSync(lingerFile, "utf8") === "Linger=no\n");
         if (kind === "changed-after-plan") chmodSync(config, 0o700);
       }
       const installed = call("install", ["--json"]);
       const refused = unsafe || changedDuringLinger || ["changed-after-plan", "existing-unit", "linger-denied"].includes(kind);
-      check(`N8 ${kind} apply outcome`, installed.status === (kind === "existing-unit" || changedSource ? 3 : refused ? 2 : 0), installed);
+      check(`N8 ${kind} apply outcome`, installed.status === (changedSource ? 3 : refused ? 2 : 0) && (previewRefusal === undefined || installed.output.includes(previewRefusal)), installed);
       if (unsafe || kind === "changed-after-plan" || kind === "existing-unit") {
         check(`N8 ${kind} refusal changes no linger or native state`, effects().length === 0 && readFileSync(lingerFile, "utf8") === "Linger=no\n", operations());
         check(`N8 ${kind} refusal publishes no source or receipt`, !existsSync(receiptFile) && (kind === "existing-unit" ? readFileSync(unitPath, "utf8") === "foreign unit" : !existsSync(unitPath)));
