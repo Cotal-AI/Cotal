@@ -10,7 +10,8 @@
  *
  * Run: pnpm smoke:runtime-run-command-usage   (no broker)
  */
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { closeSync, constants, mkdirSync, mkdtempSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
@@ -18,6 +19,7 @@ import { CommandFailure, exitCode, isCommandFailure } from "@cotal-ai/workspace"
 import { runWorkflow } from "../src/index.js";
 import { managerRefusal, renderLangProblem, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
 import { printRunDetail } from "../src/workflow-views.js";
+import { sourceOf } from "../src/offline-command.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -367,6 +369,41 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   }
   const dash = await attempt(["start", "-"]);
   c("run start - says that - does not mean standard input", isCommandFailure(dash) && dash.code === "TARGET_NOT_FOUND" && dash.message.includes("- does not mean standard input"), dash);
+  const program = join(dir, "ok.cotal.js");
+  const source = "const answer = 1;\n";
+  writeFileSync(program, source);
+  symlinkSync(program, join(dir, "linked.cotal.js"));
+  c("regular workflow sources and symlinks to them keep their text", sourceOf(program) === source && sourceOf(join(dir, "linked.cotal.js")) === source);
+  if (process.platform !== "win32") {
+    for (const verb of ["start", "validate", "plan", "simulate"]) {
+      const got = await runWorkflow({ values: {}, positionals: [verb, "/dev/null"], raw: [] }).then(() => undefined, (e: Error) => e);
+      c(`run ${verb} refuses a character device without suggesting writing into it`,
+        usageRefusal(got, "is a character device") && isCommandFailure(got)
+        && got.remedy === "save the program in a regular file and use that path instead", got);
+    }
+    const fifo = join(dir, "pipe.cotal.js");
+    const made = spawnSync("mkfifo", [fifo], { encoding: "utf8" });
+    if (made.error) throw made.error;
+    if (made.status !== 0) throw new Error(`mkfifo failed: ${made.stderr}`);
+    symlinkSync(fifo, join(dir, "linked-pipe.cotal.js"));
+    // A separate process bounds the regression: the old synchronous read blocks this event loop.
+    const child = `import { runWorkflow } from ${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)};
+      try { await runWorkflow({ values: {}, positionals: process.argv.slice(1), raw: [] }); }
+      catch (e) { console.error(e.code + ": " + e.message); process.exitCode = 1; }`;
+    const refusedPipe = (label: string, path: string, verb: string) => {
+      const got = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", child, verb, path], { encoding: "utf8", timeout: 10_000 });
+      c(`${label}: run ${verb} promptly refuses a FIFO naming its kind`,
+        !got.error && got.signal === null && got.status === 1 && got.stderr.includes("USAGE_INVALID:")
+        && got.stderr.includes(path) && got.stderr.includes("is a FIFO (named pipe)"), got);
+    };
+    for (const verb of ["validate", "start"]) refusedPipe("no writer", fifo, verb);
+    refusedPipe("symlink, no writer", join(dir, "linked-pipe.cotal.js"), "validate");
+    const writer = openSync(fifo, constants.O_RDWR | constants.O_NONBLOCK);
+    try {
+      writeFileSync(writer, source);
+      refusedPipe("writer with readable data", fifo, "validate");
+    } finally { closeSync(writer); }
+  }
   rmSync(dir, { recursive: true, force: true });
 }
 
