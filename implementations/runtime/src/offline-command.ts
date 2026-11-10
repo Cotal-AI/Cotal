@@ -37,8 +37,16 @@ export function sourceOf(file: string): string {
 function scriptOf(file: string | undefined): SimScript {
   if (file === undefined) return {};
   let value: unknown;
-  try { value = JSON.parse(readFileSync(file, "utf8")); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation handler must be a readable JSON results script", { target: { file } }); }
+  try {
+    const bytes = readFileSync(file);
+    let text: string;
+    try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
+    catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script is not valid UTF-8, so it was not simulated", { target: { file }, remedy: `save ${file} as UTF-8 text` }); }
+    value = JSON.parse(text);
+  } catch (error) {
+    if (error instanceof CommandFailure) throw error;
+    throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation handler must be a readable JSON results script", { target: { file } });
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script must be an object");
   const script = value as Record<string, unknown>;
   const fields = new Set(["turns", "asks", "checkpoints", "events", "clock", "faults"]);

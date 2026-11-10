@@ -319,6 +319,54 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   rmSync(dir, { recursive: true, force: true });
 }
 
+// Handler bytes must reach the simulated program unchanged, just as source bytes do. Reject
+// malformed UTF-8 before parsing JSON, but accept Unicode and an intentionally encoded U+FFFD.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-handler-bytes-"));
+  const program = join(dir, "p.cotal.js"), handler = join(dir, "results.json");
+  writeFileSync(program, 'const answer = await checkpoint("go", "Proceed?");\nlog(answer.value);\n');
+  const prefix = Buffer.from('{"checkpoints":{"go":{"status":"resolved","value":"');
+  const suffix = Buffer.from('","by":"ana"}}}');
+  const simulateBytes = async (bytes: Buffer, mode: Record<string, string | boolean> = {}) => {
+    writeFileSync(handler, bytes);
+    const out: string[] = [];
+    const write = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => { out.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    try {
+      const error = await runWorkflow({ values: { handler, ...mode }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
+      return { error, out: out.join("") };
+    } finally { process.stdout.write = write; }
+  };
+  const malformed: [string, number[]][] = [
+    ["Latin-1", [0xe9]], ["truncated sequence", [0xf0, 0x9f, 0x98]],
+    ["overlong sequence", [0xc0, 0xaf]], ["surrogate", [0xed, 0xa0, 0x80]],
+    ["out-of-range code point", [0xf4, 0x90, 0x80, 0x80]],
+  ];
+  const modes: Record<string, string | boolean>[] = [{}, { plain: true }, { json: true }];
+  for (const [name, bytes] of malformed) for (const mode of modes) {
+    const { error, out } = await simulateBytes(Buffer.concat([prefix, Buffer.from(bytes), suffix]), mode);
+    c(`simulate refuses ${name} handler bytes before output in ${JSON.stringify(mode)}`,
+      isCommandFailure(error) && error.outcome === "refused" && error.code === "SCHEMA_INVALID"
+      && exitCode(error.outcome, error.code) === 1 && error.message.includes("simulation results script is not valid UTF-8")
+      && (error.target as { file?: string })?.file === handler && error.remedy === `save ${handler} as UTF-8 text`
+      && out === "", { error, out });
+  }
+  const value = "café 😀 �";
+  const valid = await simulateBytes(Buffer.concat([prefix, Buffer.from(value), suffix]), { json: true });
+  const envelope = JSON.parse(valid.out) as { result?: { outcome?: string; log?: unknown } };
+  c("simulate preserves multibyte UTF-8 and an intentional U+FFFD in handler results",
+    valid.error === undefined && envelope.result?.outcome === "completed"
+    && JSON.stringify(envelope.result.log) === JSON.stringify([{ scope: "", values: [value] }]), valid);
+  // Fatal decoding must not silently strip a BOM or change the existing JSON refusal.
+  for (const [name, bytes] of [["invalid JSON", Buffer.from("{")], ["BOM", Buffer.from('\ufeff{}')]] as const) {
+    const { error, out } = await simulateBytes(bytes, { json: true });
+    c(`simulate keeps the JSON refusal for ${name}`,
+      isCommandFailure(error) && error.code === "SCHEMA_INVALID"
+      && error.message === "the simulation handler must be a readable JSON results script" && out === "", { error, out });
+  }
+  rmSync(dir, { recursive: true, force: true });
+}
+
 // A validator warning names its code, position, cause and fix, as a problem does. L3021 on a literal
 // list is a fan-out the run refuses, and the warning used to say only that something was found.
 {
