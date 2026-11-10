@@ -446,6 +446,8 @@ export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise
 export async function establishIdpSession(
   opts: DeviceLoginOpts & { dir: string },
 ): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
+  // Refuse damaged local state before asking the person to approve a sign-in.
+  readCatalogPreparationState(opts.dir);
   const previousSub = loadIdpSession(opts.dir, opts.idpUrl)?.sub;
   const session = await deviceLogin(opts);
   const tokenResult = await fetchIdpJwtResponse(opts.idpUrl, session.token, opts.signal);
@@ -474,6 +476,8 @@ export async function establishIdpSession(
   // The persistence fence: a cancel that lands after approval, while the proof was in flight,
   // must leave no session and no catalog entry on disk.
   throwIfCancelled(opts.signal);
+  // Approval can take minutes. Recheck before writing if another process changed the cache.
+  readCatalogPreparationState(opts.dir);
   saveIdpSession(opts.dir, opts.idpUrl, session);
   saveCatalogAdvertisement(opts.dir, opts.idpUrl, claims.iss, sub, tokenResult.response.headers.get("link"));
   return { session, sub, ...(previousSub && previousSub !== sub ? { previousSub } : {}), ...(label ? { label } : {}) };
@@ -584,13 +588,13 @@ function readCatalogPreparationState(dir: string) {
   let file: CatalogsFile;
   try { sessions = readSessionsFile(dir).sessions; }
   catch {
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local sign-in cache could not be read; no catalog refresh or registry application was attempted", {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local sign-in cache (idp-sessions.json) could not be read; no catalog refresh or registry application was attempted", {
       target: { path: join(dir, SESSIONS_FILE) }, remedy: "inspect and restore the sign-in cache before retrying; its contents were not printed or replaced",
     });
   }
   try { file = readCatalogsFile(dir); }
   catch {
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local space catalog cache could not be read; no catalog refresh or registry application was attempted", {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local space catalog cache (space-catalogs.json) could not be read; no catalog refresh or registry application was attempted", {
       target: { path: join(dir, CATALOG_FILE) }, remedy: "inspect and restore the catalog cache before retrying; its contents were not printed or replaced",
     });
   }
@@ -806,15 +810,18 @@ function readSessionsFile(dir: string): SessionsFile {
     throw new Error(`${f}: unknown version ${String(parsed.ver)} (expected ${SESSIONS_VER}) - refusing to guess at a credential file`);
   if (parsed.sessions === null || typeof parsed.sessions !== "object" || Array.isArray(parsed.sessions))
     throw new Error(`${f}: malformed sessions map`);
+  for (const [idp, session] of Object.entries(parsed.sessions)) {
+    if (normalizeIdpUrl(idp) !== idp || !session || typeof session !== "object" || Array.isArray(session)
+      || typeof session.token !== "string" || !session.token
+      || typeof session.expiresAt !== "number" || !Number.isFinite(session.expiresAt))
+      throw new Error(`${f}: malformed session record`);
+  }
   return parsed;
 }
 
 /** Account-picker metadata only. Session tokens never leave this helper. */
 export function listIdpAccounts(dir: string): { idp: string; sub?: string; expiresAt: number }[] {
   return Object.entries(readSessionsFile(dir).sessions).map(([idp, session]) => {
-    const normalized = normalizeIdpUrl(idp);
-    if (normalized !== idp || !session || typeof session.expiresAt !== "number" || !Number.isFinite(session.expiresAt))
-      throw new Error("the cached account metadata is invalid");
     return { idp, expiresAt: session.expiresAt, ...(typeof session.sub === "string" ? { sub: session.sub } : {}) };
   });
 }
@@ -823,8 +830,6 @@ export function loadIdpSession(dir: string, idpUrl: string): IdpSession | undefi
   const key = normalizeIdpUrl(idpUrl);
   const s = readSessionsFile(dir).sessions[key];
   if (s === undefined) return undefined;
-  if (typeof s.token !== "string" || !s.token || typeof s.expiresAt !== "number")
-    throw new Error(`stored idp session for ${key} is malformed - run \`cotal login --idp ${key}\` again`);
   // `sub` rides the cache round-trip (offline owner derivation for the spawn paths) — every
   // consumer of ownerForLogin is a SEPARATE process re-reading this file, so dropping it here
   // broke both user-mode spawn entry points while every in-process test passed.

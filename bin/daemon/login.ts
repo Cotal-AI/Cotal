@@ -10,15 +10,15 @@
  * for an attempt this daemon never started or no longer remembers. Until that delivery the attempt
  * stays in flight, so no second sign-in starts underneath an undelivered result.
  *
- * A failure crosses the endpoint as a fixed sentence per reason. Stock error text can quote the
- * provider's answer, so none of it is relayed.
+ * Provider failures cross the endpoint as a fixed sentence per reason. Only typed local cache
+ * refusals retain stock's safe diagnosis and recovery step.
  *
  * Cancelling stops this local sign-in. It does not revoke anything at the IdP.
  */
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { deleteIdpSpaceCatalog, establishIdpSession, IdpLoginCancelled, IdpUnreachableError } from "@cotal-ai/auth";
-import { homeCotalDir, removeCatalogMeshes } from "@cotal-ai/workspace";
+import { homeCotalDir, isCommandFailure, removeCatalogMeshes } from "@cotal-ai/workspace";
 import type { CancelResult, LoginPrompt, LoginResult } from "./protocol.js";
 
 /** The client id stock `cotal login` presents by default. */
@@ -26,8 +26,8 @@ export const DEFAULT_CLIENT_ID = "cotal-cli";
 /** How many finished attempt ids are remembered, so a late cancel still gets a truthful answer. */
 const REMEMBERED = 16;
 
-type FailReason = Extract<LoginResult, { outcome: "failed" }>["reason"];
-/** The only failure text a requester sees. It never quotes the provider or a stock error. */
+type FailReason = Exclude<Extract<LoginResult, { outcome: "failed" }>["reason"], "local-state-error">;
+/** Provider failure sentences. They never quote the provider or a stock error. */
 const FAILURE: Record<FailReason, string> = {
   denied: "the sign-in was denied at the verification page",
   expired: "the approval code expired before the sign-in was approved",
@@ -94,6 +94,9 @@ export function createLoginCoordinator(opts: { readonly sessionDir: string; read
     } catch (e) {
       if (e instanceof IdpLoginCancelled) return { outcome: "cancelled" };
       if (e instanceof IdpUnreachableError) return failed("unreachable");
+      // Only stock's typed local-state refusal is safe to relay. Never relay a provider error.
+      if (isCommandFailure(e) && e.code === "DEPENDENCY_UNAVAILABLE")
+        return { outcome: "failed", reason: "local-state-error", message: e.message, remedy: e.remedy };
       // Stock throws plain Errors for these two IdP answers; match their exact sentences.
       const message = e instanceof Error ? e.message : "";
       if (message.startsWith("idp login: the sign-in was denied at the verification page")) return failed("denied");

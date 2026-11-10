@@ -27,7 +27,7 @@ import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { registerDaemon } from "./register.js";
 import { createServiceConnections } from "./service.js";
-import { homeCotalDir } from "@cotal-ai/workspace";
+import { homeCotalDir, isCommandFailure } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
@@ -243,8 +243,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         replyTask(desktopSpaces(machineHome, req.refresh === true).then((result) => {
           counters.spacesAnswered++;
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
-        }, () => {
+        }, (error: unknown) => {
           counters.requestsRefused++;
+          if (isCommandFailure(error) && error.code === "DEPENDENCY_UNAVAILABLE")
+            return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message, remedy: error.remedy } });
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "SPACES_UNAVAILABLE", message: "the daemon could not read its spaces" } });
         }));
         return;
