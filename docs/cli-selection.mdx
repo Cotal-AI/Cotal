@@ -547,7 +547,8 @@ budgets as `send` and `who`, without repeating the confirm wait for each section
 A refused connection still reads `unreachable`. A stopped loopback broker keeps its separate
 process diagnosis, and a timeout never removes a registration. TLS-required probes close pending
 connections when their budget expires, so `space` and `space show` exit after reporting the timeout
-without weakening the TLS requirement.
+without weakening the TLS requirement. WebSocket probes also stop at their deadline when a peer
+upgrades the connection but never answers NATS or completes its close handshake.
 
 This machine shows what is set up and what needs attention. The version line is always there. Agent
 applications is one line: the applications whose required executables are on PATH, and a count of the

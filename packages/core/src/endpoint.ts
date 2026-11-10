@@ -8829,24 +8829,29 @@ export type BrokerCheck = "reachable" | "unreachable" | "slow-link";
 
 const probeSockets = new AsyncLocalStorage<Set<Socket>>();
 const clientSockets = channel("net.client.socket");
+const webSocketConnections = channel("undici:client:connected");
 
 /** The native transport's close ignores a dial still waiting for INFO or TLS. Own its sockets
  *  through Node's socket-created channel, scoped to this probe's async work rather than its
  *  address: concurrent probes and standing connections must never close each other's sockets.
- *  Destroy on every exit, including a native timeout before connect returns a connection handle. */
+ *  Destroy on every exit, including a native timeout before connect returns a connection handle.
+ *  The outer deadline also bounds WebSocket close, which otherwise waits for a silent peer's reply. */
 async function probeConnection(servers: string, options: Parameters<typeof connect>[0]): Promise<void> {
   const sockets = new Set<Socket>();
   const capture = (message: unknown) => {
     if (probeSockets.getStore() === sockets) sockets.add((message as { socket: Socket }).socket);
   };
   clientSockets.subscribe(capture);
+  // Secure WebSockets create their socket through TLS rather than net.createConnection.
+  if (wsServers(servers)) webSocketConnections.subscribe(capture);
   try {
-    await probeSockets.run(sockets, async () => {
+    await withDeadline(probeSockets.run(sockets, async () => {
       const nc = await dialerFor(servers)(options);
       await nc.close();
-    });
+    }), options?.timeout ?? defaultProbeTimeoutMs(servers), () => new TimeoutError());
   } finally {
     clientSockets.unsubscribe(capture);
+    if (wsServers(servers)) webSocketConnections.unsubscribe(capture);
     for (const socket of sockets) socket.destroy();
   }
 }

@@ -2,6 +2,7 @@
  *  selected preflight instead of spending the confirm budget once per section.
  *  Run: pnpm smoke:broker-not-answering */
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { createConnection, createServer, type Socket } from "node:net";
@@ -128,6 +129,56 @@ try {
     }
   }
   check("a closed port is not a timeout", await probeReachability(server, { timeoutMs: 40 }) === "unreachable");
+
+  // Upgrade successfully, then withhold both NATS INFO and the WebSocket close reply.
+  const wsSockets = new Set<Socket>();
+  let upgrades = 0;
+  let healthy = false;
+  const websocket = createServer((socket) => {
+    wsSockets.add(socket);
+    socket.on("error", () => {});
+    socket.on("close", () => wsSockets.delete(socket));
+    let header = "";
+    const handshake = (chunk: Buffer) => {
+      header += chunk.toString();
+      if (!header.includes("\r\n\r\n")) return;
+      const key = /Sec-WebSocket-Key:\s*(.+)\r\n/i.exec(header)?.[1];
+      if (!key) return;
+      socket.off("data", handshake);
+      upgrades++;
+      const accept = createHash("sha1").update(key.trim() + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+      socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+      if (healthy) {
+        const info = Buffer.from('INFO {"server_id":"owned-fixture","version":"2.12.0","proto":1,"max_payload":1048576}\r\n');
+        socket.write(Buffer.concat([Buffer.from([0x82, info.length]), info]));
+        socket.on("data", (frame: Buffer) => {
+          if ((frame[0]! & 15) === 8) socket.end(Buffer.from([0x88, 0]));
+          else socket.write(Buffer.from([0x82, 6, ...Buffer.from("PONG\r\n")]));
+        });
+      } else socket.resume();
+    };
+    socket.on("data", handshake);
+  });
+  const wsServer = `ws://127.0.0.1:${await listenOn(websocket, await freePort())}`;
+  try {
+    const registered = await run(["space", "add", "websocket", "--root", project, "--server", wsServer, "--mode", "open", "--force", "--yes", "--json"]);
+    check("the shipped registration entrypoint accepts a WebSocket space", registered.code === 0, registered);
+    for (const args of [["space", "show", "websocket"], ["status", "--space", "websocket"]]) {
+      const before = upgrades;
+      const read = await run([...args, "--json"], outside, 15_000);
+      const result = read.code === 0 ? JSON.parse(read.stdout).result : undefined;
+      console.log(`  WebSocket read ${args[0]}: ${JSON.stringify({ code: read.code, signal: read.signal, ms: read.ms, upgrades: upgrades - before })}`);
+      check(`WebSocket: ${args[0]} times out without a close reply and exits`, read.code === 0 && (result.check ?? result.selected.connection) === "slow-link" && upgrades - before === 2, read);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      check(`WebSocket: ${args[0]} releases its upgraded sockets`, read.code === 0 && wsSockets.size === 0, { remaining: wsSockets.size });
+    }
+    healthy = true;
+    const live = await run(["space", "show", "websocket", "--json"], outside, 15_000);
+    check("a WebSocket peer answering NATS remains reachable", live.code === 0 && JSON.parse(live.stdout).result.check === "reachable", live);
+  } finally {
+    for (const socket of wsSockets) socket.destroy();
+    await new Promise<void>((resolve) => websocket.close(() => resolve()));
+  }
 } finally {
   for (const socket of sockets) socket.destroy();
   if (listener.listening) await new Promise<void>((resolve) => listener.close(() => resolve()));
