@@ -540,6 +540,23 @@ try {
       }
     });
 
+    await cell("C1c service-only setup stops at failed prerequisites without repeating the check", async () => {
+      for (const [space, code, native] of [[`${ON}-missing`, "TARGET_NOT_FOUND", "NOT_REGISTERED"], [OFF, "UNSUPPORTED", "UNSUPPORTED_BY_SPACE"]] as const) {
+        const before = hits.length;
+        const lines: string[] = [];
+        let failure: Record<string, any> | undefined;
+        try {
+          await runSetup({ paths, daemonHome: undefined, noManager: true, space, idp: idpUrl, peerUid, peerPid, waitSeconds: 0,
+            report: line => lines.push(line), onPrompt: () => { throw new Error("a failed prerequisite requested sign-in"); } });
+        } catch (e) { failure = e as Record<string, any>; }
+        const requests = hits.slice(before).filter(hit => hit.space === space && hit.path === "/service-endpoint-authority");
+        check(`C1c ${native} preserves its refusal`, failure?.code === code && failure?.native?.code === native, failure);
+        check(`C1c ${native} reports no sign-in or registration`, !lines.some(line => /^(sign-in|register|connect):/.test(line)), lines);
+        check(`C1c ${native} checks once and never submits registration`, requests.length === (space === OFF ? 1 : 0) && requests.every(hit => hit.method === "GET"), requests);
+        check(`C1c ${native} records no registration or connection`, !regRecord(space) && !existsSync(intentFile(space)));
+      }
+    });
+
     await cell("C2 after approval: connected only with a broker connection and the space's ready", async () => {
       seedUnitReceipt();
       let approval: ReturnType<typeof approve> | undefined;
@@ -1491,11 +1508,13 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           grantActor(other.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(other.store, OFF))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
           const offEntry = findMesh(OFF)!;
           recordMesh({ ...offEntry, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString() });
+          const before = hits.filter(hit => hit.space === OFF && hit.path === "/service-endpoint-authority").length;
           const unsupported = await cli("setup", "--space", OFF);
           const human = await plainCommand("setup", "--space", OFF);
           console.log("3A unsupported setup", JSON.stringify({ unsupported, human }));
           check("3A unsupported space reports unsupported machine service", unsupported.doc.result?.state === "unsupported" && human.out.includes("Machine service: unsupported."), { unsupported, human });
           check("3A unsupported service preserves verified sign-in", unsupported.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "already-signed-in"), unsupported);
+          check("3A each unsupported setup checks the service prerequisite only once", hits.filter(hit => hit.space === OFF && hit.path === "/service-endpoint-authority").length - before === 2);
           return;
         }
         if (process.argv.includes("--daemon-seed-repro")) {

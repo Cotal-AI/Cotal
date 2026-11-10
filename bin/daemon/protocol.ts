@@ -164,7 +164,7 @@ const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 export const ATTEMPT_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const MAX_CLIENT_ID = 128;
 /** A space name as it appears in a subject token. */
-const SPACE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+export const SPACE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Whether a registry name can be addressed by a scoped daemon request. */
 export function isDaemonSpaceName(space: unknown): space is string {
