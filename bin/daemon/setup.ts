@@ -166,21 +166,25 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
   return unit;
 }
 
-/** Sign in by device code, but only when the space says this machine is not signed in. */
-async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<void> {
+/** Sign in when needed. Keep a failed prerequisite for the independent Manager's service report. */
+async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<RegisterResult | undefined> {
   const check = await connectCheckViaDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, space: opts.space });
   if (!check.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the connection check: ${check.code} ${check.message}`, { native: { code: check.code } });
   if (check.result.outcome === "unreachable" || check.result.outcome === "refused") {
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", check.result.message, { native: { code: check.result.outcome.toUpperCase() } });
   }
   if (check.result.outcome !== "not-signed-in") {
+    const prerequisite = check.result.outcome === "ready-to-register" ? undefined : check.result;
+    // Service-only setup cannot proceed past a failed check. Use the registration refusal
+    // mapping without sending a registration request or claiming a successful sign-in.
+    if (prerequisite && opts.noManager) registrationResult(opts, steps, prerequisite);
     // These outcomes occur only after connect-check has validated the daemon's provider session.
     const signedIn = ["ready-to-register", "unsupported-by-space", "account-mismatch"].includes(check.result.outcome);
     steps.push({ step: "sign-in", outcome: signedIn ? "already-signed-in" : "not-needed-here", detail: `the connection check answered ${check.result.outcome}` });
     opts.report(signedIn
       ? "sign-in: already signed in; no approval was needed"
       : `sign-in: skipped; the connection check answered ${check.result.outcome}`);
-    return;
+    return prerequisite;
   }
   if (opts.idp === undefined) {
     throw new CommandFailure("refused", "AUTH_REQUIRED", "this machine is not signed in to the space's provider; nothing was registered", {
@@ -223,7 +227,11 @@ async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<v
 async function requestRegistration(opts: SetupOptions, steps: SetupStep[]): Promise<RegisterResult> {
   const reply = await registerViaDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, space: opts.space });
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the registration request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
-  const r = reply.result;
+  return registrationResult(opts, steps, reply.result);
+}
+
+/** Report one registration result, including a prerequisite that prevented any request. */
+function registrationResult(opts: SetupOptions, steps: SetupStep[], r: RegisterResult): RegisterResult {
   if (!opts.noManager) {
     steps.push({ step: "register", outcome: r.outcome, detail: r.message });
     opts.report(`register: ${r.outcome}; ${r.message}`);
@@ -302,7 +310,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     steps.push({ step: "discover", outcome: "registered", detail: "the daemon discovered the requested space" });
     opts.report("discover: the requested space is registered on this machine");
   }
-  if (!discoveredSignIn) await ensureSignedIn(opts, steps);
+  const prerequisite = discoveredSignIn ? undefined : await ensureSignedIn(opts, steps);
   if (!opts.noManager) {
     let manager = await managerViaDaemon(opts, { op: "manager-status", space: opts.space }) as HostedManager;
     const inspectedExisting = manager.state === "answering";
@@ -353,7 +361,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
       }))];
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no available connector in the hosted Manager's environment", { remedy: `install ${applications.length ? applications.join(" or ") : "Claude Code, Codex, Hermes, Jcode, OpenCode or pi"} and make sure the application runs in this terminal, then run the same setup command again`, native: { code: "NO_AVAILABLE_CONNECTOR" } });
     }
-    const registration = await requestRegistration(opts, steps);
+    const registration = prerequisite ? registrationResult(opts, steps, prerequisite) : await requestRegistration(opts, steps);
     // A pending registration has no service credential yet. Report it without polling its owner.
     let state: ServiceConnectionState = fromRegister(registration);
     let message = registration.message;

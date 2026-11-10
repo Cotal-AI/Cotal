@@ -27,13 +27,19 @@ const env: NodeJS.ProcessEnv = {
 const usageConfig = join(root, "usage-config");
 const usageEnv: NodeJS.ProcessEnv = { ...env, XDG_CONFIG_HOME: usageConfig };
 delete usageEnv.COTAL_SKIP_CONNECTOR_SEED;
-const usage = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "setup", "--json"], { cwd: root, env: usageEnv, stdio: ["ignore", "pipe", "pipe"] });
-let usageOutput = "";
-usage.stdout.on("data", chunk => usageOutput += String(chunk));
-usage.stderr.on("data", chunk => usageOutput += String(chunk));
-const usageCode = await new Promise(resolve => usage.once("exit", resolve));
-if (usageCode !== 1 || !usageOutput.includes("USAGE_INVALID") || existsSync(join(usageConfig, "cotal", "seed")) || existsSync(join(usageConfig, "cotal", "extensions.json"))) throw new Error(`setup usage error changed connector state: ${usageOutput}`);
-console.log("PASS setup usage error does not reconcile connectors");
+const usageNativeLog = join(root, "usage-native.log");
+for (const tool of ["systemctl", "loginctl", "launchctl", "schtasks"]) {
+  writeFileSync(join(native, tool), `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(usageNativeLog)}, 'unexpected native call\\n'); process.exit(99);\n`, { mode: 0o700 });
+}
+for (const args of [[], ...["bad.space", "a".repeat(65), "bad space"].flatMap(space => [["--space", space], ["--no-manager", "--space", space, "--wait", "0"]])]) {
+  const usage = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "setup", ...args, "--json"], { cwd: root, env: usageEnv, stdio: ["ignore", "pipe", "pipe"] });
+  let usageOutput = "";
+  usage.stdout.on("data", chunk => usageOutput += String(chunk));
+  usage.stderr.on("data", chunk => usageOutput += String(chunk));
+  const usageCode = await new Promise(resolve => usage.once("exit", resolve));
+  if (usageCode !== 1 || !usageOutput.includes("USAGE_INVALID") || existsSync(join(usageConfig, "cotal", "seed")) || existsSync(join(usageConfig, "cotal", "extensions.json")) || existsSync(join(home, "daemon")) || existsSync(join(usageConfig, "systemd")) || existsSync(usageNativeLog)) throw new Error(`setup usage error changed state: ${usageOutput}`);
+  console.log(`PASS setup usage error changes no connector or daemon state (${JSON.stringify(args)})`);
+}
 const paths = daemonPaths(env, home);
 if (process.argv.includes("--childless")) {
   const directory = join(home, "daemon", "space.72656675736564");
