@@ -20,6 +20,7 @@ import {
   runDriverCaller,
   walkKvEntries,
   lastKvEntries,
+  recordsBucket,
   decodeEntry,
   assertIdToken,
   endpointNameOf,
@@ -55,6 +56,7 @@ import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amend
 import type { KV, KvEntry } from "@nats-io/kv";
 import { Kvm } from "@nats-io/kv";
 import { listRunPage } from "./run-list-page.js";
+import { PermissionViolationError } from "@nats-io/transport-node";
 import { logLineText } from "./log-line.js";
 
 function outcomeOf(out: DriveOutcome): RunHostOutcome {
@@ -439,7 +441,18 @@ export const cotalLangRunHost: RunHost = {
     // (#5854). One STREAM.MSG.GET per stored message grows past the caller's fixed budget once a
     // space holds a few hundred lifetime runs. A page is 1024 messages, so the records of those
     // runs are a handful of round trips. The walk still carries every value a row needs.
-    const records = await lastKvEntries(planes.kv);
+    let records: KvEntry[];
+    try {
+      records = await lastKvEntries(planes.kv);
+    } catch (error) {
+      const subject = `$JS.API.DIRECT.GET.KV_${recordsBucket(planes.space)}`;
+      if (error instanceof PermissionViolationError && error.operation === "publish" && error.subject === subject)
+        throw new EpEnvelopeError("failed-precondition",
+          `Batched run listing in space ${planes.space} requires the ${subject} grant, introduced in 0.149.0. ` +
+          "Ask the space operator to upgrade the auth service to 0.149.0 or later and retry. " +
+          "Upgrading only the manager does not update grants issued by the auth service.");
+      throw error;
+    }
     const specs = new Map<string, { endpoint: string; runId: string; entry: KvEntry }>();
     const statuses = new Map<string, KvEntry>();
     const programs = new Map<string, KvEntry>();
