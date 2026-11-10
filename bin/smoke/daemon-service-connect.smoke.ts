@@ -157,6 +157,7 @@ let deviceCodeRequests = 0;
 let deviceFailure: "denied" | "expired" | "unreachable" | undefined;
 let catalogUnavailable = false;
 let catalogAuthorityDown = false;
+let standingRenewals = 0;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/device/code") { deviceCodeRequests++; if (deviceFailure === "unreachable") { req.socket.destroy(); return; } return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 })); }
@@ -168,6 +169,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     if (catalogAuthorityDown) { res.writeHead(503); res.end("{}"); return; }
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
+    if (Buffer.concat(chunks).toString().includes('"renewStandingBundle"')) standingRenewals++;
     const answer = await fetch(`${catalogTarget}${req.url.slice(`/space/${catalogSpace}`.length)}`, { method: req.method, headers: { "content-type": "application/json" }, ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) });
     res.writeHead(answer.status);
     return void res.end(Buffer.from(await answer.arrayBuffer()));
@@ -257,6 +259,7 @@ try {
   }
   const svc = await Promise.all(ctx.map((c, i) => startAuthService({ context: { accountPublicKey: c.auth.account.pub, lifecycleUid: mintLifecycleUid() }, space: c.space, servers,
     store: c.store, storeIdentity: c.store.identity, stateDir: c.stateDir, publicFace: { port: 0, trustedProxy: false },
+    ...(process.argv.includes("--renewal-abort-repro") ? { standingRenewableTtlSeconds: 40 } : {}),
     ...(i === 1 ? {} : { serviceEndpoints: { startup: { kind: "normal" as const },
       callerPayload: { observerCreds: () => mintServiceCallerPayloadObserverCreds({ pub: c.auth.sys.pub, signingSeed: c.auth.sys.signingSeed! }) } } }) })));
   handles.push(...svc);
@@ -785,6 +788,21 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--renewal-abort-repro")) {
+          const initial = standingRenewals;
+          for (let i = 0; i < 180 && standingRenewals === initial; i++) await sleep(250);
+          check("R2-2 remote standing renewal runs before preservation", standingRenewals > initial, { initial, standingRenewals });
+          const prepared = await ask(paths.socket, { op: "managers-prepare-restart" }, 30_000);
+          const aborted = await ask(paths.socket, { op: "managers-abort-restart" }, 30_000);
+          check("R2-2 real hosted preservation fence prepares and aborts", prepared.ok === true && aborted.ok === true, { prepared, aborted });
+          const atAbort = standingRenewals;
+          process.kill(child.pid!, "SIGSTOP");
+          try { await sleep(32_000); }
+          finally { process.kill(child.pid!, "SIGCONT"); }
+          console.log("  R2-2 renewal counts", JSON.stringify({ initial, atAbort, after: standingRenewals }));
+          check("R2-2 remote standing renewal continues after aborted preservation", standingRenewals > atAbort, { atAbort, standingRenewals });
+          return;
+        }
         if (process.argv.includes("--hosted-login-repro")) {
           await cli("service-disconnect", "--space", ON);
           idpRevoked = true;
