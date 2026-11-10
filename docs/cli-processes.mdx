@@ -602,6 +602,10 @@ A damaged canonical registration and its usable legacy duplicate stay untouched,
 failure reporting and catalog removal. A selection naming that registration stays selected.
 The desktop app uses these same controls. Its source and native build instructions are in the
 [desktop README](../desktop/README.md). Closing its tray UI does not stop the installed daemon.
+After installing or starting its recorded background service, the app waits up to 15 seconds for
+the daemon to answer. A timeout reports `DEPENDENCY_UNAVAILABLE` and directs you to
+`cotal daemon status` for diagnostics. The service remains installed; the timeout does not ask
+you to install it again or report it as ready.
 
 `setup` validates its arguments before changing connector state. It makes a computer ready to launch agents from a space with one command. It installs the user
 service, discovers the space through the daemon-held sign-in, signs in by device code when needed,
