@@ -365,7 +365,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
       { kind: "lines", lines: [
         ...r.steps.map((s) => ({ text: `${s.step}: ${s.outcome}`, tone: "hint" as const })),
         ...(r.manager ? [{ text: `Agents can now be launched on this computer from space ${r.space} through Manager instance ${r.manager.instanceId}.`, tone: "hint" as const }, { text: `Machine service: ${r.state}.`, tone: "hint" as const }] : []),
-        { text: `The daemon runs as a user service, restarts on its own and reconnects after a restart. Read it with ${codeSpan(`cotal daemon service-status --space ${shellPath(r.space)}`)}, and close the connection with ${codeSpan(`cotal daemon service-disconnect --space ${shellPath(r.space)}`)}.`, tone: "hint" as const },
+        { text: `The daemon runs as a user service, restarts on its own and reconnects after a restart. Read it with ${codeSpan(`cotal daemon service-status --space=${shellPath(r.space)}`)}, and close the connection with ${codeSpan(`cotal daemon service-disconnect --space=${shellPath(r.space)}`)}.`, tone: "hint" as const },
       ] },
     ] },
   ] }));
