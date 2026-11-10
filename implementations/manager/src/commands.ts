@@ -999,7 +999,17 @@ async function runSeats(args: ParsedArgs): Promise<void> {
   const project = (entries: Awaited<ReturnType<typeof drainSeats>>) => entries.map((entry) => ({ id: entry.id, name: entry.name ?? null, state: entry.state, custodianPid: entry.custodianPid ?? null, childPid: entry.childPid ?? null }));
   let before: ReturnType<typeof project>;
   try { before = project(await drainSeats(root)); }
-  catch { throw new CommandFailure("refused", process.platform === "linux" ? "DEPENDENCY_UNAVAILABLE" : "UNSUPPORTED", "the native local custody inventory could not be read; no drain was submitted", { target }); }
+  catch (error) {
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    throw new CommandFailure("refused", process.platform === "linux" ? "DEPENDENCY_UNAVAILABLE" : "UNSUPPORTED", `the native local custody inventory at ${JSON.stringify(root)} could not be read${drain ? "; no drain was submitted" : ""}`, {
+      target,
+      cause: error,
+      native: { ...(code === undefined ? {} : { code }), detail: rejectionText(error) },
+      remedy: process.platform === "linux"
+        ? "check that COTAL_SEAT_ROOT names the intended readable directory and that its parent directories can be entered, then retry"
+        : "run this command on the Linux host that owns the local custody store",
+    });
+  }
   const refused = before.some((entry) => entry.state === "refused");
   if (!drain || args.values["dry-run"] || refused) {
     writeResult(presentation, { command: "manager", target, result: { kind: drain ? "manager-seat-drain-preview" : "manager-seat-census", entries: before, preview: drain, drainSubmitted: false }, ...(refused ? { completeness: "partial" as const, ...(drain ? { failure: new CommandFailure("refused", "LIFECYCLE_BLOCKED", "some native custody records are unresolved; no drain was submitted", { target, remedy: "inspect those full seat IDs before requesting a drain" }) } : { partial: { message: "Some native custody records are unresolved; this is an incomplete local observation, not proof that those seats are gone." } }) } : {}) }, view);

@@ -100,9 +100,15 @@ async function sendRegister(space: string, home: string): Promise<RegisterResult
     registration: DAEMON_REGISTRATION, expected: { state: "unregistered" as const },
   };
   const bodyDigest = contractDigest(base);
-  const record = claimIdentityRecord(daemonRegisterFile(space, home), "daemon register request", parseRecord(space), () => ({
-    v: 1, kind: KIND, space, instanceId: ready.instanceId, requestId: randomBytes(16).toString("hex"), bodyDigest,
-  }));
+  let record: RegisterRecord;
+  try {
+    record = claimIdentityRecord(daemonRegisterFile(space, home), "daemon register request", parseRecord(space), () => ({
+      v: 1, kind: KIND, space, instanceId: ready.instanceId, requestId: randomBytes(16).toString("hex"), bodyDigest,
+    }));
+  } catch {
+    return { outcome: "local-state-error", space,
+      message: "the daemon could not read or create its local registration request; inspect register-request.json and its permissions, and restore the original record if damaged" };
+  }
   if (record.instanceId !== ready.instanceId || record.bodyDigest !== bodyDigest)
     return { outcome: "conflict", space, requestId: record.requestId,
       message: "this daemon already sent a different registration for this space; nothing was sent. Confirm the change before removing its register request file by hand" };

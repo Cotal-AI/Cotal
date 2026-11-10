@@ -9,6 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
+    "smoke:atomic-write-cleanup": "node bin/smoke/atomic-write-cleanup.smoke.mjs",
     "smoke:server-intent:live": "tsx implementations/cli/smoke/server-intent-live.smoke.ts",
     "smoke:no-manager-credential-warning:live": "tsx implementations/cli/smoke/no-manager-credential-warning-live.smoke.ts",
     "typecheck": "pnpm build && pnpm -r typecheck",
@@ -316,6 +317,7 @@
     "smoke:keyed-submission-failures": "tsx implementations/manager/smoke/keyed-submission-failures.smoke.ts",
     "smoke:keyed-submission-native": "tsx implementations/manager/smoke/keyed-submission-native.smoke.ts",
     "smoke:run-status-program-identity": "tsx bin/smoke/run-status-program-identity.smoke.ts",
+    "smoke:run-check-identity": "tsx bin/smoke/run-check-identity.smoke.ts",
     "smoke:run-ps-latency": "tsx bin/smoke/run-ps-latency.smoke.ts",
     "smoke:keyed-submission-store": "tsx implementations/manager/smoke/keyed-submission-store.smoke.ts",
     "smoke:goal-submit-order": "tsx packages/core/smoke/goal-submit-order.smoke.ts",
@@ -753,6 +755,7 @@
     "smoke:maintenance-controller": "tsx packages/workspace/smoke/maintenance-controller.smoke.ts",
     "smoke:controller-cut-withheld": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/controller-cut-withheld.smoke.ts",
     "smoke:controller-restore": "tsx implementations/cli/smoke/controller-restore.smoke.ts",
+    "smoke:manager-seats-inventory": "tsx implementations/manager/smoke/seats-inventory.smoke.ts",
     "smoke:legacy-pty-custody": "pnpm --filter @cotal-ai/manager... build && tsx implementations/manager/smoke/legacy-pty-custody.smoke.ts",
     "smoke:custodial-pty": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/core --filter @cotal-ai/workspace --filter @cotal-ai/manager build && tsx implementations/manager/smoke/custodial-pty.smoke.ts",
     "smoke:seat-platform": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/platform.smoke.ts",
@@ -917,6 +920,7 @@
     "smoke:foreground-up-running:live": "tsx implementations/cli/smoke/foreground-up-running-live.smoke.ts",
     "smoke:legacy-root-upgrade:live": "tsx implementations/cli/smoke/legacy-root-upgrade-live.smoke.ts",
     "smoke:stack-settle:live": "tsx implementations/cli/smoke/stack-settle-live.smoke.ts",
+    "smoke:up-config-write:live": "tsx implementations/cli/smoke/up-config-write-live.smoke.ts",
     "smoke:up-interrupt:live": "tsx implementations/cli/smoke/up-interrupt-live.smoke.ts",
     "smoke:space-teardown:live": "tsx implementations/cli/smoke/space-teardown-live.smoke.ts",
     "smoke:auth-revoke-credential:live": "tsx implementations/cli/smoke/auth-revoke-credential-live.smoke.ts",

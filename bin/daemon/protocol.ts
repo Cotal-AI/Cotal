@@ -107,7 +107,7 @@ export type CancelResult =
 /** The answer to `connect-check`: whether this daemon could ask the space to register it. It never
  *  means registered or connected. Every `message` is a fixed sentence; nothing remote is quoted. */
 export type ConnectCheckResult =
-  | { readonly outcome: "not-registered" | "not-user-auth" | "not-signed-in" | "unsupported-by-space" | "unreachable" | "refused"; readonly space: string; readonly message: string }
+  | { readonly outcome: "not-registered" | "not-user-auth" | "not-signed-in" | "unsupported-by-space" | "unreachable" | "refused" | "local-state-error"; readonly space: string; readonly message: string }
   | { readonly outcome: "account-mismatch"; readonly space: string; readonly pinnedAccountPublicKey: string; readonly observedAccountPublicKey: string; readonly message: string }
   | { readonly outcome: "ready-to-register"; readonly space: string; readonly endpoint: string; readonly instanceId: string; readonly accountPublicKey: string; readonly message: string };
 
@@ -129,7 +129,7 @@ export type RegisterResult =
  *  and `reason` is a fixed stock code (or `unrecognized`). */
 export type ServiceConnectionState =
   | "not-requested" | "not-registered" | "not-signed-in" | "unsupported" | "approval-pending" | "refused" | "conflict"
-  | "connecting" | "connected" | "unavailable" | "ended" | "disconnected";
+  | "connecting" | "connected" | "unavailable" | "ended" | "disconnected" | "local-state-error";
 export interface ServiceConnectionResult {
   readonly manager?: HostedManager;
   readonly space: string;

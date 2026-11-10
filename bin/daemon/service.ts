@@ -51,6 +51,7 @@ export function fromRegister(r: RegisterResult): ServiceConnectionState {
     case "not-registered": return "not-registered";
     case "not-user-auth": case "unsupported-by-space": return "unsupported";
     case "account-mismatch": case "conflict": return "conflict";
+    case "local-state-error": return "local-state-error";
     default: return "unavailable";
   }
 }
@@ -66,6 +67,7 @@ const SENTENCE: Record<ServiceConnectionState, string> = {
   connecting: "the daemon is connecting to the space; it is not connected yet",
   connected: "connected: the broker accepted this daemon's service connection and the space accepted it as ready",
   unavailable: "the space or its broker could not be reached; nothing is connected, and connecting again retries the same requests",
+  "local-state-error": "the daemon could not use its local identity or registration record; inspect service-identity.json and register-request.json and their permissions, and restore the original record if damaged; nothing is connected",
   ended: "the space ended this daemon's service authority; nothing is connected, and connecting again will not reconnect it",
   disconnected: "not connected",
 };
