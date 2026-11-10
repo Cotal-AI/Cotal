@@ -20,7 +20,9 @@ if (!existsSync(BIN)) {
 }
 
 interface Envelope {
-  target: { space: string | null } | null;
+  target: { space?: string | null } | null;
+  outcome: string;
+  error?: { code: string };
   result: { selected: { resolved: boolean; code?: string; server?: string | null } } | null;
 }
 
@@ -68,7 +70,7 @@ const freshPlain = run(["status", "--plain"], fresh);
 check("an empty project names space preparation without an assumed space", read(freshPlain) && freshPlain.stdout.includes("space create <name>") && !/^Mesh: /m.test(freshPlain.stdout), shown(freshPlain));
 for (const args of [["persona"], ["team"], ["whoami"], ["spawn", "--dry-run"]]) {
   const result = run([...args, "--json"], fresh);
-  check(`${args[0]} refuses an empty project without assuming main`, result.status === 2 && result.envelope?.target == null && !result.stdout.includes('"space": "main"'), shown(result));
+  check(`${args[0]} refuses an empty project without assuming main`, result.status === 2 && result.envelope?.outcome === "refused" && result.envelope.error?.code === "TARGET_NOT_FOUND" && result.envelope.target?.space == null, shown(result));
 }
 check("its selection is stated once, with the step only under Next", (freshPlain.stdout.match(/no space is registered or prepared here/g) ?? []).length === 1 && /Selected space\n\s+no space is registered or prepared here for \S+\n/.test(freshPlain.stdout), shown(freshPlain));
 
