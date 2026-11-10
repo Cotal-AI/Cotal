@@ -14,6 +14,7 @@ import {
   feedbackLine,
   MESH_FIRST_STEER,
   ORIENTATION_BOOTSTRAP,
+  OWN_TOOLS_STEER,
   REPLY_ETIQUETTE,
   REPLY_GUIDANCE,
   WORKFLOW_STEER,
@@ -49,8 +50,25 @@ cell("the identity line omits the role when there is none", () => {
 
 cell("every harness carries the shared paragraphs", () => {
   for (const [h, text] of all)
-    for (const p of [ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER, CHANNEL_GUIDANCE, REPLY_GUIDANCE, ATTENTION_GUIDANCE])
+    for (const p of [ORIENTATION_BOOTSTRAP, OWN_TOOLS_STEER, MESH_FIRST_STEER, WORKFLOW_STEER, CHANNEL_GUIDANCE, REPLY_GUIDANCE, ATTENTION_GUIDANCE])
       assert.ok(text.includes(p), `${h} lacks: ${p.slice(0, 50)}`);
+});
+
+// The wording David signed off on #6197, word for word, right after the orientation paragraph.
+cell("every harness tells the agent to use its own tools and not the cotal command line", () => {
+  assert.equal(
+    OWN_TOOLS_STEER,
+    "Use your cotal_* tools for work on the mesh. They act as you, within your own grants. Don't run the `cotal` command line " +
+      "unless the user says you may. It runs with the user's credentials, so it can see and do things you can't, and what it " +
+      "posts goes out under the user's name. If no tool gives you what you need, tell the user what's missing.",
+  );
+  for (const [h, text] of all) assert.ok(text.includes(`${ORIENTATION_BOOTSTRAP}\n\n${OWN_TOOLS_STEER}\n\n`), h);
+});
+
+// A durable run is started with the agent's own tool. No paragraph hands the agent a command line to run.
+cell("the workflow paragraph names cotal_run, and no paragraph quotes a cotal command", () => {
+  assert.ok(WORKFLOW_STEER.includes("a cotal-lang program driven with cotal_run,"), WORKFLOW_STEER);
+  for (const [h, text] of all) assert.doesNotMatch(text, /`cotal [^`]*`/, h);
 });
 
 // Claude Code loads a tool's description only after picking the tool by name, so this sentence is
@@ -108,7 +126,7 @@ cell("the gateway briefing leaves the arrival sentence out", () => {
 cell("the paragraphs split cleanly on blank lines, so a harness that takes a list gets whole paragraphs", () => {
   for (const [h, text] of all) {
     const parts = text.split("\n\n");
-    assert.equal(parts.length, 9, h);
+    assert.equal(parts.length, 10, h);
     assert.ok(parts.every((p) => p.length > 0 && p.trim() === p), h);
   }
 });
