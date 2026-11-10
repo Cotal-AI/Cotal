@@ -1750,8 +1750,27 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             const local = await cli("setup", "--space", ON, "--idp", idpUrl);
             check("I0 setup enables the consented space in the account desired set", accountDesired, local);
             check("I1 conflict retries once using a fresh revision", intentWrites >= 2 && intentConflicts === 0);
+            await approve(host, ON, fixture.owner);
+            const waitIntent = async (connected: boolean) => {
+              let status: Record<string, any> = {};
+              for (let i = 0; i < 120; i++) {
+                status = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+                if (Boolean(status.account?.spaces?.some((row: any) => row.space === ON && row.observed === "connected")) === connected) return status;
+                await sleep(500);
+              }
+              throw new Error(`account connection did not become ${connected}`);
+            };
+            await waitIntent(true);
+            check("I1a enabled account intent connects approved real broker service", true);
             const removed = resultOf(await ask(paths.socket, { op: "space-intent", space: ON, enabled: false }, 100_000));
             check("I2 native removal updates account desired set", !accountDesired && removed.account?.spaces?.every((row: any) => row.space !== ON || !row.desired), removed);
+            await waitIntent(false);
+            accountDesired = true; accountBindingRevision = ++accountRevision;
+            await waitIntent(true);
+            check("I3 dashboard enable connects without a local action", true);
+            accountDesired = false; accountRevision++;
+            await waitIntent(false);
+            check("I4 dashboard removal disconnects without a local action", true);
             return;
           }
           accountDesired = true;
