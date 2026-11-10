@@ -1,5 +1,21 @@
 # @cotal-ai/cli
 
+## 0.157.0
+
+### Patch Changes
+
+- 5494fa8: Self-update checks first-party release archives before replacing the global installation.
+  Unavailable archives now produce registry propagation and retry guidance without starting installation or connector reconciliation. The check uses npm's configured registry and integrity verification with bounded requests.
+- 9989f22: Explain a denied optional agent inventory during stack shutdown without printing broker subjects or lifecycle details. Keep shutdown safety checks and actor grants unchanged.
+- 196314c: Keep broker logs owner-private after rotation on POSIX systems. Broker launches narrow the child umask without changing the caller's mask or unrelated services, so native log rotation cannot create group-readable files.
+- df601ae: Core can read the direct messages to and from named principals, and tells a refused read apart from a space with none.
+  
+  `CotalEndpoint.dmHistoryOf(principals)` filters on the broker and answers `{ state: "denied" }` when the credential may not read direct messages, while `dmHistory` keeps its empty list. The workspace keeps one private record per chat session the terminal app opens, the newest 20 per space and no credential, so the app can count those sessions as yours and show their direct messages after a restart. `cotal space forget` removes a space's records and counts them in its receipt as `removedChatSessions`.
+- Updated dependencies [df601ae]
+- Updated dependencies [3bd9391]
+  - @cotal-ai/core@0.157.0
+  - @cotal-ai/workspace@0.157.0
+
 ## 0.156.0
 
 ### Patch Changes
