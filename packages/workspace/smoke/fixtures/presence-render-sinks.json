@@ -135,7 +135,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
+        "anchor": "assert.match(text, /status: working · progress unknown · attention: open/,"
       }
     },
     {
@@ -146,7 +146,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
+        "anchor": "assert.match(text, /status: working · progress unknown · attention: open/,"
       }
     },
     {
@@ -3135,8 +3135,8 @@
       "class": "honest-text",
       "rationale": "The turn's title from turnTitle: Working for while presence says working, Open for while it waits, and No end arrived once it is idle or offline. The cited assertion reads the words.",
       "proof": {
-        "path": "implementations/web/smoke/session.smoke.ts",
-        "anchor": "ok(\"turn title: open while working reads \\\"Working for 3m 2s\\\"\""
+        "path": "implementations/web/smoke/session-parts.smoke.ts",
+        "anchor": "ok(\"3.1 the open working turn reads \\\"Working for 3m 2s\\\" in bold with the live spinner, never shimmers, and counts on\""
       }
     },
     {
@@ -3174,8 +3174,8 @@
       "class": "honest-text",
       "rationale": "The turn's title from turnTitle: Working for while presence says working, Open for while it waits, and No end arrived once it is idle or offline. The cited assertion reads the words.",
       "proof": {
-        "path": "implementations/web/smoke/session.smoke.ts",
-        "anchor": "ok(\"turn title: open while working reads \\\"Working for 3m 2s\\\"\""
+        "path": "implementations/web/smoke/session-parts.smoke.ts",
+        "anchor": "ok(\"3.1 the open working turn reads \\\"Working for 3m 2s\\\" in bold with the live spinner, never shimmers, and counts on\""
       }
     },
     {
@@ -3185,8 +3185,8 @@
       "class": "honest-text",
       "rationale": "The turn's title from turnTitle: Working for while presence says working, Open for while it waits, and No end arrived once it is idle or offline. The cited assertion reads the words.",
       "proof": {
-        "path": "implementations/web/smoke/session.smoke.ts",
-        "anchor": "ok(\"turn title: open while working reads \\\"Working for 3m 2s\\\"\""
+        "path": "implementations/web/smoke/session-parts.smoke.ts",
+        "anchor": "ok(\"3.1 the open working turn reads \\\"Working for 3m 2s\\\" in bold with the live spinner, never shimmers, and counts on\""
       }
     },
     {
@@ -3357,8 +3357,8 @@
       "class": "honest-text",
       "rationale": "The peek's Now heading from turnTitle over the whole turn: Working for while presence says working, Open for while it waits, Worked for once it finished. The cited assertion reads the words.",
       "proof": {
-        "path": "implementations/web/smoke/session.smoke.ts",
-        "anchor": "ok(\"turn title: open while working reads \\\"Working for 3m 2s\\\"\""
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn's last three steps, and no footer\""
       }
     },
     {
@@ -3368,8 +3368,8 @@
       "class": "honest-text",
       "rationale": "The peek's Now heading from turnTitle over the whole turn: Working for while presence says working, Open for while it waits, Worked for once it finished. The cited assertion reads the words.",
       "proof": {
-        "path": "implementations/web/smoke/session.smoke.ts",
-        "anchor": "ok(\"turn title: open while working reads \\\"Working for 3m 2s\\\"\""
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn's last three steps, and no footer\""
       }
     },
     {
@@ -3463,8 +3463,8 @@
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"2.10 every work-list branch renders the held work and its reported working footer\""
       }
     },
     {
@@ -3474,8 +3474,8 @@
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"2.10 every work-list branch renders the held work and its reported working footer\""
       }
     },
     {
@@ -3485,8 +3485,8 @@
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"2.10 every work-list branch renders the held work and its reported working footer\""
       }
     },
     {
@@ -3496,8 +3496,8 @@
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"2.10 every work-list branch renders the held work and its reported working footer\""
       }
     },
     {
@@ -3514,8 +3514,8 @@
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"2.10 every work-list branch renders the held work and its reported working footer\""
       }
     },
     {
@@ -3546,8 +3546,8 @@
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"2.10 every work-list branch renders the held work and its reported working footer\""
       }
     },
     {

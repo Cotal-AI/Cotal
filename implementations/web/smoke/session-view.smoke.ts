@@ -252,6 +252,19 @@ const work = (root: ParentNode) => root.querySelector('[role=tabpanel][data-stat
   same("2.9 with the plane on, Work holds no note about the plane, only the work", { notes, list }, { notes: 0, list: true });
 }
 
+// Each WorkList mount has to retain the presence footer, including the refusal and plane-off paths.
+for (const [load, plane] of [["ok", "on"], ["refused", "on"], ["ok", "off"], ["failed", "on"]] as const) {
+  const { root, m } = await open({
+    roster: [entry("working", plane)],
+    sessions: { [ENGINE]: session({ load, reason: "read refused", frames: [said("held", "Retained work")] }) },
+  });
+  const list = work(root)?.querySelector(".ox-work");
+  ok("2.10 every work-list branch renders the held work and its reported working footer",
+    text(list).includes("Retained work") && text(list?.querySelector(".ox-foot")) === "engine is working",
+    { load, plane, output: text(list) });
+  await m.unmount();
+}
+
 // ── 3. The tabs ─────────────────────────────────────────────────────────────────────────────────
 const messagesSeed = (): Partial<DashboardState> => ({
   operatorId: "local.op",
