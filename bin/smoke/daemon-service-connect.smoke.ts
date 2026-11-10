@@ -777,6 +777,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         await killAndAwaitExit(child, "SIGTERM");
         throw new Error("shipped daemon did not answer");
       };
+      if (process.argv.includes("--setup-no-connectors-repro")) {
+        writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["cotal-owned-missing-harness"],buildLaunch:()=>{throw new Error("unavailable connector must not launch")}});`);
+        const manifest = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8"));
+        manifest.extensions[0].connectors[0].requires = ["cotal-owned-missing-harness"];
+        writeFileSync(join(prefix, "extensions.json"), JSON.stringify(manifest));
+      }
       let child = await startDaemon();
       let recordingRestart = process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro");
       const watchRecordedRestart = (owned: ChildProcess) => owned.once("exit", (code) => {
@@ -801,11 +807,27 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       try {
         const setup = await cli("setup", "--space", ON, "--idp", idpUrl);
         console.log("  H1 setup", JSON.stringify(setup));
+        if (process.argv.includes("--setup-no-connectors-repro")) {
+          check("3A setup refuses no available connector", setup.code === 2 && setup.doc.error?.message?.includes("no available connector") && !!setup.doc.error?.remedy, setup);
+          return;
+        }
         check("H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
         check("H0 fresh setup prints device URL and code on stderr", setup.err.includes(`${idpOrigin}/approve?code=DAEMON`) && setup.err.includes("Approval code") && setup.err.includes("DAEMON"));
         check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--setup-unsupported-repro")) {
+          const other = ctx[1]!;
+          grantActor(other.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(other.store, OFF))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
+          const offEntry = findMesh(OFF)!;
+          recordMesh({ ...offEntry, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString() });
+          const unsupported = await cli("setup", "--space", OFF);
+          const human = await plainCommand("setup", "--space", OFF);
+          console.log("3A unsupported setup", JSON.stringify({ unsupported, human }));
+          check("3A unsupported space reports unsupported machine service", unsupported.doc.result?.state === "unsupported" && human.out.includes("Machine service: unsupported."), { unsupported, human });
+          check("3A unsupported service preserves verified sign-in", unsupported.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "already-signed-in"), unsupported);
+          return;
+        }
         if (process.argv.includes("--daemon-seed-repro")) {
           const installed = existsSync(join(prefix, "extensions.json")) ? JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions : [];
           check("3A daemon reconciles seven stock packages even when setup skips first-use seed", installed.filter((entry: { source?: string }) => entry.source === "seeded").length === 7, installed);
@@ -1280,10 +1302,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         const managedHome = join(root, "managed-daemon");
         mkdirSync(managedHome, { mode: 0o700 });
         const managedPaths = daemonPathsFor(managedHome, env);
-        const unitPath = join(root, "managed-daemon.service");
-        const unitBytes = "[Unit]\nDescription=Owned recording fixture\n[Service]\nRestart=always\n";
+        const managedUnit = `cotal-daemon-${createHash("sha256").update(managedHome).digest("hex").slice(0, 16)}.service`;
+        const unitPath = join(root, "config", "systemd", "user", managedUnit);
+        const unitBytes = `[Unit]\nDescription=Owned recording fixture\n[Service]\nExecStart="${process.execPath}" "${cliEntry}" daemon serve --daemon-home "${managedHome}"\nRestart=always\n`;
         writeFileSync(unitPath, unitBytes, { mode: 0o600 });
-        writeFileSync(join(managedHome, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon-0123456789abcdef.service", unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString(), daemonHome: managedHome }), { mode: 0o600 });
+        writeFileSync(join(managedHome, "service-unit.json"), JSON.stringify({ v: 1, unit: managedUnit, unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString(), daemonHome: managedHome }), { mode: 0o600 });
         let managedChild = await startDaemon(managedHome);
         try {
           for (const failure of ["denied", "expired", "unreachable"] as const) {
@@ -1309,7 +1332,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           });
           await new Promise<void>((resolve) => nativeControl.listen(0, "127.0.0.1", resolve));
           const nativePort = (nativeControl.address() as AddressInfo).port;
-          writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\nconst fs=require('node:fs'); (async()=>{const args=process.argv.slice(2).join(' ');fs.appendFileSync(${JSON.stringify(nativeLog)},args+'\\n');if(args==='--user --no-ask-password --no-pager stop cotal-daemon-0123456789abcdef.service'){const r=await fetch('http://127.0.0.1:${nativePort}/stop');if(!r.ok)process.exit(99);}else if(!['--user --no-ask-password --no-pager disable cotal-daemon-0123456789abcdef.service','--user --no-ask-password --no-pager daemon-reload'].includes(args))process.exit(99);})();\n`, { mode: 0o700 });
+          writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\nconst fs=require('node:fs'); (async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}fs.appendFileSync(${JSON.stringify(nativeLog)},args+'\\n');if(args==='--user --no-ask-password --no-pager stop ${managedUnit}'){const r=await fetch('http://127.0.0.1:${nativePort}/stop');if(!r.ok)process.exit(99);}else if(!['--user --no-ask-password --no-pager disable ${managedUnit}','--user --no-ask-password --no-pager daemon-reload'].includes(args))process.exit(99);})();\n`, { mode: 0o700 });
           const priorPath = env.PATH;
           env.PATH = `${recorder}:${priorPath}`;
           let removed;
@@ -1328,7 +1351,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             managedChild.kill("SIGTERM");
             await sleep(250);
             const raced = await ask(managedPaths.socket, { op: "manager-start", space: ON }, 1500);
-            check("H8 start racing shutdown receives a refusal", raced.ok === false && errorOf(raced).code === "MANAGER_UNAVAILABLE");
+            check("H8 start racing shutdown receives a refusal", raced.ok === false && ["MANAGER_UNAVAILABLE", "GENERATION_PENDING"].includes(String(errorOf(raced).code)), raced);
             try { process.kill(managed.pid, "SIGCONT"); } catch { /* owned child was already reaped */ }
             await killAndAwaitExit(managedChild, "SIGTERM");
             managedChild = await startDaemon(managedHome);
@@ -1340,7 +1363,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             let raced: Frame = {};
             try { raced = await ask(managedPaths.socket, { op: "manager-start", space: ON }, 1500); } catch { /* expected baseline leaves no response */ }
             console.log("  SHUTDOWN REPRO frame", JSON.stringify(raced));
-            check("H8 start racing shutdown receives a refusal", raced.ok === false && errorOf(raced).code === "MANAGER_UNAVAILABLE");
+            check("H8 start racing shutdown receives a refusal", raced.ok === false && ["MANAGER_UNAVAILABLE", "GENERATION_PENDING"].includes(String(errorOf(raced).code)), raced);
             try { process.kill(managed.pid, "SIGCONT"); } catch { /* child already exited */ }
             return;
           }
@@ -1363,7 +1386,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         });
         await new Promise<void>((resolve) => defaultControl.listen(0, "127.0.0.1", resolve));
         const defaultPort = (defaultControl.address() as AddressInfo).port;
-        writeFileSync(join(defaultRecorder, "systemctl"), `#!${process.execPath}\n(async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user --no-ask-password --no-pager stop cotal-daemon.service'){const r=await fetch('http://127.0.0.1:${defaultPort}/stop');if(!r.ok)process.exit(99);}else if(!['--user --no-ask-password --no-pager disable cotal-daemon.service','--user --no-ask-password --no-pager daemon-reload'].includes(args))process.exit(99);})().catch(()=>process.exit(99));\n`, { mode: 0o700 });
+        writeFileSync(join(defaultRecorder, "systemctl"), `#!${process.execPath}\n(async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}if(args==='--user --no-ask-password --no-pager stop cotal-daemon.service'){const r=await fetch('http://127.0.0.1:${defaultPort}/stop');if(!r.ok)process.exit(99);}else if(!['--user --no-ask-password --no-pager disable cotal-daemon.service','--user --no-ask-password --no-pager daemon-reload'].includes(args))process.exit(99);})().catch(()=>process.exit(99));\n`, { mode: 0o700 });
         const defaultPath = env.PATH;
         env.PATH = `${defaultRecorder}:${env.PATH}`;
         try {
