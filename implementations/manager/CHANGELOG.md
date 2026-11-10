@@ -1,5 +1,15 @@
 # @cotal-ai/manager
 
+## 0.157.2
+
+### Patch Changes
+
+- 5072833: Hosted Managers return sooner after a daemon restart without exhausting readiness authentication attempts.
+  Publish independent contract artifacts concurrently while retaining native create-only acknowledgements and digest verification. Probe the pinned endpoint after child initialization and report startup stages.
+- @cotal-ai/core@0.157.2
+  - @cotal-ai/seat@0.157.2
+  - @cotal-ai/workspace@0.157.2
+
 ## 0.157.1
 
 ### Patch Changes
