@@ -174,12 +174,12 @@ async function login(args: ParsedArgs): Promise<void> {
   }
   const r = reply.result;
   if (r.outcome === "failed") {
-    const native = { native: { code: r.reason.toUpperCase() } };
-    if (r.reason === "local-state-error") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, { ...native, remedy: r.remedy });
-    // Denied, expired and unreachable end before stock writes anything: refusals at the provider's
+    if (r.reason === "local-state-error") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, { native: { code: r.reason.toUpperCase() }, remedy: r.remedy });
+    const native = { native: { code: r.reason.toUpperCase().replaceAll("-", "_") } };
+    // Typed provider refusals end before stock writes anything, at the provider's
     // boundary. Any other failure can come after stock saved the session, so it claims nothing about
     // what was saved; `cotal daemon login` again replaces whatever is there.
-    if (r.reason === "unreachable") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${r.message}; no session was saved`, native);
+    if (r.reason === "unreachable" || r.reason === "authorization-refused") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${r.message}; no session was saved`, native);
     if (r.reason === "denied" || r.reason === "expired") throw new CommandFailure("refused", "PERMISSION_DENIED", `${r.message}; no session was saved`, native);
     throw new CommandFailure("failed", "OPERATION_FAILED", `${r.message}; a session may have been saved before the failure, so sign in again`, native);
   }

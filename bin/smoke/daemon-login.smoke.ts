@@ -34,6 +34,7 @@
  *  L15 a damaged catalog refuses sign-in before provider approval or a session write, naming recovery;
  *  L16 a sign-in denied at the verification page exits 2 refused PERMISSION_DENIED through the CLI.
  *  L17 malformed session records refuse before provider requests, preserving the sign-in cache.
+ *  L17 an initial device-authorization refusal exits 2 with no persistence warning, prompt or poll.
  *
  * Run: tsx bin/smoke/daemon-login.smoke.ts   (Linux only)
  */
@@ -154,7 +155,11 @@ const mkRuntime = async (rt: string) => { const { mkdirSync } = await import("no
 
 // ---------- a REAL Better Auth IdP on loopback ----------
 let handler: ((req: IncomingMessage, res: ServerResponse) => void) | undefined;
-const idpServer = createHttpServer((req, res) => handler!(req, res));
+const idpRequests: Array<{ path: string; status: number }> = [];
+const idpServer = createHttpServer((req, res) => {
+  res.once("finish", () => idpRequests.push({ path: new URL(req.url!, "http://x").pathname, status: res.statusCode }));
+  handler!(req, res);
+});
 await new Promise<void>((r) => idpServer.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${(idpServer.address() as AddressInfo).port}`;
 const base = `${origin}/api/auth`;
@@ -201,8 +206,8 @@ const polls = () => hits["/api/auth/device/token"] ?? 0;
 /** The scripted IdP's session token reached the stock session file. */
 const sessionSaved = (home: string) => existsSync(join(home, "idp-sessions.json")) && readFileSync(join(home, "idp-sessions.json"), "utf8").includes("scripted-session-token");
 /** `cotal daemon login --idp <idp> --json` through the composition root, against the daemon at `rt`. */
-async function runCli(rt: string, idp: string): Promise<{ status: number | null; out: string; err: string }> {
-  const child = spawn(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "bin", "cotal.ts"), "daemon", "login", "--idp", idp, "--json"], {
+async function runCli(rt: string, idp: string, args: string[] = ["--json"]): Promise<{ status: number | null; out: string; err: string }> {
+  const child = spawn(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "bin", "cotal.ts"), "daemon", "login", "--idp", idp, ...args], {
     cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rt, COTAL_HOME: cliHome, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
   });
   const exited = new Promise<number | null>((r) => child.once("exit", (c) => r(c)));
@@ -556,6 +561,30 @@ try {
         const error = reply.error as Record<string, unknown>;
         check("L15 spaces preserves the typed cache refusal and remedy", error.code === "DEPENDENCY_UNAVAILABLE" && String(error.message).includes("space-catalogs.json") && String(error.remedy).includes("restore"), reply);
       } finally { w.end(); await w.closed; }
+    } finally { await d.close(); }
+  });
+
+  // ---- L17: initial device-authorization refusals cannot have persisted a session ----
+  await cell("L17 device-authorization refusal before approval (real Better Auth)", async () => {
+    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+    try {
+      for (const [name, idp, extra, path, status] of [
+        ["missing auth base", origin, [], "/device/code", 404],
+        ["rejected client id", base, ["--client-id", "wrong-client"], "/api/auth/device/code", 400],
+      ] as const) {
+        for (const format of ["--json", "--plain"]) {
+          idpRequests.length = 0;
+          const run = await runCli(rt, idp, [...extra, format]);
+          const output = run.out + run.err;
+          const doc = format === "--json" ? JSON.parse(run.out) : undefined;
+          check(`L17 ${name} ${format}: exit 2 and a typed refusal`, run.status === 2 && (doc
+            ? doc.outcome === "refused" && doc.error?.code === "DEPENDENCY_UNAVAILABLE" && doc.error?.cause?.code === "AUTHORIZATION_REFUSED"
+            : /DEPENDENCY_UNAVAILABLE/.test(run.err)), { status: run.status, out: run.out, err: run.err });
+          check(`L17 ${name} ${format}: auth base and client-id remedy without a persistence warning`, output.includes("--idp") && output.includes("--client-id") && !/may have been saved/.test(output));
+          check(`L17 ${name} ${format}: only the initial refusal, no approval prompt or session`, JSON.stringify(idpRequests) === JSON.stringify([{ path, status }]) && !/approve sign-in|approval code/i.test(output) && !existsSync(join(home, "idp-sessions.json")), idpRequests);
+        }
+      }
     } finally { await d.close(); }
   });
 

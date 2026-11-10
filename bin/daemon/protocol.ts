@@ -97,7 +97,7 @@ export type LoginResult =
   | { readonly outcome: "signed-in"; readonly idp: string; readonly sub: string; readonly label?: string; readonly previousSub?: string }
   | { readonly outcome: "cancelled" }
   | { readonly outcome: "failed"; readonly reason: "local-state-error"; readonly message: string; readonly remedy?: string }
-  | { readonly outcome: "failed"; readonly reason: "denied" | "expired" | "unreachable" | "refused"; readonly message: string };
+  | { readonly outcome: "failed"; readonly reason: "denied" | "expired" | "unreachable" | "authorization-refused" | "refused"; readonly message: string };
 
 /** The answer to `login-cancel`. It is sent only after the named attempt has settled. */
 export type CancelResult =

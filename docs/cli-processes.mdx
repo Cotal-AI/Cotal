@@ -882,7 +882,11 @@ cancellation revokes nothing at the provider. A cancelled attempt exits 1 with `
 it closes the connection and reports `USAGE_INVALID` (`ABANDONED`), also without help. A denied or expired
 approval refuses `PERMISSION_DENIED` (`DENIED` or `EXPIRED`), and an unreachable provider refuses
 `DEPENDENCY_UNAVAILABLE`
-(`UNREACHABLE`); none of these saves a session. Any other provider answer fails `OPERATION_FAILED`
+(`UNREACHABLE`); none of these saves a session. An HTTP refusal of the initial device-code request
+refuses `DEPENDENCY_UNAVAILABLE` (`AUTHORIZATION_REFUSED`), exit 2, before approval or persistence.
+Check that `--idp` names the auth base URL (Better Auth: `<origin>/api/auth`) and that the provider
+accepts `--client-id`. This also applies to sign-in during `daemon setup`.
+Any other provider answer fails `OPERATION_FAILED`
 (`REFUSED`). Such a failure can come after the session was saved, so run `login` again. A failure
 is reported with a fixed sentence; the provider's own error text is never relayed. `status`
 keeps answering while a sign-in waits.

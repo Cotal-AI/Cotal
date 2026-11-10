@@ -17,7 +17,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
-import { deleteIdpSpaceCatalog, establishIdpSession, IdpLoginCancelled, IdpUnreachableError } from "@cotal-ai/auth";
+import { deleteIdpSpaceCatalog, establishIdpSession, IdpDeviceAuthorizationRefusedError, IdpLoginCancelled, IdpUnreachableError } from "@cotal-ai/auth";
 import { homeCotalDir, isCommandFailure, removeCatalogMeshes } from "@cotal-ai/workspace";
 import type { CancelResult, LoginPrompt, LoginResult } from "./protocol.js";
 
@@ -32,6 +32,7 @@ const FAILURE: Record<FailReason, string> = {
   denied: "the sign-in was denied at the verification page",
   expired: "the approval code expired before the sign-in was approved",
   unreachable: "the provider could not be reached",
+  "authorization-refused": "the provider refused device authorization; check --idp uses the auth base URL and --client-id is accepted by the provider",
   refused: "the provider's answer could not be used to sign in",
 };
 const failed = (reason: FailReason): LoginResult => ({ outcome: "failed", reason, message: FAILURE[reason] });
@@ -94,6 +95,7 @@ export function createLoginCoordinator(opts: { readonly sessionDir: string; read
     } catch (e) {
       if (e instanceof IdpLoginCancelled) return { outcome: "cancelled" };
       if (e instanceof IdpUnreachableError) return failed("unreachable");
+      if (e instanceof IdpDeviceAuthorizationRefusedError) return failed("authorization-refused");
       // Only stock's typed local-state refusal is safe to relay. Never relay a provider error.
       if (isCommandFailure(e) && e.code === "DEPENDENCY_UNAVAILABLE")
         return { outcome: "failed", reason: "local-state-error", message: e.message, remedy: e.remedy };

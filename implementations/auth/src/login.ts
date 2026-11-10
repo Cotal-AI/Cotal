@@ -152,6 +152,9 @@ export function idpTimeoutMs(): number {
 /** An IdP request that got no answer: the transport failed or the per-request timeout fired. */
 export class IdpUnreachableError extends Error {}
 
+/** The provider refused the initial device-code request, before approval or persistence. */
+export class IdpDeviceAuthorizationRefusedError extends Error {}
+
 /** The IdP answered 401 to a cached session: it expired or was revoked there. */
 export class IdpSessionRejectedError extends Error {}
 
@@ -267,7 +270,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   }, opts.signal);
   if (!res.ok) {
     const e = await oauthError(res, opts.signal);
-    throw new Error(
+    throw new IdpDeviceAuthorizationRefusedError(
       `idp login: ${base} refused the device authorization (${e.error ?? `HTTP ${res.status}`}: ${e.error_description ?? "no detail"})`,
     );
   }
