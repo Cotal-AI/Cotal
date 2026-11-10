@@ -801,7 +801,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         });
         await new Promise<void>((resolve) => upgradeControl!.listen(0, "127.0.0.1", resolve));
         const controlPort = (upgradeControl.address() as AddressInfo).port;
-        writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\n(async()=>{const args=process.argv.slice(2).join(' ');if(!['--user --no-ask-password --no-pager stop cotal-daemon.service','--user --no-ask-password --no-pager start cotal-daemon.service'].includes(args))process.exit(99);const op=args.includes(' stop ')?'stop':'start';const r=await fetch('http://127.0.0.1:${controlPort}/'+op);if(!r.ok)process.exit(99);})();\n`, { mode: 0o700 });
+        writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\n(async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}if(!['--user --no-ask-password --no-pager stop cotal-daemon.service','--user --no-ask-password --no-pager start cotal-daemon.service'].includes(args))process.exit(99);const op=args.includes(' stop ')?'stop':'start';const r=await fetch('http://127.0.0.1:${controlPort}/'+op);if(!r.ok)process.exit(99);})();\n`, { mode: 0o700 });
         env.PATH = `${recorder}:${env.PATH}`;
       }
       try {
