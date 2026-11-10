@@ -31,7 +31,9 @@ cotal use [<space> | --clear] [--json|--plain]
 project whose root has one running registered space other than the selection, that space is marked as
 this folder's, since a command without `--space` targets it there. It probes
 each broker that this machine started or that was registered by hand, and reports one that does not
-answer as `unreachable`; its registration stays. A discovered space is never dialed by a listing and
+answer as `unreachable` when the connection fails, or `not answering` when it times out.
+A stopped local listener is reported as `broker process is stopped`. Its registration stays.
+A discovered space is never dialed by a listing and
 reads `not checked`. `space show [<name>]` shows one space in full and probes only that broker.
 With no name it is about this folder: the space it has registered, else the one it holds prepared or
 stopped, which `show` names although every other command there targets the selection, else the
@@ -42,7 +44,9 @@ read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 `currentRecorded`, `folder` (this folder's space when it is marked, else null), `items` and
 `prepared`; each item is the row `cotal status --json` gives under
 `meshes.items`: `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`,
-`modeChecked`, `current`, `check` (`reachable`, `unreachable` or `not-checked`) and `catalog`. `space show` adds
+`modeChecked`, `current`, `check` (`reachable`, `unreachable`, `slow-link`, `broker-stopped` or
+`not-checked`) and `catalog`. `slow-link` is the `not answering` state used by `status` and
+connection refusals such as `send`. `space show` adds
 `recordedAt`, `attachHost`, `maxSessions`, `storeDir`, `unencryptedOverlay`, the login pins of a
 user-auth space under `userAuth` and the catalog's `id`, `slug`, `kind` and `role`. It leaves
 credential paths out. A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
@@ -567,6 +571,10 @@ the broker executable and dashboard rows. `--all` also dials every recorded brok
 no more than the default report. Use `status --verbose` for installation paths, extension records and
 the detailed local diagnostics.
 The default report does not include the agent roster; use `ps` or `who`.
+For an open or static-auth space, `status` shares one preflight observation across the
+selected space's rows and delivery check. A silent broker gets one confirming connect
+with the same eight-second budget as `send`, rather than a second preflight. It reads
+`not answering` in text and `slow-link` in JSON, distinct from `unreachable`.
 The deployment-attempt section lists at most 100 fresh and 100 additive
 local IDs, their returned/unsettled state and unreadable paths, with full
 readable coordinates in JSON.
