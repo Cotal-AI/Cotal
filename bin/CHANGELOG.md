@@ -1,5 +1,42 @@
 # cotal-ai
 
+## 0.155.2
+
+### Patch Changes
+
+- 16e601f: Daemon setup now reports connection progress on stderr in every output format.
+  The service-only setup reports its final connection state after waiting, on the first successful
+  attempt, and when the approval wait expires. JSON output remains one document on stdout.
+- 6bfa747: The desktop app reports a startup timeout when its installed background service does not answer, instead of asking you to install it again.
+  
+  The readiness timeout is distinct from a missing daemon, whether the app just installed the service or started its recorded installation.
+- ded3180: Self-updates wait for the daemon and its hosted Managers to return on the new version before reconciling connectors.
+  
+  The verified replacement allows up to 120 seconds for automatic activation and retains the continuity check before connector writes. A timeout names the last observed state and the recovery command.
+- 4bf8b26: Daemon setup rejects a different sign-in provider before asking for device approval.
+  For a locally registered space that needs sign-in, both setup modes check the supplied provider
+  against the space's pinned provider and name the corrected setup command on refusal.
+- a1b0ee1: Show recovery commands when running agents block an update, without suggesting another update that would also be refused.
+  
+  The daemon-hosted Manager refusal explains the restart impact and names how to list and stop the agents on that Manager and space. Update keeps classified recovery guidance and offers a CLI upgrade only after successful reconciliation.
+- 5c5831c: Daemon setup rechecks a temporarily unobserved Manager before refusing an application PATH refresh.
+  
+  Readiness reobservation has a 15-second bound. Refusals retain their actual cause, give a retry step and record the cause in the daemon journal without bypassing the idle-seat fence.
+- Updated dependencies [12fb034]
+- Updated dependencies [ded3180]
+- Updated dependencies [f06e8cc]
+- Updated dependencies [a1b0ee1]
+  - @cotal-ai/cli@0.155.2
+  - @cotal-ai/connector-core@0.155.2
+  - @cotal-ai/auth@0.155.2
+  - @cotal-ai/delivery@0.155.2
+  - @cotal-ai/manager@0.155.2
+  - @cotal-ai/registry@0.155.2
+  - @cotal-ai/runtime@0.155.2
+  - @cotal-ai/core@0.155.2
+  - @cotal-ai/seat@0.155.2
+  - @cotal-ai/workspace@0.155.2
+
 ## 0.155.1
 
 ### Patch Changes
