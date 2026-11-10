@@ -9,6 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
+    "smoke:atomic-write-cleanup": "node --test bin/smoke/atomic-write-cleanup.test.mjs",
     "smoke:no-manager-credential-warning:live": "tsx implementations/cli/smoke/no-manager-credential-warning-live.smoke.ts",
     "typecheck": "pnpm build && pnpm -r typecheck",
     "build": "pnpm -r build",

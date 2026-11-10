@@ -191,6 +191,8 @@ The file is private to its owner and versioned:
 ```
 
 `revision` counts writes that change a value. A write holds a lock and replaces the file atomically.
+If writing the lock or replacement fails, Cotal attempts to remove its temporary file and reports
+the original error. It does not sweep other writers' temporary files.
 If the revision changed after the command read it, the write refuses with `CONFLICT`.
 
 Each write makes the replacement file private with mode `0600`, regardless of its prior mode.
