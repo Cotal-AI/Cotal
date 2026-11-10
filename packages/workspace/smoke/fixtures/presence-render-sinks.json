@@ -286,7 +286,7 @@
     {
       "path": "implementations/cli/src/lib/teardown-spare.ts",
       "kind": "derived-output",
-      "anchor": "`could not list managed agents (${reply.error ?? \"invalid ps reply\"})`",
+      "anchor": "`could not list managed agents (${reason})`",
       "class": "non-render/control",
       "rationale": "Manager control-path failure while gathering the best-effort pre-stop inventory, not a rendered agent presence status."
     },
@@ -6899,7 +6899,7 @@
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "conversationFeed(m, open(), talk()?.own() ?? { received: [], sent: [] }, FEED_ROWS)",
+      "anchor": "conversationFeed(m, open(), talk()?.own() ?? { received: [], sent: [], earlier: [] }, FEED_ROWS)",
       "class": "non-render/control",
       "rationale": "App data shaping: selects the open peer, feed or mesh for a view; no status word is rendered."
     },
