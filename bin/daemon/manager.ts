@@ -267,7 +267,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       chmodSync(logFile, 0o600);
     };
     const [node, ...argv] = daemonArgv();
-    l.view = { ...l.view, state: "starting" };
+    l.view = { ...l.view, state: "starting", reason: "waiting for the hosted Manager to initialize and register", observedAt: undefined };
     let nativeReason: string | undefined;
     let authorityTerminal = false;
     let authorityStatus: number | undefined;
@@ -300,6 +300,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     l.child = child;
     l.view = { ...l.view, pid: child.pid };
     let instanceId: string | undefined;
+    let ready = false;
     child.on("message", (message: unknown) => {
       if (!message || typeof message !== "object") return;
       const frame = message as { kind?: unknown; instanceId?: unknown; reason?: unknown; terminal?: unknown; status?: unknown };
@@ -307,6 +308,11 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         nativeReason = safeDiagnostic(frame.reason).slice(0, 1500);
         authorityTerminal = frame.terminal === true;
         authorityStatus = typeof frame.status === "number" ? frame.status : undefined;
+        return;
+      }
+      if (frame.kind === "manager-ready" && frame.instanceId === instanceId && instanceId !== undefined) {
+        ready = true;
+        l.view = { ...l.view, reason: "the hosted Manager initialized; verifying its pinned endpoint" };
         return;
       }
       if (frame.kind !== "manager-instance" || typeof frame.instanceId !== "string") return;
@@ -349,7 +355,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     let last: unknown;
     while (!ended && !closed && !l.stopping && Date.now() < deadline) {
       try {
-        if (instanceId) {
+        if (instanceId && ready) {
           const selected = instanceId;
           l.view = { ...l.view, instanceId: selected };
           const reply = await probe(space, selected);
@@ -364,7 +370,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           }
           last = reply.error;
         }
-      } catch (error) { last = error; }
+      } catch (error) {
+        last = error;
+        l.view = { ...l.view, reason: safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500), observedAt: new Date().toISOString() };
+      }
       await pause(250);
     }
     await stopChild(l);
