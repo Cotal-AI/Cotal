@@ -249,6 +249,10 @@ test("empty catalog, pending approval, offline and version mismatch expose recov
     try {
       if (options.count === 0) { await a.click("login"); await a.login(); }
       assert.equal(a.node("recovery-panel").hidden, false);
+      if (options.serviceState === "approval-pending") {
+        assert.equal(a.node("connection-icon").dataset.icon, "clock");
+        assert.equal(a.doc.querySelector(".connection-card")!.classList.contains("has-refusal"), false);
+      }
       assert.equal(a.node<HTMLButtonElement>("recover").disabled, false);
       const calls = a.calls.length; await a.click("recover"); assert.ok(a.calls.length > calls);
     } finally { a.dom.window.close(); }

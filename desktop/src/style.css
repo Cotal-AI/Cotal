@@ -17,7 +17,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .app { min-height: 100vh; display: flex; flex-direction: column; padding: 24px 32px; }
 .sidebar { display: grid; grid-template-columns: 1fr auto; align-items: center; width: 100%; max-width: 760px; margin: 0 auto; }
 .brand { display: flex; align-items: center; gap: 8px; font-size: 23px; letter-spacing: -.8px; }
-.brand-mark { width: 28px; height: 28px; border-radius: 8px; background: var(--accent); }
+.brand-mark { width: 28px; height: 28px; border-radius: 8px; background: #416a34; }
 .sidebar-footer { grid-column: 2; grid-row: 1; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
 .dot { width: 6px; height: 6px; background: var(--muted); border-radius: 50%; }
 .dot.connected { background: var(--accent); }
@@ -51,10 +51,10 @@ p { margin: 0 0 16px; }
 .code-row strong { margin: 0; }
 .waiting-line { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .waiting-line .dot { background: var(--accent); }
-.loading .connection-card { min-height: 240px; }
 #loading-title { display: none; }
 .loading .connection-card > * { visibility: hidden; }
-.loading #loading-title { display: block; visibility: visible; color: var(--muted); font-size: 16px; margin: 8px 0 0; }
+.loading #loading-title { display: flex; align-items: center; gap: 12px; visibility: visible; color: var(--muted); font-size: 16px; margin: 0; letter-spacing: 0; }
+#loading-icon { color: var(--accent); }
 .loading .connection-card > :not(#loading-title) { display: none !important; }
 .loading #journey { visibility: hidden; }
 .icon { width: 20px; height: 20px; display: block; flex: none; }
@@ -75,7 +75,7 @@ label { display: block; font-size: 12px; font-weight: 600; margin: 16px 0 8px; }
 input[type=url], select { width: 100%; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-height: 40px; }
 #host-help { margin: 8px 0 0; }
 .footnote { margin: 16px 0 0; line-height: 1.6; }
-.approval { padding: 16px 0 0; margin-top: 16px; }
+.approval { padding: 0; margin-top: 0; }
 .approval p { margin: 0 0 8px; font-size: 12px; }
 .approval strong { display: block; font: 600 36px/1.4 ui-monospace, monospace; font-variant-numeric: tabular-nums; letter-spacing: 2px; margin-bottom: 8px; }
 .approval .button { margin: 4px 0 12px; }
@@ -118,7 +118,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; margin: 16px 
 @keyframes draw { from { stroke-dashoffset: 24; } to { stroke-dashoffset: 0; } }
 .icon-spinner { animation: spin calc(var(--slow) * 4) linear infinite; }
 .in-flight { animation: pulse calc(var(--slow) * 6) var(--ease) infinite; }
-.connection-icon[data-icon=check] { animation: success var(--slow) var(--ease) both; }
+#connection-icon[data-icon=check] { animation: success var(--slow) var(--ease) both; }
 .progress [data-state=done] .check-stroke { stroke-dasharray: 24; animation: draw var(--slow) var(--ease) both; }
 button { transition: background-color var(--fast) var(--ease), border-color var(--fast) var(--ease), transform var(--fast) var(--ease); }
 button:not(:disabled):hover { filter: brightness(.95); }

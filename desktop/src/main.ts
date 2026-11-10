@@ -16,6 +16,7 @@ function setIcon(node: Element, name: Icon): void {
   node.setAttribute("data-icon", name); node.replaceChildren(icon(name));
 }
 setIcon(el("machine-icon"), "computer");
+setIcon(el("loading-icon"), "spinner");
 el("dashboard").append(icon("external"));
 type Stage = "welcome" | "sign-in" | "space" | "connect" | "finished";
 let initialized = false;
@@ -180,9 +181,9 @@ function showStage(next: Stage, focus = false): void {
       text("refusal-detail", `App version: ${appVersion}. Background service version differs. Update the connection when agent sessions have stopped.`); el("details").hidden = false;
     }
   }
-  document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery));
+  document.querySelector(".connection-card")!.classList.toggle("has-refusal", Boolean(recovery) && issue !== "APPROVAL_PENDING");
   text("connection-title", title); text("connection-description", description);
-  setIcon(el("connection-icon"), recovery ? "warning" : finished ? "check" : next === "welcome" ? "computer" : next === "sign-in" ? "browser" : next === "space" ? "space" : setupActive ? "spinner" : "connect");
+  setIcon(el("connection-icon"), recovery ? issue === "APPROVAL_PENDING" ? "clock" : "warning" : finished ? "check" : next === "welcome" ? "computer" : next === "sign-in" ? "browser" : next === "space" ? "space" : setupActive ? "spinner" : "connect");
   text("selected-space", `Space: ${spaceLabel()}`); text("connected-space", `Connected to ${spaceLabel()}`);
   el("connected-space").hidden = !finished;
   text("login", linked || customHost || next === "sign-in" ? "Continue in browser" : "Continue with Cotal Cloud");
@@ -428,7 +429,7 @@ el("disconnect").addEventListener("click", () => void action(async () => {
   const space = selectedSpace(); instances.delete(space);
   const result = await request({ op: "service-disconnect", space });
   applicationRefusals.delete(space); progress = progressNames.map(() => "waiting"); clearDetails();
-  state(String(result.state), space); notice("This computer is disconnected from this space. Remote permissions have not been revoked.");
+  state(String(result.state), space); notice("");
 }));
 el("sync").addEventListener("click", () => void action(async () => { notice(""); await spaces(true); }));
 el("refresh").addEventListener("click", () => void action(refresh));
