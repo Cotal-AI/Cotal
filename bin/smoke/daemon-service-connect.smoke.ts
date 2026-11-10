@@ -179,7 +179,7 @@ class MemoryStore implements SecretStore /* the auth services' stores; the daemo
 }
 
 // ---------- owned sandbox ----------
-const root = mkdtempSync(join(scratchParent, process.argv.includes("--account-only") ? "dacct-" : "cdr-"));
+const root = mkdtempSync(join(scratchParent, process.argv.includes("--account-only") || process.argv.includes("--signin-parity") ? "dacct-" : "cdr-"));
 chmodSync(root, 0o700);
 const home = join(root, "home"), participant = join(root, "participant"), rtDir = join(root, "rt"), jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}a2b2-js-`));
 for (const d of [home, participant, rtDir]) mkdirSync(d, { mode: 0o700 });
@@ -1686,6 +1686,46 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         writeFileSync(join(pathBin, "systemctl"), `#!${process.execPath}\nconst args=process.argv.slice(2);if(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}const op=args.includes('daemon-reload')?'daemon-reload':args.at(-2);if(!['stop','start','disable','daemon-reload'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
       }
       try {
+        if (process.argv.includes("--signin-parity")) {
+          const publicCli = async (...args: string[]) => {
+            const command = spawn(process.execPath, [cliEntry, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+            let out = "", err = "";
+            command.stdout.on("data", b => { out += String(b); });
+            command.stderr.on("data", b => { err += String(b); });
+            const code = await new Promise<number | null>(resolve => command.once("close", resolve));
+            return { code, out, err };
+          };
+          const before = deviceCodeRequests;
+          const signedIn = await cli("login", "--idp", idpUrl);
+          check("P1 daemon device login succeeds in fresh shared home", signedIn.code === 0 && deviceCodeRequests === before + 1, signedIn);
+          const refreshed = await cli("spaces", "--refresh");
+          check("P2a daemon refresh publishes the signed-in catalog", refreshed.code === 0, refreshed);
+          const spaces = await publicCli("space", "--json");
+          check("P2 ordinary CLI space listing discovers signed-in catalog", spaces.code === 0 && spaces.out.includes(ON), spaces);
+          const selected = await publicCli("use", ON, "--json");
+          check("P3 select catalog space through CLI", selected.code === 0, selected);
+          const identity = await publicCli("whoami", "--plain");
+          check("P4 plain CLI whoami uses daemon sign-in", identity.code === 0 && identity.out.includes("machine-owner"), identity);
+          const read = await publicCli("channel", "--json");
+          check("P5 authenticated CLI broker read uses shared sign-in without prompt", read.code === 0 && deviceCodeRequests === before + 1, read);
+          const logout = await publicCli("logout", "--idp", idpUrl, "--local", "--json");
+          check("P6 local CLI logout succeeds", logout.code === 0, logout);
+          const reverseBefore = deviceCodeRequests;
+          const login = await publicCli("login", "--idp", idpUrl, "--plain");
+          check("P7 ordinary CLI device login succeeds", login.code === 0 && deviceCodeRequests === reverseBefore + 1, login);
+          const daemonSpaces = await cli("spaces");
+          check("P8 running daemon observes CLI sign-in without another prompt", daemonSpaces.code === 0 && daemonSpaces.doc.result?.signedInProviders?.includes(idpUrl) && deviceCodeRequests === reverseBefore + 1, daemonSpaces);
+          await killAndAwaitExit(child, "SIGTERM");
+          const isolated = join(root, "isolated-daemon");
+          mkdirSync(isolated, { mode: 0o700 });
+          child = await startDaemon(isolated);
+          const isolatedSpaces = await publicCli("daemon", "spaces", "--daemon-home", isolated, "--json");
+          check("P9 explicit daemon home does not inherit CLI sign-in", isolatedSpaces.code === 0 && JSON.parse(isolatedSpaces.out).result.signedInProviders.length === 0, isolatedSpaces);
+          const isolatedLogin = await publicCli("daemon", "login", "--idp", idpUrl, "--daemon-home", isolated, "--json");
+          check("P10 explicit daemon home requires its own device sign-in", isolatedLogin.code === 0 && deviceCodeRequests === reverseBefore + 2, isolatedLogin);
+          check("P11 no public output exposes fixture session", !JSON.stringify([signedIn, spaces, identity, read, login, daemonSpaces, isolatedLogin]).includes(SESSION));
+          return;
+        }
         if (accountOnly) {
           saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
           const pendingPublished = await (await fetch(`${svc[2]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as Record<string, any>;
