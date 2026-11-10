@@ -861,10 +861,13 @@ A separate `--daemon-home` never changes the shared registry or its credentials.
 same account or failing before a replacement session is saved does not remove registrations.
 
 One sign-in runs at a time: a second `login` refuses `CONFLICT` (`LOGIN_IN_PROGRESS`) without
-contacting the provider. Ctrl-C, or the command's connection closing, requests cancellation on this
-machine. If cancellation takes effect before persistence, nothing is saved, even if device approval
-already happened. An already-completed attempt remains completed; cancellation revokes nothing
-at the provider. A cancelled attempt reports `USAGE_INVALID` (`CANCELLED`). A denied or expired
+contacting the provider. During sign-in in `login` or either `setup` path, Ctrl-C or `SIGTERM`
+requests cancellation and waits for the daemon's answer. Closing the command's connection also
+requests cancellation on this machine. If cancellation takes effect before persistence, nothing
+is saved, even if device approval already happened. An already-completed attempt remains completed;
+cancellation revokes nothing at the provider. A cancelled attempt exits 1 with `USAGE_INVALID`
+(`CANCELLED`) without printing command help. If the command stops before receiving an attempt ID,
+it closes the connection and reports `USAGE_INVALID` (`ABANDONED`), also without help. A denied or expired
 approval refuses `PERMISSION_DENIED` (`DENIED` or `EXPIRED`), and an unreachable provider refuses
 `DEPENDENCY_UNAVAILABLE`
 (`UNREACHABLE`); none of these saves a session. Any other provider answer fails `OPERATION_FAILED`

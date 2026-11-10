@@ -16,7 +16,8 @@
 import { CommandFailure } from "@cotal-ai/workspace";
 import type { DaemonPaths } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
-import { connectCheckViaDaemon, loginViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
+import { loginFromCli } from "./cli-login.js";
+import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, RegisterResult, ServiceConnectionState } from "./protocol.js";
@@ -183,14 +184,13 @@ async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<v
     });
   }
   opts.report("sign-in: approve this machine on another device");
-  const reply = await loginViaDaemon({
+  const reply = await loginFromCli({
     paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, idp: opts.idp,
     ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}),
     onPrompt: opts.onPrompt,
   });
   if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the sign-in: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r = reply.result;
-  if (r.outcome === "cancelled") throw new CommandFailure("refused", "USAGE_INVALID", "the sign-in was cancelled on this machine; nothing was saved and nothing was registered", { native: { code: "CANCELLED" } });
   if (r.outcome === "failed") {
     const native = { native: { code: r.reason.toUpperCase() } };
     if (r.reason === "unreachable") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${r.message}; no session was saved and nothing was registered`, native);
@@ -264,12 +264,11 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     const signedInToProvider = () => discovered.ok && !("event" in discovered) && "signedInProviders" in discovered.result && discovered.result.signedInProviders?.includes(opts.idp ?? "");
     if (!hasSpace() && opts.idp && !signedInToProvider()) {
       opts.report("sign-in: approve this machine on another device");
-      const signed = await loginViaDaemon({ ...opts, idp: opts.idp });
+      const signed = await loginFromCli({ ...opts, idp: opts.idp });
       if (!signed.ok) throw new CommandFailure("refused", "AUTH_REQUIRED", `the daemon refused discovery sign-in: ${signed.code} ${signed.message}`, { native: { code: signed.code }, remedy: `run cotal daemon login --idp ${opts.idp}` });
-      if (signed.result.outcome !== "signed-in") {
+      if (signed.result.outcome === "failed") {
         const failed = signed.result;
-        const reason = failed.outcome === "failed" ? failed.reason : "cancelled";
-        throw new CommandFailure("refused", reason === "unreachable" ? "DEPENDENCY_UNAVAILABLE" : reason === "cancelled" ? "USAGE_INVALID" : "PERMISSION_DENIED", failed.outcome === "failed" ? failed.message : "the discovery sign-in was cancelled", { native: { code: reason.toUpperCase() }, remedy: `run cotal daemon login --idp ${opts.idp}` });
+        throw new CommandFailure("refused", failed.reason === "unreachable" ? "DEPENDENCY_UNAVAILABLE" : "PERMISSION_DENIED", failed.message, { native: { code: failed.reason.toUpperCase() }, remedy: `run cotal daemon login --idp ${opts.idp}` });
       }
       steps.push({ step: "sign-in", outcome: "signed-in", detail: `signed in as ${signed.result.label || signed.result.sub}` });
       opts.report(`sign-in: signed in as ${signed.result.label || signed.result.sub}`);
