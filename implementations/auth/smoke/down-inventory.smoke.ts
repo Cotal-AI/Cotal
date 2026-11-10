@@ -41,7 +41,7 @@ handler = toNodeHandler(auth);
 const signup = await auth.api.signUpEmail({ body: { email: "down@example.test", password: "correct-horse-battery", name: "Shutdown test" }, returnHeaders: true });
 const cookie = signup.headers.get("set-cookie")!.split(";")[0]!;
 try {
-  for (const kind of ["full", "admin"] as const) {
+  for (const kind of ["member", "full", "admin"] as const) {
     const root = join(fixture, kind, "project"), home = join(fixture, kind, "home"), config = join(fixture, kind, "config");
     for (const dir of [root, home, config]) mkdirSync(dir, { recursive: true, mode: 0o700 });
     const env = { ...ambient, HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
@@ -73,18 +73,19 @@ try {
       if (up.code !== 0) throw new Error(`${kind}: setup failed; see retained fixture`);
       const { sub } = await establishIdpSession({ dir: home, idpUrl: base, clientId: "cotal-cli", onPrompt: (prompt) => approveDevice({ base, cookie, origin }, prompt.userCode) });
       check(`${kind}: real device login`, sub === signup.response.user.id);
-      const grant = await run("grant", ["actor", "grant", "cli", "--sub", sub, "--full", ...(kind === "admin" ? ["--scope", "admin"] : [])]);
+      const scope = kind === "member" ? ["--scope", "role:default"] : kind === "admin" ? ["--scope", "admin"] : [];
+      const grant = await run("grant", ["actor", "grant", "cli", "--sub", sub, "--full", ...scope]);
       check(`${kind}: fixture grant stored`, grant.code === 0);
       if (grant.code !== 0) throw new Error(`${kind}: grant setup failed; see retained fixture`);
       const before = JSON.stringify(loadActorLedger(userAuthStateDir(root, space)));
       const ps = await run("ps", ["ps", "--space", space]);
-      check(`${kind}: inventory permission control`, kind === "full" ? ps.code !== 0 && /permission|refused|authorize/i.test(ps.out) : ps.code === 0);
+      check(`${kind}: inventory permission control`, kind === "member" ? ps.code !== 0 && /permission|refused|authorize/i.test(ps.out) : ps.code === 0);
       const down = await run("down", ["down", "--yes"]);
       stopped = down.code === 0;
       check(`${kind}: shutdown exits zero`, stopped);
       check(`${kind}: all four components report stopped`, ["stopped manager", "stopped delivery daemon", "stopped user-auth service", "stopped nats-server"].every((s) => down.out.includes(s)));
       check(`${kind}: inventory warning contains no broker internals`, !/REFUSED BY THE BROKER|ep\.v1\.inst|SPEC 13\.2/.test(down.out));
-      check(`${kind}: inventory result is explained`, kind === "full" ? /could not list managed agents.*access denied/i.test(down.out) && down.out.includes("cotal ps") : !down.out.includes("could not list managed agents"));
+      check(`${kind}: inventory result is explained`, kind === "member" ? /could not list managed agents.*access denied/i.test(down.out) && down.out.includes("cotal ps") : !down.out.includes("could not list managed agents"));
       check(`${kind}: shutdown does not widen the actor grant`, JSON.stringify(loadActorLedger(userAuthStateDir(root, space))) === before);
     } finally {
       if (!stopped) await run("cleanup-down", ["down", "--yes"]);
