@@ -2478,14 +2478,14 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
     return { name: "manager", verdict: lease || credential.kind === "user" ? "serving" : "not-serving", facts };
   } catch (e) {
     // A no-responder service rail or an absent manager registry is definitive no-service evidence.
-    // The lease and PID answer whether that missing service belongs to an extant component (not
-    // serving) or an absent one; any other failed probe remains a refusal.
+    // A dead local PID is absent even while its lease awaits expiry. Without a PID record, the
+    // lease still identifies an extant component; any other failed probe remains a refusal.
     const noService = managerNoService(e);
     facts.push(noService ? "serve no answer" : `serve probe refused: ${(e as Error).message}`);
     if (!noService) return { name: "manager", verdict: "refused", facts };
     const liveRecord = record.kind === "live";
     const hasLease = facts.some((fact) => fact.startsWith("lease holder "));
-    return { name: "manager", verdict: liveRecord || hasLease ? "not-serving" : "absent", facts };
+    return { name: "manager", verdict: liveRecord || (record.kind !== "dead" && hasLease) ? "not-serving" : "absent", facts };
   } finally {
     await close?.();
   }

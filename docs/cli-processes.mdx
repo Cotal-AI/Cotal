@@ -761,6 +761,10 @@ The daemon drops connections from other users, and each side reads the other pro
 the system before a request moves. The system separates users, not processes of one user: any
 process running as you can use the local controls, including sign-in and cancellation.
 
+Each local JSON request line is limited to 64 KiB of UTF-8 text, including its newline. An oversized
+line receives `LINE_TOO_LONG` and the connection closes without processing later requests. This
+also applies to an unfinished tail after valid requests. Multiple valid lines are checked separately.
+
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
 SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
 including closing the terminal, leaves a stale socket, and the next `serve` recovers it by itself.

@@ -1033,7 +1033,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   `status` service reachability from this host. A manager that answers without reporting static
   reconciliation says `static reconciliation not reported by this manager build`; the line stays
   visible even when the manager is otherwise `serving`. A row that reached no manager does not
-  carry it.
+  carry it. If the service does not answer and the local PID is dead, the manager reads `absent`
+  even before its lease expires. A lease without a local PID record still reads `not-serving`.
 - **delivery**: local PID record, its ready lease (`ready` is the daemon's own bound-control
   signal), and the latest `renewal.<spaceKey>.json` adoption verdict, the record of the space the
   command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a

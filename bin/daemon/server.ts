@@ -284,25 +284,29 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     };
     sock.setEncoding("utf8");
     sock.on("data", (chunk: string) => {
-      buf += chunk;
-      bufBytes += Buffer.byteLength(chunk, "utf8");
-      // Enforce the line limit while buffering: an unterminated stream is cut off at the limit,
-      // never accumulated.
-      if (bufBytes > MAX_LINE_BYTES && !buf.includes("\n")) {
-        counters.requestsRefused++;
-        const r: DaemonResponse = { v: DAEMON_PROTOCOL_VERSION, id: null, ok: false, error: { code: "LINE_TOO_LONG", message: `request exceeds ${MAX_LINE_BYTES} bytes` } };
-        sock.removeAllListeners("data");
-        sock.end(encode(r));
-        sock.destroySoon();
+      let offset = 0;
+      while (offset < chunk.length) {
+        const nl = chunk.indexOf("\n", offset);
+        const part = chunk.slice(offset, nl === -1 ? chunk.length : nl);
+        const bytes = Buffer.byteLength(part, "utf8");
+        // Check this line before appending, reserving its newline even while it is incomplete.
+        if (bufBytes + bytes + 1 > MAX_LINE_BYTES) {
+          counters.requestsRefused++;
+          const r: DaemonResponse = { v: DAEMON_PROTOCOL_VERSION, id: null, ok: false, error: { code: "LINE_TOO_LONG", message: `request exceeds ${MAX_LINE_BYTES} bytes` } };
+          sock.removeAllListeners("data");
+          sock.end(encode(r));
+          sock.destroySoon();
+          buf = "";
+          bufBytes = 0;
+          return;
+        }
+        buf += part;
+        bufBytes += bytes;
+        if (nl === -1) return;
+        const line = buf;
         buf = "";
         bufBytes = 0;
-        return;
-      }
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) !== -1) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        bufBytes = Buffer.byteLength(buf, "utf8");
+        offset = nl + 1;
         if (++requests > MAX_REQUESTS_PER_CONNECTION) {
           // Bounded per connection: one refusal, then the connection closes and its unread input is dropped.
           sock.removeAllListeners("data");
