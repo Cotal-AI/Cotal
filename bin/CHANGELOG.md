@@ -1,5 +1,36 @@
 # cotal-ai
 
+## 0.151.3
+
+### Patch Changes
+
+- 35ddf95: A connected chat session ends and says its inbox is gone when a manager restart removes that inbox.
+  
+  The endpoint warns as soon as the broker reports that DM consumer deleted, and the session closes with that reason instead of staying connected with no record. The process exits 5 when the connection close is confirmed, including when the old manager does not answer the retirement. A later send to the old name is refused rather than stored (#6017).
+- 97e0466: Keep the daemon mode and accepted target in JSON failure reports. The shared operation scope carries this context to the existing error renderer without changing outcomes, exit codes or credential handling.
+- 635d9d2: Refuse daemon flags that do not belong to the selected mode before performing any action. The missing-mode error now lists the declared modes, including desktop, and points to help that works without a running daemon.
+- d948e5e: A membership follow stays running through a broker outage that lasts longer than the connection's own reconnect.
+  
+  When the watch closes, the follow reports the lost connection once and reads the feed again once the endpoint re-establishes it. The gap and the current census follow, and the follow ends on an interrupt or a credential that can no longer connect (#6041).
+- Updated dependencies [6b64880]
+- Updated dependencies [35ddf95]
+- Updated dependencies [15b04d7]
+- Updated dependencies [97e0466]
+- Updated dependencies [a0eaa04]
+- Updated dependencies [d948e5e]
+- Updated dependencies [de5f4e4]
+- Updated dependencies [1ed400a]
+  - @cotal-ai/workspace@0.151.3
+  - @cotal-ai/cli@0.151.3
+  - @cotal-ai/core@0.151.3
+  - @cotal-ai/auth@0.151.3
+  - @cotal-ai/delivery@0.151.3
+  - @cotal-ai/manager@0.151.3
+  - @cotal-ai/runtime@0.151.3
+  - @cotal-ai/connector-core@0.151.3
+  - @cotal-ai/registry@0.151.3
+  - @cotal-ai/seat@0.151.3
+
 ## 0.151.2
 
 ### Patch Changes
