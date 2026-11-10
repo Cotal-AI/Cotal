@@ -349,16 +349,17 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     clearTimeout(retries.get(space));
     retries.delete(space);
   };
-  /** Retry only remembered intent and only an unavailable attempt. Recheck inside the per-space
-   *  queue so a timer already queued when disconnect runs cannot restore a forgotten connection. */
-  async function connectRemembered(space: string, delay = 1000): Promise<ServiceConnectionResult> {
+  /** Retry only remembered intent and only an unavailable attempt. Ten one-second retries cover
+   *  short startup outages before exponential backoff. Recheck inside the per-space queue so a
+   *  timer already queued when disconnect runs cannot restore a forgotten connection. */
+  async function connectRemembered(space: string, delay = 1000, fastRetries = 10): Promise<ServiceConnectionResult> {
     if (closed || intentSpace(daemonConnectIntentFile(space, home)) !== space) return result(space);
     cancelRetry(space);
     const r = await connectOnce(space);
     if (!closed && r.state === "unavailable") {
       const timer = setTimeout(() => {
         retries.delete(space);
-        void serial(space, () => connectRemembered(space, Math.min(delay * 2, 30_000)));
+        void serial(space, () => connectRemembered(space, fastRetries > 1 ? 1000 : Math.min(delay * 2, 30_000), Math.max(0, fastRetries - 1)));
       }, delay);
       timer.unref();
       retries.set(space, timer);

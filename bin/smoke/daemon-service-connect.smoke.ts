@@ -210,13 +210,16 @@ const hits: Array<{ space: string; method: string; path: string }> = [];
 /** C7: spaces whose authority door the relay drops, as an unreachable auth service. */
 const relayDown = new Set<string>();
 const changedAccount = new Map<string, string>();
-const droppedRequests = new Map<string, number>();
+const droppedAt = new Map<string, number[]>();
 const authorityGates = new Map<string, () => Promise<void>>();
 const readyGates = new Map<string, () => Promise<void>>();
 const withoutIssuer = new Set<string>();
 async function relay(space: string, target: string): Promise<string> {
   const s = createHttpServer(async (req, res) => {
-    if (relayDown.has(space)) { droppedRequests.set(space, (droppedRequests.get(space) ?? 0) + 1); req.socket.destroy(); return; }
+    if (relayDown.has(space)) {
+      const times = droppedAt.get(space) ?? []; times.push(Date.now()); droppedAt.set(space, times);
+      req.socket.destroy(); return;
+    }
     if (req.method === "GET" && req.url === "/service-endpoint-authority") await authorityGates.get(space)?.();
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
@@ -622,6 +625,7 @@ try {
         recordMesh(original);
 
         for (const dependency of ["authority", "broker"]) {
+          const droppedBeforeStart = droppedAt.get(ON)?.length ?? 0;
           if (dependency === "authority") relayDown.add(ON);
           else { recordMesh({ ...original, server: brokerPathUrl }); cutBrokerPath(); }
           await start();
@@ -629,9 +633,9 @@ try {
           const outage = await cli("service-status");
           check(`C6b ${dependency} CLI reports dependency refusal`, outage.code === 2 && outage.doc.error?.code === "DEPENDENCY_UNAVAILABLE", outage);
           if (dependency === "authority") {
-            const before = droppedRequests.get(ON) ?? 0;
-            await sleep(1500);
-            check("C6b an unavailable startup makes another authority attempt", (droppedRequests.get(ON) ?? 0) > before);
+            const deadline = Date.now() + 5000;
+            while ((droppedAt.get(ON)?.length ?? 0) < droppedBeforeStart + 2 && Date.now() < deadline) await sleep(25);
+            check("C6b an unavailable startup makes another authority attempt", (droppedAt.get(ON)?.length ?? 0) >= droppedBeforeStart + 2);
             relayDown.delete(ON);
             const response = await fetch(`${original.userAuth!.endpoints!.url}/service-endpoint-authority`);
             check("C6b authority recovery is independently reachable", response.status === 200);
@@ -643,6 +647,35 @@ try {
           check(`C6b ${dependency} recovery serves an authorized caller`, (await probeMachine()).reply.ok);
           await stop("SIGKILL");
         }
+        // Recover just after a third failed authority attempt, where immediate exponential
+        // backoff otherwise leaves four seconds before the next attempt.
+        recordMesh(original);
+        relayDown.add(ON);
+        const droppedBefore = droppedAt.get(ON)?.length ?? 0;
+        await start();
+        const retryDeadline = Date.now() + 15_000;
+        while ((droppedAt.get(ON)?.length ?? 0) < droppedBefore + 3 && Date.now() < retryDeadline) await sleep(25);
+        check("C6b recovery-latency instrument: three startup attempts failed", (droppedAt.get(ON)?.length ?? 0) >= droppedBefore + 3);
+        relayDown.delete(ON);
+        const recoveredAt = Date.now();
+        const promptly = await waitState(ON, (s) => s === "connected", 3000);
+        check("C6b early outage recovers within three seconds of authority restoration", promptly === "connected", { state: promptly, elapsedMs: Date.now() - recoveredAt });
+        check("C6b recovery latency positive control eventually connects and serves", (await waitState(ON, (s) => s === "connected", 15_000)) === "connected" && (await probeMachine()).reply.ok);
+        await stop("SIGKILL");
+        relayDown.add(ON);
+        const timesBefore = droppedAt.get(ON)?.length ?? 0;
+        await start();
+        const scheduleDeadline = Date.now() + 100_000;
+        while ((droppedAt.get(ON)?.length ?? 0) < timesBefore + 16 && Date.now() < scheduleDeadline) await sleep(100);
+        const times = (droppedAt.get(ON) ?? []).slice(timesBefore);
+        const gaps = times.slice(1).map((time, i) => time - times[i]!);
+        console.log(`  C6b startup retry gaps ms: ${gaps.join(",")}`);
+        check("C6b first ten retries stay near one second", gaps.length >= 15 && gaps.slice(0, 10).every((gap) => gap >= 950 && gap < 2000), gaps);
+        check("C6b long outage backs off to the thirty-second cap", [2000, 4000, 8000, 16000, 30000].every((delay, i) => gaps[i + 10] !== undefined && gaps[i + 10]! >= delay - 50 && gaps[i + 10]! < delay + 2000), gaps);
+        const longOutage = await cli("service-status");
+        check("C6b capped outage keeps dependency status", longOutage.code === 2 && longOutage.doc.error?.code === "DEPENDENCY_UNAVAILABLE", longOutage);
+        await stop("SIGKILL");
+        relayDown.delete(ON);
         recordMesh(original);
         for (const action of ["disconnect", "shutdown"]) {
           relayDown.add(ON);
@@ -652,9 +685,9 @@ try {
             const disconnected = await cli("service-disconnect");
             check("C6b disconnect cancels remembered intent during outage", disconnected.code === 0 && !existsSync(intentFile(ON)), disconnected);
           } else await stop("SIGTERM");
-          const before = droppedRequests.get(ON) ?? 0;
+          const before = droppedAt.get(ON)?.length ?? 0;
           await sleep(2500);
-          check(`C6b ${action} leaves no pending retry`, (droppedRequests.get(ON) ?? 0) === before);
+          check(`C6b ${action} leaves no pending retry`, (droppedAt.get(ON)?.length ?? 0) === before);
           relayDown.delete(ON);
           if (action === "disconnect") {
             await stop("SIGTERM");
