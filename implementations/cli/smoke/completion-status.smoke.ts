@@ -537,7 +537,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
 // the prepared space, as `space show` does.
 {
   const s = sandbox();
-  for (const words of [["run", "start", "--file", ""], ["run", "simulate", "p.cotal.js", "--handler", ""], ["auth", "mint", "x", "--out", ""], ["watch", "--creds", ""]]) {
+  for (const words of [["run", "start", "--file", ""], ["run", "simulate", "p.cotal.js", "--handler", ""], ["auth", "mint", "x", "--out", ""], ["watch", "--creds", ""], ["daemon", "serve", "--daemon-home", ""], ["daemon", "status", "--daemon-home", ""], ["daemon", "setup", "--daemon-home", ""]]) {
     const r = s.run(["__complete", ...words]);
     check(`${words.join(" ")} completes from the shell's file names`, r.status === 0 && r.stdout.trimEnd() === ":default", shown(r));
   }
@@ -689,6 +689,12 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("bash narrows them to the typed prefix", prefix.status === 0 && prefix.stdout === "plain.yaml\n", { status: prefix.status, stdout: prefix.stdout });
   const keys = bash(`cotal config set ""`);
   check("bash offers no file names where the value takes none", keys.status === 0 && keys.stdout.includes("color\n") && !keys.stdout.includes("plain.yaml"), { status: keys.status, stdout: keys.stdout });
+  const daemonHome = join(work, "daemon home");
+  mkdirSync(daemonHome, { mode: 0o700 });
+  const homes = bash(`cotal daemon serve --daemon-home "${join(work, "daemon")}"`);
+  check("bash completes an absolute daemon-home directory containing spaces", homes.status === 0 && homes.stdout === `${daemonHome}\n`, { status: homes.status, stdout: homes.stdout });
+  const idp = bash(`cotal daemon login --idp ""`);
+  check("bash does not offer paths for the daemon's provider URL", idp.status === 0 && idp.stdout.trim() === "", { status: idp.status, stdout: idp.stdout });
   const zshStub = s.run(["completion", "script", "zsh"]).stdout;
   check("the zsh stub calls _files for a path value", /\[\[ "\$directive" == default \]\] && _files/.test(zshStub), zshStub);
   if (spawnSync("zsh", ["-fc", "true"]).status === 0) {

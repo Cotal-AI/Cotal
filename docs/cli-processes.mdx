@@ -716,7 +716,8 @@ directory, so it runs beside the default daemon. `<dir>` must already exist as a
 directory you own with mode `0700`, and cannot be the Cotal home. On Windows it must be owned by
 you, SYSTEM or Administrators, and its access list may grant nothing to anyone else. A relative path or the Cotal home refuses `USAGE_INVALID`, a missing
 directory `TARGET_NOT_FOUND`, and a symlinked, foreign or loose one `PERMISSION_DENIED`. Nothing is
-created or repaired.
+created or repaired. Bash and Zsh completion offer file paths for `--daemon-home`, including
+existing directories; the directory checks still apply when the command runs.
 
 `serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. The default daemon holds the
 same lock at `<COTAL_HOME>/daemon/daemon.lock`. A second `serve` for the same daemon refuses
