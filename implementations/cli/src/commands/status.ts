@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   CotalEndpoint,
+  agentFilePath,
   dialerFor,
   EpEnvelopeError,
   formatAge,
@@ -56,6 +57,7 @@ import {
   hasUserAuthState,
   homeCotalDir,
   cachedPreferences,
+  loadLaunchPersonaFile,
   resolvePreference,
   isMeshRegistryError,
   isWorkspaceTargetError,
@@ -263,6 +265,7 @@ export interface StatusResult {
     natsProblem: MachineStatus["natsProblem"];
     integrations: { name: string; state: "ok" | "warn" | "error" | "off"; text: string }[];
     connectors: { name: string; requires: string[]; missing: string[] }[] | null;
+    /** For a resolved space, the bare direct launch's persona and effective harness, including its pin. */
     defaults: { harness: string | null; persona: string | null } | null;
     skills: { state: "current" | "not-installed" | "behind" | "unreadable"; total: number; behind: number; retired: number; error: string | null };
     web: { installed: boolean | null; installedError: string | null; url: string | null; urlError: string | null };
@@ -595,7 +598,22 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
   let defaults: StatusResult["machine"]["defaults"] = null;
   try {
     const context = { preferences: cachedPreferences(), space: selected.ok ? selected.target.space : undefined };
-    defaults = { harness: resolvePreference("harness", context).value, persona: resolvePreference("persona", context).value };
+    const persona = resolvePreference("persona", context);
+    defaults = { harness: resolvePreference("harness", context).value, persona: persona.value };
+    if (selected.ok) {
+      const path = agentFilePath(selected.target.root, persona.value!);
+      try {
+        const definition = loadLaunchPersonaFile(path);
+        defaults.harness = resolvePreference("harness", { ...context, pin: definition.agent }).value;
+      } catch (error) {
+        // A bare spawn writes the shipped, unpinned default only when the product default is absent.
+        // Every other failed read leaves the effective harness unknown, never the saved preference.
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT" || persona.winner?.source !== "default") {
+          defaults.harness = null;
+          gaps.add("DEFAULT_PERSONA_UNREADABLE", "the default launch persona could not be read and validated; its effective harness is unknown", { path });
+        }
+      }
+    }
   } catch (e) {
     // The refusal names the file and its problem, and its remedy is the next step.
     gaps.add("PREFERENCES_UNREADABLE", `the saved agent defaults could not be read: ${(e as Error).message}`, { path: preferencesPath() });
@@ -1886,7 +1904,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
     ...(r.stackManager ? [["Manager", r.stackManager.endpoint === "answered" ? stateCell("answering", "ok") : r.stackManager.endpoint === "not-answering" ? stateCell(`not answering · stack-manager pid ${r.stackManager.pid}`, "failed") : stateCell("endpoint not checked", "hint")] as [string, Cell]] : []),
     ["Access", s.mode === "user" ? "user sign-in" : s.mode === "auth" ? "static auth" : "open"],
     ["Project", s.rootGone ? stateCell(`${s.root} · folder is gone`, "failed") : s.root],
-    ["Default agent", r.machine.defaults ? `${r.machine.defaults.harness ?? "application not set"} · persona ${r.machine.defaults.persona ?? "not set"}` : stateCell("saved defaults could not be read", "failed")],
+    ["Default agent", r.machine.defaults ? `${r.machine.defaults.harness ?? "application unresolved"} · persona ${r.machine.defaults.persona ?? "not set"}` : stateCell("saved defaults could not be read", "failed")],
     ["Persona catalog", s.personas.default === "valid" ? "default available" : stateCell(s.personas.default === "invalid" ? "default is invalid" : s.personas.default === "unreadable" ? "could not be read" : "no default persona", s.personas.default === "invalid" || s.personas.default === "unreadable" ? "failed" : "hint")],
   ];
   if (s.tlsRequired) rows.push(["Transport", "TLS required"]);
@@ -2460,14 +2478,14 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
     return { name: "manager", verdict: lease || credential.kind === "user" ? "serving" : "not-serving", facts };
   } catch (e) {
     // A no-responder service rail or an absent manager registry is definitive no-service evidence.
-    // The lease and PID answer whether that missing service belongs to an extant component (not
-    // serving) or an absent one; any other failed probe remains a refusal.
+    // A dead local PID is absent even while its lease awaits expiry. Without a PID record, the
+    // lease still identifies an extant component; any other failed probe remains a refusal.
     const noService = managerNoService(e);
     facts.push(noService ? "serve no answer" : `serve probe refused: ${(e as Error).message}`);
     if (!noService) return { name: "manager", verdict: "refused", facts };
     const liveRecord = record.kind === "live";
     const hasLease = facts.some((fact) => fact.startsWith("lease holder "));
-    return { name: "manager", verdict: liveRecord || hasLease ? "not-serving" : "absent", facts };
+    return { name: "manager", verdict: liveRecord || (record.kind !== "dead" && hasLease) ? "not-serving" : "absent", facts };
   } finally {
     await close?.();
   }

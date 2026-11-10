@@ -46,6 +46,10 @@
  *     - a different same-uid process listens at the derived path;
  *     - `status --daemon-home D` refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER, exit 2, and the
  *       listener receives 0 bytes.
+ *  H6 managed catalog refresh keeps shared registrations, sentinel files and selection unchanged,
+ *     including on provider failure; default refresh still applies additions and removals. An
+ *     account switch drops the old catalog cache in either home, but only the default daemon
+ *     removes the old account's shared registrations and selection. Credential files stay.
  *
  * Not covered here, and still to add: register approval carry-over (needs the stock auth service
  * sandbox of daemon-register.smoke.ts), a foreign-owned home (needs a user namespace) and the
@@ -54,6 +58,7 @@
  * Run: tsx bin/smoke/daemon-home.smoke.ts   (Linux only)
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { chmodSync, closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -63,7 +68,7 @@ import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { flockExclusiveNb } from "@cotal-ai/seat";
 import { saveIdpSession } from "@cotal-ai/auth";
-import { recordMesh, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
+import { getCurrent, loadMeshes, recordMesh, setCurrent, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-home smoke: Linux only; skipped on ${process.platform}`);
@@ -262,6 +267,106 @@ try {
     check("G1 refused serve creates no socket or lifetime lock", JSON.stringify(runtimeEntries()) === JSON.stringify(before) && !existsSync(lockFile(unused)));
     const st = await cli(["status", "--daemon-home", managed, "--json"]);
     check("G1 valid status still reaches the same daemon", st.status === 0 && st.doc.result?.pid === managedServe?.child.pid, { status: st.status, doc: st.doc });
+  });
+
+  await cell("H6 managed catalog refresh never applies to the shared registry", async () => {
+    let origin = "", idp = "", catalogHits = 0, unavailable = false;
+    let slugs = ["catalog-new"], sub = "catalog-account", denied = false;
+    const session = "owned-catalog-session";
+    const catalog = createHttpServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      const send = (status: number, value: unknown, headers = {}) => res.writeHead(status, { "content-type": "application/json", ...headers }).end(JSON.stringify(value));
+      if (req.url === "/api/auth/device/code") return void send(200, { device_code: "owned-device", user_code: "OWNED", verification_uri: `${origin}/verify`, verification_uri_complete: `${origin}/verify?code=OWNED`, expires_in: 60, interval: 1 });
+      if (req.url === "/api/auth/device/token") return void (denied ? send(400, { error: "access_denied" }) : send(200, { access_token: session, expires_in: 3600 }));
+      if (req.headers.authorization !== `Bearer ${session}`) return void send(401, {});
+      if (req.url === "/api/auth/token") {
+        // Catalog discovery decodes the provider's account claims; no broker authenticates here.
+        const token = [JSON.stringify({ alg: "none" }), JSON.stringify({ sub, iss: origin, exp: Math.floor(Date.now() / 1000) + 30 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".fixture";
+        return void send(200, { token }, { link: `<${origin}/catalog>; rel="https://cotal.ai/relations/space-catalog"` });
+      }
+      if (req.url !== "/catalog") return void send(404, {});
+      catalogHits++;
+      if (unavailable) return void send(503, {});
+      send(200, {
+        v: 1, account: { idpUrl: idp, issuer: origin, sub },
+        spaces: slugs.map((slug) => ({
+          id: slug, slug, name: slug, kind: "team", role: "member",
+          registration: {
+            space: slug, server: "nats://127.0.0.1:4222", tlsRequired: false, sentinelCreds: `fixture-sentinel-${slug}`,
+            userAuth: { provider: "cotal", idp: { url: idp, issuer: origin, audience: origin }, endpoints: { url: `${origin}/exchange` } },
+          },
+        })),
+      });
+    });
+    await new Promise<void>((r) => catalog.listen(0, "127.0.0.1", r));
+    origin = `http://127.0.0.1:${(catalog.address() as AddressInfo).port}`;
+    idp = `${origin}/api/auth`;
+    const sharedState = (): string => {
+      const files: { path: string; mode: number; hash: string }[] = [];
+      const visit = (path: string, relative: string): void => {
+        if (!existsSync(path)) return;
+        const stat = lstatSync(path);
+        if (stat.isDirectory()) for (const name of readdirSync(path).sort()) visit(join(path, name), `${relative}/${name}`);
+        else files.push({ path: relative, mode: stat.mode & 0o777, hash: createHash("sha256").update(readFileSync(path)).digest("hex") });
+      };
+      for (const name of ["meshes", "catalog", "current-mesh"]) visit(join(home, name), name);
+      return JSON.stringify(files);
+    };
+    try {
+      saveIdpSession(managed, idp, { token: session, sub: "catalog-account", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+      const empty = sharedState();
+      const first = await cli(["spaces", "--refresh", "--daemon-home", managed, "--json"]);
+      check("H6 managed refresh reaches the catalog and keeps its own cache", first.status === 0 && first.doc.result?.refresh === "complete" && catalogHits > 0 && existsSync(join(managed, "space-catalogs.json")), first.doc);
+      check("H6 managed-only refresh creates no shared registration or credential", sharedState() === empty && !existsSync(join(home, "idp-sessions.json")));
+      slugs = ["catalog-kept", "catalog-removed"];
+      saveIdpSession(home, idp, { token: session, sub: "catalog-account", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+      const initial = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 default refresh registers its own catalog", initial.status === 0 && loadMeshes().some((m) => m.space === "catalog-removed"), initial.doc);
+      setCurrent("catalog-removed");
+      const before = sharedState();
+      slugs = ["catalog-kept", "catalog-added"];
+      const changed = await cli(["spaces", "--refresh", "--daemon-home", managed, "--json"]);
+      check("H6 managed refresh preserves shared registrations, credentials and selection", changed.status === 0 && sharedState() === before && getCurrent() === "catalog-removed", changed.doc);
+      check("H6 managed space list still reflects the shared registry", changed.doc.result?.spaces.some((s: { space: string }) => s.space === "catalog-removed") === true && changed.doc.result?.spaces.every((s: { space: string }) => s.space !== "catalog-added") === true);
+      unavailable = true;
+      const failed = await cli(["spaces", "--refresh", "--daemon-home", managed, "--json"]);
+      check("H6 a failed managed refresh does not write shared failure metadata", failed.status === 4 && failed.doc.result?.refresh === "failed" && sharedState() === before, failed.doc);
+      unavailable = false;
+      const applied = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 default refresh still adds and removes its registrations", applied.status === 0 && loadMeshes().some((m) => m.space === "catalog-added") && !loadMeshes().some((m) => m.space === "catalog-removed"), applied.doc);
+      check("H6 default refresh clears its removed selection", getCurrent() === undefined);
+      check("H6 no private registry or sentinel tree was created", !existsSync(join(managed, "meshes")) && !existsSync(join(managed, "catalog")));
+
+      const subjects = (dir: string): string[] => Object.values(JSON.parse(readFileSync(join(dir, "space-catalogs.json"), "utf8")).accounts as Record<string, { sub: string }>).map((a) => a.sub).sort();
+      const oldSpaces = loadMeshes().filter((m) => m.origin === "catalog");
+      const sentinels = oldSpaces.map((m) => m.userAuth?.sentinelCredsPath).filter((p): p is string => typeof p === "string");
+      check("H6 switch fixture has two discovered spaces and their sentinel files", oldSpaces.length === 2 && sentinels.length === 2 && sentinels.every((p) => existsSync(p)));
+      const manual = userMesh("catalog-manual"); recordMesh(manual);
+      setCurrent("catalog-kept");
+      const beforeSwitch = sharedState();
+      sub = "catalog-next";
+      const managedLogin = await cli(["login", "--idp", idp, "--daemon-home", managed, "--json"]);
+      check("H6 managed account switch removes its old catalog entry", managedLogin.status === 0 && subjects(managed).join() === "catalog-next", managedLogin.doc);
+      check("H6 managed account switch preserves shared credentials, records and selection", sharedState() === beforeSwitch && getCurrent() === "catalog-kept");
+      sub = "catalog-account";
+      const same = await cli(["login", "--idp", idp, "--json"]);
+      check("H6 signing in as the same account preserves discovered spaces", same.status === 0 && sharedState() === beforeSwitch, same.doc);
+      denied = true;
+      const rejected = await cli(["login", "--idp", idp, "--json"]);
+      check("H6 a denied sign-in preserves the prior account and its spaces", rejected.status !== 0 && subjects(home).join() === "catalog-account" && sharedState() === beforeSwitch, rejected.doc);
+      denied = false; sub = "catalog-next";
+      const switched = await cli(["login", "--idp", idp, "--json"]);
+      check("H6 default account switch removes its old catalog entry", switched.status === 0 && switched.doc.result?.previousSub === "catalog-account" && subjects(home).join() === "catalog-next", switched.doc);
+      check("H6 default account switch removes its old registrations", oldSpaces.every((old) => !loadMeshes().some((m) => m.space === old.space)));
+      check("H6 account cleanup retains credential files", sentinels.every((p) => existsSync(p)));
+      check("H6 default account switch clears the removed selection", getCurrent() === undefined);
+      check("H6 default account switch preserves manual registration", JSON.stringify(loadMeshes().find((m) => m.space === manual.space)) === JSON.stringify(manual));
+      slugs = ["catalog-next-space"];
+      const next = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 refreshing the new account discovers only its own spaces", next.status === 0 && loadMeshes().filter((m) => m.origin === "catalog").map((m) => m.space).join() === "catalog-next-space", next.doc);
+    } finally {
+      await new Promise<void>((r) => catalog.close(() => r()));
+    }
   });
 
   await cell("H2 managed state is disjoint and nothing migrates from legacy", async () => {

@@ -606,6 +606,56 @@ try {
       { made: shown(made), partial: shown(partial), cleaned: shown(cleaned) });
   }
 
+  // Channel policy labels describe each field's source, including explicit values equal to defaults.
+  {
+    const channel = (...args: string[]) => run(["channel", ...args, "--space", space, "--plain"]);
+    const fields = (stdout: string) => Object.fromEntries([...stdout.matchAll(/^\s+(Replay|Window|Delivery):\s+(.+)$/gm)].map((match) => [match[1], match[2]]));
+    const policyIs = (r: { status: number; stdout: string }, replay: string, window: string, delivery: string) =>
+      r.status === 0 && JSON.stringify(fields(r.stdout)) === JSON.stringify({ Replay: replay, Window: window, Delivery: delivery });
+    const row = (stdout: string, name: string) => stdout.split("\n").find((line) => line.trimStart().startsWith(`#${name} `))?.trim().replace(/\s{2,}/g, "  ");
+    const builtIn = await channel("show", "policy-unregistered");
+    const builtInDefaults = await channel("defaults");
+    check("built-in replay, retained-history window and delivery are marked inherited",
+      policyIs(builtIn, "on - inherited", "retained history - inherited", "durable - inherited")
+        && policyIs(builtInDefaults, "on - inherited", "retained history - inherited", "durable - inherited"), { show: shown(builtIn), defaults: shown(builtInDefaults) });
+    const defaults = await channel("defaults", "--delivery", "live", "--no-replay", "--window", "1h");
+    const created = await channel("set", "policy", "--desc", "Operations");
+    check("control: channel policy defaults and metadata are saved through the CLI", defaults.status === 0 && created.status === 0, { defaults: shown(defaults), created: shown(created) });
+    const inherited = await channel("show", "policy");
+    const listed = await channel();
+    check("channel show marks every inherited policy field with inherited",
+      policyIs(inherited, "off - inherited", "1h - inherited", "live - inherited"), shown(inherited));
+    check("channel list uses inherited for replay and delivery as show does",
+      listed.status === 0 && row(listed.stdout, "policy") === "#policy  Operations  off - inherited  live - inherited", shown(listed));
+    const structured = await run(["channel", "show", "policy", "--space", space, "--json"]);
+    const registry = (structured.envelope?.result as unknown as { registry?: { defaults?: object; channels?: Record<string, object> } })?.registry;
+    check("JSON keeps stored metadata without presentation marks or resolved overrides",
+      structured.status === 0 && JSON.stringify(registry?.channels?.policy) === JSON.stringify({ description: "Operations" })
+        && JSON.stringify(registry?.defaults) === JSON.stringify({ replay: false, replayWindow: "1h", deliveryClass: "live" }), shown(structured));
+    const defaultsCard = await channel("defaults");
+    check("saved channel defaults are explicit and carry no inheritance marks", policyIs(defaultsCard, "off", "1h", "live"), shown(defaultsCard));
+    const missing = await channel("show", "policy-unregistered");
+    check("an unsaved channel marks every field inherited too", policyIs(missing, "off - inherited", "1h - inherited", "live - inherited"), shown(missing));
+    const mixedSet = await channel("set", "policy", "--no-replay");
+    const mixed = await channel("show", "policy");
+    const mixedList = await channel();
+    check("an explicit false equal to the default is unmarked while other fields stay inherited",
+      mixedSet.status === 0 && policyIs(mixed, "off", "1h - inherited", "live - inherited") && mixedList.status === 0
+        && row(mixedList.stdout, "policy") === "#policy  Operations  off  live - inherited", { show: shown(mixed), list: shown(mixedList) });
+    const explicitSet = await channel("set", "policy", "--replay", "--window", "30m", "--delivery", "durable");
+    const explicit = await channel("show", "policy");
+    const explicitList = await channel();
+    check("control: explicit replay, window and delivery overrides carry no inheritance marks",
+      explicitSet.status === 0 && policyIs(explicit, "on", "30m", "durable") && explicitList.status === 0
+        && row(explicitList.stdout, "policy") === "#policy  Operations  on  durable", { show: shown(explicit), list: shown(explicitList) });
+    const sameSet = await channel("set", "policy", "--no-replay", "--window", "1h", "--delivery", "live");
+    const same = await channel("show", "policy");
+    const sameList = await channel();
+    check("explicit settings equal to defaults are still unmarked",
+      sameSet.status === 0 && policyIs(same, "off", "1h", "live") && sameList.status === 0
+        && row(sameList.stdout, "policy") === "#policy  Operations  off  live", { show: shown(same), list: shown(sameList) });
+  }
+
   // ── channel members on an open mesh, which runs no delivery service to write the feed ─────────
   {
     const members = await run(["channel", "members", "general", "--space", openSpace, "--json"]);

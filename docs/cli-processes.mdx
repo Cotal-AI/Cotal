@@ -557,6 +557,11 @@ Each mode accepts only its listed flags. A flag from another mode refuses with `
 before any daemon or service action, including `--dry-run` on `serve`. Bare `cotal daemon` lists
 the declared modes and points to `cotal help daemon`, which works without a running daemon.
 `desktop` serves the desktop app's bounded JSON request on stdin; it has its own protocol output.
+Its `about` request reads host metadata without resolving or contacting a daemon. Other requests
+resolve the selected daemon only after request validation. A path-resolution refusal returns a
+versioned `result` frame with `ok: false`, rather than ordinary CLI text. On Linux, a missing or
+overlong runtime path is reported as `NO_RUNTIME_DIR` with a fixed message naming `XDG_RUNTIME_DIR`;
+no raw diagnostic is forwarded.
 
 Once a daemon mode begins, its JSON failure names that mode in `command`, as success does.
 It retains the selected space or normalized login provider in `target` once that value is accepted.
@@ -569,8 +574,8 @@ user service on Linux, a LaunchAgent on macOS, or a scheduled task on Windows. I
 start a Manager or grant remote execution or file access. Its registered service exposes
 `machine-status`. A space connection requires owner approval, broker acceptance and space readiness.
 It has local transport implementations for Linux, macOS and Windows. On macOS and Windows the endpoint needs the `@cotal-ai/seat` native helper built for that
-platform; where none is built or shipped, every command refuses `UNSUPPORTED`
-(`UNSUPPORTED_PLATFORM`), and so does any other platform.
+platform; where none is built or shipped, daemon endpoint operations refuse `UNSUPPORTED`
+(`UNSUPPORTED_PLATFORM`), and so do those operations on any other platform.
 
 `start` starts the recorded, unchanged service without restarting an instance that is already running.
 `spaces` lists the registry through the daemon; `--refresh` uses the daemon-held sign-in to refresh
@@ -634,7 +639,11 @@ unit name, path and the sha256 of the bytes it would write, and writes, enables 
 `install` for the same daemon refuses `CONFLICT` and names `cotal daemon uninstall`. Outside a
 terminal `uninstall` needs `--yes`. `uninstall` acts on the unit `install` recorded: a unit file
 that is gone refuses `TARGET_NOT_FOUND`, and one whose bytes changed refuses `CONFLICT`, with
-nothing removed either way. On macOS and Windows, a plist, task definition, loaded label or
+nothing removed either way. On Linux, `start` and both forms of `uninstall` also require the
+receipt to name the selected daemon home, its derived unit name and that file in the user manager's
+unit directory. A copied receipt, changed unit name or redirected path refuses `CONFLICT` before
+service control or file removal, even when the file's bytes match the recorded digest.
+On macOS and Windows, a plist, task definition, loaded label or
 registered task that no install recorded refuses the install `CONFLICT` with nothing written, and a
 registered task that no longer runs the recorded command refuses `uninstall` `CONFLICT`.
 
@@ -672,6 +681,10 @@ The daemon drops connections from other users, and each side reads the other pro
 the system before a request moves. The system separates users, not processes of one user: any
 process running as you can use the local controls, including sign-in and cancellation.
 
+Each local JSON request line is limited to 64 KiB of UTF-8 text, including its newline. An oversized
+line receives `LINE_TOO_LONG` and the connection closes without processing later requests. This
+also applies to an unfinished tail after valid requests. Multiple valid lines are checked separately.
+
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
 SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
 including closing the terminal, leaves a stale socket, and the next `serve` recovers it by itself.
@@ -688,21 +701,28 @@ freed, so a socket with the recorded numbers that a process answers on belongs t
 process answers on, removes nothing and refuses `CONFLICT` (`ALREADY_RUNNING`), naming the path.
 When a process answers, the refusal says another process is listening at that path and `serve` does
 not start until it releases it, and Next names `ss -xlp` and `fuser <path>` to find that process. A
-clean shutdown clears the record, and so does a refused `serve`, so a socket at the path afterwards
-is refused the same way, and the reason says the record names no socket. A non-socket entry there refuses `PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) and is left
-alone.
+clean shutdown or a refused socket check clears the record, so a socket at the path afterwards
+is refused the same way, and the reason says the record names no socket. A start that fails before
+checking the socket, such as a runtime-directory permission refusal, preserves its predecessor's
+record while releasing the lock. Once the directory is corrected, the next start can recover the
+same dead socket. A non-socket entry there refuses `PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) and
+is left alone.
 
 `--daemon-home <dir>` runs or reaches a separate daemon whose own state lives in `<dir>`: its
 sign-in session, its per-space identity, register request and service store, all at the paths
 below with `<dir>` in place of `<COTAL_HOME>`. Spaces are still read from the shared Cotal home's
-mesh registry, which this daemon never writes. Its socket is
+mesh registry, which this daemon never writes. `spaces --refresh` updates only the separate
+home's catalog cache; it does not add or remove shared registrations, write shared sentinel files,
+or clear the default selected space. Its space list still shows the shared registry. Use
+`cotal sync` from the shared Cotal home to apply that home's signed-in catalogs there. Its socket is
 `$XDG_RUNTIME_DIR/cotal/home-<16 hex>/daemon.sock` (on macOS the same name under the cache
 directory, on Windows the pipe `\\.\pipe\cotal-daemon-<SID>-home-<16 hex>`), derived from the
 directory, so it runs beside the default daemon. `<dir>` must already exist as an absolute
 directory you own with mode `0700`, and cannot be the Cotal home. On Windows it must be owned by
 you, SYSTEM or Administrators, and its access list may grant nothing to anyone else. A relative path or the Cotal home refuses `USAGE_INVALID`, a missing
 directory `TARGET_NOT_FOUND`, and a symlinked, foreign or loose one `PERMISSION_DENIED`. Nothing is
-created or repaired.
+created or repaired. Bash and Zsh completion offer file paths for `--daemon-home`, including
+existing directories; the directory checks still apply when the command runs.
 
 `serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. The default daemon holds the
 same lock at `<COTAL_HOME>/daemon/daemon.lock`. A second `serve` for the same daemon refuses
@@ -729,6 +749,13 @@ reaches the default daemon.
 command prints only the approval link, code and expiry to stderr, then the signed-in account. No
 session token crosses the endpoint or reaches the terminal. `--idp` takes an HTTPS auth URL, or an
 HTTP loopback IP URL; `--client-id` defaults to `cotal-cli`.
+
+Signing in as a different account at the same provider removes the previous account's catalog
+cache from the selected daemon home. The default daemon also removes that account's discovered
+space registrations, clearing a selection that named a removed space. Manual registrations and
+credential files stay. This cleanup does not revoke credentials or stop existing connections.
+A separate `--daemon-home` never changes the shared registry or its credentials. Signing in as the
+same account or failing before a replacement session is saved does not remove registrations.
 
 One sign-in runs at a time: a second `login` refuses `CONFLICT` (`LOGIN_IN_PROGRESS`) without
 contacting the provider. Ctrl-C, or the command's connection closing, requests cancellation on this

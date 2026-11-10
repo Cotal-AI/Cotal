@@ -1,5 +1,16 @@
 # @cotal-ai/workspace
 
+## 0.152.0
+
+### Patch Changes
+
+- 1fec76f: Commands now reject invalid broker URLs and honor TLS schemes in `--server`.
+  Per-command connections share registration's URL validation, preserve WebSocket routes,
+  and require TLS for secure schemes on registered and raw connections.
+- Updated dependencies [4bd669c]
+- Updated dependencies [1f4700a]
+  - @cotal-ai/core@0.152.0
+
 ## 0.151.3
 
 ### Patch Changes
