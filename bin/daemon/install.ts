@@ -323,7 +323,7 @@ export interface UninstallPlan {
 }
 
 /** The recorded unit, refused unless this OS runs its mechanism and its source and job are unchanged. */
-function recordedUnit(paths: DaemonPaths): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined } {
+function recordedUnit(paths: DaemonPaths, daemonHome: string | undefined): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined } {
   const service = nativeService();
   const receipt = readReceipt(paths);
   if (!receipt) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this daemon has no installed unit recorded by `cotal daemon install`; nothing was removed");
@@ -334,6 +334,9 @@ function recordedUnit(paths: DaemonPaths): { receipt: UnitReceipt; plan: Uninsta
   if (mechanism === "scheduled-task" && receipt.unitPath !== join(paths.state, "service-task.xml")) throw new CommandFailure("refused", "CONFLICT", "the scheduled-task receipt names a definition outside this daemon state; nothing was changed");
   if (service) service.check(receipt);
   else {
+    const unit = daemonUnitName(daemonHome);
+    if (receipt.daemonHome !== daemonHome || receipt.unit !== unit || receipt.unitPath !== join(systemdUserUnitDirectory(), unit))
+      throw new CommandFailure("refused", "CONFLICT", "the systemd receipt does not name this daemon home's unit in the user manager's unit directory; nothing was changed");
     try { assertSystemdSource(receipt.unitPath, receipt.unitSha256); }
     catch { throw new CommandFailure("refused", "CONFLICT", `${receipt.unitPath} is not the unit this daemon installed; nothing was removed`); }
   }
@@ -341,13 +344,13 @@ function recordedUnit(paths: DaemonPaths): { receipt: UnitReceipt; plan: Uninsta
 }
 
 /** The exact recorded unit `uninstall` would remove, refusing a receipt that no longer matches. */
-export function planUninstall(paths: DaemonPaths): UninstallPlan {
-  return recordedUnit(paths).plan;
+export function planUninstall(paths: DaemonPaths, daemonHome: string | undefined): UninstallPlan {
+  return recordedUnit(paths, daemonHome).plan;
 }
 
 /** Start only the recorded, unchanged service. This does not restart an already-running daemon. */
-export function startInstalled(paths: DaemonPaths): UninstallPlan {
-  const { receipt, plan, service } = recordedUnit(paths);
+export function startInstalled(paths: DaemonPaths, daemonHome: string | undefined): UninstallPlan {
+  const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) service.start(receipt);
   else submitSystemdUnitControl("start", plan.unit);
   return plan;
@@ -359,8 +362,8 @@ export interface UninstallResult extends UninstallPlan {
 
 /** Stop it, disable autostart, remove the unit and its receipt, and reload the user manager (on
  *  macOS and Windows, the adapter's own stop and deregistration). */
-export function applyUninstall(paths: DaemonPaths): UninstallResult {
-  const { receipt, plan, service } = recordedUnit(paths);
+export function applyUninstall(paths: DaemonPaths, daemonHome: string | undefined): UninstallResult {
+  const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) {
     service.remove(receipt);
     rmSync(unitReceiptFile(paths), { force: true });

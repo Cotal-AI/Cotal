@@ -634,7 +634,11 @@ unit name, path and the sha256 of the bytes it would write, and writes, enables 
 `install` for the same daemon refuses `CONFLICT` and names `cotal daemon uninstall`. Outside a
 terminal `uninstall` needs `--yes`. `uninstall` acts on the unit `install` recorded: a unit file
 that is gone refuses `TARGET_NOT_FOUND`, and one whose bytes changed refuses `CONFLICT`, with
-nothing removed either way. On macOS and Windows, a plist, task definition, loaded label or
+nothing removed either way. On Linux, `start` and both forms of `uninstall` also require the
+receipt to name the selected daemon home, its derived unit name and that file in the user manager's
+unit directory. A copied receipt, changed unit name or redirected path refuses `CONFLICT` before
+service control or file removal, even when the file's bytes match the recorded digest.
+On macOS and Windows, a plist, task definition, loaded label or
 registered task that no install recorded refuses the install `CONFLICT` with nothing written, and a
 registered task that no longer runs the recorded command refuses `uninstall` `CONFLICT`.
 

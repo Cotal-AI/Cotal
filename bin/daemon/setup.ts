@@ -94,7 +94,7 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
   try {
     // A recorded, unchanged unit means this is already installed; `planUninstall` is the exact
     // same check `uninstall` makes, so the two can never disagree about what is installed.
-    const existing = planUninstall(opts.paths);
+    const existing = planUninstall(opts.paths, opts.daemonHome);
     unit = existing.unit;
     outcome = "already-installed";
     detail = `${existing.unit} is already installed; it was left as it is`;
@@ -116,7 +116,7 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
   }
   if (outcome === "already-installed" && !(await daemonAnswers(opts))) {
     // A start failure is not evidence that no installation was recorded.
-    startInstalled(opts.paths);
+    startInstalled(opts.paths, opts.daemonHome);
     detail = `${unit} is already installed; its owned service received a start request`;
   }
   steps.push({ step: "install", outcome, detail });

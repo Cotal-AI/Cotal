@@ -304,7 +304,7 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
   }
   const dry = values["dry-run"] === true;
   if (!dry && values.yes !== true && !process.stdout.isTTY) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon uninstall needs --yes outside a terminal; nothing was removed");
-  const r = dry ? { ...planUninstall(paths), state: "would-remove" as const } : applyUninstall(paths);
+  const r = dry ? { ...planUninstall(paths, home), state: "would-remove" as const } : applyUninstall(paths, home);
   writeResult(presentation, { command: "daemon uninstall", target: { unit: r.unit }, result: r }, () => ({ sections: [
     { title: dry ? "Would remove" : "Removed", blocks: [
       { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Installed", r.installedAt]] },
@@ -409,8 +409,8 @@ async function run(args: ParsedArgs): Promise<void> {
     return;
   }
   if (mode === "start") {
-    const { paths } = resolveTarget(args);
-    const result = startInstalled(paths);
+    const { paths, home } = resolveTarget(args);
+    const result = startInstalled(paths, home);
     writeResult(presentationOf(args.values), { command: "daemon start", target: { unit: result.unit }, result }, () => ({ sections: [
       { title: "Start requested", blocks: [{ kind: "lines", lines: [{ text: "The owned service received the start request. Check `cotal daemon status` for readiness; no connection is assumed.", tone: "hint" }] }] },
     ] }));
