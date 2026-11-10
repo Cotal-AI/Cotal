@@ -1,7 +1,8 @@
-import { mkdtempSync, realpathSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
+import { globalConfigDir } from "@cotal-ai/core";
 import { recordMesh } from "@cotal-ai/workspace";
 import { saveIdpSession } from "@cotal-ai/auth";
 import { createHostedManagers, daemonManagerRoot } from "../daemon/manager.js";
@@ -9,6 +10,11 @@ import { createHostedManagers, daemonManagerRoot } from "../daemon/manager.js";
 // The real createHostedManagers spawn runs the verified shipped CLI entry. A child-only
 // preload emits synthetic diagnostics before that entry starts, with real separated writes.
 const home = realpathSync(mkdtempSync(join(tmpdir(), "manager-log-")));
+const oldConfig = process.env.XDG_CONFIG_HOME;
+process.env.XDG_CONFIG_HOME = join(home, "config");
+const stamp = join(globalConfigDir(), "seed", "stamp.json");
+mkdirSync(join(stamp, ".."), { recursive: true, mode: 0o700 });
+writeFileSync(stamp, JSON.stringify({ generation: JSON.parse(readFileSync(resolve("bin/package.json"), "utf8")).version }), { mode: 0o600 });
 const oldHome = process.env.COTAL_HOME;
 const oldArgv = process.argv[1];
 const oldExec = [...process.execArgv];
@@ -45,5 +51,6 @@ try {
   process.argv[1] = oldArgv;
   process.execArgv.splice(0, process.execArgv.length, ...oldExec);
   if (oldHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = oldHome;
+  if (oldConfig === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldConfig;
   rmSync(home, { recursive: true, force: true });
 }
