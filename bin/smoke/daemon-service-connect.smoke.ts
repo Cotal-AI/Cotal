@@ -29,7 +29,8 @@
  *      dependency refusal visible during a held retry, retries broker loss during ready, serves
  *      after recovery, and cancels pending retries on disconnect and shutdown;
  *  C6c shipped disconnect and SIGTERM cancel held startup HTTP requests before their release,
- *      forget or preserve intent respectively, and allow a healthy restart;
+ *      forget or preserve intent respectively, cancel explicit registration, and allow retry
+ *      after repairing a failed intent removal;
  *  C7  outage: with the authority door unreachable, a fresh connect is not `connected`; once the
  *      door is back it is `connected` again;
  *  C7b a changed authority account stays account-mismatch in the socket, CLI and offline status,
@@ -917,6 +918,72 @@ try {
             await stop();
           }
         }
+        // Explicit registration shares the same queue as connect, including when a live
+        // connection already exists. Own its cancellation before its first network request.
+        for (const phase of ["token", "info", "register"]) {
+          for (const action of ["disconnect", "SIGTERM"]) {
+            await start();
+            check(`C6c register ${phase} ${action} prepare: disconnect`, (await cli("service-disconnect")).code === 0);
+            await stop();
+            await start();
+            // Hold metadata/POST over an already connected endpoint to check that registration
+            // does not replace that endpoint's cancellation ownership or connection state.
+            if (phase !== "token") check(`C6c register ${phase} ${action} prepare: connect`, (await cli("service-connect")).code === 0);
+            let entered!: () => void, release!: () => void, aborted!: () => void;
+            const requested = new Promise<boolean>((resolve) => { entered = () => resolve(true); });
+            const held = new Promise<void>((resolve) => { release = resolve; });
+            const cancelled = new Promise<boolean>((resolve) => { aborted = () => resolve(true); });
+            const gate = async (res: ServerResponse) => { res.once("close", aborted); entered(); await held; };
+            if (phase === "token") tokenGate = gate;
+            else connectGates.set(ON, async (operation, res) => { if (operation === phase) await gate(res); });
+            const pending = cli("register").then((reply) => reply, () => undefined);
+            try {
+              if (await within(requested, 15_000) !== true) throw new Error(`C6c explicit register did not reach ${phase}`);
+              if (phase !== "token") check(`C6c register ${phase} preserves connected status while pending`, (await cli("service-status")).doc.result?.state === "connected");
+              const started = Date.now();
+              if (action === "disconnect") {
+                const disconnect = cli("service-disconnect");
+                const reply = await within(disconnect, 2500);
+                check(`C6c register ${phase} disconnect settles before release`, reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
+                if (!reply) release();
+                await disconnect;
+              } else {
+                const exited = new Promise<number | null>((resolve) => child!.once("exit", resolve));
+                child!.kill("SIGTERM");
+                const code = await within(exited, 2500);
+                check(`C6c register ${phase} SIGTERM exits before release`, code === 0 && !existsSync(paths.socket), { code });
+                if (code === undefined) release();
+                await exited;
+                child = undefined;
+              }
+              console.log(`  C6c explicit register ${phase} ${action} elapsed ms: ${Date.now() - started}`);
+              check(`C6c register ${phase} ${action} closes the held HTTP request`, await within(cancelled, 1000) === true);
+              check(`C6c register ${phase} ${action} settles the registration client`, await within(pending.then(() => true), 2500) === true);
+            } finally { tokenGate = undefined; connectGates.delete(ON); release(); await pending; }
+            if (action === "SIGTERM") await start();
+            check(`C6c register ${phase} ${action} can register again`, (await cli("register")).doc.result?.outcome === "registered");
+            check(`C6c register ${phase} ${action} can connect again`, (await cli("service-connect")).code === 0);
+            await stop();
+          }
+        }
+        await start();
+        check("C6c intent-removal failure control connects", (await cli("service-connect")).code === 0);
+        const intent = intentFile(ON), saved = `${intent}.before-removal-error`, blocked = `${intent}.blocked-directory`;
+        renameSync(intent, saved);
+        mkdirSync(intent, { mode: 0o700 });
+        try {
+          const refused = await cli("service-disconnect");
+          check("C6c intent-removal failure remains visible", refused.code === 2 && refused.doc.error?.cause?.code === "UNAVAILABLE", refused);
+        } finally {
+          // Preserve the failed filesystem input instead of deleting evidence.
+          renameSync(intent, blocked);
+          renameSync(saved, intent);
+        }
+        check("C6c repaired intent permits connect in the same daemon", (await cli("service-connect")).code === 0);
+        check("C6c repaired intent status is connected", (await cli("service-status")).doc.result?.state === "connected");
+        check("C6c repaired intent permits a later disconnect", (await cli("service-disconnect")).code === 0 && !existsSync(intent));
+        check("C6c restore connected intent for following cells", (await cli("service-connect")).code === 0);
+        await stop();
       } finally {
         tokenGate = undefined; connectGates.delete(ON); await stop();
         d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);

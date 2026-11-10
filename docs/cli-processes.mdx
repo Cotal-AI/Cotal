@@ -1103,6 +1103,8 @@ drains the responder and closes the connection, removes that space's resume reco
 disconnect outlives a restart, and stopping the daemon closes all of them without removing a record.
 Disconnect and graceful shutdown cancel an in-flight service authority or sign-in proof request,
 including a startup resume, before waiting for the connection attempt to settle.
+This also applies to a pending `daemon register`. If removing resume intent fails, disconnect
+reports the failure. Repair the record and retry disconnect or connect without restarting the daemon.
 
 The service answers its existing `machine-status` command with `null`. This is a liveness response;
 it contains no vitals, hostname or machine metadata. Its stock Describe answer is explicitly public:

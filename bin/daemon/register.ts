@@ -76,8 +76,8 @@ const NOT_SIGNED_IN = "this machine's sign-in was not accepted by the space's pr
 const NOT_SENT = "the daemon could not send the registration request; nothing was sent and nothing is connected";
 const UNUSABLE = "the space answered the registration with something the daemon does not use; run the same command again";
 
-export async function registerDaemon(space: string, home: string = homeCotalDir()): Promise<RegisterResult> {
-  const sent = await sendRegister(space, home);
+export async function registerDaemon(space: string, home: string = homeCotalDir(), signal?: AbortSignal): Promise<RegisterResult> {
+  const sent = await sendRegister(space, home, signal);
   return "outcome" in sent ? sent : registerAnswer(sent.result, sent.ids);
 }
 

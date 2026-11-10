@@ -169,6 +169,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   const queue = new Map<string, Promise<unknown>>();
   const retries = new Map<string, ReturnType<typeof setTimeout>>();
   const disconnecting = new Set<string>();
+  const registering = new Map<string, AbortController>();
   let closed = false;
 
   const result = (space: string): ServiceConnectionResult => {
@@ -400,14 +401,22 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
 
   return {
     register: (space) => serial(space, async () => {
-      const r = await registerDaemon(space, home);
-      const current = live.get(space);
-      // Registration alone cannot replace a live transport's state or revive ended authority.
-      if (!closed && !current?.endpoint && current?.state !== "ended") {
-        live.set(space, { abort: new AbortController(), state: r.outcome === "registered" ? "disconnected" : fromRegister(r),
-          brokerUp: false, serving: new Set(), ...("remedy" in r ? { remedy: r.remedy } : {}) });
+      if (closed || disconnecting.has(space)) return { outcome: "refused", space,
+        message: "the daemon is stopping or disconnecting this space; no registration request was sent" };
+      const abort = new AbortController();
+      registering.set(space, abort);
+      try {
+        const r = await registerDaemon(space, home, abort.signal);
+        const current = live.get(space);
+        // Registration alone cannot replace a live transport's state or revive ended authority.
+        if (!abort.signal.aborted && !closed && !current?.endpoint && current?.state !== "ended") {
+          live.set(space, { abort: new AbortController(), state: r.outcome === "registered" ? "disconnected" : fromRegister(r),
+            brokerUp: false, serving: new Set(), ...("remedy" in r ? { remedy: r.remedy } : {}) });
+        }
+        return r;
+      } finally {
+        registering.delete(space);
       }
-      return r;
     }),
     connect: (space) => serial(space, async () => {
       cancelRetry(space);
@@ -419,16 +428,20 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
       cancelRetry(space);
       // Cancellation must happen outside the queue: its head may be awaiting this space.
       disconnecting.add(space);
+      registering.get(space)?.abort();
       const current = live.get(space);
       if (current) cancel(current);
       return serial(space, async () => {
-        cancelRetry(space);
-        const l = live.get(space);
-        if (l) { await teardown(l); live.delete(space); }
-        // A disconnect is explicit, so it must outlive a restart: forget the intent before answering.
-        forget(space);
-        disconnecting.delete(space);
-        return { space, state: "disconnected", message: SENTENCE.disconnected };
+        try {
+          cancelRetry(space);
+          const l = live.get(space);
+          if (l) { await teardown(l); live.delete(space); }
+          // A disconnect is explicit, so it must outlive a restart: forget the intent before answering.
+          forget(space);
+          return { space, state: "disconnected", message: SENTENCE.disconnected };
+        } finally {
+          disconnecting.delete(space);
+        }
       });
     },
     status: (space) => result(space),
@@ -446,6 +459,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     async close() {
       closed = true;
       for (const space of retries.keys()) cancelRetry(space);
+      for (const abort of registering.values()) abort.abort();
       for (const l of live.values()) cancel(l);
       await Promise.all([...queue.values()]);
       await Promise.all([...live.values()].map((l) => teardown(l)));
