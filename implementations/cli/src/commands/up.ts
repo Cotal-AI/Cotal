@@ -1,5 +1,6 @@
 import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess } from "node:child_process";
+import { spawnBroker } from "../lib/broker-spawn.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { createConnection, createServer, isIP } from "node:net";
@@ -2313,7 +2314,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // on POSIX so only this owner receives the interrupt and can finish manager-first teardown
   // before signalling the broker. Keep the child referenced and its output in this terminal.
   // The configuration names a store inside the root relative to it, so the broker runs from the root.
-  const child = spawn(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
+  const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
   let activationFinished = !resumeAttempt;
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
   releaseStartupLock();
@@ -4279,8 +4280,9 @@ export async function startMeshDetached(
   const logPath = cotalPath("nats.log");
   const fd = openBrokerLog(logPath);
   const listenerStartedAt = new Date().toISOString();
-  const child = spawn(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd] });
-  closeSync(fd);
+  let child: ChildProcess;
+  try { child = spawnBroker(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd] }); }
+  finally { closeSync(fd); }
   await recordSpawnedListener(child, listenerStartedAt, opts.boundListener);
   child.unref();
 
