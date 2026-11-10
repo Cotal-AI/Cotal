@@ -259,7 +259,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     if (!provider.serviceEndpointRenewal || !provider.serviceEndpointAuthority || !provider.serviceEndpointInfo) { l.state = "unsupported"; return result(space); }
     const store = daemonServiceStore(home, space, workspaceSecretStore(entry.root));
     const dir = userAuthStateDir(entry.root, space, { readOnly: true });
-    const source = provider.serviceEndpointRenewal({ store, dir, witness });
+    const source = provider.serviceEndpointRenewal({ store, dir, sessionDir: home, witness });
     l.source = source;
     let grant: EpServeGrant;
     const pull = async () => {

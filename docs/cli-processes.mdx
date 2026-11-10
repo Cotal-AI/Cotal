@@ -717,8 +717,12 @@ to run the command with that daemon's `COTAL_HOME` when it is a daemon started w
 home, and otherwise to stop it and start the daemon with `cotal daemon serve`.
 
 This daemon is a different machine identity. Nothing is copied from the default daemon: it needs
-its own `login`, its own `register`, and the space owner's approval of its own instance. Without
-`--daemon-home` every command reaches the default daemon.
+its own `login`, its own `register`, and the space owner's approval of its own instance.
+Registration, registration replay and service activation use the sign-in in the selected daemon
+home, including when `setup` reaches those steps. A missing sign-in there cannot use a sign-in
+from the default Cotal home. Renewal keeps using its issued service proof while that proof is
+valid; reactivation uses the selected home's sign-in again. Without `--daemon-home` every command
+reaches the default daemon.
 
 `login` signs the running daemon in with device approval. The daemon runs the same sign-in as
 `cotal login` and keeps the session in the machine's Cotal home, where `cotal login` keeps it. The

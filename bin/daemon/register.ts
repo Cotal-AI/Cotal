@@ -113,7 +113,7 @@ async function sendRegister(space: string, home: string): Promise<RegisterResult
   try {
     const provider = resolveAuthProvider();
     if (!provider.serviceEndpointAuthority) return { outcome: "unsupported-by-space", space, message: "the space's auth service does not host service endpoints, so the daemon cannot register with it" };
-    result = (await provider.serviceEndpointAuthority({ store: workspaceSecretStore(entry.root), dir: userAuthStateDir(entry.root, space, { readOnly: true }), request })).result;
+    result = (await provider.serviceEndpointAuthority({ store: workspaceSecretStore(entry.root), dir: userAuthStateDir(entry.root, space, { readOnly: true }), sessionDir: home, request })).result;
   } catch (e) {
     const status = (e as { httpStatus?: number }).httpStatus;
     if (status === 404) return { outcome: "unsupported-by-space", space, message: "the space's auth service does not host service endpoints, so the daemon cannot register with it" };
