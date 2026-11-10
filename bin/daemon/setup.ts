@@ -176,7 +176,7 @@ async function requestRegistration(opts: SetupOptions, steps: SetupStep[]): Prom
   if (r.outcome === "not-user-auth" || r.outcome === "unsupported-by-space") throw new CommandFailure("refused", "UNSUPPORTED", r.message, native);
   if (r.outcome === "not-signed-in") throw new CommandFailure("refused", "AUTH_REQUIRED", r.message, native);
   if (r.outcome === "unreachable") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, native);
-  if (r.outcome === "account-mismatch" || r.outcome === "conflict") throw new CommandFailure("refused", "CONFLICT", r.message, native);
+  if (r.outcome === "account-mismatch" || r.outcome === "conflict" || r.outcome === "local-state-error") throw new CommandFailure("refused", "CONFLICT", r.message, native);
   if (r.outcome === "refused") throw new CommandFailure("refused", "reason" in r ? "PERMISSION_DENIED" : "DEPENDENCY_UNAVAILABLE", r.message, native);
   if (r.outcome !== "approval-required" && r.outcome !== "pending" && r.outcome !== "registered") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", r.message, native);
   steps.push({ step: "register", outcome: r.outcome, detail: `${r.endpoint} instance ${r.instanceId}, request ${r.requestId}` });
@@ -184,7 +184,7 @@ async function requestRegistration(opts: SetupOptions, steps: SetupStep[]): Prom
 }
 
 /** States that will not become `connected` however long anyone waits. */
-const TERMINAL = new Set<ServiceConnectionState>(["refused", "ended", "conflict", "unsupported", "not-registered", "not-requested", "not-signed-in"]);
+const TERMINAL = new Set<ServiceConnectionState>(["refused", "ended", "conflict", "unsupported", "not-registered", "not-requested", "not-signed-in", "local-state-error"]);
 
 /**
  * Connect, retrying while the space is still waiting for its owner. Only an answer that cannot
@@ -237,7 +237,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
   const code = end.state === "not-requested" || end.state === "not-registered" ? "TARGET_NOT_FOUND"
     : end.state === "unsupported" ? "UNSUPPORTED"
     : end.state === "not-signed-in" ? "AUTH_REQUIRED"
-    : end.state === "conflict" ? "CONFLICT"
+    : end.state === "conflict" || end.state === "local-state-error" ? "CONFLICT"
     : "PERMISSION_DENIED";
   throw new CommandFailure("refused", code, `${end.message}. The daemon is installed and running, and nothing is connected`, {
     remedy: `read \`cotal daemon service-status --space ${opts.space}\``,
