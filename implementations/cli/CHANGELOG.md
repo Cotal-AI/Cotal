@@ -1,5 +1,24 @@
 # @cotal-ai/cli
 
+## 0.155.1
+
+### Patch Changes
+
+- 6af46a5: Linux daemon installation refuses unsafe unit directories during dry runs and before changing linger.
+  The installer checks existing directory ancestors without creating them, then publishes the unit and its receipt before enabling linger so a later refusal remains recoverable with uninstall. It verifies the published source and directory protection again after the linger calls before requesting service registration.
+- ac8d4c5: Use the installed CLI entry in status and agent-list suggestions when cotal is not on PATH, instead of requiring pnpm or a source checkout.
+- c43bcd9: Local write failures now name the file, explain the storage limit and give a next step.
+  Space preparation, preferences and local persona saves report storage failures separately from
+  invalid input and unknown outcomes. A failed default-persona seed reports the prepared record
+  that was already saved and warns that the persona file may be incomplete. Initial project
+  directory creation failures carry the same storage diagnosis and retry guidance.
+  Native POSIX quota errors are recognized even when Node lacks their symbolic error name.
+- 13a8a8b: Compact status no longer warns about a local broker executable on a machine with only remote spaces. Full diagnostics and JSON retain executable readiness, and local broker launches keep the same protection checks.
+- Updated dependencies [435b339]
+- Updated dependencies [c43bcd9]
+  - @cotal-ai/workspace@0.155.1
+  - @cotal-ai/core@0.155.1
+
 ## 0.155.0
 
 ### Minor Changes
