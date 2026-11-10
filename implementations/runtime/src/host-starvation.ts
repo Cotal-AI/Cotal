@@ -340,7 +340,7 @@ export const POLL_BACKOFF_MS = 250;
 export const POLL_BACKOFF_MAX_MS = 2_000;
 
 /**
- * Perform a pause-plane operation, and do not let this host's own starvation, or one late reply
+ * Perform an idempotent plane operation, and do not let this host's own starvation, or one late reply
  * from the plane, be recorded as the effect's failure.
  *
  * THE OPERATION MUST BE IDEMPOTENT, which the pause plane's are by construction: `arm` mints
@@ -390,9 +390,8 @@ export async function servedDespiteStarvation<T>(
           throw new EffectError(
             "L4026",
             "pause-unanswered",
-            `${what} could not be served: the pause plane did not answer ${unanswered} consecutive reads before their client deadline, while this host's own event loop was running (${evidence}). `
-            + `The pause and its timer are intact on the plane and nothing about the program or the resource it waits on is at fault; `
-            + `the run can be resumed once the broker is answering.`,
+            `${what} could not be served: the plane did not answer ${unanswered} reads before their client deadline, while this host's own event loop was running (${evidence}). `
+            + `Check broker connectivity and capacity.`,
             { attempts: unanswered, lagMs: last.lagMs, elapsedMs: last.elapsedMs, ticksExpected: last.ticksExpected, ticksObserved: last.ticksObserved },
           );
         }
@@ -408,9 +407,8 @@ export async function servedDespiteStarvation<T>(
         throw new EffectError(
           "L4025",
           "host-starved",
-          `${what} could not be served: this host did not schedule the run's process across ${starved} consecutive attempts (${evidence}). `
-          + `The pause and its timer are intact on the plane and nothing about the program or the resource it waits on is at fault; `
-          + `the run can be resumed once the host has capacity.`,
+          `${what} could not be served: this host did not schedule the run's process across ${starved} attempts (${evidence}). `
+          + `Check host capacity.`,
           { attempts: starved, lagMs: last.lagMs, elapsedMs: last.elapsedMs, ticksExpected: last.ticksExpected, ticksObserved: last.ticksObserved },
         );
       }
