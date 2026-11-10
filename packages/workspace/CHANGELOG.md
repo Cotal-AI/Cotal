@@ -1,5 +1,20 @@
 # @cotal-ai/workspace
 
+## 0.151.3
+
+### Patch Changes
+
+- 6b64880: Refuse chat sends before publishing when a space's chat stream is absent, and report that absence in the connection state. Preserve unknown outcomes for lost publish acknowledgements and unconfirmed session retirement.
+- 35ddf95: A connected chat session ends and says its inbox is gone when a manager restart removes that inbox.
+  
+  The endpoint warns as soon as the broker reports that DM consumer deleted, and the session closes with that reason instead of staying connected with no record. The process exits 5 when the connection close is confirmed, including when the old manager does not answer the retirement. A later send to the old name is refused rather than stored (#6017).
+- 15b04d7: `cotal completion` accepts a shell startup file that your own user private group can write. Atomic replacements preserve its group and mode, and validate the temporary file before writing shell content.
+  
+  On a host whose default umask is 002, a `~/.bashrc` or `~/.zshrc` you own is left group-writable. Completion treated every group-writable file as unsafe, so `cotal completion` exited 4 and `cotal completion install` refused it while still telling you to run the install. A group-writable file or folder you own is now accepted when its group is your proven user private group and it has no extended ACL, the same rule as every other protected path. A file another account could write, a symlink, and a file you do not own are still refused. When a `chmod` fixes the file, `cotal completion` offers that `chmod` before `install`. A path that contains the words of the following sentence stays whole in that command.
+- 97e0466: Keep the daemon mode and accepted target in JSON failure reports. The shared operation scope carries this context to the existing error renderer without changing outcomes, exit codes or credential handling.
+- Updated dependencies [35ddf95]
+  - @cotal-ai/core@0.151.3
+
 ## 0.151.2
 
 ### Patch Changes

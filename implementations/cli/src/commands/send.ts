@@ -25,13 +25,12 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, agentGrants, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, spaceStreamsExpected, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, agentGrants, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient } from "../lib/transient.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { brokerStoreWrite, recordedStore, storeRefusedWrite, storeWriteRepair } from "../lib/broker-store-health.js";
-import { chatStreamGone, streamsAbsent } from "../lib/space-streams.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { UnusableFile } from "../lib/unusable-file.js";
 
@@ -463,8 +462,7 @@ export async function send(args: ParsedArgs): Promise<void> {
       if (input.mode === "msg" && isPublishPermissionDenied(error)) throw await channelDenied(input.target, target, connection, registered, values.creds !== undefined ? connection.creds : undefined);
       const full = storeFullRefusal(error, connection.root, space, target);
       if (full) throw full;
-      // No stream stores a message whose space's streams were removed, so the send stored nothing.
-      if (spaceStreamsExpected(space, connection.mode) && await chatStreamGone(ep)) throw streamsAbsent(connection);
+      // Later stream absence cannot rule out storage before an acknowledgement was lost.
       // A broker sends nothing back for a stream it cannot write, so its own log here may name why.
       const store = connection.root ? brokerStoreWrite(connection.root, space) : undefined;
       if (store?.state === "write-failed") {

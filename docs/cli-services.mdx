@@ -258,10 +258,13 @@ component records make the inventory partial. Reads do not start, repair or inst
 `service add [name] --file <definition.json>` imports the version-1 service object described under
 [Adding a service](#adding-a-service). A declared preset uses
 `service add <name> --preset <preset> <declared-options>`. Guided input offers installed presets
-and file import. Each answer is checked at its question; an invalid value is asked for again
-without losing earlier answers. Broker server answers use the same address rules as the final
-save. Input is capped at 256 KiB, checked against the selected native space and its schema before
-a private record is saved. Whether a root or credential suits the preset is checked
+and file import. Defaulted options show the same default description as their flag help. Enter
+keeps that default, including after opting in to a text question. A yes-or-no question starts at
+its boolean default; an explicit opposite answer overrides it. An option with no default stays
+required. Text answers are checked at their question; an invalid value is asked for again without
+losing earlier answers. Broker server answers use the same address rules as the final save.
+Input is capped at 256 KiB, checked against the selected native space and its schema before a
+private record is saved. Whether a root or credential suits the preset is checked
 at start. A process definition needs an existing executable and
 absolute working directory. Credential file protection is checked without reading its contents.
 Adapter definitions use an installed local-process provider's versioned, closed option schema.

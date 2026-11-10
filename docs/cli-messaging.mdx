@@ -91,7 +91,10 @@ than its cap refuses every write with JetStream error 10023 and stores nothing, 
 `DEPENDENCY_UNAVAILABLE` (exit 2), naming the store and the `--max-file-store` cap this machine
 recorded for it. Its Next is `cotal history clear --yes`, which purges the space's channel history;
 a larger cap applies after that through `cotal down` and `cotal up --max-file-store <bytes>`. Any other unconfirmed publish outcome is
-unknown and never retried automatically. A broker that cannot write its store sends no
+unknown and never retried automatically. A lost acknowledgement stays `OPERATION_UNKNOWN` (exit 3)
+even if the stream is later found missing: the message may have been stored before deletion.
+A missing space confirmed while opening the sender still refuses before publishing.
+A broker that cannot write its store sends no
 acknowledgement at all, so when such a publish times out and the space's broker log on this machine
 records a store write failure, the `OPERATION_UNKNOWN` message names its time, cause and file and
 says the message was probably not stored. Its Next names the fix for that cause, write access to
@@ -453,7 +456,11 @@ under `Not decoded` with its key and the decode error, and the key is left in th
 channel resolves to the default policy, as an endpoint's registry watch does. `show` of that
 channel and `defaults` when the defaults key does not decode say the same. A `set` or `defaults`
 that would write such a key refuses with `CONFLICT` and leaves the bytes as they are. `remove`
-of that key removes the entry. `show` includes inherited replay and delivery settings.
+of that key removes the entry. `show` includes resolved replay, window and delivery settings.
+Each value with no per-channel override is marked `inherited`, whether it comes from space
+defaults or the built-in policy. The inventory uses the same mark for replay and delivery.
+Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the
+mark identifies values supplied by the built-in policy.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
 records. A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
@@ -579,8 +586,9 @@ message in the window came from it, and the principal otherwise. `--dms` reads t
 names, waiting up to two seconds for it. `result.items[].to` is the principal.
 A line break or other control character in a message's text shows as its `\uXXXX` escape in the
 text and `--plain` reports, so a message cannot clear the screen or start a row of its own.
-A row shows the first 500 characters of a longer message and marks the cut with the message's size.
-`--json` carries the text as it was sent, in `result.items[].text`.
+A row shows the first 500 code units of a longer message and marks the cut with the code units not
+shown. `--json` carries the text as it was sent, in `result.items[].text`. The count is code units,
+the same measure a cut `watch` line uses.
 
 Retained history is not every message sent. The chat stream keeps a post until its sender has posted
 the space's per-sender count of newer ones on that channel, or until it is older than the space's age

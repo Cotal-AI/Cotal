@@ -545,12 +545,23 @@ cotal daemon serve [--daemon-home <dir>] [--json|--plain]
 cotal daemon status [--space <s>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon login --idp <auth base URL> [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon spaces [--refresh] [--daemon-home <dir>] [--json|--plain]
+cotal daemon desktop [--daemon-home <dir>]
 cotal daemon connect-check --space <s> [--daemon-home <dir>] [--json|--plain]
 cotal daemon register --space <s> [--daemon-home <dir>] [--json|--plain]
 cotal daemon service-connect --space <s> [--daemon-home <dir>] [--json|--plain]
 cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plain]
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
+
+Each mode accepts only its listed flags. A flag from another mode refuses with `USAGE_INVALID`
+before any daemon or service action, including `--dry-run` on `serve`. Bare `cotal daemon` lists
+the declared modes and points to `cotal help daemon`, which works without a running daemon.
+`desktop` serves the desktop app's bounded JSON request on stdin; it has its own protocol output.
+
+Once a daemon mode begins, its JSON failure names that mode in `command`, as success does.
+It retains the selected space or normalized login provider in `target` once that value is accepted.
+A failure's more specific target takes precedence; a target not yet established remains `null`.
+Rejected provider URLs are never copied into the failure target. Outcomes and exit codes are unchanged.
 
 This release serves a local endpoint for status, sign-in, a connection check, a registration request
 and the daemon's own service connection, and installs itself as the user's own service: a systemd
@@ -730,7 +741,10 @@ alone.
 `--daemon-home <dir>` runs or reaches a separate daemon whose own state lives in `<dir>`: its
 sign-in session, its per-space identity, register request and service store, all at the paths
 below with `<dir>` in place of `<COTAL_HOME>`. Spaces are still read from the shared Cotal home's
-mesh registry, which this daemon never writes. Its socket is
+mesh registry, which this daemon never writes. `spaces --refresh` updates only the separate
+home's catalog cache; it does not add or remove shared registrations, write shared sentinel files,
+or clear the default selected space. Its space list still shows the shared registry. Use
+`cotal sync` from the shared Cotal home to apply that home's signed-in catalogs there. Its socket is
 `$XDG_RUNTIME_DIR/cotal/home-<16 hex>/daemon.sock` (on macOS the same name under the cache
 directory, on Windows the pipe `\\.\pipe\cotal-daemon-<SID>-home-<16 hex>`), derived from the
 directory, so it runs beside the default daemon. `<dir>` must already exist as an absolute
@@ -752,8 +766,12 @@ to run the command with that daemon's `COTAL_HOME` when it is a daemon started w
 home, and otherwise to stop it and start the daemon with `cotal daemon serve`.
 
 This daemon is a different machine identity. Nothing is copied from the default daemon: it needs
-its own `login`, its own `register`, and the space owner's approval of its own instance. Without
-`--daemon-home` every command reaches the default daemon.
+its own `login`, its own `register`, and the space owner's approval of its own instance.
+Registration, registration replay and service activation use the sign-in in the selected daemon
+home, including when `setup` reaches those steps. A missing sign-in there cannot use a sign-in
+from the default Cotal home. Renewal keeps using its issued service proof while that proof is
+valid; reactivation uses the selected home's sign-in again. Without `--daemon-home` every command
+reaches the default daemon.
 
 `login` signs the running daemon in with device approval. The daemon runs the same sign-in as
 `cotal login` and keeps the session in the machine's Cotal home, where `cotal login` keeps it. The

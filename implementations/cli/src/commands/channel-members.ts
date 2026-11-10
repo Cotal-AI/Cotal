@@ -88,16 +88,10 @@ export async function channelMembers(values: Values, channel: string, presentati
       retry ??= setTimeout(() => { retry = undefined; refresh(); }, 2_000);
     });
   };
-  // A watch whose consumer closed delivers no more changes, so reading again cannot recover it.
-  const watchClosed = () => {
-    if (stopped) return;
-    reason = "error";
-    process.exitCode = 4;
-    emit("gap", { reason: "Membership observation was interrupted.", lastAsOf: last?.asOf ?? null });
-    emit("error", { code: "OPERATION_PARTIAL", message: "The last observations are not a current membership census." });
-    if (presentation !== "json") console.error("Membership observation interrupted. The last snapshot is not current.");
-    stop();
-  };
+  // A watch whose consumer closed delivers no more changes. The endpoint re-arms that watch when the
+  // connection is re-established, so the close is the same interruption as a dropped connection: reported
+  // once, then read again until the feed answers. Ending here is what cuts a follow short of a broker restart.
+  const watchClosed = () => interrupted(true);
   const refresh = () => {
     if (stopped) return;
     pending = true;

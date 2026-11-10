@@ -1,6 +1,6 @@
-import { lstatSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
 import { dryRunOutcome, Journal, journalEntryKeyString, LangErrors, validate, type SimScript } from "@cotal-ai/lang";
-import { CommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
 export interface OfflineValues {
@@ -9,16 +9,37 @@ export interface OfflineValues {
   handler?: string;
 }
 
+function requireRegularSource(file: string, stat: Stats): void {
+  if (stat.isFile()) return;
+  const kind = stat.isDirectory() ? "a directory" : stat.isFIFO() ? "a FIFO (named pipe)"
+    : stat.isCharacterDevice() ? "a character device" : stat.isBlockDevice() ? "a block device"
+    : stat.isSocket() ? "a socket" : "an unsupported file type";
+  throw new CommandFailure("refused", "USAGE_INVALID", `the workflow source ${file} is ${kind}, not a workflow source file`, {
+    target: { file }, remedy: "save the program in a regular file and use that path instead",
+  });
+}
+
 /** A workflow program's source, or the refusal every run verb gives a file it cannot read, that is
  *  empty or that is not UTF-8. A file it cannot read refuses naming the path and the cause: it is
- *  missing or a dangling link, a directory, or not readable. `-` is a path here, not standard input.
+ *  missing or a dangling link, not a regular file, or not readable. Symlinks to regular files work.
+ *  `-` is a path here, not standard input. Pipes, including ones with a writer, are refused.
  *  A run's source must not be empty (the manager's `run-start` schema), so validate refuses that
  *  file as start does. Bytes that are not UTF-8 are refused rather than replaced, so the program a
  *  run records is the file's own text. */
 export function sourceOf(file: string): string {
   let bytes: Buffer;
-  try { bytes = readFileSync(file); }
+  try {
+    requireRegularSource(file, statSync(file));
+    // A path can be replaced after stat: opening must not wait for a FIFO's writer, and the
+    // descriptor we read must still be a regular file. Never reopen the path for the read.
+    const fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      requireRegularSource(file, fstatSync(fd));
+      bytes = readFileSync(fd);
+    } finally { closeSync(fd); }
+  }
   catch (error) {
+    if (isCommandFailure(error)) throw error;
     const code = (error as NodeJS.ErrnoException).code;
     let link = false;
     try { link = lstatSync(file).isSymbolicLink(); } catch { /* the path itself is absent */ }
@@ -37,8 +58,16 @@ export function sourceOf(file: string): string {
 function scriptOf(file: string | undefined): SimScript {
   if (file === undefined) return {};
   let value: unknown;
-  try { value = JSON.parse(readFileSync(file, "utf8")); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation handler must be a readable JSON results script", { target: { file } }); }
+  try {
+    const bytes = readFileSync(file);
+    let text: string;
+    try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
+    catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script is not valid UTF-8, so it was not simulated", { target: { file }, remedy: `save ${file} as UTF-8 text` }); }
+    value = JSON.parse(text);
+  } catch (error) {
+    if (error instanceof CommandFailure) throw error;
+    throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation handler must be a readable JSON results script", { target: { file } });
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script must be an object");
   const script = value as Record<string, unknown>;
   const fields = new Set(["turns", "asks", "checkpoints", "events", "clock", "faults"]);

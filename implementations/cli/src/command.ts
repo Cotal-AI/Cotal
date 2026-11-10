@@ -182,7 +182,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   // Under --json the envelope alone reports the failure. Its text report goes to stderr only when the
   // envelope cannot be written, and the exit status below stands either way.
   if (!json) writeReport();
-  else try { writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure, warnings))); }
+  else try { writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure, warnings, scope))); }
   catch (error) {
     reportLostOutput(error as NodeJS.ErrnoException);
     try { writeReport(); } catch { /* stderr failed too; the exit status still says so */ }

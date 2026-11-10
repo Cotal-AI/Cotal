@@ -987,7 +987,7 @@ export class MeshHandler {
     // `onExpiry` rides beside them for the operator view, as this attempt was armed (`fail` when the
     // program sets none). What an expiry does is still decided from the source, never read from here.
     if (bound?.asks === undefined)
-      await ctx.bind({ attempt: ctx.attempt, asks: req.prompt, deadlineAt: deadline, onExpiry: req.onExpiry ?? "fail", ...(req.to !== undefined ? { addressee: req.to } : {}) });
+      await ctx.bind({ attempt: ctx.attempt, asks: req.prompt, ...(req.schema !== undefined ? { schema: req.schema } : {}), deadlineAt: deadline, onExpiry: req.onExpiry ?? "fail", ...(req.to !== undefined ? { addressee: req.to } : {}) });
 
     // AN ESCALATION IS ADDRESSED, so where the addressee is an agent of this run it is TOLD.
     // Attempt 0 has no addressee (the reference allows `to` only with `onExpiry: "escalate"`,

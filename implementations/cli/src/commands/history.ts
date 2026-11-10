@@ -71,18 +71,17 @@ const MAX_LIMIT = 1000;
 /** How many message ids a follow remembers to drop duplicates: a re-tap after a reconnect and the
  *  snapshot both overlap the live feed. */
 const SEEN_IDS = 10_000;
-/** How many characters of a message a text or plain row shows. */
+/** How many code units of a message a text or plain row shows. */
 const ROW_TEXT = 500;
 
-/** A message's text as a row shows it: whole up to `ROW_TEXT` characters, else cut there and marked
- *  with its size, since `--limit` bounds messages and one message can be close to a megabyte. */
+/** A message's text as a row shows it: whole up to `ROW_TEXT` code units, else cut there and marked
+ *  with the code units not shown. `--limit` bounds messages, and one message can be close to a megabyte.
+ *  `--json` carries the text as it was sent. The count is code units, the same measure `watch` uses. */
 function rowText(text: string): string {
-  let head = "", count = 0;
-  for (const char of text) {
-    if (count++ === ROW_TEXT) return `${head}… (cut from ${Buffer.byteLength(text)} bytes; --json carries the whole text)`;
-    head += char;
-  }
-  return text;
+  if (text.length <= ROW_TEXT) return text;
+  let head = text.slice(0, ROW_TEXT);
+  if (/[\uD800-\uDBFF]/u.test(head.at(-1)!)) head = head.slice(0, -1);
+  return `${head}… (${text.length - head.length} text code units not shown; --json carries the whole text)`;
 }
 /** How long a `--dms` read waits for the roster that names DM recipients before it shows principals. */
 const ROSTER_MS = 2_000;

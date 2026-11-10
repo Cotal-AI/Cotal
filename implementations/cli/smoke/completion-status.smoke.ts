@@ -744,7 +744,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const modes = offered(["space", "add", "x", "--mode"]);
   check("space add --mode offers its modes", exactly(modes, ["auth", "open", "user"]), shown(modes));
   const history = offered(["history", "--space", "rr"]);
-  check("history offers clear and the channels the space's personas declare", exactly(history, ["clear", "review"]), shown(history));
+  check("history offers clear, limit and the channels the space's personas declare", exactly(history, ["clear", "limit", "review"]), shown(history));
   const channel = offered(["channel", "remove", "--space", "rr"]);
   check("channel remove offers those channels", exactly(channel, ["review"]), shown(channel));
   for (const [words, values] of [[["send", "--space", "rr", "--channel"], ["review"]], [["chat", "--space", "rr"], ["review"]], [["spawn", "--space", "rr", "--subscribe"], ["review"]],
@@ -795,7 +795,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   renameSync(agents, `${agents}.away`);
   for (const words of declared) {
     const r = offered(words);
-    check(`${words.join(" ")} offers no declared value when the catalog folder does not exist`, exactly(r, words[0] === "history" ? ["clear"] : []), shown(r));
+    check(`${words.join(" ")} offers no declared value when the catalog folder does not exist`, exactly(r, words[0] === "history" ? ["clear", "limit"] : []), shown(r));
   }
   renameSync(`${agents}.away`, agents);
   // A path lets the shell complete file names; any other value does not.
