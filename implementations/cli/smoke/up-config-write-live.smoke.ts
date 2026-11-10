@@ -1,10 +1,11 @@
 /** A failed broker configuration write names its path and does not turn a plain start into a
- *  no-manager recovery. Drives the built CLI with a real file-size limit and a FIFO with no reader,
- *  then starts it normally. --fifo-only runs just the non-regular-entry regression. */
+ *  no-manager recovery. Drives the built CLI with a real file-size limit, a FIFO with no reader and
+ *  a Unix socket, then starts it normally. --fifo-only and --socket-only select one entry regression. */
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, renameSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
@@ -52,28 +53,63 @@ try {
   started(["--server", server]);
   stopped();
   const config = join(root, ".cotal", "auth", "server.conf"), saved = `${config}.saved`;
-  renameSync(config, saved);
-  try {
-    const fifo = spawnSync("mkfifo", ["-m", "600", config], { encoding: "utf8" });
-    assert.ifError(fifo.error);
-    assert.equal(fifo.status, 0, fifo.stderr);
-    const before = lstatSync(config);
-    const refused = cli(["up", "--json"]);
-    check("a FIFO with no reader refuses PERMISSION_DENIED and names moving the entry aside",
-      refused.status === 2 && refused.envelope.outcome === "refused" && refused.envelope.error?.code === "PERMISSION_DENIED"
-        && refused.envelope.error.message.includes(config) && refused.envelope.error.message.includes("not a regular file")
-        && refused.envelope.error.remedy.includes("move it aside"));
-    const after = lstatSync(config);
-    check("the rejected FIFO keeps its inode and mode", after.isFIFO() && after.ino === before.ino && after.dev === before.dev && after.mode === before.mode);
-    const status = cli(["status", "--json"]);
-    check("a refused FIFO leaves no interrupted start or manager-free recovery", status.envelope.result?.folder?.stackUnfinished === null && status.envelope.result?.folder?.noManager === false);
-  } finally {
-    if (existsSync(config)) renameSync(config, `${config}.rejected`);
-    renameSync(saved, config);
+  if (!process.argv.includes("--socket-only")) {
+    renameSync(config, saved);
+    try {
+      const fifo = spawnSync("mkfifo", ["-m", "600", config], { encoding: "utf8" });
+      assert.ifError(fifo.error);
+      assert.equal(fifo.status, 0, fifo.stderr);
+      const before = lstatSync(config);
+      const refused = cli(["up", "--json"]);
+      check("a FIFO with no reader refuses PERMISSION_DENIED and names moving the entry aside",
+        refused.status === 2 && refused.envelope.outcome === "refused" && refused.envelope.error?.code === "PERMISSION_DENIED"
+          && refused.envelope.error.message.includes(config) && refused.envelope.error.message.includes("not a regular file")
+          && refused.envelope.error.remedy.includes("move it aside"));
+      const after = lstatSync(config);
+      check("the rejected FIFO keeps its inode and mode", after.isFIFO() && after.ino === before.ino && after.dev === before.dev && after.mode === before.mode);
+      const status = cli(["status", "--json"]);
+      check("a refused FIFO leaves no interrupted start or manager-free recovery", status.envelope.result?.folder?.stackUnfinished === null && status.envelope.result?.folder?.noManager === false);
+    } finally {
+      if (existsSync(config)) renameSync(config, `${config}.rejected`);
+      renameSync(saved, config);
+    }
+    started([]);
+    stopped();
   }
-  started([]);
-  stopped();
-  for (const noManager of process.argv.includes("--fifo-only") ? [] : [false, true]) {
+  if (!process.argv.includes("--fifo-only")) {
+    renameSync(config, saved);
+    const socket = createServer();
+    const cwd = process.cwd();
+    try {
+      // Linux's Unix socket path limit applies to the spelling passed to bind. The private
+      // scratch ancestry may be long, so bind relative to the owned project instead.
+      process.chdir(root);
+      await new Promise<void>((resolve, reject) => {
+        socket.once("error", reject);
+        socket.listen(".cotal/auth/server.conf", resolve);
+      });
+      const before = lstatSync(config);
+      const refused = cli(["up", "--json"]);
+      check("a Unix socket refuses PERMISSION_DENIED and names its non-regular entry and move-aside remedy",
+        refused.status === 2 && refused.envelope.outcome === "refused" && refused.envelope.error?.code === "PERMISSION_DENIED"
+          && refused.envelope.error.message.includes(config) && refused.envelope.error.message.includes("not a regular file")
+          && refused.envelope.error.remedy.includes("move it aside"));
+      const after = lstatSync(config);
+      check("the rejected socket keeps its inode and mode", after.isSocket() && after.ino === before.ino && after.dev === before.dev && after.mode === before.mode);
+      const status = cli(["status", "--json"]);
+      check("a refused socket leaves no interrupted start or manager-free recovery", status.envelope.result?.folder?.stackUnfinished === null && status.envelope.result?.folder?.noManager === false);
+      const text = spawnSync(process.execPath, [bin, "status", "--plain"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+      assert.ifError(text.error);
+      check("socket refusal offers normal up in the rendered report", text.status === 0 && /cotal up/.test(text.stdout) && !/Start interrupted|--no-manager/.test(text.stdout));
+    } finally {
+      if (socket.listening) await new Promise<void>((resolve, reject) => socket.close((error) => error ? reject(error) : resolve()));
+      process.chdir(cwd);
+      renameSync(saved, config);
+    }
+    started([]);
+    stopped();
+  }
+  for (const noManager of process.argv.includes("--fifo-only") || process.argv.includes("--socket-only") ? [] : [false, true]) {
     const flags = noManager ? ["--no-manager"] : [];
     const failed = cli(["up", ...flags, "--json"], true);
     const path = join(root, ".cotal", "auth", "server.conf");
