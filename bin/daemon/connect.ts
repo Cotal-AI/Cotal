@@ -17,7 +17,7 @@
  * holds no credential, owner, hostname or hardware id.
  */
 import { join } from "node:path";
-import { decodeJwt, decodeProtectedHeader } from "jose";
+import { base64url, decodeJwt, decodeProtectedHeader } from "jose";
 import { assertLifecycleToken, isAccountNkey, mintLifecycleUid, resolveAuthProvider } from "@cotal-ai/core";
 import { claimIdentityRecord, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { fetchIdpJwt, IdpSessionRejectedError, IdpUnreachableError, loadIdpSession } from "@cotal-ai/auth";
@@ -85,9 +85,10 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
   try {
     const jwt = await fetchIdpJwt(ua.idp.url, session.token);
     const header = decodeProtectedHeader(jwt), claims = decodeJwt(jwt);
+    const signature = jwt.split(".")[2] ?? "";
     const now = Date.now() / 1000;
     // This is a usability check only. The space still verifies the signature and pinned claims.
-    if (typeof header.alg !== "string" || !header.alg || header.alg === "none" || !/^[A-Za-z0-9_-]+$/.test(jwt.split(".")[2] ?? "")
+    if (typeof header.alg !== "string" || !header.alg || header.alg === "none" || !/^[A-Za-z0-9_-]+$/.test(signature) || base64url.decode(signature).length === 0
       || typeof claims.sub !== "string" || !claims.sub
       || typeof claims.exp !== "number" || !Number.isFinite(claims.exp) || claims.exp <= now
       || (claims.nbf !== undefined && (typeof claims.nbf !== "number" || !Number.isFinite(claims.nbf) || claims.nbf > now)))

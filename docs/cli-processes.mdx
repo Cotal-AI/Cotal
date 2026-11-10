@@ -929,8 +929,8 @@ at most 60 seconds, never past the JWT's expiry margin. The provider decides whe
 session is expired or revoked; the expiry on disk is advisory. A space whose auth service does not
 host service endpoints
 refuses `UNSUPPORTED` (`UNSUPPORTED_BY_SPACE`). The daemon does not fall back to anything else.
-Before declaring readiness, the daemon checks that the returned proof is a signed JWT shape with
-a subject and a future expiry, and is not waiting for a future not-before time. This does not
+Before declaring readiness, the daemon checks that the returned proof has a signed JWT shape with
+a decodable signature segment, a subject and a future expiry, and no future not-before time. This does not
 verify its signature or replace the space's claim checks. An unusable proof refuses
 `DEPENDENCY_UNAVAILABLE` (`REFUSED`) without asking for another device sign-in.
 The connection-check caller allows 65 seconds for the token exchange and authority read, whose

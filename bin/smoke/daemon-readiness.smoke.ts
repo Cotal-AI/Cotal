@@ -48,7 +48,9 @@ const authority = createServer(async (req, res) => {
     const claims = new SignJWT({}).setProtectedHeader({ alg: "EdDSA" }).setIssuer(origin).setAudience(origin).setSubject("fixture-owner").setIssuedAt(now);
     if (mode !== "no-expiry") claims.setExpirationTime(mode === "expired" ? now - 3600 : mode === "near-expiry" ? now + 20 : now + 120);
     if (mode === "not-yet-valid") claims.setNotBefore(now + 3600);
-    res.end(JSON.stringify({ token: await claims.sign(key.privateKey) }));
+    let token = await claims.sign(key.privateKey);
+    if (mode === "signature-x" || mode === "signature-abcde") token = `${token.slice(0, token.lastIndexOf(".") + 1)}${mode.slice("signature-".length)}`;
+    res.end(JSON.stringify({ token }));
     return;
   }
   if (req.url?.includes("/device/")) { devices++; res.writeHead(503); res.end("{}"); return; }
@@ -82,7 +84,7 @@ const daemon = spawn(process.execPath, [cliEntry, "daemon", "serve"], { cwd: par
 try {
   for (let i = 0; i < 100 && !existsSync(paths.socket) && daemon.exitCode === null; i++) await sleep(100);
   assert.ok(existsSync(paths.socket), "shipped foreground daemon must bind");
-  for (const value of ["nonsense", "expired", "no-expiry", "not-yet-valid"]) {
+  for (const value of ["nonsense", "expired", "no-expiry", "not-yet-valid", "signature-x", "signature-abcde"]) {
     mode = value;
     for (const args of [["connect-check", "--space", "proof"], ["setup", "--no-manager", "--space", "proof", "--idp", idp, "--wait", "0"]]) {
       // Isolate the command's cold request even when the stock cache holds a future-dated proof.
@@ -95,6 +97,7 @@ try {
       assert.equal(result.err.includes("already signed in"), false);
       assert.deepEqual(counts(), { ...before, tokens: before.tokens + 1 });
       assert.equal(identities(), 0);
+      assert.equal(readdirSync(join(home, "daemon"), { recursive: true }).map(String).some((p) => p.endsWith("register-request.json")), false);
       console.log(`PASS ${value} ${args[0]} refuses before authority, registration, device login or identity creation`);
     }
   }
