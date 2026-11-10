@@ -39,7 +39,7 @@ import {
 } from "@cotal-ai/core";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
-import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness } from "./register.js";
+import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness, registerDaemon } from "./register.js";
 import { ACCOUNT_MISMATCH_MESSAGE } from "./connect.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
 
@@ -130,6 +130,8 @@ interface Live {
 }
 
 export interface ServiceConnections {
+  /** Register without connecting, retaining the outcome for offline status. */
+  register(space: string): Promise<RegisterResult>;
   connect(space: string): Promise<ServiceConnectionResult>;
   disconnect(space: string): Promise<ServiceConnectionResult>;
   status(space: string): ServiceConnectionResult;
@@ -335,6 +337,16 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   };
 
   return {
+    register: (space) => serial(space, async () => {
+      const r = await registerDaemon(space, home);
+      const current = live.get(space);
+      // Registration alone cannot replace a live transport's state or revive ended authority.
+      if (!closed && !current?.endpoint && current?.state !== "ended") {
+        live.set(space, { state: r.outcome === "registered" ? "disconnected" : fromRegister(r),
+          brokerUp: false, serving: new Set() });
+      }
+      return r;
+    }),
     connect: (space) => serial(space, async () => {
       const r = await connectOnce(space);
       if (r.state === "connected") { try { remember(space); } catch { /* the connection is up either way */ } }

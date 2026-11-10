@@ -985,7 +985,10 @@ never reached connected records nothing, so a space that refuses is not retried 
 The resume runs after the local endpoint is published, so a space that is slow or unreachable does
 not delay `status`, and `service-status` reports what each one actually reached. An ended
 connection is remembered only until the daemon stops.
-`service-status` reads the daemon's current answer without contacting the space. `service-disconnect`
+`service-status` reads the daemon's current answer without contacting the space. A registration
+awaiting approval reports `approval-pending` for the rest of that daemon process, until another
+registration or connection attempt updates it or an explicit disconnect clears it. Registration
+alone never claims a connection and does not replace a live connection's state. `service-disconnect`
 drains the responder and closes the connection, removes that space's resume record so the
 disconnect outlives a restart, and stopping the daemon closes all of them without removing a record.
 

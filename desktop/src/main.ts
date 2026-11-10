@@ -17,7 +17,9 @@ let approval: string | undefined;
 let dashboard: string | undefined;
 let requestedSpace: string | undefined;
 let poll: ReturnType<typeof setTimeout> | undefined;
+let connection: { space: string; state: string } | undefined;
 const selectedSpace = () => el<HTMLSelectElement>("space").value;
+const connected = () => connection?.space === selectedSpace() && connection?.state === "connected";
 
 function notice(message: string, error = false): void {
   text("notice", message); el("notice").hidden = false; el("notice").classList.toggle("error", error);
@@ -25,7 +27,7 @@ function notice(message: string, error = false): void {
 function buttons(): void {
   el<HTMLButtonElement>("install").disabled = busy;
   el<HTMLButtonElement>("login").disabled = busy || loginActive || !ready;
-  el<HTMLButtonElement>("connect").disabled = busy || !ready || !selectedSpace();
+  el<HTMLButtonElement>("connect").disabled = busy || !ready || !selectedSpace() || connected();
   el<HTMLButtonElement>("disconnect").disabled = busy || !ready || !selectedSpace();
   el<HTMLButtonElement>("sync").disabled = busy || !ready;
 }
@@ -43,7 +45,9 @@ async function request(body: Request): Promise<Record<string, unknown>> {
   };
   return requireResult(await invoke<Frame>("daemon_request", { request: body, onEvent: events }));
 }
-function state(value: string): void {
+function state(value: string, space = selectedSpace()): void {
+  if (space !== selectedSpace()) return;
+  connection = { space, state: value };
   const view = connectionView(value);
   text("connection-title", view.title); text("connection-description", view.description);
   text("tray-label", view.connected ? "Connected" : ready ? "Daemon ready" : "Daemon unavailable");
@@ -52,15 +56,15 @@ function state(value: string): void {
   if (isTauri()) void invoke("set_connection_state", { connected: view.connected }).catch(() => undefined);
 }
 async function refresh(): Promise<void> {
+  const space = selectedSpace();
   try {
     const status = await request({ op: "status" });
     ready = status.state === "ready";
     el("install-panel").hidden = ready;
-    state("ready");
-    if (selectedSpace()) {
-      const connection = await request({ op: "service-status", space: selectedSpace() });
-      state(String(connection.state));
-    }
+    if (space) {
+      const connection = await request({ op: "service-status", space });
+      state(String(connection.state), space);
+    } else state("ready", space);
   } catch (error) {
     ready = false; el("install-panel").hidden = false; state("unavailable"); notice(String(error), true);
   }
@@ -110,19 +114,21 @@ el("open-approval").addEventListener("click", () => {
   if (approval) void invoke("open_browser", { url: approval }).catch((error) => notice(String(error), true));
 });
 el("connect").addEventListener("click", () => void action(async () => {
+  if (connected()) return;
   const space = selectedSpace();
   const registration = await request({ op: "register", space });
   if (registration.outcome !== "registered") {
     const pending = registration.outcome === "approval-required" || registration.outcome === "pending";
     notice(String(registration.message ?? "Registration was not completed.") + (pending ? " After approval, choose Request connection again." : ""), !pending);
-    state(pending ? "approval-pending" : "unavailable"); return;
+    state(pending ? "approval-pending" : "unavailable", space); return;
   }
   const result = await request({ op: "service-connect", space });
-  state(String(result.state)); notice(String(result.message ?? "Connection state updated."), result.state !== "connected");
+  state(String(result.state), space); notice(String(result.message ?? "Connection state updated."), result.state !== "connected");
 }));
 el("disconnect").addEventListener("click", () => void action(async () => {
-  const result = await request({ op: "service-disconnect", space: selectedSpace() });
-  state(String(result.state)); notice(String(result.message ?? "Connection state updated."));
+  const space = selectedSpace();
+  const result = await request({ op: "service-disconnect", space });
+  state(String(result.state), space); notice(String(result.message ?? "Connection state updated."));
 }));
 el("sync").addEventListener("click", () => void action(() => spaces(true)));
 el("refresh").addEventListener("click", () => void action(refresh));
