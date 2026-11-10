@@ -5458,11 +5458,13 @@ function writeBrokerConfig(path: string, text: string): void {
   try { writeSecretFile(path, text); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "EPERM" && code !== "EISDIR" && code !== "EACCES")
+    // A writer-only nonblocking open of a FIFO with no reader fails ENXIO before the secure
+    // writer can inspect its descriptor. It is still a non-regular entry, not a write failure.
+    const entry = code === "EPERM" || code === "EISDIR" || code === "EACCES" || code === "ENXIO" ? lstatSync(path, { throwIfNoEntry: false }) : undefined;
+    if (code !== "EPERM" && code !== "EISDIR" && code !== "EACCES" && !entry?.isFIFO())
       throw new CommandFailure("failed", "OPERATION_FAILED", `up could not write the broker configuration ${path}${code ? ` (${code})` : ""}; nothing was started`, {
         target: { path }, remedy: `correct the write failure at ${path}, then run \`cotal up\` again, which writes the configuration again`,
       });
-    const entry = lstatSync(path, { throwIfNoEntry: false });
     const what = entry?.isSymbolicLink() ? "is a symlink" : entry?.isDirectory() ? "is a folder" : code === "EACCES" ? "cannot be written by this account" : "is not a regular file this account owns";
     throw new CommandFailure("refused", "PERMISSION_DENIED", `the broker configuration ${path} ${what}, so up cannot write it; it was left as it is and nothing was started`, {
       target: { path }, remedy: `move it aside, as mv ${shellWord(path)} ${shellWord(`${path}.old`)} does, then run \`cotal up\` again, which writes it from the space's trust`,

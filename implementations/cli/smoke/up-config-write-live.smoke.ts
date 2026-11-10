@@ -1,8 +1,9 @@
 /** A failed broker configuration write names its path and does not turn a plain start into a
- *  no-manager recovery. Drives the built CLI with a real file-size limit, then starts it normally. */
+ *  no-manager recovery. Drives the built CLI with a real file-size limit and a FIFO with no reader,
+ *  then starts it normally. --fifo-only runs just the non-regular-entry regression. */
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, renameSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -50,7 +51,29 @@ try {
   const server = `nats://127.0.0.1:${await freePort()}`;
   started(["--server", server]);
   stopped();
-  for (const noManager of [false, true]) {
+  const config = join(root, ".cotal", "auth", "server.conf"), saved = `${config}.saved`;
+  renameSync(config, saved);
+  try {
+    const fifo = spawnSync("mkfifo", ["-m", "600", config], { encoding: "utf8" });
+    assert.ifError(fifo.error);
+    assert.equal(fifo.status, 0, fifo.stderr);
+    const before = lstatSync(config);
+    const refused = cli(["up", "--json"]);
+    check("a FIFO with no reader refuses PERMISSION_DENIED and names moving the entry aside",
+      refused.status === 2 && refused.envelope.outcome === "refused" && refused.envelope.error?.code === "PERMISSION_DENIED"
+        && refused.envelope.error.message.includes(config) && refused.envelope.error.message.includes("not a regular file")
+        && refused.envelope.error.remedy.includes("move it aside"));
+    const after = lstatSync(config);
+    check("the rejected FIFO keeps its inode and mode", after.isFIFO() && after.ino === before.ino && after.dev === before.dev && after.mode === before.mode);
+    const status = cli(["status", "--json"]);
+    check("a refused FIFO leaves no interrupted start or manager-free recovery", status.envelope.result?.folder?.stackUnfinished === null && status.envelope.result?.folder?.noManager === false);
+  } finally {
+    if (existsSync(config)) renameSync(config, `${config}.rejected`);
+    renameSync(saved, config);
+  }
+  started([]);
+  stopped();
+  for (const noManager of process.argv.includes("--fifo-only") ? [] : [false, true]) {
     const flags = noManager ? ["--no-manager"] : [];
     const failed = cli(["up", ...flags, "--json"], true);
     const path = join(root, ".cotal", "auth", "server.conf");
