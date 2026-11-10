@@ -1,5 +1,13 @@
 # @cotal-ai/core
 
+## 0.153.0
+
+### Patch Changes
+
+- 9bdc7f4: Failed preference and prepared-space writes now clean up their temporary files.
+  Exclusive private-record writes also remove a newly created partial file on failure without
+  removing a file that already belonged to another writer.
+
 ## 0.152.0
 
 ### Patch Changes
