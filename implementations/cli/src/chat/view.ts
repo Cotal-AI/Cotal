@@ -174,6 +174,12 @@ export function applyKey(state: ChatState, key: Key, shiftEnterDistinct: boolean
 }
 
 function submit(state: ChatState): { state: ChatState; intent?: Intent } {
+  if (/^:to(?:\s|$)/.test(state.draft)) {
+    // A line-mode command must never become a channel post, nor leave the next private line
+    // addressed to the previous channel. Choosing a recipient remains the terminal picker's job.
+    const next = { ...state, draft: "", recipient: undefined };
+    return { state: notice(next, "failed", ":to is only available in --plain; use Tab to choose a recipient. Nothing was sent"), intent: { kind: "pick-recipient" } };
+  }
   const d = submitDraft(state.draft, { recipient: state.recipient, connection: state.connection, sending: state.pending !== undefined, pick: "Tab" });
   switch (d.kind) {
     case "nothing":
