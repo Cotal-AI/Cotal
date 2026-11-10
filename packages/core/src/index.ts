@@ -74,6 +74,7 @@ export * from "./transfer.js";
 export * from "./backup-config.js";
 export * from "./backup.js";
 export * from "./channels.js";
+export * from "./registry-text.js";
 export * from "./members.js";
 export * from "./acls.js";
 export * from "./membership-feed.js";

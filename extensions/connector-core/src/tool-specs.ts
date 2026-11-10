@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, sharedNameIds, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, isAnycastSeq, type AnycastStatus, type ControlReply, type InlinePersona, type PersonaEndpoint, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, registryTextLine, registryTextLines, sharedNameIds, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, isAnycastSeq, type AnycastStatus, type ControlReply, type InlinePersona, type PersonaEndpoint, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem, type InboxScope } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -775,7 +775,9 @@ const NAMED_STUCK = 3;
  *  obey. The registry is privileged-write but still untrusted from the model's seat (a write
  *  reaches every joiner's context), so the fence — advisory framing plus the caveat travelling
  *  inline with the payload — is the injection mitigation, re-rendered on every surface that
- *  carries this text. Config only; never membership. */
+ *  carries this text. A LINE AT COLUMN ZERO OR ON A TWO-SPACE BULLET IS WRITTEN BY THIS TOOL: the
+ *  description is printed on one line and every continuation of the instructions is indented four
+ *  spaces, so no text can start a line that reads as the tool's. Config only; never membership. */
 function renderChannelInfo(
   channel: string,
   info: { description?: string; instructions?: string; replay: boolean; registered: boolean; event?: "own" | "agent" },
@@ -793,8 +795,8 @@ function renderChannelInfo(
           ? "  • an agent's event channel: that agent's connector publishes its activity events here. It is not a chat channel and needs no registry entry."
           : "  • not in the channel registry: this name has no operator entry. A prior send may have invented it. It is still a real channel if it has traffic.",
     );
-  if (info.description) lines.push(`  • operator's note — purpose: ${info.description}`);
-  if (info.instructions) lines.push(`  • operator's note — how peers use it: ${info.instructions}`);
+  if (info.description) lines.push(`  • operator's note — purpose: ${registryTextLine(info.description)}`);
+  if (info.instructions) lines.push(`  • operator's note — how peers use it: ${registryTextLines(info.instructions).join("\n    ")}`);
   if (info.registered && !info.description && !info.instructions)
     lines.push("  • (no description or instructions set for this channel)");
   lines.push(
@@ -1604,7 +1606,7 @@ export function cotalToolSpecs(
         const page = rest.slice(0, CHANNEL_ROWS);
         const lines = page.map((c) => {
           const desc = c.description
-            ? ` — ${c.description}`
+            ? ` — ${registryTextLine(c.description)}`
             : c.event === "own"
               ? " — your own event channel"
               : c.event === "agent"

@@ -9,7 +9,7 @@
  * The typed {@link Orientation} object is the source of truth; {@link renderOrientation} is one view of
  * it (the text the model reads). A future MCP resource can JSON-stringify the object directly.
  */
-import { isConcreteChannel, parsePrincipalKey, peerLabel, type AttentionMode, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, parsePrincipalKey, peerLabel, registryTextLine, type AttentionMode, type PresenceStatus } from "@cotal-ai/core";
 import { presenceReadCondition, type MeshAgent, type RosterRead } from "./agent.js";
 import { isAuthed, type AgentConfig } from "./config.js";
 import { DOCS_VERSION } from "./docs.js";
@@ -225,7 +225,7 @@ export function buildOrientation(
       joinable: config.allowSubscribe
         .filter((c) => isConcreteChannel(c) && !config.subscribe.includes(c))
         .map((channel) => {
-          const note = agent.channelInfo(channel).description?.trim();
+          const note = registryTextLine(agent.channelInfo(channel).description ?? "").trim();
           return note ? { channel, note } : { channel };
         }),
     },
