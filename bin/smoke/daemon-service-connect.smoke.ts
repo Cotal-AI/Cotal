@@ -1100,7 +1100,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             const instance = selected?.auth.managerInstanceId;
             if (!instance || instance === manager.instanceId) throw new Error(`stock Manager did not answer: ${diagnostics.slice(-1500)}`);
             const launched = await launchSeat(instance, "generation-cold", "generation_stock");
-            check("Stock Manager preserves launch behavior with the same changed shared store", launched.code === 0 && launched.doc.result?.readiness === "joined", launched);
+            check("Stock Manager also refuses a changed first-party generation with restart guidance", launched.code === 2 && launched.doc.result === null && launched.output.includes("9.9.9") && launched.output.includes(fixtureVersion) && /restart/.test(launched.output), launched);
             if (launched.code === 0) await control(instance, "stop", { name: "generation_stock" });
           } finally { await killAndAwaitExit(stock, "SIGTERM"); }
           const handoff = spawn(process.execPath, [cliEntry, "__machine-manager", "--space", ON, "--runtime", "pty", "--console-port", "0", "--session-directory", home, "--expected-connector-generation", "9.9.9"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe", "ipc"] });

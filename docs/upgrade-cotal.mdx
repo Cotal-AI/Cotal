@@ -115,6 +115,10 @@ Restart or reconnect agent applications when the migration instructions require 
 
 Confirm the target binary and installed extension versions, then check the component report for absent, not-serving, or refused components.
 A version report describes the selected installation; it does not prove that every previously running process loaded the new code.
+A Manager refuses new launches when an installed first-party connector's generation differs from
+its loaded implementation, even if it previously imported that connector. Stop that Manager's
+seats and restart it from the installed CLI. The refusal leaves existing seats running and does
+not repair or roll back the shared connector store.
 Resume new work only after the required components are serving and the release-specific checks pass.
 
 If a migration or restart fails, keep the failed step's evidence and use [Recover a mesh](recover-a-mesh.mdx).

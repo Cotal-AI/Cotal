@@ -684,11 +684,11 @@ A failed reconcile refuses the
 space with its cause and repair command and retries from five seconds up to five minutes.
 The serving Manager never runs first-use seeding. A child rejects a handed generation that differs
 from the Manager implementation it loaded.
-A hosted Manager also checks each first-party connector's manifest version before a new launch,
-including a connector already loaded in that process. A mismatch names both generations and asks
-you to stop its seats and restart it from the installed CLI. Existing seats stay running.
-Third-party connectors keep their own versions. Stock Managers started by `up` or `manager start`
-keep their existing connector loading policy.
+Every Manager using installed extensions checks each first-party connector's manifest version
+against the generation loaded by that Manager before a new launch, including a connector already
+loaded in that process. This includes Managers started by `up` and `manager start`. A mismatch names
+both generations and asks you to stop its seats and restart it from the installed CLI. Existing
+seats stay running. Third-party connectors keep their own versions.
 This readiness check does not prove login or reboot autostart on any OS.
 After a successful `cotal update --self`, a running default daemon from the same installation
 is restarted when its version differs, including older daemons that host no Managers.
