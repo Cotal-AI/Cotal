@@ -18,6 +18,8 @@ import { capabilityRole, permissionsFor } from "./provision.js";
 import { issuedPermitsPattern, mintAcceptedToken, type IssuedEvidence, type IssuedSubjectAllow, type IssuedSubjectPermissions } from "./issued-authority.js";
 import { presenceKeySubject, resolveReadAcl } from "./subjects.js";
 import { isIssuedCaller, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
+import type { EpCapability } from "./endpoint-grants.js";
+import { personaEndpointPartName } from "./persona-endpoints.js";
 
 /** What a spawner hands a helper. `subscribe` is the helper's read set after `join`; it is folded
  *  into the read ACL here the way provisioning folds it. */
@@ -27,9 +29,11 @@ export interface DelegatedGrant {
   readonly allowPublish?: readonly string[];
   readonly role?: string;
   readonly capabilities?: readonly string[];
+  /** Endpoint commands, as {@link lowerPersonaEndpoints} lowers a persona's `endpoints`. */
+  readonly endpoints?: readonly EpCapability[];
 }
 
-export type DelegatedField = "allowSubscribe" | "allowPublish" | "role" | "capabilities";
+export type DelegatedField = "allowSubscribe" | "allowPublish" | "role" | "capabilities" | "endpoints";
 
 /** One part of a grant the spawner does not hold, named for the refusal. */
 export interface GrantOverreach {
@@ -64,6 +68,8 @@ function partsOf(grant: DelegatedGrant): { part: GrantOverreach; project?: MintE
     const project = isDelegableCapability(token) ? { capabilities: [token] } : undefined;
     out.push({ part: { field: "capabilities", value: token }, ...(project ? { project } : {}) });
   }
+  for (const cap of grant.endpoints ?? [])
+    out.push({ part: { field: "endpoints", value: personaEndpointPartName(cap) }, project: { endpointCapabilities: [{ ...cap }] } });
   return out;
 }
 

@@ -31,8 +31,11 @@
  *      for that delivery and answers completed; meanwhile a new login-start is refused, 0 IdP calls;
  *  L14 a failed sign-in relays none of the provider's text (an error_description, a non-JSON token
  *      body) in any frame, or on the CLI's stdout or stderr;
- *  L15 a sign-in that fails after stock wrote the session does not make the CLI claim nothing was saved;
+ *  L15 a damaged catalog refuses sign-in before provider approval or a session write, naming recovery;
  *  L16 a sign-in denied at the verification page exits 2 refused PERMISSION_DENIED through the CLI.
+ *  L17 malformed session records refuse before provider requests, preserving the sign-in cache.
+ *  L17 an initial device-authorization refusal exits 2 with no persistence warning, prompt or poll.
+ *  L18 initial refusals stay typed when the optional error body is null or has non-string fields.
  *
  * Run: tsx bin/smoke/daemon-login.smoke.ts   (Linux only)
  */
@@ -153,7 +156,11 @@ const mkRuntime = async (rt: string) => { const { mkdirSync } = await import("no
 
 // ---------- a REAL Better Auth IdP on loopback ----------
 let handler: ((req: IncomingMessage, res: ServerResponse) => void) | undefined;
-const idpServer = createHttpServer((req, res) => handler!(req, res));
+const idpRequests: Array<{ path: string; status: number }> = [];
+const idpServer = createHttpServer((req, res) => {
+  res.once("finish", () => idpRequests.push({ path: new URL(req.url!, "http://x").pathname, status: res.statusCode }));
+  handler!(req, res);
+});
 await new Promise<void>((r) => idpServer.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${(idpServer.address() as AddressInfo).port}`;
 const base = `${origin}/api/auth`;
@@ -181,11 +188,13 @@ let approved = false;
 let tokenGate: Promise<void> | undefined;
 /** When set, /device/token answers exactly this, whatever `approved` says. */
 let tokenOverride: { status: number; body: string } | undefined;
+let codeOverride: { status: number; body: string } | undefined;
 const fakeJwt = (sub: string) => `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub, iss: "x" })).toString("base64url")}.sig`;
 const scripted = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   const route = new URL(req.url!, "http://x").pathname;
   hits[route] = (hits[route] ?? 0) + 1;
   const send = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)); };
+  if (route === "/api/auth/device/code" && codeOverride) return void res.writeHead(codeOverride.status, { "content-type": "application/json" }).end(codeOverride.body);
   if (route === "/api/auth/device/code") return send(200, { device_code: "scripted-device-code", user_code: "SCRIPTED", verification_uri: "http://127.0.0.1/v", verification_uri_complete: "http://127.0.0.1/v?c=SCRIPTED", expires_in: 60, interval: 1 });
   if (route === "/api/auth/device/token" && tokenOverride) return void res.writeHead(tokenOverride.status, { "content-type": "application/json" }).end(tokenOverride.body);
   if (route === "/api/auth/device/token") return approved ? send(200, { access_token: "scripted-session-token", expires_in: 3600 }) : send(400, { error: "authorization_pending" });
@@ -194,14 +203,14 @@ const scripted = createHttpServer(async (req: IncomingMessage, res: ServerRespon
 });
 await new Promise<void>((r) => scripted.listen(0, "127.0.0.1", r));
 const sBase = `http://127.0.0.1:${(scripted.address() as AddressInfo).port}/api/auth`;
-const resetScripted = () => { for (const k of Object.keys(hits)) delete hits[k]; approved = false; tokenGate = undefined; tokenOverride = undefined; };
+const resetScripted = () => { for (const k of Object.keys(hits)) delete hits[k]; approved = false; tokenGate = undefined; tokenOverride = undefined; codeOverride = undefined; };
 const totalHits = () => Object.values(hits).reduce((a, b) => a + b, 0);
 const polls = () => hits["/api/auth/device/token"] ?? 0;
 /** The scripted IdP's session token reached the stock session file. */
 const sessionSaved = (home: string) => existsSync(join(home, "idp-sessions.json")) && readFileSync(join(home, "idp-sessions.json"), "utf8").includes("scripted-session-token");
 /** `cotal daemon login --idp <idp> --json` through the composition root, against the daemon at `rt`. */
-async function runCli(rt: string, idp: string): Promise<{ status: number | null; out: string; err: string }> {
-  const child = spawn(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "bin", "cotal.ts"), "daemon", "login", "--idp", idp, "--json"], {
+async function runCli(rt: string, idp: string, args: string[] = ["--json"]): Promise<{ status: number | null; out: string; err: string }> {
+  const child = spawn(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "bin", "cotal.ts"), "daemon", "login", "--idp", idp, ...args], {
     cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rt, COTAL_HOME: cliHome, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
   });
   const exited = new Promise<number | null>((r) => child.once("exit", (c) => r(c)));
@@ -527,25 +536,81 @@ try {
       const run = await runCli(rt, sBase);
       check("L14 the CLI exits non-zero for the failure", run.status !== 0 && run.status !== -1, { status: run.status, out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
       check("L14 instrument: the CLI reported a failed sign-in (failed, OPERATION_FAILED)", failedEnvelope(run.out), { status: run.status, out: run.out.slice(0, 600) });
+      const doc = JSON.parse(run.out) as { command?: string; target?: { idp?: string } };
+      check("L14 a failed sign-in retains its command and provider target", doc.command === "daemon login" && doc.target?.idp === sBase, doc);
       check("L14 neither stdout nor stderr carries the provider's text", !run.out.includes(needle) && !run.err.includes(needle), { out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
     } finally { await d.close(); }
   });
 
-  // ---- L15: a failure after the session was written claims nothing about persistence ----
-  await cell("L15 a failure after the session write", async () => {
+  // ---- L15: damaged local state is not a provider failure and cannot save a new session ----
+  await cell("L15 a damaged catalog before sign-in", async () => {
     resetScripted();
     const { paths, rt, home } = fresh(); await mkRuntime(rt);
-    // Stock writes the session, then reads the catalog file; a malformed one fails the sign-in there.
     mkdirSync(home, { mode: 0o700 });
     writeFileSync(join(home, "space-catalogs.json"), "{not json", { mode: 0o600 });
     approved = true;
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const run = await runCli(rt, sBase);
-      check("L15 instrument: the sign-in failed and the session was written", run.status !== 0 && run.status !== -1 && sessionSaved(home), { status: run.status, saved: sessionSaved(home), out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
-      check("L15 instrument: the CLI reported a failed sign-in (failed, OPERATION_FAILED)", failedEnvelope(run.out), { status: run.status, out: run.out.slice(0, 600) });
-      check("L15 the CLI does not claim nothing was saved", !/no session was saved|nothing was saved/i.test(run.out + run.err), { out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
+      const doc = JSON.parse(run.out) as Record<string, any>;
+      check("L15 exit 2, refused DEPENDENCY_UNAVAILABLE, not a provider failure", run.status === 2 && doc.outcome === "refused" && doc.error?.code === "DEPENDENCY_UNAVAILABLE", { status: run.status, out: run.out.slice(0, 600) });
+      check("L15 names space-catalogs.json and how to recover without exposing its contents", doc.error?.message.includes("space-catalogs.json") && doc.error?.remedy.includes("restore") && !run.out.includes("{not json"), doc.error);
+      check("L15 no provider request or new session", totalHits() === 0 && !existsSync(join(home, "idp-sessions.json")), { hits: totalHits() });
+      check("L15 damaged catalog is preserved", readFileSync(join(home, "space-catalogs.json"), "utf8") === "{not json");
+      const w = await wire(paths.socket);
+      try {
+        w.send({ v: 1, id: rid(), op: "spaces", refresh: true });
+        const reply = await w.next((frame) => frame.ok === false);
+        const error = reply.error as Record<string, unknown>;
+        check("L15 spaces preserves the typed cache refusal and remedy", error.code === "DEPENDENCY_UNAVAILABLE" && String(error.message).includes("space-catalogs.json") && String(error.remedy).includes("restore"), reply);
+      } finally { w.end(); await w.closed; }
     } finally { await d.close(); }
+  });
+
+  // ---- L17: initial device-authorization refusals cannot have persisted a session ----
+  await cell("L17 device-authorization refusal before approval (real Better Auth)", async () => {
+    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+    try {
+      for (const [name, idp, extra, path, status] of [
+        ["missing auth base", origin, [], "/device/code", 404],
+        ["rejected client id", base, ["--client-id", "wrong-client"], "/api/auth/device/code", 400],
+      ] as const) {
+        for (const format of ["--json", "--plain"]) {
+          idpRequests.length = 0;
+          const run = await runCli(rt, idp, [...extra, format]);
+          const output = run.out + run.err;
+          const doc = format === "--json" ? JSON.parse(run.out) : undefined;
+          check(`L17 ${name} ${format}: exit 2 and a typed refusal`, run.status === 2 && (doc
+            ? doc.outcome === "refused" && doc.error?.code === "DEPENDENCY_UNAVAILABLE" && doc.error?.cause?.code === "AUTHORIZATION_REFUSED"
+            : /DEPENDENCY_UNAVAILABLE/.test(run.err)), { status: run.status, out: run.out, err: run.err });
+          check(`L17 ${name} ${format}: auth base and client-id remedy without a persistence warning`, output.includes("--idp") && output.includes("--client-id") && !/may have been saved/.test(output));
+          check(`L17 ${name} ${format}: only the initial refusal, no approval prompt or session`, JSON.stringify(idpRequests) === JSON.stringify([{ path, status }]) && !/approve sign-in|approval code/i.test(output) && !existsSync(join(home, "idp-sessions.json")), idpRequests);
+        }
+      }
+    } finally { await d.close(); }
+  });
+
+  await cell("L18 initial refusal with an optional error body of the wrong shape", async () => {
+    resetScripted();
+    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+    try {
+      for (const body of [null, [], SENTINEL, { error: { toString: null }, error_description: [SENTINEL] }]) {
+        for (const format of ["--json", "--plain"]) {
+          resetScripted();
+          codeOverride = { status: 401, body: JSON.stringify(body) };
+          const run = await runCli(rt, sBase, [format]);
+          const output = run.out + run.err;
+          const doc = format === "--json" ? JSON.parse(run.out) : undefined;
+          check(`L18 ${JSON.stringify(body)} ${format}: initial refusal stays typed`, run.status === 2 && (doc
+            ? doc.outcome === "refused" && doc.error?.code === "DEPENDENCY_UNAVAILABLE" && doc.error?.cause?.code === "AUTHORIZATION_REFUSED"
+            : /AUTHORIZATION_REFUSED/.test(run.err)), { status: run.status, out: run.out, err: run.err });
+          check("L18 fixed guidance without provider detail or persistence warning", output.includes("--idp") && output.includes("--client-id") && !output.includes(SENTINEL) && !/may have been saved/.test(output));
+          check("L18 only one device-code request, no prompt, poll or session", totalHits() === 1 && hits["/api/auth/device/code"] === 1 && !/approve sign-in|approval code/i.test(output) && !existsSync(join(home, "idp-sessions.json")), hits);
+        }
+      }
+    } finally { codeOverride = undefined; await d.close(); }
   });
 
   // ---- L16: a sign-in denied at the verification page reaches the terminal as a typed refusal ----
@@ -559,8 +624,44 @@ try {
       let doc: Record<string, any> = {};
       try { doc = JSON.parse(run.out) as Record<string, any>; } catch { /* reported below */ }
       check("L16 exit 2, refused PERMISSION_DENIED with native code DENIED", run.status === 2 && doc.outcome === "refused" && doc.error?.code === "PERMISSION_DENIED" && JSON.stringify(doc).includes("DENIED"), { status: run.status, out: run.out.slice(0, 400) });
+      check("L16 a denied sign-in retains its command and provider target", doc.command === "daemon login" && doc.target?.idp === sBase, doc);
       check("L16 nothing persisted", !sessionSaved(home));
     } finally { await d.close(); }
+  });
+  await cell("L17 malformed session records stay inside the typed cache boundary", async () => {
+    const cases: Array<[string, string, unknown]> = [
+      ["null", sBase, null],
+      ["array", sBase, []],
+      ["string", sBase, SENTINEL],
+      ["empty token", sBase, { token: "", expiresAt: 1 }],
+      ["wrong token type", sBase, { token: 7, expiresAt: 1 }],
+      ["missing expiry", sBase, { token: SENTINEL }],
+      ["wrong expiry type", sBase, { token: SENTINEL, expiresAt: "tomorrow" }],
+      ["unnormalized provider", `${sBase}/`, { token: SENTINEL, expiresAt: 1 }],
+      ["invalid provider", "not-a-provider-url", { token: SENTINEL, expiresAt: 1 }],
+    ];
+    for (const [name, idp, session] of cases) {
+      resetScripted();
+      const { paths, rt, home } = fresh(); await mkRuntime(rt);
+      mkdirSync(home, { mode: 0o700 });
+      const bytes = JSON.stringify({ ver: 1, sessions: { [idp]: session } });
+      const path = join(home, "idp-sessions.json");
+      writeFileSync(path, bytes, { mode: 0o600 });
+      const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home });
+      try {
+        const run = await runCli(rt, sBase);
+        const doc = JSON.parse(run.out) as Record<string, any>;
+        check(`L17 ${name}: CLI refuses with cache diagnosis and recovery`, run.status === 2 && doc.outcome === "refused" && doc.error?.code === "DEPENDENCY_UNAVAILABLE" && doc.error?.message.includes("idp-sessions.json") && doc.error?.remedy.includes("restore"), { status: run.status });
+        const w = await wire(paths.socket);
+        try {
+          w.send({ v: 1, id: rid(), op: "spaces", refresh: true });
+          const reply = await w.next((frame) => frame.ok === false);
+          const error = reply.error as Record<string, unknown>;
+          check(`L17 ${name}: spaces preserves cache diagnosis and recovery`, error.code === "DEPENDENCY_UNAVAILABLE" && String(error.message).includes("idp-sessions.json") && String(error.remedy).includes("restore"));
+        } finally { w.end(); await w.closed; }
+        check(`L17 ${name}: no provider requests, cache unchanged, no secret output`, totalHits() === 0 && readFileSync(path, "utf8") === bytes && !existsSync(join(home, "space-catalogs.json")) && !run.out.includes(SENTINEL) && !run.err.includes(SENTINEL));
+      } finally { await d.close(); }
+    }
   });
 } catch (e) {
   fail++;

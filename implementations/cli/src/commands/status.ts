@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   CotalEndpoint,
+  agentFilePath,
   dialerFor,
   EpEnvelopeError,
   formatAge,
@@ -39,6 +40,7 @@ import {
   targetErrorSpace,
   type RolledBackRun,
   brokerAddressForDisplay,
+  brokerCheck,
   canonicalRoot,
   CLI_USER_ACTOR,
   codeSpan,
@@ -56,6 +58,7 @@ import {
   hasUserAuthState,
   homeCotalDir,
   cachedPreferences,
+  loadLaunchPersonaFile,
   resolvePreference,
   isMeshRegistryError,
   isWorkspaceTargetError,
@@ -94,6 +97,7 @@ import {
   preferencesFolderWarning,
   cotalDirLink,
   type Cell,
+  type BrokerCheck,
   type LocalProcess,
   type LocalProcessContext,
   type MaintenanceClaim,
@@ -143,7 +147,7 @@ import {
   STACK_DEFINITION,
   stackStartedWithoutManager,
   stackOperationBlock,
-  goneStackRoot,
+  stackRootGone,
   unfinishedStackOperation,
   type StackJournal,
   type StackOperationBlock,
@@ -151,6 +155,7 @@ import {
 } from "../lib/stack-journal.js";
 import { cotalLinkHere, homeHoldsStack, linkedCotalRemedy } from "../lib/paths.js";
 import { storeWriteProblem } from "../lib/store-dir.js";
+import { stackStoreWarnings } from "../lib/store-identity.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 import { askManager } from "@cotal-ai/workspace/control";
 
@@ -187,18 +192,20 @@ export const statusFlags = [
  *  the second then reports as simply absent, so the two sections would describe different worlds.
  *  Resolve once, share the outcome, including the failure. */
 type Selected = { ok: true; target: MeshTarget } | { ok: false; error: unknown };
+type SelectedPreflight = Awaited<ReturnType<typeof preflightTarget>> | undefined;
 
-/** A project root with no registration or prepared space here, such as one whose space was
- *  forgotten. The resolver gives it the default broker address, which any broker may hold, so
- *  status selects no space for it and dials nothing. */
+/** A project root with an empty `.cotal/` and no registration or prepared space. The resolver
+ *  gives it the default broker address, which any broker may hold, so status selects no space for
+ *  it and dials nothing. A root whose records name no space is refused by the resolver instead, and
+ *  status uses that refusal. */
 class UnregisteredRoot {
-  constructor(readonly root: string, readonly namesNoSpace: boolean) {}
+  constructor(readonly root: string) {}
 }
 
 function resolveSelected(cwd: string, values: FlagValues<typeof statusFlags>, offline: readonly string[]): Selected {
   try {
     const target = resolveMeshTarget(cwd, { server: values.server, space: values.space, offline });
-    return target.source === "local-space" ? { ok: false, error: new UnregisteredRoot(target.root, target.namesNoSpace === true) } : { ok: true, target };
+    return target.source === "local-space" ? { ok: false, error: new UnregisteredRoot(target.root) } : { ok: true, target };
   } catch (e) {
     return { ok: false, error: e };
   }
@@ -263,6 +270,7 @@ export interface StatusResult {
     natsProblem: MachineStatus["natsProblem"];
     integrations: { name: string; state: "ok" | "warn" | "error" | "off"; text: string }[];
     connectors: { name: string; requires: string[]; missing: string[] }[] | null;
+    /** For a resolved space, the bare direct launch's persona and effective harness, including its pin. */
     defaults: { harness: string | null; persona: string | null } | null;
     skills: { state: "current" | "not-installed" | "behind" | "unreadable"; total: number; behind: number; retired: number; error: string | null };
     web: { installed: boolean | null; installedError: string | null; url: string | null; urlError: string | null };
@@ -317,7 +325,7 @@ export interface StatusResult {
       eventsRequired: boolean;
       modeChecked: boolean;
       current: boolean;
-      check: "reachable" | "unreachable" | "not-checked";
+      check: BrokerCheck | "not-checked";
       catalog: { name: string | null; fetchedAt: string | null; error: string | null } | null;
     }[];
     /** `account` is the IdP subject whose catalog this is, which its error line names instead of the
@@ -446,20 +454,30 @@ export async function status(args: ParsedArgs): Promise<void> {
   // THE RESPONDER AXIS (#1576), read ONCE and threaded into the rows that would otherwise claim
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
-  const responder = await readResponderAxis(selected);
+  const preflight = selected.ok && selected.target.mode !== "user" ? await preflightTarget(selected.target) : undefined;
+  const responder = await readResponderAxis(selected, preflight);
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
-  const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline);
-  const target = await readSelected(selected, responder, folder, gaps, hints);
+  const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight);
+  const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
+  const recovery = backupRecovery(maintenance);
+  const selectedHints: string[] = [];
+  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight);
+  // A held backup must be released before this root can start. Keep the selection's diagnostics,
+  // but replace its ordinary restart advice with the journal's recovery step.
+  if (recovery) hints.unshift(recovery);
+  else hints.push(...selectedHints);
+  if (!blocked) readStackStoreWarnings(root, gaps, hints);
+  if (selected.ok && selected.target.origin === "up" && !sameDir(root, selected.target.root))
+    readStackStoreWarnings(selected.target.root, gaps, hints, selected.target.space);
   // The note under the heading sends here for this folder's own stack cut off with no recorded
   // outcome under another selection. A blocked one is named with its block under `This folder's
   // space` and its step first in Next, so that note is left out here, with its --json warning. One
   // that neither blocks nor stays part way settles from its members' processes when it starts.
   const held = folderStack(folder, target);
   if (held && folder.stackBlock) withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
-  if (held && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
+  if (!recovery && held && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
-  const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
   const logged = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;
   // A store write failure holds until the broker restarts, so it is named before a full store.
   const full = selected.ok && target.resolved && target.storedBytes !== null && logged?.state !== "write-failed" ? storeFull(selected.target.root, selected.target.space, target.storedBytes) : undefined;
@@ -595,7 +613,22 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
   let defaults: StatusResult["machine"]["defaults"] = null;
   try {
     const context = { preferences: cachedPreferences(), space: selected.ok ? selected.target.space : undefined };
-    defaults = { harness: resolvePreference("harness", context).value, persona: resolvePreference("persona", context).value };
+    const persona = resolvePreference("persona", context);
+    defaults = { harness: resolvePreference("harness", context).value, persona: persona.value };
+    if (selected.ok) {
+      const path = agentFilePath(selected.target.root, persona.value!);
+      try {
+        const definition = loadLaunchPersonaFile(path);
+        defaults.harness = resolvePreference("harness", { ...context, pin: definition.agent }).value;
+      } catch (error) {
+        // A bare spawn writes the shipped, unpinned default only when the product default is absent.
+        // Every other failed read leaves the effective harness unknown, never the saved preference.
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT" || persona.winner?.source !== "default") {
+          defaults.harness = null;
+          gaps.add("DEFAULT_PERSONA_UNREADABLE", "the default launch persona could not be read and validated; its effective harness is unknown", { path });
+        }
+      }
+    }
   } catch (e) {
     // The refusal names the file and its problem, and its remedy is the next step.
     gaps.add("PREFERENCES_UNREADABLE", `the saved agent defaults could not be read: ${(e as Error).message}`, { path: preferencesPath() });
@@ -725,14 +758,13 @@ async function expectedDeliveryHolder(target: MeshTarget): Promise<string | unde
  *
  *  `leased` says whether the read found a delivery lease record. An open mesh runs no delivery
  *  daemon, so there a missing lease is the normal state rather than an unbound responder. */
-async function readResponderAxis(selected: Selected): Promise<{ state: DeliveryResponderState; leased: boolean }> {
+async function readResponderAxis(selected: Selected, preflight: SelectedPreflight): Promise<{ state: DeliveryResponderState; leased: boolean }> {
   let leased = false;
   if (!selected.ok) return { state: "unknown", leased };
   const target = selected.target;
   if (target.mode === "user") return { state: "unknown", leased };
   try {
-    const preflight = await preflightTarget(target);
-    if (!preflight.ok) return { state: "unknown", leased };
+    if (!preflight?.ok) return { state: "unknown", leased };
     const id = newIdentity();
     const creds = target.auth ? await mintCreds(target.auth, id, "observer") : undefined;
     const ep = new CotalEndpoint({
@@ -887,9 +919,9 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     controllerStack = false;
     // A journal no command can use is named with its way out, in the warnings and under Next; the
     // rest of the report still stands.
-    if (isCommandFailure(error) && error.code === "SCHEMA_INVALID") {
+    if (isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED")) {
       unusable = true;
-      gaps.add("STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
+      gaps.add(error.code === "PERMISSION_DENIED" ? "STACK_JOURNAL_UNREADABLE" : "STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
       if (error.remedy) hints.push(error.remedy);
     }
     // A journal another folder recorded, as a copy or a moved folder keeps it: clean store refuses here.
@@ -1138,7 +1170,7 @@ function deliveryDetail(live: boolean, responder: DeliveryResponderState): strin
  *  with its own recorded TLS requirement. A bare TCP/INFO probe would green-light a plaintext broker
  *  that has substituted for a TLS-required mesh — the FAIL1 attack — so a list that only asks "is
  *  anything listening" cannot report on the one property the record claims. */
-async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps, offline: readonly string[]): Promise<StatusResult["meshes"]> {
+async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps, offline: readonly string[], preflight: SelectedPreflight): Promise<StatusResult["meshes"]> {
   // A registry file that cannot be read is named, and the readable records are still listed and
   // checked. Only an absent directory or pointer is an empty registry or no current mesh.
   const unreadable: StatusResult["meshes"]["unreadable"] = [];
@@ -1169,6 +1201,15 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
   const chosen = selected.ok ? selected.target : undefined;
   // A `--server` that names another address is the only broker dialed for the selected space.
   const checked = (m: MeshEntry) => all || (m.space === chosen?.space && m.server === chosen.server);
+  const check = async (m: MeshEntry): Promise<BrokerCheck | "not-checked"> => {
+    if (!checked(m)) return "not-checked";
+    if (preflight && m.space === chosen?.space && m.server === chosen.server) {
+      if (preflight.ok) return "reachable";
+      if (preflight.kind === "slow-link" || preflight.kind === "broker-stopped" || preflight.kind === "unreachable") return preflight.kind;
+      return preflight.kind === "tls-trust" || preflight.kind === "tls-unsupported" ? "unreachable" : "reachable";
+    }
+    return brokerCheck(m.server, m.tlsRequired);
+  };
   const items = await Promise.all(
     entries.map(async (m) => ({
       space: m.space,
@@ -1180,7 +1221,7 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
       eventsRequired: m.policy?.events === "required",
       modeChecked: m.unchecked !== true,
       current: m.space === current,
-      check: checked(m) ? ((await isReachable(m.server, m.tlsRequired ? { tls: true } : {})) ? "reachable" as const : "unreachable" as const) : "not-checked" as const,
+      check: await check(m),
       catalog: m.origin === "catalog" ? { name: m.catalogName && m.catalogName !== m.space ? m.catalogName : null, fetchedAt: m.catalogFetchedAt ?? null, error: m.catalogError ?? null } : null,
     })),
   );
@@ -1213,11 +1254,26 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
   };
 }
 
+/** Diagnose the current folder's store and a selected local stack independently of folder trust. */
+function readStackStoreWarnings(root: string, gaps: Gaps, hints: string[], space?: string): void {
+  try {
+    const journal = readStackJournal(root)?.journal;
+    if (journal && (space === undefined || journal.space === space))
+      for (const warning of stackStoreWarnings(journal)) gaps.add(warning.code, warning.message, warning.target);
+  } catch (error) {
+    if (isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED")) {
+      gaps.add(error.code === "PERMISSION_DENIED" ? "STACK_JOURNAL_UNREADABLE" : "STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
+      if (error.remedy) hints.push(error.remedy);
+    } else if (!isCommandFailure(error) || error.code !== "CONFLICT") throw error;
+    // A copied or moved journal is diagnosed by the folder and selection readers.
+  }
+}
+
 /** The refusal of the stack journal at `root` when it is one no command can use, as `up` and `down`
  *  refuse it. Undefined when it reads or is absent. */
 function unusableStackJournal(root: string): CommandFailure | undefined {
   try { readStackJournal(root); return undefined; }
-  catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
+  catch (error) { return isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED") ? error : undefined; }
 }
 
 /** The refusal of `space`'s service instance records when one is a record no command can use, as
@@ -1235,7 +1291,7 @@ function rootStoreProblem(root: string): ReturnType<typeof storeWriteProblem> {
   try { return storeWriteProblem(recorded ?? join(root, ".cotal", "nats")); } catch { return undefined; }
 }
 
-async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[]): Promise<SelectedResult> {
+async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
@@ -1256,11 +1312,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     }
     if (e instanceof UnregisteredRoot) {
       const message = `no space is registered or prepared here for ${e.root}`;
-      // A bare `up` in a folder whose records name no space starts a space named after the folder,
-      // which then holds it, so the step that brings a forgotten space back is to prepare it again.
-      hints.push(e.namesNoSpace
-        ? `prepare a space with \`${cmd} space create <name> --root ${shellWord(e.root)}\`, or select one with \`${cmd} use <name>\``
-        : `run \`${cmd} up\` in ${e.root} to start one, or select a space with \`${cmd} use <name>\``);
+      hints.push(`run \`${cmd} up\` in ${e.root} to start one, or select a space with \`${cmd} use <name>\``);
       return { resolved: false, code: "unregistered-root", message };
     }
     if (!isWorkspaceTargetError(e)) throw e;
@@ -1317,6 +1369,15 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     spaceStreams: { state: "not-checked" as const, root: null, stack: null },
     storedBytes: null,
   };
+  // A moved project keeps its trust under its new path. Prefer that specific diagnosis when
+  // this folder holds the records, otherwise report the missing stack root before any auth probe.
+  const moved = target.mode === "auth" && !target.auth ? movedProject(target.space, target.root) : undefined;
+  if (moved) {
+    hints.push(moved.remedy);
+    return { resolved: false, code: "moved-folder", message: moved.message };
+  }
+  const overridden = (target.source === "flag-server" || target.source === "flag-space-override") && target.recordedServer !== target.server;
+  if (base.rootGone && !overridden) return { ...base, connection: "root-gone", snapshot: { state: "skipped", reason: "the stack's project folder was moved or deleted" } };
   if (target.mode === "user") {
     // Status never static-mints on a user-auth mesh (the flip). Everything here is offline
     // introspection — the login cache + the locally-readable ledger — plus, only when this
@@ -1346,14 +1407,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     if (!granted) return { ...result, snapshot: { state: "skipped", reason: "needs a signed-in, granted login" } };
     return { ...result, ...(await readSnapshot(() => userSnapshotEndpoint(target, stateDir), target.space, true, gaps)) };
   }
-  // A project folder moved after its stack started there keeps the seed under its new path, where a
-  // probe without it reads as authentication required. Name the move and the way back, as send does.
-  const moved = target.mode === "auth" && !target.auth ? movedProject(target.space, target.root) : undefined;
-  if (moved) {
-    hints.push(moved.remedy);
-    return { resolved: false, code: "moved-folder", message: moved.message };
-  }
-  const preflight = await preflightTarget(target);
+  if (preflight === undefined) throw new Error("status: selected non-user target has no preflight observation");
   if (!preflight.ok) {
     // A `--server` address that is not the one recorded for the space says nothing about whether its
     // stack runs, so Next names that address as the refusal of other commands does. A stopped stack
@@ -1573,7 +1627,7 @@ function folderSection(f: StatusResult["folder"], selected: SelectedResult): Sec
 }
 
 function meshesSections(m: StatusResult["meshes"]): Section[] {
-  const check = { reachable: cell("reachable", "ok"), unreachable: cell("down", "failed"), "not-checked": cell("not checked", "hint") } as const;
+  const check = { reachable: cell("reachable", "ok"), unreachable: cell("down", "failed"), "slow-link": cell("not answering", "failed"), "broker-stopped": cell("broker process is stopped", "failed"), "not-checked": cell("not checked", "hint") } as const;
   const blocks: Section["blocks"][number][] = [];
   if (!m.items.length && !m.unreadable.length) blocks.push({ kind: "lines", lines: [cell("none", "hint")] });
   else
@@ -1756,17 +1810,12 @@ function machineOverview(r: StatusResult, wide: boolean): Section {
   };
 }
 
-/** Whether `root` is the gone folder of the stack this machine still records for `space`. */
-function stackRootGone(space: string, root: string): boolean {
-  const gone = goneStackRoot(space);
-  return gone !== undefined && canonicalRoot(gone) === canonicalRoot(root);
-}
-
 function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
   if (s.connection === "ok" || s.connection === "reachable") return stateCell("reachable", "ok");
   const states: Readonly<Record<string, string>> = {
+    "root-gone": "project folder was moved or deleted",
     unreachable: "unreachable",
-    "slow-link": "connection timed out",
+    "slow-link": "not answering",
     "broker-stopped": `broker process ${s.brokerPid} is stopped`,
     "tls-trust": "TLS could not be verified",
     "tls-unsupported": "listener does not offer required TLS",
@@ -1803,7 +1852,7 @@ function spaceStateCell(r: StatusResult, entry: StatusResult["meshes"]["items"][
   // `--all` with a `--server` that names another, the row shows its own address's check.
   if (selected && r.selected.resolved && entry.check !== "not-checked" && r.selected.server !== null && r.selected.server === entry.server) return connectionCell(r.selected);
   if (entry.check === "not-checked") return "";
-  return stateCell(entry.check === "reachable" ? "reachable" : "unreachable", entry.check === "reachable" ? "ok" : "failed");
+  return stateCell(entry.check === "slow-link" ? "not answering" : entry.check === "broker-stopped" ? "broker process is stopped" : entry.check, entry.check === "reachable" ? "ok" : "failed");
 }
 
 /**
@@ -1886,7 +1935,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
     ...(r.stackManager ? [["Manager", r.stackManager.endpoint === "answered" ? stateCell("answering", "ok") : r.stackManager.endpoint === "not-answering" ? stateCell(`not answering · stack-manager pid ${r.stackManager.pid}`, "failed") : stateCell("endpoint not checked", "hint")] as [string, Cell]] : []),
     ["Access", s.mode === "user" ? "user sign-in" : s.mode === "auth" ? "static auth" : "open"],
     ["Project", s.rootGone ? stateCell(`${s.root} · folder is gone`, "failed") : s.root],
-    ["Default agent", r.machine.defaults ? `${r.machine.defaults.harness ?? "application not set"} · persona ${r.machine.defaults.persona ?? "not set"}` : stateCell("saved defaults could not be read", "failed")],
+    ["Default agent", r.machine.defaults ? `${r.machine.defaults.harness ?? "application unresolved"} · persona ${r.machine.defaults.persona ?? "not set"}` : stateCell("saved defaults could not be read", "failed")],
     ["Persona catalog", s.personas.default === "valid" ? "default available" : stateCell(s.personas.default === "invalid" ? "default is invalid" : s.personas.default === "unreadable" ? "could not be read" : "no default persona", s.personas.default === "invalid" || s.personas.default === "unreadable" ? "failed" : "hint")],
   ];
   if (s.tlsRequired) rows.push(["Transport", "TLS required"]);
@@ -1954,7 +2003,14 @@ function roleList(roles: readonly StackRole[]): string {
   return roles.length > 1 ? `${roles.slice(0, -1).join(", ")} and ${roles.at(-1)}` : roles[0] ?? "";
 }
 
+/** Pre-commit backup claims block ordinary startup; ready cuts and committed restores do not. */
+function backupRecovery(maintenance: StatusResult["maintenance"]): string | null {
+  return maintenance?.state === "claimed" || maintenance?.state === "restore-ready" ? maintenance.next : null;
+}
+
 function nextActions(r: StatusResult): Section {
+  const recovery = backupRecovery(r.maintenance);
+  if (recovery) return { title: "Next", blocks: [...new Set([recovery, ...r.hints])].map((hint) => ({ kind: "lines", lines: [cell(hint, "hint")] })) };
   const cmd = displayCmd();
   const items: { command: string; description: string }[] = [];
   const extra: string[] = [];
@@ -2460,14 +2516,14 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
     return { name: "manager", verdict: lease || credential.kind === "user" ? "serving" : "not-serving", facts };
   } catch (e) {
     // A no-responder service rail or an absent manager registry is definitive no-service evidence.
-    // The lease and PID answer whether that missing service belongs to an extant component (not
-    // serving) or an absent one; any other failed probe remains a refusal.
+    // A dead local PID is absent even while its lease awaits expiry. Without a PID record, the
+    // lease still identifies an extant component; any other failed probe remains a refusal.
     const noService = managerNoService(e);
     facts.push(noService ? "serve no answer" : `serve probe refused: ${(e as Error).message}`);
     if (!noService) return { name: "manager", verdict: "refused", facts };
     const liveRecord = record.kind === "live";
     const hasLease = facts.some((fact) => fact.startsWith("lease holder "));
-    return { name: "manager", verdict: liveRecord || hasLease ? "not-serving" : "absent", facts };
+    return { name: "manager", verdict: liveRecord || (record.kind !== "dead" && hasLease) ? "not-serving" : "absent", facts };
   } finally {
     await close?.();
   }

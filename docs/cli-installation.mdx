@@ -181,7 +181,28 @@ command, not an automatic install.
 
 ### Manager continuity
 
-Before disk reconciliation, `update` reads the selected running manager. A machine with no recorded
+For Managers hosted by the machine daemon, `update` checks every active hosted instance before
+reconciliation, even with `--space`, because restarting the global installation affects them all.
+It pins each status request to its instance and refuses unreadable custody or a non-answering
+Manager. A hosted `legacy` Manager with active seats blocks update because their
+terminal custody cannot survive replacement. After reconciliation, update waits up to 120 seconds
+for the matching daemon version and the previously active hosted spaces to report answering
+Managers. When the daemon version differs, update prepares every hosted child through the local
+preservation guard before restarting the recorded native service. A refused preparation leaves
+the occupied Managers running.
+
+A direct installed `npm i -g cotal-ai@<version>` replacement is detected by the running daemon.
+It verifies the replacement entry's reported version and its recorded native service, then asks
+every hosted child locally to prepare through the existing preservation fence. Occupied legacy
+Managers keep running while activation waits and retries. Once their seats stop and every child
+confirms preparation, the daemon stops its owned children and exits. The recorded supervisor then
+resumes the daemon and its hosting intents automatically. These are local daemon and child IPC
+operations and require no additional external admin scope. This path does not itself wait for
+restored Manager readiness. Native restart
+requests and endpoint readiness do not establish login or reboot autostart on any OS.
+
+For Managers outside machine-daemon hosting, `update` reads the selected running manager before
+disk reconciliation. A machine with no recorded
 mesh has no running manager to observe, so that read is skipped and the command completes. The same
 holds when every recorded mesh is down and none is selected. A remote user mesh, registered with
 `cotal meshes add --mode user`, is named and skipped when no `cotal manager start` or
@@ -297,7 +318,7 @@ cotal join --link <url> | --token <t>
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which mesh, and which credential |
 | `--name <n>` | none | Your presence name |
 | `--role <r>` | none | Your role |
-| `--channel <c>` | none | Channel to join |
+| `--channel <c>` | link's first channel, else `general` | Channel to join; a static credential needs a read grant for it |
 | `--kind <k>` | `agent` | Endpoint kind |
 | `--link <url>` | none | Join link (`cotal://…`) |
 | `--token <t>` | none | Join token |
@@ -315,10 +336,22 @@ this folder's, and inside a project whose root has one space other than the sele
 A space not registered here is refused before anything is dialed. The default address is never
 assumed for a credential.
 
-A `--creds` join binds the inbox provisioned for its lifecycle, so the space's owner mints the
-credential with `cotal auth mint <name> --provision` and hands over the lifecycle UID that mint
-reports. A credential minted without `--provision` has no inbox there, and `join` refuses, naming
-that lifecycle and the mint that makes one.
+A `--creds` join needs a provisioned inbox and a read grant for its landing channel. For `general`,
+the space's owner mints the credential with:
+
+```bash
+cotal auth mint <name> --provision --allow-subscribe general --allow-publish general --out <file>
+cotal join --space <s> --creds <file> --lifecycle-uid <uid> --channel general
+```
+
+The owner hands over the file and the lifecycle UID that mint reports. `--allow-subscribe` grants
+reading; `--allow-publish` is optional when the session will not post. Use the intended channel in
+both commands. `--provision` alone grants no channel access. A missing read grant is refused with
+`PERMISSION_DENIED` naming the channel and `--allow-subscribe`. A mismatched lifecycle UID is
+refused separately, naming the UID and the mint that reported its pair. Neither refusal points at
+the delivery daemon. A credential minted without `--provision` has no inbox there; with its paired
+UID and a read grant, the refusal names that lifecycle and the mint that makes one. Without a UID, `join`
+first refuses with the lifecycle-pairing requirement.
 
 On a registered user-auth space, sign in with `cotal login` first. `join` uses your existing `cli`
 actor bearer and renews it through the same login and exchange while the session runs. Its channel
@@ -608,8 +641,10 @@ and recorded ownership separately. It does not inspect or load the running shell
 file or ownership record produces a warning and a partial result, exit 4. The warning names the
 file and why. A record wired into another startup file, as an install under another `ZDOTDIR` leaves
 one, names that file and the `ZDOTDIR` to read it with. A folder above the files that is a symlink,
-owned by another user, or group- or other-writable is named once, with the `chmod go-w` that fixes
-it when one does. The files under it are not opened, and one that does not exist is reported missing,
+owned by another account, or writable by an account that is not you is named once, with the `chmod`
+that fixes it when one does. Group write is accepted when the group is your proven user private
+group and the folder has no extended ACL, the same rule as every other protected path. The files
+under it are not opened, and one that does not exist is reported missing,
 so a report with nothing installed stays complete, exit 0. Next offers that `chmod` first, offers
 `install` and `uninstall` only when nothing stops them, and offers `uninstall` only when something is
 installed. A relative `ZDOTDIR`
@@ -675,9 +710,14 @@ completion does not support, such as tcsh, is refused with `UNSUPPORTED` (exit 2
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
 ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symlink, untrusted
 owner or unsafe file access before it creates anything. A missing startup directory is named, with
-`ZDOTDIR` when that variable chose it, and with the `mkdir` that creates it. One refusal names every refused startup
-file, stub, record and directory on the way to them with its reason, and a group- or other-writable
-one with its mode and one `chmod go-w <paths>` that fixes them all. A startup file that is a
+`ZDOTDIR` when that variable chose it, and with the `mkdir` that creates it. One refusal names every
+refused startup file, stub, record and directory on the way to them with its reason, and one another
+local account could write with its mode and one `chmod` that fixes them all. Bare `completion`
+offers that `chmod` before `install`. Group write on a file
+you own is accepted when the group is your proven user private group and the file has no extended
+ACL. Replacements keep the existing file's group and mode, including under a setgid directory.
+The temporary file starts private, and its final access is checked before it receives shell content.
+A file you do not own stays refused. A startup file that is a
 symlink, as a dotfile manager such as stow links it, is never written through: `install` refuses
 it, exit 2, names it and gives the line to add to the file it points to yourself. Bare `completion`
 warns that it is a symlink and does not read it. A startup file its owner made read-only is never

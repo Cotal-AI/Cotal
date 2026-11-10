@@ -1,5 +1,41 @@
 # @cotal-ai/tmux
 
+## 0.155.0
+
+No changes in this release.
+
+## 0.154.0
+
+No changes in this release.
+
+## 0.153.1
+
+No changes in this release.
+
+## 0.153.0
+
+No changes in this release.
+
+## 0.152.0
+
+No changes in this release.
+
+## 0.151.3
+
+No changes in this release.
+
+## 0.151.2
+
+No changes in this release.
+
+## 0.151.1
+
+### Patch Changes
+
+- bbc323c: Keep a failed tmux session lookup from starting a second server when its socket path contains repeated whitespace.
+  
+  On Linux, preserve the socket pathname when reading the kernel's Unix-socket table so a moved socket is still recognized as belonging to a live server.
+
 ## 0.151.0
 
 ### Minor Changes

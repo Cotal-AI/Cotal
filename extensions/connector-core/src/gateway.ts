@@ -133,8 +133,9 @@ const READ_ONLY = { readOnlyHint: true, destructiveHint: false };
 const ADDITIVE = { readOnlyHint: false, destructiveHint: false };
 const UPDATING = { readOnlyHint: false, destructiveHint: true };
 
-// Inbox and wait consume messages. Status can change attention, and disconnect, leave and channel
-// mode can remove a connection or subscription. None of those are read-only queries.
+// Inbox and wait consume messages, and anycast can cancel a request. Status can change attention,
+// and disconnect, leave and channel mode can remove a connection or subscription. None of those are
+// read-only queries.
 const GATEWAY_ANNOTATIONS: Readonly<Record<string, ToolAnnotations>> = {
   cotal_connect: ADDITIVE,
   cotal_disconnect: UPDATING,
@@ -146,7 +147,7 @@ const GATEWAY_ANNOTATIONS: Readonly<Record<string, ToolAnnotations>> = {
   cotal_inbox: UPDATING,
   cotal_send: ADDITIVE,
   cotal_dm: ADDITIVE,
-  cotal_anycast: ADDITIVE,
+  cotal_anycast: UPDATING,
   cotal_status: UPDATING,
   cotal_channel_info: READ_ONLY,
   cotal_channels: READ_ONLY,
@@ -405,10 +406,13 @@ export function registerCotalGatewayTools(
   // What one connection may call: what is registered and what its host granted it.
   const toolsOf = (c: GatewayConnection) => new Set([...offered].filter((name) => (c.tools ?? GATEWAY_TOOLS).has(name)));
   const wake = options.wake;
-  // Connections signalled and not read since, how many cotal_wait calls hold each one, and the
-  // check for each watched connection, which the rewake runs again.
+  // Connections signalled and not read since, how many waits and reads hold each one, those that
+  // got something while held, the check each one's last hold runs, and the check for each watched
+  // connection, which the rewake runs again.
   const signalled = new WeakSet<MeshAgent>();
   const holding = new WeakMap<MeshAgent, number>();
+  const missed = new WeakSet<MeshAgent>();
+  const checks = new WeakMap<MeshAgent, () => void>();
   const watched = new Map<GatewayConnection, (fireNow?: boolean) => void>();
   wake?.attach?.((connection, fireNow) => {
     if (connection) watched.get(connection)?.(fireNow);
@@ -419,7 +423,12 @@ export function registerCotalGatewayTools(
     // Counted before `fire` runs, so a focus @mention is in the count `fire` reads.
     mentionsOf(c.agent);
     const fire = () => {
-      if (c.agent.stopping || signalled.has(c.agent) || (holding.get(c.agent) ?? 0) > 0 || wakeCount(c.agent) === 0) return;
+      if (c.agent.stopping || signalled.has(c.agent) || wakeCount(c.agent) === 0) return;
+      // A held connection is checked again when the last hold ends (see holdFor).
+      if ((holding.get(c.agent) ?? 0) > 0) {
+        missed.add(c.agent);
+        return;
+      }
       if (wake.signal(c, renderInboxPreview(c.agent.inboxSnapshot()))) signalled.add(c.agent);
     };
     const replay = (fireNow = true) => {
@@ -428,6 +437,7 @@ export function registerCotalGatewayTools(
       if (fireNow) fire();
     };
     watched.set(c, replay);
+    checks.set(c.agent, fire);
     c.agent.on("incoming", fire);
     c.agent.on("mention-wake", fire);
     c.agent.once("stopping", () => {
@@ -435,6 +445,21 @@ export function registerCotalGatewayTools(
       c.agent.off("incoming", fire);
       c.agent.off("mention-wake", fire);
     });
+  };
+  // A wait or an inbox read clears the latch and holds its connection, so nothing is signalled while
+  // it runs. A read that shows a message which arrived meanwhile cannot leave the latch set over an
+  // empty inbox, and when the last hold ends, whatever arrived meanwhile and is still unread is
+  // signalled once.
+  const holdFor = async <T>(c: GatewayConnection, run: () => Promise<T>): Promise<T> => {
+    signalled.delete(c.agent);
+    holding.set(c.agent, (holding.get(c.agent) ?? 0) + 1);
+    try {
+      return await run();
+    } finally {
+      const left = (holding.get(c.agent) ?? 1) - 1;
+      holding.set(c.agent, left);
+      if (left === 0 && missed.delete(c.agent)) checks.get(c.agent)?.();
+    }
   };
 
   server.registerTool(
@@ -619,23 +644,18 @@ export function registerCotalGatewayTools(
       const inbox = cotalToolSpecs(c.config, source, undefined, toolsOf(c)).find((s) => s.name === "cotal_inbox");
       if (!inbox) return refuse("cotal_wait is not available on this connection.");
       const limit = seconds ?? waitSeconds;
-      holding.set(c.agent, (holding.get(c.agent) ?? 0) + 1);
-      let woke: boolean;
-      try {
-        woke = await waitForWake(c.agent, limit * 1000, extra.signal);
-      } finally {
-        holding.set(c.agent, (holding.get(c.agent) ?? 1) - 1);
-      }
-      if (c.agent.stopping) return refuse(CONNECTION_REQUIRED);
-      if (!woke) {
-        return toContent({ text: `No new messages in ${limit} second${limit === 1 ? "" : "s"}. Call cotal_wait again to keep listening.` });
-      }
-      signalled.delete(c.agent);
-      try {
-        return toContent(await runFor(inbox, c, {}, extra.signal));
-      } catch (e) {
-        return refuse(errorText(e));
-      }
+      return holdFor(c, async () => {
+        const woke = await waitForWake(c.agent, limit * 1000, extra.signal);
+        if (c.agent.stopping) return refuse(CONNECTION_REQUIRED);
+        if (!woke) {
+          return toContent({ text: `No new messages in ${limit} second${limit === 1 ? "" : "s"}. Call cotal_wait again to keep listening.` });
+        }
+        try {
+          return toContent(await runFor(inbox, c, {}, extra.signal));
+        } catch (e) {
+          return refuse(errorText(e));
+        }
+      });
     },
   );
 
@@ -663,13 +683,14 @@ export function registerCotalGatewayTools(
         // A tool the host did not grant this connection, or whose capability its credential lacks.
         const own = cotalToolSpecs(c.config, source, undefined, toolsOf(c)).find((s) => s.name === spec.name);
         if (!own) return refuse(`${spec.name} is not available on this connection.`);
-        let result: ReturnType<typeof toContent>;
-        if (spec.name === "cotal_inbox") signalled.delete(c.agent);
-        try {
-          result = toContent(await runFor(own, c, rest, extra.signal));
-        } catch (e) {
-          result = refuse(errorText(e));
-        }
+        const run = async () => {
+          try {
+            return toContent(await runFor(own, c, rest, extra.signal));
+          } catch (e) {
+            return refuse(errorText(e));
+          }
+        };
+        const result = spec.name === "cotal_inbox" ? await holdFor(c, run) : await run();
         // cotal_inbox already says what it left buffered.
         const notice = spec.name === "cotal_inbox" || wake?.inboxNotice?.(c) === false ? undefined : waitingNotice(c.agent);
         return notice ? { ...result, content: [...result.content, notice] } : result;

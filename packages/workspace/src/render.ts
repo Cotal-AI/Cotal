@@ -52,9 +52,9 @@ export function renderWorkspaceError(e: WorkspaceError): string {
   return `✗ ${message}${remedy === undefined ? "" : ` - ${remedy}`}`;
 }
 
-/** The step for a root whose stack runs under another Cotal home (`stackRunsUnderOtherHome`). */
+/** The step when the current home has no records of a root's running stack members. */
 export function stackHomeRemedy(): string {
-  return `run it with COTAL_HOME set to the Cotal home the stack was started under${process.env.COTAL_HOME ? `, or with COTAL_HOME unset if that was the default ${userCotalDir()}` : ""}`;
+  return `if the records are in another home, run it with COTAL_HOME set to the Cotal home the stack was started under${process.env.COTAL_HOME ? `, or with COTAL_HOME unset if that was the default ${userCotalDir()}` : ""}; if that home's records were removed, run \`cotal down --dry-run\` in the stack's folder, then \`cotal down --yes\` to stop its creation-pinned members`;
 }
 
 /** "Which mesh" resolution failures — maps a {@link MeshTargetError}'s `{code, details}` to copy. */
@@ -62,6 +62,12 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
   const d = err.details;
   switch (err.code) {
     case "no-meshes":
+      // A folder whose records name no space is not a mesh named the held default. Its next step
+      // prepares a space there, and names the team file in the folder when one declares a space.
+      if (d.root !== undefined && d.manifest !== undefined)
+        return parts(`no space is registered or prepared here for ${d.root}`, `${shellPath(d.manifest.path)} declares space ${shellPath(d.manifest.space)}; check it with \`cotal team check ${shellPath(d.manifest.path)}\`, prepare that space with \`cotal space create ${shellPath(d.manifest.space)} --root ${shellPath(d.root)}\`, then \`cotal team boot ${shellPath(d.manifest.path)}\` or \`cotal up -f ${shellPath(d.manifest.path)}\``);
+      if (d.root !== undefined)
+        return parts(`no space is registered or prepared here for ${d.root}`, `prepare a space with \`cotal space create <name> --root ${shellPath(d.root)}\`, or select one with \`cotal use <name>\``);
       return parts("no mesh running", "run `cotal up` in a project, or pass `--server`");
     case "unknown-space":
       return d.selected
@@ -118,7 +124,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       if (d.lastRun) return parts(`the mesh${d.stackSpace === undefined ? "" : ` "${d.stackSpace}"`} in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and no space is registered for it here`, `start it again with \`cotal up\` in ${d.root}`);
       return d.home === undefined
         ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with ${codeSpan(`cotal space create ${d.stackSpace ?? "<space>"} --root ${shellPath(d.root!)}`)}, then start it with \`cotal up\` there`)
-        : parts(`the stack in ${d.root} recorded ${broker} and runs under another Cotal home; ${d.home} holds no record of its members`, stackHomeRemedy());
+        : parts(`the stack in ${d.root} recorded ${broker}; its member records are missing from ${d.home}`, stackHomeRemedy());
     }
     case "user-auth-unrecorded":
       // U11: without a TRUSTED local record of the space's IdP there is no actionable
@@ -153,7 +159,9 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       // An operator-registered mesh usually runs on ANOTHER machine, so `cotal up` is the wrong
       // remedy here — this machine can only wait for it or stop pointing at it.
       if (t.origin === "manual" || t.origin === "catalog")
-        return parts(`no broker answered at ${server}; "${t.space}" is registered here but its mesh is not up`, `start it where it runs, or \`cotal meshes rm ${t.space}\` to unregister it`);
+        return parts(`no broker answered at ${server}; "${t.space}" is registered here but its mesh is not up`, t.origin === "catalog"
+          ? "start it where it runs, or remove it from the provider's catalog and run `cotal sync` to unregister it here"
+          : `start it where it runs, or \`cotal space forget ${t.space}\` to unregister it`);
       // An `up` / pre-origin record is KEPT on a liveness miss. Keep `no mesh running at`
       // so existing attach/mint cells still recognise the classified refusal, and name
       // the recorded root so the operator restarts THAT mesh, not a new one from cwd.

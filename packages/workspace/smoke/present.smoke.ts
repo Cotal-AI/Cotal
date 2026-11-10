@@ -62,7 +62,21 @@ check("a C1 control is escaped", oneLine("\u009b31m") === "\\u009b31m");
 check("DEL is escaped", oneLine("\u007f") === "\\u007f");
 check("a line separator is escaped", oneLine("a b") === "a\\u2028b");
 check("a bidi override is escaped", oneLine("abc‮def") === "abc\\u202edef");
-check("printable text is kept as it is", oneLine("古 👩‍💻 é seat-1") === "古 👩‍💻 é seat-1");
+check("printable text and ordinary combining marks are kept as they are", oneLine("古 👩💻 é e\u0301 seat-1") === "古 👩💻 é e\u0301 seat-1");
+for (const [name, input, escaped] of [
+  ["zero-width space", "\u200b", "\\u200b"],
+  ["soft hyphen", "\u00ad", "\\u00ad"],
+  ["combining grapheme joiner", "\u034f", "\\u034f"],
+  ["variation selector", "\ufe0f", "\\ufe0f"],
+  ["interlinear annotation anchor", "\ufff9", "\\ufff9"],
+  ["astral tag", "\u{e0001}", "\\udb40\\udc01"],
+  ["astral musical format control", "\u{1d173}", "\\ud834\\udd73"],
+  ["unassigned default-ignorable", "\u{e0000}", "\\udb40\\udc00"],
+]) {
+  const actual = oneLine(`a${input}b`);
+  check(`${name} is shown in full as UTF-16 escapes`, actual === `a${escaped}b`, actual);
+}
+check("an emoji joiner is visible in operator output", oneLine("👩‍💻") === "👩\\u200d💻");
 
 const report: Report = {
   sections: [

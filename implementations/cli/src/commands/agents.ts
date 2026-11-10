@@ -508,9 +508,9 @@ function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, rea
     { title: result.kind === "slots" ? "Static slots" : "Agents", blocks: blocksFor(result.items) },
     ...result.managers.map((m): Section => ({ title: "Manager", blocks: [{ kind: "fields", rows: [["instance", m.instanceId], ...(m.reportedHost ? [["reported host", m.reportedHost] as [string, string]] : [])] }] })),
     { title: "Next", blocks: [{ kind: "commands", items: result.items.length ? [
-      { command: "cotal attach <name>", description: "Return to an agent's terminal" },
-      { command: "cotal stop <name>", description: "Stop one agent" },
-    ] : [noApplication ? { command: "cotal setup", description: "Set up an agent application" } : { command: "cotal spawn", description: "Launch your default agent" }] }] },
+      { command: `${displayCmd()} attach <name>`, description: "Return to an agent's terminal" },
+      { command: `${displayCmd()} stop <name>`, description: "Stop one agent" },
+    ] : [noApplication ? { command: `${displayCmd()} setup`, description: "Set up an agent application" } : { command: `${displayCmd()} spawn`, description: "Launch your default agent" }] }] },
   ] };
   // Several managers: one section each, named by the FULL instance id, since `--on` takes nothing
   // shorter and this is precisely where it becomes the one way to address a manager. Silent and

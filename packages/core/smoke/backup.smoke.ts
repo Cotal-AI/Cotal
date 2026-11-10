@@ -8,6 +8,7 @@ import {
 import {
   CREDENTIAL_LIFETIMES,
   admissionBucket,
+  anycastBucket,
   backupProfilePermissions,
   canonicalBackupStreamConfig,
   chatStream,
@@ -49,15 +50,18 @@ assert.equal(new Set(endpointStreams).size, 15);
 // records store and the run admission store (SPEC 14.8), which together resume a run.
 const workflowStreams = inventory.backedUp.filter((stream) => stream.class === "workflow").map((stream) => stream.name);
 assert.deepEqual(workflowStreams, [wfjStreamName(space), recordsKvStreamName(space), `KV_${admissionBucket(space)}`]);
+// The anycast request records (SPEC 8.1) are control state as well: a row is keyed by the TASK
+// stream's creation time, which a restore changes, so the daemon recreates the bucket empty.
 assert.deepEqual(
   inventory.excluded.filter((stream) => stream.class === "control").map((stream) => stream.name).sort(),
-  endpointStreams.filter((name) => !workflowStreams.includes(name)).sort(),
+  [...endpointStreams.filter((name) => !workflowStreams.includes(name)), `KV_${anycastBucket(space)}`].sort(),
 );
-// The five legacy exclusions remain alongside twelve nonportable endpoint/control resources. The
-// artifact object store keeps its own class because pin extends lifetime, not durability; endpoint
-// state is recreated empty after restore rather than misrepresented as derived or transient data.
-// The issued-authority stores (SPEC 13.15) stay excluded and come back empty.
-assert.equal(inventory.excluded.length, 17);
+// The five legacy exclusions remain alongside twelve nonportable endpoint/control resources and the
+// anycast request records. The artifact object store keeps its own class because pin extends
+// lifetime, not durability; endpoint state is recreated empty after restore rather than
+// misrepresented as derived or transient data. The issued-authority stores (SPEC 13.15) stay
+// excluded and come back empty.
+assert.equal(inventory.excluded.length, 18);
 // Comparator mechanics ONLY: the list below is synthesized from the inventory itself, so this line
 // can never fail for a family the inventory lost or never knew. That is the #643 circularity; the claim
 // it used to carry (that the inventory agrees with a real broker) is proved by the GATED live

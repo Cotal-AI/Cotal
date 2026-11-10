@@ -1,0 +1,2 @@
+# Terminal recipient selection must never post a private draft to the previous channel.
+smoke:chat-recipient:live

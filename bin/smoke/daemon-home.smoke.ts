@@ -18,6 +18,8 @@
  * Cells (each asserts counts or exact codes, never just "no error"):
  *  H0 control, no flag: legacy `serve` binds the fixed legacy socket, and `status` answers with
  *     that serve's pid. This is green today and must stay green;
+ *  H0b a different COTAL_HOME refuses the same default listener with advice for both daemon forms,
+ *     identical in plain and JSON. The matching home still reaches the same ready daemon;
  *  H1 a managed `serve --daemon-home D` beside a live legacy daemon: binds a different socket under
  *     `$XDG_RUNTIME_DIR/cotal/`. Both answer their own pid. The legacy socket keeps its inode and
  *     mtime. The no-flag client still reaches legacy. D holds a live lock owned by the managed pid;
@@ -45,7 +47,12 @@
  *     - the smoke process holds `D/daemon.lock` through the same kernel `flock` the daemon takes;
  *     - a different same-uid process listens at the derived path;
  *     - `status --daemon-home D` refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER, exit 2, and the
- *       listener receives 0 bytes.
+ *       listener receives 0 bytes. Plain and JSON give the same conditional explicit-home advice.
+ *  H6 managed catalog refresh keeps shared registrations, sentinel files and selection unchanged,
+ *     including on provider failure; default refresh still applies additions and removals. An
+ *     account switch drops the old catalog cache in either home, but only the default daemon
+ *     removes the old account's shared registrations and selection. Credential files stay.
+ *     An unrelated damaged registration stays untouched while healthy entries refresh.
  *
  * Not covered here, and still to add: register approval carry-over (needs the stock auth service
  * sandbox of daemon-register.smoke.ts), a foreign-owned home (needs a user namespace) and the
@@ -54,8 +61,9 @@
  * Run: tsx bin/smoke/daemon-home.smoke.ts   (Linux only)
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import type { AddressInfo } from "node:net";
-import { chmodSync, closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -63,7 +71,7 @@ import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { flockExclusiveNb } from "@cotal-ai/seat";
 import { saveIdpSession } from "@cotal-ai/auth";
-import { recordMesh, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
+import { getCurrent, loadMeshes, meshFile, readMeshRegistry, recordMesh, setCurrent, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-home smoke: Linux only; skipped on ${process.platform}`);
@@ -138,7 +146,7 @@ function track(child: ChildProcess): ChildProcess {
   return child;
 }
 
-type Doc = { outcome?: string; result?: Record<string, any>; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
+type Doc = { command?: string; target?: { space?: string; idp?: string } | null; outcome?: string; result?: Record<string, any>; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
 /** One CLI invocation to completion. */
 async function cli(args: string[], timeoutMs = 30_000): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
   const child = track(spawn(process.execPath, daemonArgv(args), { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] }));
@@ -204,12 +212,53 @@ const identities = (dir: string): string[] => existsSync(join(dir, "daemon")) ? 
 let legacyServe: Serve | undefined, managedServe: Serve | undefined;
 let derived: string | undefined;
 try {
+  await cell("G0 mode discovery needs no running daemon", async () => {
+    const missing = await cli([]);
+    check("G0 the missing-mode error itself includes desktop", missing.status === 1 && missing.err.split("\n")[0]!.includes("desktop"), missing.err.slice(0, 400));
+    check("G0 the remedy names help, not a live status read", missing.err.includes("cotal help daemon") && !missing.err.split("\n")[1]!.includes("cotal daemon status"), missing.err.slice(0, 400));
+    const help = await cli(["--help"]);
+    check("G0 scoped help succeeds before any daemon starts", help.status === 0 && help.out.includes("desktop"), { status: help.status });
+    check("G0 discovery creates no runtime entries or lifetime lock", runtimeEntries().length === 0 && !existsSync(lockFile(home)) && !existsSync(lockFile(managed)));
+  });
+
+  await cell("G2 failure documents retain their selected operation", async () => {
+    const absent = await cli(["status", "--daemon-home", managed, "--json"]);
+    check("G2 absent status retains its mode and null local target", absent.status === 2 && absent.doc.command === "daemon status" && absent.doc.target === null, absent.doc);
+    for (const mode of ["connect-check", "register", "service-connect", "service-disconnect", "service-status", "setup"]) {
+      const result = await cli([mode, "--daemon-home", managed, "--space", "missing", "--json", ...(mode === "setup" ? ["--wait", "bad"] : [])]);
+      check(`G2 ${mode} refuses with its selected space and command`, result.status === (mode === "setup" ? 1 : 2) && result.doc.command === `daemon ${mode}` && result.doc.target?.space === "missing", result.doc);
+    }
+    const invalid = await cli(["login", "--daemon-home", managed, "--idp", "http://user:PRIVATE_MARKER@127.0.0.1/api/auth", "--json"]);
+    check("G2 a rejected provider URL is not recorded as a target or echoed", invalid.status === 1 && invalid.doc.command === "daemon login" && invalid.doc.target === null && !(invalid.out + invalid.err).includes("PRIVATE_MARKER"), { status: invalid.status, command: invalid.doc.command, target: invalid.doc.target });
+    check("G2 failure-context reads create no runtime entries or daemon lock", runtimeEntries().length === 0 && !existsSync(lockFile(managed)));
+  });
+
   await cell("H0 control: no flag keeps the fixed legacy socket", async () => {
     legacyServe = await serve([]);
     check("H0 legacy serve reports ready at $XDG_RUNTIME_DIR/cotal/daemon.sock", live(legacyServe) && legacyServe.socket === legacy.socket, { socket: legacyServe.socket, status: legacyServe.status, err: legacyServe.err.slice(0, 300) });
     const st = await cli(["status", "--json"]);
     check("H0 no-flag status answers ready with the legacy serve's pid, exit 0", st.status === 0 && st.doc.result?.state === "ready" && st.doc.result?.pid === legacyServe.child.pid, { status: st.status, doc: st.doc });
     check("H0 the runtime dir holds exactly the legacy socket", JSON.stringify(runtimeEntries()) === JSON.stringify(["daemon.sock"]), runtimeEntries());
+  });
+
+  await cell("H0b a default daemon's COTAL_HOME mismatch has actionable recovery advice", async () => {
+    const otherHome = join(root, "other-home");
+    mkdirSync(otherHome, { mode: 0o700 });
+    const before = fileState(legacy.socket);
+    childEnv.COTAL_HOME = otherHome;
+    try {
+      const json = await cli(["status", "--json"]);
+      const plain = await cli(["status", "--plain"]);
+      const remedy = json.doc.error?.remedy ?? "";
+      check("H0b mismatched COTAL_HOME refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER in both formats", json.status === 2 && json.doc.error?.code === "PERMISSION_DENIED" && json.doc.error?.cause?.code === "PEER_NOT_LOCK_OWNER" && plain.status === 2 && plain.err.includes("PEER_NOT_LOCK_OWNER"), { json, plain });
+      check("H0b Next distinguishes default COTAL_HOME from explicit --daemon-home and matches plain output", remedy.includes("For the default daemon use its COTAL_HOME") && remedy.includes("For an explicit --daemon-home use the same directory as the intended daemon") && remedy.includes("inspect the conflicting listener with your operating system") && remedy.endsWith("No process was stopped") && plain.err.includes(remedy), { remedy, plain: plain.err });
+    } finally {
+      childEnv.COTAL_HOME = home;
+    }
+    const json = await cli(["status", "--json"]);
+    const plain = await cli(["status", "--plain"]);
+    check("H0b matching COTAL_HOME still reports the original daemon ready in both formats", json.status === 0 && json.doc.result?.state === "ready" && json.doc.result?.pid === legacyServe?.child.pid && plain.status === 0 && plain.out.includes("ready") && plain.out.includes(String(legacyServe?.child.pid)), { json, plain });
+    check("H0b refusal leaves the default socket unchanged", JSON.stringify(fileState(legacy.socket)) === JSON.stringify(before));
   });
 
   await cell("H1 a managed daemon home binds its own socket beside a live legacy daemon", async () => {
@@ -227,6 +276,165 @@ try {
     check("H1 the legacy socket keeps its inode and mtime", legacyAfter.ino === legacyBefore.ino && legacyAfter.mtimeMs === legacyBefore.mtimeMs, { legacyBefore, legacyAfter });
     check("H1 D/daemon.lock is held by the managed serve, whose record names its pid", !lockFree(managed) && lockRecordPid(managed) === managedServe.child.pid, { free: lockFree(managed), recorded: lockRecordPid(managed), pid: managedServe.child.pid });
     check("H1 no lock was created in the legacy home", !existsSync(lockFile(home)));
+  });
+
+  await cell("G1 flags are scoped before daemon actions", async () => {
+    for (const flags of [["--idp", "not-a-url"], ["--wait", "not-a-number"], ["--refresh"], ["--dry-run"], ["--yes"], ["--client-id", ""]]) {
+      const result = await cli(["status", "--daemon-home", managed, "--json", ...flags]);
+      check(`G1 status refuses ${flags[0]} from another mode`, result.status === 1 && result.doc.error?.code === "USAGE_INVALID" && result.doc.error.message?.includes(flags[0]!) === true, { status: result.status, doc: result.doc });
+    }
+    const filtered = await cli(["status", "--daemon-home", managed, "--space", "nonexistent", "--json"]);
+    check("G1 status accepts the hosted Manager space filter", filtered.status === 0 && filtered.doc.result?.pid === managedServe?.child.pid && filtered.doc.result?.managers?.[0]?.space === "nonexistent" && filtered.doc.result?.managers?.[0]?.state === "stopped", filtered);
+    const unused = join(root, "unused"); mkdirSync(unused, { mode: 0o700 });
+    const before = runtimeEntries();
+    const dry = await cli(["serve", "--daemon-home", unused, "--dry-run", "--json"]);
+    check("G1 serve --dry-run refuses rather than starting a daemon", dry.status === 1 && dry.doc.error?.code === "USAGE_INVALID" && dry.doc.error.message?.includes("--dry-run") === true, { status: dry.status, doc: dry.doc });
+    check("G1 refused serve creates no socket or lifetime lock", JSON.stringify(runtimeEntries()) === JSON.stringify(before) && !existsSync(lockFile(unused)));
+    const st = await cli(["status", "--daemon-home", managed, "--json"]);
+    check("G1 valid status still reaches the same daemon", st.status === 0 && st.doc.result?.pid === managedServe?.child.pid, { status: st.status, doc: st.doc });
+  });
+
+  await cell("H6 managed catalog refresh never applies to the shared registry", async () => {
+    let origin = "", idp = "", catalogHits = 0, unavailable = false;
+    let slugs = ["catalog-new"], sub = "catalog-account", denied = false;
+    const session = "owned-catalog-session";
+    const catalog = createHttpServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      const send = (status: number, value: unknown, headers = {}) => res.writeHead(status, { "content-type": "application/json", ...headers }).end(JSON.stringify(value));
+      if (req.url === "/api/auth/device/code") return void send(200, { device_code: "owned-device", user_code: "OWNED", verification_uri: `${origin}/verify`, verification_uri_complete: `${origin}/verify?code=OWNED`, expires_in: 60, interval: 1 });
+      if (req.url === "/api/auth/device/token") return void (denied ? send(400, { error: "access_denied" }) : send(200, { access_token: session, expires_in: 3600 }));
+      if (req.headers.authorization !== `Bearer ${session}`) return void send(401, {});
+      if (req.url === "/api/auth/token") {
+        // Catalog discovery decodes the provider's account claims; no broker authenticates here.
+        const token = [JSON.stringify({ alg: "none" }), JSON.stringify({ sub, iss: origin, exp: Math.floor(Date.now() / 1000) + 30 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".fixture";
+        return void send(200, { token }, { link: `<${origin}/catalog>; rel="https://cotal.ai/relations/space-catalog"` });
+      }
+      if (req.url !== "/catalog") return void send(404, {});
+      catalogHits++;
+      if (unavailable) return void send(503, {});
+      send(200, {
+        v: 1, account: { idpUrl: idp, issuer: origin, sub },
+        spaces: slugs.map((slug) => ({
+          id: slug, slug, name: slug, kind: "team", role: "member",
+          registration: {
+            space: slug, server: "nats://127.0.0.1:4222", tlsRequired: false, sentinelCreds: `fixture-sentinel-${slug}`,
+            userAuth: { provider: "cotal", idp: { url: idp, issuer: origin, audience: origin }, endpoints: { url: `${origin}/exchange` } },
+          },
+        })),
+      });
+    });
+    await new Promise<void>((r) => catalog.listen(0, "127.0.0.1", r));
+    origin = `http://127.0.0.1:${(catalog.address() as AddressInfo).port}`;
+    idp = `${origin}/api/auth`;
+    const sharedState = (): string => {
+      const files: { path: string; mode: number; hash: string }[] = [];
+      const visit = (path: string, relative: string): void => {
+        if (!existsSync(path)) return;
+        const stat = lstatSync(path);
+        if (stat.isDirectory()) for (const name of readdirSync(path).sort()) visit(join(path, name), `${relative}/${name}`);
+        else files.push({ path: relative, mode: stat.mode & 0o777, hash: createHash("sha256").update(readFileSync(path)).digest("hex") });
+      };
+      for (const name of ["meshes", "catalog", "current-mesh"]) visit(join(home, name), name);
+      return JSON.stringify(files);
+    };
+    try {
+      saveIdpSession(managed, idp, { token: session, sub: "catalog-account", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+      const empty = sharedState();
+      const first = await cli(["spaces", "--refresh", "--daemon-home", managed, "--json"]);
+      check("H6 managed refresh reaches the catalog and keeps its own cache", first.status === 0 && first.doc.result?.refresh === "complete" && catalogHits > 0 && existsSync(join(managed, "space-catalogs.json")), first.doc);
+      check("H6 managed-only refresh creates no shared registration or credential", sharedState() === empty && !existsSync(join(home, "idp-sessions.json")));
+      slugs = ["catalog-kept", "catalog-removed"];
+      saveIdpSession(home, idp, { token: session, sub: "catalog-account", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+      const initial = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 default refresh registers its own catalog", initial.status === 0 && loadMeshes().some((m) => m.space === "catalog-removed"), initial.doc);
+      const corrupt = join(home, "meshes", "corrupt.json");
+      const damaged = "{broken json";
+      writeFileSync(corrupt, damaged, { mode: 0o600 });
+      const listed = await cli(["spaces", "--json"]);
+      check("H6 damaged registration leaves healthy spaces visible without refresh", listed.status === 4 && listed.doc.outcome === "partial" && listed.doc.result?.refresh === "not-requested" && listed.doc.result?.unreadable === 1 && listed.doc.result?.spaces.length === 2, listed.doc);
+      setCurrent("catalog-removed");
+      const before = sharedState();
+      slugs = ["catalog-kept", "catalog-added"];
+      const changed = await cli(["spaces", "--refresh", "--daemon-home", managed, "--json"]);
+      check("H6 managed refresh preserves shared registrations, credentials and selection", changed.status === 4 && changed.doc.result?.refresh === "complete" && changed.doc.result?.unreadable === 1 && sharedState() === before && getCurrent() === "catalog-removed", changed.doc);
+      check("H6 managed space list still reflects the shared registry", changed.doc.result?.spaces.some((s: { space: string }) => s.space === "catalog-removed") === true && changed.doc.result?.spaces.every((s: { space: string }) => s.space !== "catalog-added") === true);
+      unavailable = true;
+      const failed = await cli(["spaces", "--refresh", "--daemon-home", managed, "--json"]);
+      check("H6 a failed managed refresh does not write shared failure metadata", failed.status === 4 && failed.doc.result?.refresh === "failed" && sharedState() === before, failed.doc);
+      unavailable = false;
+      const applied = await cli(["spaces", "--refresh", "--json"]);
+      const refreshed = readMeshRegistry().entries;
+      check("H6 default refresh adds and removes healthy registrations beside damage", applied.status === 4 && applied.doc.outcome === "partial" && applied.doc.result?.refresh === "complete" && applied.doc.result?.unreadable === 1 && applied.doc.result?.spaces.map((s: { space: string }) => s.space).sort().join() === "catalog-added,catalog-kept" && refreshed.some((m) => m.space === "catalog-added") && !refreshed.some((m) => m.space === "catalog-removed"), applied.doc);
+      check("H6 default refresh clears its removed selection", getCurrent() === undefined);
+      const plain = await cli(["spaces", "--refresh", "--plain"]);
+      check("H6 plain refresh reports partial success and the unreadable count", plain.status === 4 && /Catalog refresh:\s+complete/.test(plain.out) && /Unreadable:\s+1/.test(plain.out) && plain.out.includes("catalog-added"), plain);
+      const cached = Object.values(JSON.parse(readFileSync(join(home, "space-catalogs.json"), "utf8")).accounts) as { applied: boolean }[];
+      check("H6 healthy catalog application completes despite an unrelated damaged file", cached.length === 1 && cached[0]?.applied === true && readFileSync(corrupt, "utf8") === damaged);
+      unavailable = true;
+      const failedDefault = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 provider failure with damage remains a partial listing, not an endpoint failure", failedDefault.status === 4 && failedDefault.doc.result?.refresh === "failed" && failedDefault.doc.result?.unreadable === 1 && failedDefault.doc.result?.spaces.length === 2 && readMeshRegistry().entries.every((m) => Boolean(m.catalogError)) && readFileSync(corrupt, "utf8") === damaged, failedDefault.doc);
+      unavailable = false;
+      const blocked = meshFile("catalog-blocked");
+      writeFileSync(blocked, damaged, { mode: 0o600 });
+      slugs = ["catalog-kept", "catalog-added", "catalog-blocked"];
+      const targeted = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 a catalog cannot overwrite its own damaged canonical target", targeted.status === 4 && targeted.doc.result?.refresh === "failed" && targeted.doc.result?.unreadable === 2 && readFileSync(blocked, "utf8") === damaged && readFileSync(corrupt, "utf8") === damaged, targeted.doc);
+      rmSync(blocked);
+      rmSync(corrupt);
+      slugs = ["catalog-kept", "catalog-added"];
+      const recovered = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 duplicate fixture starts from a fully applied healthy catalog", recovered.status === 0 && recovered.doc.result?.refresh === "complete" && recovered.doc.result?.unreadable === 0, recovered.doc);
+      const canonical = meshFile("catalog-kept");
+      const legacy = join(home, "meshes", "catalog-kept.json");
+      const keptBytes = readFileSync(canonical, "utf8");
+      writeFileSync(legacy, keptBytes, { mode: 0o600 });
+      writeFileSync(canonical, damaged, { mode: 0o600 });
+      setCurrent("catalog-kept");
+      unavailable = true;
+      const failedDuplicate = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 provider failure preserves damaged canonical and usable legacy bytes", failedDuplicate.status === 4 && failedDuplicate.doc.result?.refresh === "failed" && failedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacy) && readFileSync(legacy, "utf8") === keptBytes, failedDuplicate.doc);
+      check("H6 failure metadata still reaches unrelated healthy registrations", Boolean(readMeshRegistry().entries.find((m) => m.space === "catalog-added")?.catalogError));
+      unavailable = false;
+      slugs = ["catalog-added"];
+      const removedDuplicate = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 catalog removal preserves damaged canonical, legacy and selection", removedDuplicate.status === 4 && removedDuplicate.doc.result?.refresh === "complete" && removedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacy) && readFileSync(legacy, "utf8") === keptBytes && getCurrent() === "catalog-kept", removedDuplicate.doc);
+      slugs = ["catalog-kept", "catalog-added"];
+      const appliedDuplicate = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 application failure cannot rewrite damage from a usable legacy duplicate", appliedDuplicate.status === 4 && appliedDuplicate.doc.result?.refresh === "failed" && appliedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacy) && readFileSync(legacy, "utf8") === keptBytes, appliedDuplicate.doc);
+      writeFileSync(canonical, keptBytes, { mode: 0o600 });
+      rmSync(legacy);
+      check("H6 no private registry or sentinel tree was created", !existsSync(join(managed, "meshes")) && !existsSync(join(managed, "catalog")));
+
+      const subjects = (dir: string): string[] => Object.values(JSON.parse(readFileSync(join(dir, "space-catalogs.json"), "utf8")).accounts as Record<string, { sub: string }>).map((a) => a.sub).sort();
+      const oldSpaces = loadMeshes().filter((m) => m.origin === "catalog");
+      const sentinels = oldSpaces.map((m) => m.userAuth?.sentinelCredsPath).filter((p): p is string => typeof p === "string");
+      check("H6 switch fixture has two discovered spaces and their sentinel files", oldSpaces.length === 2 && sentinels.length === 2 && sentinels.every((p) => existsSync(p)));
+      const manual = userMesh("catalog-manual"); recordMesh(manual);
+      setCurrent("catalog-kept");
+      const beforeSwitch = sharedState();
+      sub = "catalog-next";
+      const managedLogin = await cli(["login", "--idp", idp, "--daemon-home", managed, "--json"]);
+      check("H6 managed account switch removes its old catalog entry", managedLogin.status === 0 && subjects(managed).join() === "catalog-next", managedLogin.doc);
+      check("H6 managed account switch preserves shared credentials, records and selection", sharedState() === beforeSwitch && getCurrent() === "catalog-kept");
+      sub = "catalog-account";
+      const same = await cli(["login", "--idp", idp, "--json"]);
+      check("H6 signing in as the same account preserves discovered spaces", same.status === 0 && sharedState() === beforeSwitch, same.doc);
+      denied = true;
+      const rejected = await cli(["login", "--idp", idp, "--json"]);
+      check("H6 a denied sign-in preserves the prior account and its spaces", rejected.status !== 0 && subjects(home).join() === "catalog-account" && sharedState() === beforeSwitch, rejected.doc);
+      denied = false; sub = "catalog-next";
+      const switched = await cli(["login", "--idp", idp, "--json"]);
+      check("H6 default account switch removes its old catalog entry", switched.status === 0 && switched.doc.result?.previousSub === "catalog-account" && subjects(home).join() === "catalog-next", switched.doc);
+      check("H6 default account switch removes its old registrations", oldSpaces.every((old) => !loadMeshes().some((m) => m.space === old.space)));
+      check("H6 account cleanup retains credential files", sentinels.every((p) => existsSync(p)));
+      check("H6 default account switch clears the removed selection", getCurrent() === undefined);
+      check("H6 default account switch preserves manual registration", JSON.stringify(loadMeshes().find((m) => m.space === manual.space)) === JSON.stringify(manual));
+      slugs = ["catalog-next-space"];
+      const next = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 refreshing the new account discovers only its own spaces", next.status === 0 && loadMeshes().filter((m) => m.origin === "catalog").map((m) => m.space).join() === "catalog-next-space", next.doc);
+    } finally {
+      await new Promise<void>((r) => catalog.close(() => r()));
+    }
   });
 
   await cell("H2 managed state is disjoint and nothing migrates from legacy", async () => {
@@ -305,6 +513,9 @@ try {
       const r = await cli(["status", "--daemon-home", managed, "--json"]);
       await sleep(200);
       check("H5 status refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER, exit 2", r.status === 2 && r.doc.error?.code === "PERMISSION_DENIED" && r.doc.error?.cause?.code === "PEER_NOT_LOCK_OWNER", { status: r.status, doc: r.doc });
+      const plain = await cli(["status", "--daemon-home", managed, "--plain"]);
+      const remedy = r.doc.error?.remedy ?? "";
+      check("H5 explicit-home advice is conditional and matches plain output", remedy.includes("For an explicit --daemon-home use the same directory as the intended daemon") && plain.status === 2 && plain.err.includes("PEER_NOT_LOCK_OWNER") && plain.err.includes(remedy), { remedy, plain: plain.err });
       check("H5 the impostor listener received 0 bytes", !out.includes("GOT-BYTES"), out);
     } finally {
       await kill(listener);

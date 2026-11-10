@@ -3,7 +3,7 @@ import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
-import { findServicePreset, presetMissingOptions, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { describeDefault, findServicePreset, presetFlagName, presetMissingOptions, presetOptionRefusal, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
@@ -15,7 +15,7 @@ import { managerLogPath } from "../lib/manager-proc.js";
 import { serviceInstanceId, serviceInstances, instanceProjection } from "../lib/service-instances.js";
 import { readLocalServiceAttempts } from "../lib/service-census.js";
 import { readOwnedLogTail, readinessAddressSurvivors, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
-import { addedDefinitionStep, STACK_ADAPTER, STACK_DEFINITION } from "../lib/stack-journal.js";
+import { addedDefinitionStep, isStackMember, STACK_ADAPTER, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { assertManagerLogin } from "./stack-user-auth.js";
 import { localRecordName } from "../lib/protected-records.js";
 import { brokerServerProblem, brokerService } from "../lib/broker-service.js";
@@ -111,6 +111,10 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
     if (resolved?.stopped) return recordedManagerLogs(resolved.requested, { ...resolved.stopped, state: "stopped" }, space, root, args.values, presentation, commandName);
     if (resolved) announcePresetTarget(resolved, space, presentation);
+    // A preset name reaches the stack member built on it. Starting that member by itself launches
+    // its process and leaves the space unregistered, so it refuses before the start saves or launches.
+    if ((mode === "start" || mode === "restart") && isStackMember(space, resolved?.name ?? suppliedName!))
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${resolved?.name ?? suppliedName} is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started`, { target: { space, name: resolved?.name ?? suppliedName, ...(resolved && resolved.requested !== resolved.name ? { requested: resolved.requested } : {}) }, remedy: "start the stack with `cotal up`" });
     if (resolved?.saved === null && mode === "start" && args.values["dry-run"] && !store.read(resolved.name)) return previewPresetStart(resolved, space, root, args, presentation, commandName);
     try { return await serviceAction(resolved ? { ...args, positionals: [mode, resolved.name] } : args, space, root, commandName, resolved); }
     catch (error) {
@@ -149,7 +153,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     writeResult(presentation, { command: "service", target, result: { kind: "service-inventory", services, definitions, instances, attempts, processes, presets, presetCompleteness: catalogFailure ? "unavailable" : presetWarnings.length ? "partial" : "complete-cached-inventory", presetCatalogUnavailable: catalogFailure?.message ?? null, instanceCompleteness: "complete-local-process-records", remoteRegistrations: "not-checked" }, ...(warnings.length ? { completeness: "partial", partial: { message: "Some local component records, preset metadata or supervisor-file observations were unavailable, or a native attempt remains unsettled. The inventory is not a settled service state." } } : {}), warnings: [...warnings, ...await readinessAddressSurvivors(space)] }, (result): Report => ({ sections: [
       { title: "Services", blocks: [
         { kind: "fields", rows: [["Space", space], ["Folder", root]] },
-        result.services.length ? { kind: "table", columns: [{ key: "name", label: "Service" }, { key: "kind", label: "Kind" }, { key: "state", label: "State" }, { key: "next", label: "Next" }], rows: result.services.map((row) => ({ name: { text: row.name, tone: "command" }, kind: row.preset ? row.preset === row.name ? "built-in" : `built-in ${row.preset}` : "yours", state: { text: row.state, tone: row.state.startsWith("running") ? "ok" : row.state === "not started" || row.state === "stopped" ? "waiting" : "failed" }, next: { text: row.next, tone: "command" } })) } : { kind: "lines", lines: [result.presetCatalogUnavailable ?? "No service is saved or built in here."] },
+        result.services.length ? { kind: "table", columns: [{ key: "name", label: "Service" }, { key: "kind", label: "Kind" }, { key: "state", label: "State" }, { key: "next", label: "Next" }], rows: result.services.map((row) => ({ name: { text: row.name, tone: "command" }, kind: row.preset ? row.preset === row.name ? "built-in" : `built-in ${row.preset}` : "yours", state: { text: row.state, tone: row.state === "running" || row.state.startsWith("running, pid ") ? "ok" : row.state === "not started" || row.state === "stopped" ? "waiting" : "failed" }, next: { text: row.next, tone: "command" } })) } : { kind: "lines", lines: [result.presetCatalogUnavailable ?? "No service is saved or built in here."] },
         { kind: "lines", lines: [{ text: "A built-in service needs no add: its start saves it from its defaults. A start never starts another service for it.", tone: "hint" }, ...(result.presets.some((row) => row.name === "web") ? [] : [{ text: "The web dashboard is an extension: add it with `cotal ext add @cotal-ai/web`.", tone: "hint" as const }])] },
       ] },
       ...(result.services.some((row) => row.preset) ? [{ title: "What the built-in services do", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Service" }, { key: "summary", label: "What it does" }], rows: result.presets.map((row) => ({ name: row.name, summary: row.summary })) }] }] : []),
@@ -244,14 +248,18 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     if (choice.startsWith("preset:")) {
       const presetName = chosenPreset = choice.slice("preset:".length);
       const preset = forName(() => resolveServicePreset(presetName));
-      const guided = await guidedPreset(preset);
+      const guided = await guidedPreset(preset, space, root);
       if (!guided) return cancelled("Service creation cancelled");
       const values = guided;
       definition = forName(() => servicePresetDefinition(preset, space, values, root, `add ${name}`));
     } else {
-      const file = await prompts.text({ message: "Version-1 service definition file", placeholder: "./reviews.service.json" });
+      const file = await prompts.text({
+        message: "Version-1 service definition file",
+        placeholder: "./reviews.service.json",
+        validate: (answer) => { try { importServiceDefinition(resolve(answer ?? ""), space); return undefined; } catch (error) { return error instanceof Error ? error.message : String(error); } },
+      });
       if (prompts.isCancel(file)) return cancelled("Service creation cancelled");
-      definition = forName(() => importServiceDefinition(resolve(file), space));
+      definition = importServiceDefinition(resolve(file), space);
     }
     refuseBrokerServer(definition);
     const answer = await prompts.confirm({ message: `Save ${oneLine(name)} in ${oneLine(space)}? Its program will not be started.`, initialValue: false });
@@ -294,14 +302,19 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
   for (const row of saved) {
     const preset = presetOf(row);
     const own = instances.filter((instance) => instance.definition === row.name);
-    const state = own.some((instance) => instance.observedProcess === "running") ? "running" : own.length ? "stopped" : "not started";
-    const action = state === "running" ? "status" : "start";
+    const running = own.some((instance) => instance.observedProcess === "running");
+    const state = own.length ? [...new Set(own.map((instance) => instance.recordedState))].sort().join(", ") : "not started";
+    // A failed readiness check can leave a live process. Inspect it rather than suggesting a start.
+    const action = running ? "status" : "start";
     // One a forgotten space of this name left in another root does not start here; forgetting it is the step.
-    if (state !== "running" && definitionRootMatch(row.record.value, root) === "inherited") {
+    if (!running && definitionRootMatch(row.record.value, root) === "inherited") {
       rows.push({ name: row.name, preset, definition: row.name, state: `inherited from ${row.record.value.root}`, needs: [], next: `cotal service remove ${row.name} --space ${space} --yes` });
       continue;
     }
-    rows.push({ name: row.name, preset, definition: row.name, state, needs: [], next: preset === "manager" && managers === 1 ? `cotal manager ${action}` : `cotal service ${action} ${row.name}` });
+    // A stack member starts and stops with the stack. Starting one by itself leaves its process
+    // running and the space unregistered, which no command except down then accepts.
+    const next = !running && isStackMember(space, row.name) ? "cotal up" : preset === "manager" && managers === 1 ? `cotal manager ${action}` : `cotal service ${action} ${row.name}`;
+    rows.push({ name: row.name, preset, definition: row.name, state, needs: [], next });
   }
   for (const preset of catalog) {
     let covered = false;
@@ -399,25 +412,50 @@ export function serviceComplete(argv: string[]): CompletionResult {
   return { items: [], directive: "nofiles" };
 }
 
-async function guidedPreset(preset: ReturnType<typeof resolveServicePreset>): Promise<ParsedArgs["values"] | undefined> {
+/** The words a guided question shows for a preset default. A default the selected space cannot fill
+ *  yet is the flag form's reason, such as a space with no registered broker; one it can fill is the
+ *  same description help prints. */
+function guidedDefault(preset: ServicePreset, space: string, root: string, option: string): { shown: string; filled: boolean } | undefined {
+  const fallback = preset.defaults?.[option];
+  if (!fallback) return undefined;
+  const unfilled = presetUnfilledDefaults(preset, space, root, {}).find((row) => row.name === presetFlagName(option));
+  return unfilled ? { shown: unfilled.reason, filled: false } : { shown: describeDefault(fallback), filled: true };
+}
+
+/** Ask defaulted options as optional. Empty text and an unchanged boolean selection leave the
+ *  option out so the flag form's defaults fill it. Explicit overrides keep their value, and
+ *  required text without a default uses the same per-answer validation as the other forms. */
+async function guidedPreset(preset: ServicePreset, space: string, root: string): Promise<ParsedArgs["values"] | undefined> {
   servicePresetFlags(preset);
   const schema = resolveServiceAdapter(preset.adapter, {}, false).declaration.optionsSchema;
   const properties = schema.properties as Record<string, Record<string, unknown>>;
   const required = schema.required as string[] | undefined;
   const values: ParsedArgs["values"] = {};
-  for (const [name, option] of Object.entries(properties)) {
-    if (!required?.includes(name)) {
-      const set = await prompts.confirm({ message: `Set optional --${name}?`, initialValue: false });
+  for (const [option, schema] of Object.entries(properties)) {
+    const name = presetFlagName(option);
+    const fallback = guidedDefault(preset, space, root, option);
+    if (!required?.includes(option) || fallback) {
+      const set = await prompts.confirm({ message: fallback ? `Set --${name}? Its default is ${fallback.shown}.` : `Set optional --${name}?`, initialValue: false });
       if (prompts.isCancel(set)) return undefined;
       if (!set) continue;
     }
-    if (option.type === "boolean") {
-      const answer = await prompts.confirm({ message: `Enable --${name}?`, initialValue: false });
+    if (schema.type === "boolean") {
+      const declared = preset.defaults?.[option];
+      const initialValue = declared && "value" in declared && typeof declared.value === "boolean" ? declared.value : false;
+      const answer = await prompts.confirm({ message: fallback?.filled ? `Enable --${name}? Enter keeps its default, ${fallback.shown}.` : `Enable --${name}?`, initialValue });
       if (prompts.isCancel(answer)) return undefined;
+      if (fallback?.filled && answer === initialValue) continue;
       values[name] = answer;
     } else {
-      const answer = await prompts.text({ message: option.type === "string" ? `Non-secret value for --${name}` : `JSON ${String(option.type)} for --${name}` });
+      const kind = schema.type === "string" ? "Non-secret value" : `JSON ${String(schema.type)}`;
+      const answer = await prompts.text({
+        message: fallback ? `${kind} for --${name}. Enter keeps its default, ${fallback.shown}.` : `${kind} for --${name}`,
+        validate: (value) => fallback && (value ?? "") === "" ? undefined
+          : presetOptionRefusal(preset, name, value ?? "")
+            ?? (preset.adapter === brokerService.name && option === "server" ? brokerServerProblem(value ?? "") : undefined),
+      });
       if (prompts.isCancel(answer)) return undefined;
+      if (fallback && answer === "") continue;
       values[name] = answer;
     }
   }

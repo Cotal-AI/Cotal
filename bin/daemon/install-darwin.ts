@@ -18,7 +18,8 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, rmSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ensureDirNoSymlink, realDirNoSymlink } from "@cotal-ai/core";
 import { darwinLaunchdJob, type DarwinLaunchdLookup } from "@cotal-ai/seat";
 import { CommandFailure } from "@cotal-ai/workspace";
@@ -57,15 +58,26 @@ export interface LaunchAgentInput {
 export function renderLaunchAgent(input: LaunchAgentInput): { text: string; sha256: string } {
   if ([input.argv[0] ?? "", input.workingDirectory, input.logPath].some((path) => !isAbsolute(path))) throw new CommandFailure("refused", "USAGE_INVALID", "the LaunchAgent needs absolute executable, working and log paths");
   const str = (value: string) => `<string>${xmlText(value)}</string>`;
+  input.argv.forEach(xmlText);
+  const daemon = input.argv.indexOf("daemon");
+  const cli = input.argv[daemon - 1];
+  if (daemon < 2 || input.argv[daemon + 1] !== "serve" || !cli || !isAbsolute(cli)
+    || !input.argv.slice(1, daemon - 1).every((flag) => /^--[A-Za-z][A-Za-z0-9-]*(?:=[^\s"]*)?$/.test(flag))) {
+    throw new CommandFailure("refused", "UNSUPPORTED", "the LaunchAgent needs the durable Node daemon serve entry; no launcher was substituted");
+  }
+  // launchd's job dictionary omits WorkingDirectory. Carry it in the exact argument vector instead;
+  // this entry changes directory before importing the CLI, including any cwd-sensitive setup.
+  // Resolve our entry from this module, not argv's CLI symlink (a global install may live in bin/).
+  const bootstrap = fileURLToPath(new URL("../daemon-cwd.js", import.meta.url));
+  const argv = [...input.argv.slice(0, daemon - 1), bootstrap, input.workingDirectory, ...input.argv.slice(daemon)];
   const entry = (key: string, value: string) => `<key>${key}</key>${str(value)}`;
   const text = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
     '<plist version="1.0"><dict>',
     entry("Label", input.label),
-    `<key>ProgramArguments</key><array>${input.argv.map(str).join("")}</array>`,
-    entry("WorkingDirectory", input.workingDirectory),
-    `<key>EnvironmentVariables</key><dict>${entry("PATH", input.searchPath)}</dict>`,
+    `<key>ProgramArguments</key><array>${argv.map(str).join("")}</array>`,
+    `<key>EnvironmentVariables</key><dict>${entry("PATH", input.searchPath)}${entry("COTAL_DAEMON_NATIVE_SERVICE", "1")}</dict>`,
     entry("StandardOutPath", input.logPath),
     entry("StandardErrorPath", input.logPath),
     "<key>RunAtLoad</key><true/>",
@@ -134,7 +146,18 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
       const expected = array === undefined ? undefined : [...array.matchAll(/<string>([^<]*)<\/string>/g)].map((match) => decode(match[1]!));
       const working = /<key>WorkingDirectory<\/key>\s*<string>([^<]*)<\/string>/.exec(source)?.[1];
       const job = observed.job;
-      if (!expected?.length || working === undefined || job.label !== label || job.program !== expected[0] || job.workingDirectory !== decode(working) || JSON.stringify(job.programArguments) !== JSON.stringify(expected)) {
+      const daemon = expected?.indexOf("daemon") ?? -1;
+      const bootstrap = expected?.[daemon - 2];
+      const directory = expected?.[daemon - 1];
+      const cwdInArguments = daemon >= 3 && expected?.[daemon + 1] === "serve"
+        && bootstrap !== undefined && isAbsolute(bootstrap) && basename(bootstrap) === "daemon-cwd.js"
+        && directory !== undefined && isAbsolute(directory)
+        && expected!.slice(1, daemon - 2).every((flag) => /^--[A-Za-z][A-Za-z0-9-]*(?:=[^\s"]*)?$/.test(flag));
+      // Legacy plists keep their original proof requirement. An absent native field never clears
+      // one of those receipts, and an unrecognised directory-free launcher is not adopted.
+      const workingMatches = working !== undefined ? job.workingDirectory === decode(working)
+        : !source.includes("<key>WorkingDirectory</key>") && cwdInArguments;
+      if (!expected?.length || !workingMatches || job.label !== label || job.program !== expected[0] || JSON.stringify(job.programArguments) !== JSON.stringify(expected)) {
         throw new CommandFailure("refused", "CONFLICT", "the loaded LaunchAgent does not prove the recorded program, arguments and working directory; nothing was changed");
       }
     }
@@ -177,6 +200,24 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
     start(receipt: UnitReceipt) {
       const id = uid();
       if (owned(receipt)) step(["kickstart", `gui/${id}/${receipt.unit}`]);
+      else step(["bootstrap", `gui/${id}`, receipt.unitPath]);
+    },
+    restart(receipt: UnitReceipt, reload = false) {
+      const id = uid();
+      const isLoaded = owned(receipt);
+      if (reload) {
+        if (isLoaded) {
+          step(["bootout", `gui/${id}/${receipt.unit}`]);
+          const deadline = Date.now() + 10_000;
+          const pause = new Int32Array(new SharedArrayBuffer(4));
+          while (loaded(id, receipt.unit)) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the LaunchAgent ${receipt.unit} did not unload within 10s; no bootstrap was submitted`, { remedy: "run the same setup command again to start the recorded service" });
+            Atomics.wait(pause, 0, 0, Math.min(100, remaining));
+          }
+        }
+        step(["bootstrap", `gui/${id}`, receipt.unitPath]);
+      } else if (isLoaded) step(["kickstart", "-k", `gui/${id}/${receipt.unit}`]);
       else step(["bootstrap", `gui/${id}`, receipt.unitPath]);
     },
     remove(receipt: UnitReceipt) {

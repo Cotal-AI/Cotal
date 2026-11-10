@@ -385,6 +385,19 @@ function physicalRemedy(gaps: readonly ProtectionGap[], checked: string | undefi
   return physical === undefined ? "use a physical path owned by you or root, without symlinks" : `use the physical path ${shellPath(physical)}`;
 }
 
+/** Why another local account could replace or write an existing entry, and the chmod mode that
+ *  fixes it when one does. The rule is {@link protectionGap}: a group-writable entry is accepted
+ *  when its group is the caller's proven user private group and it has no extended ACL. A symlink,
+ *  a foreign owner and world write are never accepted. A root-owned sticky directory is accepted
+ *  only as an ancestor. The Windows model has no POSIX owner or mode, so it reports nothing. */
+export function localWriterGap(path: string, stat: EntryStat, ancestor = false): { reason: string; chmod?: string } | undefined {
+  if (localRecordAccess() === "windows-acl") return undefined;
+  const gap = protectionGap(path, stat, { ancestor });
+  if (!gap) return undefined;
+  const chmod = gap.fix === "physical" ? undefined : gap.fix === "g-w-or-acl" ? "g-w" : gap.fix;
+  return { reason: gap.reason, ...(chmod ? { chmod } : {}) };
+}
+
 /** Refuse an existing entry that another local account could replace or write; see
  *  {@link protectionGap} for the rule. `what` names the path the caller checks, for the refusal.
  *  These are POSIX owner, mode and link checks, so the Windows model skips them. */

@@ -1,6 +1,7 @@
-import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync, type Stats } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
+import { parse as parseYaml } from "yaml";
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
@@ -19,6 +20,7 @@ import {
 import { ProtectedRecordStore, shellPath, unsearchableFolder } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
 import { codeSpan } from "./text-wrap.js";
+import { tlsIntent } from "./broker-url.js";
 
 /**
  * One coherent answer to "which mesh does this command act on, and where do its creds + personas
@@ -54,7 +56,8 @@ export interface MeshTarget {
   /** Who registered the mesh this target came from — see {@link MeshEntry.origin}. Absent for a
    *  target resolved off disk rather than a record. Surfaces read it to say the right thing when
    *  the broker is down: an `up` mesh is restarted with `cotal up`, a `manual` one runs somewhere
-   *  this machine does not control (so the local remedy is `cotal meshes rm`, not `cotal up`). */
+   *  this machine does not control (the local remedy is `cotal space forget`). A `catalog` entry
+   *  follows its provider's catalog and is removed by `cotal sync` when no longer listed. */
   origin?: MeshEntry["origin"];
   /** For a broker address `--server` supplied: the address this machine records for the target's
    *  space, when it records one for this root. A probe of another address says nothing about that
@@ -167,6 +170,9 @@ export interface MeshTargetErrorDetails {
   /** For `not-started` on a prepared space: the last whole-stack operation its root's stack journal
    *  records for it with no outcome, which `cotal status` there names the way out of. */
   unsettled?: "up" | "down";
+  /** For `no-meshes` in a folder whose records name no space: a `cotal.yaml` in that folder that
+   *  declares `kind: Mesh` and a `space`, and the space it declares. The file was read, not launched. */
+  manifest?: { path: string; space: string };
 }
 
 const WORKSPACE_TARGET_ERROR = "cotal:workspace:mesh-target-error";
@@ -312,7 +318,7 @@ export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget
     server,
     space: m.space,
     mode: m.mode,
-    tlsRequired: m.tlsRequired === true,
+    tlsRequired: tlsIntent(server, m.tlsRequired === true),
     ...(m.policy ? { policy: m.policy } : {}),
     auth,
     ...(userAuth ? { userAuth } : {}),
@@ -320,6 +326,49 @@ export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget
     personaRoot: personaDir(m.root),
     source,
   };
+}
+
+/** A regular `cotal.yaml` in `dir` that declares a mesh and a space, or undefined when there is
+ *  none, it is not a regular file, it is larger than a team file needs to be, it cannot be read,
+ *  or it does not. Only `kind` and `space` are read, and only the bytes the file had when it was
+ *  found; the file is not launched. A pipe, device, or other non-file is left unread so discovery
+ *  cannot block on it. */
+function meshManifestAt(dir: string): { path: string; space: string } | undefined {
+  const path = join(dir, "cotal.yaml");
+  let text: string;
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.size > 1024 * 1024) return undefined;
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(stat.size);
+      const n = readSync(fd, buf, 0, stat.size, 0);
+      text = buf.subarray(0, n).toString("utf8");
+    } finally { closeSync(fd); }
+  } catch { return undefined; }
+  let doc: unknown;
+  try { doc = parseYaml(text); } catch { return undefined; }
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc)) return undefined;
+  const record = doc as { kind?: unknown; space?: unknown };
+  const space = record.space;
+  if (record.kind !== "Mesh" || typeof space !== "string" || !space.trim() || space !== space.trim()) return undefined;
+  return { path, space };
+}
+
+/** True when this root names no space the team file should yield to: no `.cotal` at all, an empty
+ *  one, or one whose records name nothing. A project that names a space, or whose records cannot be
+ *  read, is not this. */
+export function rootHidesNoManifest(root: string): boolean {
+  if (!isGenuineSpace(root) || rootNamesNoSpace(root)) return true;
+  let entries: string[];
+  try { entries = readdirSync(join(root, ".cotal")); } catch { return false; }
+  return entries.length === 0;
+}
+
+/** The team file beside the command, or in the project root the command resolved. A fresh clone has
+ *  the file and no `.cotal/`, so the current directory is read before the root walk. */
+export function nearbyMeshManifest(cwd: string, root = cwd): { path: string; space: string } | undefined {
+  return meshManifestAt(cwd) ?? (root === cwd ? undefined : meshManifestAt(root));
 }
 
 function localTarget(root: string, server: string, source: MeshTarget["source"], readOnly = false): MeshTarget {
@@ -357,8 +406,7 @@ function localTarget(root: string, server: string, source: MeshTarget["source"],
       `space "${userSpace}" has user auth enabled on disk but no usable registry entry`,
       { space: userSpace, root },
     );
-  // No mesh record on this path, so there is no recorded TLS decision to honour.
-  return { root, server, space, mode: auth ? "auth" : "open", tlsRequired: false, auth, personaRoot: personaDir(root), source };
+  return { root, server, space, mode: auth ? "auth" : "open", tlsRequired: tlsIntent(server, false), auth, personaRoot: personaDir(root), source };
 }
 
 /** A `.cotal/` that a user actually created here — not the machine-home dir the cwd walk-up lands on
@@ -472,8 +520,8 @@ function unfinishedStackSpace(root: string): string | undefined {
 }
 
 /** Whether `root`'s stack journal names member instances of which this Cotal home holds no record,
- *  while a manager or delivery record under the root fronts a live process: the stack runs under
- *  another `COTAL_HOME`, whose registration and service records this one cannot see. A journal that
+ *  while a manager or delivery record under the root fronts a live process. The records may have
+ *  been removed, or the stack may use another home. A journal that
  *  names no instance, a stopped stack, or a record that cannot be read answers false. */
 export function stackRunsUnderOtherHome(root: string, journal: { space?: unknown; members?: unknown }): boolean {
   const space = journal.space;
@@ -713,8 +761,9 @@ function recordsRunElsewhere(folder: { root: string; registered: readonly string
  * for this root is the target, and its heading says the selection applies outside the folder. A
  * space prepared here and never started, and one whose stack here is stopped (its registration gone
  * with only its journal or rendered broker configuration left, or its broker not answering the run's
- * liveness sweep), is the target of `up`, `down`, `space show` and `status`'s folder section only —
- * the commands that are about the folder itself. Everything else run there targets the selection,
+ * liveness sweep), is the target of `up`, `down`, `space show` and `status`'s folder section only.
+ * `auth revoke-credential` resolves the stopped space through {@link folderSpaceHeld} instead,
+ * because the revocation belongs to that space's account. Everything else run there targets the selection,
  * and the run says under its heading what this folder holds ({@link noteFolderSpaceHeld}). A folder
  * whose records are those of a stack that runs elsewhere ({@link recordsRunElsewhere}) is not released
  * to the selection: the command refuses and names where that stack runs. Nor is one whose own stack
@@ -808,9 +857,11 @@ function heldSpace(folder: { root: string; registered: readonly string[]; prepar
 }
 
 /** The space this folder holds that is not running, which only the commands about the folder itself
- *  name: `up`, `down`, `space show` and `status`'s folder section. Every other command run here
- *  targets the selection. Undefined outside a project, where a space registered for this root may
- *  still be running, and where the folder holds none. */
+ *  name: `up`, `down`, `space show` and `status`'s folder section. `auth revoke-credential` names the
+ *  stopped one too, through this, because its account issued a credential minted here; a prepared one
+ *  never started holds no such account. Every other command run here targets the selection. Undefined
+ *  outside a project, where a space registered for this root may still be running, and where the folder
+ *  holds none. */
 export function folderSpaceHeld(cwd: string): { space: string; root: string; state: "prepared" | "stopped" } | undefined {
   const folder = folderSpaces(cwd, loadMeshes());
   if (!folder || folder.registered.length) return undefined;
@@ -1018,6 +1069,12 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   }
 
   const root = findCotalRoot(cwd);
+  // A team file in this directory is this folder's file unless a project that names a space
+  // contains the directory. An empty `.cotal` names nothing, so it does not hide the file. The file
+  // is read before that project is inherited.
+  const beside = nearbyMeshManifest(cwd);
+  if (beside && rootHidesNoManifest(root))
+    throw new MeshTargetError("no-meshes", `no space is registered or prepared here for ${cwd}`, { root: cwd, manifest: beside });
   if (isGenuineSpace(root)) {
     // The DISK is the tenant authority for this root, before any registry record: a broker whose
     // auth dir holds several accounts stays several tenants even when only one of them happens to
@@ -1045,7 +1102,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // space is left out, so no caller reads this root offline as a prepared space. A stack running
     // under another Cotal home is named before any space this home prepared here, which cannot start.
     const stack = stackRecord(root);
-    if (stack?.home !== undefined) throw new MeshTargetError("not-started", `the stack in ${root} runs under another Cotal home`, { root, ...stack });
+    if (stack?.home !== undefined) throw new MeshTargetError("not-started", `the stack in ${root} has no member records in this Cotal home`, { root, ...stack });
     // A space prepared here and not started has no broker: the default address may be another's.
     const prepared = preparedSpaceAt(root);
     if (prepared) notStarted(prepared.space);
@@ -1099,8 +1156,14 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
         `another mesh ("${onDefault.space}") is running at ${DEFAULT_SERVER}`,
         { space: onDefault.space, server: DEFAULT_SERVER },
       );
-    const target = localTarget(root, DEFAULT_SERVER, "local-space", flags.readOnly);
-    return rootNamesNoSpace(root) ? { ...target, namesNoSpace: true } : target;
+    // Empty control directories and records left after `space forget` name no space. Reads and
+    // previews agree with `status` instead of assuming the held default. A nearby team file is
+    // named, not launched; explicit `up` has its own initialization path.
+    if (rootHidesNoManifest(root)) {
+      const manifest = nearbyMeshManifest(cwd, root);
+      throw new MeshTargetError("no-meshes", `no space is registered or prepared here for ${root}`, { root, ...(manifest ? { manifest } : {}) });
+    }
+    return localTarget(root, DEFAULT_SERVER, "local-space", flags.readOnly);
   }
 
   // The fallback names *running* meshes. A liveness miss used to delete the record and

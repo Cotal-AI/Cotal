@@ -297,6 +297,8 @@ jobs:
         run: pnpm smoke:join-external:live
       - name: Broker-only credential renewal warning
         run: pnpm smoke:no-manager-credential-warning:live
+      - name: Broker store identity warnings
+        run: pnpm smoke:store-identity:live
       - name: Stock broker logging and rotation
         # This suite pins 2.15.1 separately; the other smoke suites keep their 2.12.12 broker.
         shell: bash

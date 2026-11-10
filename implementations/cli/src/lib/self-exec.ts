@@ -3,7 +3,8 @@ import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { cmdSpawnSpec, resolveOnPath } from "@cotal-ai/workspace";
-import { cliPackageRoot, entryScript } from "../seed/paths.js";
+import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
+import { shellWord } from "./endpoint-errors.js";
 
 /** Is this process running the CLI's own entry? Decided on the RESOLVED file, never on its name.
  *
@@ -165,11 +166,13 @@ function isEphemeralNpxBin(dir: string): boolean {
   return /[/\\]_npx[/\\]/.test(dir);
 }
 
-/** The copy-paste command prefix for user-facing hints: `cotal` when it's on PATH, `npx cotal-ai`
- *  for an npx run, `pnpm cotal` in a dev clone. (Display only — re-execs use {@link selfArgv}.) */
+/** The copy-paste command prefix for user-facing hints: prefer PATH or npx, then the installed
+ *  entry under this Node runtime. A dev clone uses pnpm. Re-execs use {@link selfArgv}. */
 export function displayCmd(): string {
   if (cotalOnPath()) return "cotal";
   if (isNpx()) return "npx cotal-ai";
+  if (runsCliEntry() && seedWriterKind() === "released")
+    return [process.execPath, entryScript()].map(shellWord).join(" ");
   return "pnpm cotal";
 }
 

@@ -3,8 +3,8 @@
  * in an `implementations/*` package so it can later wire `@cotal-ai/auth` and `@cotal-ai/manager`
  * without one implementation importing another (AGENTS.md, repository map).
  *
- * This slice serves a local, authenticated endpoint for status, sign-in, a connection check and a
- * registration request, and installs itself as a systemd user service. It starts no Manager and
+ * This serves a local authenticated endpoint for status, sign-in, connection checks and registration.
+ * The daemon hosts a stock Manager per requested space in a separate child process, and
  * serves its registered machine-status command. Sign-in runs inside the
  * daemon through stock `establishIdpSession`, so the session lands in the machine-home Cotal
  * directory where `cotal login` keeps it, and no token ever crosses the local endpoint. The
@@ -25,26 +25,30 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, homeCotalDir, jsonFlag, plainFlag, presentationOf, renderReport, spaceFlag, writeResult, type Report } from "@cotal-ai/workspace";
-import { normalizeIdpUrl } from "@cotal-ai/auth";
+import { CommandFailure, homeCotalDir, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, spaceFlag, writeResult, type Report } from "@cotal-ai/workspace";
+import { IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
-import { connectCheckViaDaemon, loginViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { applyInstall, applyUninstall, planInstall, planUninstall, startInstalled } from "./install.js";
+import { loginFromCli } from "./cli-login.js";
+import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
+import { applyInstall, applyUninstall, daemonStartedByOwnedService, planInstall, planUninstall, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runSetup } from "./setup.js";
-import type { ConnectCheckResult, DaemonStatus, LoginResult, RegisterResult, ServiceConnectionResult } from "./protocol.js";
+import { forgetHostedManagerIntents } from "./manager.js";
+import { watchDaemonGeneration } from "./generation.js";
+import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
   jsonFlag,
   plainFlag,
   { name: "idp", type: "string", value: "<auth base URL>", description: "login: the provider's auth base URL, e.g. <origin>/api/auth" },
   { name: "client-id", type: "string", value: "<id>", description: "login: the OAuth device-flow client id" },
-  { name: "daemon-home", type: "string", value: "<abs dir>", description: "run or reach the daemon whose state lives in this directory (absolute, yours, mode 0700, not the Cotal home): its own sign-in, identity and registration, its own socket and lifetime lock. Without it, run or reach the default daemon, whose state lives in the Cotal home." },
+  { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this directory (absolute, yours, mode 0700, not the Cotal home): its own sign-in, identity and registration, its own socket and lifetime lock. Without it, run or reach the default daemon, whose state lives in the Cotal home." },
   { name: "refresh", type: "boolean", description: "spaces: refresh catalogs through the daemon-held sign-in" },
   { name: "dry-run", type: "boolean", description: "install, uninstall: report the unit it would write or remove, and change nothing" },
   { name: "yes", type: "boolean", short: "y", description: "uninstall: confirm in a script" },
-  { name: "wait", type: "string", value: "<seconds>", description: "setup: how long to wait for the space owner's approval (default 900, 0 reports what it reached)" },
+  { name: "wait", type: "string", value: "<seconds>", description: "setup --no-manager only: how long to wait for machine approval (default 900, 0 reports what it reached)" },
+  { name: "no-manager", type: "boolean", description: "setup: connect only the machine service without hosting a Manager" },
   spaceFlag,
 ] as const satisfies readonly FlagSpec[];
 
@@ -103,11 +107,12 @@ const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVA
   SOCKET_WRONG_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was removed" },
   SOCKET_WRONG_MODE: { code: "PERMISSION_DENIED", remedy: "inspect the endpoint owner and protection with your operating system; its permissions differ from the daemon contract and were not repaired" },
   PEER_UID_MISMATCH: { code: "PERMISSION_DENIED", remedy: "another user's process holds the daemon endpoint; nothing was sent" },
-  PEER_NOT_LOCK_OWNER: { code: "PERMISSION_DENIED", remedy: "use the same --daemon-home as the intended daemon and inspect the conflicting listener with your operating system; no process was stopped" },
+  PEER_NOT_LOCK_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the conflicting listener with your operating system. For the default daemon use its COTAL_HOME. For an explicit --daemon-home use the same directory as the intended daemon. No process was stopped" },
   LOCK_HELD: { code: "CONFLICT", remedy: "a daemon already holds this lifetime lock; run `cotal daemon status`, with the same --daemon-home when you passed one" },
 };
 
 function asFailure(e: unknown): unknown {
+  if (e instanceof IdpConfigurationError) return new CommandFailure("refused", "USAGE_INVALID", e.message, { remedy: "correct COTAL_IDP_TIMEOUT_MS in the daemon environment before starting it again" });
   if (!(e instanceof EndpointRefusal)) return e;
   const r = REFUSAL[e.code];
   const remedy = e.remedy ?? r.remedy;
@@ -115,7 +120,9 @@ function asFailure(e: unknown): unknown {
 }
 
 function statusView(s: DaemonStatus): Report {
-  return { sections: [{ title: "Daemon", blocks: [{ kind: "fields", rows: [["State", s.state], ["Version", s.version], ["Protocol", String(s.protocol)], ["PID", String(s.pid)], ["Started", s.startedAt], ["Uptime", `${Math.round(s.uptimeMs / 1000)}s`]] }] }] };
+  return { sections: [{ title: "Daemon", blocks: [{ kind: "fields", rows: [["State", s.state], ["Version", s.version], ["Protocol", String(s.protocol)], ["PID", String(s.pid)], ["Started", s.startedAt], ["Uptime", `${Math.round(s.uptimeMs / 1000)}s`]] }, ...(s.generation ? [{ kind: "lines" as const, lines: [`Installed ${s.generation.installed}, running ${s.generation.running}, ${s.generation.waiting}`] }] : [])] },
+    ...(s.managers ?? []).map((manager) => ({ title: `Manager: ${manager.space}`, blocks: [{ kind: "fields" as const, rows: [["Last observed state", manager.state], ["Observed at", manager.observedAt ?? "not yet probed"], ["Instance", manager.instanceId ?? "not registered"], ["PID", String(manager.pid ?? "none")], ["Restarts", String(manager.restarts)], ...(manager.lastStop ? [["Last stop", manager.lastStop]] : []), ...(manager.lastExit ? [["Last exit", manager.lastExit]] : []), ...(manager.logError ? [["Log error", manager.logError]] : []), ...(manager.lastRefusal || manager.reason ? [["Last refusal", manager.lastRefusal ?? manager.reason!]] : []), ...(manager.next ? [["Next", manager.next]] : [])] as [string, string][] }] })),
+  ] };
 }
 
 async function status(args: ParsedArgs): Promise<void> {
@@ -128,12 +135,14 @@ async function status(args: ParsedArgs): Promise<void> {
     throw asFailure(e);
   }
   if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the status request: ${reply.error.code} ${reply.error.message}`);
-  writeResult(presentation, { command: "daemon status", target: null, result: reply.result }, statusView);
+  const space = (args.values as { space?: string }).space;
+  const result = space ? { ...reply.result, managers: [await managerViaDaemon({ paths, peerUid, peerPid }, { op: "manager-status", space }) as import("./protocol.js").HostedManager] } : reply.result;
+  writeResult(presentation, { command: "daemon status", target: space ? { space } : null, result }, statusView);
 }
 
 /** Sign in through the running daemon. The daemon talks to the IdP and keeps the session; this
- *  process only shows the approval prompt and the result, and never sees a token. Ctrl-C asks the
- *  daemon to cancel the attempt and waits for its answer. */
+ *  process only shows the approval prompt and the result, and never sees a token. Ctrl-C or SIGTERM
+ *  asks the daemon to cancel the attempt and waits for its answer. */
 async function login(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const values = args.values as { idp?: string; "client-id"?: string };
@@ -141,15 +150,13 @@ async function login(args: ParsedArgs): Promise<void> {
   let idp: string;
   try { idp = normalizeIdpUrl(values.idp); }
   catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
+  recordOperationContext({ target: { idp } });
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
   const { paths } = resolveTarget(args);
-  const abort = new AbortController();
-  const onSignal = () => abort.abort();
-  process.once("SIGINT", onSignal);
   let reply;
   try {
-    reply = await loginViaDaemon({
-      paths, peerUid, peerPid, idp, signal: abort.signal,
+    reply = await loginFromCli({
+      paths, peerUid, peerPid, idp,
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: (p) => {
         process.stderr.write(`${renderReport({ sections: [{ title: "Approve sign-in", blocks: [
@@ -160,22 +167,19 @@ async function login(args: ParsedArgs): Promise<void> {
     });
   } catch (e) {
     throw asFailure(e);
-  } finally {
-    process.off("SIGINT", onSignal);
   }
   if (!reply.ok) {
     if (reply.code === "LOGIN_IN_PROGRESS") throw new CommandFailure("refused", "CONFLICT", reply.message, { native: { code: reply.code } });
-    if (reply.code === "ABANDONED") throw new CommandFailure("refused", "USAGE_INVALID", reply.message, { native: { code: reply.code } });
     throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the sign-in: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   }
-  const r: LoginResult = reply.result;
-  if (r.outcome === "cancelled") throw new CommandFailure("refused", "USAGE_INVALID", "the sign-in was cancelled on this machine; nothing was saved and nothing was revoked at the provider", { native: { code: "CANCELLED" } });
+  const r = reply.result;
   if (r.outcome === "failed") {
-    const native = { native: { code: r.reason.toUpperCase() } };
-    // Denied, expired and unreachable end before stock writes anything: refusals at the provider's
+    if (r.reason === "local-state-error") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, { native: { code: r.reason.toUpperCase() }, remedy: r.remedy });
+    const native = { native: { code: r.reason.toUpperCase().replaceAll("-", "_") } };
+    // Typed provider refusals end before stock writes anything, at the provider's
     // boundary. Any other failure can come after stock saved the session, so it claims nothing about
     // what was saved; `cotal daemon login` again replaces whatever is there.
-    if (r.reason === "unreachable") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${r.message}; no session was saved`, native);
+    if (r.reason === "unreachable" || r.reason === "authorization-refused") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${r.message}; no session was saved`, native);
     if (r.reason === "denied" || r.reason === "expired") throw new CommandFailure("refused", "PERMISSION_DENIED", `${r.message}; no session was saved`, native);
     throw new CommandFailure("failed", "OPERATION_FAILED", `${r.message}; a session may have been saved before the failure, so sign in again`, native);
   }
@@ -204,7 +208,7 @@ async function connectCheckCommand(args: ParsedArgs): Promise<void> {
   if (r.outcome === "not-user-auth" || r.outcome === "unsupported-by-space") throw new CommandFailure("refused", "UNSUPPORTED", r.message, native);
   if (r.outcome === "not-signed-in") throw new CommandFailure("refused", "AUTH_REQUIRED", r.message, native);
   if (r.outcome === "unreachable") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, native);
-  if (r.outcome === "account-mismatch") throw new CommandFailure("refused", "CONFLICT", r.message, native);
+  if (r.outcome === "account-mismatch" || r.outcome === "local-state-error") throw new CommandFailure("refused", "CONFLICT", r.message, native);
   if (r.outcome !== "ready-to-register") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, native);
   writeResult(presentation, { command: "daemon connect-check", target: { space }, result: r }, () => ({ sections: [
     { title: "Ready to register", blocks: [
@@ -234,7 +238,7 @@ async function registerCommand(args: ParsedArgs): Promise<void> {
   if (r.outcome === "not-user-auth" || r.outcome === "unsupported-by-space") throw new CommandFailure("refused", "UNSUPPORTED", r.message, native);
   if (r.outcome === "not-signed-in") throw new CommandFailure("refused", "AUTH_REQUIRED", r.message, native);
   if (r.outcome === "unreachable") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, native);
-  if (r.outcome === "account-mismatch" || r.outcome === "conflict") throw new CommandFailure("refused", "CONFLICT", r.message, native);
+  if (r.outcome === "account-mismatch" || r.outcome === "conflict" || r.outcome === "local-state-error") throw new CommandFailure("refused", "CONFLICT", r.message, native);
   // Only a refusal carrying the space's stock reason is a denial; one without is the daemon's own failure.
   if (r.outcome === "refused") throw new CommandFailure("refused", "reason" in r ? "PERMISSION_DENIED" : "DEPENDENCY_UNAVAILABLE", r.message, native);
   if (r.outcome !== "approval-required" && r.outcome !== "pending" && r.outcome !== "registered") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", r.message, native);
@@ -263,21 +267,23 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the service request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ServiceConnectionResult = reply.result;
   const native = { native: { code: (r.state === "ended" && r.reason ? r.reason : r.state).toUpperCase().replaceAll("-", "_") } };
-  const ok = r.state === "connected" || (op === "service-disconnect" && r.state === "disconnected");
+  const ok = op === "service-status" && r.manager && r.manager.state !== "stopped"
+    ? r.manager.state === "answering"
+    : r.state === "connected" || (op === "service-disconnect" && r.state === "disconnected");
   if (!ok) {
     const code = r.state === "not-requested" || r.state === "not-registered" ? "TARGET_NOT_FOUND"
       : r.state === "unsupported" ? "UNSUPPORTED"
       : r.state === "not-signed-in" ? "AUTH_REQUIRED"
       : r.state === "refused" || r.state === "ended" ? "PERMISSION_DENIED"
-      : r.state === "conflict" ? "CONFLICT"
+      : r.state === "account-mismatch" || r.state === "conflict" || r.state === "local-state-error" ? "CONFLICT"
       : r.state === "approval-pending" || r.state === "connecting" ? "LIFECYCLE_BLOCKED"
       : r.state === "disconnected" ? "TARGET_UNAVAILABLE"
       : "DEPENDENCY_UNAVAILABLE";
-    throw new CommandFailure("refused", code, r.message, native);
+    throw new CommandFailure("refused", code, `${r.message}${r.manager ? `; Manager ${r.manager.state}${r.manager.reason ? `: ${r.manager.reason}` : ""}` : ""}`, { ...native, ...(r.manager?.next ? { remedy: r.manager.next } : {}) });
   }
   writeResult(presentation, { command: `daemon ${op}`, target: { space }, result: r }, () => ({ sections: [
-    { title: r.state === "connected" ? "Connected" : "Disconnected", blocks: [
-      { kind: "fields", rows: [["Space", r.space], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : [])] },
+    { title: "Machine service and Manager", blocks: [
+      { kind: "fields", rows: [["Space", r.space], ["Machine service", r.state], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.manager ? [["Manager", r.manager.state], ["Manager instance", r.manager.instanceId ?? "none"], ...(r.manager.reason ? [["Refusal", r.manager.reason]] : []), ...(r.manager.next ? [["Next", r.manager.next]] : [])] as [string, string][] : [])] },
       { kind: "lines", lines: [{ text: r.message, tone: "hint" }] },
     ] },
   ] }));
@@ -303,7 +309,11 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
   }
   const dry = values["dry-run"] === true;
   if (!dry && values.yes !== true && !process.stdout.isTTY) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon uninstall needs --yes outside a terminal; nothing was removed");
-  const r = dry ? { ...planUninstall(paths), state: "would-remove" as const } : applyUninstall(paths);
+  if (!dry) {
+    planUninstall(paths, home);
+  }
+  const r = dry ? { ...planUninstall(paths, home), state: "would-remove" as const } : applyUninstall(paths, home);
+  if (!dry) forgetHostedManagerIntents(home ?? homeCotalDir());
   writeResult(presentation, { command: "daemon uninstall", target: { unit: r.unit }, result: r }, () => ({ sections: [
     { title: dry ? "Would remove" : "Removed", blocks: [
       { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Installed", r.installedAt]] },
@@ -317,7 +327,7 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
 /** Connect a headless machine with one command: install, sign in, register, connect. */
 async function setupCommand(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
-  const values = args.values as { space?: string; idp?: string; "client-id"?: string; wait?: string };
+  const values = args.values as { space?: string; idp?: string; "client-id"?: string; wait?: string; "no-manager"?: boolean };
   const space = values.space;
   if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon setup needs --space <s>");
   let idp: string | undefined;
@@ -328,6 +338,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
   const waitSeconds = values.wait === undefined ? 900 : Number(values.wait);
   if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > 86400) throw new CommandFailure("refused", "USAGE_INVALID", "--wait takes whole seconds from 0 to 86400");
+  if (values.wait !== undefined && values["no-manager"] !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--wait requires --no-manager; Manager setup never waits for machine approval");
   const { paths, home } = resolveTarget(args);
   const plain = presentation === "plain";
   // Progress goes to stderr so a --json caller still reads one document on stdout.
@@ -335,7 +346,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   let r;
   try {
     r = await runSetup({
-      paths, daemonHome: home, space, peerUid, peerPid, waitSeconds, report,
+      paths, daemonHome: home, space, peerUid, peerPid, waitSeconds, report, version: binVersion(), noManager: values["no-manager"] === true,
       ...(idp !== undefined ? { idp } : {}),
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: (p) => {
@@ -349,10 +360,11 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
     throw asFailure(e);
   }
   writeResult(presentation, { command: "daemon setup", target: { space }, result: r }, () => ({ sections: [
-    { title: "Connected", blocks: [
-      { kind: "fields", rows: [["Space", r.space], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.unit ? [["Unit", r.unit] as [string, string]] : [])] },
+    { title: r.manager?.state === "answering" ? "Ready to launch" : "Connected", blocks: [
+      { kind: "fields", rows: [["Space", r.space], ...(r.manager?.instanceId ? [["Manager instance", r.manager.instanceId] as [string, string]] : []), ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.unit ? [["Unit", r.unit] as [string, string]] : [])] },
       { kind: "lines", lines: [
         ...r.steps.map((s) => ({ text: `${s.step}: ${s.outcome}`, tone: "hint" as const })),
+        ...(r.manager ? [{ text: `Agents can now be launched on this computer from space ${r.space} through Manager instance ${r.manager.instanceId}.`, tone: "hint" as const }, { text: `Machine service: ${r.state}.`, tone: "hint" as const }] : []),
         { text: "The daemon runs as a user service, restarts on its own and reconnects after a restart. Read it with `cotal daemon service-status`, and close the connection with `cotal daemon service-disconnect`.", tone: "hint" as const },
       ] },
     ] },
@@ -368,8 +380,22 @@ async function serve(args: ParsedArgs): Promise<void> {
     throw asFailure(e);
   }
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
-  await new Promise<void>((resolve) => {
-    const stop = () => void running.close().then(resolve, resolve);
+  await new Promise<void>((resolve, reject) => {
+    const stopWatching = watchDaemonGeneration(binVersion(), async (version) => {
+      if (!daemonStartedByOwnedService(paths, home)) throw new Error("no verified native launch marker; automatic activation is unavailable; use the installed CLI to restart this daemon");
+      planUninstall(paths, home);
+      const seats = await running.generationSeats();
+      const occupied = seats.filter((row) => row.seats > 0);
+      if (occupied.length) throw new Error(`waiting for ${occupied.reduce((sum, row) => sum + row.seats, 0)} seat(s) on ${occupied.map((row) => row.space).join(", ")}`);
+      await running.prepareGenerationRestart();
+      // The new daemon reconciles before it launches any Manager. The old generation never
+      // mutates the shared connector store or reopens admission over a partial replacement.
+      process.stderr.write(`daemon: installed CLI ${version} validated; stopping owned children for native service restart\n`);
+      stopWatching();
+      await running.close();
+      resolve();
+    }, (line) => process.stderr.write(`${line}\n`), (version, reason) => running.generationPending(version, reason), daemonStartedByOwnedService(paths, home));
+    const stop = () => { stopWatching(); void running.close().then(resolve, reject); };
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);
   });
@@ -377,21 +403,34 @@ async function serve(args: ParsedArgs): Promise<void> {
 
 async function run(args: ParsedArgs): Promise<void> {
   const [mode, ...rest] = args.positionals;
+  const subcommand = daemonCommand.subcommands?.find((command) => command.name === mode);
+  if (subcommand) recordOperationContext({ command: `${daemonCommand.name} ${subcommand.name}` });
   if (rest.length) throw new CommandFailure("refused", "USAGE_INVALID", `cotal daemon ${mode} takes no positionals`);
+  if (subcommand) {
+    for (const name of Object.keys(args.values)) {
+      if (!subcommand.flagNames?.includes(name)) throw new CommandFailure("refused", "USAGE_INVALID", `--${name} does not belong to cotal daemon ${mode}`, { remedy: `run \`cotal help daemon ${mode}\`` });
+    }
+    const space = args.values.space;
+    if (subcommand.flagNames?.includes("space") && typeof space === "string" && space.trim()) recordOperationContext({ target: { space } });
+  }
   if (mode === "desktop") {
-    const { paths, home } = resolveTarget(args);
-    return runDesktopBridge({ paths, version: binVersion(), peerUid, peerPid, ...(home ? { daemonHome: home } : {}) });
+    return runDesktopBridge({ resolveTarget: () => target(args), version: binVersion(), peerUid, peerPid });
   }
   if (mode === "spaces") {
     const { paths } = resolveTarget(args);
     let reply;
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: args.values.refresh === true }); }
     catch (error) { throw asFailure(error); }
-    if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon could not read its spaces", { native: { code: reply.error.code } });
+    if (!reply.ok) {
+      if (reply.error.code === "DEPENDENCY_UNAVAILABLE") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", reply.error.message, { remedy: reply.error.remedy, native: { code: reply.error.code } });
+      throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon could not read its spaces", { native: { code: reply.error.code } });
+    }
     if ("event" in reply || !("kind" in reply.result) || reply.result.kind !== "spaces") throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon returned an unsupported space response");
     const result = reply.result;
     writeResult(presentationOf(args.values), { command: "daemon spaces", target: null, result,
-      ...(result.refresh === "failed" || result.refresh === "partial" || result.unreadable > 0 ? { partial: { message: "Some catalogs or registrations could not be read or applied", remedy: "inspect the recorded conflicts before retrying the refresh" } } : {}),
+      ...(result.refresh === "not-signed-in"
+        ? { failure: new CommandFailure("refused", "AUTH_REQUIRED", "No provider is signed in; no catalog refresh was attempted", { remedy: "run `cotal daemon login --idp <url>` before refreshing catalogs" }) }
+        : result.refresh === "failed" || result.refresh === "partial" || result.unreadable > 0 ? { partial: { message: "Some catalogs or registrations could not be read or applied", remedy: "inspect the recorded conflicts before retrying the refresh" } } : {}),
     }, () => ({ sections: [{ title: "Spaces", blocks: [
       { kind: "fields", rows: result.spaces.map((space): [string, string] => [space.space, `${space.label} (${space.mode})`]) },
       { kind: "fields", rows: [["Catalog refresh", result.refresh], ["Unreadable", String(result.unreadable)], ["Name conflicts", String(result.collisions)]] },
@@ -399,8 +438,8 @@ async function run(args: ParsedArgs): Promise<void> {
     return;
   }
   if (mode === "start") {
-    const { paths } = resolveTarget(args);
-    const result = startInstalled(paths);
+    const { paths, home } = resolveTarget(args);
+    const result = startInstalled(paths, home);
     writeResult(presentationOf(args.values), { command: "daemon start", target: { unit: result.unit }, result }, () => ({ sections: [
       { title: "Start requested", blocks: [{ kind: "lines", lines: [{ text: "The owned service received the start request. Check `cotal daemon status` for readiness; no connection is assumed.", tone: "hint" }] }] },
     ] }));
@@ -414,7 +453,7 @@ async function run(args: ParsedArgs): Promise<void> {
   if (mode === "service-connect" || mode === "service-disconnect" || mode === "service-status") return serviceCommand(args, mode);
   if (mode === "install" || mode === "uninstall") return unitCommand(args, mode);
   if (mode === "setup") return setupCommand(args);
-  throw new CommandFailure("refused", "USAGE_INVALID", mode === undefined ? "cotal daemon needs a mode: setup, start, status, serve, install, uninstall, login, spaces, connect-check, register, service-connect, service-disconnect or service-status" : `unknown daemon mode ${JSON.stringify(mode)}`, { remedy: "cotal daemon status" });
+  throw new CommandFailure("refused", "USAGE_INVALID", mode === undefined ? `cotal daemon needs a mode: ${daemonCommand.subcommands!.map((command) => command.name).join(", ")}` : `unknown daemon mode ${JSON.stringify(mode)}`, { remedy: "run `cotal help daemon`" });
 }
 
 const daemonCommand: Command = {
@@ -428,8 +467,8 @@ const daemonCommand: Command = {
     { name: "spaces", summary: "list registered spaces; optionally refresh catalogs using the daemon-held sign-in", flagNames: ["refresh", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "start", summary: "start the unchanged, recorded daemon service without restarting a running instance", flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "desktop", summary: "serve one bounded JSON request from the desktop app on stdin; credentials remain in the daemon", flagNames: ["daemon-home"], prepareMeshTarget: false },
-    { name: "setup", summary: "connect this machine to a space with one command: install the user service, sign in by device code without a local browser, register, and connect once the space owner approves", examples: [{ command: "cotal daemon setup --space <space> --idp <url>", note: "connect a headless machine" }, { command: "cotal daemon setup --space <space> --wait 0", note: "report what it reached without waiting for approval" }], flagNames: ["space", "idp", "client-id", "wait", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
-    { name: "status", summary: "ask the running daemon for its status over the local endpoint", examples: [{ command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon status --json", note: "the same as one JSON document" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
+    { name: "setup", summary: "make this computer launch-ready for a space: install, sign in, discover and host its Manager; machine-service approval is separate", examples: [{ command: "cotal daemon setup --space <space> --idp <url>", note: "connect a headless machine" }, { command: "cotal daemon setup --space <space> --no-manager --wait 0", note: "report machine-service approval without hosting a Manager" }], flagNames: ["space", "idp", "client-id", "wait", "no-manager", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "status", summary: "ask the running daemon for its status and hosted Managers over the local endpoint", examples: [{ command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon status --json", note: "the same as one JSON document" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "serve", summary: "run the daemon in the foreground and serve its local endpoint (refusals honor --json)", examples: [{ command: "cotal daemon serve", note: "run the machine daemon in this terminal" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "install", summary: "install the daemon as this platform's user service; Linux also enables linger", examples: [{ command: "cotal daemon install", note: "run it as a persistent user service" }, { command: "cotal daemon install --dry-run", note: "show the unit it would write" }], flagNames: ["daemon-home", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "uninstall", summary: "stop the daemon's user service, disable autostart and remove its unit", examples: [{ command: "cotal daemon uninstall", note: "remove its login unit" }], flagNames: ["daemon-home", "yes", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },

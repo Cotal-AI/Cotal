@@ -2,6 +2,8 @@ import type { ExactDrainResult, InboxItem, InboxScope } from "./inbox-types.js";
 
 export interface InboxSource {
   peekInbox(scope?: InboxScope): InboxItem[];
+  inboxPreview(scope?: InboxScope): InboxItem[];
+  takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]>;
   drainInbox(limit?: number): InboxItem[];
   drainInboxDeliveries(keys: readonly string[]): ExactDrainResult;
 }
@@ -28,6 +30,12 @@ export class InboxTurn {
     return this.source.peekInbox(scope);
   }
 
+  /** Pending automatic traffic as it reads once the held role requests in it are taken: for deciding
+   *  whether to pump, never for showing. */
+  preview(): InboxItem[] {
+    return this.source.inboxPreview("automatic");
+  }
+
   /** Remove already-confirmed late duplicates by exact receive key, even behind pull-only traffic.
    *  #624: tombstones and selection address the DELIVERY (InboxItem.recvKey). An empty wire id is
    *  never a key, so two distinct id-less deliveries never cross-reserve or cross-tombstone each
@@ -45,15 +53,35 @@ export class InboxTurn {
     return ids.length;
   }
 
-  /** Select the next automatic FIFO batch after already-reserved receive keys. */
+  /** Select the next automatic batch after already-reserved receive keys, in arrival order. When more
+   *  waits than fits, a channel post takes a seat only while the role requests after it, and the DMs
+   *  before the last of them, still fit, so a request never waits behind chatter for a later turn. A
+   *  role request in the batch that is still held for its take is shown only through {@link take}
+   *  (SPEC §8.1). */
   select(reserved: ReadonlySet<string>, limit: number): InboxItem[] {
+    const open = this.source.inboxPreview("automatic").filter((item) => !reserved.has(item.recvKey));
+    // What a channel post gives way to: every entry up to the last role request that is not a post.
+    const last = open.findLastIndex((item) => item.kind === "anycast");
+    let ahead = open.filter((item, i) => i <= last && item.kind !== "channel").length;
     const selected: InboxItem[] = [];
-    for (const item of this.source.peekInbox("automatic")) {
-      if (reserved.has(item.recvKey)) continue;
-      selected.push(item);
+    for (const [i, item] of open.entries()) {
       if (selected.length >= limit) break;
+      if (item.kind !== "channel" && i <= last) ahead--;
+      if (item.kind === "channel" && limit - selected.length <= ahead) continue;
+      selected.push(item);
     }
     return selected;
+  }
+
+  /** Whether a batch holds a role request still waiting for its take. */
+  holdsUntaken(batch: readonly InboxItem[]): boolean {
+    const showable = new Set(this.source.peekInbox("automatic").map((item) => item.recvKey));
+    return batch.some((item) => !showable.has(item.recvKey));
+  }
+
+  /** Take the held role requests in a batch, and return what of it may be shown now. */
+  take(batch: readonly InboxItem[]): Promise<InboxItem[]> {
+    return this.source.takeChosen("automatic", () => batch);
   }
 
   /** Commit provider-confirmed ids exactly; tombstone any already absent after overflow. */

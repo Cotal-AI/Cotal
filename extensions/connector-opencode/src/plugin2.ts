@@ -237,7 +237,14 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     } else if (override !== undefined) {
       parts.push(override);
     } else {
-      const items = agent.peekInbox("automatic");
+      // A role request is shown only once its take is recorded (SPEC §8.1), so only a turn that
+      // carries the inbox takes one. The recheck covers this await, during which a native prompt may
+      // have taken the same requests and carried them: a batch it opened meanwhile goes out alone. A
+      // batch already open before the take is replaced, since a native prompt the host refuses after
+      // its hook (an unreadable attachment, an unknown skill) never runs and nothing else closes it.
+      const openBefore = batch.open;
+      const items = await agent.takeChosen("automatic", (preview) => preview);
+      if (execution || submitting || (!openBefore && batch.open) || controller.signal.aborted) return;
       if (items.length === 0 && !turnPeek) return;
       if (items.length > 0) {
         ids = items.map((i) => i.recvKey);
@@ -363,9 +370,12 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   });
 
   // `e.prompt` is `DeepMutable` (measured) — mutate the text part directly, as 1.x's
-  // `injectIntoPrompt` does, through the shared batch so the two callers can't drift.
-  await ctx.session.hook("prompt", (e) => {
+  // `injectIntoPrompt` does, through the shared batch so the two callers can't drift. A role request
+  // held for its take rides the prompt only once its take is recorded, so the prompt takes the held
+  // requests it will carry first; OpenCode 2.x awaits this hook before it stores the prompt (measured).
+  await ctx.session.hook("prompt", async (e) => {
     if (sessionID && e.sessionID !== sessionID) return;
+    if (!batch.open) await agent.takeChosen("automatic", (preview) => preview);
     const prefix = batch.inject();
     if (prefix !== undefined) e.prompt.text = `${prefix}\n\n${e.prompt.text}`;
   });

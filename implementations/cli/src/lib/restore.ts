@@ -16,6 +16,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
+  anycastStoreDefinition,
   canonicalBackupStreamConfig,
   historyLimitOf,
   historyLimitRestoreStaging,
@@ -680,6 +681,8 @@ async function createOmittedInfrastructure(
     await kvm.create(presenceBucket(space), { ttl: 6_000, storage: PRESENCE_STORAGE });
     const membership = membershipStoreDefinition(space);
     await kvm.create(membership.bucket, membership.createOptions);
+    const anycast = anycastStoreDefinition(space);
+    await kvm.create(anycast.bucket, anycast.createOptions);
     await kvm.create(deliveryBucket(space), { ttl: LEASE_TTL_MS });
     await kvm.create(managerBucket(space), { ttl: MANAGER_LEASE_TTL_MS });
     // The other endpoint stores are nonportable control state. Recreate them empty, with any workflow

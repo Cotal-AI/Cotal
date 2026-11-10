@@ -7,6 +7,38 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Personas read `endpoints` after 0.153.1
+
+A persona file's `endpoints` key used to be an unmodeled list that loading ignored. It now names the
+endpoint commands the persona hands its agent, as a closed list of `{ endpoint, commands }` entries
+that may add `instanceId` to pin one instance, and a file whose `endpoints` is not that list fails to
+load and names the problem.
+
+On a static mesh the spawn bound from 0.140.8 also measures each listed command against the
+spawner's issued evidence, and refuses one it does not cover as `endpoints <endpoint> <command>`. A
+per-user auth mesh and a manifest launch refuse a persona that names the field, an empty list
+included.
+
+### What changes for you
+
+- A persona file that used an `endpoints` key for something else now refuses to load, or hands on
+  endpoint access. Rename the key.
+- A manifest whose persona lists `endpoints` is refused. Start that agent with
+  `cotal spawn --detach` instead.
+
+## Retained pending JSON uses the common receipt
+
+`cotal deliver pending <name> --json` now uses the `cotal pending` reader. It writes one
+versioned JSON receipt, including a `TARGET_NOT_FOUND` refusal (exit 2) when the name or exact
+lifecycle durable is absent. The deprecation warning still goes to stderr.
+Its `command` field is `deliver` on every outcome. Inspection does not seed or repair connectors.
+
+Scripts that read the old first-line facts object or trailing candidate lines must read
+`result` and `result.candidates` instead. Retention fields are `maxAge` and `maxMsgsPerSubject`.
+The structured reader accepts `--limit` from 1 to 100 and requires a complete lifecycle-keyed
+`--durable`. An incomplete candidate read or unconfirmed reader cleanup returns partial (exit 4).
+Plain output is unchanged. A running mesh needs no migration or restart.
+
 ## Migration commits need pause cleanup custody
 
 Library callers of `commitMigration` that supply journal entries and a handler must provide the
@@ -216,6 +248,46 @@ This page does not promise a rolling upgrade. Nothing in the current release lin
 authority versions at once. Where the broker and the manager run separately, the mesh is down for a
 window during the upgrade. The sections below describe that window so you can schedule it.
 
+## Anycast takes after 0.154.0
+
+On an authenticated mesh a role holder now shows a role request only after the delivery daemon
+records its take ([SPEC §8.1](../SPEC.md#81-anycast-request-status)). The sender gets a notice
+naming the holder and can read or cancel the request by seq. Two credential shapes change for it:
+an agent credential gains a take subject for its role and for each `role:<r>` token, and the
+delivery credential gains reads of the task stream, the `cotal_anycast_<space>` bucket and the
+notice publish.
+
+### What changes for you
+
+- Restart the delivery daemon at this version, on a credential minted at this version. `cotal up`
+  mints one when it starts the daemon, and the daemon creates the records bucket when it starts, so
+  an existing space needs no setup step. Until then, holders on the new connector keep role requests
+  unshown and report that the daemon predates anycast takes.
+- A daemon at this version on an older delivery credential still serves durable delivery, but it
+  records no takes. It logs, and every take, status and cancel answers,
+  `this delivery daemon's credential was minted before anycast request records existed`. This
+  matters for a `deliver --spaces` host, which reads each space's credential from the root.
+- Respawn every seat that holds a role. A role credential minted before this version has no take
+  subject, so the new connector on it holds role requests and reports
+  `this seat's credential was minted before anycast takes existed`. Seats without a role are
+  unaffected.
+- A seat still on an older connector shows role requests without a take, as before. Its requests
+  read `waiting` until it acks them, and a cancel can find one already gone, so upgrade every role
+  holder before you rely on status or cancel.
+- An open mesh is unchanged. It runs no delivery daemon, so it has no notices, status or cancel.
+- Before you delete or recreate a space's task stream, stop every delivery daemon that serves the
+  space and wait until each has exited and its broker connection has closed. A cancel's delete names
+  only the stream and the seq, so one still in flight when the stream is recreated removes the
+  request the new stream stores at that seq, and the cancel reads `deleted`.
+- An SDK embedder that implements pi's `InboxSource` itself adds `inboxPreview` and `takeChosen`.
+  A `MeshAgent` has both. A host built on `MeshAgent` shows a role request only from what
+  `takeChosen` returns, because `peekInbox` never returns one still held for its take.
+  `incoming` fires once when a held request arrives, and again only if its take lands after
+  `takeChosen` stopped waiting, or if a link drop ended its take, once the link is back up. A
+  notice that counts waiting messages without showing them reads `inboxPending`, which includes
+  held requests. `inboxWake` and `pendingWake` leave held requests out while a take the daemon
+  could not decide is waited out, and `incoming` announces them again when that wait ends.
+
 ## Static spawns are bounded by the spawner's evidence after 0.140.8
 
 On a static mesh, an agent that could spawn could hand its helper any channel or capability, because
@@ -230,7 +302,8 @@ spawn: this spawn hands its helper more than the spawner holds: <parts>. A spawn
 The persona file, the channel overrides on the spawn request, and the default a channel-less persona
 takes from its spawner are all measured. The operator's own commands, such as `cotal spawn
 --detach`, call the manager with a one-shot instrument and are exempt. So are agents holding
-`capabilities: [admin]`, and anything the manager starts on its own behalf.
+`capabilities: [admin]`, and anything the manager starts on its own behalf. After 0.153.1 the same
+refusal also covers a persona's endpoint commands ([above](#personas-read-endpoints-after-01531)).
 
 ### What changes for you
 
@@ -1394,7 +1467,8 @@ user-auth or open target gets no static-signing fallback.
 
 Use `cotal pending <agent>` to read native DM durable counts and bounded candidate IDs as one JSON
 or plain document. `--durable <exact-dm-durable>` targets an older lifecycle directly. The retained
-`deliver pending` spelling still uses its earlier output shape. Scripts must move to the `result`
+`deliver pending` spelling kept its earlier output shape at that release. Its `--json` now uses
+the common receipt described above. Scripts must move to the `result`
 fields instead of assuming the old per-line format. Candidate IDs do not prove that the recipient
 received a message or that the message history is complete. This route works only with the
 static-auth or open admin read authority. User-auth has no matching view yet.

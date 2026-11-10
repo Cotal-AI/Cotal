@@ -87,6 +87,10 @@ export class PiDriver {
   private continuationTimer?: ReturnType<typeof setTimeout>;
   private _state: DriverState = "idle";
   private heldReason?: string;
+  /** A batch's role requests are being taken; the take's own pump dispatches it. */
+  private taking = false;
+  /** A pump forced while a batch was being taken, so the take's own pump is forced too. */
+  private forcedDuringTake = false;
 
   constructor(
     private readonly mesh: MeshAgent,
@@ -304,14 +308,20 @@ export class PiDriver {
     await this.presence.catch(() => {});
   }
 
-  private pump(force = false): void {
+  /** Dispatch the next batch. `taken` is a batch whose role requests were just taken for it, which
+   *  goes out ahead of anything else so nothing taken waits behind a later choice. */
+  private pump(force = false, taken?: InboxItem[]): void {
     if (!this.host || !this.context || this._state === "held" || this._state === "shuttingDown") return;
     if (this.batches.some((batch) => !batch.confirmed)) return;
+    if (this.taking && !taken) {
+      if (force) this.forcedDuringTake = true;
+      return;
+    }
 
     this.inbox.discardTombstoned();
     this.inbox.discardMatching((item) => ownChannelEcho(this.mesh, item));
     const reserved = new Set(this.batches.flatMap((batch) => batch.ids));
-    const available = this.inbox.peek("automatic").filter((item) => !reserved.has(item.recvKey));
+    const available = this.inbox.preview().filter((item) => !reserved.has(item.recvKey));
     // A pending run turn is directed-strength: it justifies a pump on its own, like a wakeable item.
     const turnPeek = this.mesh.peekPendingTurns();
     if (!force && this.nudges.length === 0 && !turnPeek && !available.some((item) => wakeable(this.mesh, item))) {
@@ -321,10 +331,32 @@ export class PiDriver {
 
     let ids: string[] = [];
     let content: string | undefined;
-    if (this.nudges.length > 0) {
+    // A taken batch whose takes left nothing that wakes goes out only when forced or with a run turn.
+    // Otherwise the next batch is chosen again.
+    if (taken?.length && (force || turnPeek || taken.some((item) => wakeable(this.mesh, item)))) {
+      // Only what may be shown now: a request a redelivery sent back to wait for its take is not.
+      const live = new Set(this.inbox.peek("automatic").filter((item) => !reserved.has(item.recvKey)).map((item) => item.recvKey));
+      const items = taken.filter((item) => live.has(item.recvKey));
+      ids = items.map((item) => item.recvKey);
+      // Held for its turn like any other batch, or its ack wait runs out mid-turn (#5637).
+      if (ids.length > 0 && !this.mesh.holdInFlight(ids)) return;
+      content = items.length > 0 ? formatInjection(items) : undefined;
+    } else if (this.nudges.length > 0) {
       content = this.nudges.splice(0).join("\n");
     } else {
       const items = this.inbox.select(reserved, BATCH_LIMIT);
+      // A role request is shown only once its take is recorded (SPEC §8.1), and only the batch
+      // carrying it takes it. The take answers asynchronously, so its own pump dispatches the batch.
+      if (this.inbox.holdsUntaken(items)) {
+        this.taking = true;
+        void this.inbox.take(items).then((shown) => {
+          const forced = force || this.forcedDuringTake;
+          this.taking = false;
+          this.forcedDuringTake = false;
+          this.pump(forced, shown);
+        });
+        return;
+      }
       if (items.length === 0 && !turnPeek) return;
       ids = items.map((item) => item.recvKey);
       // The batch stays this seat's until its turn commits it: unheld, a role request's ack wait runs

@@ -96,6 +96,9 @@ function wireItem(agent: MeshAgent, i: InboxItem): Record<string, unknown> {
     text: i.text,
     replyTo: i.replyTo,
     contextId: i.contextId,
+    // The delivery daemon's notice about a role request this seat sent: the sidecar labels it as the
+    // mesh's own word and gives it no chat to answer in.
+    notice: i.notice,
     // The DM answers a question this seat asked, from the peer it asked: only then may the adapter
     // route it by its contextId (see MeshAgent.answersQuestion).
     answersQuestion: agent.answersQuestion(i),
@@ -126,6 +129,8 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
   /** The single subscribed adapter connection, and the id we're currently awaiting an ack for. */
   let adapter: Socket | undefined;
   let awaitingId: string | undefined;
+  /** Counts pushes, so a take that answers after a fresh `subscribe` sends nothing. */
+  let pushes = 0;
   /** Receive keys of deliveries the host would not take, each held back until its timer frees it. */
   const deferred = new Set<string>();
 
@@ -139,13 +144,25 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
 
   /** Push the oldest buffered message to the adapter, one at a time. Acks happen only on the
    *  adapter's `delivered` (see below), so a turn that never surfaces a message redelivers it. A
-   *  deferred one waits out its delay while the messages behind it go first. */
+   *  deferred one waits out its delay while the messages behind it go first. A role request is
+   *  pushed only once its take is recorded (SPEC §8.1); one whose take is refused gives way to the
+   *  next. */
   const pump = (): void => {
     if (!adapter || awaitingId) return;
-    const next = agent.peekInbox("automatic").find((i) => !deferred.has(i.recvKey));
+    const next = agent.inboxPreview("automatic").find((i) => !deferred.has(i.recvKey));
     if (!next) return;
+    const to = adapter;
+    const push = ++pushes;
     awaitingId = next.recvKey;
-    sendFrame(adapter, { t: "incoming", msg: wireItem(agent, next) });
+    void agent.takeChosen("automatic", () => [next]).then(([shown]) => {
+      if (push !== pushes || adapter !== to) return;
+      if (!shown) {
+        awaitingId = undefined;
+        pump();
+        return;
+      }
+      sendFrame(to, { t: "incoming", msg: wireItem(agent, shown) });
+    });
   };
 
   agent.on("incoming", () => pump());
@@ -194,6 +211,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
       case "subscribe":
         adapter = sock;
         awaitingId = undefined;
+        pushes++;
         log("adapter subscribed");
         pump();
         return;

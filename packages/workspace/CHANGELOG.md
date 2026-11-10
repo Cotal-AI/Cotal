@@ -1,5 +1,109 @@
 # @cotal-ai/workspace
 
+## 0.155.0
+
+### Patch Changes
+
+- b0bfafa: Stop a local stack safely after its Cotal home records are lost.
+  The project journal retains launch-time host and process creation pins for a guarded Linux recovery stop, and missing-record diagnostics no longer assume another home holds the records. Keep those pins aligned with instance retirement and replacement, preserve skipped members across startup, and leave a completed stop unchanged when its pinned members are gone.
+- 43cbaa0: Stop assuming the default space after a project forgets its space or when its control directory is empty. Persona, team, identity and spawn previews now report that no space is selected. Explicit startup can still initialize an empty project.
+  
+  Name a nearby Mesh team file and its declared space in the available next steps. Entry help also finds the project-root file from a subdirectory, and unrelated prepared-space inventory no longer hides its actions. Discovery skips non-regular and oversized files and does not launch the team.
+- Updated dependencies [fb752e3]
+  - @cotal-ai/core@0.155.0
+
+## 0.154.0
+
+### Patch Changes
+
+- ed8962e: Hosted Managers refuse new launches when first-party connector generations differ from their running generation.
+  
+  The daemon checks for a replaced installation before trusting the seed stamp. Refusals name the cause and the restart step for the recorded service or foreground daemon. Existing seats and stock Manager connector loading remain unchanged.
+- f579412: Explain when a local space identity reset invalidates exported credentials.
+  
+  Rejected credentials now name the local identity mismatch and a new mint with the original grants or profile. Reset previews and receipts warn that exported files need replacement after the next startup and remain on disk.
+  
+  Agent replacement commands include `--no-persona` so a preserved persona cannot add read channels or a task role to a replacement. The flag ignores persona defaults while preserving explicit grants and grants carried through `--identity`.
+- 05bb3d3: Status checks a silent broker once and reports it as not answering across space commands.
+  The selected space's connection check is shared by its status rows and delivery probe.
+  Space listings preserve the slow-link diagnosis instead of reporting it as unreachable.
+- f45357d: Show invisible characters in CLI refusals as Unicode escapes so refused names cannot look like a different name.
+  The shared operator renderer now covers format and default-ignorable characters, including astral characters, in both quoted errors and report fields.
+- Updated dependencies [71dbfad]
+- Updated dependencies [27c1356]
+- Updated dependencies [f45357d]
+  - @cotal-ai/core@0.154.0
+
+## 0.153.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.153.1
+
+## 0.153.0
+
+### Patch Changes
+
+- b4eba66: Offline registered spaces now name `cotal space forget` as the command to unregister them.
+  The connection refusal and delivery daemon no longer suggest the hidden legacy `cotal meshes rm` command.
+  Discovered spaces instead name removal from the provider's catalog followed by `cotal sync`, since their registrations cannot be forgotten locally.
+- 8d15e70: Offline direct-message receipts no longer promise delivery to a session that has ended.
+  The shared send and chat notice explains that delivery requires the same lifecycle and a surviving inbox. A new session under the same name does not inherit the message.
+- 7aaa5bf: Show the default persona's pinned harness in status so it matches a bare spawn.
+  If the selected persona cannot be read or validated, report an unresolved application rather than the saved harness preference.
+  Reject non-regular persona files without blocking status or launch previews on a named pipe.
+- 9bdc7f4: Failed preference and prepared-space writes now clean up their temporary files.
+  Exclusive private-record writes also remove a newly created partial file on failure without
+  removing a file that already belonged to another writer.
+- Updated dependencies [9bdc7f4]
+  - @cotal-ai/core@0.153.0
+
+## 0.152.0
+
+### Patch Changes
+
+- 1fec76f: Commands now reject invalid broker URLs and honor TLS schemes in `--server`.
+  Per-command connections share registration's URL validation, preserve WebSocket routes,
+  and require TLS for secure schemes on registered and raw connections.
+- Updated dependencies [4bd669c]
+- Updated dependencies [1f4700a]
+  - @cotal-ai/core@0.152.0
+
+## 0.151.3
+
+### Patch Changes
+
+- 6b64880: Refuse chat sends before publishing when a space's chat stream is absent, and report that absence in the connection state. Preserve unknown outcomes for lost publish acknowledgements and unconfirmed session retirement.
+- 35ddf95: A connected chat session ends and says its inbox is gone when a manager restart removes that inbox.
+  
+  The endpoint warns as soon as the broker reports that DM consumer deleted, and the session closes with that reason instead of staying connected with no record. The process exits 5 when the connection close is confirmed, including when the old manager does not answer the retirement. A later send to the old name is refused rather than stored (#6017).
+- 15b04d7: `cotal completion` accepts a shell startup file that your own user private group can write. Atomic replacements preserve its group and mode, and validate the temporary file before writing shell content.
+  
+  On a host whose default umask is 002, a `~/.bashrc` or `~/.zshrc` you own is left group-writable. Completion treated every group-writable file as unsafe, so `cotal completion` exited 4 and `cotal completion install` refused it while still telling you to run the install. A group-writable file or folder you own is now accepted when its group is your proven user private group and it has no extended ACL, the same rule as every other protected path. A file another account could write, a symlink, and a file you do not own are still refused. When a `chmod` fixes the file, `cotal completion` offers that `chmod` before `install`. A path that contains the words of the following sentence stays whole in that command.
+- 97e0466: Keep the daemon mode and accepted target in JSON failure reports. The shared operation scope carries this context to the existing error renderer without changing outcomes, exit codes or credential handling.
+- Updated dependencies [35ddf95]
+  - @cotal-ai/core@0.151.3
+
+## 0.151.2
+
+### Patch Changes
+
+- 0adb23c: A refused slash command in chat clears the input line.
+  
+  The refusal stays in the transcript, and the next command is typed on an empty line. A line kept because the session is not connected, a send is in flight, or no recipient is chosen stays. `/reply` with text says that it only chooses the recipient and that the message is typed after it.
+- @cotal-ai/core@0.151.2
+
+## 0.151.1
+
+### Patch Changes
+
+- dd3d984: Hosted workflow answers from the same OS login and host on a static-auth mesh now record one operator.
+  
+  The run command's control instrument keeps that actor across commands. Each command still mints a fresh credential and lifecycle. The OS login is read only after a static-auth instrument mint is selected. Signed-in users, managed seats, explicit credentials, and open meshes do not use it.
+- f84069e: The docs site now has a TypeScript reference for every published package, generated from source. Each of these packages' entry files gains a `@module index` comment so the reference names the main import path `index` instead of leaving it blank. The published code is otherwise unchanged.
+- Updated dependencies [f84069e]
+  - @cotal-ai/core@0.151.1
+
 ## 0.151.0
 
 ### Minor Changes

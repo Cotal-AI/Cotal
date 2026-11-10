@@ -1009,7 +1009,8 @@ export async function runJcodeHost(): Promise<void> {
   const sessionBusy = (): boolean => driving || turnActive;
 
   const publishInboundHealth = (): void => {
-    const pending = agent.peekInbox("automatic");
+    // Keys only: a health line shows no body, so it must not ask for a role request's take.
+    const pending = agent.inboxKeys("automatic").map((recvKey) => ({ recvKey }));
     const live = new Set(pending.map((item) => item.recvKey));
     for (const key of receivedAt.keys()) if (!live.has(key)) receivedAt.delete(key);
     const queued = pending.length;
@@ -1059,6 +1060,11 @@ export async function runJcodeHost(): Promise<void> {
     if (pendingKickoff !== undefined && steering)
       writeJcodeDiagnostic("[cotal-jcode] startup kickoff waiting for in-flight steering\n");
     await steerSettled;
+    // A role request is shown only once its take is recorded (SPEC §8.1). This turn carries every
+    // unreserved automatic message, so it takes every held one here, before the session checks
+    // below, which then cover this await too.
+    if (pendingKickoff === undefined)
+      await agent.takeChosen("automatic", (preview) => preview.filter((item) => !reservedIds.has(item.recvKey)));
     if (stopping || reconnecting || turnActive || !client || !sessionId) {
       driving = false;
       writeJcodeDiagnostic("[cotal-jcode] deferred turn after steering: native session unavailable\n");
@@ -1279,6 +1285,14 @@ export async function runJcodeHost(): Promise<void> {
     }
   };
 
+  /** The automatic deliveries among `items` the live session has not accepted yet. `surfacedIds` is
+   *  the accepted ledger, so subtracting it is what makes "unserved" mean unserved rather than
+   *  merely queued. */
+  const unserved = (items: readonly InboxItem[]): InboxItem[] => {
+    const surfaced = new Set(surfacedIds);
+    return items.filter((item) => !surfaced.has(item.recvKey) && !reservedIds.has(item.recvKey));
+  };
+
   /** Queue directed automatic traffic in Jcode's live session while a turn owns the provider. Jcode
    *  incorporates soft interrupts at its documented safe points (after provider streaming / tools),
    *  including a persisted fallback across a private bridge replacement. Ambient channel chatter
@@ -1289,11 +1303,8 @@ export async function runJcodeHost(): Promise<void> {
     steering = true;
     try {
       for (;;) {
-        const surfaced = new Set(surfacedIds);
-        const items = agent
-          .peekInbox("automatic")
-          .filter((item) => !surfaced.has(item.recvKey) && !reservedIds.has(item.recvKey)
-            && (item.kind !== "channel" || item.mentionsMe));
+        const items = await agent.takeChosen("automatic", (preview) =>
+          unserved(preview).filter((item) => item.kind !== "channel" || item.mentionsMe));
         if (!items.length || !sessionBusy()) return;
         const injection = formatInjection(items);
         if (!injection) return;
@@ -1371,13 +1382,8 @@ export async function runJcodeHost(): Promise<void> {
     }
   };
 
-  /** Automatic deliveries the live session has not accepted yet. `surfacedIds` is the accepted
-   *  ledger, so subtracting it is what makes "unserved" mean unserved rather than merely queued. */
-  const unservedAutomatic = (): InboxItem[] => {
-    const surfaced = new Set(surfacedIds);
-    return agent.peekInbox("automatic")
-      .filter((item) => !surfaced.has(item.recvKey) && !reservedIds.has(item.recvKey));
-  };
+  /** What is still owed, counting the held role requests that may be taken now. */
+  const unservedAutomatic = (): InboxItem[] => unserved(agent.inboxPreview("automatic"));
 
   const fallbackState = (): FallbackState => ({
     stopping,
@@ -1408,8 +1414,8 @@ export async function runJcodeHost(): Promise<void> {
    * and the delivery is attempted again.
    */
   const queueTurnFallback = async (): Promise<void> => {
-    const items = unservedAutomatic();
-    if (!items.length) return;
+    const owed = unservedAutomatic();
+    if (!owed.length) return;
     // A LAPSED SEND HAS POISONED ACCEPTANCE ON THIS CONNECTION, and the two obvious responses are
     // both unsafe.
     //
@@ -1443,7 +1449,7 @@ export async function runJcodeHost(): Promise<void> {
       writeJcodeDiagnostic(
         `[cotal-jcode] a queued turn lapsed with no acknowledgement, so acceptance on this ` +
           `connection can no longer be attributed; replacing the Harness connection before ` +
-          `re-delivering ${items.length} queued automatic message(s)\n`,
+          `re-delivering ${owed.length} queued automatic message(s)\n`,
       );
       if (suspect) void recoverBridge(suspect);
     }
@@ -1478,7 +1484,7 @@ export async function runJcodeHost(): Promise<void> {
         if (!deferralAnnounced) {
           deferralAnnounced = true;
           writeJcodeDiagnostic(
-            `[cotal-jcode] a run has not acknowledged within its window; deferring ${items.length} ` +
+            `[cotal-jcode] a run has not acknowledged within its window; deferring ${owed.length} ` +
               `queued automatic message(s) until it settles, so delivery cannot be misattributed\n`,
           );
         }
@@ -1495,7 +1501,7 @@ export async function runJcodeHost(): Promise<void> {
           writeJcodeDiagnostic(
             `[cotal-jcode] a run held acceptance unattributable for ${Math.round(blockedForMs / 1000)}s ` +
               `without settling, so it is treated as unsettleable; replacing the Harness connection ` +
-              `before re-delivering ${items.length} queued automatic message(s)\n`,
+              `before re-delivering ${owed.length} queued automatic message(s)\n`,
           );
           return;
         }
@@ -1523,7 +1529,7 @@ export async function runJcodeHost(): Promise<void> {
           writeJcodeDiagnostic(
             `[cotal-jcode] a run held acceptance unattributable for ${Math.round(blockedForMs / 1000)}s ` +
               `and the one bridge recovery is already spent, so the queued-turn tier stops attempting; ` +
-              `${items.length} automatic message(s) stay queued and UN-ACKED for redelivery\n`,
+              `${owed.length} automatic message(s) stay queued and UN-ACKED for redelivery\n`,
           );
           // AND SAY SO WHERE AN OPERATOR LOOKS, not only in a log nobody tails. A reviewer accepted
           // that terminalization is not itself a `stalled` state (that verdict belongs to the queue's
@@ -1536,6 +1542,9 @@ export async function runJcodeHost(): Promise<void> {
         return;
       }
     } else { deferralStartedAt = undefined; deferralAnnounced = false; }
+    // A role request is shown only once its take is recorded (SPEC §8.1), so the batch is taken here,
+    // past every reason above to send nothing.
+    const items = await agent.takeChosen("automatic", unserved);
     const injection = formatInjection(items);
     if (!injection) return;
     const current = client;

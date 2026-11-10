@@ -191,13 +191,15 @@ The file is private to its owner and versioned:
 ```
 
 `revision` counts writes that change a value. A write holds a lock and replaces the file atomically.
+If writing the lock or replacement fails, Cotal attempts to remove its temporary file and reports
+the original error. It does not sweep other writers' temporary files.
 If the revision changed after the command read it, the write refuses with `CONFLICT`.
 
 Each write makes the replacement file private with mode `0600`, regardless of its prior mode.
 A changed mode produces `PREFERENCES_MODE_CHANGED`; a read-only file does not prevent `config set` or `unset`.
 
 Invalid JSON, an unsupported schema version, an unknown key, or an invalid value stops commands that use defaults.
-Help, completion, `version`, and `docs` remain available. `status` reports the unreadable part and exits 4.
+Help, completion, `version`, `docs`, and `daemon` remain available. Machine-daemon operations do not use preference defaults. `status` reports the unreadable part and exits 4.
 The error names the file and fix. Cotal never resets it automatically.
 An initial UTF-8 byte order mark is accepted and omitted on the next write. UTF-16 is refused with the instruction to save as UTF-8.
 Symlinks, FIFOs, devices, and folders at `preferences.json` are refused with `PERMISSION_DENIED` before opening them.
@@ -236,6 +238,7 @@ other non-empty value when it starts, naming the variable. A blank value uses th
 | `COTAL_TLS` | connector session | Connect over TLS (`1`); off keeps the join link's choice | off (or the link's) |
 | `COTAL_TOKEN` | connector session | Auth token (token / open modes) | none |
 | `COTAL_CAPABILITIES` | connector session | Control-plane capabilities (e.g. `spawn`) that gate manager tools | agent file's `capabilities:` |
+| `COTAL_ENDPOINTS` | connector session | Endpoint commands the seat was handed at launch, as the JSON list of `{ endpoint, commands, instanceId? }` entries the launcher writes, `[]` when the launch names none; the orientation card lists them. A value that is not a list, empty or `null` included, is refused when the session starts | for a session started with no such variable, the agent file's `endpoints:` |
 | `COTAL_QUIET` / `COTAL_MUTED` | connector session | Per-channel attention defaults (never-wake / drop-on-receive) | agent file's, else none |
 | `COTAL_CHANNEL` | Claude connector | Force channel wake-nudges on (`1`) / off; set to `1` by the Claude launcher | on when the MCP client declares the `claude/channel` capability in `initialize` |
 | `COTAL_EVENTS` | connector session | Arm this session's event plane (`1`); set by the launcher unless the launch used `--no-events` | launcher-managed |
@@ -255,7 +258,7 @@ other non-empty value when it starts, naming the variable. A blank value uses th
 | `COTAL_COMPLETE_DEBUG` | `completion` | Print completion-resolution errors and warnings to stderr (`1`). The shell stubs discard stderr, so run `cotal __complete <words>` by hand to see them. Empty, `0`, `false` and `off`, in any case, leave it off | off |
 | `COTAL_DEBUG` | any `cotal` command | Print the stack trace under a command's error, followed by the stack of each error that caused it (`1`). Empty, `0`, `false` and `off`, in any case, leave it off | off |
 | `COTAL_CODEX_BIN` / `COTAL_OPENCODE_BIN` / `COTAL_ORCA_BIN` | Codex and OpenCode connectors, Orca runtime | Pin the `codex`, `opencode` or Orca CLI binary | found on `PATH` |
-| `COTAL_IDP_TIMEOUT_MS` | `cotal login`, IdP requests | Per-request IdP timeout in milliseconds, for a slow IdP; a malformed value fails loud | `30000` |
+| `COTAL_IDP_TIMEOUT_MS` | `cotal login`, `cotal daemon serve`, IdP requests | Per-request IdP timeout in whole milliseconds from `1` to `2147483647`, for a slow IdP; a malformed value fails loud, including before daemon startup | `30000` |
 | `COTAL_ENROLLMENT_FILE` | foreground `spawn` | Private `0600` file containing one remote enrollment URL; preferred over the environment form | none |
 | `COTAL_MANAGED_HANDOFF_FILE` | foreground `spawn` | Private `0600` file holding one managed lifecycle handoff from a delegating runtime; `spawn` takes and deletes it before anything else runs, and every other command drops the variable and leaves the file. Requires `COTAL_MANAGER_INSTANCE` (`COTAL_MANAGED_HANDOFF_FILE requires COTAL_MANAGER_INSTANCE`); `DelegatedSeatLaunch.managerInstanceId` is required, so managers and the CLI must be upgraded together | none |
 | `COTAL_ENROLLMENT_URL` | foreground `spawn` | One remote enrollment URL when a secret file cannot be mounted; conflicts with `COTAL_ENROLLMENT_FILE` | none |

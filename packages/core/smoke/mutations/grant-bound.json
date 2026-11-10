@@ -19,7 +19,11 @@
     "",
     "I1 drops the issuer's guard, so a source-free manager-caller could be issued and read as an instrument.",
     "",
-    "B7 stops minting task-queue rows for a role:<r> token, so a spawner given the token holds no evidence of the role and cannot hand it on."
+    "B7 stops minting task-queue rows for a role:<r> token, so a spawner given the token holds no evidence of the role and cannot hand it on.",
+    "",
+    "A role's rows include the take of the requests its queue delivers (SPEC 8.1). B8 grants the take",
+    "subject and B9 its reply only for the agent's own role, so a spawner given role:<r> holds the",
+    "queue rows but not the take, and cannot hand the role on."
   ],
   "mutations": [
     {
@@ -73,8 +77,24 @@
     {
       "name": "B7 the agent mint ignores role:<r> tokens",
       "file": "packages/core/src/provision.ts",
-      "find": "  const svcDs = taskRoles(opts.role, opts.capabilities).map(taskDurable);",
-      "replace": "  const svcDs = taskRoles(opts.role, undefined).map(taskDurable);",
+      "find": "  const roles = taskRoles(opts.role, opts.capabilities);",
+      "replace": "  const roles = taskRoles(opts.role, undefined);",
+      "expectRed": "a spawner minted the role:<r> token hands that role on",
+      "cell": "a spawner minted the role:<r> token hands that role on"
+    },
+    {
+      "name": "B8 the take subject only for the agent's own role",
+      "file": "packages/core/src/provision.ts",
+      "find": "        takeSubject(space, role, pr.owner, pr.actor),\n",
+      "replace": "        ...(role === opts.role ? [takeSubject(space, role, pr.owner, pr.actor)] : []),\n",
+      "expectRed": "a spawner minted the role:<r> token hands that role on",
+      "cell": "a spawner minted the role:<r> token hands that role on"
+    },
+    {
+      "name": "B9 the take reply only for the agent's own role",
+      "file": "packages/core/src/provision.ts",
+      "find": "  const takeReplies = roles.map((role) => `${takeSubject(space, role, pr.owner, pr.actor)}.>`);",
+      "replace": "  const takeReplies = roles.filter((role) => role === opts.role).map((role) => `${takeSubject(space, role, pr.owner, pr.actor)}.>`);",
       "expectRed": "a spawner minted the role:<r> token hands that role on",
       "cell": "a spawner minted the role:<r> token hands that role on"
     }

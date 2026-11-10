@@ -1,12 +1,18 @@
 name: Desktop apps
 on:
   workflow_dispatch:
+    inputs:
+      real_service:
+        description: 'Install and remove an isolated per-user daemon service on disposable Linux/macOS/Windows runners'
+        type: boolean
+        default: false
   schedule:
     - cron: '17 6 * * 1'
   pull_request:
     paths:
       - 'desktop/**'
       - 'bin/daemon/**'
+      - 'bin/smoke/daemon-install-*.smoke.*'
       - 'packages/seat/**'
       - 'packages/workspace/native/**'
       - '.github/workflows/desktop.yml'
@@ -77,6 +83,32 @@ jobs:
       - run: pnpm --dir desktop test
       - run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --no-default-features --lib
       - run: pnpm smoke:daemon-install-native
+      - name: Prepare the disposable Linux user manager
+        if: inputs.real_service && runner.os == 'Linux'
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(id -u)" -ne 0
+          test "$USER" = "$(id -un)"
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          systemctl --user show-environment > /dev/null
+          test "$(loginctl show-user "$USER" --property=Linger --value)" = yes
+          printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+      - name: Verify the real per-user daemon service
+        if: inputs.real_service
+        env:
+          COTAL_TEST_REAL_SERVICE: '1'
+        run: node bin/smoke/daemon-install-real.smoke.mjs
+      - name: Upload the real service result
+        if: always() && inputs.real_service
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-service-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/daemon-service-result.json
+          if-no-files-found: error
+          retention-days: 7
       - run: pnpm --filter cotal-ai seeded-connectors
       - run: pnpm --dir desktop prepare:runtime
       - run: pnpm --dir desktop check:runtime

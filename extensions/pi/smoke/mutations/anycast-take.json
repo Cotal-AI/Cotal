@@ -1,0 +1,93 @@
+{
+  "suite": [
+    "extensions/pi/pi.smoke.ts"
+  ],
+  "guard": "pi shows a role request only from a batch whose take returned it and that may still be shown (SPEC §8.1), takes only the requests the batch carries, holds a taken batch for its turn, never sends a dnd batch left with only chatter by a refused or undecided take, keeps a user turn's forced pump across a take, and seats a role request ahead of channel posts in a full batch",
+  "command": "pnpm smoke:pi",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/pi/smoke/mutations/anycast-take.json",
+  "why": [
+    "PT1 sends whatever a take returned, so a dnd batch whose role request was refused, or whose take is still out, goes out with only chatter.",
+    "",
+    "PT2 forgets a pump forced while a take is out, and PT3 drops it when the take's own pump runs, so a user turn that starts during a refused take carries none of the chatter waiting for it.",
+    "",
+    "PT4 takes the whole preview instead of the 32 messages the batch carries, so role requests the turn never shows lose their sender's cancel.",
+    "",
+    "PT5 sends a taken batch without holding it in flight, so its role request's ack wait runs out mid-turn and the broker hands the request out again (#5637).",
+    "",
+    "PT6 sends from the take's answer what only the preview still offers, so a request a redelivery sent back to wait for its take goes out with no take of the new copy.",
+    "",
+    "PT7 fills a full batch with the first 32 messages again, so a role request that arrived after 32 channel posts waits untaken behind them for a later turn.",
+    "",
+    "PT8 counts only the role requests a channel post gives way to, so a DM between the posts and the last request takes the last seat and the request waits.",
+    "",
+    "NO BUILD STEP: the suite imports ./src.",
+    "",
+    "NO COMPLETION MARKER: the suite stops at its first failed check, so its closing line prints only on a pass."
+  ],
+  "mutations": [
+    {
+      "name": "PT1 a taken batch goes out whatever it carries",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "    if (taken?.length && (force || turnPeek || taken.some((item) => wakeable(this.mesh, item)))) {",
+      "replace": "    if (taken?.length) {",
+      "expectRed": "in dnd a batch whose role request's take is still out does not go out with only chatter",
+      "cell": "in dnd a batch whose role request's take is still out does not go out with only chatter"
+    },
+    {
+      "name": "PT2 a pump forced during a take is forgotten",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "      if (force) this.forcedDuringTake = true;\n",
+      "replace": "",
+      "expectRed": "a user turn that starts during a take still carries the chatter once the take is refused",
+      "cell": "a user turn that starts during a take still carries the chatter once the take is refused"
+    },
+    {
+      "name": "PT3 the take's own pump drops the force asked for during it",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "const forced = force || this.forcedDuringTake;",
+      "replace": "const forced = force;",
+      "expectRed": "a user turn that starts during a take still carries the chatter once the take is refused",
+      "cell": "a user turn that starts during a take still carries the chatter once the take is refused"
+    },
+    {
+      "name": "PT4 a batch holding a role request takes the whole preview instead of the batch it carries",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "        void this.inbox.take(items).then((shown) => {",
+      "replace": "        void this.inbox.take(this.inbox.preview()).then((shown) => {",
+      "expectRed": "the take covers only the 32 messages the batch carries",
+      "cell": "the take covers only the 32 messages the batch carries"
+    },
+    {
+      "name": "PT5 a taken batch goes out without its hold",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "      if (ids.length > 0 && !this.mesh.holdInFlight(ids)) return;\n      content = items.length > 0 ? formatInjection(items) : undefined;\n    } else if (this.nudges.length > 0) {",
+      "replace": "      content = items.length > 0 ? formatInjection(items) : undefined;\n    } else if (this.nudges.length > 0) {",
+      "expectRed": "a batch that goes out on its take is held for its turn like any other",
+      "cell": "a batch that goes out on its take is held for its turn like any other"
+    },
+    {
+      "name": "PT6 a taken batch is filtered by the preview instead of what may be shown",
+      "file": "extensions/pi/src/driver.ts",
+      "find": "      const live = new Set(this.inbox.peek(\"automatic\").filter((item) => !reserved.has(item.recvKey)).map((item) => item.recvKey));",
+      "replace": "      const live = new Set(available.map((item) => item.recvKey));",
+      "expectRed": "a taken batch sends nothing a redelivery sent back to wait for its take",
+      "cell": "a taken batch sends nothing a redelivery sent back to wait for its take"
+    },
+    {
+      "name": "PT7 a full batch takes the first 32 messages whatever waits after them",
+      "file": "extensions/pi/src/inbox-turn.ts",
+      "find": "      if (item.kind === \"channel\" && limit - selected.length <= ahead) continue;\n",
+      "replace": "",
+      "expectRed": "a full batch takes and carries a role request that arrived after more channel posts than fit",
+      "cell": "a full batch takes and carries a role request that arrived after more channel posts than fit"
+    },
+    {
+      "name": "PT8 a channel post gives way to the role requests after it but not to the DMs before them",
+      "file": "extensions/pi/src/inbox-turn.ts",
+      "find": "i <= last && item.kind !== \"channel\").length;",
+      "replace": "i <= last && item.kind === \"anycast\").length;",
+      "expectRed": "a full batch fits a DM and a role request that arrived after the channel posts",
+      "cell": "a full batch fits a DM and a role request that arrived after the channel posts"
+    }
+  ]
+}

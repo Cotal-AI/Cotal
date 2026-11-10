@@ -161,6 +161,13 @@ const SPAWN_INPUT = {
         description: { type: "string" }, save: { type: "boolean" },
         subscribe: { type: "array", items: { type: "string" } }, allowSubscribe: { type: "array", items: { type: "string" } },
         allowPublish: { type: "array", items: { type: "string" } }, capabilities: { type: "array", items: { type: "string" } },
+        endpoints: {
+          type: "array",
+          items: {
+            type: "object", additionalProperties: false, required: ["endpoint", "commands"],
+            properties: { endpoint: { type: "string" }, commands: { type: "array", items: { type: "string" } }, instanceId: { type: "string" } },
+          },
+        },
       },
     },
   },
@@ -575,18 +582,18 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   receiptRun = "sp-1b";
   const out = await withDeadline(driven({
     space: SPACE, endpoint: EP, kv, runId: "sp-1b", lease: lease(),
-    source: `const d = await spawn({ name: "inliner", prompt: "You check diffs.", allowPublish: ["t"] });\nlog("spawned", d.agent);`,
+    source: `const d = await spawn({ name: "inliner", prompt: "You check diffs.", allowPublish: ["t"], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] });\nlog("spawned", d.agent);`,
     handler: mk("sp-1b"),
   }), 30_000, "the inline spawning run");
   receiptRun = undefined;
   c("an inline spawn completes", out?.status === "completed", JSON.stringify(out));
   const alloc = allocations.find((a) => a.persona === "inliner");
   c("the manager is asked for the helper by name, with the definition as its persona record",
-    alloc !== undefined && JSON.stringify(spawnPersonas.get(alloc.goalId)) === JSON.stringify({ prompt: "You check diffs.", allowPublish: ["t"] }),
+    alloc !== undefined && JSON.stringify(spawnPersonas.get(alloc.goalId)) === JSON.stringify({ prompt: "You check diffs.", allowPublish: ["t"], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] }),
     spawnPersonas.get(alloc?.goalId ?? ""));
   const entries = await journalEntries("sp-1b", "spawn");
   const binds = entries.filter((e) => e.state === "pending" && e.external !== undefined);
-  const definition = { name: "inliner", prompt: "You check diffs.", allowPublish: ["t"] };
+  const definition = { name: "inliner", prompt: "You check diffs.", allowPublish: ["t"], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] };
   const first = binds[0]?.external as { inline?: { definition?: unknown; digest?: unknown }; goalId?: unknown } | undefined;
   // What the journal held when the manager received the request, so a bind after the submission fails.
   const received = journalAtReceipt.get(alloc?.goalId ?? "")?.find((e) => e.state === "pending" && e.external !== undefined)?.external as { inline?: { digest?: unknown } } | undefined;

@@ -416,11 +416,13 @@ registry.register(preserveAuth as unknown as AuthProvider);
   const manager = managerWith((name) => fakeHandle(name));
   const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
   map.set("worker", managed("worker", "open_principal_alias", fakeHandle("worker"), "persona"));
+  (map.get("worker") as { launch: Record<string, unknown> }).launch.endpoints = [{ endpoint: "com.example.orders", commands: ["list"] }];
   const first = await manager.preparePreservation("alias-1");
   const handed = first.inventory.agents[0]?.launch;
   check("the abandoned plan carries the seat", first.ok && handed !== undefined, first);
   if (handed) {
     for (const list of [handed.subscribe, handed.allowSubscribe, handed.allowPublish ?? [], handed.capabilities ?? []]) (list as string[]).push("ops");
+    handed.endpoints?.[0]?.commands.push("refund");
     (handed.source as { configSha256: string }).configSha256 = "0".repeat(64);
   }
   manager.abortPreservation("alias-1");
@@ -429,6 +431,7 @@ registry.register(preserveAuth as unknown as AuthProvider);
   check("a caller's edit to an abandoned plan does not widen the seat's lists in the next cut",
     JSON.stringify([recorded?.subscribe, recorded?.allowSubscribe, recorded?.allowPublish, recorded?.capabilities]) === JSON.stringify([["general"], ["general"], [], ["spawn"]]),
     JSON.stringify(recorded));
+  check("...nor its endpoint commands", JSON.stringify(recorded?.endpoints) === JSON.stringify([{ endpoint: "com.example.orders", commands: ["list"] }]), JSON.stringify(recorded?.endpoints));
   check("...nor change its launch source, so the next cut still records the seat",
     next.ok && next.failures.length === 0 && recorded?.source.configSha256 === digest(personaPath), JSON.stringify({ failures: next.failures, source: recorded?.source }));
   manager.abortPreservation("alias-2");
@@ -1058,11 +1061,13 @@ let openInventory: ManagerResumeAgent;
     ...openInventory,
     name: "static-worker",
     identity: { mode: "static", id: identity.id, lifecycleUid: uidFor(identity.id), credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } },
-    launch: { ...openInventory.launch, source: { kind: "persona", ref: "worker", configPath: personaPath, configSha256: digest(personaPath) } },
+    launch: { ...openInventory.launch, source: { kind: "persona", ref: "worker", configPath: personaPath, configSha256: digest(personaPath) }, endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] },
     dependencies: [personaPath],
   };
   resetCapturedLaunch();
   const ok = await manager.resumePreserved(inventoryOf(entry));
+  check("static resume hands the session the endpoint commands its record carries",
+    JSON.stringify(capturedLaunch?.endpoints) === JSON.stringify([{ endpoint: "com.example.orders", commands: ["list"] }]), capturedLaunch?.endpoints);
   check("static resume accepts matching retained credential", ok.ok && capturedLaunch?.id === identity.id && capturedLaunch?.creds === credsPath, ok);
   check("static resume threads the recovered incarnation uid into launch", capturedLaunch?.lifecycleUid === uidFor(identity.id), capturedLaunch?.lifecycleUid);
 
@@ -1070,6 +1075,25 @@ let openInventory: ManagerResumeAgent;
   (mismatchManager as unknown as { auth: unknown }).auth = auth;
   const mismatch = await mismatchManager.resumePreserved(inventoryOf({ ...entry, identity: { mode: "static", id: newIdentity().id, lifecycleUid: uidFor("mismatch"), credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } } }));
   check("static resume fails closed on credential/principal mismatch", !mismatch.ok && /does not match inventory principal/.test(mismatch.agents[0]?.reply.error ?? ""), mismatch.agents);
+
+  // A retained inventory whose endpoint commands pin an instance resumes like any other, at the
+  // control door and through the in-process call, and the session is launched with the pinned list,
+  // which a renewal lowers to that instance's rows.
+  const pinnedList = [{ endpoint: "com.example.orders", commands: ["list"], instanceId: "i0000000000000000000000000a" }];
+  const pinnedEntry: ManagerResumeAgent = { ...entry, launch: { ...entry.launch, endpoints: pinnedList } };
+  const pinDoor = managerWith((name) => fakeHandle(name), { resumeAttemptId: "pinned_resume" });
+  (pinDoor as unknown as { auth: unknown }).auth = auth;
+  resetCapturedLaunch();
+  const pinnedAtDoor = await control(pinDoor, "admin", "resumePreserved", { attemptId: "pinned_resume", inventory: inventoryOf(pinnedEntry) });
+  check("a resume whose inventory pins an endpoint instance is accepted at the control door",
+    pinnedAtDoor.ok === true && JSON.stringify(capturedLaunch?.endpoints) === JSON.stringify(pinnedList), { reply: pinnedAtDoor, endpoints: capturedLaunch?.endpoints });
+  const pinDirect = managerWith((name) => fakeHandle(name));
+  (pinDirect as unknown as { auth: unknown }).auth = auth;
+  resetCapturedLaunch();
+  const pinnedDirect = await pinDirect.resumePreserved(inventoryOf(pinnedEntry));
+  check("and through the in-process call, which launches the session with the pinned list",
+    pinnedDirect.ok && JSON.stringify(capturedLaunch?.endpoints) === JSON.stringify(pinnedList),
+    { result: pinnedDirect.agents[0]?.reply ?? pinnedDirect.error, endpoints: capturedLaunch?.endpoints });
 
   const replacementCreds = await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: uidFor("replacement") });
   writeFileSync(credsPath, retainedCreds, { mode: 0o600 });
