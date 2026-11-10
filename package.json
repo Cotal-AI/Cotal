@@ -819,6 +819,7 @@
     "smoke:auth-idp-bridge": "tsx implementations/auth/smoke/idp-bridge.smoke.ts",
     "smoke:auth-response-json": "tsx implementations/auth/smoke/auth-response-json.smoke.ts",
     "smoke:auth-login": "tsx implementations/auth/smoke/login.smoke.ts",
+    "smoke:auth-jwt-retry": "tsx implementations/auth/smoke/idp-jwt-retry.smoke.ts && tsx implementations/cli/smoke/manager-token-retry.native.ts",
     "smoke:auth-login-name": "tsx implementations/auth/smoke/login-name.smoke.ts",
     "smoke:login-unreachable": "tsx implementations/auth/smoke/login-unreachable.smoke.ts",
     "smoke:actor-target": "tsx implementations/auth/smoke/actor-target.smoke.ts",
