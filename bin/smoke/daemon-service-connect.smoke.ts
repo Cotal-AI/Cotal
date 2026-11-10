@@ -610,7 +610,7 @@ try {
           if (phase === "before-registration") writeFileSync(file, marker);
           const started = Date.now();
           try {
-            await runSetup({ paths, daemonHome: undefined, space: ON, peerUid, peerPid, waitSeconds: 60,
+            await runSetup({ paths, daemonHome: undefined, noManager: true, space: ON, peerUid, peerPid, waitSeconds: 60,
               report: (line) => { lines.push(line); if (phase === "before-connect" && line.startsWith("register: ")) writeFileSync(file, marker); },
               onPrompt: () => { throw new Error("setup asked for an unnecessary sign-in"); } });
           } catch (e) { failure = e as Record<string, any>; }
