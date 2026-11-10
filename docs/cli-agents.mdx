@@ -636,6 +636,11 @@ records under `COTAL_SEAT_ROOT` (default `~/.cotal/seats`), one line per seat:
 | `drained` | `--drain` proved the custodian and the agent gone and removed the record |
 | `refused` | The record cannot be read, carries no start or boot identity, this host publishes no boot identity, or the reap could not prove the processes gone. The record stays on disk |
 
+If the store cannot be listed, the refusal names its path, includes the native read error,
+and gives a next step. Check that `COTAL_SEAT_ROOT` names the intended readable directory
+and that its parents can be entered. A missing store returns an empty census without
+creating it. Only a `--drain` refusal says that no drain was submitted.
+
 A drain signals only a custodian whose recorded start identity still matches the live process, so
 a reused pid is never touched. No process outlives a reboot, so a record from an earlier boot is
 reported childless and `--drain` removes it without signalling anything. A record with no start or
