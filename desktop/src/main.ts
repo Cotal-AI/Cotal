@@ -52,7 +52,7 @@ function refusal(error: unknown): void {
   const exact = error instanceof Error ? error.message : String(error);
   text("refusal-detail", exact); el("details").hidden = false;
   if (error instanceof DaemonRefusal && error.native === "NO_AVAILABLE_CONNECTOR") {
-    notice(`No supported agent application was found. Install ${applications.length ? applications.join(" or ") : "an application named in Details"}, make sure it runs in your login terminal, then choose Check again.`, true);
+    notice(`No supported agent application was found. Install ${applications.length ? new Intl.ListFormat("en", { type: "disjunction" }).format(applications) : "an application named in Details"}, make sure it runs in your login terminal, then choose Check again.`, true);
   } else {
     const code = error instanceof DaemonRefusal ? error.native ?? error.code : undefined;
     const guidance: Record<string, string> = {
@@ -326,7 +326,7 @@ function receiveLinks(urls: string[]): void {
   try {
     const link = onboardingLink(urls[0]); el<HTMLInputElement>("provider").value = link.idp;
     requestedSpace = link.space; linked = true; editing = true;
-    text("link-context", `${link.space ? `Connecting to ${link.space} at` : "Connecting with"} ${new URL(link.idp).host}. Sign in below to continue.`); el("link-context").hidden = false;
+    text("link-context", `${link.space ? "Connecting to your space at" : "Connecting with"} ${new URL(link.idp).host}. Sign in below to continue.`); el("link-context").hidden = false;
     notice(""); showStage("welcome");
   } catch (error) { refusal(error); }
 }

@@ -84,7 +84,7 @@ test("first open is a neutral Cloud-default welcome and sign-in is an explicit a
 test("linked first run needs sign-in approval then connect, with one panel and structured progress", async () => {
   const a = await app({ link: `cotal://connect?idp=${encodeURIComponent(COTAL_CLOUD_IDP)}&space=sp_team`, count: 2 });
   try {
-    assert.match(a.node("link-context").textContent!, /sp_team.*cloud.cotal.ai/);
+    assert.match(a.node("link-context").textContent!, /your space at cloud\.cotal\.ai/);
     assert.equal(a.node("notice").hidden, true);
     await a.click("login");
     assert.equal(a.calls.filter(r => r.op === "install").length, 1);
