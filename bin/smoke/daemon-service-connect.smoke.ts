@@ -788,6 +788,23 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--fence-exit-repro")) {
+          const prepared = await ask(paths.socket, { op: "managers-prepare-restart" }, 30_000);
+          check("R2-9 instrument: real hosted generation fence is held", prepared.ok === true, prepared);
+          process.kill(manager.pid, "SIGKILL");
+          await sleep(500);
+          const during = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+          check("R2-9 child exit under pending fence withdraws answering and records signal", during.state !== "answering" && String(during.lastExit).includes("SIGKILL"), during);
+          await ask(paths.socket, { op: "managers-abort-restart" }, 30_000);
+          let after: Record<string, any> = {};
+          for (let i = 0; i < 120; i++) {
+            after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+            if (after.state === "answering" && after.pid !== manager.pid) break;
+            await sleep(250);
+          }
+          check("R2-9 rollback reschedules exited hosted Manager", after.state === "answering" && after.pid !== manager.pid, after);
+          return;
+        }
         if (process.argv.includes("--renewal-abort-repro")) {
           const initial = standingRenewals;
           for (let i = 0; i < 180 && standingRenewals === initial; i++) await sleep(250);

@@ -170,8 +170,10 @@ export function createHostedManagers(home = homeCotalDir()) {
     l.child = undefined;
   }
   const schedule = (l: Live) => {
-    if (closed || generationPending || l.stopping || l.view.state === "refused") return;
-    l.view = { ...l.view, state: "restarting", restarts: l.view.restarts + 1 };
+    if (closed || l.stopping || l.view.state === "refused") return;
+    l.view = { ...l.view, state: "restarting", pid: l.child?.pid };
+    if (generationPending) return;
+    l.view = { ...l.view, restarts: l.view.restarts + 1 };
     const delay = Math.min(30_000, 1000 * 2 ** Math.min(l.failures++, 5));
     l.timer = setTimeout(() => {
       l.timer = undefined;
