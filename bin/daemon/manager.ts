@@ -125,7 +125,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     const child = l.child, selected = l.view.instanceId;
     let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      const reply = await Promise.race([probe(space, selected), new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("the pinned Manager status probe did not answer within 3500ms")), 3500); })]);
+      // This includes caller issuance, broker admission and contract resolution, not only status.
+      const reply = await Promise.race([probe(space, selected), new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("the pinned Manager status observation did not complete within 15000ms")), 15_000); })]);
       if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager did not answer status");
       if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
     } catch (error) {

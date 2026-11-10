@@ -691,7 +691,10 @@ answers make recovery eligible. Recovery restarts a live child only after its na
 fence confirms no seats and blocks new admission. An occupied or unresponsive child stays running
 without losing custody. An authority or dial failure in the daemon never triggers a restart.
 Status, per-space Manager status and service status make a fresh instance-pinned
-probe, bounded to 3.5 seconds. They never reuse an earlier answering result as fresh success.
+probe. Its 15-second bound includes caller credential exchange, broker admission and contract
+resolution as well as the status request. Local status readers allow that observation to finish.
+They never reuse an earlier answering result as fresh success. Update checks a retained child's
+pinned endpoint even when an earlier observation marked it starting.
 `observedAt` names the latest completed observation. No project folder or selected space is
 changed. `service-disconnect` stops that space's hosted Manager and removes its hosting intent.
 `uninstall` stops all hosted Managers and removes their intents from per-space directories, leaving

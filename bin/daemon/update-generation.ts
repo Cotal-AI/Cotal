@@ -24,7 +24,7 @@ export async function waitForInstalledDaemonGeneration(version: string): Promise
       remedy: "read cotal daemon status and the recorded daemon user service, restore the daemon and its hosted Managers, then run cotal update again",
     });
     try {
-      const reply = await queryDaemon({ paths, timeoutMs: Math.min(1000, Math.max(1, Math.floor(remaining / 2))) });
+      const reply = await queryDaemon({ paths, timeoutMs: Math.min(20_000, Math.max(1, remaining)) });
       if (!reply.ok) throw new Error(`machine daemon custody is unreadable: ${reply.error.code} ${reply.error.message}`);
       if (reply.result.version !== version) {
         waiting = `daemon PID ${reply.result.pid} still runs Cotal ${reply.result.version}${reply.result.generation ? ` (${reply.result.generation.waiting})` : ""}`;
