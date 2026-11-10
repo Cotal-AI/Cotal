@@ -1023,8 +1023,14 @@ record for, so the connections it held before a crash come back with nothing to 
 are at `<COTAL_HOME>/daemon/<space segment>/service-connect.json`, mode `0600`. A connect that
 never reached connected records nothing, so a space that refuses is not retried at every start.
 The resume runs after the local endpoint is published, so a space that is slow or unreachable does
-not delay `status`, and `service-status` reports what each one actually reached. An ended
-connection is remembered only until the daemon stops.
+not delay `status`, and `service-status` reports what each one actually reached. If a remembered
+connection is unavailable, the daemon retries every second for the first ten retries, then doubles
+the delay up to 30 seconds between attempts. Its status stays unavailable during a retry until a
+new outcome is known.
+A broker connection lost during startup's ready call is also retried. Recovery needs no manual
+`service-connect`. Other refusals, including ended authority and damaged local records, stop these
+retries. Disconnect and shutdown cancel them. An ended connection is remembered only until the
+daemon stops.
 `service-status` reads the daemon's current answer without contacting the space. With no current
 answer, it reports `NOT_REQUESTED` (`TARGET_NOT_FOUND`) when this daemon has no saved register
 request for the space, including after a restart. A saved request alone reports `disconnected`;
