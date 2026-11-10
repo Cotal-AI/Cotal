@@ -26,6 +26,9 @@ import type { ConnectCheckResult } from "./protocol.js";
  *  Binding it still needs the space operator's `name-bind`; the daemon never claims it. */
 export const DAEMON_ENDPOINT = "ai.cotal.machine";
 
+/** Shared diagnosis when the live authority no longer matches the daemon's pinned account. */
+export const ACCOUNT_MISMATCH_MESSAGE = "the space now answers with a different account than this daemon pinned; nothing was changed. Confirm the space was not replaced before removing the daemon's identity for it by hand";
+
 const KIND = "cotal-daemon-service-identity";
 
 export interface DaemonServiceIdentity {
@@ -101,7 +104,7 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
   }
   if (identity.accountPublicKey !== accountPublicKey)
     return { outcome: "account-mismatch", space, pinnedAccountPublicKey: identity.accountPublicKey, observedAccountPublicKey: accountPublicKey,
-      message: "the space now answers with a different account than this daemon pinned; nothing was changed. Confirm the space was not replaced before removing the daemon's identity for it by hand" };
+      message: ACCOUNT_MISMATCH_MESSAGE };
   return { outcome: "ready-to-register", space, endpoint: DAEMON_ENDPOINT, instanceId: identity.instanceId, accountPublicKey,
     message: "this daemon can ask the space to register it; the space owner must still approve it, and nothing has been registered" };
 }

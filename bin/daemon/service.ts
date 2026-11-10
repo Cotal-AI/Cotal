@@ -40,6 +40,7 @@ import {
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness } from "./register.js";
+import { ACCOUNT_MISMATCH_MESSAGE } from "./connect.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
 
 /** Map registration outcomes consistently for setup and service status. */
@@ -50,7 +51,8 @@ export function fromRegister(r: RegisterResult): ServiceConnectionState {
     case "not-signed-in": return "not-signed-in";
     case "not-registered": return "not-registered";
     case "not-user-auth": case "unsupported-by-space": return "unsupported";
-    case "account-mismatch": case "conflict": return "conflict";
+    case "account-mismatch": return "account-mismatch";
+    case "conflict": return "conflict";
     case "local-state-error": return "local-state-error";
     default: return "unavailable";
   }
@@ -63,6 +65,7 @@ const SENTENCE: Record<ServiceConnectionState, string> = {
   unsupported: "the space's auth service does not host service endpoints, so the daemon cannot connect to it",
   "approval-pending": "the space owner has not approved this daemon yet, or the space is still registering it; nothing is connected",
   refused: "the space refused this daemon's registration; nothing is connected",
+  "account-mismatch": ACCOUNT_MISMATCH_MESSAGE,
   conflict: "this daemon's registration does not match what the space holds; nothing is connected",
   connecting: "the daemon is connecting to the space; it is not connected yet",
   connected: "connected: the broker accepted this daemon's service connection and the space accepted it as ready",
