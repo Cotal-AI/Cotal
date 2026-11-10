@@ -77,6 +77,7 @@ async function spaces(refreshCatalog: boolean): Promise<void> {
   }
   const preferred = previous || requestedSpace;
   if (preferred && [...select.options].some((option) => option.value === preferred)) select.value = preferred;
+  if (result.refresh === "not-signed-in") notice("Sign in to a provider before refreshing space catalogs. No catalog refresh was attempted.", true);
   if (result.refresh === "failed" || result.refresh === "partial") notice("Some space catalogs could not be refreshed. Saved entries may be out of date.", true);
   if (Number(result.collisions) > 0) notice("Some space names conflict with existing registrations. No conflicting registration was replaced.", true);
   if (Number(result.unreadable) > 0) notice("Some local space registrations could not be read. They were not changed.", true);

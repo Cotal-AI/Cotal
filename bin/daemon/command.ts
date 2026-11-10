@@ -429,7 +429,9 @@ async function run(args: ParsedArgs): Promise<void> {
     if ("event" in reply || !("kind" in reply.result) || reply.result.kind !== "spaces") throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon returned an unsupported space response");
     const result = reply.result;
     writeResult(presentationOf(args.values), { command: "daemon spaces", target: null, result,
-      ...(result.refresh === "failed" || result.refresh === "partial" || result.unreadable > 0 ? { partial: { message: "Some catalogs or registrations could not be read or applied", remedy: "inspect the recorded conflicts before retrying the refresh" } } : {}),
+      ...(result.refresh === "not-signed-in"
+        ? { failure: new CommandFailure("refused", "AUTH_REQUIRED", "No provider is signed in; no catalog refresh was attempted", { remedy: "run `cotal daemon login --idp <url>` before refreshing catalogs" }) }
+        : result.refresh === "failed" || result.refresh === "partial" || result.unreadable > 0 ? { partial: { message: "Some catalogs or registrations could not be read or applied", remedy: "inspect the recorded conflicts before retrying the refresh" } } : {}),
     }, () => ({ sections: [{ title: "Spaces", blocks: [
       { kind: "fields", rows: result.spaces.map((space): [string, string] => [space.space, `${space.label} (${space.mode})`]) },
       { kind: "fields", rows: [["Catalog refresh", result.refresh], ["Unreadable", String(result.unreadable)], ["Name conflicts", String(result.collisions)]] },

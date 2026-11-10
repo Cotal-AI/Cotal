@@ -8,6 +8,7 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
 import { skipSuite } from "@cotal-ai/smoke-kit";
+import { recordMesh } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { parseDesktopRequest, readDesktopRequest } from "../daemon/desktop.js";
 import { serveDaemon, type RunningDaemon } from "../daemon/server.js";
@@ -33,20 +34,24 @@ Object.assign(process.env, { HOME: join(root, "home"), XDG_RUNTIME_DIR: join(roo
 const paths = daemonPaths();
 const version = (JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")) as { version: string }).version;
 let daemon: RunningDaemon | undefined;
-async function request(value: unknown, opts: { runtime?: boolean | string; daemonHome?: string } = {}): Promise<Record<string, any>> {
+async function request(value: unknown, opts: { runtime?: boolean | string; daemonHome?: string; cli?: string[]; exit?: number } = {}): Promise<Record<string, any>> {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
   if (opts.runtime === false) delete env.XDG_RUNTIME_DIR;
   else if (typeof opts.runtime === "string") env.XDG_RUNTIME_DIR = opts.runtime;
   return await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(repo, "bin/cotal.ts"), "daemon", "desktop", ...(opts.daemonHome ? ["--daemon-home", opts.daemonHome] : [])], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
-    let stdout = "", stderrBytes = 0;
+    const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(repo, "bin/cotal.ts"), "daemon", ...(opts.cli ?? ["desktop"]), ...(opts.daemonHome ? ["--daemon-home", opts.daemonHome] : [])], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
     const deadline = setTimeout(() => { child.kill("SIGKILL"); }, 30_000);
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); if (stdout.length > 256 * 1024) child.kill("SIGKILL"); });
-    child.stderr.on("data", (chunk: Buffer) => { stderrBytes += chunk.length; if (stderrBytes > 256 * 1024) child.kill("SIGKILL"); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); if (stderr.length > 256 * 1024) child.kill("SIGKILL"); });
     child.once("error", (e) => { clearTimeout(deadline); reject(e); });
     child.once("close", (code, signal) => {
       clearTimeout(deadline);
-      try { assert.equal(signal, null, `CLI signal ${signal}; stdout bytes ${stdout.length}; diagnostic bytes ${stderrBytes}; operation ${String((value as { op?: unknown }).op)}`); assert.equal(code, 0, `CLI exit ${code}; diagnostic bytes ${stderrBytes}`); resolve(JSON.parse(stdout.trim())); }
+      try {
+        assert.equal(signal, null, `CLI signal ${signal}; stdout bytes ${stdout.length}; diagnostic bytes ${stderr.length}; operation ${String((value as { op?: unknown }).op)}`);
+        assert.equal(code, opts.exit ?? 0, `CLI exit ${code}; diagnostic bytes ${stderr.length}`);
+        resolve(opts.cli && !opts.cli.includes("--json") ? { stdout, stderr } : JSON.parse(stdout.trim()));
+      }
       catch (e) { reject(e); }
     });
     child.stdin.end(`${JSON.stringify(value)}\n`);
@@ -81,9 +86,20 @@ try {
   const loose = await request({ op: "status" }, { daemonHome: managed });
   check("selected-home protection refusals remain framed without repairing permissions", loose.ok === false && loose.error.code === "DIR_WRONG_MODE" && (statSync(managed).mode & 0o777) === 0o755);
   const list = await request({ op: "spaces", refresh: false });
-  check("fresh daemon has an empty truthful space list", list.ok === true && list.result.kind === "spaces" && list.result.spaces.length === 0);
+  check("fresh daemon has an empty truthful space list", list.ok === true && list.result.kind === "spaces" && list.result.refresh === "not-requested" && list.result.spaces.length === 0);
   const sync = await request({ op: "spaces", refresh: true });
-  check("unsigned-in catalog refresh returns no fabricated spaces", sync.ok === true && sync.result.refresh === "complete" && sync.result.spaces.length === 0);
+  check("unsigned-in catalog refresh reports that sign-in is required", sync.ok === true && sync.result.refresh === "not-signed-in" && sync.result.signedInProviders.length === 0 && sync.result.spaces.length === 0);
+  recordMesh({ space: "saved-local", server: "nats://127.0.0.1:4222", mode: "open", root, ts: new Date().toISOString() });
+  const savedList = await request({ op: "spaces", refresh: true });
+  check("unsigned-in desktop refresh retains saved spaces", savedList.ok === true && savedList.result.refresh === "not-signed-in" && savedList.result.spaces[0]?.space === "saved-local");
+  for (const flags of [[], ["--plain"]]) {
+    const refused = await request({}, { cli: ["spaces", "--refresh", ...flags], exit: 2 });
+    check(`unsigned-in CLI refresh ${flags.join(" ") || "default"} refuses with a sign-in step`, refused.stdout.includes("saved-local") && refused.stdout.includes("Catalog refresh: not-signed-in") && !refused.stdout.includes("Catalog refresh: complete") && refused.stderr.includes("No provider is signed in") && refused.stderr.includes("cotal daemon login --idp <url>"));
+  }
+  const refused = await request({}, { cli: ["spaces", "--refresh", "--json"], exit: 2 });
+  check("unsigned-in JSON refresh retains the list with an authentication refusal", refused.outcome === "refused" && refused.error.code === "AUTH_REQUIRED" && refused.result.refresh === "not-signed-in" && refused.result.spaces[0]?.space === "saved-local");
+  const unchanged = await request({}, { cli: ["spaces", "--json"] });
+  check("listing without refresh still succeeds when signed out", unchanged.outcome === "ok" && unchanged.result.refresh === "not-requested");
   const foreignInstall = await request({ op: "install" });
   check("an answering daemon without an owned install receipt is not adopted", foreignInstall.ok === false && foreignInstall.error.code === "CONFLICT");
   check("refused adoption creates no service receipt", !existsSync(join(paths.state, "service-unit.json")));
