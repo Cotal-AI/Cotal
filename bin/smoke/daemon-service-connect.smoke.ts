@@ -28,6 +28,8 @@
  *  C6b shipped startup with authority or broker unavailable retries recorded intent, keeps the
  *      dependency refusal visible during a held retry, retries broker loss during ready, serves
  *      after recovery, and cancels pending retries on disconnect and shutdown;
+ *  C6c shipped disconnect and SIGTERM cancel held startup HTTP requests before their release,
+ *      forget or preserve intent respectively, and allow a healthy restart;
  *  C7  outage: with the authority door unreachable, a fresh connect is not `connected`; once the
  *      door is back it is `connected` again;
  *  C7b a changed authority account stays account-mismatch in the socket, CLI and offline status,
@@ -58,6 +60,7 @@
  * Add --setup-hints-only to run approval and setup follow-up checks with a leading-hyphen space.
  * Setup progress regression only: add --setup-progress-only (uses the shipped foreground daemon).
  * Clock-behind regression only: add --clock-behind-only (C1, C2, C15, C18 and C10).
+ * Add --cancel-only for C1, C2, C15, C6c and C10; --keep-fixture retains the sandbox after shutdown.
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
@@ -94,6 +97,8 @@ const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
 const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
 const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
 const setupHintsOnly = process.argv.includes("--setup-hints-only");
+const cancelOnly = process.argv.includes("--cancel-only");
+const keepFixture = process.argv.includes("--keep-fixture");
 const originalPath = process.env.PATH;
 const setupProgressOnly = process.argv.includes("--setup-progress-only");
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
@@ -129,6 +134,7 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--status-only") && !/^C(0|1|2|3|5|6|10|15) /.test(title)) return;
   if (process.argv.includes("--service-only") && title.startsWith("H1")) return;
   if (process.argv.includes("--resume-only") && !/^(C1 |C2 |C15 |C6b )/.test(title)) return;
+  if (cancelOnly && !/^(C1 |C2 |C15 |C6c |C10 )/.test(title)) return;
   if (setupHintsOnly && !["C1 ", "C2 ", "C17 "].some((prefix) => title.startsWith(prefix))) return;
   if (process.argv.includes("--setup-session-only") && !title.startsWith("H2")) return;
   console.log(title);
@@ -198,6 +204,7 @@ let catalogUnavailable = false;
 let catalogAuthorityDown = false;
 let standingRenewals = 0;
 let catalogAuthorityRequests = 0;
+let tokenGate: ((res: ServerResponse) => Promise<void>) | undefined;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/device/code") { deviceCodeRequests++; if (deviceFailure === "unreachable") { req.socket.destroy(); return; } return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 })); }
@@ -223,6 +230,8 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (req.url === "/api/auth/token" && tokenFailure === "unusable") { res.writeHead(503); return void res.end("{}"); }
   if (req.url === "/api/auth/token" && idpRevoked) { res.writeHead(401); return void res.end("{}"); }
   if (req.url === "/api/auth/token" && (req.headers.authorization ?? "") === `Bearer ${SESSION}`) {
+    await tokenGate?.(res);
+    if (res.destroyed) return;
     if (catalog) res.setHeader("link", `<${idpOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`);
     const now = Math.floor(Date.now() / 1000);
     const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + 120).sign(key.privateKey);
@@ -243,6 +252,7 @@ const changedAccount = new Map<string, string>();
 const droppedAt = new Map<string, number[]>();
 const authorityGates = new Map<string, () => Promise<void>>();
 const readyGates = new Map<string, () => Promise<void>>();
+const connectGates = new Map<string, (operation: string, res: ServerResponse) => Promise<void>>();
 const withoutIssuer = new Set<string>();
 async function relay(space: string, target: string): Promise<string> {
   const s = createHttpServer(async (req, res) => {
@@ -253,6 +263,11 @@ async function relay(space: string, target: string): Promise<string> {
     if (req.method === "GET" && req.url === "/service-endpoint-authority") await authorityGates.get(space)?.();
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
+    if (req.url === "/service-endpoint-authority") {
+      const operation = req.method === "GET" ? "info" : String(JSON.parse(Buffer.concat(chunks).toString()).request?.operation);
+      await connectGates.get(space)?.(operation, res);
+      if (res.destroyed) return;
+    }
     const hit = { space, method: req.method ?? "", path: new URL(req.url!, "http://x").pathname,
       operation: req.method === "POST" && req.url === "/service-endpoint-authority" ? JSON.parse(Buffer.concat(chunks).toString()).request?.operation as string | undefined : undefined,
       status: undefined as number | undefined, state: undefined as string | undefined };
@@ -818,6 +833,92 @@ try {
         authorityGates.delete(ON); readyGates.delete(ON);
         relayDown.delete(ON); brokerPathUp = true; recordMesh(original);
         await stop("SIGTERM");
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      }
+    });
+
+    await cell("C6c shipped disconnect and SIGTERM cancel held startup requests", async () => {
+      seedUnitReceipt();
+      await d.close();
+      const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"),
+        XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home,
+        COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+      const entry = join(repo, "bin/dist/cotal.js");
+      let child: ChildProcess | undefined;
+      const stop = async () => { if (child) await killAndAwaitExit(child, "SIGTERM"); child = undefined; };
+      const start = async () => {
+        child = spawn(process.execPath, [entry, "daemon", "serve"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        child.stdout!.resume(); child.stderr!.resume();
+        for (let i = 0; i < 100; i++) {
+          try { await ask(paths.socket, { op: "status" }, 1000); return; } catch { await sleep(100); }
+        }
+        throw new Error("C6c shipped daemon did not publish its endpoint");
+      };
+      const cli = async (mode: string) => {
+        const proc = spawn(process.execPath, [entry, "daemon", mode, "--space", ON, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        proc.stdout!.on("data", (b) => { out += String(b); }); proc.stderr!.on("data", (b) => { err += String(b); });
+        const timer = setTimeout(() => proc.kill("SIGKILL"), 10_000);
+        try {
+          const code = await new Promise<number | null>((resolve) => proc.once("exit", resolve));
+          frames.push(out, err);
+          return { code, doc: JSON.parse(out) as Record<string, any> };
+        } finally { clearTimeout(timer); }
+      };
+      const within = async <T>(work: Promise<T>, ms: number): Promise<T | undefined> => {
+        let timer!: ReturnType<typeof setTimeout>;
+        try { return await Promise.race([work, new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), ms); })]); }
+        finally { clearTimeout(timer); }
+      };
+      try {
+        await start();
+        check("C6c healthy control connects and records intent", (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
+        await stop();
+        for (const phase of ["token", "info", "register", "renew", "ready"]) {
+          for (const action of ["disconnect", "SIGTERM"]) {
+            let entered!: () => void, release!: () => void, aborted!: () => void;
+            const requested = new Promise<void>((resolve) => { entered = resolve; });
+            const held = new Promise<void>((resolve) => { release = resolve; });
+            const cancelled = new Promise<boolean>((resolve) => { aborted = () => resolve(true); });
+            const gate = async (res: ServerResponse) => { res.once("close", aborted); entered(); await held; };
+            if (phase === "token") tokenGate = gate;
+            else connectGates.set(ON, async (operation, res) => { if (operation === phase) await gate(res); });
+            try {
+              await start();
+              if (await within(requested.then(() => true), 15_000) !== true) throw new Error(`C6c startup did not reach ${phase}`);
+              const status = await cli("service-status");
+              check(`C6c ${phase} ${action} instrument: startup is connecting`, status.code === 2 && status.doc.error?.cause?.code === "CONNECTING", status);
+              const started = Date.now();
+              if (action === "disconnect") {
+                const pending = cli("service-disconnect");
+                const reply = await within(pending, 2500);
+                check(`C6c ${phase} disconnect returns before release and forgets intent`, reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
+                // Release only after observing the bound, even on failure, then settle the child.
+                if (!reply) release();
+                await pending;
+              } else {
+                const exited = new Promise<number | null>((resolve) => child!.once("exit", resolve));
+                child!.kill("SIGTERM");
+                const code = await within(exited, 2500);
+                check(`C6c ${phase} SIGTERM exits cleanly before release and retains intent`, code === 0 && !existsSync(paths.socket) && existsSync(intentFile(ON)), { code });
+                if (code === undefined) release();
+                await exited;
+                child = undefined;
+              }
+              console.log(`  C6c ${phase} ${action} elapsed ms: ${Date.now() - started}`);
+              check(`C6c ${phase} ${action} closes the held HTTP request`, await within(cancelled, 1000) === true);
+            } finally { tokenGate = undefined; connectGates.delete(ON); release(); await stop(); }
+            await start();
+            if (action === "disconnect") {
+              const status = await cli("service-status");
+              check(`C6c ${phase} explicit disconnect stays disconnected after restart`, status.code === 2 && status.doc.error?.cause?.code === "DISCONNECTED", status);
+              check(`C6c ${phase} explicit reconnect restores intent`, (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
+            } else check(`C6c ${phase} healthy restart resumes and serves`, (await waitState(ON, (state) => state === "connected", 15_000)) === "connected" && (await probeMachine()).reply.ok);
+            await stop();
+          }
+        }
+      } finally {
+        tokenGate = undefined; connectGates.delete(ON); await stop();
         d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
       }
     });
@@ -2323,7 +2424,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
   if (nats) await killAndAwaitExit(nats, "SIGTERM").catch(() => {});
   release?.();
   if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
-  if (setupProgressOnly || process.argv.includes("--clock-behind-only")) console.log(`Daemon sandbox retained at ${root}; broker store at ${jsDir}`);
+  if (setupProgressOnly || keepFixture || process.argv.includes("--clock-behind-only")) console.log(`Retained daemon fixture: ${root}; broker store: ${jsDir}`);
   else {
     rmSync(jsDir, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });

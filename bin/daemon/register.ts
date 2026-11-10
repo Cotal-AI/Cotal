@@ -84,15 +84,16 @@ export async function registerDaemon(space: string, home: string = homeCotalDir(
 /** The stock witness this daemon's own registration holds in `space`, read by replaying its persisted
  *  register request unchanged: the same requestId and body, so no new key or registration. Anything
  *  but `registered` is returned as the daemon's register outcome. */
-export async function daemonWitness(space: string, home: string = homeCotalDir()): Promise<{ witness: ServiceRegistrationWitness } | RegisterResult> {
-  const sent = await sendRegister(space, home);
+export async function daemonWitness(space: string, home: string = homeCotalDir(), signal?: AbortSignal): Promise<{ witness: ServiceRegistrationWitness } | RegisterResult> {
+  const sent = await sendRegister(space, home, signal);
   if ("outcome" in sent) return sent;
   if (sent.result.state === "registered") return { witness: sent.result.witness };
   return registerAnswer(sent.result, sent.ids);
 }
 
-async function sendRegister(space: string, home: string): Promise<RegisterResult | { result: ServiceAuthorityResult; ids: Ids }> {
-  const ready = await connectCheck(space, home);
+async function sendRegister(space: string, home: string, signal?: AbortSignal): Promise<RegisterResult | { result: ServiceAuthorityResult; ids: Ids }> {
+  const ready = await connectCheck(space, home, signal);
+  signal?.throwIfAborted();
   if (ready.outcome !== "ready-to-register") return ready;
   const entry = findMesh(space)!;
   const base = {
@@ -120,7 +121,7 @@ async function sendRegister(space: string, home: string): Promise<RegisterResult
   try {
     const provider = resolveAuthProvider();
     if (!provider.serviceEndpointAuthority) return { outcome: "unsupported-by-space", space, message: "the space's auth service does not host service endpoints, so the daemon cannot register with it" };
-    result = (await provider.serviceEndpointAuthority({ store: workspaceSecretStore(entry.root), dir: userAuthStateDir(entry.root, space, { readOnly: true }), sessionDir: home, request })).result;
+    result = (await provider.serviceEndpointAuthority({ store: workspaceSecretStore(entry.root), dir: userAuthStateDir(entry.root, space, { readOnly: true }), sessionDir: home, request, signal })).result;
   } catch (e) {
     const status = (e as { httpStatus?: number }).httpStatus;
     if (status === 404) return { outcome: "unsupported-by-space", space, message: "the space's auth service does not host service endpoints, so the daemon cannot register with it" };

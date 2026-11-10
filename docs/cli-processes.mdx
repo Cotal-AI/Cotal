@@ -1101,6 +1101,8 @@ registration or connection attempt updates it or an explicit disconnect clears i
 alone never claims a connection and does not replace a live connection's state. `service-disconnect`
 drains the responder and closes the connection, removes that space's resume record so the
 disconnect outlives a restart, and stopping the daemon closes all of them without removing a record.
+Disconnect and graceful shutdown cancel an in-flight service authority or sign-in proof request,
+including a startup resume, before waiting for the connection attempt to settle.
 
 The service answers its existing `machine-status` command with `null`. This is a liveness response;
 it contains no vitals, hostname or machine metadata. Its stock Describe answer is explicitly public:
