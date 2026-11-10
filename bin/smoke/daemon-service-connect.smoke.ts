@@ -425,8 +425,9 @@ try {
   try {
     await cell("C1 connect before approval is approval-pending, never connected", async () => {
       check("C1 before registration status is not-requested", stateOf(await statusS(ON)) === "not-requested");
+      check("C1 connecting before registration is not-requested", stateOf(await connectS(ON)) === "not-requested");
       await ask(paths.socket, { op: "register", space: ON });
-      check("C1 a saved register request without a connection is disconnected", stateOf(await statusS(ON)) === "disconnected");
+      check("C1 registration after a refused connect makes status disconnected without restart", stateOf(await statusS(ON)) === "disconnected");
       const r = await connectS(ON);
       check("C1 approval-pending", r.ok === true && stateOf(r) === "approval-pending", r);
       check("C1 no renewal record written for this space", !filesUnder(daemonDir).some((p) => p.includes("service-renewal")), filesUnder(daemonDir));

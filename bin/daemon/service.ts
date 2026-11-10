@@ -255,7 +255,8 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     l.state = "connecting"; l.reason = undefined;
     live.set(space, l);
 
-    if (!existsSync(daemonRegisterFile(space, home))) { l.state = "not-requested"; return result(space); }
+    // Missing registration is local state, not a connection outcome to cache after registration.
+    if (!existsSync(daemonRegisterFile(space, home))) { live.delete(space); return result(space); }
     const entry = findMesh(space);
     if (!entry || entry.mode !== "user" || !entry.userAuth) { l.state = entry ? "unsupported" : "not-registered"; return result(space); }
     const w = await daemonWitness(space, home);
