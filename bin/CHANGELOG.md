@@ -1,5 +1,23 @@
 # cotal-ai
 
+## 0.153.1
+
+### Patch Changes
+
+- 058a3e6: Run checks now identify unchanged programs, show both hashes for edits, and name terminal runs.
+  The read-only comparison no longer implies that it moves a run to another program or makes a completed or failed run resumable.
+- Updated dependencies [058a3e6]
+  - @cotal-ai/runtime@0.153.1
+  - @cotal-ai/manager@0.153.1
+  - @cotal-ai/connector-core@0.153.1
+  - @cotal-ai/auth@0.153.1
+  - @cotal-ai/cli@0.153.1
+  - @cotal-ai/delivery@0.153.1
+  - @cotal-ai/registry@0.153.1
+  - @cotal-ai/core@0.153.1
+  - @cotal-ai/seat@0.153.1
+  - @cotal-ai/workspace@0.153.1
+
 ## 0.153.0
 
 ### Patch Changes
