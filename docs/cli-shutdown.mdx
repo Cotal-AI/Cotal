@@ -282,7 +282,9 @@ recorded components and asks for confirmation on an interactive terminal, defaul
 Without an interactive terminal, or when prompts are disabled, it requires `--yes`, exit 1,
 before any stop or cleanup. This applies to a folder started with plain `cotal up` too.
 `--dry-run` stays read-only and needs no confirmation. This acknowledgement does not establish
-process ownership or native agent impact.
+process ownership or native agent impact. After confirmation, the stop checks the root,
+registration, lifecycle blockers, broker sharing and process-record containment again. A changed
+target or process record refuses before any stop and asks you to review the current stack.
 Before a retained bare apply
 reaches its pidfile sweep, it now requires one locally started registration under
 a real isolated project root and refuses pending maintenance transitions, any valid or
