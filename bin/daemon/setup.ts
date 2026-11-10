@@ -170,6 +170,9 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
 async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<RegisterResult | undefined> {
   const check = await connectCheckViaDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, space: opts.space });
   if (!check.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the connection check: ${check.code} ${check.message}`, { native: { code: check.code } });
+  if (check.result.outcome === "credential-expired") {
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", check.result.message, { native: { code: "CREDENTIAL_EXPIRED" } });
+  }
   if (check.result.outcome === "unreachable" || check.result.outcome === "refused") {
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", check.result.message, { native: { code: check.result.outcome.toUpperCase() } });
   }
@@ -241,6 +244,7 @@ function registrationResult(opts: SetupOptions, steps: SetupStep[], r: RegisterR
   if (r.outcome === "not-registered") throw new CommandFailure("refused", "TARGET_NOT_FOUND", r.message, native);
   if (r.outcome === "not-user-auth" || r.outcome === "unsupported-by-space") throw new CommandFailure("refused", "UNSUPPORTED", r.message, native);
   if (r.outcome === "not-signed-in") throw new CommandFailure("refused", "AUTH_REQUIRED", r.message, native);
+  if (r.outcome === "credential-expired") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", r.message, native);
   if (r.outcome === "unreachable") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, native);
   if (r.outcome === "account-mismatch" || r.outcome === "conflict" || r.outcome === "local-state-error") throw new CommandFailure("refused", "CONFLICT", r.message, native);
   if (r.outcome === "refused") throw new CommandFailure("refused", "reason" in r ? "PERMISSION_DENIED" : "DEPENDENCY_UNAVAILABLE", r.message, native);
@@ -251,7 +255,7 @@ function registrationResult(opts: SetupOptions, steps: SetupStep[], r: RegisterR
 }
 
 /** States that will not become `connected` however long anyone waits. */
-const TERMINAL = new Set<ServiceConnectionState>(["refused", "ended", "account-mismatch", "conflict", "unsupported", "not-registered", "not-requested", "not-signed-in", "local-state-error"]);
+const TERMINAL = new Set<ServiceConnectionState>(["refused", "ended", "account-mismatch", "conflict", "unsupported", "not-registered", "not-requested", "not-signed-in", "local-state-error", "credential-expired"]);
 
 /**
  * Connect, retrying while the space is still waiting for its owner. Only an answer that cannot
@@ -394,6 +398,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
   const code = end.state === "not-requested" || end.state === "not-registered" ? "TARGET_NOT_FOUND"
     : end.state === "unsupported" ? "UNSUPPORTED"
     : end.state === "not-signed-in" ? "AUTH_REQUIRED"
+    : end.state === "credential-expired" ? "LIFECYCLE_BLOCKED"
     : end.state === "account-mismatch" || end.state === "conflict" || end.state === "local-state-error" ? "CONFLICT"
     : "PERMISSION_DENIED";
   throw new CommandFailure("refused", code, `${end.message}. The daemon is installed and running, and nothing is connected`, {

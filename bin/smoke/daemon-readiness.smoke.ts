@@ -91,9 +91,11 @@ try {
       seed(`${value}-${args[0]}`);
       const before = counts(), result = await run(...args);
       assert.equal(result.code, 2);
-      assert.equal(result.doc.error?.code, "DEPENDENCY_UNAVAILABLE");
-      assert.equal(result.doc.error?.cause?.code, "REFUSED");
-      assert.equal(result.doc.error?.message, "the space's sign-in provider gave an answer the daemon cannot use");
+      assert.equal(result.doc.error?.code, value === "expired" ? "LIFECYCLE_BLOCKED" : "DEPENDENCY_UNAVAILABLE");
+      assert.equal(result.doc.error?.cause?.code, value === "expired" ? "CREDENTIAL_EXPIRED" : "REFUSED");
+      assert.equal(result.doc.error?.message, value === "expired"
+        ? "the sign-in provider returned a credential that is expired according to this machine's clock; check this machine's and the authority's clocks, then connect again; nothing is connected"
+        : "the space's sign-in provider gave an answer the daemon cannot use");
       assert.equal(result.err.includes("already signed in"), false);
       assert.deepEqual(counts(), { ...before, tokens: before.tokens + 1 });
       assert.equal(identities(), 0);

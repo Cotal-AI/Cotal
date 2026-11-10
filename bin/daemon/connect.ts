@@ -32,6 +32,9 @@ export const DAEMON_ENDPOINT = "ai.cotal.machine";
 /** Shared diagnosis when the live authority no longer matches the daemon's pinned account. */
 export const ACCOUNT_MISMATCH_MESSAGE = "the space now answers with a different account than this daemon pinned; nothing was changed. Confirm the space was not replaced before removing the daemon's identity for it by hand";
 
+/** Fixed clock diagnosis for a provider proof already expired on this machine. */
+const IDP_CREDENTIAL_EXPIRED_MESSAGE = "the sign-in provider returned a credential that is expired according to this machine's clock; check this machine's and the authority's clocks, then connect again; nothing is connected";
+
 const KIND = "cotal-daemon-service-identity";
 
 export interface DaemonServiceIdentity {
@@ -93,9 +96,10 @@ export async function connectCheck(space: string, home: string = homeCotalDir(),
     // This is a usability check only. The space still verifies the signature and pinned claims.
     if (typeof header.alg !== "string" || !header.alg || header.alg === "none" || !/^[A-Za-z0-9_-]+$/.test(signature) || base64url.decode(signature).length === 0
       || typeof claims.sub !== "string" || !claims.sub
-      || typeof claims.exp !== "number" || !Number.isFinite(claims.exp) || claims.exp <= now
+      || typeof claims.exp !== "number" || !Number.isFinite(claims.exp)
       || (claims.nbf !== undefined && (typeof claims.nbf !== "number" || !Number.isFinite(claims.nbf) || claims.nbf > now)))
       return { outcome: "refused", space, message: "the space's sign-in provider gave an answer the daemon cannot use" };
+    if (claims.exp <= now) return { outcome: "credential-expired", space, message: IDP_CREDENTIAL_EXPIRED_MESSAGE };
   }
   catch (e) {
     if (e instanceof IdpSessionRejectedError) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"],

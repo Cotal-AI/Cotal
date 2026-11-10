@@ -1066,6 +1066,15 @@ A service bearer issued more than five seconds ahead of this machine's clock rep
 `PERMISSION_DENIED` (`CREDENTIAL_NOT_YET_VALID`). Nothing connects. Check this machine's and
 the space authority's clocks, then connect again. The saved request IDs stay unchanged.
 
+An access credential that has expired by the daemon's clock reports `LIFECYCLE_BLOCKED`
+(`CREDENTIAL_EXPIRED`), with state `credential-expired`, rather than a network outage. Check this
+machine's and the space authority's clocks, then connect again. The credential remains rejected,
+no new material is saved, and `service-status` retains the diagnosis. Setup stops at this refusal
+without waiting for owner approval. A retry reuses the saved request IDs.
+A sign-in proof returned by the provider that has already expired by this machine's clock uses the
+same `credential-expired` diagnosis. `connect-check`, registration and setup stop before contacting
+the space authority. Other unusable proofs retain their existing refusal.
+
 Every other answer is a refusal and nothing is connected. Not yet approved is `LIFECYCLE_BLOCKED`
 (`APPROVAL_PENDING`). A refused registration is `PERMISSION_DENIED`, and so is a space that ended the
 daemon's authority, with its code as the native code, such as `APPROVAL_REVOKED`; connecting again

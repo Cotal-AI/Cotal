@@ -54,6 +54,8 @@
  *      restoring the original record recovers serving under the same request ids.
  *  C18 a shipped daemon whose clock is behind reports a not-yet-valid credential, never a network
  *      outage; clocks within tolerance connect, and recovery keeps the persisted request ids.
+ *  C18 a shipped daemon five minutes ahead rejects newly issued credentials as credential-expired,
+ *      not an unreachable space; synchronized clocks recover with the same renewal request ids.
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
  * Account pin regression only: add --account-mismatch-only (C1, C2, C7b and C10).
@@ -62,6 +64,7 @@
  * Setup progress regression only: add --setup-progress-only (uses the shipped foreground daemon).
  * Clock-behind regression only: add --clock-behind-only (C1, C2, C15, C18 and C10).
  * Add --cancel-only for C1, C2, C15, C6c and C10; --keep-fixture retains the sandbox after shutdown.
+ * Credential expiry regression only: add --credential-expiry-only (C1, C2, C7, C10, C15 and C18).
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
@@ -138,6 +141,7 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (cancelOnly && !/^(C1 |C2 |C15 |C6c |C10 )/.test(title)) return;
   if (setupHintsOnly && !["C1 ", "C2 ", "C17 "].some((prefix) => title.startsWith(prefix))) return;
   if (process.argv.includes("--setup-session-only") && !title.startsWith("H2")) return;
+  if (process.argv.includes("--credential-expiry-only") && !/^C(1|2|7|10|15|18) /.test(title)) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
 }
@@ -197,6 +201,7 @@ let catalogTarget: string | undefined;
 const jwtsIssued: string[] = [];
 /** R11: the IdP rejects the session handle, as for an expired or revoked session. */
 let idpRevoked = false;
+let idpJwtTtl = 120;
 let tokenFailure: "unreachable" | "unusable" | undefined;
 let recoverOnApproval = false;
 let deviceCodeRequests = 0;
@@ -235,7 +240,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     if (res.destroyed) return;
     if (catalog) res.setHeader("link", `<${idpOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`);
     const now = Math.floor(Date.now() / 1000);
-    const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + 120).sign(key.privateKey);
+    const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + idpJwtTtl).sign(key.privateKey);
     jwtsIssued.push(token);
     return void res.end(JSON.stringify({ token }));
   }
@@ -1008,10 +1013,99 @@ try {
       try {
         await disconnectS(ON);
         const r = await connectS(ON);
-        check("C7 while the door is unreachable the state is not connected", stateOf(r) !== "connected" && ["unavailable", "connecting"].includes(String(stateOf(r))), r);
+        check("C7 while the door is unreachable the state is unavailable", stateOf(r) === "unavailable", r);
+        const c = await cli(["service-connect", "--space", ON]);
+        check("C7 the shipped CLI reports a genuine dependency outage", c.status === 2 && c.doc?.error?.code === "DEPENDENCY_UNAVAILABLE" && c.doc.error?.cause?.code === "UNAVAILABLE", c.doc?.error);
       } finally { relayDown.delete(ON); }
       const back = await connectS(ON);
       check("C7 once the door is back, connected again", stateOf(back) === "connected", back);
+    });
+
+    await cell("C18 the shipped daemon identifies locally expired credentials without claiming a network outage", async () => {
+      await disconnectS(ON);
+      await d.close();
+      const renewalFile = filesUnder(daemonDir).find((p) => p.includes("service-renewal") && p.endsWith(".json"));
+      if (!renewalFile) throw new Error("fixture has no renewal record");
+      const target = join(daemonDir, renewalFile), original = readFileSync(target, "utf8");
+      const requestIds = (raw: string) => {
+        const o = JSON.parse(raw) as { activateRequestId: string; renewRequestId: string };
+        return [o.activateRequestId, o.renewRequestId].join("/");
+      };
+      const skew = join(root, "daemon-clock-skew.mjs");
+      writeFileSync(skew, "const now = Date.now.bind(Date); Date.now = () => now() + 300_000;\n");
+      const native = join(root, "expiry-native");
+      mkdirSync(native, { mode: 0o700 });
+      for (const command of ["systemctl", "loginctl", "launchctl", "schtasks"])
+        writeFileSync(join(native, command), "#!/bin/sh\nexit 89\n", { mode: 0o700 });
+      const env = { PATH: `${native}:${originalPath ?? ""}`, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: rtDir,
+        COTAL_HOME: home, TMPDIR: scratchParent, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      const startSkewed = () => spawn(process.execPath, ["--import", pathToFileURL(skew).href, join(repo, "bin/dist/cotal.js"), "daemon", "serve"], {
+        cwd: root, env, stdio: ["ignore", "pipe", "pipe"],
+      });
+      let child = startSkewed();
+      let output = "";
+      const capture = () => {
+        child.stdout!.on("data", (b) => { output += String(b); });
+        child.stderr!.on("data", (b) => { output += String(b); });
+        return new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      };
+      let exited = capture();
+      try {
+        for (let i = 0; i < 100 && !existsSync(paths.socket) && child.exitCode === null; i++) await sleep(100);
+        const earlyBefore = hits.length;
+        seedUnitReceipt();
+        for (const op of ["connect-check", "register", "service-connect", "service-status", "setup"] as const) {
+          const early = await cli([op, ...(op === "setup" ? ["--no-manager", "--wait", "0"] : []), "--space", ON]);
+          check(`C18 early IdP expiry ${op} names clocks and fails closed`, early.status === 2
+            && early.doc?.error?.code === "LIFECYCLE_BLOCKED" && early.doc.error?.cause?.code === "CREDENTIAL_EXPIRED"
+            && /expired according to this machine's clock/.test(early.doc.error.message) && /check.*clocks/.test(early.doc.error.message), early);
+        }
+        check("C18 early IdP expiry contacts no space authority and preserves renewal material", hits.length === earlyBefore
+          && readFileSync(target, "utf8") === original && !existsSync(intentFile(ON)));
+        await killAndAwaitExit(child, "SIGTERM");
+        await exited;
+        // Isolate the original service-credential expiry path with a proof valid beyond the skew.
+        idpJwtTtl = 600;
+        child = startSkewed();
+        exited = capture();
+        for (let i = 0; i < 100 && !existsSync(paths.socket) && child.exitCode === null; i++) await sleep(100);
+        const before = hits.length;
+        const text = await cli(["service-connect", "--space", ON], "--plain");
+        check("C18 plain connect rejects the credential and names local expiry and clock checks", text.status === 2
+          && /LIFECYCLE_BLOCKED/.test(text.err) && /CREDENTIAL_EXPIRED/.test(text.err)
+          && /expired according to this machine's clock/.test(text.err) && /check.*clocks/.test(text.err)
+          && !/could not be reached/.test(text.err), { status: text.status, err: text.err });
+        for (const op of ["service-connect", "service-status"]) {
+          const c = await cli([op, "--space", ON]);
+          check(`C18 JSON ${op} retains the credential expiry diagnosis`, c.status === 2 && c.doc?.outcome === "refused"
+            && c.doc.error?.code === "LIFECYCLE_BLOCKED" && c.doc.error?.cause?.code === "CREDENTIAL_EXPIRED", c.doc?.error);
+        }
+        check("C18 offline status names credential-expired", stateOf(await statusS(ON)) === "credential-expired");
+        check("C18 the reachable authority issued credentials for both connect attempts", hits.slice(before).filter((h) => h.space === ON
+          && h.path === "/service-endpoint-authority" && h.status === 200 && h.state === "credential").length === 2);
+        check("C18 expired material is not saved and no connect intent is recorded", readFileSync(target, "utf8") === original && !existsSync(intentFile(ON)));
+        seedUnitReceipt();
+        let setupFailure: Record<string, any> | undefined;
+        const started = Date.now();
+        try {
+          await runSetup({ paths, daemonHome: undefined, noManager: true, space: ON, peerUid, peerPid, waitSeconds: 60,
+            report: () => {}, onPrompt: () => { throw new Error("setup asked for an unnecessary sign-in"); } });
+        } catch (e) { setupFailure = e as Record<string, any>; }
+        check("C18 setup stops on credential expiry without the approval wait", setupFailure?.outcome === "refused"
+          && setupFailure.code === "LIFECYCLE_BLOCKED" && setupFailure.native?.code === "CREDENTIAL_EXPIRED"
+          && Date.now() - started < 5000, setupFailure && { outcome: setupFailure.outcome, code: setupFailure.code, native: setupFailure.native });
+        check("C18 diagnostics do not expose credential material", ![SESSION, ...jwtsIssued].some((t) => output.includes(t))
+          && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(output + frames.join("\n")));
+      } finally {
+        idpJwtTtl = 120;
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+        await exited;
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      }
+      const recovered = await cli(["service-connect", "--space", ON]);
+      check("C18 synchronized clocks reconnect with the same request ids", recovered.status === 0 && recovered.doc?.result?.state === "connected"
+        && requestIds(readFileSync(target, "utf8")) === requestIds(original));
+      check("C18 the authority independently reads the recovered instance as ready", await instanceStatus(ON) === "ready");
     });
 
     await cell("C17 `cotal daemon setup` reaches connected in one call", async () => {
