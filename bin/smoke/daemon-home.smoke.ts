@@ -360,6 +360,25 @@ try {
       rmSync(blocked);
       rmSync(corrupt);
       slugs = ["catalog-kept", "catalog-added"];
+      const canonical = meshFile("catalog-kept");
+      const legacy = join(home, "meshes", "catalog-kept.json");
+      const keptBytes = readFileSync(canonical, "utf8");
+      writeFileSync(legacy, keptBytes, { mode: 0o600 });
+      writeFileSync(canonical, damaged, { mode: 0o600 });
+      setCurrent("catalog-kept");
+      unavailable = true;
+      const failedDuplicate = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 provider failure preserves damaged canonical and usable legacy bytes", failedDuplicate.status === 4 && failedDuplicate.doc.result?.refresh === "failed" && failedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacy) && readFileSync(legacy, "utf8") === keptBytes, failedDuplicate.doc);
+      check("H6 failure metadata still reaches unrelated healthy registrations", Boolean(readMeshRegistry().entries.find((m) => m.space === "catalog-added")?.catalogError));
+      unavailable = false;
+      slugs = ["catalog-added"];
+      const removedDuplicate = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 catalog removal preserves damaged canonical, legacy and selection", removedDuplicate.status === 4 && removedDuplicate.doc.result?.refresh === "complete" && removedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacy) && readFileSync(legacy, "utf8") === keptBytes && getCurrent() === "catalog-kept", removedDuplicate.doc);
+      slugs = ["catalog-kept", "catalog-added"];
+      const appliedDuplicate = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 application failure cannot rewrite damage from a usable legacy duplicate", appliedDuplicate.status === 4 && appliedDuplicate.doc.result?.refresh === "failed" && appliedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacy) && readFileSync(legacy, "utf8") === keptBytes, appliedDuplicate.doc);
+      writeFileSync(canonical, keptBytes, { mode: 0o600 });
+      rmSync(legacy);
       check("H6 no private registry or sentinel tree was created", !existsSync(join(managed, "meshes")) && !existsSync(join(managed, "catalog")));
 
       const subjects = (dir: string): string[] => Object.values(JSON.parse(readFileSync(join(dir, "space-catalogs.json"), "utf8")).accounts as Record<string, { sub: string }>).map((a) => a.sub).sort();

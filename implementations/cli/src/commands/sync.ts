@@ -13,6 +13,7 @@ import {
   type OutputWarning,
   type Report,
   loadMeshes,
+  meshFile,
   readMesh,
   readMeshRegistry,
   recordMeshes,
@@ -211,10 +212,11 @@ function consume(result: AuthSpaceCatalogResult, force: boolean): CatalogDiff {
 }
 
 function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
-  // Unrelated damaged records stay on disk for discovery to report. A catalog row still reads
-  // its own canonical record below, so an unreadable target cannot be overwritten.
-  const { entries: loaded } = readMeshRegistry();
-  const before = loaded.filter((m) => m.origin === "catalog" && m.catalogOwner === result.account.ownerKey);
+  // A usable legacy entry can coexist with a damaged canonical record. Keep that pair out of
+  // failure-metadata writes and removals. Catalog rows still refuse it at their keyed read below.
+  const { entries: loaded, unusable } = readMeshRegistry();
+  const damagedFiles = new Set(unusable.map((error) => error.file));
+  const before = loaded.filter((m) => m.origin === "catalog" && m.catalogOwner === result.account.ownerKey && !damagedFiles.has(meshFile(m.space)));
   const priorByName = new Map(before.map((m) => [m.space, m]));
   const diff = emptyDiff();
   if (result.state === "failed") {
