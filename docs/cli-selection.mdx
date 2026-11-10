@@ -191,6 +191,12 @@ says its recorded folder no longer exists.
 
 ### Forgetting a local record
 
+When a broker registered by hand does not answer, commands such as `send` and the delivery daemon
+name `cotal space forget <name>` as the way to unregister it. The refusal keeps the registration
+and does not start a local replacement. Start the broker where it runs to keep using that space.
+For a discovered space, the next step names removal from the provider's catalog followed by
+`cotal sync`, because `space forget` cannot remove a catalog-owned registration.
+
 `space forget <name>` removes a registration this machine keeps. It stops nothing, deletes nothing on
 the broker, and keeps the files under its root. It refuses a space this machine is running with
 `LIFECYCLE_BLOCKED`, because `cotal down` stops it, and a discovered space with `CONFLICT`, because
@@ -531,6 +537,12 @@ selected space, this folder's maintenance journal under Maintenance when it hold
 attempt and next step; `maintenance` in JSON), unsettled fresh and additive attempts in this folder
 when present, owned service records and useful commands under Next. Connection state, local process
 state and service replies remain separate observations.
+
+For the selected space, `Default agent` reports the harness a bare `cotal spawn` selects.
+The default persona's `agent:` pin overrides environment and saved harness preferences.
+If that persona cannot be read or validated, status reports the application as unresolved
+and includes a warning instead of presenting a harness preference as the launch choice.
+Non-regular persona paths, including named pipes, are refused without reading them.
 
 This machine shows what is set up and what needs attention. The version line is always there. Agent
 applications is one line: the applications whose required executables are on PATH, and a count of the
@@ -1027,7 +1039,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   `status` service reachability from this host. A manager that answers without reporting static
   reconciliation says `static reconciliation not reported by this manager build`; the line stays
   visible even when the manager is otherwise `serving`. A row that reached no manager does not
-  carry it.
+  carry it. If the service does not answer and the local PID is dead, the manager reads `absent`
+  even before its lease expires. A lease without a local PID record still reads `not-serving`.
 - **delivery**: local PID record, its ready lease (`ready` is the daemon's own bound-control
   signal), and the latest `renewal.<spaceKey>.json` adoption verdict, the record of the space the
   command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a

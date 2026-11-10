@@ -119,6 +119,13 @@ check(
 check("signals.waiting surfaces the blocked agent", s.signals.waiting.length === 1 && s.signals.waiting[0].card.name === "bob");
 const watchRoster = renderReport(watchReport(s, "roster"), "plain", 200).split("\n");
 check("the watch roster names a working agent's progress as unknown", watchRoster.some((line) => /\balice\b.*working - progress unknown/.test(line)) && !watchRoster.some((line) => /\bbob\b.*progress unknown/.test(line)));
+check("the watch roster includes endpoint kind and identity alongside agents", watchRoster.some((line) => /console.*endpoint.*ID_CON/.test(line)) && watchRoster.some((line) => /alice.*agent.*ID_ALICE/.test(line)));
+const endpointOnly = renderReport(watchReport({ ...s, agents: [] }, "roster"), "plain", 200);
+check("an endpoint-only roster is not reported empty", endpointOnly.includes("console") && !endpointOnly.includes("No participants"));
+const emptyRoster = renderReport(watchReport({ ...s, agents: [], endpoints: [] }, "roster"), "plain", 200);
+check("an empty roster names its participant scope", emptyRoster.includes("No participants in this observer snapshot."));
+const waitingReport = renderReport(watchReport(s, "waiting"), "plain", 200);
+check("the waiting view keeps the agent-only signal scope", waitingReport.includes("bob") && !waitingReport.includes("console") && !waitingReport.includes("alice"));
 {
   // A message past the row bound is cut, and the line says how much it lost and which read carries the whole text.
   const long = `${"x".repeat(200_000)}END-MARK`;

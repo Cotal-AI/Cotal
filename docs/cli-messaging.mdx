@@ -68,7 +68,9 @@ A peer message is not proof of the person's authorization to perform an action.
 The receipt names the destination and message identifier without repeating the body. Direct and
 role sends include the broker's stored sequence. Storage does not confirm delivery, acceptance
 or completion. A direct send to an agent the roster shows offline also warns on stderr:
-`<agent> is offline. The message is stored and delivered when <agent> reconnects; a new agent spawned as <agent> does not receive it.`
+`<agent> is offline. The message is stored, but delivery is not confirmed. Only the same lifecycle can receive it, while its inbox still exists. If the session ended or its inbox was removed, it cannot receive this message. A new session or agent named <agent> does not receive it.`
+An offline presence card can outlive a retired session's inbox. Opening another chat under the same
+name creates a new lifecycle and does not recover that message.
 `--json` lists it as the `RECIPIENT_OFFLINE` warning. Use `--json/-j` for the same receipt as one versioned envelope, `--plain` for a text report, or
 `--verbose/-v` to show the actual sending principal. A post to an unregistered channel warns
 `CHANNEL_UNREGISTERED`: it says whether the channel already has messages or this message starts it,
@@ -209,6 +211,12 @@ and it writes its punctuation in ASCII as every plain report does.
 diagnostics on stderr. Closing stdin ends the session. `--stdio` does not combine with `--plain`,
 and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
 
+In the terminal view, Tab opens the recipient picker. Type `#<channel>`, `@<name>`,
+`@<owner>.<actor>` or `role:<role>`, then Enter to choose. A `:to` line is refused without
+sending it, clears the previous recipient and opens the picker. Choose a recipient before
+sending anything else. A send already in flight still reports its outcome without restoring
+the previous recipient. Enter sends to the recipient shown above the composer.
+
 In `--plain`, a line you type becomes the draft, and it is sent only when you answer `y` to the
 question that follows. Any other answer keeps the draft unsent. A slash command typed as the answer
 runs, and the question is asked again. A new draft that replaces a kept one says so, with the kept
@@ -230,8 +238,8 @@ A message posted on a channel carries the `@<name>` words its text holds as ment
 `cotal send -c` does, so it wakes the agents it names. A `--stdio` `send` carries only the
 `mentions` its request lists.
 
-A direct message to an agent the roster shows offline is stored, and the view adds a notice that
-the agent receives it when it reconnects, as [`send`](#send) warns. `--stdio` carries that roster
+A direct message to an agent the roster shows offline is stored, and the view adds the same
+lifecycle and inbox limits as [`send`](#send). `--stdio` carries that roster
 status as `recipientStatusAtSend` in the stored result.
 
 Message times show in local time, with the date when it is not today, the same way `history`
@@ -456,7 +464,11 @@ under `Not decoded` with its key and the decode error, and the key is left in th
 channel resolves to the default policy, as an endpoint's registry watch does. `show` of that
 channel and `defaults` when the defaults key does not decode say the same. A `set` or `defaults`
 that would write such a key refuses with `CONFLICT` and leaves the bytes as they are. `remove`
-of that key removes the entry. `show` includes inherited replay and delivery settings.
+of that key removes the entry. `show` includes resolved replay, window and delivery settings.
+Each value with no per-channel override is marked `inherited`, whether it comes from space
+defaults or the built-in policy. The inventory uses the same mark for replay and delivery.
+Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the
+mark identifies values supplied by the built-in policy.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
 records. A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
@@ -728,7 +740,8 @@ Each candidate's `from` is the sender principal
 parsed from its stored message subject, which the broker binds to the sender's
 credential. The sender's own card is not printed, and a candidate that cannot
 be decoded is withheld and reported as partial. Recipient contents are not
-printed. The retained `deliver pending` spelling keeps its earlier output shape.
+printed. The retained `deliver pending` spelling uses this reader with `--json`, including
+candidate IDs and refusals in one receipt. Without `--json`, it keeps its earlier text output.
 
 
 ## Clearing retained history [#clearing-retained-history]

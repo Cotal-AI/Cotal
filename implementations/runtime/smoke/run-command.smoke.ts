@@ -146,13 +146,14 @@ const envelopeOf = async (positionals: string[], values: Record<string, string> 
   try { await wf(positionals, { json: true, ...values }); } finally { process.stdout.write = write; }
   try { return JSON.parse(chunks.join("")); } catch { return undefined; }
 };
-type JournalRowJson = { step?: string; answer?: { value?: unknown; by?: unknown; artifact?: unknown; answerId?: unknown; at?: unknown } };
+type JournalRowJson = { step?: string; schema?: unknown; answer?: { value?: unknown; by?: unknown; artifact?: unknown; answerId?: unknown; at?: unknown } };
 type RunRowJson = { runId?: string; endpoint?: string; state?: string; programHash?: string; revoked?: { by?: string; reason?: string }; revocationUnreadable?: string };
 
 const PURE = join(sd, "pure.cotal.js");
 writeFileSync(PURE, 'const xs = [1, 2, 3];\nlog("doubled", xs.map((x) => x * 2));\n');
 const CHECKPOINT = join(sd, "checkpoint.cotal.js");
-writeFileSync(CHECKPOINT, 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n');
+const CHECKPOINT_SCHEMA = { choice: "string", count: "number" };
+writeFileSync(CHECKPOINT, `const d = await checkpoint("approve", "Ship it?", { schema: ${JSON.stringify(CHECKPOINT_SCHEMA)} });\nlog("resolved", d.status);\n`);
 const RACE = join(sd, "race.cotal.js");
 writeFileSync(RACE, 'const r = await race({\n  eins: () => checkpoint("eins", "First?"),\n  zwei: () => checkpoint("zwei", "Second?"),\n}, { name: "doppel" });\nlog("won", r.index);\n');
 const ASKING = join(sd, "asking.cotal.js");
@@ -265,6 +266,16 @@ let P = "";
   c("a non-pause step cannot expose answer-shaped result fields",
     ordinary.answer === undefined,
     ordinary);
+  const pending = { ...base, state: "pending", status: undefined } as JournalEntry;
+  for (const schema of [{}, { nested: { type: "string" } }, null, false]) {
+    const row = journalStepRow(1, { ...pending, external: { asks: "Which?", schema } });
+    c(`an open checkpoint preserves the recorded schema ${JSON.stringify(schema)}`,
+      Object.hasOwn(row, "schema") && JSON.stringify(row.schema) === JSON.stringify(schema));
+  }
+  c("a legacy pending checkpoint without a recorded schema invents none",
+    !Object.hasOwn(journalStepRow(1, { ...pending, external: { asks: "Which?" } }), "schema"));
+  c("an open hold does not borrow the earlier attempt's schema",
+    !Object.hasOwn(journalStepRow(1, { ...pending, external: { asks: "Old?", schema: CHECKPOINT_SCHEMA }, hold: { asks: "New?" } }), "schema"));
 }
 
 // ── 4) resume: a completed run replays to the same completion ────────────────────────────────
@@ -306,6 +317,11 @@ let P = "";
   c("the journal render shows an open pause's question under the step an answer is addressed by",
     rendered("/checkpoint:approve#0", "pending") && captured().includes("Needs an answer") && rendered("/checkpoint:approve#0", "Ship it?"),
     lines().filter((l) => l.includes("checkpoint") || l.includes("Ship it")).join(" | "));
+  c("the open checkpoint prints its schema as JSON beside its step",
+    captured().includes(`Schema for /checkpoint:approve#0: ${JSON.stringify(CHECKPOINT_SCHEMA)}`));
+  const openView = (await envelopeOf(["journal", cid]))?.result as { view?: { journal?: JournalRowJson[] } } | undefined;
+  c("show --json carries the checkpoint's recorded schema",
+    JSON.stringify(openView?.view?.journal?.filter((r) => r.step === "/checkpoint:approve#0").at(-1)?.schema) === JSON.stringify(CHECKPOINT_SCHEMA));
   // A THROW here must fail the cell rather than kill the suite: the holder-bound presenter is the
   // load-bearing part of `answer`, and a suite that dies names no claim.
   // Its receipt is the hosted path's, read here as the envelope `--json` writes to stdout.
@@ -337,7 +353,7 @@ let P = "";
   // The pause's earlier pending rows stay in the journal, so only its last row may decide whether
   // it still needs an answer.
   c("a settled pause is no longer listed as needing an answer, and Next offers no answer",
-    !captured().includes("Needs an answer") && !captured().includes("cotal r answer"),
+    !captured().includes("Needs an answer") && !captured().includes("cotal r answer") && !captured().includes("Schema for"),
     lines().filter((l) => l.includes("Needs an answer") || l.includes("r answer")).join(" | "));
   c("the text render shows the accepted value, answerer and artifact on the pause's answered line",
     lines().some((l) => l.includes("/checkpoint:approve#0") && l.includes("answered") && l.includes('"yes"') && l.includes("smoke") && l.includes("artifact://run-command")),
@@ -348,7 +364,7 @@ let P = "";
     ?.find((r) => r.step === "/checkpoint:approve#0" && r.answer !== undefined);
   c("show --json carries the accepted value, answerer, artifact, answer id and time on the settled pause",
     settled?.answer?.value === "yes" && settled.answer.by === "smoke" && settled.answer.artifact === "artifact://run-command"
-      && typeof settled.answer.answerId === "string" && typeof settled.answer.at === "number",
+      && typeof settled.answer.answerId === "string" && typeof settled.answer.at === "number" && !Object.hasOwn(settled, "schema"),
     settled ?? shown);
   // A long value is cut in the table, so one answer cannot widen every row to its own width.
   const long = "z".repeat(1000);
@@ -966,7 +982,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 109;
+const DECLARED = 117;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

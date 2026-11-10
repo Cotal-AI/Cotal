@@ -305,7 +305,7 @@ export const cotalAuthProvider: AuthProvider = {
     return serviceEndpointRenewal(cotalAuthProvider, opts);
   },
 
-  async serviceEndpointAuthority({ store, dir, request: raw, proof, timeoutMs, signal }) {
+  async serviceEndpointAuthority({ store, dir, sessionDir, request: raw, proof, timeoutMs, signal }) {
     const startedAt = performance.now(), request = parseServiceAuthorityRequest(raw);
     return withServiceAuthorityBudget(request.operation, { timeoutMs, signal }, async (budget) => {
       const target = serviceClientTarget(store, dir, request.space);
@@ -317,7 +317,7 @@ export const cotalAuthProvider: AuthProvider = {
       budget.check();
       if (!sentinelCreds) throw new Error("service authority client has no sentinel projection; refresh the registered space before setup");
       const actualProof = proof === undefined
-        ? { kind: "idp" as const, token: await fetchIdpJwt(target.idpUrl, requireIdpSession(homeCotalDir(), target.idpUrl).token) }
+        ? { kind: "idp" as const, token: await fetchIdpJwt(target.idpUrl, requireIdpSession(sessionDir ?? homeCotalDir(), target.idpUrl).token) }
         : checked.proof;
       budget.check();
       const result = await postRemoteServiceAuthority(target.base, { request, proof: actualProof }, { signal: budget.signal, timeoutMs: budget.remainingMs() });

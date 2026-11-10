@@ -1,5 +1,25 @@
 # @cotal-ai/cli
 
+## 0.152.0
+
+### Patch Changes
+
+- d6e7b75: Channel reports consistently mark inherited replay, window and delivery settings.
+  The channel list and detail view use `inherited` for values without a saved override, including built-in policy values. Explicit settings remain unmarked even when they match the defaults.
+- c7b64d4: Keep a separate daemon's catalog refresh from changing shared registrations, sentinel files or the default selected space.
+- 1fec76f: Commands now reject invalid broker URLs and honor TLS schemes in `--server`.
+  Per-command connections share registration's URL validation, preserve WebSocket routes,
+  and require TLS for secure schemes on registered and raw connections.
+- e044ab0: Refuse a direct launch preview when its effective harness is unknown. `spawn --dry-run` now reports `DEPENDENCY_UNAVAILABLE` with exit 2 for an unknown flag, persona pin or preference instead of reporting success with a warning. Managed previews still leave connector validation to the selected manager.
+- f40b049: Show chat sessions and service endpoints alongside agents in the watch roster.
+  The plain and terminal views include each participant's kind, reported state and identity,
+  and update when endpoint presence changes.
+- Updated dependencies [4bd669c]
+- Updated dependencies [1f4700a]
+- Updated dependencies [1fec76f]
+  - @cotal-ai/core@0.152.0
+  - @cotal-ai/workspace@0.152.0
+
 ## 0.151.3
 
 ### Patch Changes

@@ -71,6 +71,7 @@ import { serveDaemon } from "../daemon/server.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-service-connect smoke: Linux only; skipped on ${process.platform}`);
 const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
+const originalPath = process.env.PATH;
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -274,12 +275,15 @@ try {
   /** Where a space's resume intent is recorded, read the way the daemon derives it. */
   const intentFile = (space: string) => daemonConnectIntentFile(space, home);
   const filesUnder = (dir: string) => existsSync(dir) ? readdirSync(dir, { recursive: true }).map(String) : [];
-  /** Put this machine in the state `cotal daemon install` leaves: a real unit file plus the receipt
-   *  naming it, in the product's own format, which `planUninstall` reads exactly as `uninstall`
-   *  does. Only `applyInstall` is left out, because it writes into the operator's own
-   *  `~/.config/systemd/user`; a container covers that half. */
+  /** A real unit file and receipt in the fixture manager's reported directory. The native-tool
+   *  fixture admits directory reads only; no operational service is installed or controlled. */
   const seedUnitReceipt = (): string => {
-    const unitPath = join(root, "cotal-daemon.service");
+    const native = join(root, "native"), config = join(root, "config");
+    mkdirSync(native, { recursive: true, mode: 0o700 });
+    mkdirSync(join(config, "systemd", "user"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(" ") !== "--user show-environment") process.exit(89);\nconsole.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});\n`, { mode: 0o700 });
+    process.env.PATH = `${native}:${originalPath ?? ""}`;
+    const unitPath = join(config, "systemd", "user", "cotal-daemon.service");
     const unitBytes = "[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nRestart=always\n\n[Install]\nWantedBy=default.target\n";
     writeFileSync(unitPath, unitBytes, { mode: 0o600 });
     mkdirSync(join(home, "daemon"), { recursive: true, mode: 0o700 });
@@ -678,6 +682,7 @@ try {
   idp.close();
   if (nats) await killAndAwaitExit(nats, "SIGTERM").catch(() => {});
   release?.();
+  if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
   rmSync(jsDir, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 }

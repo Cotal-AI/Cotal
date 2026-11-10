@@ -1,5 +1,17 @@
 # @cotal-ai/auth
 
+## 0.152.0
+
+### Patch Changes
+
+- 1f4700a: Use the selected daemon home's sign-in for service registration and activation. Authority and renewal calls carry an explicit provider-session directory, so a separate daemon cannot borrow the default home's account; callers that omit the directory keep their existing behavior.
+- Updated dependencies [4bd669c]
+- Updated dependencies [1f4700a]
+- Updated dependencies [1fec76f]
+  - @cotal-ai/core@0.152.0
+  - @cotal-ai/workspace@0.152.0
+  - @cotal-ai/lang@0.152.0
+
 ## 0.151.3
 
 ### Patch Changes

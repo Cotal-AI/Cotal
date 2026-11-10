@@ -63,8 +63,8 @@ function parseRecord(raw: string, witnessDigest: string): RenewalRecord {
 }
 
 /** Build the renewal source for one witness over the provider's own authority client. */
-export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: SecretStore; dir: string; witness: ServiceRegistrationWitness }): ServiceEndpointRenewal {
-  const { store, dir, witness } = opts;
+export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: SecretStore; dir: string; sessionDir?: string; witness: ServiceRegistrationWitness }): ServiceEndpointRenewal {
+  const { store, dir, sessionDir, witness } = opts;
   if (!provider.serviceEndpointAuthority) throw new Error("this auth provider does not host service endpoints");
   const authority = provider.serviceEndpointAuthority.bind(provider);
   const witnessDigest = serviceWitnessDigest(witness), key = serviceRenewalKey(witness);
@@ -112,7 +112,7 @@ export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: Se
       space: witness.space, accountPublicKey: witness.accountPublicKey, endpoint: witness.endpoint, instanceId: witness.instanceId, witness } as ServiceAuthorityRequest;
     let answer: { result: ServiceAuthorityResult; sentinelCreds: string };
     try {
-      answer = await authority({ store, dir, request, signal: abort.signal, ...(renewing ? { proof: { kind: "service-renewal", token: m.renewalProof } } : {}) });
+      answer = await authority({ store, dir, ...(sessionDir === undefined ? {} : { sessionDir }), request, signal: abort.signal, ...(renewing ? { proof: { kind: "service-renewal", token: m.renewalProof } } : {}) });
     } catch (e) {
       if (closed) throw new Error("service renewal is closed");
       if (e instanceof ServiceAuthorityTransportError) outage(`service renewal is unavailable (${operation} not confirmed); the next pull replays the same request`);

@@ -36,6 +36,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
+import { tlsIntent } from "./broker-url.js";
 import { c, paintFor } from "./colors.js";
 import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
@@ -603,11 +604,8 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
         { code: "TARGET_NOT_FOUND", ...(named ? { target: { space } } : {}) },
       );
     const creds = readCredsFile(flags.creds);
-    // A broker taken from the space's record keeps its recorded TLS requirement. With `--server` the
-    // connect is off-registry: no recorded TLS intent to inherit. It stays non-strict, and that is a
-    // real (documented) gap rather than a safe default - a `--creds` connect to a TLS broker still
-    // upgrades, but is downgradeable.
-    const tls = recorded?.tlsRequired === true;
+    // Keep recorded TLS policy, or require the transport the explicit URL names.
+    const tls = tlsIntent(server, recorded?.tlsRequired === true);
     try {
       await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) });
     } catch (e) {
@@ -656,10 +654,9 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
         undefined,
         { code: "TARGET_NOT_FOUND" },
       );
-    // A raw OPEN remote broker named entirely on the command line: nothing recorded it, so there
-    // is no intent to honour. Non-strict, same documented gap as `--creds`.
-    await reachableOrThrow(flags.server, {});
-    return { server: flags.server, space: flags.space, tls: false };
+    const tls = tlsIntent(flags.server, false);
+    await reachableOrThrow(flags.server, { tls });
+    return { server: flags.server, space: flags.space, tls };
   }
   const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline, readOnly: opts.readOnly });
   return connectTargetOrThrow(target, role, opts);

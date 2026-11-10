@@ -66,7 +66,7 @@ import {
 } from "@cotal-ai/auth";
 import { recordMesh, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
-import { daemonPaths } from "../daemon/endpoint.js";
+import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
 import { registerAnswer } from "../daemon/register.js";
 
@@ -140,6 +140,8 @@ const paths = daemonPaths({ XDG_RUNTIME_DIR: rtDir });
 const key = await generateKeyPair("EdDSA");
 const jwk = { ...await exportJWK(key.publicKey), kid: "a2b2-idp" };
 const SESSION = "a2b2-session-handle-not-a-secret";
+const MANAGED_SESSION = "a2b2-managed-session-not-a-secret";
+const sessionRequests: string[] = [];
 let idpOrigin = "";
 const jwtsIssued: string[] = [];
 /** R11: the IdP rejects the session handle, as for an expired or revoked session. */
@@ -148,9 +150,11 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/jwks") return void res.end(JSON.stringify({ keys: [jwk] }));
   if (req.url === "/api/auth/token" && idpRevoked) { res.writeHead(401); return void res.end("{}"); }
-  if (req.url === "/api/auth/token" && (req.headers.authorization ?? "") === `Bearer ${SESSION}`) {
+  if (req.url === "/api/auth/token" && [SESSION, MANAGED_SESSION].some((session) => req.headers.authorization === `Bearer ${session}`)) {
+    sessionRequests.push(req.headers.authorization === `Bearer ${MANAGED_SESSION}` ? "managed" : "default");
     const now = Math.floor(Date.now() / 1000);
-    const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + 120).sign(key.privateKey);
+    // A valid proof inside the cache's refresh margin makes each activation's session observable.
+    const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + 30).sign(key.privateKey);
     jwtsIssued.push(token);
     return void res.end(JSON.stringify({ token }));
   }
@@ -237,8 +241,8 @@ try {
   const regRecord = (space: string) => { const f = regFile(space); return f ? JSON.parse(readFileSync(join(home, "daemon", f), "utf8")) as Record<string, unknown> : undefined; };
 
   let d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
-  const cli = async (space: string): Promise<{ status: number | null; doc: Record<string, any>; out: string; err: string }> => {
-    const child = spawn(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "bin", "cotal.ts"), "daemon", "register", "--space", space, "--json"], {
+  const cli = async (space: string, mode = "register", daemonHome?: string): Promise<{ status: number | null; doc: Record<string, any>; out: string; err: string }> => {
+    const child = spawn(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "bin", "cotal.ts"), "daemon", mode, "--space", space, "--json", ...(daemonHome === undefined ? [] : ["--daemon-home", daemonHome])], {
       cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "", err = "";
@@ -384,6 +388,37 @@ try {
       const text = files.map((f) => readFileSync(join(home, "daemon", f), "utf8")).join("\n");
       check("R9 daemon state holds no session handle, JWT, bearer or renewal proof", ![SESSION, ...jwtsIssued].some((s) => text.includes(s)) && !/accessBearer|renewalProof/.test(text), files);
       check("R9 no manager-instance file under the home or participant root", ![home, participant].some((p) => readdirSync(p, { recursive: true }).map(String).some((f) => f.includes("manager-instance"))));
+    });
+    await cell("R14 a separate daemon home uses its own session for registration and activation", async () => {
+      const managed = join(root, "managed"); mkdirSync(managed, { mode: 0o700 });
+      saveIdpSession(managed, idpUrl, { token: MANAGED_SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+      const managedPaths = daemonPathsFor(managed, { XDG_RUNTIME_DIR: rtDir });
+      const separate = await serveDaemon({ paths: managedPaths, version: "0.0.0-smoke", peerUid, sessionDir: managed } as Parameters<typeof serveDaemon>[0]);
+      try {
+        const before = sessionRequests.length;
+        const first = await cli(ON, "register", managed);
+        check("R14 managed registration asks for approval", first.status === 0 && first.doc.result?.outcome === "approval-required", { status: first.status, doc: first.doc });
+        const used = sessionRequests.slice(before);
+        check("R14 registration reads only the separate home's session", used.length > 0 && used.every((s) => s === "managed"), used);
+        if (first.doc.result?.outcome !== "approval-required") return;
+        const proposalId = first.doc.result.proposalId as string;
+        const p = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "proposal-read", input: { proposalId }, granter: operator } as never) as { record?: { revision: number; value: { nameBinding: { revision: number } | null } } };
+        const decided = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "decide", granter: { kind: "owner", owner: fixture.owner },
+          input: { proposalId, expectedProposalRevision: p.record?.revision ?? 0, expectedNameRevision: p.record?.value.nameBinding?.revision ?? 0, decision: "approve", callerCeiling: [] } } as never) as { state: string };
+        check("R14 fixture owner approves the separate instance", decided.state === "approved", decided);
+        if (decided.state !== "approved") return;
+        const activationStart = sessionRequests.length;
+        let registered = await cli(ON, "register", managed);
+        for (let i = 0; i < 10 && registered.doc.result?.outcome === "pending"; i++) { await sleep(500); registered = await cli(ON, "register", managed); }
+        check("R14 approval replay keeps the managed request id", registered.doc.result?.outcome === "registered" && registered.doc.result?.requestId === first.doc.result.requestId, registered.doc);
+        const connected = await cli(ON, "service-connect", managed);
+        check("R14 the separate daemon connects through the broker and ready handshake", connected.status === 0 && connected.doc.result?.state === "connected", { status: connected.status, doc: connected.doc });
+        const activated = sessionRequests.slice(activationStart);
+        check("R14 replay and activation use only the separate home's session", activated.length > 0 && activated.every((s) => s === "managed"), activated);
+        const disconnected = await cli(ON, "service-disconnect", managed);
+        check("R14 the owned connection disconnects", disconnected.status === 0 && disconnected.doc.result?.state === "disconnected", disconnected.doc);
+        check("R14 no session handle reaches CLI output", ![first, connected, disconnected].some((r) => [SESSION, MANAGED_SESSION, ...jwtsIssued].some((token) => (r.out + r.err).includes(token))));
+      } finally { await separate.close(); }
     });
   } finally { await d.close(); }
 } catch (e) {
