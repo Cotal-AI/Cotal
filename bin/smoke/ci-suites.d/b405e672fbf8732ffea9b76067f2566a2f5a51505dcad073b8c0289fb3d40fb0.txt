@@ -1,0 +1,2 @@
+# The OpenCode 2.x AG-UI mapping over measured sessions, graded after the egress policy.
+smoke:agui-opencode2-map

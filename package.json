@@ -382,6 +382,8 @@
     "smoke:agui-map:real": "tsx extensions/connector-claude-code/smoke/agui-map.smoke.ts",
     "smoke:agui-opencode-map": "tsx extensions/connector-opencode/smoke/agui-map.smoke.ts",
     "smoke:agui-opencode-source": "tsx extensions/connector-opencode/smoke/agui-source.smoke.ts",
+    "smoke:agui-opencode2-map": "tsx extensions/connector-opencode/smoke/agui-map2.smoke.ts",
+    "smoke:agui-opencode2-source": "tsx extensions/connector-opencode/smoke/agui-source2.smoke.ts",
     "smoke:opencode-events-arm": "tsx extensions/connector-opencode/smoke/events-arm.smoke.ts",
     "smoke:opencode-launch-claim": "pnpm --filter @cotal-ai/connector-opencode build && tsx extensions/connector-opencode/smoke/launch-claim.smoke.ts",
     "smoke:opencode-events-reset": "tsx extensions/connector-opencode/smoke/agui-session-reset.smoke.ts",
