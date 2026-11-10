@@ -6,7 +6,7 @@
  * starts nothing. Every cell drives the shipped `serveDaemon` with a temp machine home
  * (`COTAL_HOME`), a mesh record seeded through the stock registry writer, a stock IdP session file,
  * and a loopback HTTP fixture standing in for the space's auth service. The fixture counts every
- * request by method and route. No real credentials and no provider calls.
+ * request by method and route. A loopback IdP accepts or rejects fixture session handles.
  *
  * Cells (each asserts counts):
  *  C1  an unknown space: not-registered, 0 fixture requests, no daemon identity written;
@@ -94,9 +94,19 @@ const errorOf = (f: Frame) => (f.error ?? {}) as Record<string, unknown>;
 // ---------- a loopback fixture for the space's auth service ----------
 type Answer = { status: number; body?: unknown; headers?: Record<string, string> } | "hang";
 let answer: Answer = { status: 404 };
+let idpAnswer: Answer = { status: 200, body: { token: "fixture-jwt-not-cached" } };
+let tokenRequests = 0;
 const hits: Array<{ method: string; path: string }> = [];
 const authority = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   for await (const _ of req) { /* drain */ }
+  if (req.url === "/api/auth/token") {
+    tokenRequests++;
+    const a = idpAnswer;
+    if (a === "hang") { req.socket.destroy(); return; }
+    res.writeHead(a.status, { "content-type": "application/json", ...(a.headers ?? {}) });
+    res.end(JSON.stringify(a.body ?? {}));
+    return;
+  }
   hits.push({ method: req.method ?? "", path: new URL(req.url!, "http://x").pathname });
   const a = answer;
   if (a === "hang") return;
@@ -123,7 +133,7 @@ mkdirSync(home, { mode: 0o700 });
 process.env.COTAL_HOME = home;
 const meshRoot = join(root, "mesh");
 mkdirSync(meshRoot, { mode: 0o700 });
-const IDP = "https://idp.example.test/api/auth";
+const IDP = `${base}/api/auth`;
 // Two account-key-shaped values. The daemon only pins and compares them; nothing signs with them.
 const ACCOUNT_A = `A${"B".repeat(55)}`;
 const ACCOUNT_B = `A${"C".repeat(55)}`;
@@ -131,7 +141,7 @@ const ACCOUNT_B = `A${"C".repeat(55)}`;
 // that space's own state dir, which the stock client checks. The file itself is never read by this check.
 const userMesh = (space: string, url: string): MeshEntry => ({
   space, server: "nats://127.0.0.1:4222", root: meshRoot, mode: "user", origin: "manual",
-  userAuth: { provider: "cotal", idp: { url: IDP, issuer: "https://idp.example.test", audience: "https://idp.example.test" }, endpoints: { url }, remote: true, sentinelCredsPath: join(userAuthStateDir(meshRoot, space, { readOnly: true }), "sentinel.creds") },
+  userAuth: { provider: "cotal", idp: { url: IDP, issuer: base, audience: base }, endpoints: { url }, remote: true, sentinelCredsPath: join(userAuthStateDir(meshRoot, space, { readOnly: true }), "sentinel.creds") },
   ts: new Date().toISOString(),
 });
 recordMesh(userMesh("signedout", base));
@@ -174,6 +184,27 @@ try {
     // From here the machine is signed in to the space's IdP through the stock session writer.
     saveIdpSession(home, IDP, { token: "smoke-session-handle-not-a-secret", expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "smoke-sub" });
     recordMesh(userMesh("ready", base));
+
+    await cell("C3b cached sessions require an accepted token exchange", async () => {
+      resetHits();
+      for (const expiresAt of [Math.floor(Date.now() / 1000) + 3600, 1]) {
+        saveIdpSession(home, IDP, { token: "rejected-fixture-session", expiresAt, sub: "smoke-sub" });
+        idpAnswer = { status: 401 };
+        const before = tokenRequests;
+        const r = await ask(paths.socket, { op: "connect-check", space: "ready" });
+        check(`C3b rejected session with expiry ${expiresAt} needs sign-in`, resultOf(r).outcome === "not-signed-in", r);
+        check("C3b one token exchange, no authority request or identity", tokenRequests === before + 1 && hits.length === 0 && identityFiles().length === 0);
+      }
+      for (const [a, outcome] of [["hang", "unreachable"], [{ status: 503 }, "refused"], [{ status: 200, body: {} }, "refused"]] as const) {
+        idpAnswer = a;
+        const r = await ask(paths.socket, { op: "connect-check", space: "ready" });
+        check(`C3b provider failure is ${outcome}, not a rejected sign-in`, resultOf(r).outcome === outcome, r);
+        check("C3b provider failure sends no authority request and pins nothing", hits.length === 0 && identityFiles().length === 0);
+      }
+      idpAnswer = { status: 200, body: { token: "fixture-jwt-not-cached" } };
+      // Local expiry is advisory. A provider-accepted session must still work in C4 and C5.
+      saveIdpSession(home, IDP, { token: "accepted-fixture-session", expiresAt: 1, sub: "smoke-sub" });
+    });
 
     await cell("C4 service endpoints off at the space", async () => {
       resetHits();

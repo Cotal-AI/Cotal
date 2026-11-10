@@ -168,9 +168,12 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
 async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<void> {
   const check = await connectCheckViaDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, space: opts.space });
   if (!check.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the connection check: ${check.code} ${check.message}`, { native: { code: check.code } });
+  if (check.result.outcome === "unreachable" || check.result.outcome === "refused") {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", check.result.message, { native: { code: check.result.outcome.toUpperCase() } });
+  }
   if (check.result.outcome !== "not-signed-in") {
-    // These outcomes occur only after connect-check has loaded the daemon's provider session.
-    const signedIn = ["ready-to-register", "unsupported-by-space", "account-mismatch", "unreachable", "refused"].includes(check.result.outcome);
+    // These outcomes occur only after connect-check has validated the daemon's provider session.
+    const signedIn = ["ready-to-register", "unsupported-by-space", "account-mismatch"].includes(check.result.outcome);
     steps.push({ step: "sign-in", outcome: signedIn ? "already-signed-in" : "not-needed-here", detail: `the connection check answered ${check.result.outcome}` });
     opts.report(signedIn
       ? "sign-in: already signed in; no approval was needed"
