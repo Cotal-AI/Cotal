@@ -16,7 +16,11 @@ public static class PresenceWindow {
   [DllImport("user32.dll", EntryPoint="GetWindowLongW")] public static extern int GetWindowLong(IntPtr h, int index);
   [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint command);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr FindWindow(string cls, string title);
+  // PowerShell coerces null string arguments to empty strings. Win32 needs null
+  // to match any class/title, so keep the optional pointers inside typed C#.
+  public static IntPtr MainWindow() { return FindWindow(null, "Cotal"); }
+  public static IntPtr Taskbar() { return FindWindow("Shell_TrayWnd", null); }
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   public delegate bool EnumWindowProc(IntPtr h, IntPtr data);
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowProc callback, IntPtr data);
@@ -45,7 +49,7 @@ function Screenshot($name) {
 function Wait-Window($path) {
   for ($i = 0; $i -lt 40; $i++) {
     $processes = @(Get-Process 'cotal-desktop' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $path })
-    $handle = [PresenceWindow]::FindWindow($null, 'Cotal')
+    $handle = [PresenceWindow]::MainWindow()
     [uint32]$windowPid = 0
     if ($handle -ne [IntPtr]::Zero) { [PresenceWindow]::GetWindowThreadProcessId($handle, [ref]$windowPid) | Out-Null }
     @{ second = $i; processes = @($processes | Select-Object Id, Path, MainWindowTitle); matchingWindow = $handle.ToInt64(); windowPid = $windowPid } | ConvertTo-Json -Depth 4 -Compress | Add-Content (Join-Path $out 'window-wait.jsonl')
@@ -102,7 +106,7 @@ foreach ($kind in @('nsis', 'msi')) {
     @{ handle = $handle.ToInt64(); style = $style; owner = [PresenceWindow]::GetWindow($handle, 4).ToInt64(); title = $owned.MainWindowTitle } | ConvertTo-Json | Set-Content (Join-Path $out "$kind-window.json")
     Start-Sleep 3
     Screenshot "$kind-taskbar.png"
-    $taskbarHandle = [PresenceWindow]::FindWindow('Shell_TrayWnd', $null)
+    $taskbarHandle = [PresenceWindow]::Taskbar()
     if ($taskbarHandle -eq [IntPtr]::Zero) { throw 'Explorer taskbar is unavailable in this runner session.' }
     $taskbar = [System.Windows.Automation.AutomationElement]::FromHandle($taskbarHandle)
     $items = $taskbar.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
