@@ -1,0 +1,2 @@
+# The OpenCode 2.x event source over measured message lists: settle rule, paging, cursor.
+smoke:agui-opencode2-source

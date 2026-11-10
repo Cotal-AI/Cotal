@@ -1,0 +1,2 @@
+# OpenCode 2.x publishes its AG-UI event plane: the real 2.x plugin against a real broker.
+smoke:opencode2-events
