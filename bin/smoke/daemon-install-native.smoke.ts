@@ -44,8 +44,9 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CommandFailure } from "@cotal-ai/workspace";
+import { mkSecretDir } from "@cotal-ai/core";
 import type { DaemonPaths } from "../daemon/endpoint.js";
-import { planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
+import { assertScheduledEntry, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
 import { launchAgentLabel, launchAgentService, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
 
@@ -271,6 +272,33 @@ try {
 
   console.log("N3 task definition");
   {
+    const nativeEntry = fileURLToPath(new URL("../dist/daemon-native.js", import.meta.url));
+    check("the stock build ships the task's native entry", existsSync(nativeEntry));
+    const nativeHome = join(root, "native-entry");
+    mkSecretDir(nativeHome);
+    check("missing task entry refuses before registration", code(() => assertScheduledEntry(join(nativeHome, "missing.js"))) === "DEPENDENCY_UNAVAILABLE");
+    check("directory task entry refuses before registration", code(() => assertScheduledEntry(nativeHome)) === "DEPENDENCY_UNAVAILABLE");
+    check("built task entry passes preflight", code(() => assertScheduledEntry(nativeEntry)) === "none");
+    const refused = spawnSync(process.execPath, [nativeEntry, "daemon", "serve", "--daemon-home", nativeHome, "--json"], {
+      cwd: root, encoding: "utf8", timeout: 20_000,
+      env: { ...process.env, XDG_RUNTIME_DIR: root, COTAL_HOME: join(root, "cotal-home"), COTAL_IDP_TIMEOUT_MS: "0", COTAL_SKIP_CONNECTOR_SEED: "1" },
+    });
+    const log = join(nativeHome, "daemon.log");
+    const refusalLog = existsSync(log) ? readFileSync(log, "utf8") : "";
+    check("built native entry reaches startup and retains its refusal", refused.status === 1
+      && refusalLog.includes("COTAL_IDP_TIMEOUT_MS") && !refusalLog.includes("daemon ready"), refused.error ?? refused.stderr);
+    const logging = spawnSync(process.execPath, ["--input-type=module", "-e",
+      `import { captureNativeDaemonOutput } from ${JSON.stringify(new URL("../dist/daemon/native-log.js", import.meta.url).href)};
+       captureNativeDaemonOutput(process.argv[1]);
+       process.stderr.write("eyJhbGciOiJIUzI1NiJ9.payload.signature\\n");
+       process.stdout.write("x".repeat(100000));`, nativeHome], {
+      cwd: root, encoding: "utf8", timeout: 10_000,
+    });
+    const bounded = readFileSync(log, "utf8");
+    check("native launch output is replaced, bounded and credential-redacted", logging.status === 0
+      && bounded.includes("<redacted>") && !bounded.includes("eyJ") && !bounded.includes("COTAL_IDP_TIMEOUT_MS")
+      && Buffer.byteLength(bounded) <= 64 * 1024 + 128);
+    check("native launch log is private", process.platform === "win32" || (lstatSync(log).mode & 0o777) === 0o600);
     const sid = "S-1-5-21-1004336348-1177238915-682003330-1001";
     check("default task name carries the SID", scheduledTaskName(undefined, sid) === `cotal-daemon-${sid}`);
     check("home task name is derived from the home", scheduledTaskName("C:\\h", sid) === `cotal-daemon-${sha("C:\\h").slice(0, 16)}-${sid}`);
