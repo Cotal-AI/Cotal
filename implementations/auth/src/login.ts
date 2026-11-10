@@ -125,7 +125,13 @@ interface OAuthError {
 }
 async function oauthError(res: Response, cancel?: AbortSignal): Promise<OAuthError> {
   try {
-    return (await res.json()) as OAuthError;
+    const body: unknown = await res.json();
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return {};
+    const fields = body as Record<string, unknown>;
+    return {
+      ...(typeof fields.error === "string" ? { error: fields.error } : {}),
+      ...(typeof fields.error_description === "string" ? { error_description: fields.error_description } : {}),
+    };
   } catch {
     // An unreadable error body is treated as "no detail", unless the caller cancelled mid-read.
     throwIfCancelled(cancel);

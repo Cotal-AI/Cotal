@@ -884,6 +884,7 @@ approval refuses `PERMISSION_DENIED` (`DENIED` or `EXPIRED`), and an unreachable
 `DEPENDENCY_UNAVAILABLE`
 (`UNREACHABLE`); none of these saves a session. An HTTP refusal of the initial device-code request
 refuses `DEPENDENCY_UNAVAILABLE` (`AUTHORIZATION_REFUSED`), exit 2, before approval or persistence.
+This classification does not depend on the provider's optional error-body shape.
 Check that `--idp` names the auth base URL (Better Auth: `<origin>/api/auth`) and that the provider
 accepts `--client-id`. This also applies to sign-in during `daemon setup`.
 Any other provider answer fails `OPERATION_FAILED`
