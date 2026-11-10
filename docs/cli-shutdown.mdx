@@ -205,7 +205,12 @@ adopts those records where the folder is now and keeps its history, then
 `cotal space create <space>` for another folder. Outside a terminal it needs `--yes`, and
 `--dry-run` lists each member with its pid and process.
 `cotal status` marks such a project folder as gone, with `selected.rootGone` set to `true` in its
-JSON, and its Next names `cotal down --space <space> --yes`. A command that connects to a static-auth
+JSON, and its Next names `cotal down --space <space> --yes`. From another folder, its connection
+state is `root-gone`, rather than an authentication failure. `cotal space show <space>` also names
+the moved or deleted root and the same stop, while its broker row still reports reachability.
+Both recognize the missing stack records even when a running broker has recreated directories at
+the old path. Inside the moved folder, status keeps the specific move-back remedy.
+A command that connects to a static-auth
 space, such as `send` or `history`, is refused with `DEPENDENCY_UNAVAILABLE`, because the seed went
 with the folder, and its Next names the same `down`.
 

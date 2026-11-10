@@ -736,6 +736,12 @@ export function goneStackRoot(space: string): string | undefined {
   } catch { return undefined; }
 }
 
+/** Whether `root` is the gone folder of the stack this machine still records for `space`. */
+export function stackRootGone(space: string, root: string): boolean {
+  const gone = goneStackRoot(space);
+  return gone !== undefined && canonicalRoot(gone) === canonicalRoot(root);
+}
+
 /** Remove the controller stack definitions saved for `space` at `root`, with their stopped instance
  *  records, as `service remove` does, so that another folder can start a stack under the same name.
  *  A definition saved for another root is left alone. Nothing is removed while the root holds
