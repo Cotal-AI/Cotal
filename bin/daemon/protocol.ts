@@ -4,7 +4,8 @@
  * A request names `{ v, id, op }` plus exactly the fields its op declares. Any other key, any other
  * version, an unknown op, a field of the wrong shape, a line that is not a JSON object, or a line
  * over {@link MAX_LINE_BYTES} is refused before any effect, with a typed error. Responses echo the
- * request id when one could be read.
+ * request id when one could be read. An oversized line closes the connection after its refusal,
+ * including an incomplete tail after earlier valid requests. The limit includes the newline.
  *
  * Sign-in streams: `login-start` answers with one `login-prompt` event, then exactly one
  * `login-result` event, both tagged with the request id and the attempt id. No frame carries a
