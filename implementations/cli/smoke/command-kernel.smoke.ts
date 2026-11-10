@@ -1352,10 +1352,23 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.equal(await executeUpdate(true, current.rt), 0);
   assert.ok(current.events.includes("reconcile"));
   assert.ok(!current.events.some((event) => event.startsWith("global:install")));
+  current.rt.waitForInstalledGeneration = async () => { throw new Error("ordinary update must not wait for a replacement"); };
+  assert.equal(await executeUpdate(false, current.rt), 0);
 
   const child = updateRuntime({ env: { COTAL_UPDATE_TARGET_VERSION: "0.13.1", COTAL_UPDATE_PARENT: "99" } });
+  child.rt.waitForInstalledGeneration = async version => {
+    assert.equal(version, "0.13.1");
+    child.events.push("generation-ready");
+  };
   assert.equal(await executeUpdate(false, child.rt), 0);
+  assert.ok(child.events.indexOf("generation-ready") < child.events.indexOf("report-running-manager"), "replacement daemon readiness precedes continuity");
   assert.deepEqual(child.events.filter((event) => event === "reconcile" || event.startsWith("npm:")), ["reconcile"]);
+
+  const unavailable = updateRuntime({ env: { COTAL_UPDATE_TARGET_VERSION: "0.13.1", COTAL_UPDATE_PARENT: "99" } });
+  unavailable.rt.waitForInstalledGeneration = async () => { throw new Error("daemon did not restore its hosted Managers before the deadline"); };
+  assert.equal(await executeUpdate(false, unavailable.rt), 1);
+  assert.ok(!unavailable.events.includes("report-running-manager") && !unavailable.events.includes("reconcile"), "failed activation leaves continuity and every connector write untouched");
+  assert.ok(unavailable.events.some(event => event.includes("installed daemon generation:")));
 
   const wrongChild = updateRuntime({ env: { COTAL_UPDATE_TARGET_VERSION: "0.13.2", COTAL_UPDATE_PARENT: "99" } });
   assert.equal(await executeUpdate(false, wrongChild.rt), 1);
@@ -1367,6 +1380,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     { COTAL_UPDATE_TARGET_VERSION: "0.13.1", COTAL_UPDATE_PARENT: "98" },
   ]) {
     const invalid = updateRuntime({ env });
+    invalid.rt.waitForInstalledGeneration = async () => { assert.fail("unbound markers cannot enter the daemon wait"); };
     assert.equal(await executeUpdate(false, invalid.rt), 1);
     assert.ok(!invalid.events.includes("reconcile"), "partial/wrong child marker fails before mutation");
   }

@@ -77,6 +77,8 @@ export interface UpdateRuntime {
   /** Bring what connectors installed in their harnesses to this release; one line per connector. */
   refreshConnectors(): Promise<readonly string[]>;
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
+  /** The binary may await its daemon's replacement generation before the bound child's read. */
+  waitForInstalledGeneration?(version: string): Promise<void>;
   extensions(): readonly InstalledExtension[];
   /** Why a first-party extension still needs its reinstall at `generation`, or undefined once it is kept. */
   verifyExtension(entry: InstalledExtension, generation: string): string | undefined;
@@ -217,6 +219,12 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
   if (child.kind === "bound") {
     if (current !== child.target) {
       rt.err(c.red(`✗ global update child is cotal-ai ${current}, expected ${child.target}; refusing to mutate extensions`));
+      return 1;
+    }
+    try {
+      await rt.waitForInstalledGeneration?.(current);
+    } catch (error) {
+      rt.err(c.red(`✗ installed daemon generation: ${refusal(error)}`));
       return 1;
     }
     return reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);

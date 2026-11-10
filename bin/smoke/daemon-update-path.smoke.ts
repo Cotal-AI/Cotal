@@ -113,11 +113,37 @@ if (process.argv.includes("--provenance")) {
   }
 }
 try {
+  const generationRace = process.argv.includes("--generation-race");
+  const generationTimeout = process.argv.includes("--generation-timeout");
+  if (generationRace || generationTimeout) {
+    env.COTAL_UPDATE_TARGET_VERSION = version;
+    env.COTAL_UPDATE_PARENT = String(process.pid);
+  }
   const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...(process.argv.includes("--setup-foreign") || process.argv.includes("--setup-start-fails") ? ["daemon", "setup", "--space", "absent", "--no-manager", "--wait", "0", "--json"] : ["update"])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
+  let transition: Promise<void> | undefined;
+  child.stdout.on("data", chunk => {
+    if (generationRace && String(chunk).includes("waiting up to 120s") && !transition) transition = (async () => {
+      if (output.includes("Built-in connectors")) throw new Error("connector writes preceded generation readiness");
+      await old.close();
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      const replacementEnv = { ...env };
+      delete replacementEnv.COTAL_UPDATE_TARGET_VERSION;
+      delete replacementEnv.COTAL_UPDATE_PARENT;
+      replacement = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "serve"], { cwd: root, env: replacementEnv, stdio: "ignore" });
+    })();
+  });
   child.stdout.on("data", b => output += String(b)); child.stderr.on("data", b => output += String(b));
   const code = await new Promise(resolve => child.once("exit", resolve));
-  if (process.argv.includes("--unrecorded")) {
+  await transition;
+  if (generationTimeout) {
+    if (code !== 1 || calls.length || output.includes("Built-in connectors") || !output.includes("did not become ready within 120s") || !output.includes("then run cotal update again")) throw new Error(`generation timeout did not refuse before writes with recovery: ${output}`);
+    console.log("PASS bounded generation wait refuses before connector writes and names recovery");
+  } else if (generationRace) {
+    const after = await status();
+    if (code !== 0 || calls.length || !transition || after.result.version !== version || !output.includes("Built-in connectors")) throw new Error(`replacement reconcile raced activation: ${JSON.stringify({ code, calls, output })}`);
+    console.log("PASS replacement reconcile waits through endpoint loss without a second restart");
+  } else if (process.argv.includes("--unrecorded")) {
     const after = await status();
     console.log("unrecorded daemon update", JSON.stringify({ code, calls, after, output }));
     if (code !== 0 || calls.length || after.result.version !== "0.0.0" || !output.includes("runs Cotal 0.0.0; no recorded user service, left running")) throw new Error("unrecorded daemon blocked update or was restarted");
