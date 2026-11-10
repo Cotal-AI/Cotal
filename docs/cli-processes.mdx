@@ -887,6 +887,12 @@ approval refuses `PERMISSION_DENIED` (`DENIED` or `EXPIRED`), and an unreachable
 is reported with a fixed sentence; the provider's own error text is never relayed. `status`
 keeps answering while a sign-in waits.
 
+An unreadable `idp-sessions.json` or `space-catalogs.json` refuses sign-in with
+`DEPENDENCY_UNAVAILABLE` (`LOCAL-STATE-ERROR`) before contacting the provider or saving a session.
+The refusal names the cache and asks you to inspect and restore it in the selected daemon home.
+The daemon leaves it unchanged. `spaces --refresh` preserves the same cache diagnosis and recovery
+step instead of reporting a generic spaces failure. Signing in again cannot repair a damaged cache.
+
 `connect-check` asks the running daemon whether it could register with a space as its own service.
 The daemon is not a Manager and never borrows a Manager's identity or authority. The check reads
 the space's registration on this machine and the daemon's sign-in, then the space's public account

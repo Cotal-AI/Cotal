@@ -54,7 +54,7 @@ export type DaemonRequest =
 
 export type ProtocolErrorCode =
   | "BAD_JSON" | "NOT_OBJECT" | "BAD_VERSION" | "UNKNOWN_FIELD" | "BAD_ID" | "UNKNOWN_OP" | "LINE_TOO_LONG"
-  | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "GENERATION_PENDING";
+  | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "DEPENDENCY_UNAVAILABLE" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "GENERATION_PENDING";
 
 export interface DaemonStatus {
   readonly generation?: { readonly installed: string; readonly running: string; readonly waiting: string };
@@ -96,6 +96,7 @@ export interface LoginPrompt {
 export type LoginResult =
   | { readonly outcome: "signed-in"; readonly idp: string; readonly sub: string; readonly label?: string; readonly previousSub?: string }
   | { readonly outcome: "cancelled" }
+  | { readonly outcome: "failed"; readonly reason: "local-state-error"; readonly message: string; readonly remedy?: string }
   | { readonly outcome: "failed"; readonly reason: "denied" | "expired" | "unreachable" | "refused"; readonly message: string };
 
 /** The answer to `login-cancel`. It is sent only after the named attempt has settled. */

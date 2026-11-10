@@ -193,6 +193,7 @@ async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<v
   const r = reply.result;
   if (r.outcome === "failed") {
     const native = { native: { code: r.reason.toUpperCase() } };
+    if (r.reason === "local-state-error") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, { ...native, remedy: r.remedy });
     if (r.reason === "unreachable") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${r.message}; no session was saved and nothing was registered`, native);
     if (r.reason === "denied" || r.reason === "expired") throw new CommandFailure("refused", "PERMISSION_DENIED", `${r.message}; no session was saved and nothing was registered`, native);
     throw new CommandFailure("failed", "OPERATION_FAILED", `${r.message}; a session may have been saved before the failure, so run this again`, native);
@@ -268,6 +269,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
       if (!signed.ok) throw new CommandFailure("refused", "AUTH_REQUIRED", `the daemon refused discovery sign-in: ${signed.code} ${signed.message}`, { native: { code: signed.code }, remedy: `run cotal daemon login --idp ${opts.idp}` });
       if (signed.result.outcome === "failed") {
         const failed = signed.result;
+        if (failed.reason === "local-state-error") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", failed.message, { native: { code: failed.reason.toUpperCase() }, remedy: failed.remedy });
         throw new CommandFailure("refused", failed.reason === "unreachable" ? "DEPENDENCY_UNAVAILABLE" : "PERMISSION_DENIED", failed.message, { native: { code: failed.reason.toUpperCase() }, remedy: `run cotal daemon login --idp ${opts.idp}` });
       }
       steps.push({ step: "sign-in", outcome: "signed-in", detail: `signed in as ${signed.result.label || signed.result.sub}` });

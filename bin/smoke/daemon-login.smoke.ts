@@ -31,7 +31,7 @@
  *      for that delivery and answers completed; meanwhile a new login-start is refused, 0 IdP calls;
  *  L14 a failed sign-in relays none of the provider's text (an error_description, a non-JSON token
  *      body) in any frame, or on the CLI's stdout or stderr;
- *  L15 a sign-in that fails after stock wrote the session does not make the CLI claim nothing was saved;
+ *  L15 a damaged catalog refuses sign-in before provider approval or a session write, naming recovery;
  *  L16 a sign-in denied at the verification page exits 2 refused PERMISSION_DENIED through the CLI.
  *
  * Run: tsx bin/smoke/daemon-login.smoke.ts   (Linux only)
@@ -533,20 +533,28 @@ try {
     } finally { await d.close(); }
   });
 
-  // ---- L15: a failure after the session was written claims nothing about persistence ----
-  await cell("L15 a failure after the session write", async () => {
+  // ---- L15: damaged local state is not a provider failure and cannot save a new session ----
+  await cell("L15 a damaged catalog before sign-in", async () => {
     resetScripted();
     const { paths, rt, home } = fresh(); await mkRuntime(rt);
-    // Stock writes the session, then reads the catalog file; a malformed one fails the sign-in there.
     mkdirSync(home, { mode: 0o700 });
     writeFileSync(join(home, "space-catalogs.json"), "{not json", { mode: 0o600 });
     approved = true;
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const run = await runCli(rt, sBase);
-      check("L15 instrument: the sign-in failed and the session was written", run.status !== 0 && run.status !== -1 && sessionSaved(home), { status: run.status, saved: sessionSaved(home), out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
-      check("L15 instrument: the CLI reported a failed sign-in (failed, OPERATION_FAILED)", failedEnvelope(run.out), { status: run.status, out: run.out.slice(0, 600) });
-      check("L15 the CLI does not claim nothing was saved", !/no session was saved|nothing was saved/i.test(run.out + run.err), { out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
+      const doc = JSON.parse(run.out) as Record<string, any>;
+      check("L15 exit 2, refused DEPENDENCY_UNAVAILABLE, not a provider failure", run.status === 2 && doc.outcome === "refused" && doc.error?.code === "DEPENDENCY_UNAVAILABLE", { status: run.status, out: run.out.slice(0, 600) });
+      check("L15 names space-catalogs.json and how to recover without exposing its contents", doc.error?.message.includes("space-catalogs.json") && doc.error?.remedy.includes("restore") && !run.out.includes("{not json"), doc.error);
+      check("L15 no provider request or new session", totalHits() === 0 && !existsSync(join(home, "idp-sessions.json")), { hits: totalHits() });
+      check("L15 damaged catalog is preserved", readFileSync(join(home, "space-catalogs.json"), "utf8") === "{not json");
+      const w = await wire(paths.socket);
+      try {
+        w.send({ v: 1, id: rid(), op: "spaces", refresh: true });
+        const reply = await w.next((frame) => frame.ok === false);
+        const error = reply.error as Record<string, unknown>;
+        check("L15 spaces preserves the typed cache refusal and remedy", error.code === "DEPENDENCY_UNAVAILABLE" && String(error.message).includes("space-catalogs.json") && String(error.remedy).includes("restore"), reply);
+      } finally { w.end(); await w.closed; }
     } finally { await d.close(); }
   });
 

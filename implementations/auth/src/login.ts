@@ -446,6 +446,8 @@ export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise
 export async function establishIdpSession(
   opts: DeviceLoginOpts & { dir: string },
 ): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
+  // Refuse damaged local state before asking the person to approve a sign-in.
+  readCatalogPreparationState(opts.dir);
   const previousSub = loadIdpSession(opts.dir, opts.idpUrl)?.sub;
   const session = await deviceLogin(opts);
   const tokenResult = await fetchIdpJwtResponse(opts.idpUrl, session.token, opts.signal);
@@ -474,6 +476,8 @@ export async function establishIdpSession(
   // The persistence fence: a cancel that lands after approval, while the proof was in flight,
   // must leave no session and no catalog entry on disk.
   throwIfCancelled(opts.signal);
+  // Approval can take minutes. Recheck before writing if another process changed the cache.
+  readCatalogPreparationState(opts.dir);
   saveIdpSession(opts.dir, opts.idpUrl, session);
   saveCatalogAdvertisement(opts.dir, opts.idpUrl, claims.iss, sub, tokenResult.response.headers.get("link"));
   return { session, sub, ...(previousSub && previousSub !== sub ? { previousSub } : {}), ...(label ? { label } : {}) };
@@ -584,13 +588,13 @@ function readCatalogPreparationState(dir: string) {
   let file: CatalogsFile;
   try { sessions = readSessionsFile(dir).sessions; }
   catch {
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local sign-in cache could not be read; no catalog refresh or registry application was attempted", {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local sign-in cache (idp-sessions.json) could not be read; no catalog refresh or registry application was attempted", {
       target: { path: join(dir, SESSIONS_FILE) }, remedy: "inspect and restore the sign-in cache before retrying; its contents were not printed or replaced",
     });
   }
   try { file = readCatalogsFile(dir); }
   catch {
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local space catalog cache could not be read; no catalog refresh or registry application was attempted", {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local space catalog cache (space-catalogs.json) could not be read; no catalog refresh or registry application was attempted", {
       target: { path: join(dir, CATALOG_FILE) }, remedy: "inspect and restore the catalog cache before retrying; its contents were not printed or replaced",
     });
   }

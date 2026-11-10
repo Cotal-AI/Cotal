@@ -175,6 +175,7 @@ async function login(args: ParsedArgs): Promise<void> {
   const r = reply.result;
   if (r.outcome === "failed") {
     const native = { native: { code: r.reason.toUpperCase() } };
+    if (r.reason === "local-state-error") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, { ...native, remedy: r.remedy });
     // Denied, expired and unreachable end before stock writes anything: refusals at the provider's
     // boundary. Any other failure can come after stock saved the session, so it claims nothing about
     // what was saved; `cotal daemon login` again replaces whatever is there.
@@ -420,7 +421,10 @@ async function run(args: ParsedArgs): Promise<void> {
     let reply;
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: args.values.refresh === true }); }
     catch (error) { throw asFailure(error); }
-    if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon could not read its spaces", { native: { code: reply.error.code } });
+    if (!reply.ok) {
+      if (reply.error.code === "DEPENDENCY_UNAVAILABLE") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", reply.error.message, { remedy: reply.error.remedy, native: { code: reply.error.code } });
+      throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon could not read its spaces", { native: { code: reply.error.code } });
+    }
     if ("event" in reply || !("kind" in reply.result) || reply.result.kind !== "spaces") throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon returned an unsupported space response");
     const result = reply.result;
     writeResult(presentationOf(args.values), { command: "daemon spaces", target: null, result,
