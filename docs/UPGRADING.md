@@ -7,7 +7,7 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
-## Personas read `endpoints` after 0.151.0
+## Personas read `endpoints` after 0.153.1
 
 A persona file's `endpoints` key used to be an unmodeled list that loading ignored. It now names the
 endpoint commands the persona hands its agent, as a closed list of `{ endpoint, commands }` entries
@@ -262,8 +262,8 @@ spawn: this spawn hands its helper more than the spawner holds: <parts>. A spawn
 The persona file, the channel overrides on the spawn request, and the default a channel-less persona
 takes from its spawner are all measured. The operator's own commands, such as `cotal spawn
 --detach`, call the manager with a one-shot instrument and are exempt. So are agents holding
-`capabilities: [admin]`, and anything the manager starts on its own behalf. After 0.146.0 the same
-refusal also covers a persona's endpoint commands ([above](#personas-read-endpoints-after-01510)).
+`capabilities: [admin]`, and anything the manager starts on its own behalf. After 0.153.1 the same
+refusal also covers a persona's endpoint commands ([above](#personas-read-endpoints-after-01531)).
 
 ### What changes for you
 
