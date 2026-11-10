@@ -41,6 +41,7 @@ async function freePort(): Promise<number> {
   return address.port;
 }
 const instances = new Map<string, string>();
+let cells = 0;
 try {
   assert.equal(run(["space", "create", "list-state", "--root", root]).status, 0);
   for (const [name, status] of [["notready", 404], ["healthy", 200], ["exited", 0]] as const) {
@@ -73,12 +74,14 @@ try {
     const line = human.stdout.split("\n").find((line) => line.trim().startsWith(`${name} `));
     if (!line || !new RegExp(`\\b${expected}\\b`).test(line.split("cotal ")[0]!)) failures.push(`${name}: human row does not show ${expected}: ${line}`);
     if (name === "notready" && row?.next !== "cotal service status notready") failures.push(`notready: unsafe next command ${row?.next}`);
+    cells++;
   }
   assert.deepEqual(failures, []);
   console.log("PASS: failed-readiness, exited-before-ready and healthy list/status agree");
   assert.equal(run(["service", "stop", "healthy", "--instance", instances.get("healthy")!, "--yes"]).status, 0);
   const stopped = run(["service"]);
   assert.equal(stopped.envelope?.result?.services?.find((row) => row.name === "healthy")?.state, "stopped");
+  cells++;
   const replacement = run(["service", "start", "healthy", "--new-instance"]);
   const replacementId = replacement.envelope?.result?.instanceId;
   if (replacementId) instances.set("healthy", replacementId);
@@ -93,9 +96,11 @@ try {
   const settledRow = settled.envelope?.result?.services?.find((row) => row.name === "healthy");
   assert.equal(settledRow?.state, "stopped");
   assert.equal(settledRow?.next, "cotal service start healthy");
+  cells++;
   console.log("PASS: multiple instances retain distinct states and deduplicate stopped records");
 } finally {
   const stops = [...instances].map(([name, id]) => run(["service", "stop", name, "--instance", id, "--yes"]));
   for (const stop of stops) assert.equal(stop.status, 0);
   console.log(`Retained isolated service state: ${home}`);
 }
+console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells} failed=0`);
