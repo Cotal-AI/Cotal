@@ -59,7 +59,6 @@ const instances = new Map<string, string>();
 const applicationRefusals = new Set<string>();
 let applications: readonly string[] = [];
 const selectedSpace = () => el<HTMLSelectElement>("space").value;
-const spaceLabel = () => el<HTMLSelectElement>("space").selectedOptions[0]?.textContent ?? selectedSpace();
 const connected = () => !upgradeNeeded && connection?.space === selectedSpace() && connection?.state === "launch-ready";
 const welcome = "Connect this computer to your Cotal account. People authorized in a connected space can launch applications as your operating-system user, with your applications’ sign-in and file permissions.";
 const progressNames = ["Background service", "Sign-in", "Space", "Agent applications", "Ready"];
@@ -269,7 +268,7 @@ async function removeSpace(space: string): Promise<void> {
   connections.delete(space); instances.delete(space); applicationRefusals.delete(space);
   if (space === selectedSpace()) connection = { space, state: "disconnected" };
   progress = progressNames.map(() => "waiting"); clearDetails(); notice("");
-  listOpened = true; showStage("finished");
+  listOpened = true; state(connection?.state ?? "ready"); showStage("finished");
 }
 function buttons(): void {
   el<HTMLButtonElement>("login").disabled = busy || loginActive || !isTauri();

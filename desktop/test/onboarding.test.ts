@@ -177,6 +177,7 @@ test("Ready removes a space and adds another only after confirmation", async () 
     (a.doc.querySelector('#connected-spaces button') as HTMLButtonElement).click(); await settle();
     assert.equal(JSON.stringify(a.calls.filter(r => r.op === "service-disconnect")), JSON.stringify([{ op: "service-disconnect", space: "team" }]));
     assert.equal(a.doc.querySelectorAll('[data-testid="connected-space-row"]').length, 0);
+    assert.equal(a.node("tray-label").textContent, "Not connected");
     await a.click("another-space");
     a.node<HTMLSelectElement>("space").value = "other";
     a.node("space").dispatchEvent(new a.dom.window.Event("change")); await settle();

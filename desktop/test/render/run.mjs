@@ -146,7 +146,7 @@ try {
             if (node.nodeType !== Node.TEXT_NODE || !node.textContent.trim()) continue;
             const range = document.createRange(); range.selectNodeContents(node);
             const box = el.getBoundingClientRect();
-            for (const rect of range.getClientRects()) if (rect.left < box.left - 1 || rect.right > box.right + 1 || rect.bottom > box.bottom + 1) failures.push(`clipped text: ${el.id || el.tagName}`);
+            for (const rect of range.getClientRects()) if (rect.left < box.left - 1 || rect.right > box.right + 1 || rect.bottom > box.bottom + 1) failures.push(`clipped text: ${el.id || el.tagName} text=${JSON.stringify(rect.toJSON())} box=${JSON.stringify(box.toJSON())}`);
           }
         }
         const controls = [...document.querySelectorAll("button,input,select,summary")].filter(el => visible(el) && !el.disabled);
