@@ -123,7 +123,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
   } catch (e) {
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
     const message = code === "NOT_RUNNING" ? "The daemon is not running. Install its background service first."
-      : code === "NO_RUNTIME_DIR" ? "XDG_RUNTIME_DIR is not set. Run the app as the intended operating-system user with its private runtime directory available."
+      : code === "NO_RUNTIME_DIR" ? "The daemon runtime path is unavailable or too long. On Linux, check XDG_RUNTIME_DIR for the intended operating-system user."
       : code === "UNSUPPORTED_PLATFORM" ? "This platform does not have the required native daemon support."
       : code === "PEER_UID_MISMATCH" || code === "PEER_NOT_LOCK_OWNER" ? "The local daemon identity could not be verified. The requested change was not sent."
       : "The operation could not be completed. Use the matching cotal daemon command for diagnostics; no success is assumed.";
