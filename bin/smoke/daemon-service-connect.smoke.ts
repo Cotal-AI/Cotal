@@ -1572,7 +1572,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           process.kill(manager.pid, "SIGSTOP");
           try {
             const refused = await ask(paths.socket, { op: "managers-prepare-restart" }, 45_000);
-            check("6217 unavailable preparation names its actual condition and retry", refused.ok === false && String(refused.error?.message).includes("generation request") && String(refused.error?.remedy).includes("same command again"), refused);
+            const error = refused.error as { message?: string; remedy?: string } | undefined;
+            check("6217 unavailable preparation names its actual condition and retry", refused.ok === false && String(error?.message).includes("generation request") && String(error?.remedy).includes("same command again"), refused);
           } finally { process.kill(manager.pid, "SIGCONT"); }
           return;
         }
