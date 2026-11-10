@@ -92,7 +92,9 @@ writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, uni
 if (process.argv.includes("--provenance")) {
   const argv = process.argv, execArgv = process.execArgv;
   const marker = process.env.COTAL_DAEMON_NATIVE_SERVICE;
+  const path = process.env.PATH;
   try {
+    process.env.PATH = env.PATH;
     process.argv = [process.execPath, join(repo, "bin/dist/cotal.js")];
     process.execArgv = [];
     delete process.env.COTAL_DAEMON_NATIVE_SERVICE;
@@ -106,6 +108,7 @@ if (process.argv.includes("--provenance")) {
     console.log("PASS native marker requires verified same-install source");
   } finally {
     process.argv = argv; process.execArgv = execArgv;
+    if (path === undefined) delete process.env.PATH; else process.env.PATH = path;
     if (marker === undefined) delete process.env.COTAL_DAEMON_NATIVE_SERVICE; else process.env.COTAL_DAEMON_NATIVE_SERVICE = marker;
   }
 }
