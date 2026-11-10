@@ -192,7 +192,7 @@ try {
     follow.stdout.setEncoding("utf8").on("data", (chunk: string) => { followed += chunk; });
     const followExit = new Promise<number | null>((resolve) => follow.on("exit", (code) => resolve(code)));
     for (let i = 0; i < 60 && !followed.includes('"type":"event"'); i++) await sleep(250);
-    const down = upCotal(["down"]);
+    const down = upCotal(["down", "--yes"]);
     upStackUp = down.status !== 0;
     check("cotal down stops the plain stack while the follow reads its manager's log", down.status === 0, out(down));
     const code = await Promise.race([followExit, sleep(15_000).then(() => "timeout" as const)]);
@@ -300,7 +300,7 @@ try {
     check("teardown stops the preset broker", stop.status === 0, out(stop));
   }
   if (upStackUp) {
-    const down = upCotal(["down"]);
+    const down = upCotal(["down", "--yes"]);
     check("teardown stops the plain stack", down.status === 0, out(down));
   }
   if (stackUp) {
@@ -312,7 +312,7 @@ try {
       const stop = cotal(["service", "stop", "manager", "--yes"]);
       check("teardown stops the manager", stop.status === 0, out(stop));
     }
-    const down = cotal(["down"]);
+    const down = cotal(["down", "--yes"]);
     check("cotal down stops the sandboxed stack", down.status === 0, out(down));
   }
   for (const dir of [home, root, upHome, upRoot, presetRoot]) rmSync(dir, { recursive: true, force: true });

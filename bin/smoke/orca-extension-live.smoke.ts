@@ -240,7 +240,7 @@ try {
     endpoints.stdout + endpoints.stderr,
   );
 
-  const down = cli(["down"], 90_000);
+  const down = cli(["down", "--yes"], 90_000);
   ok("cotal down completes the real user journey", down.status === 0, down.stdout + down.stderr);
   for (let i = 0; i < 40 && ((managerPid && alive(managerPid)) || (brokerPid && alive(brokerPid)) || (await portOpen())); i++) await sleep(250);
   ok("down stops the exact manager and broker", !!managerPid && !!brokerPid && !alive(managerPid) && !alive(brokerPid) && !(await portOpen()), { managerPid, brokerPid });
@@ -266,7 +266,7 @@ try {
     if (!bareRuntime) await sleep(1_000);
   }
   ok("the no-manifest manager runs on the orca runtime, not pty", bareRuntime, bareEndpoints);
-  const bareDown = cli(["down"], 90_000);
+  const bareDown = cli(["down", "--yes"], 90_000);
   ok("down clears the no-manifest --runtime orca mesh", bareDown.status === 0, bareDown.stdout + bareDown.stderr);
   for (let i = 0; i < 40 && ((bareManagerPid && alive(bareManagerPid)) || (bareBrokerPid && alive(bareBrokerPid)) || (await portOpen())); i++) await sleep(250);
   ok("down stops the no-manifest manager and broker", !!bareManagerPid && !!bareBrokerPid && !alive(bareManagerPid) && !alive(bareBrokerPid) && !(await portOpen()), { bareManagerPid, bareBrokerPid });
@@ -277,7 +277,7 @@ try {
 
   console.log(`\nORCA EXTENSION USER-JOURNEY E2E OK (${pass} checks)`);
 } finally {
-  cli(["down"], 30_000);
+  cli(["down", "--yes"], 30_000);
   try {
     for (const terminal of orcaTerminals().filter((candidate) =>
       candidate.handle === terminalHandle || (terminalPtyId !== undefined && candidate.ptyId === terminalPtyId) || candidate.title === `cotal-${AGENT}`,

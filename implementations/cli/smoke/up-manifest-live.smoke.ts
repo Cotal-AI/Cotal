@@ -53,7 +53,7 @@ const portOpen = (port: number) =>
   });
 
 function down(): void {
-  cli("down");
+  cli("down", "--yes");
 }
 
 const alive = (pid: number) => {

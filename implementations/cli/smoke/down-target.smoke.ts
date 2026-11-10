@@ -233,7 +233,7 @@ async function stopPlantedManager(
     process.chdir(root);
     console.error = (...args: unknown[]) => { warning += `${args.join(" ")}\n`; };
     console.log = (...args: unknown[]) => { output += `${args.join(" ")}\n`; };
-    try { await run(target === "manager" ? ["manager"] : [], withAgents ? { "with-agents": true } : {}); }
+    try { await run(target === "manager" ? ["manager"] : [], { yes: true, ...(withAgents ? { "with-agents": true } : {}) }); }
     catch (error) { warning += `${(error as Error).message}\n`; }
   } finally {
     console.error = originalError;
@@ -508,7 +508,7 @@ try {
   try {
     console.error = (...args: unknown[]) => { unownedErr += `${args.join(" ")}\n`; };
     process.exit = ((code?: number) => { unownedCode = code ?? 0; throw new Error(`exit ${unownedCode}`); }) as typeof process.exit;
-    try { await run([]); } catch (error) {
+    try { await run([], { yes: true }); } catch (error) {
       if (!String((error as Error).message).startsWith("exit ")) throw error;
     }
   } finally {
@@ -584,7 +584,7 @@ try {
     console.error = (...args: unknown[]) => { mixedErr += `${args.join(" ")}\n`; };
     console.log = (...args: unknown[]) => { mixedOut += `${args.join(" ")}\n`; };
     process.exit = ((code?: number) => { mixedCode = code ?? 0; throw new Error(`exit ${mixedCode}`); }) as typeof process.exit;
-    try { await run([]); } catch (error) {
+    try { await run([], { yes: true }); } catch (error) {
       if (!String((error as Error).message).startsWith("exit ")) throw error;
     }
   } finally {

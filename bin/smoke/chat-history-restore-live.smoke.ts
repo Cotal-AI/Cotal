@@ -142,7 +142,7 @@ for (const stream of ["CHAT_x", "DM_x"]) {
     // A throw ends the scenario, not the suite, so the next one still runs and the summary prints.
     check(`the recorded-age scenario ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
   } finally {
-    if (up) s.run("down");
+    if (up) s.run("down", "--yes");
     s.cleanup();
   }
 }
@@ -177,7 +177,7 @@ for (const stream of ["CHAT_x", "DM_x"]) {
     for (const post of posts) seqs.push((await js.publish(post.subject, post.data)).seq);
     await nc.close();
     // A full stop, so the next up starts the broker and runs stream setup, as an upgrade does.
-    const stopped = s.run("down");
+    const stopped = s.run("down", "--yes");
     up = stopped.status !== 0;
     check("control: the stack stops", stopped.status === 0, s.shown(stopped));
     const rewrote = backdateMessages(streamMsgsDir(join(s.root, ".cotal", "nats"), stream), stream, new Map(seqs.map((seq, i) => [seq, ages[i]! * DAY])));
@@ -199,7 +199,7 @@ for (const stream of ["CHAT_x", "DM_x"]) {
   } catch (e) {
     check(`the aged-posts scenario ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
   } finally {
-    if (up) s.run("down");
+    if (up) s.run("down", "--yes");
     s.cleanup();
   }
 }
@@ -235,7 +235,7 @@ for (const stream of ["CHAT_x", "DM_x"]) {
     check("a backup on the old settings, no age and 1000 per sender, restores on them", same(limitOf(after.config), old) && after.state.messages === 1, { limit: limitOf(after.config), messages: after.state.messages });
     check("...with INBOX and DLV at 1000 per agent and DM with no count, as every space before their limits were configurable", same(others[0], { maxAgeMs: 0, perSubject: 1000 }) && same(others[1], { maxAgeMs: 0, perSubject: 1000 }) && same(others[2], { maxAgeMs: 0, perSubject: -1 }), others);
 
-    const stopped = s.run("down");
+    const stopped = s.run("down", "--yes");
     up = stopped.status !== 0;
     const next = s.run("up", "--detach", "--open", "--server", server, "--space", space);
     up = next.status === 0;
@@ -246,7 +246,7 @@ for (const stream of ["CHAT_x", "DM_x"]) {
   } catch (e) {
     check(`the old-settings backup scenario ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
   } finally {
-    if (up) s.run("down");
+    if (up) s.run("down", "--yes");
     s.cleanup();
   }
 }
