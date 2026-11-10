@@ -4,13 +4,14 @@ import { approvalUrl, connectionView, requireResult, onboardingLink, launchReady
 
 test("only verified service connection is presented as connected", () => {
   for (const state of ["ready", "connecting", "approval-pending", "disconnected", "refused", "unknown"]) assert.equal(connectionView(state).connected, false);
-  assert.equal(connectionView("connected").connected, true);
+  assert.equal(connectionView("connected").connected, false);
+  assert.equal(connectionView("launch-ready").connected, true);
 });
 
 test("launch readiness requires an answering registered Manager with an available application", () => {
   for (const manager of [undefined, {}, { state: "answering" }, { state: "restarting", instanceId: "m", connectors: [{ state: "available" }] }, { state: "answering", instanceId: "m", connectors: [{ state: "unavailable" }] }]) assert.equal(launchReady(manager), false);
   assert.equal(launchReady({ state: "answering", instanceId: "m", connectors: [{ state: "available" }] }), true);
-  assert.equal(connectionView("launch-ready").title, "Ready to launch");
+  assert.equal(connectionView("launch-ready").title, "This computer is connected");
   assert.equal(machinesUrl("https://cloud.cotal.ai/api/auth", "sp_636f74616c5f636c6f7564", "manager&exact"), "https://cloud.cotal.ai/machines?space=sp_636f74616c5f636c6f7564&machine=manager%26exact");
 });
 test("browser links reject executable schemes and embedded credentials", () => {

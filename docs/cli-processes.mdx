@@ -611,9 +611,14 @@ A damaged canonical registration and its usable legacy duplicate stay untouched,
 failure reporting and catalog removal. A selection naming that registration stays selected.
 The desktop app uses these same controls. Its source and native build instructions are in the
 [desktop README](../desktop/README.md). Closing its tray UI does not stop the installed daemon.
-Connect this computer hosts the selected space's Manager and reports Ready to launch only with an
-answering registered Manager and an available connector. Missing applications keep the refusal and
-its install next step visible, with Check again to rerun setup. Machine-service approval is separate.
+Its first run offers Continue with Cotal Cloud or a custom host, opens browser approval after a
+click, selects a space, and then offers Connect this computer. A connection link prefills its host
+and space without starting setup. A requested space or an account's only space skips the selector.
+The app reports This computer is connected only with an answering registered Manager and an
+available connector. Open dashboard is the primary action on that screen and on later opens.
+Sign-in and space forms appear only when needed. Five named progress steps use structured setup
+reports, while original diagnostics and exact refusals remain under Details. Missing applications
+name the applications checked and offer Check again to rerun setup. Machine-service approval is separate.
 After installing or starting its recorded background service, the app waits up to 15 seconds for
 the daemon to answer. A timeout reports `DEPENDENCY_UNAVAILABLE` and directs you to
 `cotal daemon status` for diagnostics. The service remains installed; the timeout does not ask

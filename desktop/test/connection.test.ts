@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
-import type { Request } from "../src/model.ts";
+import type { Frame, Request } from "../src/model.ts";
 
 const { JSDOM } = createRequire(import.meta.url)("jsdom");
 
@@ -27,6 +27,7 @@ test("launch readiness, application retry and polling follow the selected space"
   const heldStatus: { release?: () => void } = {};
   let holdOperation: string | undefined;
   let rejectHeld = false;
+  const callbacks = new Map<number, (frame: unknown) => void>();
   let callback = 0;
   win.setTimeout = (fn: () => Promise<void>, ms: number) => {
     assert.equal(ms, 10_000);
@@ -37,9 +38,9 @@ test("launch readiness, application retry and polling follow the selected space"
   win.isTauri = true;
   win.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
   win.__TAURI_INTERNALS__ = {
-    transformCallback: () => ++callback,
+    transformCallback: (fn: (frame: unknown) => void) => { callbacks.set(++callback, fn); return callback; },
     unregisterCallback() {},
-    async invoke(cmd: string, args: { request?: Request; url?: string } = {}) {
+    async invoke(cmd: string, args: { request?: Request; url?: string; onEvent?: { id: number } } = {}) {
       if (cmd === "plugin:event|listen") return ++callback;
       if (cmd === "plugin:deep-link|get_current") return ["cotal://connect?idp=https://example.com/auth&space=sp_first"];
       if (cmd === "plugin:autostart|is_enabled") return false;
@@ -54,6 +55,7 @@ test("launch readiness, application retry and polling follow the selected space"
         case "status": result = { state: "ready", version: daemonVersion, managers: [...managers.values()] }; break;
         case "spaces": result = { spaces: ["first", "second"].map((space) => ({ space, catalogId: `sp_${space}`, mode: "user", idp: "https://example.com/auth" })) }; break;
         case "setup": {
+          callbacks.get(args.onEvent!.id)!({ index: 0, message: { v: 1, event: "setup-progress", line: "connectors: 0 available", progress: { step: "applications", outcome: approved ? "available" : "unavailable", detail: "inventory", applications: ["Claude Code", "Codex"] } } satisfies Frame });
           if (!approved) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "no available connector in the hosted Manager's environment", native: { code: "NO_AVAILABLE_CONNECTOR" }, remedy: "install Claude Code or Codex and choose Check again" } };
           const manager = { space: req.space, state: "answering", instanceId: "test-manager", connectors: [{ state: "available" }] };
           managers.set(req.space!, manager); states.set(req.space!, "connected"); result = { launchReady: true, manager, state: "approval-pending" }; break;
@@ -105,7 +107,7 @@ test("launch readiness, application retry and polling follow the selected space"
     assert.equal(title(), "No agent application found");
     assert.equal(button("connect").disabled, false, "application discovery can be retried");
     assert.equal(button("connect").textContent, "Check again");
-    assert.match(doc.getElementById("notice")!.textContent!, /Claude Code or Codex/);
+    assert.match(doc.getElementById("refusal-detail")!.textContent!, /Claude Code or Codex/);
     await tick!();
     assert.equal(title(), "No agent application found");
     await select("second");
@@ -115,7 +117,7 @@ test("launch readiness, application retry and polling follow the selected space"
     approved = true;
     button("connect").click();
     await settle();
-    assert.equal(title(), "Ready to launch");
+    assert.equal(title(), "This computer is connected");
     button("dashboard").click(); await settle();
     assert.equal(browserUrls.at(-1), "https://example.com/machines?space=sp_first&machine=test-manager");
     assert.equal(button("connect").disabled, true);
@@ -125,7 +127,7 @@ test("launch readiness, application retry and polling follow the selected space"
     await settle();
     assert.equal(calls.filter((call) => call.op === "setup").length, registrations);
     const releaseOldSelection = await holdRefresh();
-    assert.equal(title(), "Ready to launch", "poll does not temporarily replace a verified state with local readiness");
+    assert.equal(title(), "This computer is connected", "poll does not temporarily replace a verified state with local readiness");
     assert.equal(button("connect").disabled, true);
     await select("second");
     assert.equal(button("connect").disabled, false, "another space is not blocked by the connected selection");
@@ -153,9 +155,9 @@ test("launch readiness, application retry and polling follow the selected space"
     const releaseDisconnected = await holdRefresh();
     button("connect").click();
     await settle();
-    assert.equal(title(), "Ready to launch");
+    assert.equal(title(), "This computer is connected");
     await releaseDisconnected();
-    assert.equal(title(), "Ready to launch", "old disconnected status cannot undo connect");
+    assert.equal(title(), "This computer is connected", "old disconnected status cannot undo connect");
     assert.equal(button("connect").disabled, true);
     const afterReconnect = calls.filter((call) => call.op === "setup").length;
     button("connect").click();
@@ -183,7 +185,7 @@ test("launch readiness, application retry and polling follow the selected space"
       assert.notEqual(doc.getElementById("notice")!.textContent, "Error: delayed status failure");
       button("connect").click();
       await settle();
-      assert.equal(title(), "Ready to launch");
+      assert.equal(title(), "This computer is connected");
     }
 
     const releaseBeforeReselect = await holdRefresh();
