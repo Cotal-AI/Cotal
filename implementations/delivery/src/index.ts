@@ -5,7 +5,7 @@
  * a distinct long-lived infra role with its own scoped cred profile and lifecycle. It NEVER imports
  * `@cotal-ai/manager` or `@cotal-ai/cli` (one-way tiering).
  */
-import { deprecatedDaemonEntry, deprecatedDaemonEntrySummary, warnDeprecatedDaemonEntry } from "@cotal-ai/workspace";
+import { deprecatedDaemonEntry, deprecatedDaemonEntrySummary, jsonFlag, warnDeprecatedDaemonEntry } from "@cotal-ai/workspace";
 import { feedbackIntakePreset, feedbackIntakeProcess, runNativeFeedbackIntake, validateNativeIntakeArguments } from "./feedback-intake-service.js";
 import { registry, type Command } from "@cotal-ai/core";
 import { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService, type DeliveryLaneOptions, type DeliveryLog } from "./delivery.js";
@@ -34,6 +34,8 @@ const deliveryCommands: Command[] = [
     summary:
       "run the delivery daemon — the server-side Plane-3 durable backstop [--space <s>] [--server <url>] [--creds <file>] (auth mode only; N=1); or one lane per space from one process with --spaces <manifest> --server <url>; or `deliver pending <name>` to inspect a recipient's held DMs",
     positionals: "[pending <name> [--limit <n>] [--durable <name>]]",
+    subcommands: [{ name: "pending", hidden: true, reads: true, summary: "inspect a recipient's held DMs",
+      outputs: ["json"], flagNames: ["space", "server", "creds", "limit", "durable", "json"] }],
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to serve (required; the scoped cred doesn't encode it)" },
       { name: "spaces", type: "string", value: "<manifest>", description: "serve every space in this JSON manifest from one process, one delivery lane each, all on --server (replaces --space)" },
@@ -46,10 +48,15 @@ const deliveryCommands: Command[] = [
       { name: "dev-mint", type: "boolean", description: "standalone dev: mint a scoped delivery cred from the local signer" },
       { name: "limit", type: "string", value: "<n>", description: "pending: max recent candidate ids to print (default 20)" },
       { name: "durable", type: "string", value: "<name>", description: "pending: read this exact DM durable (a live read's printed name) instead of resolving <name>" },
-      { name: "json", type: "boolean", description: "pending: print the facts as one JSON object" },
+      { ...jsonFlag, description: "pending: use the cotal pending JSON receipt, including candidates and refusals" },
     ],
     prepareMeshTarget: false,
-    run: (args) => (args.values.spaces !== undefined ? runDeliveryHost(args) : args.positionals[0] === "pending" ? runPending(args) : runDelivery(args)),
+    run: (args) => {
+      if (args.values.spaces !== undefined) return runDeliveryHost(args);
+      if (args.positionals[0] !== "pending") return runDelivery(args);
+      if (args.values.json) return pendingView({ ...args, positionals: args.positionals.slice(1) }, "deliver");
+      return runPending(args);
+    },
   },
   {
     kind: "command",

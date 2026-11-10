@@ -5,10 +5,12 @@
  *
  * A plain candidate line names the subject's sender principal as `from=` and prints the card only as
  * a trailing `label=`, sanitized: a healthy card, a card naming another principal, and a card that
- * carries control bytes and a line break. `--json` keeps its legacy candidate lines byte for byte.
+ * carries control bytes and a line break. `--json` returns one receipt, including candidate IDs
+ * or a not-found refusal, through the same reader as `cotal pending`.
  * `cotal pending` names the same subject principal as each candidate's `from` in `--json` and
  * `--plain`, within `--limit`. A confirmed bounded read received every message it requested and exits 0 with no cleanup warning. No read changes the durable's
- * pending or ack state. `cotal pending` deletes only the named reader it created. The retained spelling leaves its ordered consumer.
+ * pending or ack state. JSON reads and `cotal pending` delete only the named reader they created.
+ * The retained plain spelling leaves its ordered consumer.
  *
  * Run: pnpm smoke:deliver-pending-sender
  */
@@ -40,7 +42,7 @@ import {
 import { freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 17;
+const EXPECTED = 28;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -79,7 +81,6 @@ Object.assign(env, {
   TMPDIR: join(home, "tmp"),
   COTAL_HOME: join(home, ".cotal"),
   XDG_CONFIG_HOME: join(home, "xdg"),
-  COTAL_SKIP_CONNECTOR_SEED: "1",
   NO_COLOR: "1",
 });
 const run = (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> =>
@@ -90,6 +91,7 @@ const run = (args: string[]): Promise<{ code: number; stdout: string; stderr: st
   });
 
 let provisioner: CotalEndpoint | undefined;
+let holder: CotalEndpoint | undefined;
 try {
   let ready = false;
   for (let i = 0; i < 50 && !ready; i++) {
@@ -109,6 +111,9 @@ try {
     return { actor: identity.id, principal: `${DEV_OWNER}.${identity.id}`, lifecycleUid, creds };
   };
   const recipient = await provision("holder");
+  holder = new CotalEndpoint({ space, servers, creds: recipient.creds, lifecycleUid: recipient.lifecycleUid,
+    card: { name: "recipient", role: "holder", kind: "endpoint" }, consume: false, watchPresence: false });
+  await holder.start();
   const healthy = await provision("writer");
   const forger = await provision("writer");
 
@@ -184,15 +189,17 @@ try {
   );
 
   check("the --json read exits 0", jsonBefore.code === 0 && jsonAfter.code === 0, [jsonBefore.stderr, jsonAfter.stderr]);
-  const facts = JSON.parse(jsonBefore.stdout.split("\n")[0]) as unknown;
-  const legacy = [
-    JSON.stringify(facts),
-    "recent candidate ids (from the ack floor; not proof of a hole)",
-    ...[ok, claimed, escaped].map((m) => `  ${m.id}  from=[object Object]  ts=${m.ts}`),
-    "",
-  ].join("\n");
-  check("--json prints the legacy candidate lines unchanged", jsonBefore.stdout === legacy, jsonBefore.stdout);
-  check("--json output is identical before and after the plain read", jsonAfter.stdout === jsonBefore.stdout);
+  const parse = (r: { stdout: string }) => {
+    try { return JSON.parse(r.stdout); } catch { return undefined; }
+  };
+  const subjectRows = [[ok, healthy], [claimed, forger], [escaped, forger]] as const;
+  const expectedCandidates = subjectRows.map(([m, s]) => ({ id: m.id, from: s.principal, ts: m.ts }));
+  const legacyJson = parse(jsonBefore);
+  check("deliver pending --json prints one receipt with broker facts and subject-attributed candidates",
+    legacyJson?.outcome === "ok" && legacyJson?.result?.durable === durable && legacyJson?.result?.pending === 3 &&
+      JSON.stringify(legacyJson?.result?.candidates) === JSON.stringify(expectedCandidates), jsonBefore);
+  check("--json result is identical before and after the plain read",
+    JSON.stringify(parse(jsonAfter)?.result) === JSON.stringify(legacyJson?.result));
   const doc = (r: { stdout: string }) => JSON.parse(r.stdout) as { completeness?: string; warnings: Array<{ code: string }>; result: { candidates: unknown[]; candidateRead: string; candidateLimit: number } };
   const [full, limited] = [doc(modernJson), doc(modernLimited)];
   check(
@@ -202,7 +209,6 @@ try {
       !modernPlain.stderr.includes("could not be decoded") && !modernPlain.stderr.includes("✗"),
     [modernJson.code, modernPlain.code, modernLimited.code, full.warnings, modernPlain.stderr],
   );
-  const subjectRows = [[ok, healthy], [claimed, forger], [escaped, forger]] as const;
   check(
     "pending --json names each candidate by its subject principal, never the claimed one",
     JSON.stringify(full.result.candidates) === JSON.stringify(subjectRows.map(([m, s]) => ({ id: m.id, from: s.principal, ts: m.ts }))),
@@ -227,12 +233,53 @@ try {
     states,
   );
   check(
-    "cotal pending deletes its reader and the retained spelling leaves its ordered consumer",
+    "JSON reads and cotal pending delete their readers; the retained plain spelling leaves its ordered consumer",
     s4.consumers === s3.consumers && s5.consumers === s4.consumers && s6.consumers === s5.consumers &&
-      s1.consumers - s0.consumers === 1 && s2.consumers - s1.consumers === 1 && s3.consumers - s2.consumers === 1,
+      s1.consumers === s0.consumers && s2.consumers - s1.consumers === 1 && s3.consumers === s2.consumers,
     states.map((s) => s.consumers),
   );
+  const namedArgs = args.filter((_, i) => i !== 3 && i !== 4);
+  const named = await run([...namedArgs, "--json"]);
+  const namedControl = await run([...namedArgs.slice(1), "--json"]);
+  check("deliver pending --json resolves a live name to one document with the held IDs",
+    named.code === 0 && JSON.stringify(parse(named)?.result?.candidates) === JSON.stringify(expectedCandidates), named);
+  check("pending --json is the positive control for the same live name",
+    namedControl.code === 0 && JSON.stringify(parse(namedControl)?.result?.candidates) === JSON.stringify(expectedCandidates), namedControl);
+  const limitedLegacy = await run([...args, "--limit", "2", "--json"]);
+  check("deliver pending --json respects the candidate limit in its one document",
+    limitedLegacy.code === 0 && JSON.stringify(parse(limitedLegacy)?.result?.candidates) === JSON.stringify(expectedCandidates.slice(0, 2)), limitedLegacy);
+  const absentName = await run(["deliver", "pending", "nobody-6007", ...namedArgs.slice(3), "--json"]);
+  check("an absent name returns one refused JSON document with no inferred empty durable",
+    absentName.code === 2 && parse(absentName)?.outcome === "refused" && parse(absentName)?.error?.code === "TARGET_NOT_FOUND", absentName);
+  const absentDurable = await run([...args.map((arg) => arg === durable ? dmDurable(DEV_OWNER, "absent", recipient.lifecycleUid) : arg), "--json"]);
+  check("an absent lifecycle durable returns one refused JSON document",
+    absentDurable.code === 2 && parse(absentDurable)?.outcome === "refused" && parse(absentDurable)?.error?.code === "TARGET_NOT_FOUND", absentDurable);
+  check("success and not-found receipts name the invoked command, without a connector seed bypass",
+    [jsonBefore, jsonAfter, named, limitedLegacy, absentName, absentDurable].every((r) => parse(r)?.command === "deliver") &&
+      parse(namedControl)?.command === "pending");
+  const invalidLimit = await run(["deliver", ...namedArgs.slice(3), "pending", "recipient", "--limit", "101", "--json"]);
+  check("a validated usage refusal keeps the deliver command identity",
+    invalidLimit.code === 1 && parse(invalidLimit)?.command === "deliver" && parse(invalidLimit)?.error?.code === "USAGE_INVALID", invalidLimit);
+  const unknown = await run(["deliver", ...namedArgs.slice(3), "pending", "recipient", "--unknown-flag", "--json"]);
+  check("an unknown flag after value-taking options still returns one JSON refusal",
+    unknown.code === 1 && parse(unknown)?.command === "deliver" && parse(unknown)?.error?.code === "USAGE_INVALID", unknown);
+  const unknownEquals = await run(["deliver", `--space=${space}`, `--server=${servers}`, `--creds=${adminCreds}`, "pending", "recipient", "--unknown-flag", "-j"]);
+  check("inline option values and -j select the structured pending parser refusal",
+    unknownEquals.code === 1 && parse(unknownEquals)?.command === "deliver" && parse(unknownEquals)?.error?.code === "USAGE_INVALID", unknownEquals);
+  const daemonUnknown = await run(["deliver", "--space", "pending", "--unknown-flag", "--json"]);
+  check("a daemon option value named pending does not enable structured daemon output",
+    daemonUnknown.code === 1 && daemonUnknown.stdout === "" && daemonUnknown.stderr.includes("Unknown option"), daemonUnknown);
+  const malformedSender = await dialerFor(servers)({ servers, ...standaloneConnectOpts({ creds: healthy.creds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    await jetstream(malformedSender).publish(unicastSubject(space, DEV_OWNER, recipient.actor, DEV_OWNER, healthy.actor), new Uint8Array([0xff]));
+  } finally { await malformedSender.drain(); }
+  const partial = await run([...args, "--json"]);
+  check("a partial candidate receipt keeps the same deliver command identity and withholds unreadable data",
+    partial.code === 4 && parse(partial)?.command === "deliver" && parse(partial)?.outcome === "partial" &&
+      parse(partial)?.warnings?.some((warning: { code: string }) => warning.code === "CANDIDATE_UNREADABLE") &&
+      JSON.stringify(parse(partial)?.result?.candidates) === JSON.stringify(expectedCandidates), partial);
 } finally {
+  await holder?.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
   await killAndAwaitExit(broker);
   check("the owned broker exits before its JetStream tree is removed", broker.exitCode !== null || broker.signalCode !== null);

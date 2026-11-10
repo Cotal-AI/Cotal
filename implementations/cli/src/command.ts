@@ -141,9 +141,9 @@ function structured(cmd: Command, first: string | undefined): boolean {
 
 /** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a group of the
  *  command's boolean short flags. Read from the words, because a usage error has no parse, so the mode
- *  is the first word that is not a flag. */
+ *  is the first positional after skipping declared option values. */
 function asksForJson(cmd: Command, args: readonly string[]): boolean {
-  if (!structured(cmd, args.find((word) => !word.startsWith("-")))) return false;
+  if (!structured(cmd, metadataPositionals(cmd, args).positionals[0]?.value)) return false;
   const booleans = new Set((cmd.flags ?? []).flatMap((flag) => (flag.type === "boolean" && flag.short ? [flag.short] : [])));
   const end = args.indexOf("--");
   return (end === -1 ? args : args.slice(0, end)).some(
