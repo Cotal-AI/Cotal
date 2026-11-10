@@ -3,7 +3,7 @@ import { isAbsolute, join } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import {
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
-  ChannelRegistryConflict, ChannelRegistryRemovalFailed, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, registryTextLine, registryTextLines, seedChannelRegistry, UndecodableRegistryEntry, validateChannelConfig,
+  ChannelRegistryConflict, ChannelRegistryRemovalFailed, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, UndecodableRegistryEntry, validateChannelConfig,
   type ChannelConfig, type ChannelRegistryFile, type ChannelRegistryRead, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
@@ -251,8 +251,8 @@ function registryView(result: { action: string; name?: string; space: string; re
     const config = Object.hasOwn(registry.channels ?? {}, name!) ? registry.channels![name!] : undefined;
     const undecodable = bad(name!);
     return { sections: [
-      { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", undecodable ? "not decoded" : config ? "configured" : "no saved entry"], ...policyFields(config, registry.defaults), ["Description", config?.description ? registryTextLine(config.description) : "not set"]] }, ...(undecodable ? [{ kind: "lines" as const, lines: [{ text: `The saved entry does not decode (${undecodable.error}). The key was left as it is, and the channel resolves to the default policy.`, tone: "waiting" as const }] }] : [])] },
-      ...(config?.instructions ? [{ title: "Instructions · advisory", blocks: [{ kind: "lines" as const, lines: registryTextLines(config.instructions) }] }] : []),
+      { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", undecodable ? "not decoded" : config ? "configured" : "no saved entry"], ...policyFields(config, registry.defaults), ["Description", config?.description || "not set"]] }, ...(undecodable ? [{ kind: "lines" as const, lines: [{ text: `The saved entry does not decode (${undecodable.error}). The key was left as it is, and the channel resolves to the default policy.`, tone: "waiting" as const }] }] : [])] },
+      ...(config?.instructions ? [{ title: "Instructions · advisory", blocks: [{ kind: "lines" as const, lines: config.instructions.split(/\r?\n/) }] }] : []),
       { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch members ${name}`, description: "Read broker-observed membership" }, { command: `cotal history ${name}`, description: "Read retained messages within your grant" }] }] },
     ] };
   }
@@ -268,7 +268,7 @@ function registryView(result: { action: string; name?: string; space: string; re
   return { sections: [
     { title: `Channels · ${result.space}`, blocks: [entries.length ? {
       kind: "table", columns: [{ key: "name", label: "Channel" }, { key: "description", label: "Description" }, { key: "replay", label: "Replay" }, { key: "delivery", label: "Delivery" }],
-      rows: entries.map(([channel, config]) => ({ name: { text: `#${channel}`, tone: "command" }, description: config.description === undefined ? "not set" : registryTextLine(config.description), replay: policyValue(effectiveReplay(config, registry.defaults) ? "on" : "off", config.replay), delivery: policyValue(effectiveDeliveryClass(config, registry.defaults), config.deliveryClass) })),
+      rows: entries.map(([channel, config]) => ({ name: { text: `#${channel}`, tone: "command" }, description: config.description ?? "not set", replay: policyValue(effectiveReplay(config, registry.defaults) ? "on" : "off", config.replay), delivery: policyValue(effectiveDeliveryClass(config, registry.defaults), config.deliveryClass) })),
     } : { kind: "lines", lines: ["No saved channel metadata."] }, { kind: "lines", lines: [{ text: "Configured entries only. Channels with traffic but no saved metadata are not included.", tone: "hint" }] }] },
     ...(undecodable.length ? [{ title: "Not decoded", blocks: [{ kind: "table" as const, columns: [{ key: "key", label: "Key" }, { key: "error", label: "Error" }], rows: undecodable.map((entry) => ({ key: entry.key === "=defaults" ? "defaults" : `#${entry.key}`, error: entry.error })), }, { kind: "lines" as const, lines: [{ text: "These keys stay in the registry. Their channels resolve to the default policy until the value decodes.", tone: "hint" as const }] }] }] : []),
     { title: "Next", blocks: [{ kind: "commands", items: [
