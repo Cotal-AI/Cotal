@@ -202,9 +202,22 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
       if (owned(receipt)) step(["kickstart", `gui/${id}/${receipt.unit}`]);
       else step(["bootstrap", `gui/${id}`, receipt.unitPath]);
     },
-    restart(receipt: UnitReceipt) {
+    restart(receipt: UnitReceipt, reload = false) {
       const id = uid();
-      if (owned(receipt)) step(["kickstart", "-k", `gui/${id}/${receipt.unit}`]);
+      const isLoaded = owned(receipt);
+      if (reload) {
+        if (isLoaded) {
+          step(["bootout", `gui/${id}/${receipt.unit}`]);
+          const deadline = Date.now() + 10_000;
+          const pause = new Int32Array(new SharedArrayBuffer(4));
+          while (loaded(id, receipt.unit)) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the LaunchAgent ${receipt.unit} did not unload within 10s; no bootstrap was submitted`, { remedy: "run the same setup command again to start the recorded service" });
+            Atomics.wait(pause, 0, 0, Math.min(100, remaining));
+          }
+        }
+        step(["bootstrap", `gui/${id}`, receipt.unitPath]);
+      } else if (isLoaded) step(["kickstart", "-k", `gui/${id}/${receipt.unit}`]);
       else step(["bootstrap", `gui/${id}`, receipt.unitPath]);
     },
     remove(receipt: UnitReceipt) {
