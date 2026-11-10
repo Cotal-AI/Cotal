@@ -79,7 +79,7 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
   let session;
   try { session = loadIdpSession(home, ua.idp.url); } catch { session = undefined; }
   if (!session) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"],
-    remedy: `run \`${daemonCommandCopy("login", home, ["--idp", ua.idp.url])}\`` };
+    remedy: `run \`${daemonCommandCopy("login", home, [["--idp", ua.idp.url]])}\`` };
 
   let accountPublicKey: string;
   try {

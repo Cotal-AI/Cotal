@@ -145,9 +145,11 @@ function track(child: ChildProcess): ChildProcess {
 }
 
 type Doc = { command?: string; target?: { space?: string; idp?: string } | null; outcome?: string; result?: Record<string, any>; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
-/** One CLI invocation to completion. */
-async function cli(args: string[], timeoutMs = 30_000): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
-  const child = track(spawn(process.execPath, daemonArgv(args), { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] }));
+/** One CLI invocation to completion. A command string exercises copied guidance through the built CLI. */
+async function cli(args: string[] | string, timeoutMs = 30_000): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
+  const child = track(typeof args === "string"
+    ? spawn("/bin/sh", ["-c", `cotal() { exec "$DAEMON_COPY_NODE" "$DAEMON_COPY_ENTRY" "$@"; }\n${args} --json`], { cwd: root, env: { ...childEnv, DAEMON_COPY_NODE: process.execPath, DAEMON_COPY_ENTRY: join(repo, "bin", "dist", "cotal.js") }, stdio: ["ignore", "pipe", "pipe"] })
+    : spawn(process.execPath, daemonArgv(args), { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] }));
   let out = "", err = "";
   child.stdout!.on("data", (b) => { out += String(b); });
   child.stderr!.on("data", (b) => { err += String(b); });
@@ -278,6 +280,34 @@ try {
     }
     const st = await cli(["status", "--daemon-home", managed, "--json"]);
     check("H1b refusal reads leave the selected daemon serving", st.status === 0 && st.doc.result?.pid === managedServe?.child.pid, st.doc);
+  });
+
+  await cell("H1c copied recovery commands preserve leading-hyphen spaces", async () => {
+    const quotedHome = `'${managed.replace(/'/g, `'\\''`)}'`;
+    for (const space of ["copy-control", "-leading-dash", "--json", "-1"]) {
+      recordMesh(userMesh(space));
+      const option = space.startsWith("-") ? `--space=${space}` : `--space ${space}`;
+      for (const mode of ["service-connect", "service-status"]) {
+        const result = await cli([mode, `--space=${space}`, "--daemon-home", managed, "--json"]);
+        const command = `cotal daemon register ${option} --daemon-home ${quotedHome}`;
+        const remedy = `run \`${command}\` first`;
+        check(`H1c ${mode} emits a parseable register command for ${space}`, result.status === 2 && result.doc.error?.cause?.code === "NOT_REQUESTED" && result.doc.error.remedy === remedy, result);
+        if (result.doc.error?.remedy !== remedy) throw new Error("unexpected copied registration command");
+        const copied = await cli(result.doc.error.remedy.slice(5, -7));
+        check(`H1c copied ${mode} remedy reaches ${space} on the selected daemon`, copied.status === 2 && copied.doc.command === "daemon register" && copied.doc.target?.space === space && copied.doc.error?.cause?.code === "NOT_SIGNED_IN" && copied.doc.error.remedy?.includes(IDP) && copied.doc.error.remedy.includes(quotedHome), copied);
+      }
+      const setup = await cli(["setup", "--no-manager", `--space=${space}`, "--daemon-home", managed, "--wait", "0", "--json"]);
+      check(`H1c setup manual recovery retains ${space}`, setup.status === 2 && setup.doc.error?.cause?.code === "RUNNING_WITHOUT_UNIT", setup);
+      const commands = [...(setup.doc.error?.remedy ?? "").matchAll(/`([^`]+)`/g)].map(match => match[1]!);
+      const expected = ["register", "service-connect"].map(op => `cotal daemon ${op} ${option} --daemon-home ${quotedHome}`);
+      if (JSON.stringify(commands) !== JSON.stringify(expected)) throw new Error("unexpected copied setup commands");
+      for (const command of commands) {
+        const copied = await cli(command);
+        check(`H1c copied setup ${command.includes(" register ") ? "register" : "service-connect"} reaches ${space}`, copied.status === 2 && copied.doc.target?.space === space && ["NOT_SIGNED_IN", "NOT_REQUESTED"].includes(copied.doc.error?.cause?.code ?? ""), copied);
+      }
+    }
+    const status = await cli(["status", "--daemon-home", managed, "--json"]);
+    check("H1c copied commands leave the selected daemon serving", status.status === 0 && status.doc.result?.pid === managedServe?.child.pid, status.doc);
   });
 
   await cell("G1 flags are scoped before daemon actions", async () => {

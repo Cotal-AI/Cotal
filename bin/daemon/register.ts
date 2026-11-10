@@ -132,7 +132,7 @@ async function sendRegister(space: string, home: string): Promise<RegisterResult
     // 401 sentence; it carries no code) or none at all (`signed-out`) needs a new sign-in.
     if ((e as { code?: unknown }).code === "signed-out" || /rejected the cached session/.test((e as Error).message ?? ""))
       return { outcome: "not-signed-in", space, message: NOT_SIGNED_IN,
-        remedy: `run \`${daemonCommandCopy("login", home, ["--idp", entry.userAuth!.idp.url])}\`` };
+        remedy: `run \`${daemonCommandCopy("login", home, [["--idp", entry.userAuth!.idp.url]])}\`` };
     return { outcome: "refused", space, message: NOT_SENT };
   }
   return { result, ids };

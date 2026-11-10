@@ -168,7 +168,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   const result = (space: string): ServiceConnectionResult => {
     const l = live.get(space);
     const state = l?.state ?? "disconnected";
-    const remedy = state === "not-requested" ? `run \`${daemonCommandCopy("register", home, ["--space", space])}\` first`
+    const remedy = state === "not-requested" ? `run \`${daemonCommandCopy("register", home, [["--space", space]])}\` first`
       : state === "not-signed-in" ? l?.remedy : undefined;
     return { space, state, message: SENTENCE[state], ...(l?.instanceId ? { instanceId: l.instanceId } : {}),
       ...(remedy !== undefined ? { remedy } : {}),
