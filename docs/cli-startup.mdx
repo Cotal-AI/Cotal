@@ -723,8 +723,12 @@ operator-owned config. `--host` changes that file only when nats is actually sta
 restart that leaves an answering listener in place is a refresh, not a rebind. When a symlink or a
 folder stands in its place, `up` leaves it as it is and refuses `PERMISSION_DENIED` (exit 2) before
 it starts anything, naming the path and the `mv` that moves it aside; the next `up` writes the file
-again. A trust record under `.cotal/auth` that this account cannot read, such as one at mode 000, is
-refused the same way, and its next step makes it readable again.
+again. Other configuration write failures, such as a full disk or a file-size limit, fail
+`OPERATION_FAILED` (exit 5), naming the file and the filesystem error code. No member starts.
+`status` keeps the failed start's manager choice in its recovery command, including `--no-manager`
+only when that start chose it. A trust record under `.cotal/auth` that this account cannot read,
+such as one at mode 000, is refused the same way as a permission failure, and its next step makes
+it readable again.
 
 `cotal up` creates a new space's chat stream with no age limit and 1000 posts per sender on each
 channel, its delivery inbox and stored copies with no age limit and 1000 per agent, and its DM

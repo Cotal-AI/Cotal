@@ -1310,6 +1310,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     if (journal) { const step = journal.remedy ?? journal.message; if (!hints.includes(step)) hints.push(step); }
     else if (instances) hints.push(instances.remedy ?? instances.message);
     else if (store) hints.push(`${store.message}; ${store.remedy}`);
+    else if (d.stopped && servedStack(folder, result) && folder.noManager) hints.push(`start it again with \`cotal up --no-manager\` in ${d.root}`);
     else if (!d.unsettled || !servedStack(folder, result)) hints.push(remedy ?? message);
     else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with \`cotal up\` in ${d.root}`);
     return result;

@@ -68,6 +68,9 @@ export interface StackJournal {
    *  refuses. Absent on journals written before they were recorded. */
   broker?: StackBrokerInputs;
   operation: { id: string; kind: "up" | "down" | "preserve" | "resume"; phase: "planned" | "applying" | "completed" | "partial" | "unknown" | "refused" | "failed"; recordedAt: string; withAgents: boolean;
+    /** The up's explicit manager choice, independent of members later left not-attempted.
+     *  Absent on journals written before this choice was recorded. */
+    noManager?: boolean;
     /** The maintenance attempt a preserve or resume serves. Required for those kinds, absent otherwise;
      *  the maintenance journal stays the authority for the attempt's state and evidence. */
     maintenanceAttemptId?: string;
@@ -148,7 +151,8 @@ function validate(input: unknown, root: string): StackJournal {
     if (!stackRoleApplies(value.mode as StackMode, role) && (member.instanceId !== null || member.state !== "not-attempted" || member.replacement !== undefined)) invalid(root);
     return member as unknown as StackMember;
   });
-  const operation = localRecordObject(value.operation, ["id", "kind", "phase", "recordedAt", "withAgents", "maintenanceAttemptId", "runs"]);
+  const operation = localRecordObject(value.operation, ["id", "kind", "phase", "recordedAt", "withAgents", "noManager", "maintenanceAttemptId", "runs"]);
+  if (operation.noManager !== undefined && (operation.kind !== "up" || typeof operation.noManager !== "boolean")) invalid(root);
   if (operation.runs !== undefined && (operation.kind !== "down" || stackRunsRecord(operation.runs) === undefined)) invalid(root);
   try { serviceOperationId(operation.id); } catch { invalid(root); }
   if (!["up", "down", "preserve", "resume"].includes(String(operation.kind)) || !PHASES.includes(String(operation.phase)) || typeof operation.recordedAt !== "string" || typeof operation.withAgents !== "boolean") invalid(root);
@@ -635,7 +639,7 @@ export function unfinishedStackOperation(journal: StackJournal): { kind: "up" | 
     else return undefined;
   }
   if (kind === "up" ? !stopped.length : !running.length) return undefined;
-  return { kind, id, running, stopped, noManager: kind === "up" && stackRoleApplies(journal.mode, "manager") && !running.includes("manager") && !stopped.includes("manager") };
+  return { kind, id, running, stopped, noManager: interruptedUpLeftManagerOut(journal) };
 }
 
 /** The one-line notice a command prints after it settled an earlier operation. */
@@ -656,16 +660,16 @@ export function newStackOperation(kind: "up" | "down", withAgents = false): Stac
   return { id: randomUUID(), kind, phase: "planned", recordedAt: new Date().toISOString(), withAgents };
 }
 
-/** Whether the stack's last `up` completed with its manager not attempted, as `up --no-manager`
- *  records it, so the stack runs no manager by choice. */
+/** Whether the stack's last settled `up` left its manager out by choice. Older completed journals
+ *  recorded that choice only in the manager's member state. */
 export function stackStartedWithoutManager(journal: StackJournal): boolean {
-  return journal.operation.kind === "up" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
+  return journal.operation.kind === "up" && !stackOperationUnsettled(journal) && (journal.operation.noManager === true || journal.operation.noManager === undefined && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted"));
 }
 
 /** Whether the stack's last `up` ended with no recorded outcome and planned no manager, as
  *  `up --no-manager` does. */
 export function interruptedUpLeftManagerOut(journal: StackJournal): boolean {
-  return journal.operation.kind === "up" && stackOperationUnsettled(journal) && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted");
+  return journal.operation.kind === "up" && stackOperationUnsettled(journal) && (journal.operation.noManager ?? journal.members.some((row) => row.role === "manager" && row.state === "not-attempted"));
 }
 
 /** Whether an `up` on this root is starting the stack's manager for `space` now: the journal records

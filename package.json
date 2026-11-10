@@ -915,6 +915,7 @@
     "smoke:foreground-up-signals:live": "tsx implementations/cli/smoke/foreground-up-signals-live.smoke.ts",
     "smoke:foreground-up-running:live": "tsx implementations/cli/smoke/foreground-up-running-live.smoke.ts",
     "smoke:legacy-root-upgrade:live": "tsx implementations/cli/smoke/legacy-root-upgrade-live.smoke.ts",
+    "smoke:up-config-write:live": "tsx implementations/cli/smoke/up-config-write-live.smoke.ts",
     "smoke:stack-settle:live": "tsx implementations/cli/smoke/stack-settle-live.smoke.ts",
     "smoke:up-interrupt:live": "tsx implementations/cli/smoke/up-interrupt-live.smoke.ts",
     "smoke:space-teardown:live": "tsx implementations/cli/smoke/space-teardown-live.smoke.ts",
