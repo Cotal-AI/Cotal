@@ -1,0 +1,122 @@
+<!-- Based on Tauri CLI 2.12.4 main.wxs (MIT/Apache-2.0).
+     Keeps its generated resource, binary, protocol and signing inputs.
+     Adds desktop shortcut identity and per-user login removal without a script custom action. -->
+<?if $(sys.BUILDARCH)="x86"?>
+  <?define Win64 = "no" ?>
+  <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?else?>
+  <?define Win64 = "yes" ?>
+  <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?endif?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="{{product_name}}" UpgradeCode="{{upgrade_code}}" Language="!(loc.TauriLanguage)" Manufacturer="{{manufacturer}}" Version="{{version}}">
+    <Package Id="*" InstallerVersion="450" Compressed="yes" InstallScope="perMachine" SummaryCodepage="!(loc.TauriCodepage)" />
+    <Property Id="REINSTALLMODE" Value="amus" />
+    <Property Id="AUTOLAUNCHAPP" Secure="yes" />
+    <Property Id="LAUNCHAPPARGS" Secure="yes" />
+    {{#if allow_downgrades}}
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowDowngrades="yes" />
+    {{else}}
+    <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="!(loc.DowngradeErrorMessage)" AllowSameVersionUpgrades="yes" />
+    {{/if}}
+    <Media Id="1" Cabinet="app.cab" EmbedCab="yes" />
+    {{#if banner_path}}<WixVariable Id="WixUIBannerBmp" Value="{{banner_path}}" />{{/if}}
+    {{#if dialog_image_path}}<WixVariable Id="WixUIDialogBmp" Value="{{dialog_image_path}}" />{{/if}}
+    {{#if license}}<WixVariable Id="WixUILicenseRtf" Value="{{license}}" />{{/if}}
+    <Icon Id="ProductIcon" SourceFile="{{icon_path}}" />
+    <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
+    <Property Id="ARPNOREPAIR" Value="yes" Secure="yes" />
+    <SetProperty Id="ARPNOMODIFY" Value="1" After="InstallValidate" Sequence="execute" />
+    {{#if homepage}}
+    <Property Id="ARPURLINFOABOUT" Value="{{homepage}}" />
+    <Property Id="ARPHELPLINK" Value="{{homepage}}" />
+    {{/if}}
+    <Property Id="INSTALLDIR">
+      <RegistrySearch Id="PrevInstallDirNoName" Root="HKCU" Key="Software\{{manufacturer}}\{{product_name}}" Type="raw" />
+      <RegistrySearch Id="PrevInstallDirWithName" Root="HKCU" Key="Software\{{manufacturer}}\{{product_name}}" Name="InstallDir" Type="raw" />
+    </Property>
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.LaunchApp)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <CustomAction Id="LaunchApplication" Impersonate="yes" FileKey="Path" ExeCommand="[LAUNCHAPPARGS]" Return="asyncNoWait" />
+    <UI>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed</Publish>
+      <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
+      {{#unless license}}
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="2">1</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2">1</Publish>
+      {{/unless}}
+    </UI>
+    <UIRef Id="WixUI_InstallDir" />
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="DesktopFolder" Name="Desktop">
+        <Component Id="ApplicationShortcutDesktop" Guid="*">
+          <Shortcut Id="ApplicationDesktopShortcut" Name="{{product_name}}" Description="Connect your computer to Cotal" Target="[!Path]" WorkingDirectory="INSTALLDIR" Icon="ProductIcon">
+            <ShortcutProperty Key="System.AppUserModel.ID" Value="{{bundle_id}}" />
+          </Shortcut>
+          <RegistryValue Root="HKCU" Key="Software\{{manufacturer}}\{{product_name}}" Name="Desktop Shortcut" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+      <Directory Id="$(var.PlatformProgramFilesFolder)" Name="PFiles">
+        <Directory Id="INSTALLDIR" Name="{{product_name}}" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="{{product_name}}" />
+      </Directory>
+    </Directory>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="RegistryEntries" Guid="*">
+        <RegistryValue Root="HKCU" Key="Software\{{manufacturer}}\{{product_name}}" Name="InstallDir" Type="string" Value="[INSTALLDIR]" KeyPath="yes" />
+        <!-- The autostart plugin writes this value only after connection. Never create it on install. -->
+        <RemoveRegistryValue Id="RemoveCotalLogin" Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="Cotal" Action="removeOnUninstall" />
+        {{#each deep_link_protocols as |protocol| ~}}
+        <RegistryKey Root="HKLM" Key="Software\Classes\{{protocol}}">
+          <RegistryValue Type="string" Name="URL Protocol" Value="" />
+          <RegistryValue Type="string" Value="URL:{{bundle_id}} protocol" />
+          <RegistryKey Key="DefaultIcon"><RegistryValue Type="string" Value="&quot;[!Path]&quot;,0" /></RegistryKey>
+          <RegistryKey Key="shell\open\command"><RegistryValue Type="string" Value="&quot;[!Path]&quot; &quot;%1&quot;" /></RegistryKey>
+        </RegistryKey>
+        {{/each~}}
+      </Component>
+      <Component Id="Path" Guid="{{path_component_guid}}" Win64="$(var.Win64)">
+        <File Id="Path" Source="{{main_binary_path}}" KeyPath="yes" Checksum="yes" />
+      </Component>
+      {{#each binaries as |bin| ~}}
+      <Component Id="{{bin.id}}" Guid="{{bin.guid}}" Win64="$(var.Win64)">
+        <File Id="Bin_{{bin.id}}" Source="{{bin.path}}" KeyPath="yes" />
+      </Component>
+      {{/each~}}
+      {{resources}}
+    </DirectoryRef>
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="ApplicationShortcut" Guid="*">
+        <Shortcut Id="ApplicationStartMenuShortcut" Name="{{product_name}}" Description="Connect your computer to Cotal" Target="[!Path]" Icon="ProductIcon" WorkingDirectory="INSTALLDIR">
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="{{bundle_id}}" />
+        </Shortcut>
+        <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\{{manufacturer}}\{{product_name}}" Name="Start Menu Shortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+    <Feature Id="MainProgram" Title="Application" Level="1" ConfigurableDirectory="INSTALLDIR" AllowAdvertise="no" Absent="disallow">
+      <ComponentRef Id="Path" />
+      <ComponentRef Id="RegistryEntries" />
+      <ComponentRef Id="ApplicationShortcut" />
+      <ComponentRef Id="ApplicationShortcutDesktop" />
+      {{#each resource_file_ids as |id| ~}}<ComponentRef Id="{{id}}" />{{/each~}}
+      {{#each binaries as |bin| ~}}<ComponentRef Id="{{bin.id}}" />{{/each~}}
+    </Feature>
+    {{#if webview2_bootstrapper_path}}
+    <Binary Id="MicrosoftEdgeWebview2Setup.exe" SourceFile="{{webview2_bootstrapper_path}}" />
+    <CustomAction Id="InvokeBootstrapper" BinaryKey="MicrosoftEdgeWebview2Setup.exe" Execute="deferred" ExeCommand="{{webview_installer_args}} /install" Return="check" />
+    <Property Id="INSTALLED_WEBVIEW2_VERSION">
+      <RegistrySearch Id="Webview2System" Root="HKLM" Key="SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" Name="pv" Type="raw" />
+      <RegistrySearch Id="Webview2User" Root="HKCU" Key="SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" Name="pv" Type="raw" />
+    </Property>
+    <InstallExecuteSequence><Custom Action="InvokeBootstrapper" Before="InstallFinalize">NOT(REMOVE OR INSTALLED_WEBVIEW2_VERSION)</Custom></InstallExecuteSequence>
+    {{/if}}
+    <InstallExecuteSequence>
+      <RemoveShortcuts>Installed AND NOT UPGRADINGPRODUCTCODE</RemoveShortcuts>
+      <Custom Action="LaunchApplication" After="InstallFinalize">AUTOLAUNCHAPP AND NOT Installed</Custom>
+    </InstallExecuteSequence>
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLDIR]" After="CostFinalize" />
+  </Product>
+</Wix>

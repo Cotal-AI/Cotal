@@ -16,7 +16,7 @@ required-features = ["desktop"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-shell", "dep:tauri-plugin-opener", "dep:tauri-plugin-autostart", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-deep-link", "dep:tokio"]
+desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-shell", "dep:tauri-plugin-opener", "dep:tauri-plugin-autostart", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-deep-link", "dep:tokio", "dep:windows"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
@@ -32,3 +32,6 @@ tauri-plugin-autostart = { version = "2", optional = true }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"], optional = true }
 tauri-plugin-deep-link = { version = "2", optional = true }
 tokio = { version = "1", features = ["time", "sync"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["UI_Shell", "Win32_UI_Shell", "Win32_System_Registry"], optional = true }

@@ -1,6 +1,6 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { refreshPresence, setLoginPreference, startPresence } from "./presence";
 import { approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import "./style.css";
@@ -375,7 +375,9 @@ async function request(body: Request): Promise<Record<string, unknown>> {
       if (approvalExpires > Date.now()) void invoke("open_browser", { url: approval }).catch(refusal);
     } catch (error) { refusal(error); }
   };
-  return requireResult(await invoke<Frame>("daemon_request", { request: body, onEvent: events }));
+  const result = requireResult(await invoke<Frame>("daemon_request", { request: body, onEvent: events }));
+  if (body.op === "status" || body.op === "setup") await refreshPresence(connected());
+  return result;
 }
 function state(value: string, space = selectedSpace()): void {
   if (space !== selectedSpace()) return;
@@ -391,6 +393,7 @@ function state(value: string, space = selectedSpace()): void {
   else if ((value === "approval-pending" || listOpened) && !editing) { listOpened = true; showStage("finished"); }
   else if (stage === "finished" && !listOpened) showStage(selectedSpace() ? "connect" : "welcome");
   else showStage(stage);
+  if (isTauri()) void refreshPresence(verified).catch(refusal);
 }
 async function refresh(): Promise<void> {
   const space = selectedSpace();
@@ -562,6 +565,7 @@ el("connect").addEventListener("click", () => void action(async () => {
 el("disconnect").addEventListener("click", () => void action(async () => {
   const space = selectedSpace(); instances.delete(space);
   const result = await request({ op: "service-disconnect", space });
+  await request({ op: "status" });
   applicationRefusals.delete(space); progress = progressNames.map(() => "waiting"); clearDetails();
   state(String(result.state), space); notice("");
 }));
@@ -577,8 +581,7 @@ el("dashboard").addEventListener("click", () => {
 });
 el("autostart").addEventListener("change", () => void action(async () => {
   const checkbox = el<HTMLInputElement>("autostart");
-  try { if (checkbox.checked) await enable(); else await disable(); }
-  finally { checkbox.checked = await isEnabled(); }
+  await setLoginPreference(checkbox.checked);
 }));
 function receiveLinks(urls: string[]): void {
   if (busy || loginActive) { refusal(new Error("Finish the current operation before opening another connection link.")); return; }
@@ -598,13 +601,13 @@ async function start(): Promise<void> {
     el<HTMLInputElement>("autostart").disabled = true; document.querySelector(".app")!.classList.remove("loading"); return;
   }
   try {
+    await startPresence(notice);
     await onOpenUrl(receiveLinks); const initialLinks = await getCurrent(); if (initialLinks?.length) receiveLinks(initialLinks);
     const info = await request({ op: "about" }); appVersion = String(info.version);
     text("machine-name", String(info.machine)); text("version", `v${String(info.version)}`);
     const os = ({ darwin: "macOS", win32: "Windows", linux: "Linux" } as Record<string, string>)[String(info.platform)] ?? String(info.platform);
     const arch = info.platform === "darwin" && info.arch === "arm64" ? "Apple silicon" : ({ x64: "64-bit Intel / AMD", arm64: "ARM64", ia32: "32-bit Intel" } as Record<string, string>)[String(info.arch)] ?? String(info.arch);
     text("machine-details", `${os} · ${arch} · ${Math.round(Number(info.memoryBytes) / 1024 ** 3)} GB`);
-    el<HTMLInputElement>("autostart").checked = await isEnabled();
     await refresh();
     if (ready) {
       await spaces(false);

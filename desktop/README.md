@@ -72,6 +72,18 @@ The Linux dispatch prepares only the disposable runner's user manager and enable
 
 ## Platforms
 
+### App presence and login
+
+On macOS, install **Cotal.app** in Applications. The DMG places Cotal on the left and the Applications alias on the right. When opened from a mounted disk image or Downloads, Cotal offers to copy itself to `/Applications/Cotal.app` and reopen there. It never replaces an existing installation. **Not now** is remembered. Open at login is unavailable from these temporary locations. The running app has a normal Dock icon. Clicking it or reopening the app brings its window back. Dock Quit and Cmd+Q quit the app without stopping the daemon.
+
+To keep the macOS icon after quitting, use the Dock's **Options > Keep in Dock**. Cotal does not edit Dock preferences or restart the Dock. Apple provides user controls and managed Dock profiles, but no supported ordinary-app self-pinning API was found.
+
+On Windows, both installers create a Cotal Start menu entry and desktop shortcut with the same `ai.cotal.desktop` application identity as the running app. A visible window has its Cotal taskbar button. A second launch focuses the existing window. Closing hides to the system tray, with a one-time explanation before the first hide. On supported Windows versions, the connected screen offers **Pin Cotal to the taskbar** once. Only clicking it requests Windows consent. Already pinned apps are not offered again. Older versions that require Microsoft's limited-access token, unsupported versions and administrator restrictions display their reason instead. Cotal has no pinning token and does not use undocumented pinning commands.
+
+Once a space is connected, **Open at login** defaults on. It opens Cotal in the background at login, without showing or focusing its window. On macOS the app remains in the Dock, and on Windows it stays in the system tray until opened. Turn the switch off to remember that choice across reconnects. Disconnecting the last space removes the app's login entry. Selecting a disconnected space does not remove another space's login startup. The app's login entry and the daemon's background service are separate.
+
+Windows NSIS and MSI uninstall remove their shortcuts and the current user's app login entry. A macOS DMG has no executable uninstaller: dragging the app to Trash cannot run cleanup code. Turn off Open at login before deleting the app. Linux deb/rpm packages install the desktop entry and icons for the launcher. Package removal does not remove the independently installed daemon. Disconnect spaces and use the matching CLI's daemon uninstall operation before removing a service installation you no longer need.
+
 | Platform | Desktop service | Installer |
 |---|---|---|
 | Linux | systemd user service | Debian and RPM |
@@ -88,6 +100,6 @@ After replacing the app in the same installation directory, reopen it, choose a 
 
 ## Local boundary
 
-The OS user is the trust principal. A hostile process running as that same user is not isolated by the tray. Native peer authentication and lifetime custody protect the daemon from other users and foreign listeners. The renderer has no shell, filesystem or remote IPC capability. Rust launches only the bundled Node and stock CLI, admits a closed request schema, removes inherited provider/agent authority from its child environment, and bounds input/output and time. Browser opening permits HTTPS and literal loopback HTTP only. Login proofs and tokens never cross into the webview.
+The OS user is the trust principal. A hostile process running as that same user is not isolated by the tray. Native peer authentication and lifetime custody protect the daemon from other users and foreign listeners. The renderer has no shell, filesystem or remote IPC capability. Login startup is reconciled from successful native daemon replies, not a renderer-supplied connected flag. Its preference control accepts only a Boolean. Relocation uses this executable's bundle and the fixed Applications destination, and pinning accepts no app identity or command. Neither command accepts a renderer path. Rust launches only the bundled Node and stock CLI, admits a closed request schema, removes inherited provider/agent authority from its child environment, and bounds input/output and time. Browser opening permits HTTPS and literal loopback HTTP only. Login proofs and tokens never cross into the webview.
 
 On macOS, starting or removing a loaded LaunchAgent requires its recorded source digest and native evidence matching its label, executable and full argument vector. New installs carry the working directory in those arguments: a small Node entry validates it and changes directory before loading the CLI. They do not depend on launchd exporting its WorkingDirectory property. Legacy plists that carry that property still require the matching native field; an omitted field refuses without stopping the job. No legacy receipt is migrated or adopted through the new path. An unavailable lookup or missing executable/arguments also refuses. `launchctl` display text is not parsed as authority.

@@ -36,7 +36,7 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
     async invoke(cmd: string, args: { request?: Request; url?: string; onEvent?: { id: number } } = {}) {
       if (cmd === "plugin:deep-link|get_current") return options.link ? [options.link] : null;
       if (cmd === "plugin:event|listen") return ++next;
-      if (cmd === "plugin:autostart|is_enabled") return false;
+      if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "" };
       if (cmd === "set_connection_state") return;
       if (cmd === "open_browser") { urls.push(args.url!); return; }
       assert.equal(cmd, "daemon_request"); const r = args.request!; calls.push(r);

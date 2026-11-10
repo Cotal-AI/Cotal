@@ -1,11 +1,12 @@
 use crate::{browser_url, daemon_env_key, DesktopRequest, NODE_SIDECAR};
+use crate::native_presence;
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use tauri::{
     ipc::Channel,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, WindowEvent,
+    AppHandle, Emitter, Manager, WindowEvent,
 };
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
@@ -27,6 +28,11 @@ async fn daemon_request(
         .try_acquire_owned()
         .map_err(|_| "Too many app requests are running. Wait for an operation to finish.")?;
     request.validate()?;
+    let operation = match &request {
+        DesktopRequest::Status {} => "status",
+        DesktopRequest::Setup { .. } => "setup",
+        _ => "other",
+    };
     let seconds = request.timeout_seconds();
     let runtime = app
         .path()
@@ -93,7 +99,12 @@ async fn daemon_request(
         Err("The daemon client closed without an exit receipt.".into())
     }).await;
     let _ = child.kill();
-    answer.map_err(|_| "The daemon client timed out. The operation outcome is unknown; check status before retrying.".to_string())?
+    let frame = answer.map_err(|_| "The daemon client timed out. The operation outcome is unknown; check status before retrying.".to_string())??;
+    // An OS integration refusal does not conceal the completed daemon operation.
+    if let Err(message) = native_presence::observe(&app, operation, &frame) {
+        app.emit("desktop-presence-error", message).map_err(|e| e.to_string())?;
+    }
+    Ok(frame)
 }
 
 #[tauri::command]
@@ -126,23 +137,37 @@ fn show(app: &AppHandle) {
 }
 
 pub fn run() {
+    #[cfg(windows)]
+    unsafe {
+        windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(windows::core::w!("ai.cotal.desktop"))
+            .expect("Cotal could not set its Windows application identity");
+    }
+    let autostart = tauri_plugin_autostart::Builder::new().app_name("Cotal").args(["--background"]);
+    #[cfg(target_os = "macos")]
+    let autostart = autostart.macos_launcher(tauri_plugin_autostart::MacosLauncher::LaunchAgent);
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| show(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if !args.iter().any(|arg| arg == "--background") { show(app); }
+        }))
         .manage(RequestSlots(Arc::new(Semaphore::new(4))))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(
-            tauri_plugin_autostart::Builder::new()
-                .args(["--background"])
-                .build(),
-        )
+        .plugin(autostart.build())
         .invoke_handler(tauri::generate_handler![
             daemon_request,
             open_browser,
-            set_connection_state
+            set_connection_state,
+            crate::native_presence::desktop_presence,
+            crate::native_presence::set_login_preference,
+            crate::native_presence::dismiss_presence_offer,
+            crate::native_presence::move_to_applications,
+            crate::native_presence::pin_to_taskbar
         ])
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            app.manage(native_presence::Presence(std::sync::Mutex::new(native_presence::load(app.handle())?)));
             let open = MenuItem::with_id(app, "open", "Open Cotal", true, None::<&str>)?;
             let quit = MenuItem::with_id(
                 app,
@@ -174,9 +199,27 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                match native_presence::explain_close(window.app_handle()) {
+                    Ok(true) => {
+                        let _ = window.emit("desktop-close-explained", "Cotal stays in your system tray. Open it from the tray or Dock. Quit app leaves the background service running.");
+                        // Keep the first explanation visible until the person closes again.
+                        return;
+                    }
+                    Err(message) => { let _ = window.emit("desktop-presence-error", message); return; }
+                    Ok(false) => {}
+                }
                 let _ = window.hide();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("Cotal could not initialize its native desktop application");
+        .build(tauri::generate_context!())
+        .expect("Cotal could not initialize its native desktop application")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            match event {
+                tauri::RunEvent::Reopen { .. } | tauri::RunEvent::Opened { .. } => show(app),
+                _ => {}
+            }
+            #[cfg(not(target_os = "macos"))]
+            { let _ = (app, event); }
+        });
 }
