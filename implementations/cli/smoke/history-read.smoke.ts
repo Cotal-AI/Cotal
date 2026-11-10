@@ -274,7 +274,7 @@ try {
   const denied = await run(["history", "general", "--json", "--creds", probe, "--space", space, "--server", servers]);
   check("a credential that may not read history is a PERMISSION_DENIED refusal, exit 2, not an empty page", denied.status === 2 && denied.envelope?.outcome === "refused" && denied.envelope.error?.code === "PERMISSION_DENIED" && denied.envelope.result === null, shown(denied));
   // A credential another space's account issued is rejected, and the refusal names the space its
-  // permissions name. One for this space's name from a foreign account names no other space.
+  // permissions name. One for this registered space from a foreign account names its local identity mismatch.
   const elsewhere = join(home, "elsewhere.creds"), sameName = join(home, "same-name.creds");
   writeFileSync(elsewhere, await mintCreds(await createSpaceAuth("elsewhere"), newIdentity(), "observer"), { mode: 0o600 });
   writeFileSync(sameName, await mintCreds(await createSpaceAuth(space), newIdentity(), "observer"), { mode: 0o600 });
@@ -282,7 +282,9 @@ try {
   check("another space's credential is PERMISSION_DENIED, exit 2, naming the space it is for",
     crossed.status === 2 && crossed.envelope?.error?.code === "PERMISSION_DENIED" && crossed.envelope.error.message.endsWith(`${elsewhere} is a credential for space "elsewhere", not "${space}"`) && (crossed.envelope.target as { credentialSpace?: string } | null)?.credentialSpace === "elsewhere" && (crossed.envelope.error.remedy ?? "").includes(`cotal auth mint <label> --space ${space}`), shown(crossed));
   const foreign = await run(["history", "general", "--json", "--creds", sameName, "--space", space, "--server", servers]);
-  check("a rejected credential naming this space keeps the plain rejection", foreign.status === 2 && foreign.envelope?.error?.code === "PERMISSION_DENIED" && /^credentials rejected at \S+$/.test(foreign.envelope.error.message), shown(foreign));
+  check("a rejected credential naming this registered space names its different local identity and the same-profile mint",
+    foreign.status === 2 && foreign.envelope?.error?.code === "PERMISSION_DENIED" && foreign.envelope.error.message.includes(`space "${space}" has a different local identity`)
+      && foreign.envelope.error.remedy?.includes("cotal auth mint <label> --profile observer --out <new file>"), shown(foreign));
   // With that space registered here at another address, a `--server` at this broker is the mismatch:
   // the next step drops it, and following the first step with `--server` kept says so again.
   const inHome = (f: () => void) => {
@@ -449,12 +451,12 @@ try {
     { membersEnded, stderr: ml.stderr() });
 
   // A credential the broker rejects, as after `reset space` replaced the trust it was minted from.
-  // Given as a file it ends a follow with the one-shot's Next; minted by the follow from the space's
-  // trust, the Next says to run it again.
+  // A raw connection with no file or local trust context keeps the broker's generic guidance;
+  // minted by the follow from the space's trust, the Next says to run it again.
   const rejected = await mintCreds(await createSpaceAuth(space), newIdentity(), "observer");
   const given = await credentialEnded({ server: servers, space, tls: false, creds: rejected });
   const minted = await credentialEnded({ server: servers, space, tls: false, creds: rejected, auth });
-  check("a rejected --creds file ends a follow PERMISSION_DENIED with the one-shot's Next", given?.code === "PERMISSION_DENIED" && given.failure().remedy === foreign.envelope?.error?.remedy, { given: given?.failure(), oneShot: foreign.envelope?.error });
+  check("a rejected raw credential ends a follow PERMISSION_DENIED without claiming a local identity change", given?.code === "PERMISSION_DENIED" && given.failure().message === `credentials rejected at ${servers}` && given.failure().remedy === "check your creds, or the broker wants different auth", given?.failure());
   check("a rejected credential the follow minted ends it PERMISSION_DENIED saying to run it again",
     minted?.code === "PERMISSION_DENIED" && minted.failure().message === given?.failure().message && /run it again/.test(minted.failure().remedy ?? ""), minted?.failure());
 
