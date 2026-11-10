@@ -231,17 +231,23 @@ export function seatMissRefusal(
   return `could not establish where "${name}" is: ${loc.answered} manager instance(s) answered and none hosts it, but ${loc.silent.length + loc.refused.length} did not answer for themselves, so this is NOT a report that it is gone — it may be running on one of those.${silent}${refused} ${address}`;
 }
 
+/** The scope a user-mode manager-caller view needs on the actor grant for each manager read. */
+const MANAGER_READ_SCOPE = {
+  ps: "the `spawn` or `admin` scope on your actor grant",
+  slots: "the `admin` scope on your actor grant; `spawn` alone does not carry it",
+} as const;
+
 /** A manager read that failed, as the classified failure. For a user-mode manager view that the
  *  broker refused before any responder saw the call, the broker does not say which row was missing,
  *  so this names the documented requirement for these reads instead of asserting a cause, and keeps
  *  the native refusal as it was. A refusal the manager answered, such as a retiring caller's, already
  *  states its own reason. */
-export function managerReadFailure(reply: ManagerReply, target: Record<string, unknown>, command: string, userAuth: boolean): CommandFailure {
+export function managerReadFailure(reply: ManagerReply, target: Record<string, unknown>, command: keyof typeof MANAGER_READ_SCOPE, userAuth: boolean): CommandFailure {
   const failure = readFailure(reply, target);
   if (!userAuth || failure.code !== "PERMISSION_DENIED" || reply.nativeOutcome !== "not-executed" || reply.answered) return failure;
   return new CommandFailure(failure.outcome, failure.code, failure.message, {
     target,
-    remedy: `on a user-auth mesh, the manager's \`${command}\` read is documented to need the \`admin\` scope on your actor grant; \`spawn\` alone does not carry it. Check what your row holds with \`cotal auth grants\``,
+    remedy: `on a user-auth mesh, the manager's \`${command}\` read is documented to need ${MANAGER_READ_SCOPE[command]}. Check what your row holds with \`cotal auth grants\``,
     ...(failure.native ? { native: failure.native } : {}),
   });
 }

@@ -75,9 +75,9 @@ if (phase === "first") {
   await step("removePersona", async () => replyOf(await a.invoke("remove-persona", { name: "browser_temp" })));
   await step("listRemovedPersona", async () => replyOf(await a.invoke("list-personas")));
   await step("removeInvalidPersona", async () => replyOf(await a.invoke("remove-persona", { name: cfg.invalidPersona })));
-  // `ps` is an operator read that stays with `admin`. The person's spawn-scoped view carries only the
-  // launch reads (`status`, `models`, `resolve-cwd`).
-  await step("notGranted", async () => replyOf(await a.invoke("ps")));
+  // `slots` is an operator read that stays with `admin`. The person's spawn-scoped view carries only
+  // `status`, `models`, `resolve-cwd` and `ps` among the manager reads.
+  await step("notGranted", async () => replyOf(await a.invoke("slots")));
   const goalId = newGoalId();
   // A host persists the goal id BEFORE it submits, so a reload can read the goal back.
   sessionStorage.setItem("goal", goalId);

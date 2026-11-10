@@ -1,13 +1,14 @@
 /**
  * USER-MODE `cotal ps` (fix/ps-option3 C): mode chosen up front — ep.one, not scatter.
  *
- *   1. up --user-auth + device login + admin grant (the arm-2 shape that may reach ps)
+ *   1. up --user-auth + device login + admin grant
  *   2. cotal ps exits 0 (the product claim C authorises)
  *   3. manager killed — ps says no manager answered and lists your agents from presence, exit 0,
  *      never a bare empty list
  *
- * Spawn-only `status --components` runs under `actor grant --full` after the admin ps
- * cells, then the admin grant is restored. That cell records the manager-caller exchange
+ * Spawn-only `ps` and `status --components` run under `actor grant --full` after the admin ps
+ * cells, then the admin grant is restored. A spawn-scoped manager-caller view carries `ps` on its
+ * pinned instance, so spawn-only `ps` answers. The status cell records the manager-caller exchange
  * and requires the instance id this machine's live manager persisted. A call with the
  * manager pidfile hidden stays serving and is not pinned. A live pid whose identity file
  * is hidden is refused and names the instance that answered. Refusal of other
@@ -407,6 +408,15 @@ try {
       check("spawn-only status reports this machine's manager instance", typeof localId === "string" && plain.includes(`service instance ${localId}`), managerLine);
       const pinned = exchanges.filter((body) => body.view === "manager-caller" && typeof body.managerInstanceId === "string" && body.managerInstanceId.length > 0 && body.managerInstanceId === localId);
       check("spawn-only status pins the manager-caller exchange to this machine's manager", typeof localId === "string" && localId.length > 0 && pinned.length > 0, { localId: localId ?? null, exchanges });
+      const spawnPs = await cotal(["ps", "--space", SPACE], 30_000);
+      mustHaveRun(spawnPs, "spawn-only ps");
+      console.log(`   spawn-only ps (exit=${spawnPs.status}):\n` + spawnPs.out.split("\n").map((l) => `   | ${l}`).join("\n").slice(0, 800));
+      check("spawn-only ps exits 0", spawnPs.status === 0, spawnPs.out.slice(-600));
+      check("spawn-only ps is not refused by the broker", !/REFUSED BY THE BROKER|PERMISSION_DENIED/.test(spawnPs.out), spawnPs.out.slice(-600));
+      const spawnAgentStatus = await cotal(["status", "no-such-agent", "--space", SPACE], 30_000);
+      mustHaveRun(spawnAgentStatus, "spawn-only status <agent>");
+      check("spawn-only status <agent> reads the manager's census and reports the agent not found",
+        /TARGET_NOT_FOUND/.test(spawnAgentStatus.out) && !/REFUSED BY THE BROKER|PERMISSION_DENIED/.test(spawnAgentStatus.out), spawnAgentStatus.out.slice(-600));
       const managerLineOf = (out: string): string => {
         const plain = out.replace(/\x1b\[[0-9;]*m/g, "");
         return plain.split("\n").find((line) => /^  manager /.test(line)) ?? plain.slice(-600);
