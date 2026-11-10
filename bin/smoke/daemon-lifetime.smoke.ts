@@ -32,6 +32,7 @@
  *     link, binds another inode at the path, and `status` answers the new pid;
  *  L3b a refused runtime-directory preflight preserves the predecessor's record across retries;
  *     after the mode is corrected, the same dead socket is recovered and clean close clears it.
+ *  L3c a logging failure after the old socket is removed never restores that consumed record.
  *  L4 a socket the record does not name is refused: after SIGKILL the operator replaces the stale
  *     socket with a different same-uid listener's, bound while the dead inode is pinned so its number
  *     differs. The next serve refuses CONFLICT / ALREADY_RUNNING, removes 0 files, the listener's
@@ -352,6 +353,21 @@ try {
       await recovered?.close();
       rmSync(pin, { force: true });
     }
+  });
+
+  await cell("L3c a failure after removing the old socket does not restore its record", async () => {
+    const predecessor = await serveChild();
+    await kill(predecessor.proc, "SIGKILL");
+    let failure: unknown;
+    try {
+      await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home,
+        log: () => { throw new Error("owned recovery log failure"); } });
+    } catch (error) { failure = error; }
+    check("L3c the logging failure happens after the old socket is removed", failure instanceof Error && failure.message === "owned recovery log failure" && !existsSync(paths.socket));
+    check("L3c the consumed predecessor record stays cleared and the lock is free", lockRecord() === undefined && lockIsFree());
+    const retry = await serve();
+    try { check("L3c a retry starts without recovering the consumed socket again", retry.status().state === "ready" && retry.counters.socketsRecovered === 0); }
+    finally { await retry.close(); }
   });
 
   await cell("L4 a socket the record does not name is refused, never removed", async () => {

@@ -347,12 +347,12 @@ async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime
     lock.discardPrevious();
     throw error;
   }
+  if (claim === "recover") unlinkSync(paths.socket);
+  lock.discardPrevious();
   if (claim === "recover") {
-    unlinkSync(paths.socket);
     counters.socketsRecovered++;
     log(`daemon: recovered the socket its predecessor left at ${paths.socket} (its lifetime lock was already released)`);
   }
-  lock.discardPrevious();
 
   // Bind on a private name inside the verified 0700 directory, then publish it at the fixed path
   // with link(2), which refuses to replace anything already there. Node's server.close() unlinks
