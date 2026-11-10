@@ -386,8 +386,8 @@ async function serve(args: ParsedArgs): Promise<void> {
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
   await new Promise<void>((resolve, reject) => {
     const stopWatching = watchDaemonGeneration(binVersion(), async (version) => {
-      if (!daemonStartedByOwnedService(paths)) throw new Error("foreground daemon remains running; restart it from the installed CLI to activate");
-      planUninstall(paths);
+      if (!daemonStartedByOwnedService(paths, home)) throw new Error("foreground daemon remains running; restart it from the installed CLI to activate");
+      planUninstall(paths, home);
       const seats = await running.generationSeats();
       const occupied = seats.filter((row) => row.seats > 0);
       if (occupied.length) throw new Error(`waiting for ${occupied.reduce((sum, row) => sum + row.seats, 0)} seat(s) on ${occupied.map((row) => row.space).join(", ")}`);
@@ -398,7 +398,7 @@ async function serve(args: ParsedArgs): Promise<void> {
       stopWatching();
       await running.close();
       resolve();
-    }, (line) => process.stderr.write(`${line}\n`), (version, reason) => running.generationPending(version, reason), daemonStartedByOwnedService(paths));
+    }, (line) => process.stderr.write(`${line}\n`), (version, reason) => running.generationPending(version, reason), daemonStartedByOwnedService(paths, home));
     const stop = () => { stopWatching(); void running.close().then(resolve, reject); };
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);

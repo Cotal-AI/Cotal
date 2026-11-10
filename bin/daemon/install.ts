@@ -359,8 +359,8 @@ export function startInstalled(paths: DaemonPaths, daemonHome: string | undefine
 }
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
-export function installedDaemonIdentity(paths: DaemonPaths): { same: boolean; installed: string; current: string } {
-  const { receipt, plan } = recordedUnit(paths);
+export function installedDaemonIdentity(paths: DaemonPaths, daemonHome?: string): { same: boolean; installed: string; current: string } {
+  const { receipt, plan } = recordedUnit(paths, daemonHome);
   const bytes = readFileSync(receipt.unitPath);
   const decode = (value: string) => value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
   let argv: string[];
@@ -393,11 +393,11 @@ export function installedDaemonIdentity(paths: DaemonPaths): { same: boolean; in
 }
 
 /** A native launch marker is trusted only with this installation's verified recorded source. */
-export function daemonStartedByOwnedService(paths: DaemonPaths): boolean {
+export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string): boolean {
   if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return false;
   try {
-    if (!installedDaemonIdentity(paths).same) return false;
-    const { receipt, plan } = recordedUnit(paths);
+    if (!installedDaemonIdentity(paths, daemonHome).same) return false;
+    const { receipt, plan } = recordedUnit(paths, daemonHome);
     const source = readFileSync(receipt.unitPath).toString(plan.mechanism === "scheduled-task" ? "utf16le" : "utf8");
     return plan.mechanism === "systemd-user" ? source.includes("Environment=COTAL_DAEMON_NATIVE_SERVICE=1")
       : plan.mechanism === "launchd-agent" ? source.includes("<key>COTAL_DAEMON_NATIVE_SERVICE</key><string>1</string>")
@@ -406,8 +406,8 @@ export function daemonStartedByOwnedService(paths: DaemonPaths): boolean {
 }
 
 /** Restart only the source and native job recorded for this daemon. */
-export function restartInstalled(paths: DaemonPaths): UninstallPlan {
-  const { receipt, plan, service } = recordedUnit(paths);
+export function restartInstalled(paths: DaemonPaths, daemonHome?: string): UninstallPlan {
+  const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) service.restart(receipt);
   else {
     submitSystemdUnitControl("stop", plan.unit);
