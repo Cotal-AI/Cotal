@@ -1,5 +1,31 @@
 # cotal-ai
 
+## 0.157.0
+
+### Minor Changes
+
+- c854ece: Guide new desktop users through connecting their computer and open the dashboard from a clear connected screen.
+  
+  The private `@cotal-ai/desktop` app defaults to Cotal Cloud, keeps custom hosts available, and shows only the current welcome, browser approval, space or connection step. Carry structured setup progress beside unchanged terminal diagnostics, preserve refusals under Details, and keep later opens focused on the verified connection and its secondary controls.
+
+### Patch Changes
+
+- Updated dependencies [5494fa8]
+- Updated dependencies [9989f22]
+- Updated dependencies [196314c]
+- Updated dependencies [df601ae]
+- Updated dependencies [3bd9391]
+  - @cotal-ai/cli@0.157.0
+  - @cotal-ai/core@0.157.0
+  - @cotal-ai/workspace@0.157.0
+  - @cotal-ai/connector-core@0.157.0
+  - @cotal-ai/auth@0.157.0
+  - @cotal-ai/delivery@0.157.0
+  - @cotal-ai/manager@0.157.0
+  - @cotal-ai/registry@0.157.0
+  - @cotal-ai/runtime@0.157.0
+  - @cotal-ai/seat@0.157.0
+
 ## 0.156.0
 
 ### Minor Changes

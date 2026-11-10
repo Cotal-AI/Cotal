@@ -1,5 +1,19 @@
 # @cotal-ai/workspace
 
+## 0.157.0
+
+### Patch Changes
+
+- df601ae: Core can read the direct messages to and from named principals, and tells a refused read apart from a space with none.
+  
+  `CotalEndpoint.dmHistoryOf(principals)` filters on the broker and answers `{ state: "denied" }` when the credential may not read direct messages, while `dmHistory` keeps its empty list. The workspace keeps one private record per chat session the terminal app opens, the newest 20 per space and no credential, so the app can count those sessions as yours and show their direct messages after a restart. `cotal space forget` removes a space's records and counts them in its receipt as `removedChatSessions`.
+- 3bd9391: A space member who may spawn agents can now list them with `cotal ps` and read them with `cotal status <agent>` on a user-auth mesh.
+  
+  A `spawn`-scoped `manager-caller` view carries `ps` on its one pinned Manager instance, beside `status`, `models` and `resolve-cwd`. The Manager answers it with the caller's own agents only unless the caller holds `admin`. `slots` still needs `admin`, and the standing agent `spawn` set is unchanged. A refused `ps` now names `spawn` or `admin` as the scope it needs.
+- Updated dependencies [df601ae]
+- Updated dependencies [3bd9391]
+  - @cotal-ai/core@0.157.0
+
 ## 0.156.0
 
 ### Patch Changes
