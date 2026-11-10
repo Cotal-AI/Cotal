@@ -14,6 +14,7 @@ import {
   type Report,
   loadMeshes,
   readMesh,
+  readMeshRegistry,
   recordMeshes,
   removeMeshes,
   userAuthStateDir,
@@ -210,7 +211,9 @@ function consume(result: AuthSpaceCatalogResult, force: boolean): CatalogDiff {
 }
 
 function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
-  const loaded = loadMeshes();
+  // Unrelated damaged records stay on disk for discovery to report. A catalog row still reads
+  // its own canonical record below, so an unreadable target cannot be overwritten.
+  const { entries: loaded } = readMeshRegistry();
   const before = loaded.filter((m) => m.origin === "catalog" && m.catalogOwner === result.account.ownerKey);
   const priorByName = new Map(before.map((m) => [m.space, m]));
   const diff = emptyDiff();
@@ -332,9 +335,8 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
   try {
     meshes = loadMeshes();
   } catch {
-    // Applying a catalog reads this same registry, so none can apply while a record is unusable.
-    // Refusing here would pre-empt the command's own checks; a command that resolves its target
-    // through the registry still refuses the record by name.
+    // Target resolution still needs a usable registry. Refusing here would pre-empt the
+    // command's own checks, which name the damaged record.
     return;
   }
   const named = requested ? meshes.find((m) => m.space === requested) : undefined;

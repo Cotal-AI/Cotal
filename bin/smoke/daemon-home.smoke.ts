@@ -50,6 +50,7 @@
  *     including on provider failure; default refresh still applies additions and removals. An
  *     account switch drops the old catalog cache in either home, but only the default daemon
  *     removes the old account's shared registrations and selection. Credential files stay.
+ *     An unrelated damaged registration stays untouched while healthy entries refresh.
  *
  * Not covered here, and still to add: register approval carry-over (needs the stock auth service
  * sandbox of daemon-register.smoke.ts), a foreign-owned home (needs a user namespace) and the
@@ -60,7 +61,7 @@
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
 import type { AddressInfo } from "node:net";
-import { chmodSync, closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -68,7 +69,7 @@ import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { flockExclusiveNb } from "@cotal-ai/seat";
 import { saveIdpSession } from "@cotal-ai/auth";
-import { getCurrent, loadMeshes, recordMesh, setCurrent, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
+import { getCurrent, loadMeshes, meshFile, readMeshRegistry, recordMesh, setCurrent, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-home smoke: Linux only; skipped on ${process.platform}`);
@@ -324,19 +325,41 @@ try {
       saveIdpSession(home, idp, { token: session, sub: "catalog-account", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
       const initial = await cli(["spaces", "--refresh", "--json"]);
       check("H6 default refresh registers its own catalog", initial.status === 0 && loadMeshes().some((m) => m.space === "catalog-removed"), initial.doc);
+      const corrupt = join(home, "meshes", "corrupt.json");
+      const damaged = "{broken json";
+      writeFileSync(corrupt, damaged, { mode: 0o600 });
+      const listed = await cli(["spaces", "--json"]);
+      check("H6 damaged registration leaves healthy spaces visible without refresh", listed.status === 4 && listed.doc.outcome === "partial" && listed.doc.result?.refresh === "not-requested" && listed.doc.result?.unreadable === 1 && listed.doc.result?.spaces.length === 2, listed.doc);
       setCurrent("catalog-removed");
       const before = sharedState();
       slugs = ["catalog-kept", "catalog-added"];
       const changed = await cli(["spaces", "--refresh", "--daemon-home", managed, "--json"]);
-      check("H6 managed refresh preserves shared registrations, credentials and selection", changed.status === 0 && sharedState() === before && getCurrent() === "catalog-removed", changed.doc);
+      check("H6 managed refresh preserves shared registrations, credentials and selection", changed.status === 4 && changed.doc.result?.refresh === "complete" && changed.doc.result?.unreadable === 1 && sharedState() === before && getCurrent() === "catalog-removed", changed.doc);
       check("H6 managed space list still reflects the shared registry", changed.doc.result?.spaces.some((s: { space: string }) => s.space === "catalog-removed") === true && changed.doc.result?.spaces.every((s: { space: string }) => s.space !== "catalog-added") === true);
       unavailable = true;
       const failed = await cli(["spaces", "--refresh", "--daemon-home", managed, "--json"]);
       check("H6 a failed managed refresh does not write shared failure metadata", failed.status === 4 && failed.doc.result?.refresh === "failed" && sharedState() === before, failed.doc);
       unavailable = false;
       const applied = await cli(["spaces", "--refresh", "--json"]);
-      check("H6 default refresh still adds and removes its registrations", applied.status === 0 && loadMeshes().some((m) => m.space === "catalog-added") && !loadMeshes().some((m) => m.space === "catalog-removed"), applied.doc);
+      const refreshed = readMeshRegistry().entries;
+      check("H6 default refresh adds and removes healthy registrations beside damage", applied.status === 4 && applied.doc.outcome === "partial" && applied.doc.result?.refresh === "complete" && applied.doc.result?.unreadable === 1 && applied.doc.result?.spaces.map((s: { space: string }) => s.space).sort().join() === "catalog-added,catalog-kept" && refreshed.some((m) => m.space === "catalog-added") && !refreshed.some((m) => m.space === "catalog-removed"), applied.doc);
       check("H6 default refresh clears its removed selection", getCurrent() === undefined);
+      const plain = await cli(["spaces", "--refresh", "--plain"]);
+      check("H6 plain refresh reports partial success and the unreadable count", plain.status === 4 && /Catalog refresh:\s+complete/.test(plain.out) && /Unreadable:\s+1/.test(plain.out) && plain.out.includes("catalog-added"), plain);
+      const cached = Object.values(JSON.parse(readFileSync(join(home, "space-catalogs.json"), "utf8")).accounts) as { applied: boolean }[];
+      check("H6 healthy catalog application completes despite an unrelated damaged file", cached.length === 1 && cached[0]?.applied === true && readFileSync(corrupt, "utf8") === damaged);
+      unavailable = true;
+      const failedDefault = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 provider failure with damage remains a partial listing, not an endpoint failure", failedDefault.status === 4 && failedDefault.doc.result?.refresh === "failed" && failedDefault.doc.result?.unreadable === 1 && failedDefault.doc.result?.spaces.length === 2 && readMeshRegistry().entries.every((m) => Boolean(m.catalogError)) && readFileSync(corrupt, "utf8") === damaged, failedDefault.doc);
+      unavailable = false;
+      const blocked = meshFile("catalog-blocked");
+      writeFileSync(blocked, damaged, { mode: 0o600 });
+      slugs = ["catalog-kept", "catalog-added", "catalog-blocked"];
+      const targeted = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 a catalog cannot overwrite its own damaged canonical target", targeted.status === 4 && targeted.doc.result?.refresh === "failed" && targeted.doc.result?.unreadable === 2 && readFileSync(blocked, "utf8") === damaged && readFileSync(corrupt, "utf8") === damaged, targeted.doc);
+      rmSync(blocked);
+      rmSync(corrupt);
+      slugs = ["catalog-kept", "catalog-added"];
       check("H6 no private registry or sentinel tree was created", !existsSync(join(managed, "meshes")) && !existsSync(join(managed, "catalog")));
 
       const subjects = (dir: string): string[] => Object.values(JSON.parse(readFileSync(join(dir, "space-catalogs.json"), "utf8")).accounts as Record<string, { sub: string }>).map((a) => a.sub).sort();
