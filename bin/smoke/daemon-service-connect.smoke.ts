@@ -80,6 +80,7 @@ for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
+const fixtureVersion = (JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")) as { version: string }).version;
 const authRequire = createRequire(join(repo, "implementations", "auth", "package.json"));
 // jose is a dependency of implementations/auth, not of this package; resolve it from its owner, as the
 // daemon-login smoke resolves better-auth. Typed structurally for what this file uses.
@@ -375,7 +376,7 @@ try {
     } finally { await caller.stop(); }
   };
 
-  let d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+  let d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
   let assignmentDigest = "";
   try {
     await cell("C1 connect before approval is approval-pending, never connected", async () => {
@@ -484,7 +485,7 @@ try {
       const before = filesUnder(daemonDir).filter((p) => p.includes("service-renewal") && p.endsWith(".json")).map((p) => readFileSync(join(daemonDir, p), "utf8"));
       const ids0 = before.map((t) => { const o = JSON.parse(t) as Record<string, string>; return `${o.activateRequestId}/${o.renewRequestId}`; });
       await d.close();
-      d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
       // Nothing is run against this daemon: the state it reports is the one its own resume reached.
       const st = await waitState(ON, (x) => x === "connected", 90_000);
       check("C6 it reaches connected with nothing run against it", st === "connected", st);
@@ -494,7 +495,7 @@ try {
       // And the other direction: an explicit disconnect must not come back.
       check("C6 instrument: an explicit disconnect forgets the intent", stateOf(await disconnectS(ON)) === "disconnected" && !existsSync(intentFile(ON)));
       await d.close();
-      d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
       check("C6 a restart after an explicit disconnect resumes 0 connections and is not connected", d.counters.connectionsResumed === 0 && stateOf(await statusS(ON)) !== "connected", { counters: d.counters, state: stateOf(await statusS(ON)) });
       check("C6 instrument: connected again for the cells that follow", stateOf(await connectS(ON)) === "connected");
     });
@@ -630,7 +631,7 @@ try {
       // A crashed child leaves its socket behind; the successor removes exactly that one under the
       // lifetime lock, with no step from this fixture.
       const crashed = child.exitCode !== 0 && existsSync(paths.socket);
-      d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
       if (crashed) check("C14 the successor recovered the crashed child's socket by itself (1 recovery)", d.counters.socketsRecovered === 1, d.counters);
     });
 
@@ -972,7 +973,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         catalog = undefined; catalogSpace = undefined; catalogTarget = undefined;
         await delivery.close();
         await secondDelivery?.close();
-        d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home });
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home });
       }
     });
 
@@ -995,7 +996,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       let refused = false;
       try { await ask(paths.socket, { op: "service-status", space: ON }, 2000); } catch { refused = true; }
       check("C9 nothing answers after shutdown", refused);
-      d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     });
 
     await cell("C11 the CLI through the composition root", async () => {
