@@ -18,3 +18,7 @@ Setup reconciles the stock connectors before hosting and prepares the default pe
 Manager's own catalog. A bare npm upgrade reconciles the replacement connectors before activation
 and leaves the running generation in place with a cause when preparation fails.
 Uninstall removes only per-space hosting records and works with the default daemon home's lock file.
+Corrupt hosting records refuse only their space and setup repairs them after readiness succeeds.
+Periodic pinned probes withdraw stale readiness and restart live children only under an empty-seat
+preservation fence. Stopped status retains the Manager identity and observation, and daemon sign-in
+refusals consistently name the daemon login command.

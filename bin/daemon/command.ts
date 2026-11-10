@@ -270,7 +270,9 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the service request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ServiceConnectionResult = reply.result;
   const native = { native: { code: (r.state === "ended" && r.reason ? r.reason : r.state).toUpperCase().replaceAll("-", "_") } };
-  const ok = (op === "service-status" && r.manager?.state === "answering") || r.state === "connected" || (op === "service-disconnect" && r.state === "disconnected");
+  const ok = op === "service-status" && r.manager && r.manager.state !== "stopped"
+    ? r.manager.state === "answering"
+    : r.state === "connected" || (op === "service-disconnect" && r.state === "disconnected");
   if (!ok) {
     const code = r.state === "not-requested" || r.state === "not-registered" ? "TARGET_NOT_FOUND"
       : r.state === "unsupported" ? "UNSUPPORTED"

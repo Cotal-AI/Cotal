@@ -53,8 +53,10 @@ try {
         mkdirSync(state, { recursive: true, mode: 0o700 });
         writeFileSync(join(state, name), "not-json", { mode: 0o600 });
         const frame = await request(paths.socket, op);
-        check(`${name} ${op} returns a bounded refusal`, frame?.ok === false && frame.error?.code === "MANAGER_UNAVAILABLE", { frame, exit: child.exitCode, stderr: stderr.slice(-500) });
-        rmSync(join(state, name));
+        const manager = op === "status" ? frame?.result?.managers?.find((row: { space: string }) => row.space === "corrupt") : frame?.result;
+        check(`${name} ${op} isolates the corrupt space without failing the daemon request`, frame?.ok === true && (op === "managers-stop" || manager?.state === "refused"), { frame, exit: child.exitCode, stderr: stderr.slice(-500) });
+        if (op === "status" || op === "manager-status") check(`${name} ${op} names the invalid file`, manager?.reason?.includes(join(state, name)) === true, manager);
+        rmSync(join(state, name), { force: true });
         const healthy = await request(paths.socket, "status");
         check(`${name} ${op} leaves the same daemon alive`, healthy?.ok === true && healthy.result?.pid === child.pid, { healthy, exit: child.exitCode });
       } finally { await killAndAwaitExit(child, "SIGTERM"); }

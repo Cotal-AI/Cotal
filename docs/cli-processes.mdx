@@ -586,11 +586,21 @@ refuses with the Manager's reason and next step.
 The daemon supervises each Manager as a separate child, restarts it with bounded backoff after a
 crash, and resumes recorded hosting intents after its own restart. It records intent only after
 status answers. A permanent refusal, such as a missing sign-in or scope, stops automatic retries.
+A damaged hosting or refusal record appears as a refusal for that space with the file path. Other
+spaces still answer status. Run `cotal daemon setup --space <space>` to repair the record after a
+successful Manager readiness probe.
 Manager state stays under the daemon's own per-space directory. Its `manager.log` captures stdout
 and stderr with mode `0600`, rotates at 1 MiB, and retains one previous file as `manager.log.1`.
-Status includes `lastExit` after a crash and `lastStop` for graceful, terminated or killed shutdowns,
-plus `logError` if logging fails. Hosted Manager status is the last observed state with `observedAt`;
-reading status does not perform a fresh readiness probe. No project folder or selected space is
+Status includes `lastExit` after a crash and `lastStop` for graceful, terminated or killed shutdowns.
+A stopped row keeps its instance and last observation, clears the PID, and names setup as its next
+step. An expired or revoked daemon session names `cotal daemon login --idp <url>` in both the refusal
+and its next step. Status also includes `logError` if logging fails. Every five seconds the daemon
+probes the recorded Manager instance.
+A failed probe advances `observedAt`, withdraws `answering`, and makes `service-status` refuse with
+a next step. Recovery restarts a live child only after its native preservation fence confirms no
+seats and blocks new admission. An occupied or unresponsive child stays running for recovery without
+losing custody. Hosted Manager status is the last observed state with `observedAt`; reading status
+does not perform a fresh readiness probe. No project folder or selected space is
 changed. `service-disconnect` stops that space's hosted Manager and removes its hosting intent.
 `uninstall` stops all hosted Managers and removes their intents from per-space directories, leaving
 the lifetime lock file and unrelated records alone. A later install has no Manager to resume from

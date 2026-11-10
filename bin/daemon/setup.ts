@@ -76,7 +76,7 @@ async function waitForDaemon(opts: SetupOptions, seconds: number): Promise<void>
       last = e.message;
     }
     if (Date.now() >= deadline) {
-      throw new CommandFailure("failed", "DEPENDENCY_UNAVAILABLE", `the daemon did not answer ${opts.paths.socket} within ${seconds}s of being started; nothing was registered`, {
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the daemon did not answer ${opts.paths.socket} within ${seconds}s of being started; nothing was registered`, {
         remedy: "read its unit with systemctl --user status, then run this again",
         ...(typeof last === "string" ? { native: { code: "NOT_ANSWERING" } } : {}),
       });
