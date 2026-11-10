@@ -204,6 +204,15 @@ const identities = (dir: string): string[] => existsSync(join(dir, "daemon")) ? 
 let legacyServe: Serve | undefined, managedServe: Serve | undefined;
 let derived: string | undefined;
 try {
+  await cell("G0 mode discovery needs no running daemon", async () => {
+    const missing = await cli([]);
+    check("G0 the missing-mode error itself includes desktop", missing.status === 1 && missing.err.split("\n")[0]!.includes("desktop"), missing.err.slice(0, 400));
+    check("G0 the remedy names help, not a live status read", missing.err.includes("cotal help daemon") && !missing.err.split("\n")[1]!.includes("cotal daemon status"), missing.err.slice(0, 400));
+    const help = await cli(["--help"]);
+    check("G0 scoped help succeeds before any daemon starts", help.status === 0 && help.out.includes("desktop"), { status: help.status });
+    check("G0 discovery creates no runtime entries or lifetime lock", runtimeEntries().length === 0 && !existsSync(lockFile(home)) && !existsSync(lockFile(managed)));
+  });
+
   await cell("H0 control: no flag keeps the fixed legacy socket", async () => {
     legacyServe = await serve([]);
     check("H0 legacy serve reports ready at $XDG_RUNTIME_DIR/cotal/daemon.sock", live(legacyServe) && legacyServe.socket === legacy.socket, { socket: legacyServe.socket, status: legacyServe.status, err: legacyServe.err.slice(0, 300) });
@@ -227,6 +236,20 @@ try {
     check("H1 the legacy socket keeps its inode and mtime", legacyAfter.ino === legacyBefore.ino && legacyAfter.mtimeMs === legacyBefore.mtimeMs, { legacyBefore, legacyAfter });
     check("H1 D/daemon.lock is held by the managed serve, whose record names its pid", !lockFree(managed) && lockRecordPid(managed) === managedServe.child.pid, { free: lockFree(managed), recorded: lockRecordPid(managed), pid: managedServe.child.pid });
     check("H1 no lock was created in the legacy home", !existsSync(lockFile(home)));
+  });
+
+  await cell("G1 flags are scoped before daemon actions", async () => {
+    for (const flags of [["--idp", "not-a-url"], ["--wait", "not-a-number"], ["--refresh"], ["--dry-run"], ["--yes"], ["--space", "nonexistent"], ["--client-id", ""]]) {
+      const result = await cli(["status", "--daemon-home", managed, "--json", ...flags]);
+      check(`G1 status refuses ${flags[0]} from another mode`, result.status === 1 && result.doc.error?.code === "USAGE_INVALID" && result.doc.error.message?.includes(flags[0]!) === true, { status: result.status, doc: result.doc });
+    }
+    const unused = join(root, "unused"); mkdirSync(unused, { mode: 0o700 });
+    const before = runtimeEntries();
+    const dry = await cli(["serve", "--daemon-home", unused, "--dry-run", "--json"]);
+    check("G1 serve --dry-run refuses rather than starting a daemon", dry.status === 1 && dry.doc.error?.code === "USAGE_INVALID" && dry.doc.error.message?.includes("--dry-run") === true, { status: dry.status, doc: dry.doc });
+    check("G1 refused serve creates no socket or lifetime lock", JSON.stringify(runtimeEntries()) === JSON.stringify(before) && !existsSync(lockFile(unused)));
+    const st = await cli(["status", "--daemon-home", managed, "--json"]);
+    check("G1 valid status still reaches the same daemon", st.status === 0 && st.doc.result?.pid === managedServe?.child.pid, { status: st.status, doc: st.doc });
   });
 
   await cell("H2 managed state is disjoint and nothing migrates from legacy", async () => {

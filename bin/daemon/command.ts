@@ -378,6 +378,12 @@ async function serve(args: ParsedArgs): Promise<void> {
 async function run(args: ParsedArgs): Promise<void> {
   const [mode, ...rest] = args.positionals;
   if (rest.length) throw new CommandFailure("refused", "USAGE_INVALID", `cotal daemon ${mode} takes no positionals`);
+  const subcommand = daemonCommand.subcommands?.find((command) => command.name === mode);
+  if (subcommand) {
+    for (const name of Object.keys(args.values)) {
+      if (!subcommand.flagNames?.includes(name)) throw new CommandFailure("refused", "USAGE_INVALID", `--${name} does not belong to cotal daemon ${mode}`, { remedy: `run \`cotal help daemon ${mode}\`` });
+    }
+  }
   if (mode === "desktop") {
     const { paths, home } = resolveTarget(args);
     return runDesktopBridge({ paths, version: binVersion(), peerUid, peerPid, ...(home ? { daemonHome: home } : {}) });
@@ -414,7 +420,7 @@ async function run(args: ParsedArgs): Promise<void> {
   if (mode === "service-connect" || mode === "service-disconnect" || mode === "service-status") return serviceCommand(args, mode);
   if (mode === "install" || mode === "uninstall") return unitCommand(args, mode);
   if (mode === "setup") return setupCommand(args);
-  throw new CommandFailure("refused", "USAGE_INVALID", mode === undefined ? "cotal daemon needs a mode: setup, start, status, serve, install, uninstall, login, spaces, connect-check, register, service-connect, service-disconnect or service-status" : `unknown daemon mode ${JSON.stringify(mode)}`, { remedy: "cotal daemon status" });
+  throw new CommandFailure("refused", "USAGE_INVALID", mode === undefined ? `cotal daemon needs a mode: ${daemonCommand.subcommands!.map((command) => command.name).join(", ")}` : `unknown daemon mode ${JSON.stringify(mode)}`, { remedy: "run `cotal help daemon`" });
 }
 
 const daemonCommand: Command = {
