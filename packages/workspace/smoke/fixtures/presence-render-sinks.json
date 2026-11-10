@@ -5785,7 +5785,7 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": "nector.missing.length ? \"waiting\" : \"ok\")]);\n    }\n  if (",
+      "anchor": "nector.missing.length ? \"waiting\" : \"ok\")]);\n    }\n  // A",
       "class": "non-render/control",
       "rationale": "Status machine overview: \"waiting\" is the color tone for a connector whose binaries are not on PATH, not presence."
     },
