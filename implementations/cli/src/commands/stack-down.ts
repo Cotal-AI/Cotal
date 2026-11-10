@@ -20,6 +20,7 @@ import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { releaseDeadForegroundHold } from "../lib/foreground-hold.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { stackStoreWarnings } from "../lib/store-identity.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
@@ -371,7 +372,7 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
   const stopped = alreadyStopped(journal0, members);
   if (stopped || stackNeverStarted(journal0)) {
     await refuseLiveUnrecordedDaemons(localProcessSurface(), { root, space: journal0.space });
-    return nothingRunning(presentation, target, stopped && withAgents && !journal0.operation.withAgents, [], true);
+    return nothingRunning(presentation, target, stopped && withAgents && !journal0.operation.withAgents, stackStoreWarnings(journal0), true);
   }
   // A preview reports what would refuse the real stop instead of refusing itself.
   let blocked: CommandFailure | undefined, restore: string | undefined, stranded: ReturnType<typeof strandedRegistration>;
@@ -389,8 +390,8 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
     if (disabled) blocked = disabledJetStreamStop(journal0, manager, disabled);
     else if (full) blocked = fullStoreStop(journal0, manager, full);
   }
-  const warnings = blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }]
-    : [...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleWarning(root, row, true))];
+  const warnings = [...stackStoreWarnings(journal0), ...(blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }]
+    : [...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleWarning(root, row, true))])];
   // A preview that changes nothing succeeds. It is partial only in what it read: no provider and
   // no manager impact, which the real stop reads and confirms before any signal.
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop-preview", ...target, withAgents, members: members.map((member) => ({ role: member.role, definition: member.definition.name, instanceId: member.instance.name, process: member.live ? "running" : "gone" })), settlesOperation: settlement ?? null, blockedBy: blocked?.detail() ?? null, nativeImpactChecked: false, dryRun: true, signalled: false, admittedRestore: restore ?? null }, completeness: "partial", warnings }, () => {
@@ -438,14 +439,15 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
     ...(launch ? [{ code: "LAUNCH_ABANDONED", target: { ...instanceProjection(launch.row), role: launch.role }, message: `the ${launch.role} launch ${launch.row.name} was recorded failed: the up that started it exited before it recorded a process. A process that launch started without recording it is not excluded, and this down does not stop it` }] : []),
   ];
   const { previous, journal0, settlement, members, target } = stopTarget(root, values);
+  const storeWarnings = stackStoreWarnings(journal0);
   // The completed down that stopped the stack also stopped its agents when it took --with-agents, so
   // a repeat has nothing left to stop. A stack that never started has no agents either.
   if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) {
     // A controller stack with no recorded member can still have a manager or delivery daemon whose
     // pidfile was moved. Its lease is the evidence, read before this stop reports nothing running.
     await refuseLiveUnrecordedDaemons(localProcessSurface(), { root, space: journal0.space });
-    if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, [...abandonWarnings, ...await readinessAddressSurvivors(journal0.space)]);
-    return nothingRunning(presentation, target, false, abandonWarnings);
+    if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, [...storeWarnings, ...abandonWarnings, ...await readinessAddressSurvivors(journal0.space)]);
+    return nothingRunning(presentation, target, false, [...storeWarnings, ...abandonWarnings]);
   }
   // A stopped broker takes connections and never answers, so every read through it would wait out
   // its budget and the broker's own stop would wait on a signal it cannot act on.
@@ -584,6 +586,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   if (!failure) releaseDeadForegroundHold(root);
   settle(failure ? (failure.outcome === "unknown" ? "unknown" : failure.outcome === "partial" ? "partial" : failure.outcome === "failed" ? "failed" : "refused") : "completed");
   const warnings: OutputWarning[] = [
+    ...storeWarnings,
     ...(settled || abandoned || stranded || cleared.length ? [
       ...abandonWarnings,
       ...(settled ? [{ code: "OPERATION_SETTLED", target: { ...target, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : []),

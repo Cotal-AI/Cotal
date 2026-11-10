@@ -327,7 +327,14 @@ warning. `clean store`, `clean all`, `reset store` and `reset space` refuse such
 [clean](cli-shutdown.mdx#clean) and [reset](cli-shutdown.mdx#reset) describe. A controller stack whose recorded store folder is
 missing, as after it was removed by hand, starts its broker on a new empty store there and warns
 `STORE_MISSING`: the space's history starts empty. A legacy root whose last broker served a missing
-folder warns the same. When a controller stack's broker logged damage in a stored file since it
+folder warns the same. A controller stack records its store directory's identity when the broker
+starts. If the path now names another directory, `status`, `down` (including `--dry-run`) and `up`
+warn `STORE_REPLACED`. A running broker can still serve its old open files, but a restart uses the
+replacement and may start with empty history. A live `up` does not accept the replacement as the
+running broker's store. After a new broker starts, its directory becomes the recorded store.
+Older journals without a directory identity can detect only a missing path until their next broker
+start. These checks identify directories, not deleted files within an unchanged directory.
+When a controller stack's broker logged damage in a stored file since it
 started, as `status` shows in its `Store` row, `up` warns `STORE_DAMAGE_LOGGED` with the broker's
 words. It still starts the stack and repairs nothing.
 

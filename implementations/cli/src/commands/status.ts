@@ -155,6 +155,7 @@ import {
 } from "../lib/stack-journal.js";
 import { cotalLinkHere, homeHoldsStack, linkedCotalRemedy } from "../lib/paths.js";
 import { storeWriteProblem } from "../lib/store-dir.js";
+import { stackStoreWarnings } from "../lib/store-identity.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 import { askManager } from "@cotal-ai/workspace/control";
 
@@ -464,6 +465,9 @@ export async function status(args: ParsedArgs): Promise<void> {
   // but replace its ordinary restart advice with the journal's recovery step.
   if (recovery) hints.unshift(recovery);
   else hints.push(...selectedHints);
+  if (!blocked) readStackStoreWarnings(root, gaps, hints);
+  if (selected.ok && selected.target.origin === "up" && !sameDir(root, selected.target.root))
+    readStackStoreWarnings(selected.target.root, gaps, hints, selected.target.space);
   // The note under the heading sends here for this folder's own stack cut off with no recorded
   // outcome under another selection. A blocked one is named with its block under `This folder's
   // space` and its step first in Next, so that note is left out here, with its --json warning. One
@@ -914,9 +918,9 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     controllerStack = false;
     // A journal no command can use is named with its way out, in the warnings and under Next; the
     // rest of the report still stands.
-    if (isCommandFailure(error) && error.code === "SCHEMA_INVALID") {
+    if (isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED")) {
       unusable = true;
-      gaps.add("STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
+      gaps.add(error.code === "PERMISSION_DENIED" ? "STACK_JOURNAL_UNREADABLE" : "STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
       if (error.remedy) hints.push(error.remedy);
     }
     // A journal another folder recorded, as a copy or a moved folder keeps it: clean store refuses here.
@@ -1249,11 +1253,26 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
   };
 }
 
+/** Diagnose the current folder's store and a selected local stack independently of folder trust. */
+function readStackStoreWarnings(root: string, gaps: Gaps, hints: string[], space?: string): void {
+  try {
+    const journal = readStackJournal(root)?.journal;
+    if (journal && (space === undefined || journal.space === space))
+      for (const warning of stackStoreWarnings(journal)) gaps.add(warning.code, warning.message, warning.target);
+  } catch (error) {
+    if (isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED")) {
+      gaps.add(error.code === "PERMISSION_DENIED" ? "STACK_JOURNAL_UNREADABLE" : "STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
+      if (error.remedy) hints.push(error.remedy);
+    } else if (!isCommandFailure(error) || error.code !== "CONFLICT") throw error;
+    // A copied or moved journal is diagnosed by the folder and selection readers.
+  }
+}
+
 /** The refusal of the stack journal at `root` when it is one no command can use, as `up` and `down`
  *  refuse it. Undefined when it reads or is absent. */
 function unusableStackJournal(root: string): CommandFailure | undefined {
   try { readStackJournal(root); return undefined; }
-  catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
+  catch (error) { return isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED") ? error : undefined; }
 }
 
 /** The refusal of `space`'s service instance records when one is a record no command can use, as

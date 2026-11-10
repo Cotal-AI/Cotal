@@ -14,6 +14,7 @@ import { observeServiceProcess, processServiceHost, serviceInstances, type Servi
 import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, abandonUnresolvedLaunch, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
+import type { StoreIdentity } from "./store-identity.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -184,6 +185,8 @@ function replacementOf(input: unknown, root: string): StackReplacement {
 
 export interface StackBrokerInputs {
   storeDir: string;
+  /** Recorded only when a broker starts, never refreshed from a running broker's path. */
+  storeIdentity?: StoreIdentity;
   maxFileStore?: number;
   host?: string;
   logFile?: string;
@@ -192,8 +195,16 @@ export interface StackBrokerInputs {
 }
 
 function brokerInputs(input: unknown, root: string): StackBrokerInputs {
-  const value = localRecordObject(input, ["storeDir", "maxFileStore", "host", "logFile", "logfileSizeLimit", "logfileMaxNum"]);
+  const value = localRecordObject(input, ["storeDir", "storeIdentity", "maxFileStore", "host", "logFile", "logfileSizeLimit", "logfileMaxNum"]);
   if (typeof value.storeDir !== "string" || !isAbsolute(value.storeDir) || value.storeDir.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value.storeDir)) invalid(root);
+  let storeIdentity: StoreIdentity | undefined;
+  if (value.storeIdentity !== undefined) {
+    const identity = localRecordObject(value.storeIdentity, ["path", "dev", "ino", "birthtimeNs"]);
+    if (typeof identity.path !== "string" || !isAbsolute(identity.path) || identity.path.length > 4096 || /[\u0000-\u001f\u007f]/u.test(identity.path)) invalid(root);
+    for (const field of ["dev", "ino", "birthtimeNs"] as const)
+      if (typeof identity[field] !== "string" || !/^[0-9]{1,40}$/.test(identity[field] as string)) invalid(root);
+    storeIdentity = identity as unknown as StoreIdentity;
+  }
   if (value.maxFileStore !== undefined && (!Number.isSafeInteger(value.maxFileStore) || Number(value.maxFileStore) <= 0)) invalid(root);
   if (value.host !== undefined && (typeof value.host !== "string" || !value.host || value.host.length > 253 || /[\u0000- \u007f]/u.test(value.host))) invalid(root);
   if (value.logFile !== undefined && (typeof value.logFile !== "string" || !isAbsolute(value.logFile) || !value.logFile.trim() || value.logFile.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value.logFile))) invalid(root);
@@ -202,6 +213,7 @@ function brokerInputs(input: unknown, root: string): StackBrokerInputs {
   if (value.logFile === undefined && (value.logfileSizeLimit !== undefined || value.logfileMaxNum !== undefined)) invalid(root);
   return {
     storeDir: value.storeDir as string,
+    ...(storeIdentity ? { storeIdentity } : {}),
     ...(value.maxFileStore !== undefined ? { maxFileStore: Number(value.maxFileStore) } : {}),
     ...(value.host !== undefined ? { host: value.host as string } : {}),
     ...(value.logFile !== undefined ? { logFile: value.logFile as string } : {}),
