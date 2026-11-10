@@ -377,6 +377,10 @@ check("unreachable copy for a registered mesh names `cotal space forget`, not le
   const m = preflightMessage("unreachable", manualT, false);
   return m.includes("cotal space forget theirs") && !m.includes("cotal meshes rm") && !m.includes("cotal up");
 })(), preflightMessage("unreachable", manualT, false));
+check("unreachable catalog copy names provider removal and sync, not locally refused forget", (() => {
+  const m = preflightMessage("unreachable", { ...manualT, origin: "catalog" }, false);
+  return m.includes("remove it from the provider's catalog") && m.includes("cotal sync") && !m.includes("cotal space forget") && !m.includes("cotal meshes rm") && !m.includes("cotal up");
+})());
 // A user-mode target never reaches preflightTarget, so this arm has to throw the same refusal.
 {
   const userBase = { ...T, mode: "user" as const, space: "hosted", root: "/tmp/hosted-root" };
