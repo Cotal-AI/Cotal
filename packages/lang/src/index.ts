@@ -110,6 +110,7 @@ export {
   type ParticipantRequest,
   type SleepRequest,
   type InlineSpawnDefinition,
+  type InlineSpawnEndpoint,
   type SpawnRequest,
   type TurnRequest,
   type TurnResultValue,

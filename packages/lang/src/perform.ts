@@ -109,7 +109,8 @@ function isPlacementPair(v: unknown): v is { endpoint: string; instanceId: strin
  */
 const INLINE_STRINGS = ["role", "model", "variant", "description"] as const;
 const INLINE_LISTS = ["subscribe", "allowSubscribe", "allowPublish", "capabilities"] as const;
-const INLINE_KEYS: readonly string[] = ["name", "prompt", ...INLINE_STRINGS, ...INLINE_LISTS, "save"];
+const INLINE_KEYS: readonly string[] = ["name", "prompt", ...INLINE_STRINGS, ...INLINE_LISTS, "endpoints", "save"];
+const ENDPOINT_KEYS: readonly string[] = ["endpoint", "commands", "instanceId"];
 
 /**
  * The inline persona a `spawn`'s first argument carries, or `undefined` for a catalog spawn (§6.1).
@@ -141,6 +142,22 @@ function inlineDefinition(subject: unknown): InlineSpawnDefinition | undefined {
     if (!Array.isArray(r[k]) || !(r[k] as unknown[]).every((c) => typeof c === "string"))
       refuse(`\`${k}\` must be a list of strings when present`);
     out[k] = [...(r[k] as string[])];
+  }
+  // The shape only: the manager reads the names (reserved commands, single-label endpoints) and
+  // bounds each command against the run, as it does for a persona file.
+  if (r.endpoints !== undefined) {
+    if (!Array.isArray(r.endpoints)) refuse("`endpoints` must be a list of { endpoint, commands, instanceId? } entries when present");
+    out.endpoints = (r.endpoints as unknown[]).map((e) => {
+      if (e === null || typeof e !== "object" || Array.isArray(e)) refuse("`endpoints` entries must be records of endpoint, commands and an optional instanceId");
+      const entry = e as Record<string, unknown>;
+      const extra = Object.keys(entry).filter((k) => !ENDPOINT_KEYS.includes(k));
+      if (extra.length) refuse(`\`endpoints\` entry carries ${extra.map((k) => `\`${k}\``).join(", ")}; an entry takes ${ENDPOINT_KEYS.join(", ")}`);
+      if (!nonBlank(entry.endpoint)) refuse("`endpoints` entry needs a non-empty `endpoint` string");
+      if (!Array.isArray(entry.commands) || entry.commands.length === 0 || !(entry.commands as unknown[]).every(nonBlank))
+        refuse(`\`endpoints\` entry for ${entry.endpoint as string} needs a non-empty \`commands\` list of strings`);
+      if (entry.instanceId !== undefined && !nonBlank(entry.instanceId)) refuse(`\`endpoints\` entry for ${entry.endpoint as string}: \`instanceId\` must be a non-empty string when present`);
+      return { endpoint: entry.endpoint, commands: [...(entry.commands as string[])], ...(entry.instanceId !== undefined ? { instanceId: entry.instanceId } : {}) };
+    });
   }
   if (r.save !== undefined) {
     if (typeof r.save !== "boolean") refuse("`save` must be true or false when present");

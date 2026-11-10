@@ -145,8 +145,8 @@ receipts retained, and is not retried. The command does not print environment-ex
 
 This remains the native standalone caller exporter, not a connector setup or generic caller bundle.
 A supported bootstrap must carry its actual credential and minted lifecycle together; a file alone
-is not a native caller identity. No seat is started, and managed static `cotal spawn` agents still
-refuse endpoint capabilities. `auth mint --endpoint` now covers supported untargeted synchronous
+is not a native caller identity. No seat is started. A managed static `cotal spawn` agent gets
+endpoint commands from its persona's `endpoints` instead. `auth mint --endpoint` now covers supported untargeted synchronous
 surfaces through live native resolution. Targeted/journaled/action issuance and caller/launch
 adapters are not supported.
 

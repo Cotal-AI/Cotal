@@ -7,7 +7,9 @@ import type { IssuanceSeam } from "../src/issued-authority.js";
 import { importNativeSubjectPermissions, mintAcceptedToken, mintGeneration, type IssuedEvidence, type IssuedSubjectPermissions } from "../src/issued-authority.js";
 import { capabilityWithin, grantOverreach, grantParts, issuedSpawnerStanding, type DelegatedGrant, type GrantOverreach } from "../src/grant-bound.js";
 import type { IssuedCaller } from "../src/endpoint-subjects.js";
-import { spacePrefix } from "../src/subjects.js";
+import { instanceOnlyManagerCapabilities, operatorInstrumentCapabilities, runCallerCapabilities, type EpCapability } from "../src/endpoint-grants.js";
+import { DEV_OWNER, spacePrefix } from "../src/subjects.js";
+import { lowerPersonaEndpoints } from "../src/persona-endpoints.js";
 
 let pass = 0;
 let fail = 0;
@@ -142,12 +144,13 @@ console.log("standing (static spawner)");
 
 console.log("issuer invariant");
 {
-  // A fake evidence store whose stage records the profile and stops the mint, so no broker is needed.
+  // A fake evidence store whose stage (an issue) and confirm (a renewal) stop the mint, so no broker
+  // is needed.
   const STAGED = "staged: the issuer reached the evidence store";
   const auth = await createSpaceAuth(space);
-  const issueSourceFree = async (profile: "agent" | "control-caller-privileged" | "manager-caller", extra: Omit<MintOpts, "lifecycleUid" | "issued" | "issuance" | "expiresAt"> = {}) => {
+  const issueSourceFree = async (profile: "agent" | "control-caller-privileged" | "manager-caller", extra: Omit<MintOpts, "lifecycleUid" | "issued" | "issuance" | "expiresAt"> = {}, mode: "issue" | "renew" = "issue") => {
     const now = Math.floor(Date.now() / 1000);
-    const seam = { mode: "issue", sources: [], accepted: {}, store: { stage: async () => { throw new Error(STAGED); } } } as unknown as IssuanceSeam;
+    const seam = { mode, sources: [], accepted: {}, store: { stage: async () => { throw new Error(STAGED); }, confirm: async () => { throw new Error(STAGED); } } } as unknown as IssuanceSeam;
     try {
       await mintCreds(auth, newIdentity(), profile, { ...extra, lifecycleUid: mintLifecycleUid(), expiresAt: now + 300,
         issued: { generation: mintGeneration(now + 3600), acceptedToken: mintAcceptedToken() }, issuance: seam });
@@ -160,6 +163,91 @@ console.log("issuer invariant");
   ok("a source-free agent reaches it too: it carries its own presence key", (await issueSourceFree("agent")) === STAGED);
   const mc = await issueSourceFree("manager-caller", { managerInstanceId: "inst0000000000000000000000a1" });
   ok("a source-free non-instrument with no presence key of its own is refused before staging", /must carry its own presence key/.test(mc), mc);
+  // For third-party endpoints, an issued static agent credential carries only untargeted,
+  // unjournaled commands: the static terminal has no obligation drain (SPEC 13.1). Refused on the
+  // spawn's issue and on a renewal, before anything reaches the evidence store.
+  const targeted: EpCapability = { endpoint: "com.example.orders", command: "cancel-order", target: { mode: "self" } };
+  const journaled: EpCapability = { endpoint: "com.example.orders", command: "import", journal: true };
+  for (const mode of ["issue", "renew"] as const) {
+    const t = await issueSourceFree("agent", { endpointCapabilities: [targeted] }, mode);
+    ok(`an issued agent ${mode} with a targeted endpoint command is refused before staging`, /for third-party endpoints, an issued static agent credential carries only untargeted, unjournaled commands; "com\.example\.orders cancel-order" is targeted/.test(t), t);
+    const j = await issueSourceFree("agent", { endpointCapabilities: [journaled] }, mode);
+    ok(`an issued agent ${mode} with a journaled endpoint command is refused before staging`, /"com\.example\.orders import" is journaled/.test(j), j);
+  }
+  ok("an issued agent with an untargeted command still reaches the evidence store",
+    (await issueSourceFree("agent", { endpointCapabilities: [{ endpoint: "com.example.orders", command: "list" }] })) === STAGED);
+  ok("an issued agent holding spawn, whose manager rows are targeted, still reaches the evidence store",
+    (await issueSourceFree("agent", { capabilities: ["spawn"] })) === STAGED);
+  // The manager's own targeted rows, passed as endpoint capabilities pinned to one instance, are the
+  // rows the run and admin capabilities mint; the reference endpoint is outside the guard. A
+  // third-party command beside them is still refused.
+  const pinnedManager = instanceOnlyManagerCapabilities([{ endpoint: "manager", command: "describe" },
+    ...runCallerCapabilities(DEV_OWNER), ...operatorInstrumentCapabilities("admin", DEV_OWNER)], "inst0000000000000000000000a1");
+  ok("the pinned manager rows include a targeted command", pinnedManager.some((c) => c.target !== undefined), pinnedManager.map((c) => c.command));
+  for (const mode of ["issue", "renew"] as const) {
+    const m = await issueSourceFree("agent", { endpointCapabilities: pinnedManager }, mode);
+    ok(`an issued agent ${mode} holding the manager's targeted rows pinned to one instance reaches the evidence store`, m === STAGED, m);
+    const mixed = await issueSourceFree("agent", { endpointCapabilities: [...pinnedManager, targeted] }, mode);
+    ok(`an issued agent ${mode} with those rows and a targeted third-party command is refused on the third-party command`, /"com\.example\.orders cancel-order" is targeted/.test(mixed), mixed);
+  }
+  let unissued = "minted";
+  try { await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid(), endpointCapabilities: [targeted], expiresInSeconds: 300 }); }
+  catch (e) { unissued = (e as Error).message; }
+  ok("an unissued operator mint is not this guard's to refuse", unissued === "minted", unissued);
+}
+
+console.log("endpoints");
+{
+  const orders = (command: string, more: Partial<EpCapability> = {}): EpCapability => ({ endpoint: "com.example.orders", command, ...more });
+  const held = evidence({ endpointCapabilities: [orders("list"), orders("create")] });
+  ok("a command the spawner holds is within", over(held, { endpoints: [orders("list")] }).length === 0);
+  const o = names(over(held, { endpoints: [orders("list"), orders("refund")] }));
+  ok("a command the spawner does not hold is named, and only that one", same(o, ["endpoints:com.example.orders refund"]), o);
+  const other = names(over(held, { endpoints: [{ endpoint: "com.example.billing", command: "list" }] }));
+  ok("the same command on another endpoint is not held", same(other, ["endpoints:com.example.billing list"]), other);
+  const none = names(over(evidence({}), { endpoints: [orders("list")] }));
+  ok("a spawner with no endpoint rows holds none", same(none, ["endpoints:com.example.orders list"]), none);
+  ok("an endpoint-only grant from a spawner with no evidence names the command", same(names(grantParts({ endpoints: [orders("list")] })), ["endpoints:com.example.orders list"]));
+  // Class and instance rails are different subjects: a class grant never covers an instance pin, and
+  // one instance never covers another.
+  const pinA = orders("list", { instanceId: "ia000000000000000000000000a", instanceOnly: true });
+  const pinB = orders("list", { instanceId: "ib000000000000000000000000b", instanceOnly: true });
+  ok("a class grant does not cover an instance-pinned command", over(held, { endpoints: [pinA] }).length === 1);
+  const heldA = evidence({ endpointCapabilities: [pinA] });
+  ok("the same instance pin is within", over(heldA, { endpoints: [pinA] }).length === 0);
+  ok("instance A does not cover instance B", over(heldA, { endpoints: [pinB] }).length === 1);
+  ok("instance A does not cover the class rail", over(heldA, { endpoints: [orders("list")] }).length === 1);
+  // A third-party command named spawn adds the caller's own goal-progress read; it is measured too.
+  const spawnCmd = orders("spawn");
+  const progressRow = (perms: IssuedSubjectPermissions) => JSON.stringify(perms.subscribe).includes(".goal.");
+  ok("a third-party spawn command adds a goal-progress read to the mint", progressRow(evidence({ endpointCapabilities: [spawnCmd] })) && !progressRow(evidence({})));
+  ok("a spawner holding that spawn command hands it on", over(evidence({ endpointCapabilities: [spawnCmd] }), { endpoints: [spawnCmd] }).length === 0);
+  const spawnOver = names(over(held, { endpoints: [spawnCmd] }));
+  ok("a spawner without it is refused, progress read included", same(spawnOver, ["endpoints:com.example.orders spawn"]), spawnOver);
+  // A baseline command adds no row, so it cannot be shown to be held, and is refused.
+  const baseline = names(over(evidence({}), { endpoints: [{ endpoint: "delivery", command: "join" }] }));
+  ok("a command the baseline already grants adds no row and is refused", same(baseline, ["endpoints:delivery join"]), baseline);
+
+  // A pinned persona entry, as the persona field lowers it: the instance rail only, plus that
+  // instance's describe, each measured as its own part.
+  const A = "ia000000000000000000000000a", B = "ib000000000000000000000000b";
+  const pinnedA = lowerPersonaEndpoints([{ endpoint: "com.example.orders", commands: ["list"], instanceId: A }]);
+  ok("a pinned entry lowers to the instance command and the instance describe, both instance-only",
+    same(pinnedA.map((c) => `${c.command}@${c.instanceId}:${c.instanceOnly === true}`).sort(), [`describe@${A}:true`, `list@${A}:true`]), pinnedA);
+  const minted = evidence({ endpointCapabilities: pinnedA });
+  const prefix = `${spacePrefix(space)}.ep.v1`;
+  const pub = minted.publish.allow.mode === "patterns" ? minted.publish.allow.patterns : [];
+  ok("a pinned entry's credential has no class row for its command or its describe",
+    !pub.some((r) => r.startsWith(`${prefix}.one.com_example_orders.`)) && pub.some((r) => r.startsWith(`${prefix}.inst.com_example_orders.${A}.list.`)) && pub.some((r) => r.startsWith(`${prefix}.inst.com_example_orders.${A}.describe.`)),
+    pub.filter((r) => r.includes("com_example_orders")));
+  ok("a spawner holding the pinned entry hands it on", over(minted, { endpoints: pinnedA }).length === 0);
+  const partial = names(over(evidence({ endpointCapabilities: [pinA] }), { endpoints: pinnedA }));
+  ok("a spawner with the instance command but not the instance describe is refused on the describe part",
+    same(partial, [`endpoints:com.example.orders describe on instance ${A}`]), partial);
+  const classOnly = names(over(held, { endpoints: pinnedA }));
+  ok("a class grant covers neither part of a pinned entry", same(classOnly, [`endpoints:com.example.orders describe on instance ${A}`, `endpoints:com.example.orders list on instance ${A}`]), classOnly);
+  const otherInstance = names(over(minted, { endpoints: lowerPersonaEndpoints([{ endpoint: "com.example.orders", commands: ["list"], instanceId: B }]) }));
+  ok("a pin on instance A covers neither part of the same entry on instance B", same(otherInstance, [`endpoints:com.example.orders describe on instance ${B}`, `endpoints:com.example.orders list on instance ${B}`]), otherInstance);
 }
 
 console.log("token rule (ledger)");

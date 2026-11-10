@@ -46,6 +46,7 @@ import {
   AGENT_ROW_SCHEMA,
   INSPECT_INPUT_SCHEMA,
   SPAWN_INPUT_SCHEMA,
+  PERSONA_ENDPOINTS_SCHEMA,
   SPAWN_OUTPUT_SCHEMA,
   GRACEFUL_INPUT_SCHEMA,
   STOP_OUTPUT_SCHEMA,
@@ -568,6 +569,7 @@ const PERSONA_INPUT_SCHEMA = {
     allowSubscribe: CHANNEL_LIST,
     allowPublish: CHANNEL_LIST,
     capabilities: { type: "array", items: { type: "string" } },
+    endpoints: PERSONA_ENDPOINTS_SCHEMA,
   },
 } as const;
 const PERSONA_OUTPUT_SCHEMA = {
@@ -1252,9 +1254,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  `capabilities`. Both input schemas are closed, so a revision-44 contract rejects either.
  *
  *  46 = `define-persona` refuses empty or whitespace-only model, role and agent arguments.
- *  The changed input schema advances the described surface without adding a command. */
+ *  The changed input schema advances the described surface without adding a command.
+ *
+ *  47 = the inline `persona` on `spawn` and the `define-persona` input take `endpoints`, the endpoint
+ *  commands a persona hands on. Both input schemas are closed, so a revision-46 contract rejects it. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 46, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 47, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

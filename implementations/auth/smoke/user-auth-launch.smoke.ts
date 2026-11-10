@@ -336,6 +336,12 @@ try {
   check("the envelope: a foreground spawn beyond the cli grant is refused (delegation only narrows)",
     overSpawn.status !== 0 && overSpawn.out.includes("delegation only narrows"), overSpawn.out);
   check("…naming the exact widening re-grant", overSpawn.out.includes("cotal actor grant cli --owner"), overSpawn.out);
+  // A persona that names `endpoints`, even an empty list, is refused on a user-auth mesh before any
+  // grant is read, pointing at the service owner's grant instead (SPEC 13.15).
+  writeFileSync(join(root, ".cotal", "agents", "ep-probe.md"), "---\nname: epprobe\nsubscribe: [general]\nendpoints: []\n---\nprobe persona.\n");
+  const epSpawn = await cotal(["spawn", "ep-probe", "--foreground", "--space", SPACE]);
+  check("a foreground spawn of a persona naming endpoints is refused by name on a user-auth mesh",
+    epSpawn.status !== 0 && epSpawn.out.includes("per-user auth mesh endpoint access comes from the service owner's grants") && epSpawn.out.includes("cotal service-endpoint grant"), epSpawn.out);
 
   // The witness: a directly-minted static admin tap (pre-flip static+user coexist) on the chat wire.
   const auth = loadSoleSpaceAuth(authDir(root))!;

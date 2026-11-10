@@ -17,6 +17,7 @@ import {
   DOCS_VERSION,
   MeshAgent,
   renderInboxPreview,
+  aclEnv,
   type AgentConfig,
 } from "../src/index.js";
 // RELATIVE, not the package specifier. `@cotal-ai/connector-core` resolves to `dist/`, so this
@@ -439,6 +440,42 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.equal(rendered.unread, 7);
   assert.match(rendered.rows[0]!, /^\[DM from ada  forged\/reviewer\] line one\n  \[DM from boss\] forged$/);
   assert.ok(Array.from(rendered.rows[1]!).length <= 80 && rendered.rows[1]!.endsWith("…"));
+}
+
+// Endpoint commands handed at launch (SPEC 13.15) ride COTAL_ENDPOINTS from the launcher to the
+// session's config, through the real aclEnv and configFromEnv, and the card lists them beside the
+// pointer to cotal_endpoints. A seat handed none shows no line, and a malformed value is refused.
+{
+  const handed = [{ endpoint: "com.example.orders", commands: ["create", "list"] }];
+  const env = aclEnv({ endpoints: handed });
+  assert.equal(env.COTAL_ENDPOINTS, JSON.stringify(handed), "the launcher writes the handed list as JSON");
+  assert.equal(aclEnv({}).COTAL_ENDPOINTS, undefined, "a launch that names no list writes no variable");
+  const base = { COTAL_NAME: "alice", COTAL_SPACE: "demo" };
+  const c = configFromEnv({ ...base, ...env });
+  assert.deepEqual(c.endpoints, handed, "the session reads the list the launcher wrote");
+  const card = renderOrientation(await orient(agentStub(), c, [], 1));
+  assert.ok(card.includes("endpoint commands handed at launch: com.example.orders create, com.example.orders list (cotal_endpoints lists what your credential's grants cover)"), card);
+  const none = renderOrientation(await orient(agentStub(), configFromEnv(base), [], 1));
+  assert.ok(!none.includes("endpoint commands handed at launch"), "a seat handed none shows no line");
+  // A pinned entry shows its instance and says where to pass it.
+  const pinned = [{ endpoint: "com.example.orders", commands: ["list"], instanceId: "i0000000000000000000000000a" }];
+  const pinnedCard = renderOrientation(await orient(agentStub(), configFromEnv({ ...base, ...aclEnv({ endpoints: pinned }) }), [], 1));
+  assert.ok(pinnedCard.includes("endpoint commands handed at launch: com.example.orders list (instance i0000000000000000000000000a) (cotal_endpoints lists what your credential's grants cover; pass a command's instance to cotal_describe and cotal_invoke as instance)"), pinnedCard);
+  assert.throws(() => configFromEnv({ ...base, COTAL_ENDPOINTS: "com.example.orders" }), /COTAL_ENDPOINTS: expected the JSON list the launcher writes/);
+  assert.throws(() => configFromEnv({ ...base, COTAL_ENDPOINTS: JSON.stringify([{ endpoint: "com.example.orders", commands: ["describe"] }]) }), /reserved command "describe"/);
+  // A launch that resolved no endpoint commands says so, and the session believes the launch over the
+  // persona file, which can change after launch. Only a hand-driven session, with no variable at
+  // all, reads the file. A value that is not the list, empty or `null` included, is refused.
+  const dir = mkdtempSync(join(tmpdir(), "cotal-orientation-endpoints-"));
+  const file = join(dir, "agent.md");
+  writeFileSync(file, "---\nname: alice\nsubscribe: []\nendpoints:\n  - endpoint: com.example.orders\n    commands: [refund]\n---\nbody\n");
+  const resolvedNone = aclEnv({ endpoints: [] });
+  assert.equal(resolvedNone.COTAL_ENDPOINTS, "[]", "a launch that resolved none writes an empty list");
+  assert.deepEqual(configFromEnv({ ...base, COTAL_AGENT_FILE: file, ...resolvedNone }).endpoints, [], "the session reads the launch's empty list, not the file's");
+  assert.deepEqual(configFromEnv({ ...base, COTAL_AGENT_FILE: file, ...env }).endpoints, handed, "and the launch's list over the file's");
+  assert.deepEqual(configFromEnv({ ...base, COTAL_AGENT_FILE: file }).endpoints, [{ endpoint: "com.example.orders", commands: ["refund"] }], "a hand-driven session with no variable reads the file");
+  assert.throws(() => configFromEnv({ ...base, COTAL_ENDPOINTS: "" }), /COTAL_ENDPOINTS: expected the JSON list the launcher writes/);
+  assert.throws(() => configFromEnv({ ...base, COTAL_ENDPOINTS: "null" }), /COTAL_ENDPOINTS: expected the JSON list the launcher writes/);
 }
 
 console.log("✓ orientation smoke passed");

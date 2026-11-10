@@ -7,6 +7,25 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Personas read `endpoints` after 0.151.0
+
+A persona file's `endpoints` key used to be an unmodeled list that loading ignored. It now names the
+endpoint commands the persona hands its agent, as a closed list of `{ endpoint, commands }` entries
+that may add `instanceId` to pin one instance, and a file whose `endpoints` is not that list fails to
+load and names the problem.
+
+On a static mesh the spawn bound from 0.140.8 also measures each listed command against the
+spawner's issued evidence, and refuses one it does not cover as `endpoints <endpoint> <command>`. A
+per-user auth mesh and a manifest launch refuse a persona that names the field, an empty list
+included.
+
+### What changes for you
+
+- A persona file that used an `endpoints` key for something else now refuses to load, or hands on
+  endpoint access. Rename the key.
+- A manifest whose persona lists `endpoints` is refused. Start that agent with
+  `cotal spawn --detach` instead.
+
 ## Retained pending JSON uses the common receipt
 
 `cotal deliver pending <name> --json` now uses the `cotal pending` reader. It writes one
@@ -243,7 +262,8 @@ spawn: this spawn hands its helper more than the spawner holds: <parts>. A spawn
 The persona file, the channel overrides on the spawn request, and the default a channel-less persona
 takes from its spawner are all measured. The operator's own commands, such as `cotal spawn
 --detach`, call the manager with a one-shot instrument and are exempt. So are agents holding
-`capabilities: [admin]`, and anything the manager starts on its own behalf.
+`capabilities: [admin]`, and anything the manager starts on its own behalf. After 0.146.0 the same
+refusal also covers a persona's endpoint commands ([above](#personas-read-endpoints-after-01510)).
 
 ### What changes for you
 

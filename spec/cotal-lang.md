@@ -423,10 +423,13 @@ journal recorded. `channel()` and `run()` are pure primitives: they build a valu
 
 `persona` in `spawn` is a persona name, a record `{ persona, model?, variant? }`, or an **inline
 persona**: `{ name, prompt, role?, model?, variant?, description?, subscribe?, allowSubscribe?,
-allowPublish?, capabilities?, save? }`. A record with `prompt` is inline and a record with `persona`
-names the catalog. An inline record is closed: one that also names `persona`, carries another key,
-names no `name`, has a blank `prompt`, a string field that is blank, a list that is not of strings, or a
-`save` that is not a boolean is refused (L3049) before the step key is minted.
+allowPublish?, capabilities?, endpoints?, save? }`. A record with `prompt` is inline and a record with
+`persona` names the catalog. An inline record is closed: one that also names `persona`, carries another
+key, names no `name`, has a blank `prompt`, a string field that is blank, a list that is not of
+strings, or a `save` that is not a boolean is refused (L3049) before the step key is minted.
+`endpoints` is a list of `{ endpoint, commands, instanceId? }` records, and an entry with another key,
+a blank `endpoint` or an empty `commands` list is refused the same way. The manager reads the names
+and bounds each command as it does a persona file's (SPEC 13.15).
 
 ### 6.2 Step names
 
@@ -1393,3 +1396,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-11-03 | An `Error` that fails a concurrency scope is recorded as the `L4000` `host` fault a `catch` binds for it live (§9.1, §10.1, §10.6), so a resume binds the same kind; a refused scope value is recorded the same way. Measured before it: a `parallel` branch returning a function, and a plain throw from a `conclave`'s dispatch, were caught as `{ code: "L4000", kind: "host" }` live and as kind `scope-fault` on resume, on both engines, and a `notify` carrying the kind diverged (L5001) on the resume of unchanged source. A value the program throws is still recorded as `scope-fault`. |
 | 2026-10-30 | `spawn` takes an inline persona, `{ name, prompt, role?, model?, variant?, description?, subscribe?, allowSubscribe?, allowPublish?, capabilities?, save? }`, as its first argument (§6.1). The record is closed and a malformed one is refused before the step key is minted (L3049). The whole definition is hashed as `inline` and a catalog spawn's hash is unchanged (§6.4). The definition and its digest are bound into the entry before submission (§6.5), and a migration hands an adopted seat only to a spawn of the same definition (§11.2). |
 | 2026-11-04 | A client deadline is an instance of the NATS client's `TimeoutError`, not an error that carries that name. The client's request and API deadlines reject that class with no cause. `AbortSignal.timeout` raises a `DOMException` of the same name, and any error can be renamed to it; matching the name retried those and, after the bound, failed the step as L4026. They are not a client deadline, so they fail on the first attempt as `L4000`. |
+| 2026-11-04 | An inline persona takes `endpoints`, a list of `{ endpoint, commands, instanceId? }` records naming the endpoint commands handed to the helper (§6.1). A malformed entry is refused with L3049 before the step key is minted, and the list is hashed with the rest of the definition (§6.4). |

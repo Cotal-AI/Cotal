@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, sharedNameIds, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, type ControlReply, type InlinePersona, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, sharedNameIds, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, type ControlReply, type InlinePersona, type PersonaEndpoint, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -211,6 +211,16 @@ const managerInstanceArg = z
   }, "instance must be a lifecycle token ([a-z0-9]{26,32})")
   .optional()
   .describe("Optional manager instance id for a multi-manager space. When omitted, a seat a manager launched uses that manager and any other caller lets the mesh select one; on a user-auth mesh with several of your managers live, that selection refuses and lists their ids. A pin that cannot be resolved is refused without falling back to another manager.");
+
+/** The endpoint-instance pin of `cotal_describe` and `cotal_invoke`, for any endpoint. */
+const endpointInstanceArg = z
+  .string()
+  .refine((value) => {
+    try { assertLifecycleToken(value, "instance"); return true; }
+    catch { return false; }
+  }, "instance must be a lifecycle token ([a-z0-9]{26,32})")
+  .optional()
+  .describe("Optional instance id: call this one instance of the endpoint on its own rail, never another. Pass it when you were handed a command on one instance; cotal_orientation shows which. Omitted, the endpoint picks an instance.");
 
 /** One-line meaning of each attention mode, echoed back on set/read so the agent always sees the
  *  effect of a mode it may have set turns ago (self-visibility is the escape hatch for `focus`). */
@@ -1579,7 +1589,7 @@ export function cotalToolSpecs(
         "To start a saved persona instead, pass its name and no persona; cotal_personas lists them. Pass persona.save: true, or use cotal_persona, only for a persona worth reusing. " +
         'Example: `{name: "reviewer", join: ["review.login-page"], persona: {prompt: "You review the login page change and report each finding with its file and line.", allowSubscribe: ["review.login-page"], allowPublish: ["review.login-page"]}, prompt: "Read the brief on #review.login-page, post your findings there, then despawn yourself."}` ' +
         "The new agent can read and post wherever its persona allows. A persona you pass here, or an operator's persona, that names no channels gets your read and post grants and no more; one you save with cotal_persona gets only the channels it lists. Give a helper only what its job needs, so list just the channels it needs. " +
-        "You can give it only channels and capabilities you hold. On a mesh that checks grants, a spawn that asks for more is refused, and the refusal names each part you do not hold. It can spawn agents or run workflows only if its persona lists spawn or run. Endpoint access comes from the operator, so ask the user if the job needs it. cotal_orientation shows what you hold. " +
+        "You can give it only channels, capabilities and endpoint commands you hold. On a mesh that checks grants, a spawn that asks for more is refused, and the refusal names each part you do not hold. It can spawn agents or run workflows only if its persona lists spawn or run. To let it call an endpoint command you can call, list it in persona.endpoints, such as [{endpoint: \"com.example.orders\", commands: [\"list\"]}]. A per-user auth mesh refuses endpoints in a persona, because the operator grants endpoint access there, so ask the user if the job needs it. cotal_orientation shows what you hold, and cotal_endpoints the endpoint commands you can call. " +
         "For a single job on a Claude Code, jcode, OpenCode or pi helper, pass once: true with the prompt, and the helper is stopped when it ends that turn; or tell it in the prompt to despawn itself when done, as in the example. A standing teammate keeps running until it despawns itself or you call cotal_despawn. " +
         "For work with several steps, a wait on a person, or a need to survive restarts, use cotal_run.",
       schema: {
@@ -1595,11 +1605,12 @@ export function cotalToolSpecs(
             allowSubscribe: z.array(z.string()).optional().describe("Channels the helper may read. Each must be one you may read."),
             allowPublish: z.array(z.string()).optional().describe("Channels the helper may post to. Each must be one you may post to."),
             capabilities: z.array(z.string()).optional().describe("Capabilities to hand on, such as spawn or run. Each must be one you hold."),
+            endpoints: z.array(z.object({ endpoint: z.string(), commands: z.array(z.string()).min(1), instanceId: z.string().optional() }).strict()).optional().describe("Endpoint commands to hand on, as { endpoint, commands } entries such as { endpoint: \"com.example.orders\", commands: [\"list\"] }. Each must be one you hold. Add instanceId to hand on a command you hold on one instance of the endpoint."),
             save: z.boolean().optional().describe("Also save this persona to the catalog under `name`, for a broad persona worth reusing. A name already in the catalog is refused before anything starts."),
           })
           .strict()
           .optional()
-          .describe("Define the helper on this spawn instead of from a catalog file: `prompt` (who it is), with optional `role`, `model`, `variant`, `description`, `subscribe`, `allowSubscribe`, `allowPublish`, `capabilities` and `save`. Not saved unless `save` is true."),
+          .describe("Define the helper on this spawn instead of from a catalog file: `prompt` (who it is), with optional `role`, `model`, `variant`, `description`, `subscribe`, `allowSubscribe`, `allowPublish`, `capabilities`, `endpoints` and `save`. Not saved unless `save` is true."),
         join: z
           .array(z.string())
           .optional()
@@ -1934,7 +1945,7 @@ export function cotalToolSpecs(
         "Save a persona that cotal_spawn can start by name. Most jobs need a persona written for them. For one job, pass persona to cotal_spawn instead, and save one here only when it is worth reusing. Reuse one from cotal_personas only when it really fits, such as a general reviewer. Every persona you save stays in the user's workspace after the helper stops. No cotal_* tool removes one: remove one you own with cotal_invoke, endpoint `manager`, command `remove-persona`, args `{ name }`; the operator removes any with `cotal persona remove <name>`. " +
         "Name it after what it does, such as review-login-page. Write the prompt about the job: what to do, where the brief is, how to report, and when to stop. Point to sources for facts rather than stating them. Set role when others should reach it through a role. " +
         "List its channels and give it only what the job needs: subscribe for where it starts, allowSubscribe for what it may read, and allowPublish for what it may post to. If you list subscribe alone, it may read just those channels and can't post anywhere. Leave all three out and it can read and post nowhere, so list the channels it needs. A persona you pass to cotal_spawn differs here: with no channel field it takes your own read and post grants. " +
-        "To let its agent spawn others or run workflows, list spawn or run in capabilities. You can give only capabilities you hold, and each later spawn of the persona is checked again against its spawner. Only you or an operator can change a persona you saved.\n\n" +
+        "To let its agent spawn others or run workflows, list spawn or run in capabilities. To let it call an endpoint command, list it in endpoints, a per-user auth mesh excepted. You can give only capabilities and endpoint commands you hold, and each later spawn of the persona is checked again against its spawner. Only you or an operator can change a persona you saved.\n\n" +
         "Before you write one, check what you can give. cotal_orientation shows your own channels and capabilities, and cotal_channels lists the channels in the space. cotal_endpoints lists the endpoints you can call, and cotal_describe shows what one lets a caller do. The agent-files page in cotal_docs lists every persona field.\n\n" +
         "Example:\n\n" +
         "```\n" +
@@ -1960,6 +1971,7 @@ export function cotalToolSpecs(
         allowSubscribe: z.array(z.string()).optional().describe("Optional read ACL written into the persona file. Wins over allowSubscribe: in the prompt's frontmatter."),
         allowPublish: z.array(z.string()).optional().describe("Optional post ACL written into the persona file. Wins over allowPublish: in the prompt's frontmatter."),
         capabilities: z.array(z.string()).optional().describe("Optional capabilities written into the persona file, such as spawn or run. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Capabilities in the prompt's frontmatter are dropped."),
+        endpoints: z.array(z.object({ endpoint: z.string(), commands: z.array(z.string()).min(1), instanceId: z.string().optional() }).strict()).optional().describe("Optional endpoint commands written into the persona file, as { endpoint, commands } entries, with instanceId for a command held on one instance. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Endpoints in the prompt's frontmatter are dropped."),
         announce: z
           .string()
           .optional()
@@ -1970,7 +1982,7 @@ export function cotalToolSpecs(
       async run(
         agent,
         _config,
-        { name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, announce }: {
+        { name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, endpoints, announce }: {
           name: string;
           prompt: string;
           instance?: string;
@@ -1981,11 +1993,12 @@ export function cotalToolSpecs(
           allowSubscribe?: string[];
           allowPublish?: string[];
           capabilities?: string[];
+          endpoints?: PersonaEndpoint[];
           announce?: string;
         },
       ) {
         try {
-          const reply = await agent.definePersona({ name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, announce });
+          const reply = await agent.definePersona({ name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, capabilities, endpoints, announce });
           if (reply.definitionOutcome === "unknown") {
             const readback = `cotal_personas(name="${name}"${instance === undefined ? "" : `, instance="${instance}"`})`;
             const message = `The definition outcome for persona \`${name}\` is unknown: ${reply.error ?? "the manager reply was not observed"}. ` +
@@ -2131,14 +2144,15 @@ export function cotalToolSpecs(
       name: "cotal_describe",
       title: "Cotal: describe an endpoint",
       description:
-        "List the commands a registered endpoint serves, as this session's credential sees them: each command's capability, whether it is targeted, and its input schema. The surface comes from the endpoint's describe reply and the content-addressed contract store, digest-verified, never from the endpoint's own claims. Read it before cotal_invoke.",
+        "List the commands a registered endpoint serves, as this session's credential sees them: each command's capability, whether it is targeted, and its input schema. The surface comes from the endpoint's describe reply and the content-addressed contract store, digest-verified, never from the endpoint's own claims. Read it before cotal_invoke, with the same instance if you pass one.",
       schema: {
         endpoint: z.string().min(1).max(200).describe("The endpoint name, e.g. com.example.orders."),
+        instance: endpointInstanceArg,
         refresh: z.boolean().optional().describe("Resolve again instead of using this session's cached surface."),
       },
-      async run(agent, config, { endpoint, refresh }: { endpoint: string; refresh?: boolean }) {
+      async run(agent, config, { endpoint, instance, refresh }: { endpoint: string; instance?: string; refresh?: boolean }) {
         try {
-          const instanceId = endpoint === "manager" && !isAuthed(config) ? config.managerInstanceId : undefined;
+          const instanceId = instance ?? (endpoint === "manager" && !isAuthed(config) ? config.managerInstanceId : undefined);
           const svc = await agent.ep.describeService(endpoint, { refresh, ...(instanceId !== undefined ? { instanceId } : {}) });
           const commands = [...svc.commands.values()]
             .sort((a, b) => a.command.localeCompare(b.command))
@@ -2164,14 +2178,15 @@ export function cotalToolSpecs(
         "Call one command on a registered endpoint with JSON arguments, over this session's own connection and grants. The arguments are checked against the command's digest-verified input schema before anything is sent, and the reply against its output schema. A failure reports its code and outcome: `not-executed` means the command did not run; `unknown` means it may have. Do not repeat a call whose outcome is unknown without checking first.",
       schema: {
         endpoint: z.string().min(1).max(200).describe("The endpoint name, e.g. com.example.orders."),
+        instance: endpointInstanceArg,
         command: z.string().min(1).max(128).describe("The command name from cotal_describe."),
         args: z.record(z.string(), z.unknown()).optional().describe("The command's arguments as a JSON object."),
         self: z.boolean().optional().describe("Targeted commands only: act on this session itself."),
         timeoutMs: z.number().int().min(1).max(120000).optional().describe("Reply deadline in milliseconds (default 30000)."),
       },
-      async run(agent, config, { endpoint, command, args, self, timeoutMs }: { endpoint: string; command: string; args?: Record<string, unknown>; self?: boolean; timeoutMs?: number }) {
+      async run(agent, config, { endpoint, instance, command, args, self, timeoutMs }: { endpoint: string; instance?: string; command: string; args?: Record<string, unknown>; self?: boolean; timeoutMs?: number }) {
         try {
-          const instanceId = endpoint === "manager" && self && !isAuthed(config) ? config.managerInstanceId : undefined;
+          const instanceId = instance ?? (endpoint === "manager" && self && !isAuthed(config) ? config.managerInstanceId : undefined);
           const r = await agent.ep.invokeService(endpoint, command, args, { deadlineMs: timeoutMs ?? 30_000, ...(self ? { target: { mode: "self" as const } } : {}), ...(instanceId !== undefined ? { instanceId } : {}) });
           if (r.reply.ok !== true) {
             const e = r.reply.error;

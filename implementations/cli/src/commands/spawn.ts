@@ -28,6 +28,8 @@ import {
   spawnNameError,
   provisionAgent,
   provisionAgentDurables,
+  lowerPersonaEndpoints,
+  copyPersonaEndpoints,
   registry,
   resolveAuthProvider,
   resolveReadAcl,
@@ -1521,6 +1523,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), run the agent there, or add -d to launch it through one of your managers`));
     process.exit(1);
   }
+  // The persona's endpoint commands (SPEC 13.15). A user-auth mesh grants endpoint access through the
+  // service owner's records, so a persona that names the field is refused there, `[]` included. On a
+  // static mesh the operator's own spawn mints them; an open mesh mints nothing.
+  if (target.mode === "user" && def.endpoints !== undefined)
+    throw new CommandFailure("refused", "UNSUPPORTED", `persona ${path} names \`endpoints\`, and on a per-user auth mesh endpoint access comes from the service owner's grants, which a persona cannot hand on (SPEC 13.15)`, { target: { space, path }, remedy: "drop `endpoints` from the persona, and grant the agent with `cotal service-endpoint grant` once it runs" });
+  const endpointCapabilities = lowerPersonaEndpoints(def.endpoints);
   // Said once every check above has passed, so a refusal is never read as a launch that started.
   console.error(renderReport({ sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", process.stderr));
   // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the
@@ -1673,6 +1681,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
             allowPublish,
             role,
             capabilities: def.capabilities,
+            ...(endpointCapabilities.length ? { endpointCapabilities } : {}),
             ...(values["live-only"] ? { durableMembership: false } : {}),
             lifecycleUid,
             expiresAt: issue.expiresAt,
@@ -1727,6 +1736,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       subscribe,
       allowSubscribe,
       allowPublish,
+      // The endpoint commands this launch minted (on a static mesh) or names (on an open one), so the
+      // session reads them from the launch rather than from a persona file that may change.
+      endpoints: copyPersonaEndpoints(def.endpoints) ?? [],
       prompt: values.prompt,
       // Fork an existing session into the mesh. `prompt + resume` is a supported combo (claude accepts
       // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.

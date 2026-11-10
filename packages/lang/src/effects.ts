@@ -113,7 +113,16 @@ export interface InlineSpawnDefinition {
   readonly allowSubscribe?: readonly string[];
   readonly allowPublish?: readonly string[];
   readonly capabilities?: readonly string[];
+  /** Endpoint commands to hand on. The manager checks the names and bounds them against the run. */
+  readonly endpoints?: readonly InlineSpawnEndpoint[];
   readonly save?: boolean;
+}
+
+/** One entry of an inline persona's `endpoints`. */
+export interface InlineSpawnEndpoint {
+  readonly endpoint: string;
+  readonly commands: readonly string[];
+  readonly instanceId?: string;
 }
 
 export interface SpawnRequest {
