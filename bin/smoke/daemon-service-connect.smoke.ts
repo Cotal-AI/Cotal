@@ -46,7 +46,7 @@
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
-import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -642,7 +642,7 @@ try {
     await cell("H1 shipped setup hosts an answering Manager independently of machine approval", async () => {
       seedUnitReceipt();
       await d.close();
-      const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] }).lifecycleUid!;
+      const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
       const original = findMesh(ON)!;
       const published = await (await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as { server: string; tlsRequired?: boolean; userAuth: NonNullable<MeshEntry["userAuth"]> };
       const deliveryStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${ON}` });
@@ -665,7 +665,7 @@ try {
       const prefix = join(root, "config", "cotal", "extensions");
       const pkg = join(prefix, "node_modules", "daemon-smoke-connector");
       mkdirSync(pkg, { recursive: true });
-      writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "daemon-smoke-connector", version: "1.0.0", type: "module", main: "index.js" }));
+      writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "daemon-smoke-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": ">=0.1.0" } }));
       const coreUrl = pathToFileURL(upgrading ? join(root, "global-cli/lib/node_modules/cotal-ai/node_modules/@cotal-ai/core/dist/index.js") : join(repo, "packages/core/dist/index.js")).href;
       const seatScript = join(root, "seat.mjs");
       writeFileSync(seatScript, `import {CotalEndpoint} from ${JSON.stringify(coreUrl)}; import {readFileSync} from 'node:fs'; import {execFile} from 'node:child_process';
@@ -673,7 +673,12 @@ const cmd=JSON.parse(process.env.COTAL_BEARER_CMD); const bearer=()=>new Promise
 const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(process.env.COTAL_SENTINEL_CREDS,'utf8'),lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,card:{owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,name:process.env.COTAL_NAME,kind:'agent'}});ep.on('error',()=>{});await ep.start();`);
       writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
       writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: false }] }] }));
+      if (process.argv.includes("--hosted-seed-repro")) rmSync(prefix, { recursive: true });
       const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+      if (process.argv.includes("--hosted-seed-repro")) {
+        delete env.COTAL_SKIP_CONNECTOR_SEED;
+        env.COTAL_ALLOW_CHECKOUT_SEED = "1";
+      }
       if (upgrading && !upgradeFixture) throw new Error("upgrade proofs require COTAL_DAEMON_UPGRADE_FIXTURE from build-daemon-upgrade-fixture.mjs");
       let npmRegistry: ReturnType<typeof createHttpServer> | undefined;
       let npmRegistryUrl = "";
@@ -703,6 +708,28 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         await npmRun(["install", "-g", "--prefix", globalPrefix, "--ignore-scripts", join(upgradeFixture!, "cotal-ai-0.151.2.tgz")]);
         cliEntry = join(globalPrefix, "lib/node_modules/cotal-ai/dist/cotal.js");
       }
+      const connectorUpgrade = process.argv.includes("--upgrade-connectors-repro");
+      if (upgrading) {
+        const fixturePackage = join(root, "daemon-smoke-connector");
+        renameSync(pkg, fixturePackage);
+        const adding = spawn(process.execPath, [cliEntry, "ext", "add", fixturePackage], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let addingOutput = "";
+        adding.stdout.on("data", (b) => { addingOutput += String(b); }); adding.stderr.on("data", (b) => { addingOutput += String(b); });
+        const added = await new Promise<number | null>((resolve) => adding.once("exit", resolve));
+        if (added !== 0) throw new Error(`owned stand-in ext add failed: ${addingOutput}`);
+        const seed = join(root, "config", "cotal", "seed");
+        mkdirSync(seed, { recursive: true, mode: 0o700 });
+        for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: [...(connectorUpgrade ? [] : ["claude"]), "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
+        writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: "0.151.2" }));
+        writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: "0.151.2" }));
+        if (connectorUpgrade) {
+        const seedChild = spawn(process.execPath, [cliEntry, "ext", "seed"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let output = ""; seedChild.stdout.on("data", (b) => { output += String(b); }); seedChild.stderr.on("data", (b) => { output += String(b); });
+        const code = await new Promise<number | null>((resolve) => seedChild.once("exit", resolve));
+        const installed = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
+        check("U0 actual seed installs one current-generation stock connector", code === 0 && installed.some((entry: { pkg: string; source?: string; version: string }) => entry.pkg === "@cotal-ai/connector-claude-code" && entry.source === "seeded" && entry.version === "0.151.2"), { code, output });
+        }
+      }
       const cli = async (...args: string[]) => {
         const child = spawn(process.execPath, [cliEntry, "daemon", ...args, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let out = "", err = "";
@@ -721,7 +748,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       };
       const startDaemon = async (managedHome?: string) => {
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
-        const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
         child.stdout.resume(); child.stderr.on("data", (chunk) => { if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) console.log("  owned daemon", String(chunk).trim()); });
         for (let i = 0; i < 100; i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
         await killAndAwaitExit(child, "SIGTERM");
@@ -756,6 +783,32 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--hosted-seed-repro")) {
+          const manifest = join(prefix, "extensions.json");
+          const installed = existsSync(manifest) ? JSON.parse(readFileSync(manifest, "utf8")).extensions : [];
+          console.log("  HM003 connectors after fresh setup", JSON.stringify(installed.map((entry: { pkg: string; source?: string; version: string }) => ({ pkg: entry.pkg, source: entry.source, version: entry.version }))));
+          check("HM003 fresh setup reconciles stock connector packages before readiness", installed.filter((entry: { source?: string }) => entry.source === "seeded").length === 7);
+          return;
+        }
+        if (!process.argv.includes("--skip-default-probe")) {
+          const statusPlain = await plainCommand("status");
+          console.log("  HM001 plain daemon status", JSON.stringify(statusPlain));
+          check("HM001 plain status exposes hosted Manager and instance", statusPlain.code === 0 && statusPlain.out.includes(manager.instanceId) && statusPlain.out.includes("Manager"), statusPlain);
+          const defaultLaunch = spawn(process.execPath, [cliEntry, "spawn", "--on", manager.instanceId, "--space", ON, "--harness", "daemon-smoke", "--no-events", "--detach", "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+          let out = "", err = "";
+          defaultLaunch.stdout.on("data", (b) => { out += String(b); }); defaultLaunch.stderr.on("data", (b) => { err += String(b); });
+          const code = await new Promise<number | null>((resolve) => defaultLaunch.once("exit", resolve));
+          console.log("  HM002 default launch", JSON.stringify({ code, out, err }));
+          check("HM002 default spawn joins after setup alone", code === 0 && JSON.parse(out).result?.readiness === "joined", { code, out, err });
+          const defaultFile = join(home, "daemon", spaceSegment(ON), "manager", ".cotal", "agents", "default.md");
+          const editedDefault = `${readFileSync(defaultFile, "utf8")}\nOwned fixture edit.\n`;
+          writeFileSync(defaultFile, editedDefault);
+          await cli("setup", "--space", ON);
+          check("HM002 repeated setup keeps an edited hosted persona", readFileSync(defaultFile, "utf8") === editedDefault);
+          const selected = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+          await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, selected.server, "stop", { name: "default_agent" }, selected.auth, "owner", 10_000, { instanceId: manager.instanceId });
+          if (process.argv.includes("--hosted-default-repro")) return;
+        }
         const deviceBeforeMissing = deviceCodeRequests;
         const missing = await cli("setup", "--space", `${ON}-missing`, "--idp", idpUrl);
         check("H0 absent space does not repeat a valid provider device sign-in", missing.code === 2 && missing.doc.error?.code === "TARGET_NOT_FOUND" && deviceCodeRequests === deviceBeforeMissing, { missing, deviceCodeRequests, deviceBeforeMissing });
@@ -772,6 +825,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         check("H1 hosted Manager keeps a private bounded diagnostic log", existsSync(log) && (statSync(log).mode & 0o777) === 0o600 && statSync(log).size <= 1024 * 1024);
         const plain = await plainCommand("setup", "--space", ON);
         check("H1 human success names launch-ready computer, space and instance", plain.code === 0 && plain.out.includes(`Agents can now be launched on this computer from space ${ON} through Manager instance ${manager.instanceId}.`));
+        check("HM004 setup uses the same machine-service connection state as status", plain.out.includes(`Machine service: ${setup.doc.result.state}.`), plain.out);
         check("H1 human fields distinguish Manager and machine-service instances", plain.out.includes(`Manager instance: ${manager.instanceId}`) && /Instance:\s+/.test(plain.out));
         const plainStatus = await plainCommand("service-status", "--space", ON);
         check("H1 service-status names independent machine service and answering Manager", plainStatus.code === 0 && plainStatus.out.includes("Machine service and Manager") && !plainStatus.out.includes("\nDisconnected\n") && plainStatus.out.includes(manager.instanceId));
@@ -837,7 +891,18 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             check("U2 cotal update self checks both hosted instances and completes native reconcile", code === 0 && output.includes(`instance ${manager.instanceId} answered`) && output.includes(`instance ${second.instanceId} answered`));
             const secondAfter = resultOf(await ask(paths.socket, { op: "manager-status", space: OFF }));
             check("U2 update waits for both hosted Managers to answer again", secondAfter.state === "answering");
-          } else await npmRun(["install", "-g", "--prefix", globalPrefix, "--ignore-scripts", join(upgradeFixture!, "cotal-ai-0.151.3.tgz")]);
+          } else {
+            await npmRun(["install", "-g", "--prefix", globalPrefix, "--ignore-scripts", join(upgradeFixture!, "cotal-ai-0.151.3.tgz")]);
+            if (connectorUpgrade) {
+              const payload = join(globalPrefix, "lib/node_modules/cotal-ai/seeded-connectors/claude");
+              renameSync(payload, `${payload}.held`);
+              try {
+                await sleep(5000);
+                const held = await cli("status", "--space", ON);
+                check("U0 missing replacement connector blocks activation without stopping old daemon", held.doc.result?.version === "0.151.2" && held.doc.result?.managers?.[0]?.state === "answering", held);
+              } finally { renameSync(`${payload}.held`, payload); }
+            }
+          }
           if (activeTarget) {
             await sleep(4000);
             const held = await cli("status", "--space", ON);
@@ -857,6 +922,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           const reply = await askManager({ versionSkew: (s: string) => s, roster: async () => [] }, ON, selected.server, "managerStatus", undefined, selected.auth, "owner", 3000, { instanceId: current?.instanceId ?? manager.instanceId });
           console.log("  UPGRADE MANAGER", JSON.stringify(reply));
           check("U1 npm upgrade restores answering Manager at installed generation", reply.ok && (reply.data as { version?: string })?.version === "0.151.3");
+          if (connectorUpgrade) {
+            const installed = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
+            check("U0 replacement activation installs core-matched seeded connector", installed.some((entry: { pkg: string; source?: string; version: string }) => entry.pkg === "@cotal-ai/connector-claude-code" && entry.source === "seeded" && entry.version === "0.151.3"));
+            const meta = JSON.parse(readFileSync(join(prefix, "node_modules/@cotal-ai/connector-claude-code/package.json"), "utf8"));
+            check("U0 installed connector bytes identify replacement generation", meta.version === "0.151.3");
+          }
           return;
         }
         if (!process.argv.includes("--upgrade-repro")) {
@@ -992,6 +1063,30 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("H8 uninstall leaves the real hosted Manager exited and records native removal", typeof managed?.pid === "number" && !managerAlive && !existsSync(managedPaths.socket) && !existsSync(join(managedHome, "service-unit.json")) && readFileSync(nativeLog, "utf8").trim().split("\n").length === 3);
           check("H8 uninstall leaves the default daemon answering", resultOf(await ask(paths.socket, { op: "status" })).state === "ready");
         } finally { await killAndAwaitExit(managedChild, "SIGTERM"); }
+        const defaultSetup = await cli("setup", "--space", ON);
+        const defaultManager = defaultSetup.doc.result?.manager;
+        check("HM005 default home has an answering Manager before uninstall", defaultManager?.state === "answering", defaultSetup);
+        const defaultRecorder = join(root, "default-native");
+        mkdirSync(defaultRecorder, { mode: 0o700 });
+        const defaultControl = createHttpServer(async (request, response) => {
+          if (request.url !== "/stop") { response.writeHead(404).end(); return; }
+          await killAndAwaitExit(child, "SIGTERM"); response.end("stopped");
+        });
+        await new Promise<void>((resolve) => defaultControl.listen(0, "127.0.0.1", resolve));
+        const defaultPort = (defaultControl.address() as AddressInfo).port;
+        writeFileSync(join(defaultRecorder, "systemctl"), `#!${process.execPath}\n(async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user --no-ask-password --no-pager stop cotal-daemon.service'){const r=await fetch('http://127.0.0.1:${defaultPort}/stop');if(!r.ok)process.exit(99);}else if(!['--user --no-ask-password --no-pager disable cotal-daemon.service','--user --no-ask-password --no-pager daemon-reload'].includes(args))process.exit(99);})().catch(()=>process.exit(99));\n`, { mode: 0o700 });
+        const defaultPath = env.PATH;
+        env.PATH = `${defaultRecorder}:${env.PATH}`;
+        try {
+          const removed = await cli("uninstall", "--yes");
+          check("HM005 default-home uninstall reports Removed and forgets hosting", removed.code === 0 && removed.doc.result?.state === "removed" && !existsSync(intent), removed);
+          let alive = false;
+          try { process.kill(defaultManager.pid, 0); alive = true; } catch { /* retained owned Manager exited */ }
+          check("HM005 native stop leaves actual hosted Manager and socket gone", !alive && !existsSync(paths.socket));
+          seedUnitReceipt();
+          child = await startDaemon();
+          check("HM005 later installation resumes no hosted Manager", (await cli("status")).doc.result?.managers?.length === 0);
+        } finally { env.PATH = defaultPath; defaultControl.close(); }
       } finally {
         recordingRestart = false;
         await killAndAwaitExit(child, "SIGTERM");

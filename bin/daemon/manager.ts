@@ -1,10 +1,11 @@
 /** Per-space stock Manager children. Only an answered instance records a hosting intent. */
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, chmodSync, existsSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assertLifecycleToken, mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { daemonArgv } from "@cotal-ai/cli/self-exec";
+import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
 import { loadIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { findMesh, homeCotalDir, resolveControlTarget, spaceFromSegment, spaceSegment } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
@@ -18,6 +19,7 @@ export function forgetHostedManagerIntents(home: string): void {
   let entries: string[];
   try { entries = readdirSync(join(home, "daemon")); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
   for (const entry of entries) {
+    if (spaceFromSegment(entry) === undefined || !lstatSync(join(home, "daemon", entry)).isDirectory()) continue;
     for (const name of ["manager-host.json", "manager-refusal.json"]) rmSync(join(home, "daemon", entry, name), { force: true });
   }
 }
@@ -124,6 +126,7 @@ export function createHostedManagers(home = homeCotalDir()) {
     if (!loadIdpSession(home, entry.userAuth.idp.url)) return refuse(l, "the daemon has no sign-in for this space's provider", `run cotal daemon login --idp ${entry.userAuth.idp.url}, then cotal daemon setup --space ${space}`);
     const root = daemonManagerRoot(space, home);
     mkSecretDir(root); mkSecretDir(join(root, ".cotal"));
+    writeDefaultPersonaForLaunch(root);
     const logFile = join(root, "manager.log");
     const append = (text: string) => {
       const safe = safeDiagnostic(text);
@@ -160,7 +163,7 @@ export function createHostedManagers(home = homeCotalDir()) {
     };
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") || ["COTAL_HOME", "COTAL_SKIP_CONNECTOR_SEED", "COTAL_TELEMETRY"].includes(key)));
     const child = spawn(node!, [...argv, "__machine-manager", "--space", space, "--runtime", "pty", "--console-port", "0", "--session-directory", home], {
-      cwd: root, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"],
+      cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1" }, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"],
     });
     l.child = child;
     l.view = { ...l.view, pid: child.pid };

@@ -14,6 +14,23 @@ function packageFile(): string {
   throw new Error("the daemon's CLI package is not identifiable");
 }
 
+export async function reconcileInstalledGeneration(): Promise<void> {
+  const file = packageFile();
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(process.execPath, [join(dirname(file), "dist", "cotal.js"), "ext", "seed"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    let error = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => { error = (error + chunk).slice(-1500); });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
+    child.once("error", (cause) => { clearTimeout(timer); reject(cause); });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`replacement connector reconciliation failed (exit ${code}): ${error.trim()}; run cotal ext seed --repair with the installed CLI`));
+    });
+  });
+}
+
 export function watchDaemonGeneration(version: string, changed: (version: string) => Promise<void>, report: (line: string) => void): () => void {
   const file = packageFile();
   let busy = false, closed = false;

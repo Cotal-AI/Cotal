@@ -12,9 +12,9 @@ import { fileURLToPath } from "node:url";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { killAndAwaitExit, skipSuite } from "@cotal-ai/smoke-kit";
 import { managerViaDaemon } from "../daemon/client.js";
-import { daemonPathsFor } from "../daemon/endpoint.js";
+import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
 import { holdLifetime } from "../daemon/lifetime.js";
-import { daemonManagerIntentFile } from "../daemon/manager.js";
+import { createHostedManagers, daemonManagerIntentFile } from "../daemon/manager.js";
 
 if (process.platform !== "linux") skipSuite("daemon-compat: Linux only");
 const self = fileURLToPath(import.meta.url);
@@ -25,7 +25,7 @@ const repo = join(dirname(self), "..", "..");
 if (process.argv[2] === "--old-endpoint") {
   const home = process.argv[3]!;
   const log = process.argv[4]!;
-  const paths = daemonPathsFor(home);
+  const paths = home === "default" ? daemonPaths() : daemonPathsFor(home);
   mkdirSync(paths.state, { recursive: true, mode: 0o700 });
   mkdirSync(paths.dir!, { recursive: true, mode: 0o700 });
   const lock = holdLifetime(paths.lock);
@@ -45,19 +45,21 @@ if (process.argv[2] === "--old-endpoint") {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "dc-")));
   const home = join(root, "home"), cotal = join(root, "cotal"), recorder = join(root, "native");
   for (const dir of [home, cotal, recorder]) mkdirSync(dir, { mode: 0o700 });
-  const paths = daemonPathsFor(home);
+  const defaultHome = process.argv.includes("--default-home");
+  const stateHome = defaultHome ? cotal : home;
+  const paths = defaultHome ? daemonPaths(process.env, cotal) : daemonPathsFor(home);
   const wireLog = join(root, "wire.log"), nativeLog = join(root, "native.log");
   const env = { ...process.env, HOME: root, COTAL_HOME: cotal, XDG_CONFIG_HOME: join(root, "config"), PATH: recorder, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1" };
   let child: ChildProcess | undefined;
   const control = httpServer(async (_request, response) => {
     try {
-      assert.ok(existsSync(daemonManagerIntentFile("compat", home)), "intent retained until native stop");
+      assert.ok(existsSync(daemonManagerIntentFile("compat", stateHome)), "intent retained until native stop");
       await killAndAwaitExit(child!, "SIGTERM");
       response.end("stopped");
     } catch (error) { response.writeHead(500).end(String(error)); }
   });
   try {
-    child = spawn(process.execPath, ["--import", "tsx", self, "--old-endpoint", home, wireLog], { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] });
+    child = spawn(process.execPath, ["--import", "tsx", self, "--old-endpoint", defaultHome ? "default" : home, wireLog], { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     child.stderr!.on("data", (chunk) => { stderr += String(chunk); });
     await new Promise<void>((resolve, reject) => {
@@ -80,7 +82,10 @@ if (process.argv[2] === "--old-endpoint") {
       console.log(`  ✓ ${request.op} UNKNOWN_OP becomes typed refusal with restart remedy`);
     }
     const before = readFileSync(wireLog, "utf8");
-    const intent = daemonManagerIntentFile("compat", home);
+    const foreign = join(stateHome, "daemon", "foreign");
+    mkdirSync(foreign, { recursive: true, mode: 0o700 });
+    writeFileSync(join(foreign, "manager-host.json"), "foreign-owned-marker");
+    const intent = daemonManagerIntentFile("compat", stateHome);
     mkdirSync(dirname(intent), { recursive: true, mode: 0o700 });
     writeFileSync(intent, `${JSON.stringify({ v: 1, space: "compat" })}\n`, { mode: 0o600 });
     const unitPath = join(root, "cotal-daemon.service"), bytes = "[Service]\nExecStart=/owned/fixture\n";
@@ -92,7 +97,7 @@ if (process.argv[2] === "--old-endpoint") {
     writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\nconst fs=require('node:fs');(async()=>{const args=process.argv.slice(2).join(' ');fs.appendFileSync(${JSON.stringify(nativeLog)},args+'\\n');if(args==='--user --no-ask-password --no-pager stop cotal-daemon.service'){const r=await fetch('http://127.0.0.1:${port}/stop');if(!r.ok)process.exit(99);}else if(!['--user --no-ask-password --no-pager disable cotal-daemon.service','--user --no-ask-password --no-pager daemon-reload'].includes(args))process.exit(99);})().catch(()=>process.exit(99));\n`, { mode: 0o700 });
     // PATH contains only the recorder. Neither real systemctl nor loginctl can be reached.
     const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
-      const cli = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "uninstall", "--daemon-home", home, "--yes", "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+      const cli = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "uninstall", ...(defaultHome ? [] : ["--daemon-home", home]), "--yes", "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
       let output = "";
       cli.stdout.on("data", (chunk) => { output += String(chunk); });
       cli.stderr.on("data", (chunk) => { output += String(chunk); });
@@ -105,7 +110,13 @@ if (process.argv[2] === "--old-endpoint") {
     assert.equal(readFileSync(wireLog, "utf8"), before, "uninstall must not send managers-stop or any old-daemon request");
     assert.ok(child.exitCode !== null || child.signalCode !== null, "native stop reaped owned endpoint");
     for (const file of [intent, receipt, unitPath]) assert.equal(existsSync(file), false, `${file} removed`);
-    console.log("  ✓ real uninstall stops owned old endpoint natively, removes unit and forgets intent without managers-stop");
+    assert.equal(JSON.parse(result.output).result?.state, "removed", "uninstall reports Removed");
+    assert.equal(readFileSync(join(foreign, "manager-host.json"), "utf8"), "foreign-owned-marker", "non-space directory retained");
+    const managers = createHostedManagers(stateHome);
+    await managers.resume();
+    assert.equal(managers.status("compat").state, "stopped", "a later daemon starts with no hosting intent for the removed space");
+    await managers.close();
+    console.log(`  ✓ real ${defaultHome ? "default" : "explicit"}-home uninstall stops owned old endpoint natively, removes unit and forgets intent without managers-stop`);
     console.log("daemon-compat: passed (protocol fixture, not historical baseline proof)");
   } finally {
     if (child) await killAndAwaitExit(child, "SIGTERM");

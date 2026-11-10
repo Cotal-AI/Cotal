@@ -569,12 +569,17 @@ The desktop app uses these same controls. Its source and native build instructio
 
 `setup` makes a computer ready to launch agents from a space with one command. It installs the user
 service, discovers the space through the daemon-held sign-in, signs in by device code when needed,
-and starts the space's Manager. It succeeds when that registered instance answers `status`.
+and starts the space's Manager. Before starting it, setup reconciles the stock connectors through
+the same first-run path as `spawn` and refuses if that preparation fails. The hosted Manager gets
+the stock default persona in its own catalog, without replacing an existing file, so
+`cotal spawn --on <instance> --space <space>` can launch it. Setup succeeds when that registered
+instance answers `status`.
 The separate `ai.cotal.machine` registration and connection are reported even while owner approval
 is pending. That approval never holds up agent launches. JSON reports `launchReady: true`, the
 registered Manager at `manager.instanceId`, its `manager` status and the separate machine
 `registration`. The top-level `instanceId`, when present, identifies the machine-service registration.
-The human report prints `Manager instance: <id>`.
+The human report prints `Manager instance: <id>` and the machine-service connection state using
+the same words as `service-status`.
 Progress goes to stderr, so `--json` writes one document on stdout. Missing `supervise` scope
 refuses with the Manager's reason and next step.
 
@@ -587,13 +592,18 @@ Status includes `lastExit` after a crash and `lastStop` for graceful, terminated
 plus `logError` if logging fails. Hosted Manager status is the last observed state with `observedAt`;
 reading status does not perform a fresh readiness probe. No project folder or selected space is
 changed. `service-disconnect` stops that space's hosted Manager and removes its hosting intent.
-`uninstall` stops all hosted Managers and removes their intents. Pause and rename are not implemented.
+`uninstall` stops all hosted Managers and removes their intents from per-space directories, leaving
+the lifetime lock file and unrelated records alone. A later install has no Manager to resume from
+those removed intents. Pause and rename are not implemented.
 
 Setup reuses completed stages but probes an existing Manager again, pinned to its recorded instance,
 before reporting launch-readiness. If the running daemon's version or protocol differs from the
 invoking CLI, setup prepares all hosted children through the local preservation guard, restarts
 its recorded native service, and waits for the matching daemon. An occupied legacy Manager blocks
 that preparation and remains running. Stop its seats before retrying setup.
+A bare npm replacement reconciles the new generation's connectors under the preservation fence
+before the daemon exits for native restart. A failed reconcile leaves activation pending with its
+cause and repair command. The serving daemon and its Manager children never run first-use seeding.
 This readiness check does not prove login or reboot autostart on any OS.
 `--no-manager` keeps the machine-service-only setup path and waits for owner approval.
 `--wait` without `--no-manager` refuses `USAGE_INVALID` before setup starts.

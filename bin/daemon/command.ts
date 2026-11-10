@@ -34,7 +34,7 @@ import { applyInstall, applyUninstall, planInstall, planUninstall, startInstalle
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runSetup } from "./setup.js";
 import { forgetHostedManagerIntents } from "./manager.js";
-import { watchDaemonGeneration } from "./generation.js";
+import { reconcileInstalledGeneration, watchDaemonGeneration } from "./generation.js";
 import type { ConnectCheckResult, DaemonStatus, LoginResult, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
@@ -365,7 +365,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
       { kind: "fields", rows: [["Space", r.space], ...(r.manager?.instanceId ? [["Manager instance", r.manager.instanceId] as [string, string]] : []), ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : []), ...(r.unit ? [["Unit", r.unit] as [string, string]] : [])] },
       { kind: "lines", lines: [
         ...r.steps.map((s) => ({ text: `${s.step}: ${s.outcome}`, tone: "hint" as const })),
-        ...(r.manager ? [{ text: `Agents can now be launched on this computer from space ${r.space} through Manager instance ${r.manager.instanceId}.`, tone: "hint" as const }, { text: `Machine service registration: ${r.registration?.outcome ?? r.state}.`, tone: "hint" as const }] : []),
+        ...(r.manager ? [{ text: `Agents can now be launched on this computer from space ${r.space} through Manager instance ${r.manager.instanceId}.`, tone: "hint" as const }, { text: `Machine service: ${r.state}.`, tone: "hint" as const }] : []),
         { text: "The daemon runs as a user service, restarts on its own and reconnects after a restart. Read it with `cotal daemon service-status`, and close the connection with `cotal daemon service-disconnect`.", tone: "hint" as const },
       ] },
     ] },
@@ -385,6 +385,8 @@ async function serve(args: ParsedArgs): Promise<void> {
     const stopWatching = watchDaemonGeneration(binVersion(), async (version) => {
       planUninstall(paths);
       await running.prepareGenerationRestart();
+      try { await reconcileInstalledGeneration(); }
+      catch (error) { await running.abortGenerationRestart(); throw error; }
       process.stderr.write(`daemon: installed CLI ${version} validated; stopping owned children for native service restart\n`);
       stopWatching();
       await running.close();

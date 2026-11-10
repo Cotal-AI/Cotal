@@ -126,6 +126,16 @@ function copyPackage(src, dst, version, isRoot = false, nested = []) {
   }
   delete meta.devDependencies;
   delete meta.scripts;
+  if (isRoot) {
+    const payload = join(dst, 'seeded-connectors');
+    for (const entry of readdirSync(payload, { withFileTypes: true })) {
+      const manifest = join(payload, entry.name, 'package.json');
+      if (!entry.isDirectory() || !stat(manifest)) continue;
+      const connector = json(manifest);
+      connector.version = version;
+      writeFileSync(manifest, `${JSON.stringify(connector, null, 2)}\n`);
+    }
+  }
   if (isRoot || local) meta.version = version;
   for (const key of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
     for (const name of Object.keys(meta[key] ?? {})) meta[key][name] = '*';
