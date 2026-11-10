@@ -613,11 +613,11 @@ function resolveReplacement(journal: StackJournal, row: StackMember): StackMembe
   const space = journal.space, rows = serviceInstances(space, row.definition), found = rows[0];
   const target = { root: journal.root, space, operation: journal.operation.id, definition: row.definition, recorded: row.instanceId, replacement: replacement.instanceId, launchRequestId: replacement.launchRequestId, found: rows.map((item) => item.name) };
   if (rows.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a stack definition has several instance records; the journaled replacement was not resolved", { target });
-  if (!found) return { ...member, instanceId: null };
+  if (!found) return { ...member, instanceId: null, process: undefined };
   if (found.name === row.instanceId) return member;
   const value = found.record.value;
   if (replacement.operation === journal.operation.id && replacement.definitionRevision !== undefined && found.name === replacement.instanceId && value.launchRequestId === replacement.launchRequestId && value.definitionRevision === replacement.definitionRevision && serviceDefinitionStore(space).read(row.definition)?.record.revision === replacement.definitionRevision)
-    return { ...member, instanceId: found.name };
+    return { ...member, instanceId: found.name, process: value.process };
   throw new CommandFailure("refused", "CONFLICT", "the definition's instance record is not the replacement this stack journal recorded for its operation; neither was adopted", { target, remedy: `inspect it with \`cotal service status ${row.definition} --instance ${found.name} --space ${space}\`` });
 }
 
@@ -792,7 +792,7 @@ export function releaseStackDefinitions(root: string, space: string): { released
   const isRetired = (row: StackMember) => retired.some((item) => item.definition === row.definition && item.instanceId === row.instanceId);
   if (journal?.journal.space === space && journal.journal.members.some(isRetired)) {
     try {
-      writeStackJournal(root, journal, { ...journal.journal, members: journal.journal.members.map((row) => isRetired(row) ? { ...row, instanceId: null } : row), updatedAt: new Date().toISOString() });
+      writeStackJournal(root, journal, { ...journal.journal, members: journal.journal.members.map((row) => isRetired(row) ? { ...row, instanceId: null, process: undefined } : row), updatedAt: new Date().toISOString() });
     } catch (error) {
       throw new CommandFailure("partial", "OPERATION_PARTIAL", `the stopped stack definitions were removed, but the stack journal still names their instances: ${(error as Error).message}`, { target: { space, root }, changed: released.map((name) => ({ kind: "service-definition", name })), remedy: `inspect ${stackJournalPath(root)} and the service instances it names with \`cotal service --space ${space}\`; it was not reset` });
     }

@@ -72,6 +72,12 @@ export async function lostRecordsStackDown(root: string, values: ParsedArgs["val
     ] }] }));
     return;
   }
+  const journal = initial.snapshot.journal;
+  if (journal.operation.kind === "down" && journal.operation.phase === "completed" && initial.rows.every((row) =>
+    (row.state === "stopped" || row.state === "already-stopped") && ["gone", "mismatch"].includes(assertRecordIdentity(row.process!).kind))) {
+    writeResult(presentation, { command: "down", target, result: { kind: "missing-records-stack-stop", members: journal.members, recordsRestored: false }, noOp: true }, () => ({ sections: [{ title: "Stack is already stopped", blocks: [{ kind: "lines", lines: ["Every creation-pinned member is gone. No signal was sent or record changed."] }] }] }));
+    return;
+  }
   if (values.yes !== true) throw new ConfirmationRequired("stopping a stack whose instance records are missing requires --yes", { target, remedy: "run `cotal down --dry-run` to inspect its pinned members, then `cotal down --yes`" });
   const lock = acquireStackOperationLock(root, "down");
   try {

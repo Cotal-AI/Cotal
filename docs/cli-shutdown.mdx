@@ -227,6 +227,9 @@ or claim native manager-impact inspection. The manager uses its default agent sh
 other member. An unconfirmed exit returns `OPERATION_UNKNOWN` and leaves later members running.
 Run the stop again after that member exits. A reused PID is never signalled. The store and trust
 remain. After recovery, run `cotal space create <space>` in the project, then `cotal up`.
+If the journal already records a completed stop and every pinned member is gone, repeated `down`
+returns a no-op without confirmation, signals or journal writes. Retiring a stopped instance also
+retires its process pin; `up --no-manager` preserves the pin of an earlier stopped manager.
 
 ### Already-stopped stacks
 

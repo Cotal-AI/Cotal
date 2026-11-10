@@ -788,7 +788,10 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const roles = STACK_ROLES.filter((role) => stackRoleApplies(mode, role) && !(role === "manager" && request.noManager));
   // A replacement an earlier `up` journaled is resolved from its own record before it is carried over.
   const recordedMembers = current ? withSettledMembers(current.journal, undefined).members : [];
-  const members: StackMember[] = STACK_ROLES.map((role) => ({ role, definition: STACK_DEFINITION[role], instanceId: recordedMembers.find((row) => row.role === role)?.instanceId ?? null, state: roles.includes(role) ? "planned" : "not-attempted" }));
+  const members: StackMember[] = STACK_ROLES.map((role) => {
+    const recorded = recordedMembers.find((row) => row.role === role);
+    return { role, definition: STACK_DEFINITION[role], instanceId: recorded?.instanceId ?? null, process: recorded?.process, state: roles.includes(role) ? "planned" : "not-attempted" };
+  });
   let journal: StackJournal = { schemaVersion: 1, kind: "cotal-stack-controller", root, space, server, mode, recovery: { home: resolve(homeCotalDir()), host: stackRecoveryHost() }, ...(recordedBroker ? { broker: recordedBroker } : {}), members, operation: newStackOperation("up"), updatedAt: new Date().toISOString() };
   // The whole scoped plan is durable before the first effect. A crash after this reads as unsettled
   // until the next whole-stack operation settles it from its members' evidence.
