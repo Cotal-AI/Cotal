@@ -777,6 +777,9 @@ systemd-logind, then retry. This read happens during `--dry-run` too; it does no
 Planning checks the unit directory and its existing ancestors for unsafe ownership, permissions
 and symlinks without creating missing directories. An unsafe path refuses `PERMISSION_DENIED`
 before linger is enabled. Publication checks the directory again before any linger change.
+After the linger calls, installation verifies the published unit's digest and directory protection
+again before submitting reload, enable or start. A changed source or unsafe path stops registration
+and keeps the source and receipt for inspection.
 
 `serve` validates `COTAL_IDP_TIMEOUT_MS` in its own environment before opening the endpoint or
 resuming connections. The value must be whole milliseconds from `1` to `2147483647`.

@@ -315,6 +315,7 @@ export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined)
     const enabled = loginctl(["enable-linger", plan.user]);
     if (enabled.status !== 0 || !lingerEnabled(plan.user)) throw new CommandFailure("refused", "PERMISSION_DENIED", `linger could not be enabled for ${plan.user}, so the recorded unit was not enabled or started. Remove it with \`cotal daemon uninstall\`, enable linger with loginctl enable-linger ${plan.user} and run this again`);
   }
+  assertSystemdSource(rendered.unitPath, rendered.sha256);
   submitSystemdUnitRegistration("reload", rendered.unit);
   submitSystemdUnitRegistration("enable", rendered.unit);
   submitSystemdUnitControl("start", rendered.unit);

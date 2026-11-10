@@ -3,12 +3,17 @@ import { readFileSync, appendFileSync, writeFileSync, chmodSync, existsSync } fr
 import { basename } from "node:path";
 const context = JSON.parse(readFileSync(process.env.DAEMON_UNIT_FIXTURE, "utf8"));
 const args = process.argv.slice(2);
+function changeDuringLinger(phase) {
+  if (context.changeSourceDuringLinger === phase) writeFileSync(context.publication[0], "changed unit\n");
+  if (context.changeDirectoryDuringLinger === phase) chmodSync(context.config, 0o777);
+}
 let operation;
 if (basename(process.argv[1]) === "loginctl") {
   if (args[0] === "show-user") {
     operation = "linger-read";
     console.log(context.lingerFile ? readFileSync(context.lingerFile, "utf8") : "Linger=yes");
     if (context.changeDirectoryOnLingerRead) chmodSync(context.changeDirectoryOnLingerRead, 0o777);
+    if (context.lingerFile && readFileSync(context.lingerFile, "utf8") === "Linger=yes\n") changeDuringLinger("read");
   } else if (args[0] === "enable-linger" && context.lingerFile) {
     operation = "enable-linger";
     // Installation must already be recoverable before this persistent change is submitted.
@@ -16,6 +21,7 @@ if (basename(process.argv[1]) === "loginctl") {
     appendFileSync(context.calls, JSON.stringify({ operation }) + "\n");
     if (context.denyLinger) process.exit(1);
     writeFileSync(context.lingerFile, "Linger=yes\n");
+    changeDuringLinger("enable");
     process.exit(0);
   } else process.exit(88);
 } else if (args.includes("show-environment")) {
