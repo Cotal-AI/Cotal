@@ -1,0 +1,2 @@
+# Require module-specific output coverage for presence-render smoke proofs.
+smoke:presence-render-proofs

@@ -2790,10 +2790,10 @@
       "kind": "derived-output",
       "anchor": "rows={working}",
       "class": "honest-text",
-      "rationale": "The conversation's working line, <name> is <statusLabel> <activity>, for the parties presence says are working: the status presence reports and nothing more; the cited assertion reads the line with progress unknown.",
+      "rationale": "The conversation's working line names only its working parties, with their reported activity and no progress claim; the cited DM assertion reads the text, link and placement after the messages.",
       "proof": {
         "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+        "anchor": "ok(\"7.9 a conversation draws the working line for its working party only, after its messages\""
       }
     },
     {
@@ -2801,10 +2801,10 @@
       "kind": "derived-output",
       "anchor": "{working}",
       "class": "honest-text",
-      "rationale": "The conversation's working line, <name> is <statusLabel> <activity>, for the parties presence says are working: the status presence reports and nothing more; the cited assertion reads the line with progress unknown.",
+      "rationale": "The conversation's working line names only its working parties, with their reported activity and no progress claim; the cited DM assertion reads the text, link and placement after the messages.",
       "proof": {
         "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+        "anchor": "ok(\"7.9 a conversation draws the working line for its working party only, after its messages\""
       }
     },
     {
@@ -2812,10 +2812,10 @@
       "kind": "derived-output",
       "anchor": "{conv || sent > 0 ? (\n                <>\n                  {conv && cut && (\n                    <MessageScrollerItem>\n                      <Marker>\n                        <MarkerContent>Earlier messages aren't loaded</MarkerContent>\n                      </Marker>\n                    </MessageScrollerItem>\n                  )}\n                  {conv && <MessageList messages={conv.messages} idx={idx} peers={peers} self={self} />}\n                  {target && <OutgoingRows store={store} target={target} shown={shown} />}\n                  {working.length > 0 && (\n                    <MessageScrollerItem>\n                      <WorkingLine rows={working} />\n                    </MessageScrollerItem>\n                  )}\n                </>\n              ) : (\n                <MessageScrollerItem>\n                  <Empty>\n                    <EmptyHeader>\n                      <EmptyTitle>{`No direct messages with ${name} yet.`}</EmptyTitle>\n                    </EmptyHeader>\n                  </Empty>\n                </MessageScrollerItem>\n              )}",
       "class": "honest-text",
-      "rationale": "The conversation's working line, <name> is <statusLabel> <activity>, for the parties presence says are working: the status presence reports and nothing more; the cited assertion reads the line with progress unknown.",
+      "rationale": "The conversation's working line names only its working parties, with their reported activity and no progress claim; the cited DM assertion reads the text, link and placement after the messages.",
       "proof": {
         "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+        "anchor": "ok(\"7.9 a conversation draws the working line for its working party only, after its messages\""
       }
     },
     {
@@ -2823,10 +2823,10 @@
       "kind": "derived-output",
       "anchor": "{working.length > 0 && (\n                    <MessageScrollerItem>\n                      <WorkingLine rows={working} />\n                    </MessageScrollerItem>\n                  )}",
       "class": "honest-text",
-      "rationale": "The conversation's working line, <name> is <statusLabel> <activity>, for the parties presence says are working: the status presence reports and nothing more; the cited assertion reads the line with progress unknown.",
+      "rationale": "The conversation's working line names only its working parties, with their reported activity and no progress claim; the cited DM assertion reads the text, link and placement after the messages.",
       "proof": {
         "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+        "anchor": "ok(\"7.9 a conversation draws the working line for its working party only, after its messages\""
       }
     },
     {

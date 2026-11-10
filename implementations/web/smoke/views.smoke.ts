@@ -486,10 +486,13 @@ const dmRows: StoredMessage[] = [
     textOf(lonely.querySelector("header h1")) === "scout" && textOf(lonely.querySelector('[data-slot="empty"]')) === "No direct messages with scout yet.", textOf(lonely));
   const stranger = view({ view: "dm", peer: "local.ghost" });
   ok("7.8 a peer off the roster is named by its id and drawn offline", textOf(stranger.querySelector("header h1")) === "local.ghost" && stranger.querySelector("header .ui-av.ui-av-off") !== null);
-  same("7.9 a conversation draws the working line for its working party only, after its messages",
-    [all(c, ".ox-typing .ox-wline").map((l) => [textOf(l.querySelector(".ox-wline-c")), textOf(l.querySelector("a")), l.querySelector("a")?.getAttribute("href")]),
-      all(c.querySelector('[role="log"]') ?? none(), ':scope > [data-slot="message-scroller-item"]').at(-1)?.querySelector(':scope > [role="status"]') === c.querySelector(".ox-typing")],
-    [[["david is working Editing packages/core/src/presence.ts", "View work", formatRoute({ view: "agent", id: "local.dav", tab: "work" })]], true]);
+  const workingLines = all(c, ".ox-typing .ox-wline").map((l) => [textOf(l.querySelector(".ox-wline-c")), textOf(l.querySelector("a")), l.querySelector("a")?.getAttribute("href")]);
+  ok("7.9 a conversation draws the working line for its working party only, after its messages",
+    c.querySelector('section[data-view="dm"]') !== null
+      && JSON.stringify(workingLines) === JSON.stringify([["david is working Editing packages/core/src/presence.ts", "View work", formatRoute({ view: "agent", id: "local.dav", tab: "work" })]])
+      && all(c.querySelector('[role="log"]') ?? none(), ':scope > [data-slot="message-scroller-item"]').at(-1)?.querySelector(':scope > [role="status"]') === c.querySelector(".ox-typing")
+      && c.querySelector(".ox-typing .ui-dots") === null,
+    workingLines);
 }
 
 // ── 8. Empty space ───────────────────────────────────────────────────────────────────────────────
