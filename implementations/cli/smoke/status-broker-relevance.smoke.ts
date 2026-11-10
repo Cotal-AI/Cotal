@@ -13,7 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSuite, skipSuite } from "@cotal-ai/smoke-kit";
-import { renderReport } from "@cotal-ai/workspace";
+import { createSpaceAuth } from "@cotal-ai/core";
+import { authDir, renderReport, saveSpaceAuth, stackJournalPath } from "@cotal-ai/workspace";
 import { statusView, type StatusResult } from "../src/commands/status.js";
 
 if (process.platform === "win32") skipSuite("the executable protection rule is POSIX-only");
@@ -38,8 +39,8 @@ const env = {
   XDG_RUNTIME_DIR: join(home, "runtime"), COTAL_HOME: join(home, "state"),
   TMPDIR: tmpdir(), PATH: path, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1",
 };
-const run = (args: string[], cwd = project) => {
-  const r = spawnSync(process.execPath, ["--import", preload, bin, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], cwd = project, extraEnv: Record<string, string> = {}) => {
+  const r = spawnSync(process.execPath, ["--import", preload, bin, ...args], { cwd, env: { ...env, ...extraEnv }, encoding: "utf8", timeout: 120_000 });
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 };
 const json = () => {
@@ -83,12 +84,40 @@ missing.machine.nats = "missing";
 missing.machine.natsServer = null;
 missing.machine.natsProblem = null;
 check("a missing executable is also irrelevant to remote-only compact status", !renderReport(statusView(missing), "plain").includes("Broker executable:"));
-missing.meshes.currentPrepared = true;
-check("a local preparation makes a missing executable relevant", renderReport(statusView(missing), "plain").includes("Broker executable:"));
+missing.meshes.hasPrepared = true;
+check("any local preparation makes a missing executable relevant", renderReport(statusView(missing), "plain").includes("Broker executable:"));
+// Each damaged or local-only folder gets its own root, without any prepared record to mask it.
+for (const fixture of ["trust", "corrupt-auth", "invalid-journal", "unreadable-journal"] as const) {
+  const cwd = join(home, fixture);
+  mkdirSync(join(cwd, ".cotal"), { recursive: true, mode: 0o700 });
+  if (fixture === "trust") saveSpaceAuth(authDir(cwd), await createSpaceAuth("unregistered"));
+  else if (fixture === "corrupt-auth") {
+    mkdirSync(authDir(cwd), { mode: 0o700 });
+    writeFileSync(join(authDir(cwd), "auth.json"), "{", { mode: 0o600 });
+  } else if (fixture === "invalid-journal") writeFileSync(stackJournalPath(cwd), "{", { mode: 0o600 });
+  else mkdirSync(stackJournalPath(cwd), { mode: 0o700 });
+  const extraEnv: Record<string, string> = fixture === "trust" || fixture === "corrupt-auth" ? { COTAL_HOME: join(root, `${fixture}-state`) } : {};
+  const r = run(["status"], cwd, extraEnv);
+  check(`${fixture} folder retains compact broker diagnostics`, (r.status === 0 || r.status === 4) && r.stdout.includes("Broker executable:") && r.stdout.includes(warning), r);
+}
 const localProject = join(home, "local-project");
 mkdirSync(localProject, { mode: 0o700 });
 const prepare = run(["space", "create", "local", "--root", localProject]);
 assert.equal(prepare.status, 0, prepare.stderr);
+for (const cwd of [localProject, project, home]) {
+  const r = run(["status"], cwd);
+  check(`an unselected preparation is relevant from ${cwd === localProject ? "its project" : cwd === project ? "the remote project" : "outside both projects"}`, r.status === 0 && r.stdout.includes("Broker executable:") && r.stdout.includes(warning), r);
+}
+const preparedObservation = json().result;
+check("the complete preparation inventory is independent of the current selection", preparedObservation.meshes.hasPrepared === true && preparedObservation.meshes.currentPrepared === false && preparedObservation.meshes.current === "hosted", preparedObservation.meshes);
+// A fresh workstation store has a prepared space but no current selection or registration.
+const unselectedEnv = { COTAL_HOME: join(root, "only-prepared-state") };
+const onlyProject = join(home, "only-prepared-project");
+mkdirSync(onlyProject, { mode: 0o700 });
+const onlyPrepare = run(["space", "create", "only-local", "--root", onlyProject], onlyProject, unselectedEnv);
+assert.equal(onlyPrepare.status, 0, onlyPrepare.stderr);
+const only = run(["status"], home, unselectedEnv);
+check("a preparation without any selection or registration is relevant outside its project", only.status === 0 && only.stdout.includes("Broker executable:") && only.stdout.includes(warning), only);
 const local = run(["status", "--space", "local"]);
 check("a locally prepared space shows the executable failure in compact status", local.status === 0 && local.stdout.includes("Broker executable:") && local.stdout.includes(warning), local);
 const up = run(["up", "--space", "local", "--json"], localProject);

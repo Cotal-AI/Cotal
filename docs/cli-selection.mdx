@@ -566,9 +566,11 @@ applications is one line: the applications whose required executables are on PAT
 others, which `cotal setup` adds. An application's own rows, such as the Claude plugin, Claude
 Desktop and Claude skills, appear for an application that is set up and only when they are not
 current. When this machine has local broker records, such as a prepared space, a stack or a
-registration started here, the broker executable appears if it is missing or `up` refuses it. A client
-with only remote registrations does not need a local broker executable, so the compact report omits
-that row. `--json`, `--wide`, `--all` and `--verbose` keep the local executable diagnostics.
+registration started here, the broker executable appears if it is missing or `up` refuses it.
+Prepared spaces count even when another space is selected or status runs outside their projects.
+Local trust and a stack journal also retain the row, including records that cannot be read or parsed.
+A client with only remote registrations does not need a local broker executable, so the compact
+report omits that row. `--json`, `--wide`, `--all` and `--verbose` keep the local executable diagnostics.
 The executable protection checks still apply before any broker launch. The dashboard
 appears when its record cannot be read. The extensions are one line, `11 extensions at 0.103.3`, and
 an extension at another version is the only one named.
