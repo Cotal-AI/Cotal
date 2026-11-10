@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer, connect, type Socket } from "node:net";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { clean, COTAL, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 
@@ -32,13 +33,22 @@ async function until(done: () => boolean, ms = 30_000): Promise<boolean> {
   return done();
 }
 const sessions: { name: string; pty: Pty; raw: string; exit: number | undefined }[] = [];
-function open(name: string) {
-  const pty = cotalPty(["chat", "general", "--name", name], { cwd: root, env, cols: 120, rows: 40 });
+function open(name: string, server?: string) {
+  const pty = cotalPty(["chat", "general", "--name", name, ...(server ? ["--server", server] : [])], { cwd: root, env, cols: 120, rows: 40 });
   const session = { name, pty, raw: "", exit: undefined as number | undefined };
   pty.onData((data) => { session.raw += data; });
   pty.onExit(({ exitCode }) => { session.exit = exitCode; });
   sessions.push(session);
   return session;
+}
+// Delay only broker replies, so the real publisher remains in flight while the composer changes.
+let holdReplies = false;
+const held: { socket: Socket; data: Buffer }[] = [];
+const sockets = new Set<Socket>();
+let relay: ReturnType<typeof createServer> | undefined;
+function release(): void {
+  holdReplies = false;
+  for (const { socket, data } of held.splice(0)) if (!socket.destroyed) socket.write(data);
 }
 async function line(session: ReturnType<typeof open>, text: string): Promise<void> {
   const from = session.raw.length;
@@ -100,7 +110,79 @@ try {
   await until(() => clean(ana.raw).includes("public hello"));
   const publicHistory = history("public-general", "general");
   check("switching back posts only the public line", publicHistory.includes("public hello") && !publicHistory.includes(":to ") && !publicHistory.includes("private hi ana") && !publicHistory.includes("still private"), publicHistory);
+
+  relay = createServer((client) => {
+    const upstream = connect(port, "127.0.0.1");
+    sockets.add(client);
+    sockets.add(upstream);
+    client.on("data", (data) => upstream.write(data));
+    upstream.on("data", (data: Buffer) => {
+      if (holdReplies) held.push({ socket: client, data: Buffer.from(data) });
+      else client.write(data);
+    });
+    client.on("error", () => upstream.destroy());
+    upstream.on("error", () => client.destroy());
+    client.on("close", () => { upstream.destroy(); sockets.delete(client); });
+    upstream.on("close", () => { client.destroy(); sockets.delete(upstream); });
+  });
+  await new Promise<void>((resolve, reject) => {
+    relay!.once("error", reject);
+    relay!.listen(0, "127.0.0.1", resolve);
+  });
+  const address = relay.address();
+  if (!address || typeof address === "string") throw new Error("relay did not bind a loopback port");
+  const delayed = open("delayed", `nats://127.0.0.1:${address.port}`);
+  if (!await until(() => clean(delayed.raw).includes("Enter send"))) throw new Error("delayed chat did not open");
+  holdReplies = true;
+  await line(delayed, "public before switch");
+  if (!await until(() => held.length > 0 && clean(ana.raw).includes("public before switch"))) throw new Error("publish did not reach broker with its reply held");
+  // Each backspace must be a key, not one pasted burst of control bytes.
+  for (let i = 0; i < "public before switch".length; i++) { delayed.pty.write("\x7f"); await wait(70); }
+  await line(delayed, ":to @ana");
+  check("a pending publish does not prevent immediate :to refusal", clean(delayed.raw).includes(":to is only available in --plain"));
+  writeFileSync(join(evidence, "before-release-screen.txt"), clean(delayed.raw));
+  release();
+  if (!await until(() => /you[^\n]*\[stored\]: public before switch/.test(clean(delayed.raw)))) throw new Error("delayed publish did not settle");
+  writeFileSync(join(evidence, "after-release-screen.txt"), clean(delayed.raw));
+  delayed.pty.write("\x1b");
+  await wait(400);
+  await line(delayed, "private after delayed publish");
+  const concurrent = history("delayed-general", "general");
+  check("a delayed publish completion cannot restore the previous channel", !concurrent.includes("private after delayed publish"), concurrent);
+  // Explicit choice still delivers the draft held after completion.
+  await line(delayed, "@ana");
+  delayed.pty.write("\r");
+  if (!await until(() => clean(ana.raw).includes("private after delayed publish"))) throw new Error("held draft was not delivered after explicit DM choice");
+  const recovered = history("delayed-dms", "--dms");
+  check("explicit DM choice recovers after delayed publish", /DM[^\n]*private after delayed publish/.test(recovered), recovered);
+
+  delayed.pty.write("\t");
+  await wait(400);
+  await line(delayed, "#general");
+  holdReplies = true;
+  await line(delayed, "/status waiting");
+  if (!await until(() => held.length > 0)) throw new Error("slash command did not await a broker reply");
+  await line(delayed, ":to @ana");
+  if (!clean(delayed.raw).includes(":to is only available in --plain")) throw new Error("slash-crossing refusal did not run");
+  delayed.pty.write("\x1b");
+  await wait(400);
+  await line(delayed, "private during command");
+  release();
+  if (!await until(() => clean(delayed.raw).includes("/status done"))) throw new Error("delayed slash command did not settle");
+  // The no-recipient Enter reopened the picker. Cancel and submit the held draft again.
+  delayed.pty.write("\x1b");
+  await wait(400);
+  delayed.pty.write("\r");
+  await wait(700);
+  const slashHistory = history("delayed-slash-general", "general");
+  check("a delayed command completion cannot restore the previous channel", !slashHistory.includes("private during command"), slashHistory);
+  await line(delayed, "@ana");
+  delayed.pty.write("\r");
+  if (!await until(() => clean(ana.raw).includes("private during command"))) throw new Error("command completion lost the held draft");
+  const slashDm = history("delayed-slash-dms", "--dms");
+  check("a delayed command preserves the held draft for explicit DM choice", /DM[^\n]*private during command/.test(slashDm), slashDm);
 } finally {
+  release();
   for (const session of sessions) {
     if (session.exit === undefined) {
       session.pty.write("\x03");
@@ -114,6 +196,8 @@ try {
     writeFileSync(join(evidence, `${session.name}-screen.txt`), clean(session.raw));
     check(`${session.name} exits cleanly`, session.exit === 0, session.exit);
   }
+  for (const socket of sockets) socket.destroy();
+  if (relay) await new Promise<void>((resolve) => relay!.close(() => resolve()));
   const down = cli("down", "--yes");
   writeFileSync(join(evidence, "down.txt"), `status=${down.status}\n${down.stdout}\n${down.stderr}`);
   check("only the isolated stack is stopped", down.status === 0, down.stderr);

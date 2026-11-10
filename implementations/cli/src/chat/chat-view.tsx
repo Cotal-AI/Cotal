@@ -184,8 +184,8 @@ export function ChatView({ session, initialRecipient, notice, words, shiftEnterD
     queue.current = queue.current.then(async () => {
       if (closing.current) return;
       const { state: s, ack } = intent.kind === "publish"
-        ? { state: await runPublish(session, latest.current, intent.to, intent.text), ack: [] as readonly string[] }
-        : await runSlash(session, latest.current, intent.command);
+        ? { state: await runPublish(session, () => latest.current, intent.to, intent.text), ack: [] as readonly string[] }
+        : await runSlash(session, () => latest.current, intent.command);
       if (ack.length) unacked.current.push(...ack);
       update(s);
     });

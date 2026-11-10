@@ -300,7 +300,7 @@ check("Ctrl-D with no draft leaves at once", keys(s0(), [{ kind: "ctrl-d" }]).in
 console.log("5. /help lists every slash command");
 {
   // /help talks to no one, so a session that answers nothing is enough.
-  const { state: helped } = await runSlash({} as never, s0(), { name: "help" });
+  const { state: helped } = await runSlash({} as never, s0, { name: "help" });
   const shown = transcriptRows(helped, 1000).map((r) => r.text).join("\n");
   check("/help lists every slash command with its arguments", ["/who", "/history [n]", "/leave <channel>", "/help", "/quit"].every((c) => shown.includes(c)), shown);
 }
