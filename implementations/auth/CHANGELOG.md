@@ -1,5 +1,24 @@
 # @cotal-ai/auth
 
+## 0.155.0
+
+### Patch Changes
+
+- a9260af: The machine daemon now reports a malformed IdP timeout setting before it starts.
+  It uses the same timeout validation as direct sign-in, so an invalid
+  `COTAL_IDP_TIMEOUT_MS` no longer appears as a provider refusal during daemon sign-in.
+  The setting accepts whole milliseconds from 1 to 2147483647, preventing fractional
+  values from failing inside a request and oversized delays from becoming a 1ms timeout.
+- 53dd69c: Daemon sign-in and space refresh now identify damaged local caches and explain how to recover.
+  Sign-in checks both caches before requesting device approval or saving a replacement session.
+  Malformed provider keys and session records receive the same cache recovery guidance.
+- Updated dependencies [fb752e3]
+- Updated dependencies [b0bfafa]
+- Updated dependencies [43cbaa0]
+  - @cotal-ai/core@0.155.0
+  - @cotal-ai/workspace@0.155.0
+  - @cotal-ai/lang@0.155.0
+
 ## 0.154.0
 
 ### Minor Changes

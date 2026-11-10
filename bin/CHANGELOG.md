@@ -1,5 +1,54 @@
 # cotal-ai
 
+## 0.155.0
+
+### Patch Changes
+
+- be80749: Daemon service connections now report when a space's account differs from the pinned identity.
+  
+  `service-connect` and `service-status` preserve the `ACCOUNT_MISMATCH` diagnosis and recovery guidance instead of reporting a generic registration conflict. The daemon leaves its identity and registration request unchanged.
+- a9260af: The machine daemon now reports a malformed IdP timeout setting before it starts.
+  It uses the same timeout validation as direct sign-in, so an invalid
+  `COTAL_IDP_TIMEOUT_MS` no longer appears as a provider refusal during daemon sign-in.
+  The setting accepts whole milliseconds from 1 to 2147483647, preventing fractional
+  values from failing inside a request and oversized delays from becoming a 1ms timeout.
+- 83fe543: Linux daemon installation now explains how to recover when loginctl is unavailable, including during a dry run.
+  The process guide documents the linger read and its prerequisites.
+- a925dcb: Cancelling daemon sign-in no longer prints command help, and SIGTERM cancels it cleanly.
+  Both setup sign-in paths use the same cancellation handling as daemon login, including structured output.
+- c787def: Refreshing daemon spaces continues when an unrelated local registration is damaged.
+  Healthy catalog entries update while the damaged file stays untouched and the listing reports
+  the unreadable count with a partial outcome.
+  Failure reporting and catalog removal also preserve damaged canonical registrations when a usable
+  legacy duplicate exists.
+- 9c93075: Running daemon setup again now finds agent applications installed after the service was first set up. On Linux and macOS, setup keeps existing PATH directories, adds the invoking terminal's directories first, and reloads the recorded service only when no hosted seats are running. The no-connector remedy names applications and asks you to run them in the setup terminal.
+- 21d2938: Linux daemon installation now refuses an existing unrecorded unit path before changing linger or starting a service. Dry runs report the same conflict, and an uninspectable path refuses instead of being treated as absent.
+- e1f7def: Report when space catalogs cannot be refreshed because the daemon has no signed-in provider. The CLI returns AUTH_REQUIRED with a sign-in step while retaining saved spaces, and the desktop prompts for sign-in instead of treating the refresh as complete.
+- 3029762: Keep pending machine approval visible in the desktop app and disable connection requests for an already connected space. The daemon retains registration outcomes for offline status without replacing an existing live connection.
+- 53dd69c: Daemon sign-in and space refresh now identify damaged local caches and explain how to recover.
+  Sign-in checks both caches before requesting device approval or saving a replacement session.
+  Malformed provider keys and session records receive the same cache recovery guidance.
+- Updated dependencies [fb752e3]
+- Updated dependencies [c179f8f]
+- Updated dependencies [a9260af]
+- Updated dependencies [c787def]
+- Updated dependencies [1847f14]
+- Updated dependencies [b0bfafa]
+- Updated dependencies [43cbaa0]
+- Updated dependencies [53dd69c]
+- Updated dependencies [f35b309]
+- Updated dependencies [d0186cf]
+  - @cotal-ai/core@0.155.0
+  - @cotal-ai/connector-core@0.155.0
+  - @cotal-ai/cli@0.155.0
+  - @cotal-ai/auth@0.155.0
+  - @cotal-ai/workspace@0.155.0
+  - @cotal-ai/delivery@0.155.0
+  - @cotal-ai/manager@0.155.0
+  - @cotal-ai/registry@0.155.0
+  - @cotal-ai/runtime@0.155.0
+  - @cotal-ai/seat@0.155.0
+
 ## 0.154.0
 
 ### Minor Changes

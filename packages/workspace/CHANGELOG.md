@@ -1,5 +1,17 @@
 # @cotal-ai/workspace
 
+## 0.155.0
+
+### Patch Changes
+
+- b0bfafa: Stop a local stack safely after its Cotal home records are lost.
+  The project journal retains launch-time host and process creation pins for a guarded Linux recovery stop, and missing-record diagnostics no longer assume another home holds the records. Keep those pins aligned with instance retirement and replacement, preserve skipped members across startup, and leave a completed stop unchanged when its pinned members are gone.
+- 43cbaa0: Stop assuming the default space after a project forgets its space or when its control directory is empty. Persona, team, identity and spawn previews now report that no space is selected. Explicit startup can still initialize an empty project.
+  
+  Name a nearby Mesh team file and its declared space in the available next steps. Entry help also finds the project-root file from a subdirectory, and unrelated prepared-space inventory no longer hides its actions. Discovery skips non-regular and oversized files and does not launch the team.
+- Updated dependencies [fb752e3]
+  - @cotal-ai/core@0.155.0
+
 ## 0.154.0
 
 ### Patch Changes
