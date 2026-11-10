@@ -151,6 +151,14 @@ not the full gate or a replacement name for a smaller testing tier.
 directory under the scanned source roots and removes only that directory. Selected-probe mode
 uses the same ownership rule. Probe inputs are test scratch, not CLI source to commit or publish;
 the full suite checks that an existing file at the old fixed probe name survives both modes.
+Set `COTAL_PRESENCE_RENDER_PROBE_CHILD=1` to check the census without writing source probes.
+
+An `honest-text` smoke proof must match a reviewed assertion-to-module binding in
+`smokeProofSites` in `packages/workspace/smoke/presence-render-census.smoke.ts`.
+When adding a proof, check that its assertion exercises that module's output, then update the
+binding and manifest together. A channel assertion cannot prove the DM view's working line.
+The DM binding cites a shell render with unknown progress that checks the conversation's
+working party, text and placement after its messages.
 
 `pnpm smoke:required-arg-seam --census` prints the actual classified call sites. Review each
 added or removed site before updating `required-arg-sites.json` and the total/smoke pins.

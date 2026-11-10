@@ -490,6 +490,16 @@ const dmRows: StoredMessage[] = [
     [all(c, ".ox-typing .ox-wline").map((l) => [textOf(l.querySelector(".ox-wline-c")), textOf(l.querySelector("a")), l.querySelector("a")?.getAttribute("href")]),
       all(c.querySelector('[role="log"]') ?? none(), ':scope > [data-slot="message-scroller-item"]').at(-1)?.querySelector(':scope > [role="status"]') === c.querySelector(".ox-typing")],
     [[["david is working Editing packages/core/src/presence.ts", "View work", formatRoute({ view: "agent", id: "local.dav", tab: "work" })]], true]);
+  const unknown = roster.map((p) => ({ ...p, progress: { kind: "unknown" as const } }));
+  const dm = centre(shellDom({ space: "main", roster: unknown, dms: dmRows }, { view: "dm", peer: "local.rv2", with: "local.dav" }));
+  const lines = all(dm, ".ox-typing .ox-wline");
+  const last = all(dm.querySelector('[role="log"]') ?? none(), ':scope > [data-slot="message-scroller-item"]').at(-1);
+  ok("7.10 a DM party with unknown progress reads working with its activity after the messages, without moving dots",
+    dm.querySelector('section[data-view="dm"]') !== null && lines.length === 1
+      && textOf(lines[0].querySelector(".ox-wline-c")) === "david is working Editing packages/core/src/presence.ts"
+      && dm.querySelector(".ui-dots") === null
+      && last?.querySelector(':scope > [role="status"]') === dm.querySelector(".ox-typing")
+      && last?.previousElementSibling?.querySelector('[data-slot="message"]') != null, lines.map(textOf));
 }
 
 // ── 8. Empty space ───────────────────────────────────────────────────────────────────────────────

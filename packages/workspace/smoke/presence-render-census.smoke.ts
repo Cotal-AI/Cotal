@@ -346,6 +346,46 @@ const proofAnchors = new Map<string, string>([
   ["implementations/tui/src/screen.ts", tuiOverviewStatusAnchor],
 ]);
 
+// Reviewed assertion-to-module bindings. An assertion's existence alone cannot prove another
+// view's output, even when both views happen to use the same shared renderer.
+const smokeProofSites: [string, string, string[]][] = [
+  ["extensions/connector-core/smoke/orientation.smoke.ts", 'assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,', ["extensions/connector-core/src/orientation.ts"]],
+  ["extensions/connector-core/smoke/orientation.smoke.ts", 'assert.match(result.text, /bob\\b[^\\n]* — working[^\\n]* · progress unknown/,', ["extensions/connector-core/src/tool-specs.ts"]],
+  ["extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts", 'check("9a a waiting request\'s status names the role\'s holder online now, by name and id"', ["extensions/connector-core/src/tool-specs.ts"]],
+  ["extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts", 'check("9b with no holder online it says none is"', ["extensions/connector-core/src/tool-specs.ts"]],
+  ["extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts", 'check("9c a failed roster read reads unknown, not empty"', ["extensions/connector-core/src/tool-specs.ts"]],
+  ["implementations/cli/smoke/chat-pure.smoke.ts", 'check("/who names a working peer\'s progress as unknown"', ["implementations/cli/src/chat/controller.ts"]],
+  ["implementations/cli/smoke/chat-pure.smoke.ts", 'check("the picker names a working peer\'s progress as unknown"', ["implementations/cli/src/chat/picker.ts"]],
+  ["implementations/manager/smoke/cli-seat-locality.smoke.ts", 'check("ps textual working mesh row names unknown progress", /working · progress unknown/.test(ps.out), ps.out.slice(-1200));', ["implementations/cli/src/commands/agents.ts"]],
+  ["implementations/cli/smoke/who-roster.smoke.ts", 'check(\n    "the rich report is colored, marks each state and keeps every state word",', ["implementations/cli/src/commands/who.ts"]],
+  ["implementations/cli/smoke/console-status-row.smoke.ts", 'check("a working seat renders `mesh working · progress unknown`", working.includes("mesh working · progress unknown"), working);', ["implementations/cli/src/console/commands.ts"]],
+  ["implementations/cli/smoke/console-palette.smoke.tsx", 'assert.ok(row.includes("mesh working · progress unknown")', ["implementations/cli/src/console/ui/CommandPalette.tsx"]],
+  ["implementations/cli/smoke/view.smoke.ts", 'check("the watch roster names a working agent\'s progress as unknown"', ["implementations/cli/src/watch-json.ts", "implementations/cli/src/watch-view.tsx"]],
+  ["implementations/web/smoke/views.smoke.ts", 'ok("3.3 a member whose connector reports no progress reads working with its activity, with no moving dots"', ["implementations/web/client/src/ui/WorkingLine.tsx", "implementations/web/client/src/ui/views/ChannelView.tsx"]],
+  ["implementations/web/smoke/views.smoke.ts", 'ok("7.10 a DM party with unknown progress reads working with its activity after the messages, without moving dots"', ["implementations/web/client/src/ui/views/DmView.tsx"]],
+  ["implementations/web/smoke/session.smoke.ts", 'ok("turn title: open while working reads \\"Working for 3m 2s\\""', ["implementations/web/client/src/ui/panel/SessionPreview.tsx", "implementations/web/client/src/ui/work/Turn.tsx"]],
+  ["implementations/web/smoke/panel.smoke.ts", 'ok("8.9 beside the peek, the agent\'s page ends its work with the full footer: the status presence reports, with its activity"', ["implementations/web/client/src/ui/session/SessionFoot.tsx", "implementations/web/client/src/ui/views/AgentPage.tsx"]],
+  ["implementations/web/smoke/session-view.smoke.ts", 'ok("5.3 the header Badge says the status presence reports, Working, for an agent whose progress is unknown, with no progress claim"', ["implementations/web/client/src/ui/views/AgentPage.tsx"]],
+  ["implementations/web/smoke/agents-view.smoke.ts", 'ok("11.6 a working row whose call has finished shows no step line, and keeps View work"', ["implementations/web/client/src/ui/views/AgentsView.tsx"]],
+];
+const smokeProofCovers = (site: string, proof: NonNullable<Entry["proof"]>): boolean =>
+  smokeProofSites.some(([path, anchor, sites]) => path === proof.path && anchor === proof.anchor && sites.includes(site));
+
+// These are proof records, not source substitutions. No shipped file is changed to test refusal.
+const viewsSmoke = "implementations/web/smoke/views.smoke.ts";
+const dmSite = "implementations/web/client/src/ui/views/DmView.tsx";
+assert.equal(smokeProofCovers(dmSite, { path: viewsSmoke, anchor: 'ok("3.3 a member whose connector reports no progress reads working with its activity, with no moving dots"' }), false, "a channel working-line assertion cannot prove the DM view");
+assert.equal(smokeProofCovers(dmSite, { path: viewsSmoke, anchor: 'ok("3.2 a working agent who is not in the channel is not named"' }), false, "an unrelated existing assertion cannot prove the DM view");
+assert.equal(smokeProofCovers("implementations/web/client/src/ui/views/AgentPage.tsx", { path: viewsSmoke, anchor: 'ok("3.8 a channel where only a waiting member is busy has no working line and no chip"' }), false, "a channel chip assertion cannot prove the agent page");
+for (const [path, anchor, sites] of smokeProofSites) {
+  assert.equal(readFileSync(join(root, path), "utf8").split(anchor).length - 1, 1, `checked smoke assertion must exist exactly once: ${path}: ${anchor}`);
+  for (const site of sites) {
+    assert.ok(manifest.entries.some((entry) => entry.class === "honest-text" && entry.path === site && entry.proof?.path === path && entry.proof.anchor === anchor), `unused checked smoke proof: ${site}: ${path}: ${anchor}`);
+    assert.equal(smokeProofCovers(site, { path, anchor }), true);
+    assert.equal(smokeProofCovers(site, { path: "unrelated/smoke/test.ts", anchor }), false, "the assertion's file is part of its identity");
+  }
+}
+
 const entryKeys = new Set<string>();
 const counts: Record<Classification, number> = { "honest-text": 0, "presence-only-glyph/count": 0, "command-ack": 0, "non-render/control": 0 };
 for (const entry of manifest.entries) {
@@ -363,7 +403,7 @@ for (const entry of manifest.entries) {
     const proofBody = readFileSync(join(root, entry.proof!.path), "utf8");
     const proofCount = proofBody.split(entry.proof!.anchor).length - 1;
     assert.equal(proofCount, 1, `honest-text proof anchor must exist exactly once in ${entry.proof!.path} but occurs ${proofCount} time(s): ${entry.proof!.anchor}`);
-    if (entry.proof!.path.includes("/smoke/")) assert.ok(/assert|check|ok\(/.test(entry.proof!.anchor), `smoke proof is not an output assertion: ${entry.proof!.path}: ${entry.proof!.anchor}`);
+    if (entry.proof!.path.includes("/smoke/")) assert.ok(smokeProofCovers(entry.path, entry.proof!), `smoke proof does not cover this module: ${entry.path}: ${entry.proof!.path}: ${entry.proof!.anchor}`);
     else assert.equal(proofAnchors.get(entry.proof!.path), entry.proof!.anchor, `honest-text source proof is not a checked honest renderer: ${entry.proof!.path}: ${entry.proof!.anchor}`);
   } else assert.equal(entry.proof, undefined, `${entry.class} entry must not carry honest-text proof: ${entry.path}: ${entry.anchor}`);
 }

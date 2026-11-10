@@ -2793,7 +2793,7 @@
       "rationale": "The conversation's working line, <name> is <statusLabel> <activity>, for the parties presence says are working: the status presence reports and nothing more; the cited assertion reads the line with progress unknown.",
       "proof": {
         "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+        "anchor": "ok(\"7.10 a DM party with unknown progress reads working with its activity after the messages, without moving dots\""
       }
     },
     {
@@ -2804,7 +2804,7 @@
       "rationale": "The conversation's working line, <name> is <statusLabel> <activity>, for the parties presence says are working: the status presence reports and nothing more; the cited assertion reads the line with progress unknown.",
       "proof": {
         "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+        "anchor": "ok(\"7.10 a DM party with unknown progress reads working with its activity after the messages, without moving dots\""
       }
     },
     {
@@ -2815,7 +2815,7 @@
       "rationale": "The conversation's working line, <name> is <statusLabel> <activity>, for the parties presence says are working: the status presence reports and nothing more; the cited assertion reads the line with progress unknown.",
       "proof": {
         "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+        "anchor": "ok(\"7.10 a DM party with unknown progress reads working with its activity after the messages, without moving dots\""
       }
     },
     {
@@ -2826,7 +2826,7 @@
       "rationale": "The conversation's working line, <name> is <statusLabel> <activity>, for the parties presence says are working: the status presence reports and nothing more; the cited assertion reads the line with progress unknown.",
       "proof": {
         "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+        "anchor": "ok(\"7.10 a DM party with unknown progress reads working with its activity after the messages, without moving dots\""
       }
     },
     {
