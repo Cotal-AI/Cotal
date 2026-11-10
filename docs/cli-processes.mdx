@@ -659,7 +659,8 @@ activates it after seats stop. Without a verified native launch marker, status n
 the installed CLI for a recorded service, or an explicit foreground stop followed by serve.
 A failed reconcile refuses the
 space with its cause and repair command and retries from five seconds up to five minutes.
-The serving Manager never runs first-use seeding.
+The serving Manager never runs first-use seeding. A child rejects a handed generation that differs
+from the Manager implementation it loaded.
 A hosted Manager also checks each first-party connector's manifest version before a new launch,
 including a connector already loaded in that process. A mismatch names both generations and asks
 you to stop its seats and restart it from the installed CLI. Existing seats stay running.

@@ -960,6 +960,14 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             check("Stock Manager preserves launch behavior with the same changed shared store", launched.code === 0 && launched.doc.result?.readiness === "joined", launched);
             if (launched.code === 0) await control(instance, "stop", { name: "generation_stock" });
           } finally { await killAndAwaitExit(stock, "SIGTERM"); }
+          const handoff = spawn(process.execPath, [cliEntry, "__machine-manager", "--space", ON, "--runtime", "pty", "--console-port", "0", "--session-directory", home, "--expected-connector-generation", "9.9.9"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+          let handoffOutput = "";
+          handoff.stdout?.on("data", (chunk) => { handoffOutput += String(chunk); });
+          handoff.stderr?.on("data", (chunk) => { handoffOutput += String(chunk); });
+          try {
+            const code = await Promise.race([new Promise<number | null>((resolve) => handoff.once("exit", resolve)), sleep(15_000).then(() => "timeout" as const)]);
+            check("Machine entry refuses a handed generation different from its loaded implementation", code !== "timeout" && code !== 0 && handoffOutput.includes("expected connector generation 9.9.9") && handoffOutput.includes(`loaded generation ${fixtureVersion}`) && handoffOutput.includes("restart"), { code, handoffOutput });
+          } finally { await killAndAwaitExit(handoff, "SIGTERM"); }
           return;
         }
         if (process.argv.includes("--setup-unsupported-repro")) {
