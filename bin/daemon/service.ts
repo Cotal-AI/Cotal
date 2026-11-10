@@ -314,7 +314,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
       if (l.state !== "ended") void readyOnce(l, space, witness, store, dir);
     });
     l.endpoint = endpoint;
-    try { await endpoint.start(); } catch { if (stateOf(l) !== "ended") l.state = "unavailable"; await teardown(l); return result(space); }
+    try { await endpoint.start(); } catch { if (stateOf(l) !== "ended") sourceFailed(l); await teardown(l); return result(space); }
     l.brokerUp = true;
     await readyOnce(l, space, witness, store, dir);
     const after = stateOf(l);

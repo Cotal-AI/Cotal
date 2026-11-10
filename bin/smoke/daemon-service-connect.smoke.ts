@@ -44,7 +44,8 @@
  *
  *  C18 a daemon clock five minutes ahead refuses expired credentials as a local credential-time
  *      conflict, not an unreachable authority. Synchronized clocks connect, a real authority outage
- *      stays unavailable, and restoring the clock recovers with the same request ids.
+ *      stays unavailable, and restoring the clock recovers with the same request ids. Clock changes
+ *      on the endpoint startup and ready credential pulls keep the same local diagnosis.
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
  * Add --clock-only to run C1, C2, C15, C18 and C14 alone.
@@ -207,6 +208,8 @@ const hits: Array<{ space: string; method: string; path: string }> = [];
 /** C7: spaces whose authority door the relay drops, as an unreachable auth service. */
 const relayDown = new Set<string>();
 const withoutIssuer = new Set<string>();
+const clockControl = join(root, "clock-offset");
+let expiryOnCredential = 0, credentialResponses = 0;
 async function relay(space: string, target: string): Promise<string> {
   const s = createHttpServer(async (req, res) => {
     if (relayDown.has(space)) { req.socket.destroy(); return; }
@@ -219,6 +222,11 @@ async function relay(space: string, target: string): Promise<string> {
     const headers: Record<string, string> = {};
     up.headers.forEach((v, k) => { if (k !== "content-length" && k !== "transfer-encoding") headers[k] = v; });
     let body = Buffer.from(await up.arrayBuffer());
+    if (expiryOnCredential && req.method === "POST" && req.url === "/service-endpoint-authority" && up.ok) {
+      const answer = JSON.parse(body.toString()) as { state?: string };
+      if (answer.state === "credential" && ++credentialResponses === expiryOnCredential)
+        writeFileSync(clockControl, "300000", { mode: 0o600 });
+    }
     if (withoutIssuer.has(space) && req.method === "GET" && req.url === "/service-endpoint-authority" && up.ok) {
       const info = JSON.parse(body.toString()) as Record<string, unknown>;
       delete info.issuer; delete info.keys;
@@ -652,7 +660,7 @@ try {
       const env = { PATH: process.env.PATH ?? "", HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: rtDir,
         COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
       const skew = join(root, "clock-ahead.mjs");
-      writeFileSync(skew, "const now = Date.now.bind(Date); Date.now = () => now() + 300_000;\n", { mode: 0o600 });
+      writeFileSync(skew, `import { readFileSync } from 'node:fs';\nconst now = Date.now.bind(Date); Date.now = () => now() + Number(readFileSync(${JSON.stringify(clockControl)}, 'utf8'));\n`, { mode: 0o600 });
       const cli = async (mode: string, json = true) => {
         const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", mode, "--space", ON, ...(json ? ["--json"] : ["--plain"])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let out = "", err = "";
@@ -668,7 +676,11 @@ try {
       const ids = () => { const r = JSON.parse(readFileSync(target, "utf8")); return JSON.stringify([r.activateRequestId, r.renewRequestId]); };
       const originalIds = ids();
       try {
-        for (const ahead of [true, false]) {
+        for (const phase of ["initial", "startup", "ready", "synchronized"]) {
+          const ahead = phase !== "synchronized";
+          credentialResponses = 0;
+          expiryOnCredential = phase === "startup" ? 2 : phase === "ready" ? 3 : 0;
+          writeFileSync(clockControl, phase === "initial" ? "300000" : "0", { mode: 0o600 });
           const child = spawn(process.execPath, [...(ahead ? ["--import", skew] : []), join(repo, "bin/dist/cotal.js"), "daemon", "serve"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
           let childErr = ""; child.stderr!.on("data", (b) => { childErr += String(b); });
           try {
@@ -677,8 +689,8 @@ try {
               const before = posts(ON);
               for (const mode of ["service-connect", "service-status", "service-connect"]) {
                 const r = await cli(mode);
-                check(`C18 ahead ${mode} reports a local credential-time conflict`, r.status === 2 && r.doc?.error?.code === "CONFLICT" && r.doc.error?.cause?.code === "CREDENTIAL_TIME_ERROR", { status: r.status, error: r.doc?.error });
-                check(`C18 ahead ${mode} advises clock synchronization, not an unreachable space`, /clock/.test(r.doc?.error?.message ?? "") && !/could not be reached/.test(r.doc?.error?.message ?? ""));
+                check(`C18 ${phase} ${mode} reports a local credential-time conflict`, r.status === 2 && r.doc?.error?.code === "CONFLICT" && r.doc.error?.cause?.code === "CREDENTIAL_TIME_ERROR", { status: r.status, error: r.doc?.error });
+                check(`C18 ${phase} ${mode} advises clock synchronization, not an unreachable space`, /clock/.test(r.doc?.error?.message ?? "") && !/could not be reached/.test(r.doc?.error?.message ?? ""));
               }
               check("C18 the ahead daemon reached the real authority", posts(ON) >= before + 4, { posts: posts(ON) - before });
               const plain = await cli("service-connect", false);
@@ -686,6 +698,15 @@ try {
               let unanswered = false;
               try { await probeMachine(); } catch (e) { unanswered = unansweredRequest(e); }
               check("C18 clock refusal leaves no responder or resume intent", unanswered && !existsSync(intentFile(ON)));
+              if (expiryOnCredential) {
+                check(`C18 ${phase} clock advanced on the selected stock credential`, credentialResponses >= expiryOnCredential, { credentialResponses });
+                expiryOnCredential = 0;
+                writeFileSync(clockControl, "0", { mode: 0o600 });
+                const recovered = await cli("service-connect");
+                check(`C18 ${phase} same daemon recovers after synchronizing its clock`, recovered.status === 0 && recovered.doc?.result?.state === "connected" && await instanceStatus(ON) === "ready");
+                check(`C18 ${phase} recovered daemon serves an authorized caller`, (await probeMachine()).reply.ok);
+                await cli("service-disconnect");
+              }
             } else {
               relayDown.add(ON);
               try {
@@ -697,10 +718,11 @@ try {
               check("C18 synchronized recovery serves an authorized caller", (await probeMachine()).reply.ok);
               await cli("service-disconnect");
             }
-            check(`C18 ${ahead ? "ahead" : "synchronized"} keeps the same request ids and secrets private`, ids() === originalIds && ![SESSION, ...jwtsIssued].some((t) => childErr.includes(t)) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(childErr));
+            check(`C18 ${phase} keeps the same request ids and secrets private`, ids() === originalIds && ![SESSION, ...jwtsIssued].some((t) => childErr.includes(t)) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(childErr));
           } finally { await killAndAwaitExit(child, "SIGTERM"); }
         }
       } finally {
+        expiryOnCredential = 0;
         d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
         await connectS(ON);
       }

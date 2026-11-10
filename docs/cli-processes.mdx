@@ -950,6 +950,8 @@ An access bearer that has already expired by the daemon's local clock reports `C
 (`CREDENTIAL_TIME_ERROR`). The space answered, but nothing is connected. Check clock synchronization
 on this machine and the space's authority before retrying. The daemon keeps the request IDs and
 does not accept the expired bearer or extend its lifetime.
+The same diagnosis applies if the clock advances during the credential pulls used to start the
+broker connection or report ready.
 
 Every other answer is a refusal and nothing is connected. Not yet approved is `LIFECYCLE_BLOCKED`
 (`APPROVAL_PENDING`). A refused registration is `PERMISSION_DENIED`, and so is a space that ended the
