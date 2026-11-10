@@ -553,6 +553,10 @@ cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plai
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
+Daemon commands use the machine home, not the invoking project's `.cotal` records. They run from
+a removed working directory or a folder with a `.cotal` file, and malformed preferences do not
+block them. Machine-home validation and the permissions required for each operation still apply.
+
 Each mode accepts only its listed flags. A flag from another mode refuses with `USAGE_INVALID`
 before any daemon or service action, including `--dry-run` on `serve`. Bare `cotal daemon` lists
 the declared modes and points to `cotal help daemon`, which works without a running daemon.
