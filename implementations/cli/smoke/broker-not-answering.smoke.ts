@@ -4,11 +4,11 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
-import { createServer, type Socket } from "node:net";
+import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite, freePort, listenOn } from "@cotal-ai/smoke-kit";
-import { isReachable, probeReachability } from "@cotal-ai/core";
+import { isReachable, probeConnect, probeReachability } from "@cotal-ai/core";
 
 const BIN = join(import.meta.dirname, "../../../bin/dist/cotal.js");
 if (!existsSync(BIN)) throw new Error("build the binary before running this suite");
@@ -25,37 +25,76 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !ke
 Object.assign(env, { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, "config"), COTAL_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "0", NO_COLOR: "1" });
 const sockets = new Set<Socket>();
 let dials = 0;
+let greeting: "silent" | "tls" | "plaintext" = "silent";
+let clearConnects = 0;
 const listener = createServer((socket) => {
   dials++;
   sockets.add(socket);
   socket.on("error", () => {});
   socket.on("close", () => sockets.delete(socket));
+  if (greeting !== "silent") socket.write(`INFO ${JSON.stringify({ server_id: "owned-fixture", version: "2.12.0", proto: 1, max_payload: 1048576, tls_required: greeting === "tls" })}\r\n`);
+  socket.on("data", (chunk: Buffer) => { if (chunk.toString().includes("CONNECT ")) clearConnects++; });
   socket.resume();
 });
 const server = `nats://127.0.0.1:${await listenOn(listener, await freePort())}`;
 
-async function run(args: string[], cwd = outside) {
+async function run(args: string[], cwd = outside, timeoutMs = 60_000) {
   const start = Date.now();
   const before = dials;
   const child = spawn(process.execPath, [BIN, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
   child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-  const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
+  const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
   try {
     const [code, signal] = await once(child, "close") as [number | null, NodeJS.Signals | null];
-    if (signal !== null) throw new Error(`CLI did not finish: ${signal}\n${stderr}`);
-    return { code, stdout, stderr, ms: Date.now() - start, dials: dials - before };
+    return { code, signal, stdout, stderr, ms: Date.now() - start, dials: dials - before };
   } finally { clearTimeout(timer); }
 }
 
 try {
   check("a silent INFO read retains its timeout", await probeReachability(server, { timeoutMs: 40 }) === "slow-link");
   check("the boolean liveness API still returns false for silence", await isReachable(server, { timeoutMs: 40 }) === false);
+  const concurrent = Promise.all([
+    probeReachability(server, { tls: true, timeoutMs: 80 }),
+    probeConnect(server, { tls: true, timeoutMs: 160 }),
+  ]);
+  const unrelated = createConnection({ host: "127.0.0.1", port: Number(new URL(server).port) });
+  try {
+    await once(unrelated, "connect");
+    const [liveness, connection] = await concurrent;
+    check("concurrent TLS probes retain their timeout classes", liveness === "slow-link" && !connection.ok && connection.reason === "timeout", { liveness, connection });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    check("TLS probes release their sockets without closing an unrelated connection", sockets.size === 1 && !unrelated.destroyed, { remaining: sockets.size });
+  } finally { unrelated.destroy(); }
+  greeting = "tls";
+  const stalled = await probeConnect(server, { tls: true, timeoutMs: 100 });
+  check("a stalled TLS upgrade remains a timeout", !stalled.ok && stalled.reason === "timeout", stalled);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  check("a stalled TLS upgrade releases its pending socket", sockets.size === 0, { remaining: sockets.size });
+  greeting = "plaintext";
+  const downgrade = await probeConnect(server, { tls: true, token: "owned-test-token", timeoutMs: 100 });
+  check("a forged plaintext greeting cannot satisfy required TLS", !downgrade.ok && downgrade.reason === "tls-unsupported", downgrade);
+  check("a TLS refusal never sends CONNECT in plaintext", clearConnects === 0, { clearConnects });
+  greeting = "silent";
   const added = await run(["space", "add", "silent", "--root", project, "--server", server, "--mode", "open", "--force", "--yes", "--json"]);
   check("the shipped registration entrypoint accepts an unchecked space", added.code === 0, added);
   const selected = await run(["use", "silent", "--json"]);
   check("the shipped selection entrypoint selects it", selected.code === 0, selected);
+
+  // TLS-required reads must release their native dial, not just print the timeout verdict.
+  const strict = await run(["space", "add", "strict", "--root", project, "--server", server, "--mode", "open", "--tls", "--force", "--yes", "--json"]);
+  check("the shipped registration entrypoint records TLS intent", strict.code === 0, strict);
+  for (const args of [["space", "show", "strict"], ["space"]]) {
+    const read = await run([...args, "--json"], outside, 15_000);
+    const result = JSON.parse(read.stdout).result;
+    console.log(`  TLS read ${args.join(" ")}: ${JSON.stringify({ code: read.code, signal: read.signal, ms: read.ms, dials: read.dials })}`);
+    check(`TLS: ${args.join(" ")} classifies silence and exits inside its budget`, read.code === 0 && read.signal === null && (result.items?.find((row: { space: string }) => row.space === "strict") ?? result).check === "slow-link", read);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    check(`TLS: ${args.join(" ")} releases every accepted socket without a forced exit`, read.code === 0 && sockets.size === 0, { remaining: sockets.size });
+  }
+  const removed = await run(["space", "forget", "strict", "--json"]);
+  check("the TLS test registration is removed", removed.code === 0, removed);
 
   for (const mode of ["silent", "closed"] as const) {
     if (mode === "closed") {

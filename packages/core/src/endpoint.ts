@@ -1,7 +1,9 @@
 import { EventEmitter } from "node:events";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { channel } from "node:diagnostics_channel";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { createConnection, isIP } from "node:net";
+import { createConnection, isIP, type Socket } from "node:net";
 import {
   connect,
   headers,
@@ -8825,6 +8827,30 @@ export async function isReachable(
 /** A liveness observation, without flattening an inconclusive timeout into a dead address. */
 export type BrokerCheck = "reachable" | "unreachable" | "slow-link";
 
+const probeSockets = new AsyncLocalStorage<Set<Socket>>();
+const clientSockets = channel("net.client.socket");
+
+/** The native transport's close ignores a dial still waiting for INFO or TLS. Own its sockets
+ *  through Node's socket-created channel, scoped to this probe's async work rather than its
+ *  address: concurrent probes and standing connections must never close each other's sockets.
+ *  Destroy on every exit, including a native timeout before connect returns a connection handle. */
+async function probeConnection(servers: string, options: Parameters<typeof connect>[0]): Promise<void> {
+  const sockets = new Set<Socket>();
+  const capture = (message: unknown) => {
+    if (probeSockets.getStore() === sockets) sockets.add((message as { socket: Socket }).socket);
+  };
+  clientSockets.subscribe(capture);
+  try {
+    await probeSockets.run(sockets, async () => {
+      const nc = await dialerFor(servers)(options);
+      await nc.close();
+    });
+  } finally {
+    clientSockets.unsubscribe(capture);
+    for (const socket of sockets) socket.destroy();
+  }
+}
+
 /** The same credential-free or TLS-aware liveness check as {@link isReachable}, retaining timeouts.
  *  An authentication refusal still proves that the broker answers. */
 export async function probeReachability(
@@ -8841,8 +8867,7 @@ export async function probeReachability(
     // designed to avoid; on a ws broker there is no silent alternative.
     if (wsServers(servers)) {
       try {
-        const nc = await dialerFor(servers)({ servers, timeout: timeoutMs, reconnect: false, maxReconnectAttempts: 0 });
-        await nc.close();
+        await probeConnection(servers, { servers, timeout: timeoutMs, reconnect: false, maxReconnectAttempts: 0 });
         return "reachable";
       } catch (e) {
         return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError ? "reachable" : e instanceof TimeoutError ? "slow-link" : "unreachable";
@@ -8865,14 +8890,13 @@ export async function probeReachability(
   const reached = await gate(servers, timeoutMs);
   if (!reached || reached === "silent") return reached === "silent" ? "slow-link" : "unreachable";
   try {
-    const nc = await dialerFor(servers)({
+    await probeConnection(servers, {
       servers,
       timeout: Math.max(1, timeoutMs - (Date.now() - started)),
       reconnect: false,
       maxReconnectAttempts: 0,
       ...authOpts(opts),
     });
-    await nc.close();
     return "reachable";
   } catch (e) {
     return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError ? "reachable" : e instanceof TimeoutError ? "slow-link" : "unreachable";
@@ -8933,14 +8957,13 @@ export async function probeConnect(
   // overloaded broker is. That is the same latency verdict as a dial that ran out of its budget.
   if (greeting === "silent") return classifyProbeFailure(undefined, opts, false, "timeout");
   try {
-    const nc = await dialerFor(server)({
+    await probeConnection(server, {
       servers: server,
       timeout: Math.max(1, timeoutMs - (Date.now() - started)),
       reconnect: false,
       maxReconnectAttempts: 0,
       ...authOpts(opts),
     });
-    await nc.close();
     return { ok: true };
   } catch (e) {
     return classifyProbeFailure(e, opts, greeting !== true && greeting.authRequired);
