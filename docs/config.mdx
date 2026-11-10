@@ -199,7 +199,7 @@ Each write makes the replacement file private with mode `0600`, regardless of it
 A changed mode produces `PREFERENCES_MODE_CHANGED`; a read-only file does not prevent `config set` or `unset`.
 
 Invalid JSON, an unsupported schema version, an unknown key, or an invalid value stops commands that use defaults.
-Help, completion, `version`, and `docs` remain available. `status` reports the unreadable part and exits 4.
+Help, completion, `version`, `docs`, and `daemon` remain available. Machine-daemon operations do not use preference defaults. `status` reports the unreadable part and exits 4.
 The error names the file and fix. Cotal never resets it automatically.
 An initial UTF-8 byte order mark is accepted and omitted on the next write. UTF-16 is refused with the instruction to save as UTF-8.
 Symlinks, FIFOs, devices, and folders at `preferences.json` are refused with `PERMISSION_DENIED` before opening them.

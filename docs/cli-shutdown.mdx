@@ -825,6 +825,11 @@ and non-Linux targets refuse. It applies the same maintenance, deployment and
 process-custody guards as store reset. It does not stop a process to become
 eligible.
 
+When the reset removes a static-auth signing account, its preview, confirmation and receipt warn that
+credentials exported with `auth mint --out` stop working on this space after the next `up`.
+The warning is also in the JSON envelope as `EXPORTED_CREDENTIALS_INVALIDATED`. Exported files
+stay where they are. Mint replacements after `up`; no remote credential is revoked by this reset.
+
 Its `--dry-run` validates the existing local trust chain and inventories the
 native identity paths, including provider-declared secret keys, without running
 deprovisioning hooks. The inventory is bounded to 10,000 paths. Foreign space

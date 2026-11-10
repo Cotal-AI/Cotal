@@ -393,7 +393,35 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         writeSecretFileAtomic(daemonManagerIntentFile(space, home), JSON.stringify({ v: 1, space }));
         rmSync(refusalFile(space), { force: true });
         l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+        if (!l.view.connectors?.some(connector => connector.state === "available")) {
+          const child = l.child;
+          const seats = await generationCall(child, randomUUID(), "inspect");
+          if (seats === undefined || l.child !== child) throw new Error("the hosted Manager changed before its applications could be refreshed");
+          if (seats > 0) throw new HostedManagerRefusal("SEATS_ACTIVE", `hosted Manager for ${space} holds ${seats} active seat(s); its applications cannot be refreshed`, command(`stop the seats through Manager ${l.view.instanceId} in space ${space}, then run cotal daemon setup --space ${space}`));
+          const attempt = randomUUID();
+          generationAttempts.set(child, attempt);
+          l.stopping = true;
+          if (l.healthTimer) { clearTimeout(l.healthTimer); l.healthTimer = undefined; }
+          try {
+            await l.healthTask;
+            await generationCall(child, attempt, "prepare");
+            if (closed || generationPending || l.child !== child) throw new Error("the hosted Manager changed before its applications could be refreshed");
+            await stopChild(l);
+            generationAttempts.delete(child);
+            l.stopping = false;
+            l.view = { ...l.view, state: "starting", restarts: l.view.restarts + 1 };
+            l.starting = launch(l).finally(() => { l!.starting = undefined; });
+            return await l.starting;
+          } finally {
+            l.stopping = false;
+            if (l.child === child) {
+              try { await generationCall(child, attempt, "abort"); generationAttempts.delete(child); }
+              finally { observe(l); }
+            }
+          }
+        }
       } catch (error) {
+        if (error instanceof HostedManagerRefusal) throw error;
         l.view = { ...l.view, state: "starting", reason: error instanceof Error ? safeDiagnostic(error.message).slice(0, 1500) : "the hosted Manager did not answer status", next: `read cotal daemon status --space ${space}; correct its connection or restart the daemon`, observedAt: new Date().toISOString() };
       }
       return { ...l.view };

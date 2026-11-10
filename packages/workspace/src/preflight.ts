@@ -238,6 +238,19 @@ const PRUNE_CONFIRM_TIMEOUT_MS = 5_000;
  *  {@link renderWorkspaceError}'s `slow-link` sentence can name the real budget instead of a copy. */
 export const PREFLIGHT_CONFIRM_TIMEOUT_MS = 8_000;
 
+/** A credential-free broker observation, not proof of a space's identity or access. */
+export type BrokerCheck = "reachable" | "unreachable" | "slow-link" | "broker-stopped";
+
+/** Confirm a missed broker probe without flattening a timeout into a refused connection. */
+export async function brokerCheck(server: string, tlsRequired = false): Promise<BrokerCheck> {
+  const auth = tlsRequired ? { tls: true as const } : {};
+  if (await isReachable(server, auth)) return "reachable";
+  if (stoppedLoopbackListener(server) !== undefined) return "broker-stopped";
+  const probe = await probeConnect(server, { ...auth, timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS });
+  if (probe.ok || probe.reason === "auth-required" || probe.reason === "stale-auth") return "reachable";
+  return probe.reason === "timeout" ? "slow-link" : "unreachable";
+}
+
 /** What one sweep did. `offline` is the entries whose broker is gone but whose record STAYS —
  *  every origin, because a liveness miss is not a deletion. A surface that lists meshes renders
  *  that as a state instead of probing every broker a second time. */

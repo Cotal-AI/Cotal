@@ -291,7 +291,13 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     if (manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", manager.reason ?? "the hosted Manager is not answering yet", { remedy: manager.next ?? `read cotal daemon status --space ${opts.space}`, native: { code: manager.state.toUpperCase() } });
     const available = manager.connectors?.filter(connector => connector.state === "available") ?? [];
     opts.report(`connectors: ${available.length} available`);
-    if (!available.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no available connector in the hosted Manager's environment", { remedy: "install a supported harness on the daemon's PATH, then run setup again", native: { code: "NO_AVAILABLE_CONNECTOR" } });
+    if (!available.length) {
+      const applications = [...new Set((manager.connectors ?? []).flatMap(connector => {
+        const missing = / harness needs (.+) on PATH/.exec(connector.reason ?? "");
+        return missing ? missing[1]!.split(", ") : connector.agent === "(inventory)" ? [] : [connector.agent];
+      }))];
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no available connector in the hosted Manager's environment", { remedy: `install ${applications.length ? applications.join(" or ") : "an agent application reported by Manager status"} on the daemon's PATH, then run setup again`, native: { code: "NO_AVAILABLE_CONNECTOR" } });
+    }
     const registration = await requestRegistration(opts, steps);
     // A pending registration has no service credential yet. Report it without polling its owner.
     let state: ServiceConnectionState = fromRegister(registration);

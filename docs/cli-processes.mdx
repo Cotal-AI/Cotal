@@ -553,6 +553,10 @@ cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plai
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
+Daemon commands use the machine home, not the invoking project's `.cotal` records. They run from
+a removed working directory or a folder with a `.cotal` file, and malformed preferences do not
+block them. Machine-home validation and the permissions required for each operation still apply.
+
 Each mode accepts only its listed flags. A flag from another mode refuses with `USAGE_INVALID`
 before any daemon or service action, including `--dry-run` on `serve`. Bare `cotal daemon` lists
 the declared modes and points to `cotal help daemon`, which works without a running daemon.
@@ -591,7 +595,9 @@ the stock default persona in its own catalog, without replacing an existing file
 `cotal spawn --on <instance> --space <space>` can launch it. Setup succeeds when that registered
 instance answers `status` with an available connector. With no available connector it refuses with
 `no available connector` and a harness-install next step. Connector availability is read from the
-daemon-hosted Manager, not from the invoking shell.
+daemon-hosted Manager, not from the invoking shell. Running setup again refreshes an idle hosted
+Manager's application inventory by restarting that child. If it holds seats, setup refuses with the
+seat cause instead. Install one of the agent applications named in the remedy on the daemon's PATH.
 The separate `ai.cotal.machine` registration and connection are reported even while owner approval
 is pending. That approval never holds up agent launches. JSON reports `launchReady: true`, the
 registered Manager at `manager.instanceId`, its `manager` status and the separate machine
@@ -933,6 +939,12 @@ as that service. It binds the registered
 responder before reporting ready. It succeeds, exit 0, only after the broker accepts the connection,
 the responder subscriptions are flushed and the space accepts the daemon as ready. The renewal and ready request IDs are kept in
 `<COTAL_HOME>/daemon/<space segment>/service-store/`, mode `0600`, and reused after a restart.
+
+A damaged `daemon-ready/*.json` or `auth/<space segment>/service-renewal/*.json` record in that
+store reports `CONFLICT` (`LOCAL_STATE_ERROR`) on connection or startup resume. Store read,
+creation and write failures use the same local diagnosis. The daemon preserves existing records
+and leaves no connection after a failed connect attempt. Check permissions and restore the original
+record before retrying; restoring it reuses the saved request IDs. No record is silently replaced.
 
 Every other answer is a refusal and nothing is connected. Not yet approved is `LIFECYCLE_BLOCKED`
 (`APPROVAL_PENDING`). A refused registration is `PERMISSION_DENIED`, and so is a space that ended the

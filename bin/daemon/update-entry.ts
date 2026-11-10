@@ -1,4 +1,5 @@
 /** The binary composes machine-daemon custody with the stock package updater. */
+import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
 import { update, updateRuntime } from "@cotal-ai/cli/update";
 import { withIdpSessionDir } from "@cotal-ai/auth";
@@ -6,7 +7,7 @@ import { CommandFailure, homeCotalDir, resolveControlTarget } from "@cotal-ai/wo
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, restartInstalled } from "./install.js";
+import { installedDaemonIdentity, restartInstalled, unitReceiptFile } from "./install.js";
 
 const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
@@ -56,6 +57,10 @@ const composed: Command = { ...command, async run(args) {
   const paths = daemonPaths();
   const current = await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");
+  if (!existsSync(unitReceiptFile(paths))) {
+    console.log(`machine daemon: PID ${current.result.pid} runs Cotal ${current.result.version}; no recorded user service, left running`);
+    return;
+  }
   const installation = installedDaemonIdentity(paths);
   if (!installation.same) {
     console.log(`machine daemon: ${installation.installed} runs Cotal ${current.result.version}; another installation was left running`);

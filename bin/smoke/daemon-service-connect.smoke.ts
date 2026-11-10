@@ -38,9 +38,9 @@
  *      this space (a TCP pass-through the suite cuts) is unreachable while the space's auth service
  *      keeps its broker; no 500 ms sample over 8 s says connected (all say connecting); after the
  *      path returns it is connected again, which needs a fresh ready, and the space reads ready;
- *  C14 the SHIPPED binary (`node bin/dist/cotal.js daemon serve`) with its 0600 ready record corrupted:
- *      the connect answers unavailable with fixed text, status agrees (nothing left running), the
- *      process keeps running, and with the record restored the same daemon connects.
+ *  C14 the SHIPPED binary starts with a damaged ready or renewal record: resume and the real CLI
+ *      identify local state, the damaged bytes stay private and unchanged, no responder is left, and
+ *      restoring the original record recovers serving under the same request ids.
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
  */
@@ -639,44 +639,70 @@ try {
       check("C16 restored connection actually serves", reply.reply.ok && reply.reply.data === null);
     });
 
-    await cell("C14 the shipped daemon survives a corrupt ready record and leaves nothing running", async () => {
-      // The shipped binary, as `cotal daemon serve` runs it: no handler of this suite in its process.
+    await cell("C14 the shipped daemon diagnoses damaged ready and renewal records", async () => {
       await d.close();
-      const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), "daemon", "serve"], {
-        env: { PATH: process.env.PATH ?? "", HOME: home, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"] });
-      let childErr = ""; child.stderr!.on("data", (b) => { childErr += String(b); });
-      const childExit = new Promise<number | null>((r) => child.once("exit", (code) => r(code)));
+      const env = { PATH: process.env.PATH ?? "", HOME: home, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      const cli = async (mode: string) => {
+        const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), "daemon", mode, "--space", ON, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
+        const timer = setTimeout(() => child.kill("SIGKILL"), 40_000);
+        const status = await new Promise<number | null>((r) => child.once("exit", r)); clearTimeout(timer);
+        let doc: Record<string, any> = {};
+        try { doc = JSON.parse(out) as Record<string, any>; } catch { /* asserted below */ }
+        return { status, doc, out, err };
+      };
+      const marker = "PRIVATE_SERVICE_RECORD_MARKER";
+      let crashed = false;
       try {
-        for (let i = 0; i < 100 && !existsSync(paths.socket); i++) await sleep(100);
-        const readyFiles = filesUnder(daemonDir).filter((p) => p.includes("daemon-ready") && p.endsWith(".json"));
-        const target = readyFiles.length === 1 ? join(daemonDir, readyFiles[0]!) : "";
-        const original = target ? readFileSync(target, "utf8") : "";
-        if (target) writeFileSync(target, "not-json", { mode: 0o600 });
-        let r: Frame = {}, s: Frame = {};
-        try {
-          r = await connectS(ON);
-          s = await statusS(ON);
-        } catch (e) { r = { result: { state: `no-answer: ${(e as Error).message.slice(0, 60)}` } }; }
-        finally { if (target) writeFileSync(target, original, { mode: 0o600 }); }
-        const exited = await Promise.race([childExit, sleep(5000).then(() => "running" as const)]);
-        console.log(`  C14 frame ${String(stateOf(r))}, status ${String(stateOf(s))}, process ${String(exited)}`);
-        check("C14 instrument: exactly one ready record was corrupted", readyFiles.length === 1, readyFiles);
-        check("C14 the connect is not connected, with fixed text", stateOf(r) === "unavailable" && !String(resultOf(r).message).includes("not-json"), r);
-        check("C14 status agrees: no live connection left behind", stateOf(s) === stateOf(r), { frame: stateOf(r), status: stateOf(s) });
-        check("C14 the shipped daemon process is still running", exited === "running", { exited, err: childErr.split("\n").filter((x) => /Error|Unexpected/.test(x)).slice(0, 2) });
-        if (exited === "running") {
-          const again = await connectS(ON);
-          check("C14 with the record restored, the same daemon connects", stateOf(again) === "connected", again);
-        } else check("C14 with the record restored, the same daemon connects", false, "the daemon process had exited");
-        check("C14 the daemon wrote nothing secret to stderr", ![SESSION, ...jwtsIssued].some((t) => childErr.includes(t)) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(childErr));
+        for (const kind of ["daemon-ready", "service-renewal"]) {
+          const files = filesUnder(daemonDir).filter((p) => p.includes(kind) && p.endsWith(".json"));
+          check(`C14 instrument: one ${kind} record exists`, files.length === 1, files);
+          if (files.length !== 1) continue;
+          const target = join(daemonDir, files[0]!);
+          const ids = (raw: string) => {
+            const o = JSON.parse(raw) as Record<string, unknown>;
+            return JSON.stringify(kind === "daemon-ready" ? [o.requestId] : [o.activateRequestId, o.renewRequestId]);
+          };
+          for (const damaged of [`not-json ${marker}`, JSON.stringify({ v: 1, secret: marker })]) {
+            const original = readFileSync(target, "utf8"), originalIds = ids(original);
+            writeFileSync(target, damaged, { mode: 0o600 });
+            // Damage exists before startup, so this exercises automatic resume as well as retry.
+            const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), "daemon", "serve"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+            let childErr = ""; child.stderr!.on("data", (b) => { childErr += String(b); });
+            const childExit = new Promise<number | null>((r) => child.once("exit", r));
+            try {
+              for (let i = 0; i < 100 && !existsSync(paths.socket); i++) await sleep(100);
+              const resumed = await waitState(ON, (s) => s === "unavailable" || s === "local-state-error", 30_000);
+              check(`C14 ${kind} resume identifies local state`, resumed === "local-state-error", { resumed });
+              for (const mode of ["service-status", "service-connect"]) {
+                const c = await cli(mode);
+                check(`C14 ${kind} ${mode} reports a local conflict`, c.status === 2 && c.doc.error?.code === "CONFLICT" && c.doc.error?.cause?.code === "LOCAL_STATE_ERROR", { status: c.status, error: c.doc.error });
+                check(`C14 ${kind} ${mode} preserves damaged bytes and hides them`, readFileSync(target, "utf8") === damaged && !(c.out + c.err).includes(marker));
+              }
+              let unanswered = false;
+              try { await probeMachine(); } catch (e) { unanswered = unansweredRequest(e); }
+              check(`C14 ${kind} failure leaves no live responder`, unanswered);
+              const exited = await Promise.race([childExit, sleep(5000).then(() => "running" as const)]);
+              check(`C14 ${kind} failure leaves the shipped daemon running`, exited === "running", { exited });
+              writeFileSync(target, original, { mode: 0o600 });
+              const again = await cli("service-connect");
+              check(`C14 restoring ${kind} reconnects with the same request ids`, again.status === 0 && again.doc.result?.state === "connected" && ids(readFileSync(target, "utf8")) === originalIds, { status: again.status, state: again.doc.result?.state });
+              const probe = await probeMachine();
+              check(`C14 restoring ${kind} serves an authorized caller`, probe.reply.ok && probe.reply.data === null);
+              check(`C14 ${kind} never exposes tokens or damaged contents on stderr`, !childErr.includes(marker) && ![SESSION, ...jwtsIssued].some((t) => childErr.includes(t)) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(childErr));
+            } finally {
+              if (child.exitCode === null && child.signalCode === null) { child.kill("SIGTERM"); await childExit; }
+              // Restore after shutdown only if a failing cell left the damaged fixture behind.
+              if (readFileSync(target, "utf8") === damaged) writeFileSync(target, original, { mode: 0o600 });
+              crashed = child.exitCode !== 0 && existsSync(paths.socket);
+            }
+          }
+        }
       } finally {
-        if (child.exitCode === null) { child.kill("SIGTERM"); await childExit; }
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+        if (crashed) check("C14 the successor recovered the crashed child's socket by itself (1 recovery)", d.counters.socketsRecovered === 1, d.counters);
       }
-      // A crashed child leaves its socket behind; the successor removes exactly that one under the
-      // lifetime lock, with no step from this fixture.
-      const crashed = child.exitCode !== 0 && existsSync(paths.socket);
-      d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
-      if (crashed) check("C14 the successor recovered the crashed child's socket by itself (1 recovery)", d.counters.socketsRecovered === 1, d.counters);
     });
 
     await cell("H1 shipped setup hosts an answering Manager independently of machine approval", async () => {
@@ -810,6 +836,9 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         manifest.extensions[0].connectors[0].requires = ["cotal-owned-missing-harness"];
         writeFileSync(join(prefix, "extensions.json"), JSON.stringify(manifest));
       }
+      const recoveryBin = join(root, "application-bin");
+      mkdirSync(recoveryBin, { mode: 0o700 });
+      env.PATH = `${recoveryBin}:${env.PATH}`;
       let child = await startDaemon();
       let recordingRestart = process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro");
       const watchRecordedRestart = (owned: ChildProcess) => owned.once("exit", (code) => {
@@ -842,6 +871,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         console.log("  H1 setup", JSON.stringify(setup));
         if (process.argv.includes("--setup-no-connectors-repro")) {
           check("3A setup refuses no available connector", setup.code === 2 && setup.doc.error?.message?.includes("no available connector") && !!setup.doc.error?.remedy, setup);
+          check("setup remedy names the missing agent application", setup.doc.error?.remedy?.includes("cotal-owned-missing-harness"), setup);
+          const before = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
+          writeFileSync(join(recoveryBin, "cotal-owned-missing-harness"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+          const recovered = await cli("setup", "--space", ON);
+          console.log("  setup after application install", JSON.stringify(recovered));
+          check("setup after application install restarts idle child and becomes launch-ready", recovered.code === 0 && recovered.doc.result?.launchReady === true && recovered.doc.result?.manager?.pid !== before?.pid && recovered.doc.result?.manager?.connectors?.some((connector: any) => connector.state === "available"), recovered);
           return;
         }
         check(explicitHome ? "Explicit-home manager-start returns answering hosted Manager" : "H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
