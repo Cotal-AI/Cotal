@@ -148,7 +148,7 @@ export interface DaemonSpaces {
   readonly unreadable: number;
   readonly collisions: number;
   readonly signedInProviders?: readonly string[];
-  readonly spaces: readonly { readonly space: string; readonly label: string; readonly catalogId?: string; readonly mode: "auth" | "open" | "user"; readonly idp?: string }[];
+  readonly spaces: readonly { readonly space: string; readonly label: string; readonly catalogId?: string; readonly kind?: string; readonly role?: string; readonly mode: "auth" | "open" | "user"; readonly idp?: string }[];
 }
 
 type Envelope = { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string | null };

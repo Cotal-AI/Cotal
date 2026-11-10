@@ -20,15 +20,24 @@ export function machinesUrl(provider: string, spaceId: string, instanceId: strin
   return url.href;
 }
 
+export interface AccountSpace { space: string; label: string; catalogId?: string; kind?: string; role?: string }
+
+/** Discovery selects a target, but never grants consent to connect. */
+export function initialSpace(spaces: readonly AccountSpace[], requested?: string): string | undefined {
+  const linked = requested && spaces.find(item => item.space === requested || item.catalogId === requested);
+  if (linked) return linked.space;
+  return spaces.find(item => item.kind === "personal")?.space ?? (spaces.length === 1 ? spaces[0].space : undefined);
+}
+
 export function connectionView(state: string): { title: string; description: string; connected: boolean } {
   switch (state) {
-    case "launch-ready": return { title: "This computer is connected", description: "You can now launch agent applications on this computer from your space's dashboard.", connected: true };
+    case "launch-ready": return { title: "This computer is connected", description: "Manage the spaces that can launch agent applications on this computer.", connected: true };
     case "no-application": return { title: "No agent application found", description: "Install a supported application named below, then choose Check again.", connected: false };
     case "connected": return { title: "Not connected", description: "The connection is not yet ready to launch agent applications.", connected: false };
     case "approval-pending": return { title: "Waiting for owner approval", description: "The space owner must approve this machine. No connection is claimed yet.", connected: false };
-    case "connecting": return { title: "Connecting this computer", description: "Checking that this computer can launch agent applications for your space.", connected: false };
-    case "disconnected": return { title: "Disconnected from this space", description: "The background service is still running. Disconnecting does not revoke remote permissions.", connected: false };
-    case "ready": return { title: "Background service is ready", description: "Choose a space to connect this computer.", connected: false };
+    case "connecting": return { title: "Connecting this computer", description: "Checking that this computer can launch agent applications.", connected: false };
+    case "disconnected": return { title: "Computer disconnected", description: "The background service is still running. Disconnecting does not revoke remote permissions.", connected: false };
+    case "ready": return { title: "Background service is ready", description: "Connect this computer to your account.", connected: false };
     default: return { title: "Not connected", description: "No verified connection to the selected space is available.", connected: false };
   }
 }

@@ -13,7 +13,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean } = {}) {
+async function app(options: { personal?: boolean; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -52,8 +52,9 @@ async function app(options: { link?: string; installed?: boolean; connected?: bo
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
         return ok({ state: "ready", version: options.mismatch ? "old" : "test", managers: connected ? [manager] : [] });
       }
-      if (r.op === "spaces") return ok({ spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : "My team", mode: "user", idp: COTAL_CLOUD_IDP })) });
+      if (r.op === "spaces") return ok({ spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : "My team", kind: options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: COTAL_CLOUD_IDP })) });
       if (r.op === "service-status") return ok({ state: options.serviceState ?? "disconnected" });
+      if (r.op === "service-disconnect") { connected = false; return ok({ state: "disconnected" }); }
       if (r.op === "login") {
         send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: "https://example.com/device?user_code=ABCD", userCode: "ABCD", expiresAt: new Date(now + 581000).toISOString() } }, 0);
         await new Promise<void>(resolve => { releaseLogin = resolve; }); return options.loginReason ? ok({ outcome: "failed", reason: options.loginReason, message: `Exact sign-in reason: ${options.loginReason}` }) : ok({ outcome: "signed-in" });
@@ -98,7 +99,7 @@ test("first open is a neutral Cloud-default welcome and sign-in is an explicit a
 test("linked first run needs sign-in approval then connect, with one panel and structured progress", async () => {
   const a = await app({ link: `cotal://connect?idp=${encodeURIComponent(COTAL_CLOUD_IDP)}&space=sp_team`, count: 2 });
   try {
-    assert.match(a.node("link-context").textContent!, /your space at cloud\.cotal\.ai/);
+    assert.match(a.node("link-context").textContent!, /your account at cloud\.cotal\.ai/);
     assert.equal(a.node("notice").hidden, true);
     await a.click("login");
     assert.equal(a.calls.filter(r => r.op === "install").length, 1);
@@ -134,7 +135,8 @@ test("unlinked accounts choose among spaces but skip a single space", async () =
     try {
       await a.click("login"); await a.login();
       assert.equal(a.node("space-panel").hidden, count === 1);
-      assert.equal(a.node("connect-panel").hidden, count !== 1);
+      assert.equal(a.node("connect-panel").hidden, false);
+      assert.equal(a.calls.filter(r => r.op === "setup").length, 0);
       if (count === 2) {
         a.node<HTMLSelectElement>("space").value = "other";
         a.node("space").dispatchEvent(new a.dom.window.Event("change")); await settle();
@@ -154,6 +156,35 @@ test("later open shows connection and secondary controls, never sign-in or space
     await a.click("another-space"); assert.equal(a.node("space-panel").hidden, false);
     await a.click("choose-space"); assert.equal(a.node("connected-panel").hidden, false);
     await a.click("sign-in-again"); assert.equal(a.node("sign-in-panel").hidden, false);
+  } finally { a.dom.window.close(); }
+});
+
+test("personal space is selected without a chooser and still requires consent", async () => {
+  const a = await app({ count: 2, personal: true });
+  try {
+    await a.click("login"); await a.login();
+    assert.equal(a.node<HTMLSelectElement>("space").value, "team");
+    assert.equal(a.node("space-panel").hidden, true);
+    assert.match(a.node("selected-space").textContent!, /your personal space, My team/);
+    assert.equal(a.calls.filter(r => r.op === "setup").length, 0);
+  } finally { a.dom.window.close(); }
+});
+
+test("Ready removes a space and adds another only after confirmation", async () => {
+  const a = await app({ installed: true, connected: true, count: 2 });
+  try {
+    assert.equal(a.doc.querySelectorAll('[data-testid="connected-space-row"]').length, 1);
+    (a.doc.querySelector('#connected-spaces button') as HTMLButtonElement).click(); await settle();
+    assert.equal(JSON.stringify(a.calls.filter(r => r.op === "service-disconnect")), JSON.stringify([{ op: "service-disconnect", space: "team" }]));
+    assert.equal(a.doc.querySelectorAll('[data-testid="connected-space-row"]').length, 0);
+    await a.click("another-space");
+    a.node<HTMLSelectElement>("space").value = "other";
+    a.node("space").dispatchEvent(new a.dom.window.Event("change")); await settle();
+    assert.match(a.node("selected-space").textContent!, /People authorized in Other team/);
+    assert.equal(a.calls.filter(r => r.op === "setup").length, 0);
+    await a.click("connect"); assert.equal(a.calls.filter(r => r.op === "setup").at(-1)?.space, "other");
+    await a.setup();
+    assert.match(a.node("connected-spaces").textContent!, /Other team/);
   } finally { a.dom.window.close(); }
 });
 
@@ -248,11 +279,13 @@ test("empty catalog, pending approval, offline and version mismatch expose recov
     const a = await app(options);
     try {
       if (options.count === 0) { await a.click("login"); await a.login(); }
-      assert.equal(a.node("recovery-panel").hidden, false);
       if (options.serviceState === "approval-pending") {
-        assert.equal(a.node("connection-icon").dataset.icon, "clock");
+        assert.equal(a.node("recovery-panel").hidden, true);
+        assert.match(a.node("connected-spaces").textContent!, /Waiting for owner approval/);
         assert.equal(a.doc.querySelector(".connection-card")!.classList.contains("has-refusal"), false);
+        continue;
       }
+      assert.equal(a.node("recovery-panel").hidden, false);
       assert.equal(a.node<HTMLButtonElement>("recover").disabled, false);
       const calls = a.calls.length; await a.click("recover"); assert.ok(a.calls.length > calls);
     } finally { a.dom.window.close(); }

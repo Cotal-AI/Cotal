@@ -1,6 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { approvalUrl, connectionView, requireResult, onboardingLink, launchReady, machinesUrl } from "../src/model.ts";
+import { initialSpace, approvalUrl, connectionView, requireResult, onboardingLink, launchReady, machinesUrl } from "../src/model.ts";
+
+test("account targeting prefers the link, personal space, only space, then asks", () => {
+  const personal = { space: "mine", catalogId: "sp_mine", label: "Mine", kind: "personal" };
+  const team = { space: "team", catalogId: "sp_team", label: "Team", kind: "team" };
+  assert.equal(initialSpace([personal, team], "sp_team"), "team");
+  assert.equal(initialSpace([team, personal]), "mine");
+  assert.equal(initialSpace([team]), "team");
+  assert.equal(initialSpace([team, { ...team, space: "other" }]), undefined);
+  assert.equal(initialSpace([]), undefined);
+});
 
 test("only verified service connection is presented as connected", () => {
   for (const state of ["ready", "connecting", "approval-pending", "disconnected", "refused", "unknown"]) assert.equal(connectionView(state).connected, false);

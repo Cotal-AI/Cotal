@@ -79,6 +79,7 @@ test("launch readiness, application retry and polling follow the selected space"
   };
   const button = (id: string) => doc.getElementById(id) as HTMLButtonElement;
   const title = () => doc.getElementById("connection-title")!.textContent;
+  const disconnectedTitle = () => doc.getElementById("connected-panel")!.hidden ? "Ready to connect" : managers.size ? "This computer is connected" : "Spaces using this computer";
   const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
   const select = async (space: string) => {
     (doc.getElementById("space") as HTMLSelectElement).value = space;
@@ -111,7 +112,7 @@ test("launch readiness, application retry and polling follow the selected space"
     await tick!();
     assert.equal(title(), "No agent application found");
     await select("second");
-    assert.equal(title(), "Disconnected from this space");
+    assert.equal(title(), disconnectedTitle());
     await select("first");
     assert.equal(title(), "No agent application found");
     approved = true;
@@ -132,7 +133,7 @@ test("launch readiness, application retry and polling follow the selected space"
     await select("second");
     assert.equal(button("connect").disabled, false, "another space is not blocked by the connected selection");
     await releaseOldSelection();
-    assert.equal(title(), "Disconnected from this space", "late status for the old selection is ignored");
+    assert.equal(title(), disconnectedTitle(), "late status for the old selection is ignored");
     const beforeOtherSpace = browserUrls.length;
     assert.equal(button("dashboard").disabled, true);
     button("dashboard").click(); button("dashboard").dispatchEvent(new win.Event("click")); await settle();
@@ -142,11 +143,11 @@ test("launch readiness, application retry and polling follow the selected space"
     const releaseConnected = await holdRefresh();
     button("disconnect").click();
     await settle();
-    assert.equal(title(), "Disconnected from this space");
+    assert.equal(title(), disconnectedTitle());
     assert.equal(doc.getElementById("notice")!.textContent, "", "disconnect uses one status sentence without a duplicate notice");
     assert.equal(button("connect").disabled, false);
     await releaseConnected();
-    assert.equal(title(), "Disconnected from this space", "old connected status cannot undo disconnect");
+    assert.equal(title(), disconnectedTitle(), "old connected status cannot undo disconnect");
     assert.equal(button("connect").disabled, false, "reconnect stays available");
     const beforeDisconnected = browserUrls.length;
     assert.equal(button("dashboard").disabled, true);
@@ -172,7 +173,7 @@ test("launch readiness, application retry and polling follow the selected space"
     const serviceReads = calls.filter((call) => call.op === "service-status").length;
     await releaseReady();
     assert.equal(calls.filter((call) => call.op === "service-status").length, serviceReads, "stale readiness reply cannot continue a refresh");
-    assert.equal(title(), "Disconnected from this space");
+    assert.equal(title(), disconnectedTitle());
     button("connect").click();
     await settle();
 
@@ -181,7 +182,7 @@ test("launch readiness, application retry and polling follow the selected space"
       button("disconnect").click();
       await settle();
       await releaseError();
-      assert.equal(title(), "Disconnected from this space", `stale ${op} failure cannot overwrite disconnect`);
+      assert.equal(title(), disconnectedTitle(), `stale ${op} failure cannot overwrite disconnect`);
       assert.equal(button("connect").disabled, false, "stale error cannot clear daemon readiness");
       assert.notEqual(doc.getElementById("notice")!.textContent, "Error: delayed status failure");
       button("connect").click();
@@ -193,9 +194,9 @@ test("launch readiness, application retry and polling follow the selected space"
     await select("second");
     states.set("first", "disconnected"); managers.delete("first");
     await select("first");
-    assert.equal(title(), "Disconnected from this space");
+    assert.equal(title(), disconnectedTitle());
     await releaseBeforeReselect();
-    assert.equal(title(), "Disconnected from this space", "returning to the same space does not revive an old refresh");
+    assert.equal(title(), disconnectedTitle(), "returning to the same space does not revive an old refresh");
     assert.equal(button("connect").disabled, false);
     daemonVersion = "older";
     button("refresh").click(); await settle();
