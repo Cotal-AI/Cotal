@@ -1216,7 +1216,7 @@
     "smoke:claude-mcp-default": "tsx extensions/connector-claude-code/smoke/mcp-default.smoke.ts",
     "smoke:presence-runtime": "tsx packages/core/smoke/presence-runtime.smoke.ts",
     "smoke:daemon-install-native": "tsx bin/smoke/daemon-install-native.smoke.ts",
-    "smoke:daemon-desktop": "tsx bin/smoke/daemon-desktop.smoke.ts",
+    "smoke:daemon-desktop": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-desktop.smoke.ts && tsx bin/smoke/daemon-startup-context.smoke.ts",
     "smoke:daemon-transport": "tsx bin/smoke/daemon-transport.smoke.ts"
   },
   "dependencies": {
