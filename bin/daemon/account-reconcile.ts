@@ -45,7 +45,8 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
   };
   const desiredByOwner = new Map<string, Set<string>>();
   const desiredAll = () => new Set([...desiredByOwner.values()].flatMap(set => [...set]));
-  const apply = (account: AuthSpaceCatalogAccount, snapshot: SpaceCatalogSnapshot, revision: number, bindingRevisions: Record<string, number>, fresh = true) => serial(async () => {
+  const apply = (account: AuthSpaceCatalogAccount, snapshot: SpaceCatalogSnapshot, revision: number, bindingRevisions: Record<string, number>, fresh = true, signal?: AbortSignal) => serial(async () => {
+    signal?.throwIfAborted();
     if (snapshot.spaces.some(row => !Number.isSafeInteger(bindingRevisions[row.id]) || bindingRevisions[row.id]! <= 0 || bindingRevisions[row.id]! > revision)) throw new Error("invalid binding revisions");
     const desired = new Set(snapshot.spaces.map(row => row.slug));
     desiredByOwner.set(account.ownerKey, desired);
@@ -60,6 +61,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       } catch { refusals.set(space, "disconnect refused; inspect daemon status before retrying"); retryAt.set(space, Date.now() + 30_000); }
     }
     for (const row of snapshot.spaces) {
+      signal?.throwIfAborted();
       const prior = saved.spaces[row.slug];
       if (prior && prior.owner !== account.ownerKey) { refusals.set(row.slug, "another account owns the local space connection"); continue; }
       if (prior?.removedAt !== undefined && (!fresh || bindingRevisions[row.id]! <= prior.removedAt)) continue;
@@ -81,6 +83,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
           const connected = await services.connect(row.slug);
           if (connected.state !== "connected") throw new Error(connected.state);
         }
+        signal?.throwIfAborted();
         const manager = await managers.refresh(row.slug);
         if (manager.state !== "answering") {
           const started = await managers.start(row.slug);
