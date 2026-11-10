@@ -18,6 +18,7 @@ let dashboard: string | undefined;
 let requestedSpace: string | undefined;
 let poll: ReturnType<typeof setTimeout> | undefined;
 let connection: { space: string; state: string } | undefined;
+let refreshGeneration = 0;
 const selectedSpace = () => el<HTMLSelectElement>("space").value;
 const connected = () => connection?.space === selectedSpace() && connection?.state === "connected";
 
@@ -57,15 +58,20 @@ function state(value: string, space = selectedSpace()): void {
 }
 async function refresh(): Promise<void> {
   const space = selectedSpace();
+  const generation = ++refreshGeneration;
+  const current = () => generation === refreshGeneration && space === selectedSpace();
   try {
     const status = await request({ op: "status" });
+    if (!current()) return;
     ready = status.state === "ready";
     el("install-panel").hidden = ready;
     if (space) {
       const connection = await request({ op: "service-status", space });
+      if (!current()) return;
       state(String(connection.state), space);
     } else state("ready", space);
   } catch (error) {
+    if (!current()) return;
     ready = false; el("install-panel").hidden = false; state("unavailable"); notice(String(error), true);
   }
   buttons();
@@ -88,9 +94,10 @@ async function spaces(refreshCatalog: boolean): Promise<void> {
   buttons();
 }
 async function action(fn: () => Promise<void>): Promise<void> {
-  if (busy) return; busy = true; buttons();
+  // Discard reads begun before this action, and selection reads still pending when it finishes.
+  if (busy) return; busy = true; refreshGeneration++; buttons();
   try { await fn(); } catch (error) { notice(error instanceof Error ? error.message : String(error), true); }
-  finally { busy = false; buttons(); }
+  finally { refreshGeneration++; busy = false; buttons(); }
 }
 
 el("install").addEventListener("click", () => void action(async () => {

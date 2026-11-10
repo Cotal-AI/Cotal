@@ -21,8 +21,9 @@ test("connection controls follow the selected space across approval, polling and
   const states = new Map([["first", "approval-pending"], ["second", "disconnected"]]);
   let approved = false;
   let tick: (() => Promise<void>) | undefined;
-  let heldStatus: (() => void) | undefined;
-  let holdStatus = false;
+  const heldStatus: { release?: () => void } = {};
+  let holdOperation: string | undefined;
+  let rejectHeld = false;
   let callback = 0;
   win.setTimeout = (fn: () => Promise<void>, ms: number) => {
     assert.equal(ms, 10_000);
@@ -53,10 +54,16 @@ test("connection controls follow the selected space across approval, polling and
         case "service-disconnect": states.set(req.space!, "disconnected"); result = { state: "disconnected" }; break;
         case "service-status": {
           result = { state: states.get(req.space!) };
-          if (holdStatus) await new Promise<void>((resolve) => { heldStatus = resolve; });
           break;
         }
         default: throw new Error(`Unexpected request ${req.op}`);
+      }
+      if (req.op === holdOperation) {
+        holdOperation = undefined;
+        const fail = rejectHeld;
+        await new Promise<void>((resolve, reject) => {
+          heldStatus.release = () => fail ? reject(new Error("delayed status failure")) : resolve();
+        });
       }
       return { v: 1, event: "result", ok: true, result };
     },
@@ -68,6 +75,16 @@ test("connection controls follow the selected space across approval, polling and
     (doc.getElementById("space") as HTMLSelectElement).value = space;
     doc.getElementById("space")!.dispatchEvent(new win.Event("change"));
     await settle();
+  };
+  const holdRefresh = async (op = "service-status", fail = false) => {
+    holdOperation = op;
+    rejectHeld = fail;
+    heldStatus.release = undefined;
+    const polling = tick!();
+    await settle();
+    const release = heldStatus.release as (() => void) | undefined;
+    assert.ok(release, `refresh reached ${op}`);
+    return async () => { release(); await polling; };
   };
   try {
     win.eval(bundle.code);
@@ -94,22 +111,67 @@ test("connection controls follow the selected space across approval, polling and
     button("connect").dispatchEvent(new win.Event("click"));
     await settle();
     assert.equal(calls.filter((call) => call.op === "register").length, registrations);
-    holdStatus = true;
-    const polling = tick!();
-    await settle();
+    const releaseOldSelection = await holdRefresh();
     assert.equal(title(), "Connected", "poll does not temporarily replace a verified state with local readiness");
     assert.equal(button("connect").disabled, true);
-    holdStatus = false;
     await select("second");
     assert.equal(button("connect").disabled, false, "another space is not blocked by the connected selection");
-    heldStatus!();
-    await polling;
+    await releaseOldSelection();
     assert.equal(title(), "Disconnected from this space", "late status for the old selection is ignored");
     await select("first");
     assert.equal(button("connect").disabled, true);
+    const releaseConnected = await holdRefresh();
     button("disconnect").click();
     await settle();
     assert.equal(title(), "Disconnected from this space");
+    assert.equal(button("connect").disabled, false);
+    await releaseConnected();
+    assert.equal(title(), "Disconnected from this space", "old connected status cannot undo disconnect");
+    assert.equal(button("connect").disabled, false, "reconnect stays available");
+
+    const releaseDisconnected = await holdRefresh();
+    button("connect").click();
+    await settle();
+    assert.equal(title(), "Connected");
+    await releaseDisconnected();
+    assert.equal(title(), "Connected", "old disconnected status cannot undo connect");
+    assert.equal(button("connect").disabled, true);
+    const afterReconnect = calls.filter((call) => call.op === "register").length;
+    button("connect").click();
+    button("connect").dispatchEvent(new win.Event("click"));
+    await settle();
+    assert.equal(calls.filter((call) => call.op === "register").length, afterReconnect);
+
+    const releaseReady = await holdRefresh("status");
+    button("disconnect").click();
+    await settle();
+    const serviceReads = calls.filter((call) => call.op === "service-status").length;
+    await releaseReady();
+    assert.equal(calls.filter((call) => call.op === "service-status").length, serviceReads, "stale readiness reply cannot continue a refresh");
+    assert.equal(title(), "Disconnected from this space");
+    button("connect").click();
+    await settle();
+
+    for (const op of ["status", "service-status"]) {
+      const releaseError = await holdRefresh(op, true);
+      button("disconnect").click();
+      await settle();
+      await releaseError();
+      assert.equal(title(), "Disconnected from this space", `stale ${op} failure cannot overwrite disconnect`);
+      assert.equal(button("connect").disabled, false, "stale error cannot clear daemon readiness");
+      assert.notEqual(doc.getElementById("notice")!.textContent, "Error: delayed status failure");
+      button("connect").click();
+      await settle();
+      assert.equal(title(), "Connected");
+    }
+
+    const releaseBeforeReselect = await holdRefresh();
+    await select("second");
+    states.set("first", "disconnected");
+    await select("first");
+    assert.equal(title(), "Disconnected from this space");
+    await releaseBeforeReselect();
+    assert.equal(title(), "Disconnected from this space", "returning to the same space does not revive an old refresh");
     assert.equal(button("connect").disabled, false);
   } finally { win.close(); }
 });
