@@ -1,5 +1,12 @@
 # @cotal-ai/connector-claude-code
 
+## 0.156.0
+
+### Patch Changes
+
+- c0f99eb: Claude setup and updates refuse to replace registrations belonging to another Cotal home.
+  The error names the existing home and explains how to use a separate Claude profile.
+
 ## 0.155.2
 
 No changes in this release.

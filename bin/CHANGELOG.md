@@ -1,5 +1,51 @@
 # cotal-ai
 
+## 0.156.0
+
+### Minor Changes
+
+- 0ff6bca: Connect a computer for Cloud agent launches from the desktop app.
+  
+  The app runs stock daemon setup with streamed progress, reports hosted Manager launch-readiness,
+  and lets users check again after installing an agent application. Application discovery reads the
+  account PATH outside the renderer and preserves the daemon's guarded service refresh.
+
+### Patch Changes
+
+- 24bf62a: Daemon service connections now identify credentials that are not yet valid by the machine's clock.
+  The refusal tells you to check the machine's and space authority's clocks instead of reporting an
+  unreachable space. Bearer verification still fails closed and retries preserve the saved request IDs.
+- 80b1c38: Daemon disconnect and graceful shutdown cancel pending service HTTP requests instead of waiting for network timeouts.
+  
+  Cancellation reaches startup metadata, registration, credential and ready requests, including sign-in proof acquisition. Explicit disconnect still forgets resume intent, while shutdown preserves it.
+- ccc9d7e: Daemon service connections now report locally expired credentials instead of an unreachable space or broker.
+  The renewal source preserves a fixed expiry classification, and the daemon reports `LIFECYCLE_BLOCKED`
+  with native code `CREDENTIAL_EXPIRED` and a clock-check remedy. A newly returned sign-in proof
+  already expired by the local clock uses the same diagnosis before any space request. Expiry checks
+  and request replay stay unchanged.
+- c68579c: Include the Windows daemon startup entry in CLI builds so an installed scheduled task can start the daemon.
+- ca34053: Daemon setup rejects invalid space names before installing a service and stops on failed connection prerequisites.
+  
+  Service-only setup reports the original refusal without a misleading sign-in message or a duplicate registration check. Manager setup still reports unsupported machine services independently of agent launch readiness.
+- d2c020e: Windows daemon services now start with the native entry included in the CLI build. Native launches retain bounded private output, unavailable status names the log and Task Scheduler diagnostics, and the real-service smoke reports the task state and last result on failure.
+- Updated dependencies [24bf62a]
+- Updated dependencies [80b1c38]
+- Updated dependencies [f167bea]
+- Updated dependencies [ccc9d7e]
+- Updated dependencies [33f22ee]
+- Updated dependencies [8b0bdf7]
+- Updated dependencies [b814b95]
+  - @cotal-ai/core@0.156.0
+  - @cotal-ai/auth@0.156.0
+  - @cotal-ai/workspace@0.156.0
+  - @cotal-ai/cli@0.156.0
+  - @cotal-ai/runtime@0.156.0
+  - @cotal-ai/connector-core@0.156.0
+  - @cotal-ai/delivery@0.156.0
+  - @cotal-ai/manager@0.156.0
+  - @cotal-ai/registry@0.156.0
+  - @cotal-ai/seat@0.156.0
+
 ## 0.155.2
 
 ### Patch Changes
