@@ -456,17 +456,23 @@ export async function status(args: ParsedArgs): Promise<void> {
   const responder = await readResponderAxis(selected, preflight);
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
   const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight);
-  const target = await readSelected(selected, responder, folder, gaps, hints, preflight);
+  const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
+  const recovery = backupRecovery(maintenance);
+  const selectedHints: string[] = [];
+  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight);
+  // A held backup must be released before this root can start. Keep the selection's diagnostics,
+  // but replace its ordinary restart advice with the journal's recovery step.
+  if (recovery) hints.unshift(recovery);
+  else hints.push(...selectedHints);
   // The note under the heading sends here for this folder's own stack cut off with no recorded
   // outcome under another selection. A blocked one is named with its block under `This folder's
   // space` and its step first in Next, so that note is left out here, with its --json warning. One
   // that neither blocks nor stays part way settles from its members' processes when it starts.
   const held = folderStack(folder, target);
   if (held && folder.stackBlock) withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
-  if (held && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
+  if (!recovery && held && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
-  const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
   const logged = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;
   // A store write failure holds until the broker restarts, so it is named before a full store.
   const full = selected.ok && target.resolved && target.storedBytes !== null && logged?.state !== "write-failed" ? storeFull(selected.target.root, selected.target.space, target.storedBytes) : undefined;
@@ -1984,7 +1990,14 @@ function roleList(roles: readonly StackRole[]): string {
   return roles.length > 1 ? `${roles.slice(0, -1).join(", ")} and ${roles.at(-1)}` : roles[0] ?? "";
 }
 
+/** Pre-commit backup claims block ordinary startup; ready cuts and committed restores do not. */
+function backupRecovery(maintenance: StatusResult["maintenance"]): string | null {
+  return maintenance?.state === "claimed" || maintenance?.state === "restore-ready" ? maintenance.next : null;
+}
+
 function nextActions(r: StatusResult): Section {
+  const recovery = backupRecovery(r.maintenance);
+  if (recovery) return { title: "Next", blocks: [...new Set([recovery, ...r.hints])].map((hint) => ({ kind: "lines", lines: [cell(hint, "hint")] })) };
   const cmd = displayCmd();
   const items: { command: string; description: string }[] = [];
   const extra: string[] = [];

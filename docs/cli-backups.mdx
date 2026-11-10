@@ -88,7 +88,9 @@ or 129 and names its attempt, the partial artifact it left and `cotal backup rec
 That claim follows the restore claim's rule below: it holds the cut until its backup process and
 brokers are proven gone, or for 30 minutes when they cannot be. Until then `up`, another create and
 `backup recover` refuse `LIFECYCLE_BLOCKED` and name the backup process and the deadline, and
-`cotal status` names the attempt and its next step. Once it is stale, `backup recover` removes the
+`cotal status` names the attempt and its next step. While a create or pre-commit restore holds
+the cut, its Next section leads with recovery instead of offering a restart that would refuse.
+The JSON report leads its hints with the same step. Once it is stale, `backup recover` removes the
 partial artifact, the clone and the broker files, each matched by inode, and a create to another
 directory does the same before it starts, then backs up the cut's recorded store, a custom
 `--store-dir` one included. A create naming the partial artifact refuses `CONFLICT`
