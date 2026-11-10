@@ -862,6 +862,7 @@
     "smoke:int2-revoke:live": "tsx implementations/auth/smoke/int2-revoke-hold.smoke.ts",
     "smoke:ctl-trust:live": "tsx implementations/auth/smoke/ctl-trust.smoke.ts",
     "smoke:cli-kernel": "tsx implementations/cli/smoke/command-kernel.smoke.ts",
+    "smoke:auth-service-prerequisite": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/auth-service-prerequisite.smoke.ts",
     "smoke:service-preset-guidance": "tsx implementations/cli/smoke/service-preset-guidance.smoke.ts",
     "smoke:linear-accounts": "tsx implementations/linear/smoke/account-refusals.smoke.ts",
     "smoke:linear-hosted": "tsx implementations/linear/smoke/user-auth-serve.smoke.ts",
