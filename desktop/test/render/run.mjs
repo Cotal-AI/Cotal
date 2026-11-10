@@ -62,6 +62,8 @@ try {
         const animations = await page.evaluate(() => {
           window.__captureMotion();
           window.__motionObserver.disconnect();
+          const current = document.getAnimations();
+          window.__motion = window.__motion.filter(a => current.includes(a));
           return window.__motion.map(a => ({
             target: a.effect.target.id || a.effect.target.className.baseVal || a.effect.target.className,
             name: a.animationName || a.transitionProperty,
