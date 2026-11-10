@@ -1,0 +1,1237 @@
+{
+ "source": "OpenCode 2.2.5, opencode serve with no plugin, GET /api/session/:id/message polled every 150 ms while each turn ran and read once after it, 2026-11-10. Models: opencode/big-pickle and opencode/deepseek-v4.1-flash-free. Redacted by scripts/redact-opencode2-session.mjs.",
+ "sessions": [
+  {
+   "name": "shell then text, two turns",
+   "snapshots": [
+    [],
+    [
+     {
+      "id": "msg_01",
+      "type": "user",
+      "time": {
+       "created": 1794313797178
+      },
+      "text": "[user 1]"
+     }
+    ],
+    [
+     {
+      "id": "msg_02",
+      "type": "assistant",
+      "time": {
+       "created": 1794313797194,
+       "streamed": 1794313798628,
+       "completed": 1794313798643
+      },
+      "content": [
+       {
+        "type": "tool",
+        "id": "call_1",
+        "name": "tool_1",
+        "state": {
+         "status": "completed",
+         "input": {
+          "value": "[input 1]"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "[result 1]"
+          }
+         ]
+        },
+        "time": {
+         "created": 1794313798615,
+         "ran": 1794313798625,
+         "completed": 1794313798641
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_01",
+      "type": "user",
+      "time": {
+       "created": 1794313797178
+      },
+      "text": "[user 1]"
+     }
+    ],
+    [
+     {
+      "id": "msg_04",
+      "type": "idle",
+      "time": {
+       "created": 1794313799712
+      },
+      "outcome": "succeeded"
+     },
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794313798658,
+       "streamed": 1794313799705,
+       "completed": 1794313799707
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "[text 1]"
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "assistant",
+      "time": {
+       "created": 1794313797194,
+       "streamed": 1794313798628,
+       "completed": 1794313798643
+      },
+      "content": [
+       {
+        "type": "tool",
+        "id": "call_1",
+        "name": "tool_1",
+        "state": {
+         "status": "completed",
+         "input": {
+          "value": "[input 1]"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "[result 1]"
+          }
+         ]
+        },
+        "time": {
+         "created": 1794313798615,
+         "ran": 1794313798625,
+         "completed": 1794313798641
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_01",
+      "type": "user",
+      "time": {
+       "created": 1794313797178
+      },
+      "text": "[user 1]"
+     }
+    ],
+    [
+     {
+      "id": "msg_05",
+      "type": "user",
+      "time": {
+       "created": 1794313800732
+      },
+      "text": "[user 2]"
+     },
+     {
+      "id": "msg_04",
+      "type": "idle",
+      "time": {
+       "created": 1794313799712
+      },
+      "outcome": "succeeded"
+     },
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794313798658,
+       "streamed": 1794313799705,
+       "completed": 1794313799707
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "[text 1]"
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "assistant",
+      "time": {
+       "created": 1794313797194,
+       "streamed": 1794313798628,
+       "completed": 1794313798643
+      },
+      "content": [
+       {
+        "type": "tool",
+        "id": "call_1",
+        "name": "tool_1",
+        "state": {
+         "status": "completed",
+         "input": {
+          "value": "[input 1]"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "[result 1]"
+          }
+         ]
+        },
+        "time": {
+         "created": 1794313798615,
+         "ran": 1794313798625,
+         "completed": 1794313798641
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_01",
+      "type": "user",
+      "time": {
+       "created": 1794313797178
+      },
+      "text": "[user 1]"
+     }
+    ],
+    [
+     {
+      "id": "msg_07",
+      "type": "idle",
+      "time": {
+       "created": 1794313801874
+      },
+      "outcome": "succeeded"
+     },
+     {
+      "id": "msg_06",
+      "type": "assistant",
+      "time": {
+       "created": 1794313800742,
+       "streamed": 1794313801865,
+       "completed": 1794313801868
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "[text 2]"
+       }
+      ]
+     },
+     {
+      "id": "msg_05",
+      "type": "user",
+      "time": {
+       "created": 1794313800732
+      },
+      "text": "[user 2]"
+     },
+     {
+      "id": "msg_04",
+      "type": "idle",
+      "time": {
+       "created": 1794313799712
+      },
+      "outcome": "succeeded"
+     },
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794313798658,
+       "streamed": 1794313799705,
+       "completed": 1794313799707
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "[text 1]"
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "assistant",
+      "time": {
+       "created": 1794313797194,
+       "streamed": 1794313798628,
+       "completed": 1794313798643
+      },
+      "content": [
+       {
+        "type": "tool",
+        "id": "call_1",
+        "name": "tool_1",
+        "state": {
+         "status": "completed",
+         "input": {
+          "value": "[input 1]"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "[result 1]"
+          }
+         ]
+        },
+        "time": {
+         "created": 1794313798615,
+         "ran": 1794313798625,
+         "completed": 1794313798641
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_01",
+      "type": "user",
+      "time": {
+       "created": 1794313797178
+      },
+      "text": "[user 1]"
+     }
+    ]
+   ]
+  },
+  {
+   "name": "reasoning, text and a slow shell, then a long step",
+   "snapshots": [
+    [
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794313878004
+      }
+     }
+    ],
+    [
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794313878028
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794313878004
+      }
+     }
+    ],
+    [
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794313878040
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "",
+        "time": {
+         "created": 1794313882903
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794313878028
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794313878004
+      }
+     }
+    ],
+    [
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794313878040
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "",
+        "time": {
+         "created": 1794313882903
+        }
+       },
+       {
+        "type": "text",
+        "text": ""
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794313878028
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794313878004
+      }
+     }
+    ],
+    [
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794313878040
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "",
+        "time": {
+         "created": 1794313882903
+        }
+       },
+       {
+        "type": "text",
+        "text": ""
+       },
+       {
+        "type": "tool",
+        "id": "call_1",
+        "name": "tool_1",
+        "state": {
+         "status": "streaming",
+         "input": ""
+        },
+        "time": {
+         "created": 1794313884259
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794313878028
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794313878004
+      }
+     }
+    ],
+    [
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794313878040,
+       "streamed": 1794313884633
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "[reasoning 1]",
+        "time": {
+         "created": 1794313882903,
+         "completed": 1794313884624
+        }
+       },
+       {
+        "type": "text",
+        "text": "[text 1]"
+       },
+       {
+        "type": "tool",
+        "id": "call_1",
+        "name": "tool_1",
+        "state": {
+         "status": "running",
+         "input": {
+          "value": "[input 1]"
+         }
+        },
+        "time": {
+         "created": 1794313884259,
+         "ran": 1794313884629
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794313878028
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794313878004
+      }
+     }
+    ],
+    [
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794313878040,
+       "streamed": 1794313884633,
+       "completed": 1794313888647
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "[reasoning 1]",
+        "time": {
+         "created": 1794313882903,
+         "completed": 1794313884624
+        }
+       },
+       {
+        "type": "text",
+        "text": "[text 1]"
+       },
+       {
+        "type": "tool",
+        "id": "call_1",
+        "name": "tool_1",
+        "state": {
+         "status": "completed",
+         "input": {
+          "value": "[input 1]"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "[result 1]"
+          }
+         ]
+        },
+        "time": {
+         "created": 1794313884259,
+         "ran": 1794313884629,
+         "completed": 1794313888645
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794313878028
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794313878004
+      }
+     }
+    ],
+    [
+     {
+      "id": "msg_04",
+      "type": "assistant",
+      "time": {
+       "created": 1794313888662
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "",
+        "time": {
+         "created": 1794313889853
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794313878040,
+       "streamed": 1794313884633,
+       "completed": 1794313888647
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "[reasoning 1]",
+        "time": {
+         "created": 1794313882903,
+         "completed": 1794313884624
+        }
+       },
+       {
+        "type": "text",
+        "text": "[text 1]"
+       },
+       {
+        "type": "tool",
+        "id": "call_1",
+        "name": "tool_1",
+        "state": {
+         "status": "completed",
+         "input": {
+          "value": "[input 1]"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "[result 1]"
+          }
+         ]
+        },
+        "time": {
+         "created": 1794313884259,
+         "ran": 1794313884629,
+         "completed": 1794313888645
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794313878028
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794313878004
+      }
+     }
+    ],
+    [
+     {
+      "id": "msg_04",
+      "type": "assistant",
+      "time": {
+       "created": 1794313888662
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "",
+        "time": {
+         "created": 1794313889853
+        }
+       },
+       {
+        "type": "text",
+        "text": ""
+       }
+      ]
+     },
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794313878040,
+       "streamed": 1794313884633,
+       "completed": 1794313888647
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "[reasoning 1]",
+        "time": {
+         "created": 1794313882903,
+         "completed": 1794313884624
+        }
+       },
+       {
+        "type": "text",
+        "text": "[text 1]"
+       },
+       {
+        "type": "tool",
+        "id": "call_1",
+        "name": "tool_1",
+        "state": {
+         "status": "completed",
+         "input": {
+          "value": "[input 1]"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "[result 1]"
+          }
+         ]
+        },
+        "time": {
+         "created": 1794313884259,
+         "ran": 1794313884629,
+         "completed": 1794313888645
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794313878028
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794313878004
+      }
+     }
+    ],
+    [
+     {
+      "id": "msg_05",
+      "type": "idle",
+      "time": {
+       "created": 1794313910275
+      },
+      "outcome": "succeeded"
+     },
+     {
+      "id": "msg_04",
+      "type": "assistant",
+      "time": {
+       "created": 1794313888662,
+       "streamed": 1794313910269,
+       "completed": 1794313910271
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "[reasoning 2]",
+        "time": {
+         "created": 1794313889853,
+         "completed": 1794313910264
+        }
+       },
+       {
+        "type": "text",
+        "text": "[text 2]"
+       }
+      ]
+     },
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794313878040,
+       "streamed": 1794313884633,
+       "completed": 1794313888647
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "[reasoning 1]",
+        "time": {
+         "created": 1794313882903,
+         "completed": 1794313884624
+        }
+       },
+       {
+        "type": "text",
+        "text": "[text 1]"
+       },
+       {
+        "type": "tool",
+        "id": "call_1",
+        "name": "tool_1",
+        "state": {
+         "status": "completed",
+         "input": {
+          "value": "[input 1]"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "[result 1]"
+          }
+         ]
+        },
+        "time": {
+         "created": 1794313884259,
+         "ran": 1794313884629,
+         "completed": 1794313888645
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794313878028
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794313878004
+      }
+     }
+    ]
+   ]
+  },
+  {
+   "name": "interrupted while streaming",
+   "snapshots": [
+    [
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794314114051
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "",
+        "time": {
+         "created": 1794314115778
+        }
+       },
+       {
+        "type": "text",
+        "text": ""
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794314114035
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794314114011
+      }
+     }
+    ],
+    [
+     {
+      "id": "msg_04",
+      "type": "idle",
+      "time": {
+       "created": 1794314116702
+      },
+      "outcome": "interrupted"
+     },
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794314114051,
+       "streamed": 1794314116697,
+       "completed": 1794314116699
+      },
+      "error": {
+       "type": "aborted",
+       "message": "[error 1]"
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "[reasoning 1]",
+        "time": {
+         "created": 1794314115778,
+         "completed": 1794314116695
+        }
+       },
+       {
+        "type": "text",
+        "text": "[text 1]"
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794314114035
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794314114011
+      }
+     }
+    ]
+   ]
+  },
+  {
+   "name": "tool error",
+   "snapshots": [
+    [],
+    [
+     {
+      "id": "msg_01",
+      "type": "user",
+      "time": {
+       "created": 1794314137183
+      },
+      "text": "[user 1]"
+     }
+    ],
+    [
+     {
+      "id": "msg_02",
+      "type": "assistant",
+      "time": {
+       "created": 1794314137194
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "",
+        "time": {
+         "created": 1794314142173
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_01",
+      "type": "user",
+      "time": {
+       "created": 1794314137183
+      },
+      "text": "[user 1]"
+     }
+    ],
+    [
+     {
+      "id": "msg_02",
+      "type": "assistant",
+      "time": {
+       "created": 1794314137194,
+       "streamed": 1794314142352,
+       "completed": 1794314142379
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "[reasoning 1]",
+        "time": {
+         "created": 1794314142173,
+         "completed": 1794314142346
+        }
+       },
+       {
+        "type": "tool",
+        "id": "call_1",
+        "name": "tool_1",
+        "state": {
+         "status": "error",
+         "input": {
+          "value": "[input 1]"
+         },
+         "error": {
+          "type": "tool.execution",
+          "message": "[error 1]"
+         }
+        },
+        "time": {
+         "created": 1794314142342,
+         "ran": 1794314142350,
+         "completed": 1794314142377
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_01",
+      "type": "user",
+      "time": {
+       "created": 1794314137183
+      },
+      "text": "[user 1]"
+     }
+    ],
+    [
+     {
+      "id": "msg_04",
+      "type": "idle",
+      "time": {
+       "created": 1794314146756
+      },
+      "outcome": "succeeded"
+     },
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794314142391,
+       "streamed": 1794314146751,
+       "completed": 1794314146753
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "[text 1]"
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "assistant",
+      "time": {
+       "created": 1794314137194,
+       "streamed": 1794314142352,
+       "completed": 1794314142379
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "[reasoning 1]",
+        "time": {
+         "created": 1794314142173,
+         "completed": 1794314142346
+        }
+       },
+       {
+        "type": "tool",
+        "id": "call_1",
+        "name": "tool_1",
+        "state": {
+         "status": "error",
+         "input": {
+          "value": "[input 1]"
+         },
+         "error": {
+          "type": "tool.execution",
+          "message": "[error 1]"
+         }
+        },
+        "time": {
+         "created": 1794314142342,
+         "ran": 1794314142350,
+         "completed": 1794314142377
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_01",
+      "type": "user",
+      "time": {
+       "created": 1794314137183
+      },
+      "text": "[user 1]"
+     }
+    ]
+   ]
+  },
+  {
+   "name": "failed before any step",
+   "snapshots": [
+    [
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794313865268
+      }
+     }
+    ],
+    [
+     {
+      "id": "msg_03",
+      "type": "idle",
+      "time": {
+       "created": 1794313865293
+      },
+      "outcome": "failed",
+      "error": {
+       "type": "provider.no-route",
+       "message": "[error 1]"
+      }
+     },
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794313865289
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794313865268
+      }
+     }
+    ]
+   ]
+  },
+  {
+   "name": "prompt steered into a running turn",
+   "snapshots": [
+    [
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794314559291
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "",
+        "time": {
+         "created": 1794314561141
+        }
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794314559277
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794314559255
+      }
+     }
+    ],
+    [
+     {
+      "id": "msg_06",
+      "type": "idle",
+      "time": {
+       "created": 1794314572439
+      },
+      "outcome": "succeeded"
+     },
+     {
+      "id": "msg_05",
+      "type": "assistant",
+      "time": {
+       "created": 1794314566392,
+       "streamed": 1794314572433,
+       "completed": 1794314572435
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "[reasoning 2]",
+        "time": {
+         "created": 1794314567490,
+         "completed": 1794314572428
+        }
+       },
+       {
+        "type": "text",
+        "text": "[text 2]"
+       }
+      ]
+     },
+     {
+      "id": "msg_04",
+      "type": "user",
+      "time": {
+       "created": 1794314566381
+      },
+      "text": "[user 2]"
+     },
+     {
+      "id": "msg_03",
+      "type": "assistant",
+      "time": {
+       "created": 1794314559291,
+       "streamed": 1794314566372,
+       "completed": 1794314566375
+      },
+      "content": [
+       {
+        "type": "reasoning",
+        "text": "[reasoning 1]",
+        "time": {
+         "created": 1794314561141,
+         "completed": 1794314566368
+        }
+       },
+       {
+        "type": "text",
+        "text": "[text 1]"
+       }
+      ]
+     },
+     {
+      "id": "msg_02",
+      "type": "user",
+      "time": {
+       "created": 1794314559277
+      },
+      "text": "[user 1]"
+     },
+     {
+      "id": "msg_01",
+      "type": "model-switched",
+      "time": {
+       "created": 1794314559255
+      }
+     }
+    ]
+   ]
+  }
+ ]
+}
