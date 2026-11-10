@@ -124,6 +124,7 @@ export function renderDaemonUnit(unitDirectory: string, daemonHome: string | und
     "[Service]",
     "Type=simple",
     `Environment=PATH=${unitValue(pinnedPath())}`,
+    "Environment=COTAL_DAEMON_NATIVE_SERVICE=1",
     `ExecStart=${argv.map((part) => unitValue(part, true)).join(" ")}`,
     "Restart=always",
     "RestartSec=2",
@@ -382,9 +383,23 @@ export function installedDaemonIdentity(paths: DaemonPaths): { same: boolean; in
   const installed = coordinate(argv), current = coordinate(expected);
   // launchd pins the adjacent cwd bootstrap instead of cotal.js itself.
   if (plan.mechanism === "launchd-agent") installed.entry = argv[argv.indexOf("daemon") - 2]!.replace(/daemon-cwd\.js$/, "cotal.js");
+  if (plan.mechanism === "scheduled-task") installed.entry = installed.entry.replace(/daemon-native\.js$/, "cotal.js");
   if (!installed.executable || !installed.entry) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon installation could not be identified");
   const canonical = (path: string) => { try { return realpathSync(path); } catch { return path; } };
   return { same: canonical(installed.executable) === canonical(current.executable!) && canonical(installed.entry) === canonical(current.entry), installed: `${installed.executable} ${installed.entry}`, current: `${current.executable} ${current.entry}` };
+}
+
+/** A native launch marker is trusted only with this installation's verified recorded source. */
+export function daemonStartedByOwnedService(paths: DaemonPaths): boolean {
+  if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return false;
+  try {
+    if (!installedDaemonIdentity(paths).same) return false;
+    const { receipt, plan } = recordedUnit(paths);
+    const source = readFileSync(receipt.unitPath).toString(plan.mechanism === "scheduled-task" ? "utf16le" : "utf8");
+    return plan.mechanism === "systemd-user" ? source.includes("Environment=COTAL_DAEMON_NATIVE_SERVICE=1")
+      : plan.mechanism === "launchd-agent" ? source.includes("<key>COTAL_DAEMON_NATIVE_SERVICE</key><string>1</string>")
+      : source.includes("daemon-native.js");
+  } catch { return false; }
 }
 
 /** Restart only the source and native job recorded for this daemon. */

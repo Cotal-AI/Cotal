@@ -72,13 +72,13 @@ try {
     check("default label", launchAgentLabel(undefined) === "ai.cotal.daemon");
     check("home label is derived from the home", launchAgentLabel("/x") === `ai.cotal.daemon.${sha("/x").slice(0, 16)}`);
     const { text, sha256 } = renderLaunchAgent({ label: "ai.cotal.daemon", argv, searchPath: "/usr/bin:/bin", workingDirectory: "/Users/a", logPath: "/Users/a/.cotal/daemon/daemon.log" });
-    check("arguments are escaped, one string each", text.includes("<string>/Users/a b/&amp;&lt;home&gt;</string>") && (text.match(/<string>/g) ?? []).length === argv.length + 5, text);
+    check("arguments are escaped, one string each", text.includes("<string>/Users/a b/&amp;&lt;home&gt;</string>") && (text.match(/<string>/g) ?? []).length === argv.length + 6, text);
     check("directory is carried by the bootstrap's arguments", text.includes(`<string>${xmlText(bootstrap)}</string><string>/Users/a</string><string>daemon</string><string>serve</string>`));
     const alias = renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, "/usr/local/bin/cotal", "daemon", "serve"], searchPath: "/bin", workingDirectory: "/Users/a", logPath: "/log" });
     check("a CLI alias still pins this package's bootstrap", alias.text.includes(`<string>${xmlText(bootstrap)}</string>`) && !alias.text.includes("/usr/local/bin/daemon-cwd.js"));
     check("no unobservable WorkingDirectory property is emitted", !text.includes("<key>WorkingDirectory</key>"));
     check("KeepAlive and RunAtLoad are true", text.includes("<key>KeepAlive</key><true/>") && text.includes("<key>RunAtLoad</key><true/>"));
-    check("PATH is pinned", text.includes("<key>EnvironmentVariables</key><dict><key>PATH</key><string>/usr/bin:/bin</string></dict>"));
+    check("PATH is pinned", text.includes("<key>PATH</key><string>/usr/bin:/bin</string>") && text.includes("<key>COTAL_DAEMON_NATIVE_SERVICE</key><string>1</string>"));
     check("digest is of the exact bytes", sha256 === sha(text));
     check("a control character refuses", code(() => renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, "a\nb"], searchPath: "/bin", workingDirectory: "/", logPath: "/l" })) === "USAGE_INVALID");
     check("a relative executable refuses", code(() => renderLaunchAgent({ label: "ai.cotal.daemon", argv: ["node", "x"], searchPath: "/bin", workingDirectory: "/", logPath: "/l" })) === "USAGE_INVALID");
@@ -236,7 +236,7 @@ try {
     check("restarts by a one-minute repetition that ignores a running instance", t.text.includes("<Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>") && t.text.includes("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>") && !t.text.includes("<Duration>"));
     check("no run-time or battery limit", t.text.includes("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>") && t.text.includes("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>") && t.text.includes("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"));
     check("the command is the executable, unquoted", t.command === winArgv[0] && t.text.includes(`<Command>${winArgv[0]}</Command>`));
-    check("a C runtime split of the arguments returns them unchanged", JSON.stringify(splitWindows(t.arguments)) === JSON.stringify(winArgv.slice(1)), [t.arguments, splitWindows(t.arguments)]);
+    check("a C runtime split of the arguments returns them unchanged", JSON.stringify(splitWindows(t.arguments)) === JSON.stringify([winArgv[1], "C:\\Program Files\\cotal\\daemon-native.js", ...winArgv.slice(3)]), [t.arguments, splitWindows(t.arguments)]);
     check("% refuses", code(() => windowsArgument("%APPDATA%")) === "UNSUPPORTED");
     check("a double quote refuses", code(() => windowsArgument('a"b')) === "UNSUPPORTED");
     check("a relative executable refuses", code(() => renderScheduledTask({ sid, argv: ["node.exe"], workingDirectory: "C:\\" })) === "UNSUPPORTED");

@@ -77,7 +77,7 @@ export function renderLaunchAgent(input: LaunchAgentInput): { text: string; sha2
     '<plist version="1.0"><dict>',
     entry("Label", input.label),
     `<key>ProgramArguments</key><array>${argv.map(str).join("")}</array>`,
-    `<key>EnvironmentVariables</key><dict>${entry("PATH", input.searchPath)}</dict>`,
+    `<key>EnvironmentVariables</key><dict>${entry("PATH", input.searchPath)}${entry("COTAL_DAEMON_NATIVE_SERVICE", "1")}</dict>`,
     entry("StandardOutPath", input.logPath),
     entry("StandardErrorPath", input.logPath),
     "<key>RunAtLoad</key><true/>",

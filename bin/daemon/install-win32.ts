@@ -62,7 +62,10 @@ export interface ScheduledTaskInput {
 
 /** The task definition this install registers. */
 export function renderScheduledTask(input: ScheduledTaskInput): { text: string; bytes: Buffer; sha256: string; command: string; arguments: string } {
-  const [command, ...rest] = input.argv;
+  const nativeArgv = [...input.argv];
+  const daemon = nativeArgv.indexOf("daemon");
+  if (daemon >= 2 && /cotal\.[cm]?js$/i.test(nativeArgv[daemon - 1]!)) nativeArgv[daemon - 1] = win32.join(win32.dirname(nativeArgv[daemon - 1]!), "daemon-native.js");
+  const [command, ...rest] = nativeArgv;
   // Windows path rules on every host, so the definition renders the same wherever it is checked.
   if (command === undefined || !win32.isAbsolute(command) || !win32.isAbsolute(input.workingDirectory) || command.includes("%") || input.workingDirectory.includes("%")) throw new CommandFailure("refused", "UNSUPPORTED", "the task needs absolute executable and working paths without %; no task was prepared");
   const args = rest.map(windowsArgument).join(" ");

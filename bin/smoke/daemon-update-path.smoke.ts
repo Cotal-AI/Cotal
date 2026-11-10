@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { killAndAwaitExit, skipSuite } from "@cotal-ai/smoke-kit";
 import { serveDaemon } from "../daemon/server.js";
+import { daemonStartedByOwnedService } from "../daemon/install.js";
 import { daemonPaths } from "../daemon/endpoint.js";
 
 if (process.platform !== "linux") skipSuite("daemon update path: Linux recording supervisor only");
@@ -76,6 +77,26 @@ const bytes = `[Service]\nExecStart="${process.execPath}" "${foreign ? join(root
 const unitPath = join(root, "cotal-daemon.service");
 writeFileSync(unitPath, bytes, { mode: 0o600 });
 writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(bytes).digest("hex"), installedAt: new Date().toISOString() }));
+if (process.argv.includes("--provenance")) {
+  const argv = process.argv, execArgv = process.execArgv;
+  const marker = process.env.COTAL_DAEMON_NATIVE_SERVICE;
+  try {
+    process.argv = [process.execPath, join(repo, "bin/dist/cotal.js")];
+    process.execArgv = [];
+    delete process.env.COTAL_DAEMON_NATIVE_SERVICE;
+    if (daemonStartedByOwnedService(paths)) throw new Error("foreground accepted as native");
+    process.env.COTAL_DAEMON_NATIVE_SERVICE = "1";
+    if (daemonStartedByOwnedService(paths)) throw new Error("unmarked source accepted as native");
+    const marked = bytes.replace("[Service]", "[Service]\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1");
+    writeFileSync(unitPath, marked, { mode: 0o600 });
+    writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(marked).digest("hex"), installedAt: new Date().toISOString() }));
+    if (!daemonStartedByOwnedService(paths)) throw new Error("verified native source refused");
+    console.log("PASS native marker requires verified same-install source");
+  } finally {
+    process.argv = argv; process.execArgv = execArgv;
+    if (marker === undefined) delete process.env.COTAL_DAEMON_NATIVE_SERVICE; else process.env.COTAL_DAEMON_NATIVE_SERVICE = marker;
+  }
+}
 try {
   const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...(process.argv.includes("--setup-foreign") ? ["daemon", "setup", "--space", "absent", "--no-manager", "--wait", "0", "--json"] : ["update"])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";

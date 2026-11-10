@@ -22,6 +22,8 @@ Update reports and skips hosted records without a live child, and gives a discon
 live custody that cannot be confirmed. Native restart failures retain their cause and name
 `cotal daemon start`; a failed rollback no longer hides the primary failure.
 Update keeps its ordinary continuity checks when Linux has no runtime directory for a daemon.
+New native jobs mark their launch, and generation activation verifies that marker against the
+recorded same-install source before exiting for the supervisor.
 Setup reconciles the stock connectors before hosting and prepares the default persona in the
 Manager's own catalog. A bare npm upgrade reconciles the replacement connectors before activation
 and leaves the running generation in place with a cause when preparation fails.
