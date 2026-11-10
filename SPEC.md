@@ -6576,6 +6576,11 @@ program record alone. It is absent when the run has no recorded program. A progr
 cannot be read or parsed MUST be reported as `programUnreadable: string`, with no `programHash`,
 and never as a hash or as an absent program.
 
+An open checkpoint's journal step row MAY carry `schema`, the uninterpreted value recorded with
+its question. A status reader MUST preserve a recorded schema, including an empty record or
+`null`, and MUST NOT infer one from the program when the entry recorded none. This field provides
+answer guidance and does not impose checkpoint answer validation.
+
 A `run-status` request MAY carry `journal: { offset }`, a row offset into the journal. The reply
 then carries `journalTotal`, the journal's row count, and its `journal` holds the rows from
 `offset`, in journal order, that fit in one reply under the serving connection's payload limit: at
