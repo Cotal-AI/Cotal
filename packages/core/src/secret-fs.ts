@@ -178,7 +178,8 @@ export function writePrivateRecord(path: string, data: string | Buffer): void {
 /**
  * Create an owner-private record that must not exist yet, under {@link openPrivate}'s rule with
  * `O_EXCL` and without the win32 ACL step: for a temporary that a rename then publishes. On POSIX any
- * existing name, a symlink included, fails with `EEXIST` and is left as it was.
+ * existing name, a symlink included, fails with `EEXIST` and is left as it was. If writing fails
+ * after creation, the new file is best-effort removed before the original error propagates.
  */
 export function createPrivateRecord(path: string, data: string | Buffer): void {
   writeBytes(path, data, true);
@@ -189,10 +190,19 @@ function writeBytes(path: string, data: string | Buffer, exclusive: boolean): vo
   // No O_TRUNC: a name openPrivate refuses keeps its bytes, so truncation waits until it passed.
   const fd = openPrivate(path, constants.O_WRONLY | constants.O_CREAT | (exclusive ? constants.O_EXCL : 0));
   try {
-    ftruncateSync(fd);
-    writeFileSync(fd, data);
-  } finally {
-    closeSync(fd);
+    try {
+      ftruncateSync(fd);
+      writeFileSync(fd, data);
+    } finally {
+      closeSync(fd);
+    }
+  } catch (e) {
+    // Only an exclusive open proves this call created the name. An EEXIST refusal above must
+    // never remove another writer's file, and an in-place write must not delete its destination.
+    if (exclusive) {
+      try { unlinkSync(path); } catch { /* preserve the original write failure */ }
+    }
+    throw e;
   }
 }
 
