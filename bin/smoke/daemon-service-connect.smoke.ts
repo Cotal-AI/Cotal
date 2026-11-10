@@ -207,6 +207,7 @@ let accountHttp = 200;
 let accountHang = false;
 let accountHangs = 0;
 let catalog: unknown;
+const accountTargets = new Map<string, string>();
 let catalogSpace: string | undefined;
 let catalogTarget: string | undefined;
 const jwtsIssued: string[] = [];
@@ -242,6 +243,14 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   }
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
   if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(catalog));
+  const accountTarget = [...accountTargets].find(([space]) => req.url?.startsWith(`/account-space/${space}/`));
+  if (accountOnly && accountTarget) {
+    const [space, target] = accountTarget;
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const answer = await fetch(`${target}${req.url!.slice(`/account-space/${space}`.length)}`, { method: req.method, headers: { "content-type": "application/json" }, ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) });
+    res.writeHead(answer.status); res.end(Buffer.from(await answer.arrayBuffer())); return;
+  }
   if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
     catalogAuthorityRequests++;
     if (catalogAuthorityDown) { res.writeHead(503); res.end("{}"); return; }
@@ -1679,6 +1688,10 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       try {
         if (accountOnly) {
           saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+          const pendingPublished = await (await fetch(`${svc[2]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as Record<string, any>;
+          accountTargets.set(DENY, svc[2]!.publicUrl!.replace(/\/$/, ""));
+          removeMesh(DENY);
+          (catalog as { spaces: unknown[] }).spaces.unshift({ id: DENY, slug: DENY, name: "Pending space", kind: "team", role: "member", registration: { ...pendingPublished, space: DENY, tlsRequired: false, userAuth: { ...pendingPublished.userAuth, endpoints: { url: `${idpOrigin}/account-space/${DENY}` } } } });
           accountDesired = true;
           const observed = async () => resultOf(await ask(paths.socket, { op: "status" }, 25_000));
           const waitAccount = async (predicate: (s: Record<string, any>) => boolean, label: string) => {
@@ -1690,6 +1703,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           await approve(host, ON, fixture.owner);
           await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A1 desired 200 connects real broker service");
           await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === "approval-pending"));
           accountHttp = 503; await sleep(5500);
           check("A2c 503 never disconnects a connected space", (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
           accountHttp = 304; await sleep(5500);
