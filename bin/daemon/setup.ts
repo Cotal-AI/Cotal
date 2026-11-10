@@ -20,7 +20,7 @@ import { connectCheckViaDaemon, loginViaDaemon, managerViaDaemon, queryDaemon, r
 import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
 import type { HostedManager, LoginPrompt, RegisterResult, ServiceConnectionState } from "./protocol.js";
-import { applyInstall, planUninstall, startInstalled, restartInstalled } from "./install.js";
+import { applyInstall, installedDaemonIdentity, planUninstall, startInstalled, restartInstalled } from "./install.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
 
 /** How each step ended, in the order they ran. A reader sees what this did and what it skipped. */
@@ -126,15 +126,33 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
     detail = `${unit} is already installed; its owned service received a start request`;
   } else if (outcome === "already-installed" && opts.version) {
     const reply = await queryDaemon(opts);
-    if (reply.ok && (reply.result.version !== opts.version || reply.result.protocol !== DAEMON_PROTOCOL_VERSION)) {
-      const hosted = (reply.result.managers ?? []).some((manager) => manager.state !== "stopped");
-      if (hosted) await managerViaDaemon(opts, { op: "managers-prepare-restart" });
-      try { restartInstalled(opts.paths); }
-      catch (error) {
-        if (hosted) await managerViaDaemon(opts, { op: "managers-abort-restart" });
-        throw error;
+    if (reply.ok) {
+      const installation = installedDaemonIdentity(opts.paths);
+      if (!installation.same) {
+        const remedy = `run setup from ${installation.installed}, or run cotal daemon uninstall then setup from ${installation.current}`;
+        if (reply.result.protocol !== DAEMON_PROTOCOL_VERSION) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; its protocol is incompatible and it was not restarted`, { remedy });
+        if (!opts.noManager) {
+          try { await managerViaDaemon(opts, { op: "manager-status", space: opts.space }); }
+          catch { throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; it does not answer the hosting operations and was not restarted`, { remedy }); }
+        }
+        detail = `${unit} at ${installation.installed} runs compatible Cotal ${reply.result.version}; it was left running`;
+        steps.push({ step: "install", outcome, detail });
+        opts.report(`service: ${detail}`);
+        return unit;
       }
-      detail = `${unit} restarted through its recorded service to load Cotal ${opts.version}`;
+      if (reply.result.version !== opts.version || reply.result.protocol !== DAEMON_PROTOCOL_VERSION) {
+        const hosted = (reply.result.managers ?? []).some((manager) => manager.state !== "stopped");
+        if (hosted) await managerViaDaemon(opts, { op: "managers-prepare-restart" });
+        try { restartInstalled(opts.paths); }
+        catch (error) {
+          if (hosted) {
+            try { await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
+            catch { /* The native restart failure remains the primary outcome. */ }
+          }
+          throw error;
+        }
+        detail = `${unit} restarted through its recorded service to load Cotal ${opts.version}`;
+      }
     }
   }
   steps.push({ step: "install", outcome, detail });

@@ -6,28 +6,33 @@ import { CommandFailure, homeCotalDir, resolveControlTarget } from "@cotal-ai/wo
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { restartInstalled } from "./install.js";
+import { installedDaemonIdentity, restartInstalled } from "./install.js";
 
 const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
   let hostedSpaces: string[] = [];
+  let daemonObserved = false;
   await update(args, { ...updateRuntime, async reportRunningManager(flags) {
     let managers;
     try {
       const reply = await queryDaemon({ paths: daemonPaths() });
       if (!reply.ok) throw new Error(`machine daemon custody is unreadable: ${reply.error.message}`);
+      daemonObserved = true;
       managers = reply.result.managers ?? [];
     } catch (error) {
-      if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") return updateRuntime.reportRunningManager(flags);
+      if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) return updateRuntime.reportRunningManager(flags);
       throw error;
     }
     // Updating this installation restarts the machine daemon, including spaces not selected by flags.
-    const active = managers.filter((manager) => manager.state !== "stopped");
+    for (const manager of managers) {
+      if (manager.pid === undefined) console.log(`hosted Manager ${manager.space}: ${manager.state}; no live child, skipped`);
+    }
+    const active = managers.filter((manager) => manager.pid !== undefined);
     hostedSpaces = active.map((manager) => manager.space);
     if (!active.length) return updateRuntime.reportRunningManager(flags);
     for (const manager of active) {
-      if (!manager.instanceId || manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager for ${manager.space} is ${manager.state}; its custody must answer before update`, { remedy: `read cotal daemon status --space ${manager.space}` });
+      if (!manager.instanceId || manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager for ${manager.space} is ${manager.state}; its custody must answer before update`, { remedy: `run cotal daemon service-disconnect --space ${manager.space}, correct its sign-in or connection, then run cotal update again` });
       const reply = await withIdpSessionDir(homeCotalDir(), async () => {
         const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
         return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
@@ -47,15 +52,24 @@ const composed: Command = { ...command, async run(args) {
     }
     return "none";
   } });
-  if (args.values.check === true || process.exitCode || !hostedSpaces.length) return;
+  if (args.values.check === true || process.exitCode || !daemonObserved) return;
   const paths = daemonPaths();
   const current = await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");
+  const installation = installedDaemonIdentity(paths);
+  if (!installation.same) {
+    console.log(`machine daemon: ${installation.installed} runs Cotal ${current.result.version}; another installation was left running`);
+    return;
+  }
   if (current.result.version !== updateRuntime.version()) {
-    await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
+    const hosted = (current.result.managers ?? []).some((manager) => manager.pid !== undefined);
+    if (hosted) await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
     try { restartInstalled(paths); }
     catch (error) {
-      await managerViaDaemon({ paths }, { op: "managers-abort-restart" });
+      if (hosted) {
+        try { await managerViaDaemon({ paths }, { op: "managers-abort-restart" }); }
+        catch { /* The native restart failure remains the primary outcome. */ }
+      }
       throw error;
     }
   }
