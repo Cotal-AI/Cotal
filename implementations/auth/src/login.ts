@@ -204,8 +204,7 @@ async function sleepUnlessCancelled(ms: number, signal: AbortSignal | undefined)
 /** `fetch` with a hard per-request timeout, so a hung IdP connection can never stall the client
  *  (Node's global fetch has no default timeout). A timeout or transport failure surfaces as a
  *  legible sentence rather than a raw DOMException/TypeError. */
-async function idpFetch(url: string, init?: RequestInit, cancel?: AbortSignal): Promise<Response> {
-  const ms = idpTimeoutMs();
+async function idpFetch(url: string, init?: RequestInit, cancel?: AbortSignal, ms = idpTimeoutMs()): Promise<Response> {
   throwIfCancelled(cancel);
   try {
     const timeout = AbortSignal.timeout(ms);
@@ -398,7 +397,7 @@ function jwtCacheUntil(jwt: string, now: number): number {
  *  means the session was revoked or expired at the IdP: the error says exactly how to recover.
  *  The JWT is held in memory within the bounds above and never written anywhere; a failure is
  *  never held, so a rate-limited or unreachable IdP is retried on the next call. Concurrent
- *  callers without a cancel signal share one request; a cancellable call makes its own request,
+ *  callers without a cancel signal share one proof fetch; a cancellable call makes its own fetch,
  *  so one caller's abort rejects nobody else. */
 async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?: AbortSignal): Promise<IdpJwtResult> {
   const base = normalizeIdpUrl(idpUrl);
@@ -429,16 +428,37 @@ async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?
   return inflight;
 }
 
+/** Retry only an explicitly rate-limited proof read, never the operation that consumes its JWT.
+ * Both attempts, their bodies and the server's wait share the original IdP timeout. */
 async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: AbortSignal): Promise<IdpJwtResult> {
-  const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } }, cancel);
-  if (res.status === 401)
-    throw new IdpSessionRejectedError(
-      `idp session: ${base} rejected the cached session (expired or revoked) - run \`cotal login --idp ${base}\` to sign in again`,
-    );
-  if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
-  const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
-  if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
-  return { jwt: body.token, response: res };
+  const deadline = Date.now() + idpTimeoutMs();
+  for (let attempt = 0; ; attempt++) {
+    const remaining = deadline - Date.now();
+    throwIfCancelled(cancel);
+    if (remaining <= 0) throw new IdpUnreachableError(`idp request to ${base}/token timed out before the retry`);
+    const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } }, cancel, remaining);
+    if (res.status === 429 && attempt === 0) {
+      const delays = ["retry-after", "x-retry-after"].map((name) => {
+        const value = res.headers.get(name)?.trim();
+        return value && /^\d+$/.test(value) ? Number(value) * 1000
+          : value && name === "retry-after" ? Date.parse(value) - Date.now() : NaN;
+      }).filter(Number.isFinite);
+      const wait = Math.max(1000, ...delays);
+      if (delays.length && wait < deadline - Date.now()) {
+        await res.body?.cancel();
+        await sleepUnlessCancelled(wait, cancel);
+        continue;
+      }
+    }
+    if (res.status === 401)
+      throw new IdpSessionRejectedError(
+        `idp session: ${base} rejected the cached session (expired or revoked) - run \`cotal login --idp ${base}\` to sign in again`,
+      );
+    if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
+    const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
+    if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
+    return { jwt: body.token, response: res };
+  }
 }
 
 export async function fetchIdpJwt(idpUrl: string, sessionToken: string, signal?: AbortSignal): Promise<string> {
