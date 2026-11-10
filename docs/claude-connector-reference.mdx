@@ -1041,6 +1041,8 @@ profile. Setup, skills installation and refresh refuse a registration pointing i
 home before changing either registration. The error names the existing home. Run with that
 `COTAL_HOME`, or use a separate `CLAUDE_CONFIG_DIR` and plugin cache for the second home.
 Home paths that resolve to the same directory can share the profile.
+Setup also resolves lock directories before acquiring them, so a plugin cache that aliases
+the Claude configuration directory does not make setup wait on its own lock.
 The install mechanics and the invariants behind them are in
 [setup internals](setup-internals.md).
 

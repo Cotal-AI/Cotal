@@ -1,7 +1,7 @@
 /** Two Cotal homes must not replace one shared Claude profile's installed registrations. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 const tree = fileURLToPath(new URL("../../..", import.meta.url));
 process.umask(0o077);
 const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-registration-home-")));
+const boundary = spawnSync("git", ["init", "-q", root], { encoding: "utf8" });
+assert.equal(boundary.status, 0, boundary.stderr);
 const cli = join(tree, "bin", "dist", "cotal.js");
 const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   !key.startsWith("COTAL_") && !key.startsWith("CLAUDE_") && key !== "CLAUDECODE" && key !== "CLAUDE_PID"));
@@ -29,13 +31,14 @@ function env(profile: string, home: string): NodeJS.ProcessEnv {
     cpSync(join(template, "config", "cotal"), join(xdg, "cotal"), { recursive: true, verbatimSymlinks: true });
   return {
     ...clean, PATH: `${standins}:${process.env.PATH ?? ""}`, HOME: user, USERPROFILE: user, USER_HOME: user,
-    XDG_CONFIG_HOME: xdg, XDG_RUNTIME_DIR: join(user, "runtime"), COTAL_HOME: home,
+    XDG_CONFIG_HOME: xdg, XDG_RUNTIME_DIR: join(user, "runtime"),
+    XDG_DATA_HOME: join(user, "data"), XDG_CACHE_HOME: join(user, "cache"), COTAL_HOME: home,
     CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_PLUGIN_CACHE_DIR: join(config, "plugins"),
     NODE_COMPILE_CACHE: join(root, "compile-cache"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_ASSIST: "1",
   };
 }
-function run(command: string, args: string[], environment: NodeJS.ProcessEnv, cwd = root) {
-  const result = spawnSync(command, args, { env: environment, cwd, encoding: "utf8", timeout: 300_000, maxBuffer: 64 * 1024 * 1024 });
+function run(command: string, args: string[], environment: NodeJS.ProcessEnv, cwd = root, timeout = 300_000) {
+  const result = spawnSync(command, args, { env: environment, cwd, encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024 });
   assert.ifError(result.error);
   return result;
 }
@@ -47,10 +50,10 @@ const homeA = join(root, "home-a");
 const homeB = join(root, "home-b");
 const envA = env("shared", homeA);
 const envB = env("shared", homeB);
-function setup(environment: NodeJS.ProcessEnv, project: string, space: string) {
+function setup(environment: NodeJS.ProcessEnv, project: string, space: string, timeout = 300_000) {
   const cwd = join(root, project);
   mkdirSync(cwd, { recursive: true });
-  const result = run(process.execPath, [cli, "setup", "--destination", "local", "--harness", "claude", "--project", cwd, "--space", space, "--configure-only", "--json"], environment, cwd);
+  const result = run(process.execPath, [cli, "setup", "--destination", "local", "--harness", "claude", "--project", cwd, "--space", space, "--configure-only", "--json"], environment, cwd, timeout);
   writeFileSync(join(root, `${project}-${space}.json`), result.stdout);
   return result;
 }
@@ -120,5 +123,21 @@ assert.notEqual(noMarketplace.status, 0);
 assert.match(noMarketplace.stdout + noMarketplace.stderr, /Claude user MCP entry cotal belongs to Cotal home/);
 assert.equal(readFileSync(join(envA.CLAUDE_CONFIG_DIR!, ".claude.json"), "utf8"), mcpOnly);
 console.log("PASS: an MCP-only registration cannot be taken over either");
+
+// The two shared lock names can address one physical file through different parent paths.
+const aliasHome = join(root, "home-cache-alias");
+const aliasEnv = env("cache-alias", aliasHome);
+const cacheAlias = join(root, "cache-alias");
+symlinkSync(aliasEnv.CLAUDE_CONFIG_DIR!, cacheAlias, process.platform === "win32" ? "junction" : "dir");
+aliasEnv.CLAUDE_CODE_PLUGIN_CACHE_DIR = cacheAlias;
+const aliased = setup(aliasEnv, "project-cache-alias", "triage-cache-alias", 60_000);
+assert.equal(aliased.status, 0, aliased.stdout + aliased.stderr);
+resolved(aliasEnv, aliasHome);
+console.log("PASS: setup completes when plugin cache aliases the Claude config directory");
+const sameParent = { ...aliasEnv, CLAUDE_CODE_PLUGIN_CACHE_DIR: aliasEnv.CLAUDE_CONFIG_DIR };
+const identical = setup(sameParent, "project-cache-alias", "triage-cache-alias", 60_000);
+assert.equal(identical.status, 0, identical.stdout + identical.stderr);
+resolved(sameParent, aliasHome);
+console.log("PASS: setup also completes when both lock parents use the same path");
 assert.equal(readFileSync(serviceLog, "utf8"), "", "no native service command ran");
 console.log(`registration-home-live.smoke: evidence retained at ${root}`);

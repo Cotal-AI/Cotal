@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   acquireLock,
@@ -259,7 +259,11 @@ function withPluginLock<T>(run: () => T): T {
       join(marketplaceDir(), ".setup.lock"),
       join(process.env.CLAUDE_CONFIG_DIR?.trim() || homedir(), ".cotal-setup.lock"),
       join(pluginCacheDir(), ".cotal-setup.lock"),
-    ].map((path) => resolve(path));
+    ].map((path) => {
+      const parent = dirname(path);
+      mkdirSync(parent, { recursive: true, mode: 0o700 });
+      return join(realpathSync(parent), basename(path));
+    });
     for (const path of [...new Set(paths)].sort())
       locks.push(acquireLock(path, { label: "Claude plugin setup" }));
     return run();
