@@ -607,7 +607,8 @@ and stderr with mode `0600`, rotates at 1 MiB, and retains one previous file as 
 Status includes `lastExit` after a crash and `lastStop` for graceful, terminated or killed shutdowns.
 A Manager that exits before readiness reports its exit code or signal and its last stderr line.
 A stopped row keeps its instance and last observation, clears the PID, and names setup as its next
-step. An expired or revoked daemon session names `cotal daemon login --idp <url>` in both the refusal
+step. Status emits a PID only for a retained child, never from a saved refusal record.
+An expired or revoked daemon session names `cotal daemon login --idp <url>` in both the refusal
 and its next step. Status also includes `logError` if logging fails. Every five seconds the daemon
 probes the recorded Manager instance.
 A failed probe advances `observedAt`, withdraws `answering`, and makes `service-status` refuse with

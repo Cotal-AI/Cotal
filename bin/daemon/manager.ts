@@ -92,11 +92,11 @@ export function createHostedManagers(home = homeCotalDir()) {
   const status = (space: string): HostedManager => {
     const current = live.get(space);
     const invalid = recordError(space);
-    if (invalid) return { ...(current?.view ?? { space, restarts: 0 }), state: "refused", reason: invalid, lastRefusal: invalid, next: `run cotal daemon setup --space ${space} to repair its hosting records` };
-    if (current) return { ...current.view };
+    if (invalid) return { ...(current?.view ?? { space, restarts: 0 }), pid: current?.child?.pid, state: "refused", reason: invalid, lastRefusal: invalid, next: `run cotal daemon setup --space ${space} to repair its hosting records` };
+    if (current) return { ...current.view, pid: current.child?.pid };
     if (existsSync(refusalFile(space))) {
       const saved = JSON.parse(readFileSync(refusalFile(space), "utf8")) as HostedManager;
-      if (saved.space === space && saved.state === "refused") return saved;
+      if (saved.space === space && saved.state === "refused") return { ...saved, pid: undefined };
       throw new Error("invalid hosted Manager refusal record");
     }
     return { space, state: "stopped", restarts: 0 };
