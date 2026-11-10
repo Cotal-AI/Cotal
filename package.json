@@ -309,6 +309,7 @@
     "smoke:chat-open:live": "tsx packages/workspace/smoke/chat-open-live.smoke.ts",
     "smoke:chat-transport:live": "tsx implementations/cli/smoke/chat-transport-live.smoke.ts",
     "smoke:chat-name": "tsx packages/workspace/smoke/chat-name.smoke.ts",
+    "smoke:chat-remembered": "tsx packages/workspace/smoke/chat-remembered.smoke.ts",
     "smoke:chat-command": "tsx implementations/cli/smoke/chat-command.smoke.ts",
     "smoke:chat-leave": "tsx implementations/cli/smoke/chat-leave.smoke.ts",
     "smoke:chat-stand-in": "tsx implementations/cli/smoke/chat-stand-in.smoke.ts",

@@ -5,7 +5,8 @@
  * pins. Each refusal is checked for its code and exit, and for writing nothing; each success for the
  * record it writes and for leaving the selection as it was. An open space must be one the broker
  * serves, so the open broker serves the names that are added and refuses one it does not. A forget
- * removes the space's per-space preferences with it, refuses on a preferences file it cannot read,
+ * removes the space's per-space preferences and the chat sessions the terminal app remembered for it,
+ * counting them, refuses on a preferences file it cannot read,
  * and is partial when it cannot remove them, naming the chmod first when other accounts can write
  * their folder. A forget of a running space names `cotal down`: on a legacy root it says that down
  * drops the record, and for a controller stack, whose down keeps it prepared, it names forget again.
@@ -500,12 +501,22 @@ setCurrent("keep");
   for (const [name, key, value] of [["withprefs", "persona", "rev"], ["withprefs", "harness", "opencode"], ["shownprefs", "persona", "rev"], ["badprefs", "persona", "rev"], ["lockedprefs", "persona", "rev"], ["exposedprefs", "persona", "rev"]])
     setUp.push((await json(["config", "set", key!, value!, "--space", name!])).status ?? -1);
   check("five spaces are added and their preferences saved", setUp.every((status) => status === 0), setUp);
+  // The chat sessions the terminal app remembered for a space go with it too.
+  const { mintLifecycleUid } = await import("@cotal-ai/core");
+  const { rememberChatSession, rememberedChatSessions } = await import("@cotal-ai/workspace/chat");
+  const remember = (space: string, n: number) => rememberChatSession({ space, server: LIVE }, { mode: "open", space, principal: `local.lead${n}`, lifecycleUid: mintLifecycleUid(), label: "lead", allowSubscribe: [], allowPublish: [] });
+  remember("withprefs", 1);
+  remember("withprefs", 2);
+  remember("shownprefs", 3);
   const withPrefs = await json(["space", "forget", "withprefs"]);
   check("forget removes the space's preferences, lists each key and value, and keeps another space's",
     withPrefs.status === 0 && JSON.stringify(withPrefs.env?.result.removedPreferences) === JSON.stringify({ persona: "rev", harness: "opencode" }) && saved().withprefs === undefined && saved().shownprefs?.persona === "rev", shown(withPrefs));
+  check("forget removes the chat sessions the terminal app remembered for the space, counts them, and keeps another space's",
+    withPrefs.env?.result.removedChatSessions === 2 && rememberedChatSessions({ space: "withprefs", server: LIVE }).sessions.length === 0 && rememberedChatSessions({ space: "shownprefs", server: LIVE }).sessions.length === 1, shown(withPrefs));
   const shownPrefs = await run(["space", "forget", "shownprefs"]);
   check("the receipt names each removed value and the config set that restores one",
     shownPrefs.status === 0 && shownPrefs.stdout.includes("removed its per-space preferences: persona=rev - `cotal config set <key> <value> --space shownprefs` sets one again"), shown(shownPrefs));
+  check("the receipt says how many remembered chat sessions it removed", shownPrefs.stdout.includes("removed the 1 chat session(s) the terminal app remembered for it"), shown(shownPrefs));
   const prefsText = readFileSync(prefsFile, "utf8");
   writeFileSync(prefsFile, "{");
   const badPrefs = await json(["space", "forget", "badprefs"]);
