@@ -263,28 +263,23 @@ for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-
   check(`message: ${kind} also names the space`, preflightMessage(kind, T, true).includes("alpha"));
 check("message: open-wants-auth does NOT claim a space name", !preflightMessage("open-wants-auth", T, true).includes("alpha"));
 
-// A folder whose `.cotal/` holds records but names no space, as after `space forget` of a prepared
-// space, resolves to the default space with nothing recording it there. An unreachable broker then
-// names the folder and the step that prepares a space in it, not a default mesh recorded there.
+// Forgotten roots refuse before a target or default broker is invented.
 {
   const forgotten = mkdtempSync(join(home, "forgotten-"));
   mkdirSync(join(forgotten, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(forgotten, ".cotal", "agents", "default.md"), "---\nname: default\n---\n");
   const empty = mkdtempSync(join(home, "empty-"));
   mkdirSync(join(empty, ".cotal"));
-  const t = resolveMeshTarget(forgotten);
-  check("a folder whose records name no space resolves local-space, flagged as naming no space", t.source === "local-space" && t.namesNoSpace === true, t);
-  check("control: an empty .cotal/ is not flagged", resolveMeshTarget(empty).namesNoSpace === undefined);
-  const m = preflightMessage("unreachable", t, false);
-  check("message: unreachable for that folder names it and space create, not the default mesh or address",
-    m === `✗ no space is registered or prepared here for ${t.root} - prepare one there with \`cotal space create <name> --root ${t.root}\`, or select one with \`cotal use <name>\`` && !m.includes(t.server), m);
-  check("control: the same target without the flag keeps the recorded-mesh sentence", preflightMessage("unreachable", { ...t, namesNoSpace: undefined }, false).includes(`mesh "${t.space}" is recorded at ${t.root}`));
-  // The refusal's target names the folder only, so no report is headed by the assumed space.
-  const refusal = await preflightOrThrow({ ...t, server: DEAD }).then(() => undefined, (e: unknown) => e);
-  check("preflightOrThrow on that folder refuses with a target naming only the folder, not the assumed space",
-    refusal instanceof ConnectRefusal && refusal.code === "TARGET_UNAVAILABLE" && JSON.stringify(refusal.target) === JSON.stringify({ root: t.root }) && !Object.hasOwn(refusal.failure().target as object, "space"), refusal instanceof ConnectRefusal ? refusal.target : String(refusal));
-  const recorded = await preflightOrThrow({ ...t, server: DEAD, namesNoSpace: undefined }).then(() => undefined, (e: unknown) => e);
-  check("control: without the flag the refusal's target keeps the space", recorded instanceof ConnectRefusal && (recorded.target as { space?: string } | undefined)?.space === t.space, recorded instanceof ConnectRefusal ? recorded.target : String(recorded));
+  assert.throws(() => resolveMeshTarget(forgotten), (error: unknown) => error instanceof MeshTargetError && error.code === "unregistered-root" && error.details.root === forgotten && error.details.space === undefined);
+  check("control: an empty .cotal/ retains local startup resolution", resolveMeshTarget(empty).source === "local-space");
+  const cwd = process.cwd();
+  let refusal: unknown;
+  try {
+    process.chdir(forgotten);
+    refusal = await resolveTargetOrThrow({ readOnly: true }).then(() => undefined, (e: unknown) => e);
+  } finally { process.chdir(cwd); }
+  check("resolution refuses with only the forgotten root and preparation remedy",
+    refusal instanceof ConnectRefusal && refusal.code === "TARGET_NOT_FOUND" && JSON.stringify(refusal.target) === JSON.stringify({ root: forgotten }) && refusal.message.includes("space create <name>") && !refusal.message.includes("4222"), refusal instanceof ConnectRefusal ? refusal.target : String(refusal));
 }
 
 // ── preflightTarget: probe a dead broker, classify, but DO NOT mutate the registry ────────────────

@@ -155,6 +155,7 @@ import { cotalLinkHere, homeHoldsStack, linkedCotalRemedy } from "../lib/paths.j
 import { storeWriteProblem } from "../lib/store-dir.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 import { askManager } from "@cotal-ai/workspace/control";
+import { localManifestRemedy } from "../lib/local-manifest.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` is a broad, recovery-oriented report: it exits 0, or 4 when it could not read part of what
@@ -190,18 +191,19 @@ export const statusFlags = [
  *  Resolve once, share the outcome, including the failure. */
 type Selected = { ok: true; target: MeshTarget } | { ok: false; error: unknown };
 
-/** A project root with no registration or prepared space here, such as one whose space was
- *  forgotten. The resolver gives it the default broker address, which any broker may hold, so
- *  status selects no space for it and dials nothing. */
+/** A root with no registration or prepared space. Even an empty project whose startup resolution
+ *  retains the default broker address selects no space in status and dials nothing. */
 class UnregisteredRoot {
-  constructor(readonly root: string, readonly namesNoSpace: boolean) {}
+  constructor(readonly root: string, readonly namesNoSpace = false) {}
 }
 
 function resolveSelected(cwd: string, values: FlagValues<typeof statusFlags>, offline: readonly string[]): Selected {
   try {
     const target = resolveMeshTarget(cwd, { server: values.server, space: values.space, offline });
-    return target.source === "local-space" ? { ok: false, error: new UnregisteredRoot(target.root, target.namesNoSpace === true) } : { ok: true, target };
+    return target.source === "local-space" ? { ok: false, error: new UnregisteredRoot(target.root) } : { ok: true, target };
   } catch (e) {
+    if (isWorkspaceTargetError(e) && e.code === "unregistered-root" && e.details.root)
+      return { ok: false, error: new UnregisteredRoot(e.details.root, true) };
     return { ok: false, error: e };
   }
 }
@@ -1276,9 +1278,9 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       const message = `no space is registered or prepared here for ${e.root}`;
       // A bare `up` in a folder whose records name no space starts a space named after the folder,
       // which then holds it, so the step that brings a forgotten space back is to prepare it again.
-      hints.push(e.namesNoSpace
+      hints.push(localManifestRemedy(process.cwd(), cmd) ?? (e.namesNoSpace
         ? `prepare a space with \`${cmd} space create <name> --root ${shellWord(e.root)}\`, or select one with \`${cmd} use <name>\``
-        : `run \`${cmd} up\` in ${e.root} to start one, or select a space with \`${cmd} use <name>\``);
+        : `run \`${cmd} up\` in ${e.root} to start one, or select a space with \`${cmd} use <name>\``));
       return { resolved: false, code: "unregistered-root", message };
     }
     if (!isWorkspaceTargetError(e)) throw e;
@@ -1287,6 +1289,13 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // of the codes and point the others at a command that does not fix them. The section states the
     // selection, and Next gives its repair once.
     const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
+    if (e.code === "no-meshes") {
+      const declaration = localManifestRemedy(process.cwd(), cmd);
+      if (declaration) {
+        hints.push(declaration);
+        return { resolved: false, code: e.code, message };
+      }
+    }
     const d = e.details;
     // A copy or a moved folder is reported under the space its records name, as the commands run here
     // refuse under it, and says what the folder holds; Next gives the step they name.

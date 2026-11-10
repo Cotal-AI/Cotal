@@ -37,9 +37,9 @@ not performed. Both previews say where the persona came from: `--file`, the comm
 preference or the default. Only a managed preview reports an unknown local harness as a
 `HARNESS_UNKNOWN` warning, or the `PREFERENCE_INVALID` warning `config` gives when only
 `COTAL_DEFAULT_AGENT` chose it. Its `completeness` remains `not-checked`, because the selected
-manager checks its own connectors at launch. In a folder whose `.cotal/` names no space, as after
-`space forget`, the preview keeps `Mesh: main`, says under it that the held default was assumed,
-and its JSON `target` names the folder as `root` and the space as `assumed`.
+manager checks its own connectors at launch. In a folder whose `.cotal/` records name no space, as
+after `space forget`, the preview refuses with `TARGET_NOT_FOUND` (exit 2). It names no default
+space or broker and offers preparation or an explicit selection.
 
 `spawn --foreground --enrollment-file <private-file> --space <name>` uses the existing one-seat
 foreground enrollment path. The file is opened with protected ownership/mode and bounded input

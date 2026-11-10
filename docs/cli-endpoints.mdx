@@ -128,9 +128,8 @@ trust gives it: `space-signer` when the root holds the space's signer, as after 
 `space create` again, and `no-credential` before its first `up`. `server` and `mode` are `null`, the
 `target` names the root, and the report says to start it with `cotal up` there. With `--server`, or
 when the prepared folder no longer exists, it still refuses with `TARGET_UNAVAILABLE`.
-In a folder whose `.cotal/` names no space, as after `space forget`, the held default `main` is
-assumed. The report keeps `Mesh: main` and says under it that the default was assumed, and the JSON
-`target` is `{"root": <folder>, "assumed": "main"}`.
+In a folder whose `.cotal/` records name no space, as after `space forget`, `whoami` refuses with
+`TARGET_NOT_FOUND` (exit 2). Its target names only the folder, with no `Mesh:` heading or assumed space.
 `--creds <file>` reports what a credential file may do instead, with `kind: "credential"`: the space
 its permissions name, the profile it was minted with, its principal, the agent lifecycle its
 delivery and history grants are keyed to (none for the `observer` and `admin` profiles), when it was

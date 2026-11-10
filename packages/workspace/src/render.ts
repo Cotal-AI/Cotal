@@ -63,6 +63,8 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
   switch (err.code) {
     case "no-meshes":
       return parts("no mesh running", "run `cotal up` in a project, or pass `--server`");
+    case "unregistered-root":
+      return parts(`no space is registered or prepared here for ${d.root}`, `prepare a space with \`cotal space create <name> --root ${shellPath(d.root!)}\`, or select one with \`cotal use <name>\``);
     case "unknown-space":
       return d.selected
         ? parts(`the selected space "${boundedValue(String(d.requested), SHOWN_VALUE_MAX)}" is not registered here`, "select one with `cotal use <name>` (`cotal space` lists them), or name one with `--space`")
@@ -146,10 +148,6 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
         return t.recordedServer === undefined
           ? parts(`nothing answered at ${server}, the broker address --server named`, "check that address and that a broker runs there")
           : parts(`nothing answered at ${server}, the broker address --server named`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
-      // Nothing records the default space that was assumed for a folder whose records name no
-      // space, so the folder is what to name, with the step that prepares a space in it again.
-      if (t.namesNoSpace)
-        return parts(`no space is registered or prepared here for ${t.root}`, `prepare one there with \`cotal space create <name> --root ${shellPath(t.root)}\`, or select one with \`cotal use <name>\``);
       // An operator-registered mesh usually runs on ANOTHER machine, so `cotal up` is the wrong
       // remedy here — this machine can only wait for it or stop pointing at it.
       if (t.origin === "manual" || t.origin === "catalog")

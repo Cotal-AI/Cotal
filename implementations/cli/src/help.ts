@@ -8,6 +8,7 @@ import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPrep
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
+import { localManifestHint } from "./lib/local-manifest.js";
 import { c, hang } from "./ui.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
@@ -221,6 +222,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   } catch {
     unreadable = true;
   }
+  const manifest = !removed && !space && !unreadable ? localManifestHint(process.cwd()) : undefined;
   const sections: Section[] = [];
   if (removed) sections.push({ blocks: [{ kind: "lines", lines: [{ text: "This folder no longer exists, so commands that use a space refuse here. cd to an existing folder first.", tone: "waiting" }] }] });
   else if (unreadable) sections.push({ blocks: [{ kind: "lines", lines: [{ text: "The local space or defaults could not be read. Status reports the affected records.", tone: "waiting" }] }] });
@@ -229,10 +231,11 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     ...(outside ? [{ text: `this folder's space while it runs; the selected space "${outside}" applies outside it and while it is stopped`, tone: "hint" } as const] : []),
     ...(folderHeld ? [{ text: folderHeld, tone: "hint" } as const] : []),
     ...(elsewhere ? [{ text: elsewhere, tone: "hint" } as const] : [])] }] });
-  else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: anySpace ? "Select one with `cotal use <name>`; `cotal space` lists them." : "Set up a local space, or connect to a self-hosted one.", tone: "hint" },
+  else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: manifest?.message ?? (anySpace ? "Select one with `cotal use <name>`; `cotal space` lists them." : "Set up a local space, or connect to a self-hosted one."), tone: "hint" },
     ...(elsewhere ? [{ text: elsewhere, tone: "hint" } as const] : [])] }] });
   sections.push({ title: "Usage", blocks: [{ kind: "lines", lines: [{ text: "cotal <command> [options]", tone: "command" }] }] });
-  sections.push(actions("Start here", space ? [
+  if (manifest) sections.push({ title: "Start here", blocks: [{ kind: "commands", items: manifest.commands }] });
+  else sections.push(actions("Start here", space ? [
     // A folder's `up` starts THAT folder's space, not the one commands here target, so it is named
     // as the folder's. The selection keeps its own first action: its `up` while it is prepared or
     // stopped, else spawn.

@@ -378,10 +378,9 @@ export class ConnectRefusal extends Error {
 /** A refusal over a workspace failure: the one-line sentence for a terminal, its parts for a
  *  structured command. */
 function workspaceRefusal(e: WorkspaceError, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode }): ConnectRefusal {
-  // A folder whose records name no space is probed under the default space, and its refusal names
-  // the folder, so its target names only the folder too.
+  // An unresolved root names only that folder, never an invented space.
   const target = e.kind === "target" ? spaceRootTarget({ root: e.error.details.root, space: targetErrorSpace(e.error.details) })
-    : e.kind === "preflight" ? spaceRootTarget(e.failure === "unreachable" && e.target.namesNoSpace ? { root: e.target.root } : e.target) : undefined;
+    : e.kind === "preflight" ? spaceRootTarget(e.target) : undefined;
   return new ConnectRefusal(renderWorkspaceError(e), undefined, { ...options, parts: workspaceErrorParts(e), ...(target ? { target } : {}) });
 }
 
@@ -400,6 +399,7 @@ export function isConnectRefusal(e: unknown): e is ConnectRefusal {
 export function targetErrorCode(code: MeshTargetErrorCode): RefusalCode {
   switch (code) {
     case "no-meshes":
+    case "unregistered-root":
     case "unknown-space":
     case "user-auth-unrecorded":
       return "TARGET_NOT_FOUND";

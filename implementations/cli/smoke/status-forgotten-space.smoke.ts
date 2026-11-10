@@ -9,7 +9,7 @@
  * Run: pnpm smoke:status-forgotten-space
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -22,6 +22,7 @@ if (!existsSync(BIN)) {
 
 interface Envelope {
   target: { space: string | null } | null;
+  error?: { code: string; message: string; remedy?: string };
   result: { selected: { resolved: boolean; code?: string; server?: string | null } } | null;
 }
 
@@ -46,6 +47,11 @@ check("rig: the space is prepared in this root", created.status === 0, shown(cre
 const prepared = run(["status", "--json"]);
 check("control: a prepared space is reported as not started, with nothing selected", read(prepared) && prepared.envelope?.result?.selected.resolved === false && prepared.envelope.result.selected.code === "not-started", shown(prepared));
 
+for (const args of [["persona"], ["team"], ["spawn", "--dry-run"], ["whoami"]]) {
+  const control = run([...args, "--json"]);
+  check(`control: ${args.join(" ")} names the prepared space`, control.status === 0 && control.envelope?.target?.space === "b1", shown(control));
+}
+
 const forgot = run(["space", "forget", "b1"]);
 check("rig: the space is forgotten and its root's files stay", forgot.status === 0 && existsSync(join(root, ".cotal")), shown(forgot));
 
@@ -63,6 +69,48 @@ check("the report names space create for this folder, not a bare up", plain.stdo
 
 const components = run(["status", "--components"]);
 check("status --components refuses the unregistered root and probes no default broker", /target\s+refused · unregistered-root/.test(components.stdout) && !components.stdout.includes("4222") && !components.stderr.includes("4222"), shown(components));
+
+for (const args of [["persona"], ["team"], ["spawn", "--dry-run"], ["spawn", "--detach", "--dry-run"], ["whoami"]]) {
+  const refused = run([...args, "--json"]);
+  check(`${args.join(" ")} refuses without an assumed space`, refused.status === 2 && refused.envelope?.error?.code === "TARGET_NOT_FOUND" && !refused.stdout.includes('"assumed"') && !refused.stdout.includes('"main"'), shown(refused));
+  const plain = run([...args, "--plain"]);
+  check(`${args.join(" ")} names no Mesh and offers preparation`, plain.status === 2 && !/^Mesh: /m.test(plain.stdout + plain.stderr) && /no space is registered or prepared here/.test(plain.stdout + plain.stderr) && /space create <name>/.test(plain.stdout + plain.stderr), shown(plain));
+}
+
+// Discovery is advice, not selection or preparation. The same valid manifest remains a file until
+// the operator explicitly checks and boots it.
+writeFileSync(join(root, "cotal.yaml"), "apiVersion: cotal/v1\nkind: Mesh\nspace: declared\nagents: {}\nchannels: {}\n");
+const checked = run(["team", "check", "cotal.yaml", "--graph"]);
+check("rig: the local manifest passes the real offline check", checked.status === 0, shown(checked));
+for (const args of [[], ["status", "--plain"], ["team", "--plain"]]) {
+  const report = run(args);
+  const text = report.stdout + report.stderr;
+  check(`${args.join(" ") || "bare cotal"} notices the declaration without selecting it`, /cotal.yaml/.test(text) && /declared/.test(text) && /cotal (?:team|t) check cotal.yaml --graph/.test(text) && /cotal (?:team|t) boot cotal.yaml/.test(text) && !/^Mesh: /m.test(text), shown(report));
+}
+const stillUnselected = run(["status", "--json"]);
+check("discovery leaves the target unresolved", stillUnselected.envelope?.target?.space === null && stillUnselected.envelope.result?.selected.resolved === false, shown(stillUnselected));
+
+for (const source of ["space: secret-not-a-manifest\n", "apiVersion: cotal/v1\nkind: Mesh\nspace: -unsafe\n", "x".repeat(1024 * 1024 + 1)]) {
+  writeFileSync(join(root, "cotal.yaml"), source);
+  const report = run([]);
+  check("an invalid or oversized declaration gives only the check step", report.status === 0 && /cotal team check cotal.yaml --graph/.test(report.stdout) && !/team boot|space create|secret-not-a-manifest|-unsafe/.test(report.stdout), shown(report));
+}
+unlinkSync(join(root, "cotal.yaml"));
+if (process.platform !== "win32") {
+  symlinkSync("missing-manifest", join(root, "cotal.yaml"));
+  const report = run([]);
+  check("a dangling manifest link is not treated as an absent file", /could not be read/.test(report.stdout) && /team check cotal.yaml/.test(report.stdout) && !/team boot/.test(report.stdout), shown(report));
+  unlinkSync(join(root, "cotal.yaml"));
+}
+mkdirSync(join(root, "cotal.yaml"));
+const directory = run([]);
+check("a directory at the manifest path does not hang or infer a space", directory.status === 0 && /team check cotal.yaml/.test(directory.stdout) && !/team boot/.test(directory.stdout), shown(directory));
+
+const preparedRoot = mkdtempSync(join(home, "declared-"));
+const declared = run(["space", "create", "declared", "--root", preparedRoot], preparedRoot);
+writeFileSync(join(preparedRoot, "cotal.yaml"), "apiVersion: cotal/v1\nkind: Mesh\nspace: declared\nagents: {}\nchannels: {}\n");
+const preparedTeam = run(["team", "--plain"], preparedRoot);
+check("a prepared team's Next names its local manifest", declared.status === 0 && /Mesh: declared/.test(preparedTeam.stdout) && /team check cotal.yaml --graph/.test(preparedTeam.stdout) && /team boot cotal.yaml/.test(preparedTeam.stdout) && !/check <file>/.test(preparedTeam.stdout), shown(preparedTeam));
 
 // A `.cotal/` with nothing in it names no records, and a bare `up` there is how a space starts.
 const fresh = mkdtempSync(join(home, "fresh-"));

@@ -63,10 +63,6 @@ export interface MeshTarget {
   recordedServer?: string;
   /** `<root>/.cotal/agents` — the persona catalog for this mesh. */
   personaRoot: string;
-  /** For `local-space`: the root's `.cotal/` holds records but names no space, as after `space
-   *  forget`, so the default space was assumed for it. Surfaces name the folder, not a mesh
-   *  recorded there. */
-  namesNoSpace?: true;
   /** Where the target came from — this also carries OWNERSHIP for pruning. `registry`/`current`/
    *  `flag-space`/`local-recorded` mean the server + mode came from a registry record, so a
    *  stale-broker failure prunes the entry. `local-space`/`flag-server`/`flag-space-override` are the
@@ -105,6 +101,7 @@ export interface ResolveFlags {
  *  job ({@link renderWorkspaceError}), not the protocol's. */
 export type MeshTargetErrorCode =
   | "no-meshes"
+  | "unregistered-root"
   | "unknown-space"
   | "ambiguous-target"
   | "default-occupied"
@@ -957,7 +954,8 @@ export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boo
  *     the selected `current` are not filtered.
  * A space `cotal space create` prepared and no `up` started, named by `--space`, selected, or
  * prepared at the local project, refuses as `not-started`. So does a local project with no
- * registration whose stack journal recorded a broker; only a project with neither gets the default.
+ * registration whose stack journal recorded a broker. Retained records that name no space refuse
+ * as `unregistered-root`; an empty project can still resolve the startup default.
  * No silent fallback — an unresolved target throws one human sentence.
  */
 export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTarget {
@@ -1090,6 +1088,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // is. Kept as `canonicalRoot` anyway, for one reason that is not style: the equivalence is a
     // consequence of the early return above, not a property of this line. Change that return and the
     // `resolve` spelling silently becomes load-bearing and wrong.
+    if (rootNamesNoSpace(root))
+      throw new MeshTargetError("unregistered-root", `no space is registered or prepared here for ${root}`, { root });
     const onDefault = meshes.find(
       (m) =>
         m.server === DEFAULT_SERVER &&
@@ -1102,8 +1102,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
         `another mesh ("${onDefault.space}") is running at ${DEFAULT_SERVER}`,
         { space: onDefault.space, server: DEFAULT_SERVER },
       );
-    const target = localTarget(root, DEFAULT_SERVER, "local-space", flags.readOnly);
-    return rootNamesNoSpace(root) ? { ...target, namesNoSpace: true } : target;
+    return localTarget(root, DEFAULT_SERVER, "local-space", flags.readOnly);
   }
 
   // The fallback names *running* meshes. A liveness miss used to delete the record and

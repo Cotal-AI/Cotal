@@ -226,10 +226,15 @@ folder does not start one, as [Running a service](cli-services.mdx#running-a-ser
 finds no space for it, so remove a service before you forget its space to drop it at once.
 `status` in a forgotten space's root then selects no space and probes no broker. When nothing left
 in that root's `.cotal/` names a space, its next step is `cotal space create <name> --root <root>`,
-because a bare `cotal up` there would start a space named after that folder. A command run
-there that finds no broker at the default address says that no space is registered or prepared for
-the folder and names the same step. That refusal has no `Mesh:` line, and its `target` names only
-the folder, because no space was resolved there.
+because a bare `cotal up` there would start a space named after that folder. Reads such as
+`persona`, `team`, `whoami` and `spawn --dry-run` refuse with `TARGET_NOT_FOUND` (exit 2) before
+probing a default broker. That refusal has no `Mesh:` line because no space was resolved there.
+
+With no space selected, bare `cotal`, `status` and `team` notice `cotal.yaml` in the working folder.
+A valid declaration names its space and offers `cotal team check cotal.yaml --graph`, preparation
+with that name, and `cotal team boot cotal.yaml`. This advice does not select, prepare or start
+anything, and discovery does not read referenced persona files. An invalid, unreadable, linked,
+non-regular or larger-than-1-MiB file gets only the check step, without an inferred space.
 
 In open or static-auth mode, an unanswered `--server` address that differs from the registration
 retained by target resolution gives `TARGET_UNAVAILABLE`, naming the address that did not answer.
