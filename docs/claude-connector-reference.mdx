@@ -1036,6 +1036,11 @@ that does not update is still an error. `cotal status` checks the resolved paylo
 file contents. A folder-backed plugin can retain older version metadata in Claude's installation
 records; that metadata does not override the files Claude loads. Running sessions keep the
 code they loaded; reload plugins or reopen Claude to load the update.
+The `cotal-mesh` marketplace and user MCP entry `cotal` belong to one Cotal home per Claude
+profile. Setup, skills installation and refresh refuse a registration pointing into another
+home before changing either registration. The error names the existing home. Run with that
+`COTAL_HOME`, or use a separate `CLAUDE_CONFIG_DIR` and plugin cache for the second home.
+Home paths that resolve to the same directory can share the profile.
 The install mechanics and the invariants behind them are in
 [setup internals](setup-internals.md).
 

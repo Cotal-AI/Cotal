@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   acquireLock,
@@ -223,13 +223,48 @@ function marketplaceDir(): string {
   return join(cotalHome(), "claude-plugin");
 }
 
+function pluginCacheDir(): string {
+  const config = process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
+  return process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR?.trim() || join(config, "plugins");
+}
+
+/** Refuse before either shared registration moves, including a profile with only its MCP entry left. */
+function assertRegistrationHome(): void {
+  const canonical = (path: string) => existsSync(path) ? realpathSync(path) : resolve(path);
+  const check = (home: string, registration: string) => {
+    if (canonical(home) !== canonical(cotalHome()))
+      throw new Error(`${registration} belongs to Cotal home ${home}, not ${cotalHome()}. Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache for this home.`);
+  };
+  const result = command("plugin", "marketplace", "list", "--json");
+  if (result.status !== 0) throw new Error(`plugin marketplace list failed:\n${result.output}`);
+  const entries: unknown = JSON.parse(result.output);
+  if (!Array.isArray(entries)) throw new Error("Claude's marketplace list has an unsupported shape");
+  const market = entries.find((entry) => entry?.name === MARKETPLACE);
+  if (market?.source === "directory") {
+    if (typeof market.path !== "string" || !market.path) throw new Error("Claude's cotal-mesh marketplace has no directory path");
+    check(dirname(market.path), "Claude marketplace cotal-mesh");
+  }
+  const server = claudeUserMcpServers().cotal as { args?: unknown } | undefined;
+  if (Array.isArray(server?.args)) for (const arg of server.args) {
+    if (typeof arg === "string" && /[\\/]claude-plugin[\\/]cotal[\\/]dist[\\/](?:seat|mcp)\.cjs$/.test(arg))
+      check(dirname(dirname(dirname(dirname(arg)))), "Claude user MCP entry cotal");
+  }
+}
+
 /** Keep materialization, native registration and verification in one cross-process transaction. */
 function withPluginLock<T>(run: () => T): T {
-  const lock = acquireLock(join(marketplaceDir(), ".setup.lock"), { label: "Claude plugin setup" });
+  const locks: ReturnType<typeof acquireLock>[] = [];
   try {
+    const paths = [
+      join(marketplaceDir(), ".setup.lock"),
+      join(process.env.CLAUDE_CONFIG_DIR?.trim() || homedir(), ".cotal-setup.lock"),
+      join(pluginCacheDir(), ".cotal-setup.lock"),
+    ].map((path) => resolve(path));
+    for (const path of [...new Set(paths)].sort())
+      locks.push(acquireLock(path, { label: "Claude plugin setup" }));
     return run();
   } finally {
-    lock.release();
+    for (const lock of locks.reverse()) lock.release();
   }
 }
 
@@ -355,9 +390,7 @@ function writeMarketplace(): void {
 /** A missing executable must not make an already installed integration disappear from an upgrade.
  * Only inspect native records to detect that obligation; never rewrite them ourselves. */
 function installedForRefresh(): PluginEntry[] {
-  const config = process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
-  const cache = process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR?.trim() || join(config, "plugins");
-  const path = join(cache, "installed_plugins.json");
+  const path = join(pluginCacheDir(), "installed_plugins.json");
   if (!existsSync(path)) return [];
   let records: unknown;
   try {
@@ -643,6 +676,7 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     context: [DOCS_URL],
     run({ cotal, signedIn }) {
       return withPluginLock(() => {
+        assertRegistrationHome();
         const version = materializeCotal(cotal);
         install("cotal", "user", version);
         const entry = registerUserServer(cotal);
@@ -667,6 +701,7 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
         const path = desktopConfigPath();
         const app = path !== undefined && readDesktopEntry(path) !== undefined;
         if (!installs.length && !skillInstalls.length && !app) return "not installed";
+        assertRegistrationHome();
         if (skillInstalls.length && !skills) throw new Error("current skills are required to refresh the installed Claude skills plugin");
         const version = installs.length || app ? materializeCotal(cotal) : undefined;
         if (skillInstalls.length) materializeSkills(skills!);
@@ -698,6 +733,7 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     context: [DOCS_URL],
     run(input) {
       return withPluginLock(() => {
+        assertRegistrationHome();
         materializeSkills(input);
         install("cotal-skills", "user", input.version);
         return `cotal-skills@${MARKETPLACE} (user scope)`;
