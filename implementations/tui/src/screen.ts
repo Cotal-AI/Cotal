@@ -49,14 +49,14 @@ const inConversation = (e: FeedEntry, open: Open) => {
   return false
 }
 
-/** The open conversation's newest `limit` rows. Where the observer cannot see direct messages, as
- *  on an auth space, the session's own directed traffic joins the observer's feed, deduplicated by
- *  id and ordered by time. */
+/** The open conversation's newest `limit` rows. The human's direct messages from earlier sessions join
+ *  the observer's feed, and where the observer cannot see direct messages, as on an auth space, so does
+ *  the session's own directed traffic, deduplicated by id and ordered by time. */
 export function conversationFeed(mesh: Mesh, open: Open, own: OwnTraffic, limit: number): FeedEntry[] {
   const seen = mesh.feed.filter((e) => inConversation(e, open))
-  if (mesh.status.dmVisible) return seen.slice(-limit)
   const ids = new Set(seen.map((e) => e.id))
-  const mine = [...own.received, ...own.sent].filter((e) => !ids.has(e.id) && inConversation(e, open))
+  const mine = [...own.earlier, ...(mesh.status.dmVisible ? [] : [...own.received, ...own.sent])].filter((e) => !ids.has(e.id) && inConversation(e, open))
+  if (mesh.status.dmVisible && !mine.length) return seen.slice(-limit)
   return [...seen, ...mine].sort((a, b) => a.ts - b.ts).slice(-limit)
 }
 
@@ -82,8 +82,8 @@ export function conversationRecipient(open: Open, mesh: Mesh): Recipient | undef
   return undefined
 }
 
-/** Whether a sender is the human: a session this app run opened, or one under their chat name in any
- *  letter case. */
+/** Whether a sender is the human: a session the app opened, in this run or in an earlier one it
+ *  remembers, or one under their chat name in any letter case. */
 export const isYou = (you: You, who: FeedEntry["from"]) => you.principals.has(who.id) || who.name.toLowerCase() === you.name
 
 /** What the human did with a card in this app run: opened it, or dismissed it without replying. */

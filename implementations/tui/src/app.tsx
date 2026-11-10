@@ -95,7 +95,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const waiting = () => mesh()?.signals.waiting ?? []
   const feed = createMemo(() => {
     const m = mesh()
-    return m ? conversationFeed(m, open(), talk()?.own() ?? { received: [], sent: [] }, FEED_ROWS) : []
+    return m ? conversationFeed(m, open(), talk()?.own() ?? { received: [], sent: [], earlier: [] }, FEED_ROWS) : []
   })
   const senders = createMemo(() => new Map(feed().map((e) => [e.id, e.from.name])))
   // Each space's cards, gathered from every snapshot of it in this app run. A card stays until a reply
@@ -107,7 +107,11 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     const t = talk()
     if (!m || !t) return prev
     const was = prev.get(m.status.space)
-    const found = cardsFor(conversationFeed(m, { kind: "channel" }, t.own(), FEED_ROWS), t.you(), t.mentionsYou, was?.sent ?? new Set())
+    // The earlier sessions' direct messages arrive once, when the space opens, so all of them make
+    // cards, however much traffic is newer.
+    const recent = conversationFeed(m, { kind: "channel" }, t.own(), FEED_ROWS)
+    const ids = new Set(recent.map((e) => e.id))
+    const found = cardsFor([...t.own().earlier.filter((e) => !ids.has(e.id)), ...recent], t.you(), t.mentionsYou, was?.sent ?? new Set())
     const answered = new Set([...(was?.answered ?? []), ...found.answered])
     const sent = new Set([...(was?.sent ?? []), ...found.sent])
     const cards = new Map(was?.cards)
@@ -306,16 +310,20 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   // What the arrows and enter do in the column that has the keys.
   const column = () => (keysAt() === "inspector" ? { move: moveNeed, open: () => answerNeed(needAt()) } : { move, open: openRow })
 
-  // The shared-name warning, once per session that finds its name taken.
-  createEffect(
-    on(
-      () => {
-        const p = talk()?.phase()
-        return p?.phase === "open" ? p.shared : undefined
-      },
-      (shared) => shared && toast.show({ variant: "warning", message: shared, duration: 10_000 }),
-    ),
-  )
+  // The shared-name warning, once per session that finds its name taken, and the warning for a session
+  // the app could not remember.
+  for (const key of ["shared", "unremembered"] as const)
+    createEffect(
+      on(
+        () => {
+          const p = talk()?.phase()
+          return p?.phase === "open" ? p[key] : undefined
+        },
+        (line) => line && toast.show({ variant: "warning", message: line, duration: 10_000 }),
+      ),
+    )
+  // Why earlier direct messages are missing, once per space. An agent's conversation keeps saying it.
+  createEffect(on(() => talk()?.unread(), (why) => why && toast.show({ variant: "warning", message: why, duration: 10_000 })))
 
   const unsent = () => Object.values(composer().drafts).filter((d) => d.text.trim()).length
   // Quitting closes the chat session first, as `cotal chat` does, and prints how it closed.
@@ -648,6 +656,13 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
           </text>
         </box>
         <box height={1} flexShrink={0} />
+        <Show when={open().kind === "peer" && talk()?.unread()}>
+          {(why) => (
+            <text fg={theme.text.feedback.warning.base} flexShrink={0} marginBottom={1}>
+              {why()}
+            </text>
+          )}
+        </Show>
         <Show when={peer()}>
           {(pr) => (
             <box flexShrink={0} marginBottom={1}>
