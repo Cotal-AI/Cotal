@@ -531,6 +531,13 @@ route described below. Recovery re-entry keeps its recorded mode.
 
 ### Controller recovery
 
+A broker configuration write that runs out of space or exceeds a file-size limit reports
+`OPERATION_FAILED`, exit 5, with the configuration path and filesystem error code. No member was
+started by that preparation. Correct the write failure and run `cotal up` again. The failed write
+is a known outcome, so `status` does not treat it as an interrupted start or add `--no-manager`
+to its recovery command. Permission and non-regular-file refusals, including FIFOs and Unix sockets,
+keep `PERMISSION_DENIED` and name moving the configuration entry aside.
+
 A whole-stack `up` or `down` takes the root's maintenance lock before it reads the journal. While
 another whole-stack or maintenance command holds it, the command refuses `LIFECYCLE_BLOCKED` and
 names that command's pid. A lock whose holder is no longer running, as a command killed by
