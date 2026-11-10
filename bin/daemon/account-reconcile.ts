@@ -45,7 +45,8 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
   };
   const desiredByOwner = new Map<string, Set<string>>();
   const desiredAll = () => new Set([...desiredByOwner.values()].flatMap(set => [...set]));
-  const apply = (account: AuthSpaceCatalogAccount, snapshot: SpaceCatalogSnapshot, revision: number, fresh = true) => serial(async () => {
+  const apply = (account: AuthSpaceCatalogAccount, snapshot: SpaceCatalogSnapshot, revision: number, bindingRevisions: Record<string, number>, fresh = true) => serial(async () => {
+    if (snapshot.spaces.some(row => !Number.isSafeInteger(bindingRevisions[row.id]) || bindingRevisions[row.id]! <= 0 || bindingRevisions[row.id]! > revision)) throw new Error("invalid binding revisions");
     const desired = new Set(snapshot.spaces.map(row => row.slug));
     desiredByOwner.set(account.ownerKey, desired);
     for (const [space, state] of Object.entries(saved.spaces)) {
@@ -60,14 +61,17 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
     }
     for (const row of snapshot.spaces) {
       const prior = saved.spaces[row.slug];
-      if (prior?.removedAt !== undefined) continue;
+      if (prior && prior.owner !== account.ownerKey) { refusals.set(row.slug, "another account owns the local space connection"); continue; }
+      if (prior?.removedAt !== undefined && (!fresh || bindingRevisions[row.id]! <= prior.removedAt)) continue;
       if (prior && !findMesh(row.slug)) { prior.removedAt = prior.revision; persist(); continue; }
       if (Date.now() < (retryAt.get(row.slug) ?? 0)) continue;
       try {
         if ("unavailable" in row) throw new Error("account space is currently unavailable");
+        const legacy = !prior && services.status(row.slug).state === "connected";
         importAccountComputerSpace(account, row);
+        if (legacy) continue;
         // Persist custody before the first operation, so restart knows which spaces it may remove.
-        saved.spaces[row.slug] = { owner: account.ownerKey, id: row.id, revision }; persist();
+        saved.spaces[row.slug] = { owner: account.ownerKey, id: row.id, revision: bindingRevisions[row.id]! }; persist();
         const check = await connectCheck(row.slug, home);
         if (check.outcome !== "ready-to-register") throw new Error(check.outcome);
         const observed = services.status(row.slug);
@@ -91,6 +95,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
     }
   });
   return { apply, localRemoval, localAddition, serial,
+    retainAccounts(owners: string[]) { for (const key of desiredByOwner.keys()) if (!owners.includes(key)) desiredByOwner.delete(key); },
     view: () => [...new Set([...desiredAll(), ...Object.keys(saved.spaces), ...readMeshRegistry().entries.filter(entry => services.status(entry.space).state === "connected").map(entry => entry.space)])].map(space => ({ space, desired: desiredAll().has(space), observed: saved.spaces[space]?.removedAt !== undefined ? "removed on this computer" : services.status(space).state, ...(refusals.has(space) ? { lastRefusal: refusals.get(space)! } : {}) })),
     settled: () => queue,
   };

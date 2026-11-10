@@ -1,0 +1,80 @@
+/** Real daemon endpoint against account-computer HTTP routes, in a private machine home. */
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createServer } from "node:http";
+import { saveIdpSession } from "@cotal-ai/auth";
+import { daemonPathsFor } from "../daemon/endpoint.js";
+import { serveDaemon } from "../daemon/server.js";
+import { queryDaemon } from "../daemon/client.js";
+import { accountComputerId } from "../daemon/account-identity.js";
+
+const root = mkdtempSync(join(tmpdir(), "dacct-"));
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_") && !["COTAL_TELEMETRY", "COTAL_SKIP_CONNECTOR_SEED"].includes(key)) delete process.env[key];
+const home = join(root, "home");
+mkdirSync(home, { mode: 0o700 });
+process.env.HOME = home;
+process.env.XDG_CONFIG_HOME = join(root, "config");
+process.env.COTAL_HOME = join(root, "cotal");
+const machineHome = process.env.COTAL_HOME;
+const runtime = join(root, "rt"); mkdirSync(runtime, { mode: 0o700 });
+let mode = 200, puts = 0, gets = 0;
+let revision = 1;
+let etag = '"one"';
+let conditional: string | undefined;
+let persistedBeforePut = false;
+const fixture = createServer((req, res) => {
+  res.setHeader("content-type", "application/json");
+  assert.equal(req.headers.authorization, "Bearer fixture-session");
+  const machine = req.url?.match(/^\/api\/cli\/machines\/([0-9a-f-]+)(\/spaces)?$/);
+  if (!machine) { res.writeHead(404); res.end("{}"); return; }
+  if (req.method === "PUT") {
+    puts++;
+    persistedBeforePut = readdirSync(join(machineHome, "daemon", "accounts"), { recursive: true }).some(path => String(path).endsWith("computer.json"));
+    if (mode === 404) { res.writeHead(404); res.end("{}"); return; }
+    res.end(JSON.stringify({ v: 1, machine: { id: machine[1], lastSeenAt: new Date().toISOString(), revision } })); return;
+  }
+  gets++; conditional = req.headers["if-none-match"] as string | undefined;
+  if (mode !== 200) { res.writeHead(mode); res.end(mode === 304 ? undefined : "{}"); return; }
+  res.setHeader("etag", etag);
+  res.end(JSON.stringify({ v: 1, machineId: machine[1], revision, bindingRevisions: {}, account: { idpUrl, issuer, sub: "owner" }, spaces: [] }));
+});
+await new Promise<void>(resolve => fixture.listen(0, "127.0.0.1", resolve));
+const issuer = `http://127.0.0.1:${(fixture.address() as { port: number }).port}`;
+const idpUrl = `${issuer}/api/auth`;
+saveIdpSession(machineHome, idpUrl, { token: "fixture-session", sub: "owner", expiresAt: Date.now() / 1000 + 3600 });
+const paths = daemonPathsFor(machineHome, { XDG_RUNTIME_DIR: runtime });
+let daemon = await serveDaemon({ paths, version: "0.157.2", sessionDir: machineHome });
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+async function until(test: () => boolean, label: string) {
+  const end = Date.now() + 12_000;
+  while (!test() && Date.now() < end) await sleep(50);
+  assert.ok(test(), label);
+  console.log(`ok ${label}`);
+}
+try {
+  await until(() => gets > 0 && daemon.status().account?.desiredRevision === 1, "registered and applied complete desired set");
+  assert.ok(persistedBeforePut);
+  const identity = daemon.status().account!.machineId!;
+  assert.equal(accountComputerId(machineHome, { issuer, sub: "owner" }), identity);
+  assert.notEqual(accountComputerId(machineHome, { issuer, sub: "other" }), identity);
+  const records = readdirSync(join(machineHome, "daemon", "accounts"));
+  assert.ok(records.every(key => (statSync(join(machineHome, "daemon", "accounts", key, "computer.json")).mode & 0o777) === 0o600));
+  const reply = await queryDaemon({ paths }); assert.ok(reply.ok && reply.result.account?.hostSupport === "supported");
+  mode = 304; const before = gets;
+  await until(() => gets > before, "conditional 304 poll");
+  assert.equal(conditional, etag); assert.equal(daemon.status().account!.desiredRevision, 1);
+  mode = 503; const errors = gets;
+  await until(() => gets > errors, "503 leaves desired revision unchanged");
+  assert.equal(daemon.status().account!.desiredRevision, 1);
+  mode = 401; const denied = gets;
+  await until(() => gets > denied && daemon.status().account?.mode === "sign-in-required", "401 surfaces sign in again");
+  const halted = gets; await sleep(5500); assert.equal(gets, halted);
+  await daemon.close(); mode = 404;
+  daemon = await serveDaemon({ paths, version: "0.157.2", sessionDir: machineHome });
+  await until(() => daemon.status().account?.mode === "per-space", "404 explicitly reports unsupported per-space mode");
+  assert.equal(daemon.status().account!.machineId, identity);
+  const unsupported = puts; await sleep(5500); assert.equal(puts, unsupported);
+  console.log(`account computers smoke passed; retained private fixture ${root}`);
+} finally { await daemon.close(); fixture.closeAllConnections(); await new Promise<void>(resolve => fixture.close(() => resolve())); }

@@ -397,9 +397,9 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   let closed: Promise<void> | undefined;
   const close = (): Promise<void> => {
     closed ??= (async () => {
-      await account.close();
-      // Cancel network work before waiting for startup resume to settle.
       const servicesClosed = services.close();
+      await account.close();
+      // In-flight account work observes service cancellation before shutdown waits for it.
       // An in-flight sign-in is cancelled through the stock fence before the listener goes away.
       await login.close();
       await managers.close();
