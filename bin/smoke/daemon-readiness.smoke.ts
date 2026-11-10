@@ -83,8 +83,10 @@ try {
   for (let i = 0; i < 100 && !existsSync(paths.socket) && daemon.exitCode === null; i++) await sleep(100);
   assert.ok(existsSync(paths.socket), "shipped foreground daemon must bind");
   for (const value of ["nonsense", "expired", "no-expiry", "not-yet-valid"]) {
-    mode = value; seed(value);
+    mode = value;
     for (const args of [["connect-check", "--space", "proof"], ["setup", "--no-manager", "--space", "proof", "--idp", idp, "--wait", "0"]]) {
+      // Isolate the command's cold request even when the stock cache holds a future-dated proof.
+      seed(`${value}-${args[0]}`);
       const before = counts(), result = await run(...args);
       assert.equal(result.code, 2);
       assert.equal(result.doc.error?.code, "DEPENDENCY_UNAVAILABLE");
