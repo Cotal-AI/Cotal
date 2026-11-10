@@ -13,7 +13,9 @@ or in a PID namespace: the shard's initial orphan-process sweep is not limited t
 ## Live broker suites
 
 `pnpm smoke:local-write-quota` drives the built CLI with native quota errors injected at
-filesystem publication. It needs Linux and `strace` on PATH and reports a skip otherwise.
+directory creation and filesystem publication. It checks saved prepared records and retry,
+and keeps missing-path errors separate from quota failures. It needs Linux and `strace` on
+PATH and reports a skip otherwise.
 It retains its private fixtures and syscall traces under the temporary directory it prints.
 
 The Linux live job runs `smoke:no-manager-credential-warning:live` with its usual NATS 2.12.12
