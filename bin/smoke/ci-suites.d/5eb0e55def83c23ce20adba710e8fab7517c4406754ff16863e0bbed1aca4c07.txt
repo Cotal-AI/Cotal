@@ -1,0 +1,2 @@
+# Compact remote-client status omits local broker readiness, while full diagnostics and launch protection remain.
+smoke:status-broker-relevance

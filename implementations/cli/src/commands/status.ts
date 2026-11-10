@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -82,6 +82,7 @@ import {
   readPidfile,
   preparedRecordSkipped,
   readPreparedSpaces,
+  stackJournalPath,
   readRenewalRecord,
   renderWorkspaceError,
   resolveMeshTarget,
@@ -287,6 +288,8 @@ export interface StatusResult {
     /** Whether this root records a controller stack for the process space. Its members are service
      *  instances, so the legacy pidfile rows say nothing about them. */
     controllerStack: boolean;
+    /** Presence of a folder's journal, even when it cannot be parsed or read. Older inputs may omit it. */
+    stackJournal?: "present" | "absent" | "unreadable";
     /** Whether that controller stack was started with `--no-manager`, so it runs no manager by choice. */
     noManager: boolean;
     /** The service of this space, outside that stack, whose process runs this root's manager, as a
@@ -309,6 +312,8 @@ export interface StatusResult {
     currentRecorded: boolean;
     /** Whether the selection names a space `cotal space create` prepared and no `cotal up` started. */
     currentPrepared: boolean;
+    /** Whether any local space is prepared, including one that is not selected. Older inputs may omit it. */
+    hasPrepared?: boolean;
     /** Whether that prepared space's controller stack ran and was stopped. */
     currentStopped: boolean;
     /** This folder's space when a command without `--space` targets it here instead of `current`, as
@@ -523,7 +528,7 @@ function folderReadProblem(root: string): string | undefined {
 /** The folder section for a folder this account cannot read: every part of it is unread. */
 function unreadFolder(root: string, code: string): StatusResult["folder"] {
   const error = `${root} cannot be read by this account (${code})`;
-  return { root, auth: { state: "unreadable", spaces: [], userAuth: false, error }, personas: { root: personaDir(root), default: "unreadable", demo: null, error }, launches: null, processes: null, processSpace: null, storedState: false, controllerStack: false, noManager: false, stackBlock: null };
+  return { root, auth: { state: "unreadable", spaces: [], userAuth: false, error }, personas: { root: personaDir(root), default: "unreadable", demo: null, error }, launches: null, processes: null, processSpace: null, storedState: false, controllerStack: false, stackJournal: "unreadable", noManager: false, stackBlock: null };
 }
 
 /** The folder's maintenance journal, read only. An unreadable one is reported, never taken for none. */
@@ -817,6 +822,9 @@ async function readResponderAxis(selected: Selected, preflight: SelectedPrefligh
 
 async function readFolder(root: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState, gaps: Gaps, hints: string[]): Promise<StatusResult["folder"]> {
   const cmd = displayCmd();
+  let stackJournal: NonNullable<StatusResult["folder"]["stackJournal"]>;
+  try { stackJournal = lstatSync(stackJournalPath(root), { throwIfNoEntry: false }) === undefined ? "absent" : "present"; }
+  catch { stackJournal = "unreadable"; }
   const folder = (auth: StatusResult["folder"]["auth"], processes: ProcessRow[] | null = null, storedState = false, processSpace: string | null = null, controllerStack = false, noManager = false, stackBlock: StackOperationBlock | null = null,
   stackUnfinished: StatusResult["folder"]["stackUnfinished"] = null): StatusResult["folder"] => ({
     root,
@@ -826,6 +834,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     processSpace,
     storedState,
     controllerStack,
+    stackJournal,
     noManager,
     stackBlock,
     stackUnfinished,
@@ -1226,9 +1235,10 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
     })),
   );
   // The prepared spaces folder, or a record in it, that cannot be read is named the same way.
-  let currentPrepared = false, currentStopped = false;
+  let currentPrepared = false, currentStopped = false, hasPrepared = false;
   try {
     const prepared = readPreparedSpaces();
+    hasPrepared = prepared.spaces.length > 0;
     // Named with the warning a command that skips it gives, so a run that also skipped it says it once.
     for (const e of prepared.unusable) {
       const skipped = preparedRecordSkipped(e);
@@ -1246,6 +1256,7 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
     current,
     currentRecorded: current === null || entries.some((m) => m.space === current),
     currentPrepared,
+    hasPrepared,
     currentStopped,
     folder,
     unreadable,
@@ -1770,7 +1781,8 @@ function extensionsCell(e: StatusResult["extensions"]): Cell | undefined {
  * does not have is what `cotal setup` adds, which the applications line already counts. So an
  * application's own rows (the Claude plugin, Desktop and skills) appear only for an application that
  * IS set up, and only when they are not current; the broker executable appears when it is missing or
- * refused; the dashboard, which is optional, appears when its record cannot be read. `--all` and
+ * refused and local broker records make it relevant; the dashboard, which is optional, appears
+ * when its record cannot be read. `--all` and
  * `--wide` print every row, and `--verbose` adds the installation paths ({@link machineSection}).
  *
  * It used to print one row per known connector whether or not it was set up, every extension label
@@ -1792,7 +1804,15 @@ function machineOverview(r: StatusResult, wide: boolean): Section {
       if (m.integrations.some((item) => item.name.toLowerCase().includes(connector.name.toLowerCase()))) continue;
       rows.push([connector.name, stateCell(connector.missing.length ? `${connector.missing.join(", ")} not on PATH` : connector.requires.length ? "available on PATH" : "in-process", connector.missing.length ? "waiting" : "ok")]);
     }
-  if (wide || m.nats === "missing" || m.natsProblem)
+  // A remote registration uses the broker elsewhere. Keep executable readiness in the full
+  // diagnostics, without making a hosted client repair a binary it does not need to run.
+  const localBroker = r.meshes.hasPrepared || r.meshes.currentPrepared || r.meshes.unreadable.length > 0 ||
+    r.meshes.items.some((entry) => entry.origin !== "manual" && entry.origin !== "catalog") ||
+    r.folder.controllerStack || r.folder.storedState || r.folder.auth.state !== "none" ||
+    (r.folder.stackJournal !== undefined && r.folder.stackJournal !== "absent") ||
+    r.folder.processes?.some((row) => row.name === "nats" && (row.pid !== null || row.state === "unreadable")) ||
+    (!r.selected.resolved && (r.selected.code === "not-started" || r.selected.code === "unregistered-root" || r.selected.code === "unreadable-auth"));
+  if (wide || (localBroker && (m.nats === "missing" || m.natsProblem)))
     rows.push(["Broker executable", stateCell(m.nats === "missing" ? "not installed" : brokerExecutable(m), m.nats === "missing" ? "waiting" : m.natsProblem ? "failed" : "ok")]);
   if (wide || (m.skills.state !== "current" && setUp.length)) rows.push(["Agent skills", skillsCell(m.skills)]);
   if (wide || m.web.installed === null)
