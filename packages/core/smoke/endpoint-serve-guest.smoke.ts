@@ -18,7 +18,7 @@
  */
 import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import {
-  EpEnvelopeError, VOID_SCHEMA_DIGEST, assertServeGrantAuthorized, authorizeGuestServeGrant, contractDigest,
+  EpEnvelopeError, ServiceAccessNotYetValidError, VOID_SCHEMA_DIGEST, assertServeGrantAuthorized, authorizeGuestServeGrant, contractDigest,
   createSpaceAuth, mintLifecycleUid, parseServiceAuthorityResult, serviceEndpointActor, singleDocumentClosure,
   type EpServeGrant, type GuestServeAuthenticity, type ServiceAuthorityRequest, type ServiceAuthorityResult,
   type ServiceIssuerKey, type ServiceRegistration, type ServiceRegistrationWitness,
@@ -143,6 +143,30 @@ await refuses("a bearer for another space refuses", () => withBearer(signed(HEAD
 await refuses("a bearer scoped to two audiences refuses", () => withBearer(signed(HEADER, claimsFor(witness, { aud: [space, "epsother"] }))), "permission-denied");
 await refuses("an expired bearer refuses", () => withBearer(signed(HEADER, claimsFor(witness, { iat: NOW - 120, nbf: NOW - 120, exp: NOW - 60 }))), "permission-denied", "has expired");
 await refuses("a bearer issued in the future refuses", () => withBearer(signed(HEADER, claimsFor(witness, { iat: NOW + 3600, nbf: NOW + 3600, exp: NOW + 3660 }))), "permission-denied", "issued in the future");
+{
+  const now = Date.now;
+  Date.now = () => NOW * 1000;
+  try {
+    const accepted = await withBearer(signed(HEADER, claimsFor(witness, { iat: NOW + 5, nbf: NOW + 5, exp: NOW + 65 })));
+    c("a bearer issued at the five-second tolerance still brands a grant", accepted.instanceId === witness.instanceId);
+    const bearer = signed(HEADER, claimsFor(witness, { iat: NOW + 6, nbf: NOW + 6, exp: NOW + 66 }));
+    try {
+      await withBearer(bearer);
+      c("a bearer beyond tolerance carries the typed clock refusal", false, "no throw");
+    } catch (e) {
+      c("a bearer beyond tolerance carries the typed clock refusal without token material", e instanceof ServiceAccessNotYetValidError
+        && e instanceof EpEnvelopeError && e.code === "permission-denied" && !e.message.includes(bearer));
+    }
+    const forged = signed(HEADER, claimsFor(witness, { iat: NOW + 6, nbf: NOW + 6, exp: NOW + 66 }), otherPair.privateKey);
+    try {
+      await withBearer(forged);
+      c("an unsigned future claim does not receive a clock diagnosis", false, "no throw");
+    } catch (e) {
+      c("an unsigned future claim does not receive a clock diagnosis", e instanceof EpEnvelopeError
+        && !(e instanceof ServiceAccessNotYetValidError) && e.message.includes("signature does not verify"));
+    }
+  } finally { Date.now = now; }
+}
 await refuses("a bearer with a lifetime past the fixed cap refuses", () => withBearer(signed(HEADER, claimsFor(witness, { exp: NOW + 61 }))), "permission-denied");
 await refuses("a bearer for another subject refuses", () => withBearer(signed(HEADER, claimsFor(witness, { sub: `u_${"b".repeat(26)}` }, { owner: `u_${"b".repeat(26)}` }))), "permission-denied");
 await refuses("a bearer without the serve duty refuses", () => withBearer(signed(HEADER, claimsFor(witness, {}, {}, { duty: "call" }))), "permission-denied");

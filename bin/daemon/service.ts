@@ -35,7 +35,7 @@ import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
   CotalEndpoint, authorizeGuestServeGrant, compileContract, resolveAuthProvider, serveAuthenticityOf, serveEndpoint,
-  ServiceAuthorityTransportError, serviceWitnessDigest, VOID_SCHEMA,
+  ServiceAccessNotYetValidError, ServiceAuthorityTransportError, serviceWitnessDigest, VOID_SCHEMA,
   type EpServeGrant, type EpServeHandle, type SecretStore, type ServiceEndpointRenewal, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
@@ -72,6 +72,7 @@ const SENTENCE: Record<ServiceConnectionState, string> = {
   connecting: "the daemon is connecting to the space; it is not connected yet",
   connected: "connected: the broker accepted this daemon's service connection and the space accepted it as ready",
   unavailable: "the space or its broker could not be reached; nothing is connected, and connecting again retries the same requests",
+  "credential-not-yet-valid": "the space returned a service credential that is not yet valid according to this machine's clock; check this machine's and the space authority's clocks, then connect again; nothing is connected",
   "local-state-error": "the daemon could not use its local service records; inspect its identity, registration, ready and renewal records and their permissions, and restore the original record if damaged; nothing is connected",
   ended: "the space ended this daemon's service authority; nothing is connected, and connecting again will not reconnect it",
   disconnected: "not connected",
@@ -241,15 +242,16 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     return l.readying;
   }
 
-  function sourceFailed(l: Live): void {
+  function sourceFailed(l: Live, error?: unknown): void {
     const s = l.source?.state();
-    if (s?.state === "ended") { l.state = "ended"; l.reason = ENDED.has(s.reason) ? s.reason : "unrecognized"; }
+    if (error instanceof ServiceAccessNotYetValidError) l.state = "credential-not-yet-valid";
+    else if (s?.state === "ended") { l.state = "ended"; l.reason = ENDED.has(s.reason) ? s.reason : "unrecognized"; }
     else if (s?.state === "unavailable" && s.cause === "store") l.state = "local-state-error";
     else l.state = "unavailable";
   }
 
   /** Any throw inside a connect leaves nothing running: the endpoint and source are torn down and
-   *  the answer is a fixed `unavailable`. */
+   *  the answer is a fixed failure classification. */
   async function connectOnce(space: string): Promise<ServiceConnectionResult> {
     try { return await connectInner(space); } catch {
       const l = live.get(space);
@@ -292,7 +294,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
         registration: DAEMON_REGISTRATION, authenticity: serveAuthenticityOf(info) });
       return credential.accessBearer;
     };
-    try { await pull(); } catch { sourceFailed(l); await teardown(l); return result(space); }
+    try { await pull(); } catch (e) { sourceFailed(l, e); await teardown(l); return result(space); }
 
     const onEnd = () => {
       // The source ends inside the endpoint's own refresh: tear down after that call returns.
@@ -330,7 +332,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
       if (l.state !== "ended") void readyOnce(l, space, witness, store, dir);
     });
     l.endpoint = endpoint;
-    try { await endpoint.start(); } catch { if (stateOf(l) !== "ended") l.state = "unavailable"; await teardown(l); return result(space); }
+    try { await endpoint.start(); } catch (e) { if (stateOf(l) !== "ended") sourceFailed(l, e); await teardown(l); return result(space); }
     l.brokerUp = true;
     await readyOnce(l, space, witness, store, dir);
     const after = stateOf(l);

@@ -1750,6 +1750,15 @@ const SERVICE_ACCESS_BEARER_VER = 1;
 /** Clock tolerance on `iat` and `nbf` only; expiry is refused at the original second (SPEC 13.9). */
 const SERVICE_ACCESS_CLOCK_TOLERANCE_SEC = 5;
 
+/** A signed service access bearer whose issue time exceeds this process's clock tolerance.
+ *  Carries no bearer material; the refusal remains permission-denied. */
+export class ServiceAccessNotYetValidError extends EpEnvelopeError {
+  constructor() {
+    super("permission-denied", "the access bearer is issued in the future; an unverified bearer binds no serve grant (SPEC 13.9)");
+    this.name = "ServiceAccessNotYetValidError";
+  }
+}
+
 // A declared `never` return narrows the control flow after each call; an inferred arrow does not.
 function refuseBearer(why: string): never {
   throw new EpEnvelopeError("permission-denied", `the access bearer ${why}; an unverified bearer binds no serve grant (SPEC 13.9)`);
@@ -1799,7 +1808,7 @@ function verifyServiceAccessBearer(bearer: string, witness: ServiceRegistrationW
   if (!Number.isSafeInteger(iat) || !Number.isSafeInteger(nbf) || !Number.isSafeInteger(exp) || (iat as number) < 0
     || nbf !== iat || (exp as number) <= (iat as number) || (exp as number) - (iat as number) > SERVICE_ACCESS_TTL_SECONDS)
     refuseBearer("lifetime is not the fixed service access lifetime");
-  if ((iat as number) > now + SERVICE_ACCESS_CLOCK_TOLERANCE_SEC) refuseBearer("is issued in the future");
+  if ((iat as number) > now + SERVICE_ACCESS_CLOCK_TOLERANCE_SEC) throw new ServiceAccessNotYetValidError();
   if ((exp as number) <= now) refuseBearer("has expired");
   if (!act || !service || act.view !== "service-endpoint" || service.duty !== "serve" || act.owner !== payload!.sub
     || act.actor !== witness.principal.actor || act.lifecycleUid !== witness.principal.lifecycleUid
