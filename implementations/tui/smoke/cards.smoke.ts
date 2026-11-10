@@ -262,6 +262,7 @@ try {
   Object.assign(process.env, { HOME: home, XDG_CONFIG_HOME: xdg })
   delete process.env.COTAL_HOME
   const w = await import("@cotal-ai/workspace")
+  const { forgetChatSessions } = await import("@cotal-ai/workspace/chat")
   for (const s of [space, other]) w.recordMesh({ space: s, server, root: project, mode: "open", origin: "manual", ts: new Date().toISOString() })
   w.setCurrent(space)
 
@@ -275,9 +276,11 @@ try {
   for (const [width, height] of [[209, 52], [97, 49], [80, 24]] as const) {
     const size = `${width}x${height}`
     const dir = join(captures, size)
-    // A name per size, so the history of the sizes before makes no card for this one.
+    // A name per size, with the sessions of the sizes before forgotten, so their history makes no card
+    // for this one.
     const me = `lead-${width}`
     w.writePreference({}, "name", me, w.readPreferences().revision)
+    forgetChatSessions(space)
     const three = layoutFor(width).kind === "three"
     console.log(size)
     launch(width, height, join(work, `${size}.err`))

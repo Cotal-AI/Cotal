@@ -127,7 +127,7 @@ export function openSpace(space: string | undefined, afterPaint: () => Promise<v
       v.on("change", show)
       show(v.snapshot())
       ctx = { space: c.space, server: c.server }
-      setTalk(openTalk({ target, control: client, afterPaint }))
+      setTalk(openTalk({ target, control: client, afterPaint, observer: ep, nameOf: v.nameOf }))
       poll()
     } catch (e) {
       if (!closed) setConn(failed(space, e))

@@ -101,6 +101,7 @@ import type {
   AttentionMode,
   ChannelMode,
   CotalMessage,
+  DmHistoryRead,
   HistoryMessage,
   DeliveryClass,
   MembershipRecord,
@@ -4367,14 +4368,49 @@ export class CotalEndpoint extends EventEmitter {
    *  returned — a stored row missing `ts` / `space` / `parts` / `from.name` is dropped, never
    *  returned with that member silently `undefined`. */
   async dmHistory(opts?: { limit?: number; signal?: AbortSignal }): Promise<HistoryMessage[]> {
-    // every inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor> DM — the whole DM subtree (god-view)
-    return (await this.streamHistory(
-      dmStream(this.space),
-      [`${spacePrefix(this.space)}.inst.>`],
-      opts?.limit ?? 100,
-      undefined,
-      opts?.signal,
-    )).map((r) => r.msg);
+    try {
+      // every inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor> DM — the whole DM subtree (god-view)
+      return (await this.streamHistory(
+        dmStream(this.space),
+        [`${spacePrefix(this.space)}.inst.>`],
+        opts?.limit ?? 100,
+        undefined,
+        opts?.signal,
+      )).map((r) => r.msg);
+    } catch (e) {
+      if (isPermissionDenied(e)) return [];
+      throw e;
+    }
+  }
+
+  /** The newest `limit` DMs (100 by default) sent to or by any of `principals`, oldest first. Each
+   *  principal is a concrete `<owner>.<actor>`; anything else throws, because a wildcard would widen
+   *  the read to other principals' DMs. The broker filters on the DM subject, so every row's `to` or
+   *  `from.id` is one of them. Only an `admin` credential may read the DM backlog. Where
+   *  {@link dmHistory} returns an empty list for any other, this returns `denied`. */
+  async dmHistoryOf(principals: readonly string[], opts?: { limit?: number; signal?: AbortSignal }): Promise<DmHistoryRead> {
+    const keys = [...new Set(principals)].map((p) => {
+      const key = parsePrincipalKey(p);
+      if (!key) throw new Error(`dmHistoryOf: "${p}" is not a principal <owner>.<actor>`);
+      return key;
+    });
+    if (!keys.length) return { state: "read", items: [] };
+    const limit = opts?.limit ?? 100;
+    const read = (subjects: string[]) => this.streamHistory(dmStream(this.space), subjects, limit, undefined, opts?.signal);
+    let rows: { seq: number; msg: HistoryMessage }[];
+    try {
+      // A consumer refuses overlapping filters, and a DM between two of these principals matches a
+      // recipient filter and a sender filter, so each direction is its own read.
+      rows = (await Promise.all([
+        read(keys.map((k) => unicastRecvFilter(this.space, k.owner, k.actor))),
+        read(keys.map((k) => unicastSubject(this.space, "*", "*", k.owner, k.actor))),
+      ])).flat();
+    } catch (e) {
+      if (isPermissionDenied(e)) return { state: "denied", reason: (e as Error).message };
+      throw e;
+    }
+    const bySeq = new Map(rows.map((r) => [r.seq, r.msg]));
+    return { state: "read", items: [...bySeq].sort(([a], [b]) => a - b).slice(-limit).map(([, msg]) => msg) };
   }
 
   /**
@@ -4503,17 +4539,13 @@ export class CotalEndpoint extends EventEmitter {
       // event is not enough either — callers consume the RETURN VALUE, and the dashboard renders
       // empty regardless of what an operator log says.
       //
-      // So only two things may still produce an empty result:
-      //   1. The stream does not exist (a space with no history yet).
-      //   2. A permission denial on the DM backlog specifically. `dmHistory` is god-view by
-      //      contract: a normal agent's ACL denies it, and returning empty there is documented
-      //      behaviour, not a bug being hidden.
-      // Anything else — a denial on CHAT, a timeout, a 503, a protocol or consumer-create failure —
-      // is raised, because "no history" and "I could not read the history" are different answers and
-      // only one of them is safe to render as an empty conversation.
+      // So only one thing may still produce an empty result here: the stream does not exist (a space
+      // with no history yet). Anything else — a denial, a timeout, a 503, a protocol or
+      // consumer-create failure — is raised, because "no history" and "I could not read the history"
+      // are different answers and only one of them is safe to render as an empty conversation.
+      // `dmHistory` alone turns a denial into its documented empty god-view result.
       const msg = String((e as { message?: unknown } | null)?.message ?? "");
       if (/stream not found/i.test(msg) || (e as { code?: number } | null)?.code === 404) return [];
-      if (isPermissionDenied(e) && stream === dmStream(this.space)) return [];
       throw e;
     } finally {
       if (reader) this.releaseHistoryReader(reader);

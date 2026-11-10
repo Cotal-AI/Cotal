@@ -152,8 +152,8 @@ type Quotable = Answerable & { text: string }
 type Refused = { readonly refused: string }
 
 /** Where a reply to `m` goes. A direct message or role task from the human refuses, from any of their
- *  sessions. One under their name that this app run did not open may be another person's, so its
- *  refusal says only that. */
+ *  sessions. One under their name that the app did not open, in this run or an earlier one it
+ *  remembers, may be another person's, so its refusal says only that. */
 function answer(m: Answerable, you: You): Recipient | Refused {
   if (m.kind !== "channel" && !you.principals.has(m.from.id) && isYou(you, m.from)) return { refused: "that is from another session under your name" }
   return replyRecipient(m, you.principals.has(m.from.id) ? m.from.id : "")
@@ -161,7 +161,8 @@ function answer(m: Answerable, you: You): Recipient | Refused {
 
 /** Where a reply to a row of the `open` conversation goes, or why the row cannot be quoted. A direct
  *  conversation quotes only direct messages. A direct message is answered only by a recipient, which
- *  is a session this app run opened: a name match could be another person's session. A burst
+ *  is a session the app opened, in this run or an earlier one it remembers: a name match could be
+ *  another person's session. A burst
  *  coalesced into one row keeps its first copy's id, so the row answers only when that copy came to
  *  the human. */
 function rowAnswer(e: FeedEntry, you: You, open: Open): Recipient | Refused {

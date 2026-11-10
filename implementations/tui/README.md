@@ -48,7 +48,9 @@ leaves it listed. A card whose message has left its conversation still opens it 
 message, and the next `enter` sends the reply. Each space keeps its cards while the app runs, also
 while another space is open. After a restart the list starts again from the history the app
 loads, the newest 50 messages of each channel and 300 in all. A channel card comes back when its
-message is in that history, and stays gone when your reply is there too. A card you opened is drawn
+message is in that history, and stays gone when your reply is there too. A direct message's card
+comes back from your earlier sessions' direct messages (see [Remembered sessions](#remembered-sessions)),
+and stays gone when your answer is among them. A card you opened is drawn
 dimmer than one you have not, and a reply or mention that arrives in the conversation you have open
 is listed already dimmed.
 When the conversation
@@ -108,9 +110,9 @@ login. The name at the bottom of the left column is dim until then and gold afte
 - `↑` and `↓` pass over what a reply cannot answer, and a click on it says why: your own direct
   messages, and direct messages between two others. In an agent's conversation only direct
   messages are quoted, so a reply there never posts to a channel. A message is yours when it comes
-  from a session the app opened, or from any session under your name in any letter case. A direct
-  message is to you only when it went to a session the app opened, so one sent to your session from
-  an earlier run of the app cannot be quoted.
+  from a session the app opened, in this run or an earlier one it remembers, or from any session
+  under your name in any letter case. A direct message is to you only when it went to one of those
+  sessions the app opened.
 - `@name` in a channel post mentions that peer, as `cotal send` does. A message that mentions you
   is marked `@you`.
 - A line that starts with `/` is a command: `/reply` quotes the newest direct message you received
@@ -138,6 +140,19 @@ session without a warning. While a switch waits, the conversation reads `Leaving
 message still sending in one space never holds up `enter` in another. After it ends, `enter` opens
 a new session under a new identity and sends nothing; the next `enter` sends. Quitting with unsent
 drafts asks first. Quitting closes the session and prints how it closed.
+
+### Remembered sessions
+
+The app remembers each session it opens, so a later run counts that session as yours. A space keeps
+its 20 newest, each in a private file under `~/.cotal/chat-sessions/` with the session's principal,
+name, broker and opening time, and no credential. When a space opens, the app reads the newest 200
+direct messages to and from those sessions with the credential its observer already holds, and
+shows them in their conversations with their cards, so `↑` quotes them. Your answer goes from the
+new session, under the same name. On a static-auth space, a direct message an agent sends to an
+earlier session while the app runs shows at the next start; on an open space it shows when it
+arrives. When the broker refuses that read, or a remembered session cannot be read, a warning says
+why and the agent's conversation keeps saying it. `cotal space forget` removes a space's remembered
+sessions. Sessions opened with `cotal chat` are not remembered.
 
 ## Vendored OpenCode code
 
@@ -206,7 +221,16 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   message has left the loaded rows, is still listed after a switch to another space and back, then
   quotes it and sends a reply a peer receives with its id. It then checks that a reply to a post
   you sent before 250 more posts in another channel still makes a card.
-  They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
-  built, so they are not in `smoke:ci`.
+  `smoke/continuity.smoke.ts` writes to an agent on an open space and on a static-auth space that a
+  real `cotal up --detach` stack serves, then quits and starts the app again. It checks that the
+  session's record is one private file with no credential, that the reply card, the conversation and
+  the `↑` quote come back, that the answer reaches the agent with the reply's id from a new session
+  under the same name, and that the answered card stays gone at the next start. It then has the agent
+  write to the first session, which shows as it arrives on the open space and at the next start on
+  the static one. On the open space it runs two copies of the app at once and reads both sessions'
+  records back, then restarts the broker with a default user that may not read direct messages and
+  checks the agent's conversation says so.
+  They need Node 26.4, tmux and nats-server, and the control, composer and continuity smokes need the
+  manager built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space
   list under tmux.
