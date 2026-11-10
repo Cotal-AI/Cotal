@@ -721,6 +721,9 @@ connection stage is never reached. With `--no-manager`, only a connected machine
 `--idp` is needed only when this machine is not signed in. Without it, a machine that needs a
 sign-in refuses `AUTH_REQUIRED` (`NOT_SIGNED_IN`) and names the provider's login command, before
 any registration.
+When a registered space needs sign-in, setup checks `--idp` against its pinned provider before
+starting device approval. A different provider refuses `USAGE_INVALID` (`IDP_MISMATCH`) and names
+the setup command with the pinned provider. This applies to both Manager and `--no-manager` setup.
 An expired or revoked session rejected by the provider needs a new device sign-in, even when a
 cached session remains on disk. A provider outage or unusable response stops setup with
 `DEPENDENCY_UNAVAILABLE`, without asking for a new sign-in or reporting the session as valid.

@@ -14,6 +14,7 @@
  * stay separate commands; this one does not absorb them.
  */
 import { codeSpan, CommandFailure, resolveOnPath } from "@cotal-ai/workspace";
+import { normalizeIdpUrl } from "@cotal-ai/auth";
 import type { DaemonPaths } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
 import { loginFromCli } from "./cli-login.js";
@@ -185,6 +186,18 @@ async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<v
     throw new CommandFailure("refused", "AUTH_REQUIRED", "this machine is not signed in to the space's provider; nothing was registered", {
       remedy: check.result.remedy,
       native: { code: "NOT_SIGNED_IN" },
+    });
+  }
+  const listed = await exchangeDesktopRequest(opts, { op: "spaces" });
+  const provider = listed.ok && !("event" in listed) && "spaces" in listed.result
+    ? listed.result.spaces.find((entry) => entry.space === opts.space)?.idp : undefined;
+  if (provider === undefined) {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the daemon did not identify the space's sign-in provider; no sign-in was started and nothing was registered");
+  }
+  if (normalizeIdpUrl(opts.idp) !== normalizeIdpUrl(provider)) {
+    throw new CommandFailure("refused", "USAGE_INVALID", "--idp does not match the space's pinned sign-in provider; no sign-in was started and nothing was registered", {
+      remedy: `run ${codeSpan(daemonCommandCopy("setup", opts.daemonHome, [["--space", opts.space], ["--idp", provider], ...(opts.noManager ? ["--no-manager" as const] : [])]))}`,
+      native: { code: "IDP_MISMATCH" },
     });
   }
   opts.report("sign-in: approve this machine on another device");

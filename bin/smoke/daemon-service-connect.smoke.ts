@@ -978,10 +978,37 @@ try {
         return child;
       };
       let child = await start();
+      let otherProviderRequests = 0;
+      const otherProvider = createHttpServer((_req, res) => {
+        otherProviderRequests++;
+        res.writeHead(500); res.end("{}");
+      });
+      await new Promise<void>((resolve) => otherProvider.listen(0, "127.0.0.1", resolve));
+      const otherIdp = `http://127.0.0.1:${(otherProvider.address() as AddressInfo).port}/api/auth`;
       recoverOnApproval = true;
       try {
-        const login = await cli("login", "--idp", idpUrl);
-        check("H2 initial device login succeeds", login.code === 0);
+        deleteIdpSession(home, idpUrl);
+        const mismatchBefore = deviceCodeRequests, postsBefore = posts(sessionSpace);
+        for (const serviceOnly of [true, false]) {
+          const mismatch = await cli("setup", "--space", sessionSpace, "--idp", otherIdp,
+            ...(serviceOnly ? ["--no-manager", "--wait", "0"] : []));
+          check(`H2 ${serviceOnly ? "service-only" : "Manager"} setup rejects a different provider before approval`,
+            mismatch.code === 1 && mismatch.doc.error?.code === "USAGE_INVALID" && mismatch.doc.error?.cause?.code === "IDP_MISMATCH"
+            && !mismatch.err.includes("Approval code") && !mismatch.err.includes("signed in as"), mismatch.doc);
+          check("H2 mismatch remedy names the pinned provider and matching setup mode",
+            String(mismatch.doc.error?.remedy).includes(idpUrl)
+            && String(mismatch.doc.error?.remedy).includes("cotal daemon setup --space")
+            && String(mismatch.doc.error?.remedy).includes("--no-manager") === serviceOnly, mismatch.doc.error);
+        }
+        const missingProvider = await cli("setup", "--no-manager", "--space", sessionSpace, "--wait", "0");
+        check("H2 omitted provider still requires explicit sign-in", missingProvider.code === 2
+          && missingProvider.doc.error?.code === "AUTH_REQUIRED" && missingProvider.doc.error?.cause?.code === "NOT_SIGNED_IN");
+        check("H2 refused setup makes no device requests or registration posts",
+          otherProviderRequests === 0 && deviceCodeRequests === mismatchBefore && posts(sessionSpace) === postsBefore);
+        const login = await cli("setup", "--no-manager", "--space", sessionSpace, "--wait", "0", "--idp", `${idpUrl}/`);
+        check("H2 normalized matching provider starts one device approval and reaches registration",
+          login.code === 4 && login.doc.error?.cause?.code === "APPROVAL_PENDING"
+          && deviceCodeRequests === mismatchBefore + 1 && otherProviderRequests === 0, login.doc);
         idpRevoked = true;
         console.log("  H2 waiting past the stock 60-second JWT cache cap");
         await sleep(61_000);
@@ -1015,6 +1042,7 @@ try {
         await cli("service-disconnect", "--space", sessionSpace);
       } finally {
         tokenFailure = undefined; idpRevoked = false; recoverOnApproval = false;
+        await new Promise<void>((resolve, reject) => otherProvider.close((error) => error ? reject(error) : resolve()));
         await killAndAwaitExit(child, "SIGTERM");
         d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
       }
