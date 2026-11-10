@@ -1,5 +1,21 @@
 # @cotal-ai/cmux
 
+## 0.154.0
+
+No changes in this release.
+
+## 0.153.1
+
+No changes in this release.
+
+## 0.153.0
+
+No changes in this release.
+
+## 0.152.0
+
+No changes in this release.
+
 ## 0.151.3
 
 No changes in this release.

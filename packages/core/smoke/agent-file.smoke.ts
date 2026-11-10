@@ -2,8 +2,9 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertValidKind, loadAgentFile, saveAgentFile, type AgentDef } from "../src/agent-file.js";
+import { assertValidKind, composeWirePersona, loadAgentFile, saveAgentFile, type AgentDef } from "../src/agent-file.js";
 import { CotalEndpoint } from "../src/endpoint.js";
+import { lowerPersonaEndpoints, parsePersonaEndpoints } from "../src/persona-endpoints.js";
 import type { EndpointKind } from "../src/types.js";
 
 // Every cell runs and the suite reports at the end. Throwing on the first failure stopped the run
@@ -286,6 +287,82 @@ ok("saveAgentFile refuses a family wider than every read entry and writes no fil
 // the rule once and names neither this function nor the path of a file that was never written.
 ok("the refusal reads as the rule the file broke",
   wideErr === 'it would not load: subscribe "perm.>" is not within allowSubscribe [perm.*]', wideErr);
+
+// 14) `endpoints` (SPEC 13.15): a closed list of { endpoint, commands, instanceId? }. It round-trips,
+//     folds duplicates into one canonical entry, and refuses every other shape by name, so a list a
+//     file names is never dropped the way an unmodeled array is.
+{
+  const epPath = join(dir, "ep.md");
+  writeFileSync(epPath, "---\nname: ep\nsubscribe: []\nendpoints:\n  - endpoint: com.example.orders\n    commands: [list, create, list]\n  - endpoint: com.example.orders\n    commands: [refund]\n  - endpoint: com.example.billing\n    commands: [quote]\n---\nbody\n");
+  const loaded = loadAgentFile(epPath);
+  ok("an endpoints list loads into one canonical entry per endpoint, commands deduplicated and sorted",
+    JSON.stringify(loaded.endpoints) === JSON.stringify([
+      { endpoint: "com.example.billing", commands: ["quote"] },
+      { endpoint: "com.example.orders", commands: ["create", "list", "refund"] },
+    ]), loaded.endpoints);
+  ok("endpoints never land in meta", loaded.meta?.endpoints === undefined, loaded.meta);
+  const again = join(dir, "ep-again.md");
+  saveAgentFile(again, loaded);
+  ok("saveAgentFile writes endpoints back and they load the same", JSON.stringify(loadAgentFile(again).endpoints) === JSON.stringify(loaded.endpoints));
+  const noneSaved = join(dir, "ep-none.md");
+  saveAgentFile(noneSaved, { name: "epnone", subscribe: [], endpoints: [] });
+  ok("an empty endpoints list is written as none", !readFileSync(noneSaved, "utf8").includes("endpoints") && loadAgentFile(noneSaved).endpoints === undefined);
+  const pinned = join(dir, "ep-pin.md");
+  writeFileSync(pinned, "---\nname: pin\nsubscribe: []\nendpoints:\n  - endpoint: com.example.orders\n    commands: [list]\n    instanceId: i0000000000000000000000000a\n---\n");
+  ok("an instanceId is kept on its own entry", loadAgentFile(pinned).endpoints?.[0]?.instanceId === "i0000000000000000000000000a");
+  // Entry order never changes the result: the same (endpoint, instanceId) folds, two instances of one
+  // endpoint stay two entries, and a reordered list parses and lowers to the same set.
+  const forward = [
+    { endpoint: "com.example.orders", commands: ["list"] },
+    { endpoint: "com.example.orders", commands: ["list"], instanceId: "i0000000000000000000000000a" },
+    { endpoint: "com.example.orders", commands: ["create", "list"] },
+    { endpoint: "com.example.orders", commands: ["list"], instanceId: "i0000000000000000000000000b" },
+  ];
+  const a = parsePersonaEndpoints(forward, "t");
+  const b = parsePersonaEndpoints([...forward].reverse(), "t");
+  ok("a reordered endpoints list parses to the same canonical list", JSON.stringify(a) === JSON.stringify(b), { a, b });
+  ok("two instances of one endpoint stay two entries beside the class entry",
+    a?.length === 3 && a.filter((e) => e.instanceId !== undefined).length === 2, a);
+  ok("a reordered list, pinned entries included, lowers to the same capabilities",
+    JSON.stringify(lowerPersonaEndpoints(a)) === JSON.stringify(lowerPersonaEndpoints(b)));
+  ok("each pinned entry lowers to its instance rail alone plus that instance's describe",
+    JSON.stringify(lowerPersonaEndpoints(a).filter((c) => c.instanceId !== undefined).map((c) => `${c.command}@${c.instanceId}:${c.instanceOnly}`)) ===
+      JSON.stringify(["list@i0000000000000000000000000a:true", "describe@i0000000000000000000000000a:true", "list@i0000000000000000000000000b:true", "describe@i0000000000000000000000000b:true"]),
+    lowerPersonaEndpoints(a));
+  const refuse = (label: string, body: string, want: RegExp) => {
+    const f = join(dir, `ep-bad-${label.replace(/\W+/g, "-")}.md`);
+    writeFileSync(f, `---\nname: bad\nsubscribe: []\nendpoints: ${body}\n---\n`);
+    let err = "";
+    try { loadAgentFile(f); } catch (e) { err = (e as Error).message; }
+    ok(`endpoints refuses ${label}`, want.test(err), err);
+  };
+  refuse("a scalar", "com.example.orders", /must be a list/);
+  refuse("an unknown entry key", "[{ endpoint: com.example.orders, commands: [list], target: self }]", /unknown key target/);
+  refuse("a journal flag", "[{ endpoint: com.example.orders, commands: [list], journal: true }]", /unknown key journal/);
+  refuse("a single-label endpoint", "[{ endpoint: manager, commands: [spawn] }]", /single-label endpoint/);
+  refuse("the reserved describe", "[{ endpoint: com.example.orders, commands: [describe] }]", /reserved command "describe"/);
+  refuse("the reserved cancel", "[{ endpoint: com.example.orders, commands: [cancel] }]", /reserved command "cancel"/);
+  refuse("a wildcard command", "[{ endpoint: com.example.orders, commands: ['*'] }]", /not a valid command token/);
+  refuse("an empty commands list", "[{ endpoint: com.example.orders, commands: [] }]", /non-empty commands/);
+  refuse("a non-string command", "[{ endpoint: com.example.orders, commands: [[list]] }]", /commands must be strings/);
+  refuse("a malformed instance", "[{ endpoint: com.example.orders, commands: [list], instanceId: X }]", /not a valid lifecycle token/);
+}
+
+// 15) define-persona treats endpoints as policy, as it treats capabilities: only the explicit argument
+//     sets it, a redefine that omits it keeps the stored list, and prompt frontmatter grants nothing.
+{
+  const ep = [{ endpoint: "com.example.orders", commands: ["list"] }];
+  const fromPrompt = composeWirePersona({ name: "w", prompt: "---\nsubscribe: []\nendpoints:\n  - endpoint: com.example.orders\n    commands: [list]\n---\nbody" });
+  ok("an endpoints block in the prompt's frontmatter grants nothing", fromPrompt.endpoints === undefined, fromPrompt.endpoints);
+  const set = composeWirePersona({ name: "w", prompt: "body", endpoints: ep });
+  ok("the explicit argument sets endpoints on create", JSON.stringify(set.endpoints) === JSON.stringify(ep));
+  const kept = composeWirePersona({ name: "w", prompt: "new body" }, { ...set });
+  ok("a redefine that omits endpoints keeps the stored list", JSON.stringify(kept.endpoints) === JSON.stringify(ep));
+  const cleared = composeWirePersona({ name: "w", prompt: "new body", endpoints: [] }, { ...set });
+  ok("a redefine with [] clears it", Array.isArray(cleared.endpoints) && cleared.endpoints.length === 0);
+  const promptOnRedefine = composeWirePersona({ name: "w", prompt: "---\nsubscribe: []\nendpoints:\n  - endpoint: com.example.billing\n    commands: [quote]\n---\nbody" }, { ...set });
+  ok("prompt frontmatter on a redefine does not replace the stored list", JSON.stringify(promptOnRedefine.endpoints) === JSON.stringify(ep));
+}
 
 console.log(`\nagent-file yaml smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -799,8 +799,9 @@ let P = "";
   c("an admissible edit prints the report and exits 0",
     migrated === undefined && process.exitCode === undefined && captured().includes("admissible"),
     { err: migrated instanceof Error ? migrated.message.slice(0, 120) : "", exit: process.exitCode, out: captured().slice(0, 200) });
-  c("the report says the walk's count and the hash it would move to",
-    /accounts for \d+ journal row/.test(captured()) && /moves to sha256:[0-9a-f]/.test(captured()), captured().split("\n").slice(0, 2).join(" | "));
+  c("the report says the walk's count and identifies the unchanged program",
+    /accounts for \d+ journal row/.test(captured()) && /program unchanged:.*sha256:[0-9a-f]/.test(captured())
+      && captured().includes("already completed (terminal)") && !captured().includes("moves to"), captured());
   c("and the one line that names what a commit would file, and that this filed nothing",
     captured().includes("a commit would file this report") && captured().includes("filed nothing"), captured().split("\n").at(-1) ?? "");
   // THE STORE READS EMPTY: the check decides, it does not file. Read back through the same core

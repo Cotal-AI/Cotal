@@ -24,7 +24,7 @@ import {
 import { connectOrExit } from "@cotal-ai/workspace";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 
-type Values = { space?: string; server?: string; creds?: string; limit?: string; durable?: string; json?: boolean };
+type Values = { space?: string; server?: string; creds?: string; limit?: string; durable?: string };
 
 /** A short presence watch, the shape `send.ts` polls: an `offline` card still counts as a resolved
  *  peer (the recipient may be dead, that is exactly what this verb exists to inspect). */
@@ -141,18 +141,14 @@ export async function runPending(args: ParsedArgs): Promise<void> {
       max_msgs_per_subject: streamInfo.config.max_msgs_per_subject,
       discard: streamInfo.config.discard,
     };
-    if (values.json) {
-      console.log(JSON.stringify(facts));
-    } else {
-      console.log(durable);
-      console.log(`pending ${facts.pending}`);
-      console.log(`ack-pending ${facts.ackPending}`);
-      console.log(`delivered ${facts.delivered}`);
-      console.log(`ack-floor ${facts.ackFloor}`);
-      console.log(`created ${facts.created}`);
-      console.log(`frontier ${facts.frontier}`);
-      console.log(`max_age ${facts.max_age} max_msgs_per_subject ${facts.max_msgs_per_subject} discard ${facts.discard}`);
-    }
+    console.log(durable);
+    console.log(`pending ${facts.pending}`);
+    console.log(`ack-pending ${facts.ackPending}`);
+    console.log(`delivered ${facts.delivered}`);
+    console.log(`ack-floor ${facts.ackFloor}`);
+    console.log(`created ${facts.created}`);
+    console.log(`frontier ${facts.frontier}`);
+    console.log(`max_age ${facts.max_age} max_msgs_per_subject ${facts.max_msgs_per_subject} discard ${facts.discard}`);
 
     // Bounded read of recent candidate ids from the ack floor - an ephemeral ordered consumer,
     // never acked, never durable. Not proof of a hole: it names what is there, nothing more.
@@ -175,18 +171,13 @@ export async function runPending(args: ParsedArgs): Promise<void> {
           try {
             for await (const m of iter) {
               const body = JSON.parse(new TextDecoder().decode(m.data)) as { id: string; from?: Partial<EndpointRef>; ts: number };
-              if (values.json) {
-                // Keep the legacy --json output unchanged, including its candidate lines.
-                console.log(`  ${body.id}  from=${String(body.from)}  ts=${body.ts}`);
-              } else {
-                // `from=` is the sender principal the broker bound into the stored subject. The card is
-                // the sender's own claim, so its name and role print last, as a label and nothing more.
-                const sender = parseSubject(m.subject)?.sender;
-                if (!sender) throw new Error(`unparseable DM subject ${m.subject}`);
-                const card = body.from;
-                const label = typeof card?.name === "string" ? `  label=${peerLabel({ name: card.name, role: typeof card.role === "string" ? card.role : undefined })}` : "";
-                console.log(`  ${body.id}  from=${sender}  ts=${body.ts}${label}`);
-              }
+              // `from=` is the sender principal the broker bound into the stored subject. The card is
+              // the sender's own claim, so its name and role print last, as a label and nothing more.
+              const sender = parseSubject(m.subject)?.sender;
+              if (!sender) throw new Error(`unparseable DM subject ${m.subject}`);
+              const card = body.from;
+              const label = typeof card?.name === "string" ? `  label=${peerLabel({ name: card.name, role: typeof card.role === "string" ? card.role : undefined })}` : "";
+              console.log(`  ${body.id}  from=${sender}  ts=${body.ts}${label}`);
               seen++;
               if (seen >= pendingCandidates) break;
             }

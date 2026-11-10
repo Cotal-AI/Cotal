@@ -289,7 +289,10 @@ refused `restart` leaves a running manager as it was and says the running manage
 running. Any other failure of that check, such as an IdP that does not answer, is left to the start.
 In a folder
 that hosts the space, `stop` and `cotal down` need no sign-in: the broker, the records and the
-process belong to this folder, so the stop reads the manager's own local receipt.
+process belong to this folder, so the stop reads the manager's own local receipt. For a stack
+recorded by PID, `cotal down` checks missing manager or delivery pidfiles using this root's signing
+authority, without contacting the IdP. A daemon still renewing its lease blocks the stop before
+any process is stopped. Missing signing authority refuses the check rather than skipping it.
 
 The manager these verbs act on is the space's one manager service: `manager` when `cotal manager
 start` saved it, or `stack-manager` when `cotal up` did. Stderr names the saved service when it is
@@ -343,8 +346,9 @@ so a fresh machine or container has its connectors before the manager boots; `st
 
 ## Start a manager for a hosted space [#start-a-manager-for-a-hosted-space]
 
-A hosted space runs its broker elsewhere, so nothing on your machine starts a manager for it. Start
-one:
+A hosted space runs its broker elsewhere. `cotal daemon setup --space <space> --idp <url>` hosts
+its Manager on this computer and resumes it after a daemon restart. To run a separate Manager
+without the machine daemon:
 
 ```bash
 cotal manager start --space <space> --runtime <orca|tmux|pty>

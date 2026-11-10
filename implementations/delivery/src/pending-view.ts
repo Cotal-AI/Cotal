@@ -34,7 +34,7 @@ async function uniquePresence(ep: CotalEndpoint, name: string): Promise<Presence
 }
 
 /** One finite read receipt. It never acknowledges a DM or claims that candidate IDs prove a hole. */
-export async function pendingView(args: ParsedArgs): Promise<void> {
+export async function pendingView(args: ParsedArgs, command: "pending" | "deliver" = "pending"): Promise<void> {
   validatePendingArguments(args);
   const values = args.values as { space?: string; server?: string; creds?: string; durable?: string; limit?: string };
   const requested = args.positionals[0]!;
@@ -143,7 +143,7 @@ export async function pendingView(args: ParsedArgs): Promise<void> {
   }
   const readFailed = result.candidateRead !== "bounded-from-ack-floor" || warnings.some((warning) => warning.code === "CANDIDATE_READ_UNAVAILABLE" || warning.code === "CANDIDATE_UNREADABLE" || warning.code === "EPHEMERAL_CLEANUP_UNCONFIRMED" || warning.code === "READER_CLOSE_UNCONFIRMED");
   const partialMessage = warnings.find((warning) => warning.code === "EPHEMERAL_CLEANUP_UNCONFIRMED" || warning.code === "READER_CLOSE_UNCONFIRMED" || warning.code === "CANDIDATE_READ_UNAVAILABLE" || warning.code === "CANDIDATE_UNREADABLE")?.message ?? "Candidate message IDs are a bounded read, not proof of complete history, delivery or absence of a hole.";
-  writeResult(presentationOf(args.values), { command: "pending", target: { space, requested, durable }, result,
+  writeResult(presentationOf(args.values), { command, target: { space, requested, durable }, result,
     ...(readFailed ? { completeness: "partial" as const, partial: { message: partialMessage } } : {}), warnings }, (data): Report => ({ sections: [
     { title: "Held DM durable", blocks: [{ kind: "fields", rows: [["Space", space], ["Durable", data.durable], ["Pending", String(data.pending)], ["Ack pending", String(data.ackPending)], ["Delivered sequence", String(data.delivered)], ["Ack floor", String(data.ackFloor)], ["Created", data.created], ["Frontier", String(data.frontier)], ["Retention max age", String(data.maxAge)], ["Per-subject maximum", String(data.maxMsgsPerSubject)], ["Discard", data.discard], ["Candidate read", data.candidateRead]] }, { kind: "lines", lines: ["Broker-reported consumer facts only. A held message is not proof it was delivered or read by the recipient."] }] },
     { title: "Recent candidate IDs", blocks: [{ kind: "lines", lines: data.candidates.length ? data.candidates.map((row) => `${row.id}  from=${row.from}  ts=${row.ts}`) : [data.candidateRead === "bounded-from-ack-floor" ? "No candidates in this bounded read; history completeness is not established." : "Candidate read unavailable or skipped."] }, { kind: "lines", lines: ["Candidates start after the ack floor and do not prove a hole. No DM was acknowledged or native durable deleted."] }] },

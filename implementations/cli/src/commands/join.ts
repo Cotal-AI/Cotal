@@ -12,6 +12,16 @@ import {
   partsToText,
   peerLabel,
   isConsumerNotFound,
+  credsClaims,
+  idFromCreds,
+  DEV_OWNER,
+  dmStream,
+  dmDurable,
+  chatStream,
+  chatHistDurable,
+  chatSubject,
+  importNativeSubjectPermissions,
+  issuedPermitsPattern,
   type Delivery,
   type EndpointKind,
   type PresenceStatus,
@@ -55,6 +65,28 @@ function joinAuthFailure(e: unknown, space: string, credsLifecycle?: string): Co
     });
   }
   return undefined;
+}
+
+/** Diagnose the lifecycle-keyed grants of a static agent credential. The broker still
+ * authenticates it first and enforces admission, provisioning and the current ACL. */
+function checkCredentialJoin(creds: string, space: string, uid: string, channel: string): void {
+  const pub = credsClaims(creds).nats?.pub;
+  const actor = idFromCreds(creds);
+  const inboxPrefix = `$JS.API.CONSUMER.INFO.${dmStream(space)}.dm_${DEV_OWNER}-${actor}-`;
+  // Other profiles do not carry an agent's lifecycle-keyed inbox. Leave their refusal
+  // to the broker rather than interpreting their unrelated grants as a wrong UID.
+  if (!pub?.allow?.some((subject) => subject.startsWith(inboxPrefix))) return;
+  const permission = importNativeSubjectPermissions({ pub }).publish;
+  const inbox = `$JS.API.CONSUMER.INFO.${dmStream(space)}.${dmDurable(DEV_OWNER, actor, uid)}`;
+  if (!issuedPermitsPattern(permission, inbox))
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential does not grant inbox access for lifecycle ${uid} in ${space}`, {
+      remedy: "pass --lifecycle-uid with the lifecycle UID that `cotal auth mint <name> --provision` reported for this credential; a different UID cannot bind its inbox",
+    });
+  const history = `$JS.API.CONSUMER.CREATE.${chatStream(space)}.${chatHistDurable(DEV_OWNER, actor, uid)}.${chatSubject(space, "*", "*", channel)}`;
+  if (!issuedPermitsPattern(permission, history))
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential does not grant read access to #${channel} in ${space}`, {
+      remedy: `ask the space's owner to mint it with \`cotal auth mint <name> --provision --allow-subscribe ${channel}\`, then join with the lifecycle UID that mint reports; add --allow-publish ${channel} if you also need to post`,
+    });
 }
 
 /** Refresh a manual user-auth registration's policy before anything is dialed. A refresh that fails
@@ -129,7 +161,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       "refused",
       "USAGE_INVALID",
       "--creds is lifecycle-paired (SPEC 13.1): the credential's durable grants name exact lifecycle-keyed resources, so a made-up uid would name durables it cannot bind",
-      { remedy: "pass --lifecycle-uid <uid> (or set COTAL_LIFECYCLE_UID) with the uid minted alongside this credential at provision time", selfContained: true },
+      { remedy: "pass --lifecycle-uid <uid> (or set COTAL_LIFECYCLE_UID) with the UID that `cotal auth mint <name> --provision` reported for this credential", selfContained: true },
     );
 
   let space: string;
@@ -171,6 +203,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
     await reachableOrThrow(server, auth);
+    if (values.creds) checkCredentialJoin(auth.creds!, space, lifecycleUid!, channel);
   } else {
     // Self-mint: a bare `cotal join` becomes a console on the running mesh. In auth mode it self-provisions
     // exactly like the manager does at spawn — open a short-lived `provisioner`, pre-create THIS console's

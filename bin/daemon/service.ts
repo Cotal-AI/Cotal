@@ -40,7 +40,23 @@ import {
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness } from "./register.js";
+import { ACCOUNT_MISMATCH_MESSAGE } from "./connect.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
+
+/** Map registration outcomes consistently for setup and service status. */
+export function fromRegister(r: RegisterResult): ServiceConnectionState {
+  switch (r.outcome) {
+    case "approval-required": case "pending": return "approval-pending";
+    case "refused": return "reason" in r ? "refused" : "unavailable";
+    case "not-signed-in": return "not-signed-in";
+    case "not-registered": return "not-registered";
+    case "not-user-auth": case "unsupported-by-space": return "unsupported";
+    case "account-mismatch": return "account-mismatch";
+    case "conflict": return "conflict";
+    case "local-state-error": return "local-state-error";
+    default: return "unavailable";
+  }
+}
 
 const SENTENCE: Record<ServiceConnectionState, string> = {
   "not-requested": "this daemon has not requested registration with this space; run `cotal daemon register --space <s>` first",
@@ -49,10 +65,12 @@ const SENTENCE: Record<ServiceConnectionState, string> = {
   unsupported: "the space's auth service does not host service endpoints, so the daemon cannot connect to it",
   "approval-pending": "the space owner has not approved this daemon yet, or the space is still registering it; nothing is connected",
   refused: "the space refused this daemon's registration; nothing is connected",
+  "account-mismatch": ACCOUNT_MISMATCH_MESSAGE,
   conflict: "this daemon's registration does not match what the space holds; nothing is connected",
   connecting: "the daemon is connecting to the space; it is not connected yet",
   connected: "connected: the broker accepted this daemon's service connection and the space accepted it as ready",
   unavailable: "the space or its broker could not be reached; nothing is connected, and connecting again retries the same requests",
+  "local-state-error": "the daemon could not use its local service records; inspect its identity, registration, ready and renewal records and their permissions, and restore the original record if damaged; nothing is connected",
   ended: "the space ended this daemon's service authority; nothing is connected, and connecting again will not reconnect it",
   disconnected: "not connected",
 };
@@ -173,18 +191,6 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     l.closing = undefined;
   }
 
-  const fromRegister = (r: RegisterResult): ServiceConnectionState => {
-    switch (r.outcome) {
-      case "approval-required": case "pending": return "approval-pending";
-      case "refused": return "reason" in r ? "refused" : "unavailable";
-      case "not-signed-in": return "not-signed-in";
-      case "not-registered": return "not-registered";
-      case "not-user-auth": case "unsupported-by-space": return "unsupported";
-      case "account-mismatch": case "conflict": return "conflict";
-      default: return "unavailable";
-    }
-  };
-
   /** Ask the space to accept this witness as ready, on a fresh access bearer from the source, under
    *  one persisted ready request per witness. Sets `connected` only if the broker is still up. */
   async function ready(l: Live, space: string, witness: ServiceRegistrationWitness, store: SecretStore, dir: string): Promise<void> {
@@ -193,7 +199,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     if (!flush) { l.state = "unavailable"; return; }
     await flush();
     const requestId = await readyRequestId(store, witness);
-    if (requestId === undefined) { l.state = "unavailable"; return; }
+    if (requestId === undefined) { l.state = "local-state-error"; return; }
     let token: string;
     try { token = await l.source!.bearer(); } catch { return sourceFailed(l); }
     let answer;
@@ -225,6 +231,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   function sourceFailed(l: Live): void {
     const s = l.source?.state();
     if (s?.state === "ended") { l.state = "ended"; l.reason = ENDED.has(s.reason) ? s.reason : "unrecognized"; }
+    else if (s?.state === "unavailable" && s.cause === "store") l.state = "local-state-error";
     else l.state = "unavailable";
   }
 

@@ -210,6 +210,31 @@ space, such as `send` or `history`, is refused with `DEPENDENCY_UNAVAILABLE`, be
 with the folder, and its Next names the same `down`.
 
 
+### Missing home records
+
+If the Cotal home is removed while a controller stack runs, the project's journal still names
+its members. `status` reports missing member records rather than assuming another home holds
+them. Run `cotal down --dry-run` in that project to inspect the recovery stop, then
+`cotal down --yes`. This Linux recovery route requires the journal's launch-time Cotal home,
+machine, boot, account and each member's process creation pin. A different home, an older journal
+without these pins, partial record loss, an unresolved replacement or a maintenance operation
+refuses before any member stops. Restore the original records in those cases.
+
+Recovery sends SIGTERM to each exact pinned member, manager first and broker last, and records
+each confirmed exit in the project journal. It does not use a bare PID, recreate service records
+or claim native manager-impact inspection. The manager uses its default agent shutdown policy.
+`--with-agents` is refused. The stop waits up to 90 seconds for the manager and 30 seconds for each
+other member. An unconfirmed exit returns `OPERATION_UNKNOWN` and leaves later members running.
+Run the stop again after that member exits. A reused PID is never signalled. The store and trust
+remain. After recovery, run `cotal space create <space>` in the project, then `cotal up`.
+If the journal already records a completed stop and every pinned member is gone, repeated `down`
+returns a no-op without confirmation, signals or journal writes. Retiring a stopped instance also
+retires its process pin; `up --no-manager` preserves the pin of an earlier stopped manager.
+A planned member gains its new pin only after readiness succeeds. If that start is interrupted,
+missing-record recovery refuses rather than treating the earlier process's exit as the new one's.
+An unconfirmed first launch also refuses when its home records are missing, even if no instance ID
+reached the project journal. Missing launch evidence does not mean that nothing started.
+
 ### Already-stopped stacks
 
 A bare `down` in a folder whose stack is already stopped stops nothing. It reports that the stack
@@ -824,6 +849,11 @@ line: a later `up` needs `cotal up --user-auth --idp <auth base URL>`, and each 
 and non-Linux targets refuse. It applies the same maintenance, deployment and
 process-custody guards as store reset. It does not stop a process to become
 eligible.
+
+When the reset removes a static-auth signing account, its preview, confirmation and receipt warn that
+credentials exported with `auth mint --out` stop working on this space after the next `up`.
+The warning is also in the JSON envelope as `EXPORTED_CREDENTIALS_INVALIDATED`. Exported files
+stay where they are. Mint replacements after `up`; no remote credential is revoked by this reset.
 
 Its `--dry-run` validates the existing local trust chain and inventories the
 native identity paths, including provider-declared secret keys, without running

@@ -96,6 +96,7 @@ export const CATALOG = Object.freeze({
   // An inline persona is the helper's identity and is hashed whole, so a malformed one is refused
   // at the call, before a key is minted, and never journalled.
   L3049: "`spawn` inline persona is malformed",
+  L3050: "Agent argument is not a handle",
 
   // ---- L4xxx: runtime semantics ---------------------------------------------------------------
   L4001: "Permit exhausted",

@@ -134,9 +134,11 @@ then its help on stderr, writes nothing on stdout, exits 1, and does not run. Th
 `--help` prints for the same words, so a refused `cotal persona create` shows the `persona create`
 help. A refusal for a missing
 `--yes` outside an interactive terminal prints its error and a remedy that names `--yes`, without the
-help. A control character in
-a word the error quotes, from the command line or from a file, shows as its `\uXXXX` escape, so a
-typed word cannot clear the screen or retitle the terminal. A refusal that repeats an argument
+help. Control, format and default-ignorable characters in
+a word the error quotes, from the command line or from a file, show as `\uXXXX` escapes. The same
+applies to the report's Name field, so an invisible character such as U+200B is visible as `\u200b`.
+Astral characters use two UTF-16 escapes. Printable letters and ordinary combining marks stay
+unchanged. A typed word cannot clear the screen or retitle the terminal. A refusal that repeats an argument
 longer than 128 characters, such as an unknown command, a space name or a run id, shows its first
 128 characters followed by `… (<n> characters)`, in text and in the `--json` message. The command
 still checks and uses the whole value. A usage error is found before any effect, so it never seeds
@@ -228,6 +230,9 @@ envelope cannot be written to stdout, and the exit code is the same either way. 
 `--json` is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout. A word that names none of a command's
 subcommands and is near none of them is a usage error that lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.
+
+An interrupted controller `up --json` writes its envelope on stdout and keeps the recovery notice
+on stderr. It exits with the signal's code, as [startup](cli-startup.mdx#up) describes.
 
 A subcommand's help has its own `structured output` line, and only the forms that show one write a
 document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ext root` and

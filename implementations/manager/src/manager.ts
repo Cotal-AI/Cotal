@@ -8,6 +8,9 @@ import Headless from "@xterm/headless";
 import {
   CotalEndpoint,
   canonicalJson,
+  copyPersonaEndpoints,
+  lowerPersonaEndpoints,
+  parsePersonaEndpoints,
   MANAGED_HANDOFF_KIND,
   accountFromCreds,
   credsClaims,
@@ -96,7 +99,7 @@ import {
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -495,8 +498,27 @@ function ownLists<T extends { subscribe?: readonly string[]; allowSubscribe?: re
   };
 }
 
+/** The inline record is admitted the same way, one level deeper: the record itself, its lists, and
+ *  each `endpoints` entry with its commands. It is still untrusted here, so a shape the validator
+ *  will refuse is copied as far as it goes and refused where it is read. */
+function ownPersona(record: InlinePersona): InlinePersona {
+  if (record === null || typeof record !== "object" || Array.isArray(record)) return record;
+  const owned = ownLists({ ...record });
+  const endpoints: unknown = owned.endpoints;
+  if (Array.isArray(endpoints))
+    owned.endpoints = endpoints.map((e: unknown) => {
+      if (e === null || typeof e !== "object" || Array.isArray(e)) return e;
+      const entry = { ...(e as Record<string, unknown>) };
+      if (Array.isArray(entry.commands)) entry.commands = [...entry.commands];
+      return entry;
+    }) as InlinePersona["endpoints"];
+  return owned;
+}
+
 export interface ManagerOptions {
   space: string;
+  /** Pin first-party connector launches to the embedding process's captured generation. */
+  expectedConnectorGeneration?: string;
   /** Hosted pooled control requires signerless authority and either an explicit non-custodial
    * runtime or explicit execution: none. It never borrows local signing authority. */
   pooled?: boolean;
@@ -851,6 +873,7 @@ export interface ManagerResumeAgent {
     allowSubscribe: string[];
     allowPublish?: string[];
     capabilities?: string[];
+    endpoints?: PersonaEndpoint[];
     events: boolean;
     shareTools?: readonly string[];
     /** Original connector fork source, not a captured id for the currently running host session. */
@@ -1053,6 +1076,8 @@ interface ManagedLaunch {
   allowSubscribe: string[];
   allowPublish?: string[];
   capabilities?: string[];
+  /** The persona's endpoint commands, as minted. Renewal re-mints their rows. */
+  endpoints?: PersonaEndpoint[];
   events: boolean;
   shareTools?: readonly string[];
   forkSource?: string;
@@ -1105,7 +1130,7 @@ function revokedRunRefusal(runId: string, revoked: RunRevocation): string {
   return `run ${runId} was revoked by ${revoked.by} (${revoked.reason}); a revoked run starts no helper (SPEC 14.8)`;
 }
 
-const INLINE_PERSONA_KEYS = ["prompt", "role", "model", "variant", "description", "subscribe", "allowSubscribe", "allowPublish", "capabilities", "save"];
+const INLINE_PERSONA_KEYS = ["prompt", "role", "model", "variant", "description", "subscribe", "allowSubscribe", "allowPublish", "capabilities", "endpoints", "save"];
 
 /** Read an inline persona into the definition a catalog file would load as, refusing what a file
  *  load refuses plus any shape the closed record does not take. The body is literal text: nothing in
@@ -1141,6 +1166,7 @@ function inlinePersonaDef(name: string, raw: unknown): { def: AgentDef; save: bo
     allowSubscribe: list("allowSubscribe"),
     allowPublish: list("allowPublish"),
     capabilities: list("capabilities"),
+    endpoints: parsePersonaEndpoints(rec.endpoints, "persona"),
   };
   // The checks a file load makes on these fields: channel names, and the read set within the read ACL.
   try {
@@ -1150,6 +1176,12 @@ function inlinePersonaDef(name: string, raw: unknown): { def: AgentDef; save: bo
     throw new Error(`persona: ${rejectionText(e)}`);
   }
   return { def, save: rec.save === true };
+}
+
+/** The refusal a user-auth mesh gives a persona that names `endpoints`. */
+function userMeshEndpointsRefusal(door: "spawn" | "define-persona"): string {
+  return `${door}: this mesh has per-user auth, where endpoint access comes from the service owner's grants and a persona cannot hand it on (SPEC 13.15). ` +
+    "Drop `endpoints` from the persona, and ask the operator to grant the helper with `cotal service-endpoint grant` once it runs.";
 }
 
 /** A user-mode spawn's provisioning options. Both arms take this one declaration because
@@ -1614,6 +1646,7 @@ export class Manager {
   private secretStoreIdentity?: SecretStoreIdentity;
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
+  private readonly expectedConnectorGeneration?: string;
   private readonly executionState: { kind: "none" } | { kind: "runtime" };
   // Declared only: no own Runtime slot exists in the none arm.
   declare private readonly runtime: Runtime;
@@ -1909,6 +1942,7 @@ export class Manager {
   private leaseStopping = false;
   /** The class-2 renewal owner's half-TTL schedule; armed only on auth meshes. */
   private credRenewTimer?: ReturnType<typeof setInterval>;
+  private resumeCredRenewal?: () => void;
   /** #2073: the `endpoint-serve` credential's OWN renewal, armed from its `[renewAt, exp)` window
    *  (`credsRenewalDelayMs`) rather than left to `credRenewTimer`'s boot-phased TTL/4 tick, which can
    *  miss the window by ordering. Re-armed at registration and after every successful re-mint;
@@ -1967,6 +2001,8 @@ export class Manager {
   }
 
   constructor(opts: ManagerOptions) {
+    if (opts.expectedConnectorGeneration !== undefined && opts.expectedConnectorGeneration !== MANAGER_VERSION)
+      throw new Error(`expected connector generation ${opts.expectedConnectorGeneration} differs from this Manager's loaded generation ${MANAGER_VERSION}; restart from the installed CLI`);
     if (opts.onServiceIdentity !== undefined && typeof opts.onServiceIdentity !== "function") throw new Error("manager onServiceIdentity must be a trusted embedding callback");
     if (opts.execution !== undefined && opts.execution !== "runtime" && opts.execution !== "none")
       throw new Error(`unknown manager execution capability ${JSON.stringify(opts.execution)}`);
@@ -2000,6 +2036,7 @@ export class Manager {
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
     if (opts.secretStore) this.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
     this.installedExtensions = opts.installedExtensions ?? false;
+    this.expectedConnectorGeneration = opts.expectedConnectorGeneration;
     this.pooled = opts.pooled === true;
     this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
     if (!this.remoteAuthority) {
@@ -2564,20 +2601,24 @@ export class Manager {
         } catch {}
       }
       const intervalMs = Math.min(credRenewIntervalMs(5 * 60), credRenewIntervalMs(standingTtl));
-      this.credRenewTimer = setInterval(async () => {
-        try {
-          if (this.remoteAuthority?.renewStandingBundle) await this.renewRemoteStandingBundle();
-          else await this.renewRemoteExecutor();
-        } catch (e) {
-          console.error(`! remote manager renewal pass failed: ${rejectionText(e)}`);
-        }
-        try {
-          await this.runHosting?.renew();
-        } catch (e) {
-          console.error(`! remote run-hosting renewal pass failed: ${rejectionText(e)}`);
-        }
-      }, intervalMs);
-      this.credRenewTimer.unref?.();
+      this.resumeCredRenewal = () => {
+        if (this.credRenewTimer || this.leaseStopping) return;
+        this.credRenewTimer = setInterval(async () => {
+          try {
+            if (this.remoteAuthority?.renewStandingBundle) await this.renewRemoteStandingBundle();
+            else await this.renewRemoteExecutor();
+          } catch (e) {
+            console.error(`! remote manager renewal pass failed: ${rejectionText(e)}`);
+          }
+          try {
+            await this.runHosting?.renew();
+          } catch (e) {
+            console.error(`! remote run-hosting renewal pass failed: ${rejectionText(e)}`);
+          }
+        }, intervalMs);
+        this.credRenewTimer.unref?.();
+      };
+      this.resumeCredRenewal();
     }
     // stop() fences before it waits for an accepted startup reconciliation terminal. Once that
     // terminal drains, start() and stop() resume from the same await boundary; start must observe
@@ -3360,6 +3401,7 @@ export class Manager {
       this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
       this.credRenewTimer.unref?.();
     }
+    this.resumeCredRenewal?.();
     // Exit watchers were suppressed while the fence stood: reconcile every child that died during
     // preparation now, or its slot/credential footprint would linger unreaped after the abort.
     for (const agent of [...this.agents.values()]) {
@@ -3544,6 +3586,7 @@ export class Manager {
         allowSubscribe: a.launch.allowSubscribe,
         allowPublish: a.launch.allowPublish,
         capabilities: a.launch.capabilities,
+        ...(a.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(a.launch.endpoints) } : {}),
         events: a.launch.events,
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
@@ -6510,12 +6553,14 @@ export class Manager {
    *  on MANIFEST membership FIRST — so a live `cotal ext remove` is honored even though the registry
    *  still holds a connector imported earlier this session — then returns the registry hit or lazily
    *  imports the providing package (transactional + single-flight, via the workspace primitive).
+   *  An expected generation also revalidates cached first-party providers under that lock.
    *  Fail-loud with an install hint; no fallback. */
   private async resolveConnector(name: string): Promise<Connector> {
     if (!this.installedExtensions) return registry.resolve<Connector>("connector", name);
     if (!manifestExtensionNames("connector").includes(name)) throw new Error(connectorInstallHint(name));
     const already = registry.all<Connector>("connector").find((c) => c.name === name);
-    return already ?? materializeFromManifest<Connector>({ kind: "connector", name }, { hint: (ref) => connectorInstallHint(ref.name) });
+    if (this.expectedConnectorGeneration === undefined && already) return already;
+    return materializeFromManifest<Connector>({ kind: "connector", name }, { hint: (ref) => connectorInstallHint(ref.name), expectedGeneration: this.expectedConnectorGeneration });
   }
 
   /** Connector names the manager can spawn WITHOUT importing: the manifest on the published binary,
@@ -7094,6 +7139,7 @@ export class Manager {
     // the lists and the restart policy as admitted.
     opts = ownLists(opts);
     if (opts.resolved) opts.resolved = ownLists(opts.resolved);
+    if (opts.persona !== undefined) opts.persona = ownPersona(opts.persona);
     if (opts.supervise) {
       opts.supervise = { restarts: opts.supervise.restarts, windowMs: opts.supervise.windowMs };
       // The budget is checked here, where it is held, not only at the wire: an in-process caller of
@@ -7259,6 +7305,10 @@ export class Manager {
     let allowSubscribe: string[];
     let allowPublish: string[] | undefined;
     let capabilities: string[] | undefined;
+    // The endpoint commands the persona hands on (SPEC 13.15), as the persona names them and as the
+    // mint grants them. A manifest launch carries none: its schema has no slot for them.
+    let personaEndpoints: PersonaEndpoint[] | undefined;
+    let endpoints: EpCapability[] = [];
     let model = opts.model;
     let variant = opts.variant;
     let launchOptions = opts.launchOptions;
@@ -7321,6 +7371,13 @@ export class Manager {
       allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? scoped?.allowSubscribe ?? [];
       allowPublish = opts.allowPublish ?? def.allowPublish ?? scoped?.allowPublish;
       capabilities = def.capabilities;
+      personaEndpoints = copyPersonaEndpoints(def.endpoints);
+      // A user-auth mesh grants endpoint access through the service owner's records, which a spawn
+      // cannot write (SPEC 13.15), so a persona that names the field is refused there, `[]` included,
+      // before any bound or exemption reads it.
+      if (personaEndpoints !== undefined && this.meshMode === "user")
+        return { ok: false, error: userMeshEndpointsRefusal("spawn") };
+      endpoints = lowerPersonaEndpoints(personaEndpoints);
       // #651: fold the persona's model into the launch record, mirroring the variant line below
       // and the manifest branch above. Without this, a persona-file model (the common pin source)
       // never reaches `launch.model`, so the connector runs the seat on it while `ps --wide`/`--json`
@@ -7348,6 +7405,7 @@ export class Manager {
       ...(allowPublish !== undefined ? { allowPublish } : {}),
       ...(role !== undefined ? { role } : {}),
       ...(capabilities !== undefined ? { capabilities } : {}),
+      ...(endpoints.length ? { endpoints } : {}),
     }, events);
     if (boundRefusal) return { ok: false, error: boundRefusal };
     // A run saves for the caller it was admitted for, whose catalog reads then find the copy.
@@ -7368,6 +7426,7 @@ export class Manager {
           allowSubscribe: [...allowSubscribe],
           allowPublish: [...(allowPublish ?? [])],
           capabilities: capabilities?.length ? [...capabilities] : undefined,
+          endpoints: copyPersonaEndpoints(personaEndpoints?.length ? personaEndpoints : undefined),
         }
       : undefined;
     // Checked after every path has resolved its selectors: a direct `startAgent` call skips the
@@ -7721,6 +7780,7 @@ export class Manager {
               allowPublish,
               role,
               capabilities,
+              ...(endpoints.length ? { endpointCapabilities: endpoints } : {}),
               lifecycleUid,
               expiresAt: exp,
               issued,
@@ -7796,6 +7856,9 @@ export class Manager {
         allowSubscribe,
         allowPublish,
         capabilities,
+        // Always the list the launch resolved, `[]` included, so the session never reads a persona
+        // file that may have changed since.
+        endpoints: copyPersonaEndpoints(personaEndpoints) ?? [],
         events,
         cwd,
       };
@@ -7872,6 +7935,7 @@ export class Manager {
           allowSubscribe,
           allowPublish,
           capabilities,
+          ...(personaEndpoints?.length ? { endpoints: copyPersonaEndpoints(personaEndpoints) } : {}),
           events,
           shareTools: opts.shareTools,
           forkSource: opts.resume,
@@ -8570,6 +8634,7 @@ export class Manager {
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,
           capabilities: entry.launch.capabilities,
+          endpoints: copyPersonaEndpoints(entry.launch.endpoints) ?? [],
           events: entry.launch.events,
           cwd: entry.launch.cwd,
         };
@@ -8654,6 +8719,7 @@ export class Manager {
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,
           capabilities: entry.launch.capabilities,
+          ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
           events: entry.launch.events,
           shareTools: entry.launch.shareTools,
           forkSource: entry.launch.forkSource,
@@ -9311,6 +9377,9 @@ export class Manager {
       await nc.drain().catch(() => nc.close());
     }
   }
+
+  /** Parent-local inventory read. It does not enter maintenance or change admission. */
+  hostedSeatCount(): number { return this.agents.size; }
 
   /** The served manager-level health summary. Given an owner, `agentCount` counts only that owner's
    *  seats, as `ps` lists them ({@link psOwnerFilter}), so a person reading a shared Manager does not
@@ -11804,6 +11873,7 @@ export class Manager {
         allowSubscribe: entry.launch.allowSubscribe,
         allowPublish: entry.launch.allowPublish,
         capabilities: entry.launch.capabilities,
+        ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
         events: entry.launch.events,
         shareTools: entry.launch.shareTools,
         forkSource: entry.launch.forkSource,
@@ -12250,6 +12320,7 @@ export class Manager {
         allowPublish: a.launch.allowPublish,
         role: a.role,
         capabilities: a.launch.capabilities,
+        ...(a.launch.endpoints?.length ? { endpointCapabilities: lowerPersonaEndpoints(a.launch.endpoints) } : {}),
         lifecycleUid: a.lifecycleUid,
         expiresAt: exp,
         issued,
@@ -12781,6 +12852,12 @@ export class Manager {
       return (Array.isArray(v) ? v : [v]).map((x) => String(x));
     };
     const capabilities = strList(args.capabilities);
+    let endpointArg: PersonaEndpoint[] | undefined;
+    try {
+      endpointArg = parsePersonaEndpoints(args.endpoints, "define-persona");
+    } catch (e) {
+      return { ok: false, error: rejectionText(e) };
+    }
     // Read, authorize and compose against the catalog as it is now. Nothing yields between this and
     // the write, so no other call in this manager can change the file in between. The handler does
     // not serialize with other processes; their writes are outside this single-manager guarantee.
@@ -12811,6 +12888,7 @@ export class Manager {
               allowSubscribe: strList(args.allowSubscribe),
               allowPublish: strList(args.allowPublish),
               capabilities,
+              endpoints: copyPersonaEndpoints(endpointArg),
             },
             existing,
           ),
@@ -12821,22 +12899,33 @@ export class Manager {
     };
     let composed = compose();
     if ("reply" in composed) return composed.reply;
-    // The bound reads the persona as written, so a redefine that omits `capabilities` has the list it
-    // keeps checked too. Resolving the definer's grant yields, so the catalog is read again after it.
-    if (composed.def.capabilities?.length) {
-      const refusal = await this.definerCapabilityRefusal(caller, authenticated);
+    // The bound reads the persona as written, so a redefine that omits `capabilities` or `endpoints`
+    // has the list it keeps checked too. Resolving the definer's grant yields, so the catalog is read
+    // again after it.
+    if (composed.def.capabilities?.length || composed.def.endpoints !== undefined) {
+      const refusal = await this.definerGrantRefusal(caller, authenticated);
       composed = compose();
       if ("reply" in composed) return composed.reply;
       const kept = composed.def.capabilities ?? [];
-      const refused = kept.length ? refusal(kept) : undefined;
-      if (refused)
+      const keptEndpoints = lowerPersonaEndpoints(composed.def.endpoints);
+      // A user-auth persona may not name the field at all; elsewhere `[]` hands on nothing to bound.
+      const namesEndpoints = composed.def.endpoints !== undefined;
+      const refused = kept.length || keptEndpoints.length || (namesEndpoints && this.meshMode === "user")
+        ? refusal({ capabilities: kept, endpoints: keptEndpoints, namesEndpoints })
+        : undefined;
+      if (refused) {
+        const fromSaved = [
+          ...(capabilities === undefined && kept.length ? ["capabilities"] : []),
+          ...(endpointArg === undefined && composed.def.endpoints?.length ? ["endpoints"] : []),
+        ];
         return {
           ok: false,
           code: "permission-denied",
-          error: capabilities === undefined
-            ? `${refused} These come from the saved persona, which a redefine without \`capabilities\` keeps; pass the capabilities the definer holds, or [] to clear them.`
+          error: fromSaved.length
+            ? `${refused} ${fromSaved.map((f) => `\`${f}\``).join(" and ")} come${fromSaved.length === 1 ? "s" : ""} from the saved persona, which a redefine that omits ${fromSaved.length === 1 ? "it keeps" : "them keeps"}; pass what the definer holds, or [] to clear ${fromSaved.length === 1 ? "it" : "them"}.`
             : refused,
         };
+      }
     }
     try {
       saveAgentFile(path, composed.def);
@@ -12847,23 +12936,27 @@ export class Manager {
   }
 
   /** Resolve what a persona's definer may put into it, as a check that returns the refusal for
-   *  capabilities it does not hold, or `undefined` when it holds them all. The check itself does not
-   *  yield. An open mesh mints no credential, so nothing is bounded there. A static definer is
-   *  bounded by its issued evidence, as a spawner is; a user-auth definer by its own ledger row's
-   *  scope, under the ledger's token rule, with `admin` exempt. A hosted manager reads no ledger, so
+   *  capabilities or endpoint commands it does not hold, or `undefined` when it holds them all. The
+   *  check itself does not yield. An open mesh mints no credential, so nothing is bounded there. A
+   *  static definer is bounded by its issued evidence, as a spawner is; a user-auth definer by its
+   *  own ledger row's scope, under the ledger's token rule, with `admin` exempt. A user-auth persona
+   *  cannot name `endpoints` at all, `[]` included (SPEC 13.15). A hosted manager reads no ledger, so
    *  it refuses. A later spawn of the persona is bounded again against its own spawner. */
-  private async definerCapabilityRefusal(caller: string, authenticated: EpCaller | undefined): Promise<(capabilities: string[]) => string | undefined> {
+  private async definerGrantRefusal(caller: string, authenticated: EpCaller | undefined): Promise<(grant: { capabilities: string[]; endpoints: EpCapability[]; namesEndpoints: boolean }) => string | undefined> {
     if (this.meshMode === "open") return () => undefined;
     if (this.meshMode === "static") {
       const run = await this.spawnRun(authenticated, undefined);
       const bound = await this.staticSpawnBound(authenticated, run !== undefined && "admission" in run ? run : undefined);
-      return (capabilities) => this.spawnBoundRefusal(bound, { capabilities }, false, "define-persona");
+      return ({ capabilities, endpoints }) => this.spawnBoundRefusal(bound, { capabilities, ...(endpoints.length ? { endpoints } : {}) }, false, "define-persona");
     }
     if (this.remoteAuthority)
-      return () => "define-persona: this manager's user authority is hosted, so it cannot read the definer's grant and its persona can grant no capabilities.";
+      return ({ capabilities, namesEndpoints }) => namesEndpoints
+        ? userMeshEndpointsRefusal("define-persona")
+        : capabilities.length ? "define-persona: this manager's user authority is hosted, so it cannot read the definer's grant and its persona can grant no capabilities." : undefined;
     const p = parsePrincipalKey(caller);
     const scope = p ? await resolveAuthProvider().actorScope({ dir: userAuthStateDir(this.workspaceRoot, this.space), owner: p.owner, actor: p.actor }) : undefined;
-    return (capabilities) => {
+    return ({ capabilities, namesEndpoints }) => {
+      if (namesEndpoints) return userMeshEndpointsRefusal("define-persona");
       if (scope?.includes("admin")) return undefined;
       const over = capabilities.filter((c) => !capabilityWithin(scope ?? [], c));
       if (!over.length) return undefined;

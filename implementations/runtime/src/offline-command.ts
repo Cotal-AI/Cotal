@@ -9,14 +9,41 @@ export interface OfflineValues {
   handler?: string;
 }
 
-function requireRegularSource(file: string, stat: Stats): void {
+type InputKind = "workflow source" | "simulation results script";
+
+function requireRegularFile(file: string, stat: Stats, input: InputKind): void {
   if (stat.isFile()) return;
   const kind = stat.isDirectory() ? "a directory" : stat.isFIFO() ? "a FIFO (named pipe)"
     : stat.isCharacterDevice() ? "a character device" : stat.isBlockDevice() ? "a block device"
     : stat.isSocket() ? "a socket" : "an unsupported file type";
-  throw new CommandFailure("refused", "USAGE_INVALID", `the workflow source ${file} is ${kind}, not a workflow source file`, {
-    target: { file }, remedy: "save the program in a regular file and use that path instead",
+  throw new CommandFailure("refused", "USAGE_INVALID", `the ${input} ${file} is ${kind}, not a ${input} file`, {
+    target: { file }, remedy: `save the ${input === "workflow source" ? "program" : "JSON results script"} in a regular file and use that path instead`,
   });
+}
+
+function readRegularFile(file: string, input: InputKind): Buffer {
+  try {
+    requireRegularFile(file, statSync(file), input);
+    // A path can be replaced after stat: opening must not wait for a FIFO's writer, and the
+    // descriptor we read must still be a regular file. Never reopen the path for the read.
+    const fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      requireRegularFile(file, fstatSync(fd), input);
+      return readFileSync(fd);
+    } finally { closeSync(fd); }
+  }
+  catch (error) {
+    if (isCommandFailure(error)) throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    let link = false;
+    try { link = lstatSync(file).isSymbolicLink(); } catch { /* the path itself is absent */ }
+    const [refusal, cause] = code === "ENOENT"
+      ? ["TARGET_NOT_FOUND", link ? "is a link whose target does not exist" : file === "-" && input === "workflow source" ? "does not exist; run reads its program from a file, and - does not mean standard input" : "does not exist"] as const
+      : code === "EISDIR" ? ["USAGE_INVALID", `is a directory, not a ${input} file`] as const
+      : code === "EACCES" || code === "EPERM" ? ["PERMISSION_DENIED", "is not readable with this user's permissions"] as const
+      : ["TARGET_NOT_FOUND", `could not be read (${code ?? "unknown error"})`] as const;
+    throw new CommandFailure("refused", refusal, `the ${input} ${file} ${cause}`, { target: { file }, remedy: `check that ${file} exists and this account can read it` });
+  }
 }
 
 /** A workflow program's source, or the refusal every run verb gives a file it cannot read, that is
@@ -27,29 +54,7 @@ function requireRegularSource(file: string, stat: Stats): void {
  *  file as start does. Bytes that are not UTF-8 are refused rather than replaced, so the program a
  *  run records is the file's own text. */
 export function sourceOf(file: string): string {
-  let bytes: Buffer;
-  try {
-    requireRegularSource(file, statSync(file));
-    // A path can be replaced after stat: opening must not wait for a FIFO's writer, and the
-    // descriptor we read must still be a regular file. Never reopen the path for the read.
-    const fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK);
-    try {
-      requireRegularSource(file, fstatSync(fd));
-      bytes = readFileSync(fd);
-    } finally { closeSync(fd); }
-  }
-  catch (error) {
-    if (isCommandFailure(error)) throw error;
-    const code = (error as NodeJS.ErrnoException).code;
-    let link = false;
-    try { link = lstatSync(file).isSymbolicLink(); } catch { /* the path itself is absent */ }
-    const [refusal, cause] = code === "ENOENT"
-      ? ["TARGET_NOT_FOUND", link ? "is a link whose target does not exist" : file === "-" ? "does not exist; run reads its program from a file, and - does not mean standard input" : "does not exist"] as const
-      : code === "EISDIR" ? ["USAGE_INVALID", "is a directory, not a workflow source file"] as const
-      : code === "EACCES" || code === "EPERM" ? ["PERMISSION_DENIED", "is not readable with this user's permissions"] as const
-      : ["TARGET_NOT_FOUND", `could not be read (${code ?? "unknown error"})`] as const;
-    throw new CommandFailure("refused", refusal, `the workflow source ${file} ${cause}`, { target: { file }, remedy: `check that ${file} exists and this account can read it` });
-  }
+  const bytes = readRegularFile(file, "workflow source");
   if (bytes.length === 0) throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow source file is empty, and a run's source must not be empty", { target: { file }, remedy: `write the program into ${file}` });
   try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow source file is not valid UTF-8, so it was not read as a program", { target: { file }, remedy: `save ${file} as UTF-8 text` }); }
@@ -57,17 +62,15 @@ export function sourceOf(file: string): string {
 
 function scriptOf(file: string | undefined): SimScript {
   if (file === undefined) return {};
+  const bytes = readRegularFile(file, "simulation results script");
+  if (bytes.length === 0) throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} is empty`, { target: { file }, remedy: `write a JSON results object into ${file}` });
+  let text: string;
+  // Strip only a leading encoding signature. BOMs inside JSON strings remain data.
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script is not valid UTF-8, so it was not simulated", { target: { file }, remedy: `save ${file} as UTF-8 text` }); }
   let value: unknown;
-  try {
-    const bytes = readFileSync(file);
-    let text: string;
-    try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
-    catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script is not valid UTF-8, so it was not simulated", { target: { file }, remedy: `save ${file} as UTF-8 text` }); }
-    value = JSON.parse(text);
-  } catch (error) {
-    if (error instanceof CommandFailure) throw error;
-    throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation handler must be a readable JSON results script", { target: { file } });
-  }
+  try { value = JSON.parse(text); }
+  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} is not valid JSON`, { target: { file }, remedy: `save a JSON results object in ${file}` }); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script must be an object");
   const script = value as Record<string, unknown>;
   const fields = new Set(["turns", "asks", "checkpoints", "events", "clock", "faults"]);

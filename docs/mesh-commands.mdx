@@ -26,7 +26,7 @@ The output schemas below describe successful command results, not the protocol e
 
 ## manager
 
-Cluster `ai.cotal.manager`, revision 46. 43 commands.
+Cluster `ai.cotal.manager`, revision 47. 43 commands.
 
 | Command                                                   | Capability          | Class     | Target modes |
 | --------------------------------------------------------- | ------------------- | --------- | ------------ |
@@ -1332,7 +1332,7 @@ Registered declaration:
   "class": "ephemeral",
   "targeted": false,
   "capability": "manager.spawn",
-  "inputDigest": "sha256:fdb061219ac54df53789b2dfba3ff709271075e4115be6f5142d731b609269fe",
+  "inputDigest": "sha256:64c597ae615c7f036549ac9e7e6aa6e2c629a90c8965cc7eceb0bb4eac53766d",
   "outputDigest": "sha256:d883a9f97f7c034772c7cbc28b22d63cf69870ba072d470c2f7b104f455e2e83"
 }
 ```
@@ -1454,6 +1454,31 @@ Input schema:
           "type": "array",
           "items": {
             "type": "string"
+          }
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "endpoint",
+              "commands"
+            ],
+            "properties": {
+              "endpoint": {
+                "type": "string"
+              },
+              "commands": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "instanceId": {
+                "type": "string"
+              }
+            }
           }
         },
         "save": {
@@ -2931,7 +2956,7 @@ Registered declaration:
   "targeted": false,
   "capability": "manager.read",
   "inputDigest": "sha256:67695dbcf54a9f34a8d1fdf88c46da0808c5cc3a045e14b8a55cad725944999d",
-  "outputDigest": "sha256:9a44037dfa81572346d83a2593b95e63f84d6366dd1357226923ffdac159aec0"
+  "outputDigest": "sha256:b0979319b29095b917451e3de9b8a9d80827e07cad3cba44047acd30c05c827f"
 }
 ```
 
@@ -3095,6 +3120,7 @@ Output schema:
           "asks": {
             "type": "string"
           },
+          "schema": {},
           "addressee": {
             "type": "string"
           },
@@ -3587,7 +3613,7 @@ Registered declaration:
   "class": "ephemeral",
   "targeted": false,
   "capability": "manager.persona",
-  "inputDigest": "sha256:680a2b5b79a268835add7bd20ed131f65f3ae333936f50faeb90bbfeee67ca97",
+  "inputDigest": "sha256:b1aa72d7b2aa88cde94bde2e97e3fd612dfada752b52e8c9b0acbae5f528dea4",
   "outputDigest": "sha256:a121baba27357c3710b20023422927b0c11d4d1d58a542f909efd7ad1152751c"
 }
 ```
@@ -3645,6 +3671,31 @@ Input schema:
       "type": "array",
       "items": {
         "type": "string"
+      }
+    },
+    "endpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "endpoint",
+          "commands"
+        ],
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "commands": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "instanceId": {
+            "type": "string"
+          }
+        }
       }
     }
   }

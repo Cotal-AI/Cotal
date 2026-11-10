@@ -8,10 +8,11 @@
  *
  * What stops a planted persona from carrying POLICY — `endpointCapabilities`, a pinned instance route,
  * anything else that shapes a grant — is not a trust boundary and not the caller's honesty. It is that
- * the `define-persona` input schema is CLOSED over content fields plus one bounded policy field, and
- * that `opDefinePersona` CONSTRUCTS its record rather than spreading caller input. `capabilities` has
- * a slot because the manager bounds it against the definer before the write (SPEC 13.15), so a peer
- * puts only what it holds into a persona. `owner` still has no slot. Channel grants, role, and agent
+ * the `define-persona` input schema is CLOSED over content fields plus two bounded policy fields, and
+ * that `opDefinePersona` CONSTRUCTS its record rather than spreading caller input. `capabilities` and
+ * `endpoints` have slots because the manager bounds each against the definer before the write (SPEC
+ * 13.15), so a peer puts only what it holds into a persona. `endpoints` lowers only to untargeted
+ * request rows and refuses a reference endpoint by name. `owner` still has no slot. Channel grants, role, and agent
  * are content (#1351 / #395): a peer may name them, or they may arrive in a leading frontmatter block
  * inside `persona`. The manager still sets `owner`.
  *
@@ -27,7 +28,8 @@
  *   1. exactly ONE published document is the persona input (identification is unambiguous)
  *   2. it is `additionalProperties: false`            <- the closure itself
  *   3. its property set is exactly the content fields (name, persona, model, role, agent,
- *      subscribe, allowSubscribe, allowPublish) plus the bounded `capabilities`, never owner
+ *      subscribe, allowSubscribe, allowPublish) plus the bounded `capabilities` and `endpoints`,
+ *      never owner
  *
  * (1) is a control, not decoration: if the finder matched zero documents every later assertion would
  * be vacuously true, and if it matched several this file would be grading an arbitrary one of them.
@@ -36,8 +38,9 @@
  * rather than merges — that is the second half of the guarantee and it lives in the handler, not the
  * schema. A future handler that spread caller input would pass this file. The schema is the half that
  * is checkable from a published artifact; the handler half is covered only by review. Nor does it
- * cover the capability bound: `smoke:spawn-grant-door` drives it through the served door, and
- * `smoke:spawn-inline-persona` against a real user-auth ledger.
+ * cover the bound itself: `smoke:spawn-grant-door` drives the capability bound through the served
+ * door, and `smoke:spawn-inline-persona` drives both fields against issued evidence and a real
+ * user-auth ledger.
  *
  * Run: pnpm smoke:persona-input-closed
  */
@@ -76,7 +79,7 @@ if (personaInputs.length !== 1) {
 
 const schema = personaInputs[0]!;
 const props = isDoc(schema.properties) ? Object.keys(schema.properties).sort() : [];
-const EXPECTED = ["agent", "allowPublish", "allowSubscribe", "capabilities", "model", "name", "persona", "role", "subscribe"];
+const EXPECTED = ["agent", "allowPublish", "allowSubscribe", "capabilities", "endpoints", "model", "name", "persona", "role", "subscribe"];
 
 check("the define-persona input schema is `additionalProperties: false` (a planted persona cannot carry policy)",
   schema.additionalProperties === false, { additionalProperties: schema.additionalProperties });

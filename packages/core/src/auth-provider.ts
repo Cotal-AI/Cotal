@@ -678,13 +678,13 @@ export function resolveAuthProvider(): AuthProvider {
   return providers[0];
 }
 
-/** Where a {@link ServiceEndpointRenewal} stands. `unavailable` is an outage the next pull retries with
- *  the same request; `ended` is terminal, and every later pull refuses without sending anything. No
- *  state carries a token. */
+/** Where a {@link ServiceEndpointRenewal} stands. `unavailable` can be retried with the same request;
+ *  `cause: "store"` identifies a persistence problem to inspect before retrying. `ended` is terminal,
+ *  and every later pull refuses without sending anything. No state carries a token. */
 export type ServiceEndpointRenewalState =
   | { readonly state: "idle" }
   | { readonly state: "current"; readonly accessExpiresAt: number; readonly renewalExpiresAt: number }
-  | { readonly state: "unavailable" }
+  | { readonly state: "unavailable"; readonly cause?: "store" }
   | { readonly state: "ended"; readonly reason: string }
   | { readonly state: "closed" };
 
@@ -701,7 +701,7 @@ export interface ServiceEndpointRenewal {
    *  Concurrent `bearer()` and `credential()` calls share one request; the persisted request ids
    *  and the terminal behaviour are the same. */
   credential(): Promise<ServiceEndpointCredential>;
-  /** The current state, with expiries only. */
+  /** The current state, with fixed failure classifications and expiries. */
   state(): ServiceEndpointRenewalState;
   /** The space's deny-all sentinel creds the endpoint presents with the bearer, known after the first success. */
   readonly sentinelCreds: string | undefined;

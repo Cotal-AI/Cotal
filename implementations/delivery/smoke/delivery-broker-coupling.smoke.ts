@@ -108,7 +108,7 @@ try {
   // never in the operator's. (First draft called it without the override and the record silently
   // landed in the real registry while every cell graded a no-record default.) The children's `env`
   // was snapshotted above and is unaffected.
-  const writeRecord = (entry: { server: string; root: string; origin?: "up" | "manual" }): void => {
+  const writeRecord = (entry: { server: string; root: string; origin?: "up" | "manual" | "catalog"; catalogOwner?: string }): void => {
     const prev = process.env.COTAL_HOME;
     process.env.COTAL_HOME = join(dir, "cotal-home");
     try {
@@ -159,9 +159,20 @@ try {
   let r2 = spawnDaemon(["--space", space, "--creds", credsPath], wsRoot);
   let r2Log = await r2.done();
   check(
-    "R2 an unreachable RECORDED broker is refused naming that URL (not the loopback default), without `Run: cotal up` for a manual record",
-    r2Log.includes(deadServer) && !r2Log.includes("nats://127.0.0.1:4222") && !r2Log.includes("Run: `cotal up`"),
+    "R2 an unreachable recorded broker refuses with space forget, not legacy removal or local startup",
+    r2.proc.exitCode === 1 && r2Log.includes(deadServer) && !r2Log.includes("nats://127.0.0.1:4222") &&
+      r2Log.includes(`cotal space forget ${space}`) && !r2Log.includes("cotal meshes rm") && !r2Log.includes("cotal up"),
     r2Log,
+  );
+
+  writeRecord({ server: deadServer, root: wsRoot, origin: "catalog", catalogOwner: "test-provider" });
+  const catalog = spawnDaemon(["--space", space, "--creds", credsPath], wsRoot);
+  const catalogLog = await catalog.done();
+  check(
+    "R2 catalog-owned registration names provider removal and sync, not locally refused forget",
+    catalog.proc.exitCode === 1 && catalogLog.includes(deadServer) && catalogLog.includes("remove it from the provider's catalog") &&
+      catalogLog.includes("cotal sync") && !catalogLog.includes("cotal space forget") && !catalogLog.includes("cotal meshes rm") && !catalogLog.includes("cotal up"),
+    catalogLog,
   );
 
   // R3: an explicit --server that DIFFERS from the record: refused BEFORE any dial, naming both.

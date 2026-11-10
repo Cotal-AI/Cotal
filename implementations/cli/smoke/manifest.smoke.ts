@@ -189,6 +189,12 @@ agents: { a: { persona: ./a.md, resume: sess-123 } }
 channels: { general: { subscribe: [a] } }
 `, "Unrecognized key");
 
+// A manifest agent has no `endpoints` slot (SPEC 13.15): the key is refused, never forwarded.
+fails(`${HEAD}
+agents: { a: { persona: ./a.md, endpoints: [{ endpoint: com.example.orders, commands: [list] }] } }
+channels: { general: { subscribe: [a] } }
+`, "Unrecognized key");
+
 // undeclared name inside allowPublish specifically
 fails(`${HEAD}
 agents: { a: ./a.md }
@@ -346,6 +352,14 @@ const declared = new Set(["general", "review"]);
   );
   assert.ok(issues.some((i) => i.message.includes("wildcard")));
 }
+
+// a persona that lists endpoints is refused by name under either personaPermissions, `[]` included,
+// so a manifest launch never starts it without them
+for (const personaPermissions of ["include", "reject"] as const)
+  for (const endpoints of [[{ endpoint: "com.example.orders", commands: ["list"] }], []]) {
+    const { issues } = prepareAgent(agent({ persona: "/x/a.md", personaPermissions }), persona({ endpoints }), declared);
+    assert.ok(issues.some((i) => i.message.includes("lists `endpoints`") && i.message.includes("cotal spawn --detach")), `${personaPermissions} ${JSON.stringify(endpoints)}`);
+  }
 
 // empty-ACL agent → warning; loud when it has capabilities
 {

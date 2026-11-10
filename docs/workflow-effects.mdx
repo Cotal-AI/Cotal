@@ -24,6 +24,13 @@ must be renewed after a reconnect or manager restart.
 
 ## Spawn ownership [#spawn-ownership-and-cleanup]
 
+Agent arguments take the handle returned by `spawn` or `participant`, not a name such as
+`"bob"`. Keep the returned value and pass it to `turn`, `ask`, `monitor`, `replied` and `down`.
+The same rule applies to members of `notify` and `conclave` and to `message`'s `from` option.
+A malformed handle is refused at evaluation with L3050, naming the argument to repair, before
+the effect is dispatched. The host still checks whether that handle belongs to this run and
+whether the operation supports its kind.
+
 `spawn` is
 the manager's spawn action submitted under the step's own identity: the goal binds under the step's
 request id, so a resumed run re-attaches to the same seat instead of allocating a second one, a

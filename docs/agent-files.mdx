@@ -62,6 +62,7 @@ It requires a YAML mapping between `---` fences and a valid `name`.
 | `agent` | string | Connector pinned by the persona, such as `claude` or `jcode`. An explicit `--harness` overrides it; the legacy `--agent` spelling is also accepted. The pin overrides caller and manager defaults. An unregistered connector is refused. See [Persona lookup](#persona-lookup). |
 | `launchOptions` | map | Connector-specific options passed through to the application. Claude uses flags; OpenCode uses agent configuration; Codex uses `-c` overrides. Hermes, Jcode, and pi refuse options. `--opt key=value` overrides the same key in the file. A role governed by `modelPolicy` launches without options. See [Launch agents](launch-agents.mdx#spawning-agents). |
 | `capabilities` | string[] | Control permissions. `spawn` grants host-launch authority, named stop, and persona definition. `run` grants workflow start, resume, answer, status, and list, plus the spawn permissions needed by programs; it also exposes `cotal_run`. Missing capabilities grant none. `role:<r>` lets the agent hand role `r` to a helper it spawns. On a static mesh it also binds role `r`'s task queue, which is how the spawn bound sees that the agent holds the role; on a user-auth mesh the ledger checks it. `admin` is never a persona capability. See [Identity and auth](identity-and-auth.mdx). |
+| `endpoints` | list | Endpoint commands handed to the agent, as `{ endpoint, commands }` entries such as `{ endpoint: com.example.orders, commands: [list, create] }`. Add `instanceId` to hand on the commands on that one instance only; the agent then passes it as `instance` to `cotal_describe` and `cotal_invoke`. Entries for the same endpoint and instance merge and each command is listed once. On a static mesh a spawn refuses any command the spawner's own credential does not carry; the operator's own spawn is not checked. An open mesh grants every endpoint, so there the list only tells the agent what it was handed. A per-user auth mesh refuses the field, an empty list included: the operator grants endpoint access there with `cotal service-endpoint grant`. A single-label endpoint such as `manager`, the `describe` and `cancel` commands, and any other key are refused. A manifest launch refuses a persona that names the field. See [Spawn authority](security-boundaries.mdx#spawn-authority). |
 | `owner` | string | Policy set by `definePersona` to a signed-in creator or one of the manager's own seats. On a static space, another creator, including the CLI, leaves the file operator-owned. Only that owner or an admin can redefine the file over the wire. An operator-written file without an owner requires admin authority for wire redefinition. This field is not peer-supplied content. |
 | Any other scalar key | string | Stored in `meta` for connector-specific hints. Unmodeled maps and lists are not stored. A saved definition cannot use `meta` to overwrite modeled fields or the renamed `channels` and `publish` fields. The live session overlays connector-owned `connector`, `model`, `variant`, and `host` metadata, so the file cannot misstate its connector or machine. |
 
@@ -116,7 +117,7 @@ Links to repository docs or other sources give the agent a place to check facts 
 
 For a one-off helper, pass its persona on the spawn ([inline personas](#inline-personas)).
 Define a persona when a broad one is worth reusing.
-`cotal_persona(name, prompt, model?, role?, agent?, subscribe?, allowSubscribe?, allowPublish?, capabilities?, announce?)` sends content to the manager, which writes an agent file.
+`cotal_persona(name, prompt, model?, role?, agent?, subscribe?, allowSubscribe?, allowPublish?, capabilities?, endpoints?, announce?)` sends content to the manager, which writes an agent file.
 `cotal_spawn(name, role?, agent?, model?, variant?, join?)` then launches it.
 Both tools also accept an `instance` pin for one full manager instance.
 The [tool catalog](mcp-tools.mdx) defines their full argument sets.
@@ -129,11 +130,12 @@ On redefinition, existing fields remain unless an explicit tool argument changes
 Explicit `model`, `role` and `agent` arguments must be nonblank strings. Empty or whitespace-only values are refused with `bad-request` naming the field before any file is written. Omit a field to retain its inherited value.
 Malformed leading frontmatter is refused with `prompt-frontmatter`.
 A definition the manager could not load back is refused and nothing is written, for example one whose `subscribe` names a channel or family that no `allowSubscribe` entry contains.
-`capabilities` is policy: only an explicit `capabilities` argument sets it, and the manager's `define-persona` command checks it against the definer before it writes.
-A definer can put into a persona only capabilities it holds itself, and a later spawn of the persona is checked again against its spawner.
-A redefine that omits `capabilities` keeps the saved list, and that list is checked the same way, so a definer that no longer holds a saved capability passes the ones it holds, or `[]` to clear them.
+`capabilities` and `endpoints` are policy: only an explicit argument sets each one, and the manager's `define-persona` command checks it against the definer before it writes.
+A definer can put into a persona only capabilities and endpoint commands it holds itself, and a later spawn of the persona is checked again against its spawner.
+A redefine that omits either field keeps the saved list, and that list is checked the same way, so a definer that no longer holds a saved entry passes the ones it holds, or `[]` to clear them.
 An open mesh checks nothing, and a manager whose user authority is hosted refuses any capability.
-`owner` has no tool argument, and prompt frontmatter cannot grant capabilities or claim ownership.
+A per-user auth mesh refuses a definition that names `endpoints`, `[]` included.
+`owner` has no tool argument, and prompt frontmatter cannot grant capabilities or endpoint commands or claim ownership.
 A new definition records a signed-in creator or one of the manager's own seats as owner. Other static-space definitions remain operator-owned.
 
 A persona without `capabilities` has no `spawn` permission.
@@ -163,7 +165,7 @@ Unowned operator files remain launchable.
 
 A spawn can carry its helper's persona itself.
 An agent passes it as the `persona` argument of `cotal_spawn`, which forwards it as a `persona` record on the manager's `spawn` command.
-The record holds `prompt` (the persona body), `role`, `model`, `variant`, `description`, `subscribe`, `allowSubscribe`, `allowPublish`, `capabilities` and `save`.
+The record holds `prompt` (the persona body), `role`, `model`, `variant`, `description`, `subscribe`, `allowSubscribe`, `allowPublish`, `capabilities`, `endpoints` and `save`.
 The spawn's own `prompt` is still the first turn the helper receives.
 `name` is the helper's name, and a live name gets a number as a persona identity does.
 A spawn with `persona` takes no `config` or `identity`.
@@ -182,7 +184,7 @@ An open or user-auth mesh logs the failure with the path and leaves the file for
 No spawn can name a snapshot as its persona file.
 
 `save: true` also writes `.cotal/agents/<name>.md` under the requested name, for a persona worth reusing.
-The copy records the grant the spawn was checked against: every channel field, `[]` included, and the capabilities, without the helper's own event channel.
+The copy records the grant the spawn was checked against: every channel field, `[]` included, the capabilities and the endpoint commands, without the helper's own event channel.
 Its owner is the spawner, as with `cotal_persona`, and a copy a workflow run saves is owned by the run's starter.
 The write never replaces a file: a name the catalog already holds is refused before anything starts, so spawn that persona by name or save under another name.
 Each later spawn of the copy is bounded against its own spawner.

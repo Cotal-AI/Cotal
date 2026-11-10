@@ -56,10 +56,10 @@ Workflow admission requires this binding. Renewals preserve a generation only wh
 
 Agent files declare control authority. `capabilities: [spawn]` permits spawning, control of the caller's own children, and persona definition. `capabilities: [run]` adds workflow-run commands and includes the spawn set because a workflow may spawn agents.
 
-Without these capabilities, a peer retains self-despawn and the run-turn operations addressed to it. The exposed tools follow the grant. Persona content edits cannot add capabilities, and a definer can give a persona only capabilities it holds. See [capability grants](identity-authority.mdx#capabilities) for the full command and tool boundary.
+Without these capabilities, a peer retains self-despawn and the run-turn operations addressed to it. The exposed tools follow the grant. Persona content edits cannot add capabilities, and a definer can give a persona only capabilities and endpoint commands it holds. See [capability grants](identity-authority.mdx#capabilities) for the full command and tool boundary.
 
 <Callout type="warn" title="Spawn grants authority on the manager host">
-Spawn permits connector launch options on the manager host. Treat it as host-launch authority. A spawner hands its helper only the channels, role and capabilities it holds itself. Read the [host boundaries](security-boundaries.mdx#spawn-authority) before granting it.
+Spawn permits connector launch options on the manager host. Treat it as host-launch authority. A spawner hands its helper only the channels, role, capabilities and endpoint commands it holds itself. Read the [host boundaries](security-boundaries.mdx#spawn-authority) before granting it.
 </Callout>
 
 ## Per-user authentication [#per-user-authentication]

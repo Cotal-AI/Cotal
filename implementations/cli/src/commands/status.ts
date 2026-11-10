@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   CotalEndpoint,
+  agentFilePath,
   dialerFor,
   EpEnvelopeError,
   formatAge,
@@ -39,6 +40,7 @@ import {
   targetErrorSpace,
   type RolledBackRun,
   brokerAddressForDisplay,
+  brokerCheck,
   canonicalRoot,
   CLI_USER_ACTOR,
   codeSpan,
@@ -56,6 +58,7 @@ import {
   hasUserAuthState,
   homeCotalDir,
   cachedPreferences,
+  loadLaunchPersonaFile,
   resolvePreference,
   isMeshRegistryError,
   isWorkspaceTargetError,
@@ -94,6 +97,7 @@ import {
   preferencesFolderWarning,
   cotalDirLink,
   type Cell,
+  type BrokerCheck,
   type LocalProcess,
   type LocalProcessContext,
   type MaintenanceClaim,
@@ -188,6 +192,7 @@ export const statusFlags = [
  *  the second then reports as simply absent, so the two sections would describe different worlds.
  *  Resolve once, share the outcome, including the failure. */
 type Selected = { ok: true; target: MeshTarget } | { ok: false; error: unknown };
+type SelectedPreflight = Awaited<ReturnType<typeof preflightTarget>> | undefined;
 
 /** A project root with no registration or prepared space here, such as one whose space was
  *  forgotten. The resolver gives it the default broker address, which any broker may hold, so
@@ -264,6 +269,7 @@ export interface StatusResult {
     natsProblem: MachineStatus["natsProblem"];
     integrations: { name: string; state: "ok" | "warn" | "error" | "off"; text: string }[];
     connectors: { name: string; requires: string[]; missing: string[] }[] | null;
+    /** For a resolved space, the bare direct launch's persona and effective harness, including its pin. */
     defaults: { harness: string | null; persona: string | null } | null;
     skills: { state: "current" | "not-installed" | "behind" | "unreadable"; total: number; behind: number; retired: number; error: string | null };
     web: { installed: boolean | null; installedError: string | null; url: string | null; urlError: string | null };
@@ -318,7 +324,7 @@ export interface StatusResult {
       eventsRequired: boolean;
       modeChecked: boolean;
       current: boolean;
-      check: "reachable" | "unreachable" | "not-checked";
+      check: BrokerCheck | "not-checked";
       catalog: { name: string | null; fetchedAt: string | null; error: string | null } | null;
     }[];
     /** `account` is the IdP subject whose catalog this is, which its error line names instead of the
@@ -447,10 +453,11 @@ export async function status(args: ParsedArgs): Promise<void> {
   // THE RESPONDER AXIS (#1576), read ONCE and threaded into the rows that would otherwise claim
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
-  const responder = await readResponderAxis(selected);
+  const preflight = selected.ok && selected.target.mode !== "user" ? await preflightTarget(selected.target) : undefined;
+  const responder = await readResponderAxis(selected, preflight);
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
-  const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline);
-  const target = await readSelected(selected, responder, folder, gaps, hints);
+  const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight);
+  const target = await readSelected(selected, responder, folder, gaps, hints, preflight);
   // The note under the heading sends here for this folder's own stack cut off with no recorded
   // outcome under another selection. A blocked one is named with its block under `This folder's
   // space` and its step first in Next, so that note is left out here, with its --json warning. One
@@ -596,7 +603,22 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
   let defaults: StatusResult["machine"]["defaults"] = null;
   try {
     const context = { preferences: cachedPreferences(), space: selected.ok ? selected.target.space : undefined };
-    defaults = { harness: resolvePreference("harness", context).value, persona: resolvePreference("persona", context).value };
+    const persona = resolvePreference("persona", context);
+    defaults = { harness: resolvePreference("harness", context).value, persona: persona.value };
+    if (selected.ok) {
+      const path = agentFilePath(selected.target.root, persona.value!);
+      try {
+        const definition = loadLaunchPersonaFile(path);
+        defaults.harness = resolvePreference("harness", { ...context, pin: definition.agent }).value;
+      } catch (error) {
+        // A bare spawn writes the shipped, unpinned default only when the product default is absent.
+        // Every other failed read leaves the effective harness unknown, never the saved preference.
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT" || persona.winner?.source !== "default") {
+          defaults.harness = null;
+          gaps.add("DEFAULT_PERSONA_UNREADABLE", "the default launch persona could not be read and validated; its effective harness is unknown", { path });
+        }
+      }
+    }
   } catch (e) {
     // The refusal names the file and its problem, and its remedy is the next step.
     gaps.add("PREFERENCES_UNREADABLE", `the saved agent defaults could not be read: ${(e as Error).message}`, { path: preferencesPath() });
@@ -726,14 +748,13 @@ async function expectedDeliveryHolder(target: MeshTarget): Promise<string | unde
  *
  *  `leased` says whether the read found a delivery lease record. An open mesh runs no delivery
  *  daemon, so there a missing lease is the normal state rather than an unbound responder. */
-async function readResponderAxis(selected: Selected): Promise<{ state: DeliveryResponderState; leased: boolean }> {
+async function readResponderAxis(selected: Selected, preflight: SelectedPreflight): Promise<{ state: DeliveryResponderState; leased: boolean }> {
   let leased = false;
   if (!selected.ok) return { state: "unknown", leased };
   const target = selected.target;
   if (target.mode === "user") return { state: "unknown", leased };
   try {
-    const preflight = await preflightTarget(target);
-    if (!preflight.ok) return { state: "unknown", leased };
+    if (!preflight?.ok) return { state: "unknown", leased };
     const id = newIdentity();
     const creds = target.auth ? await mintCreds(target.auth, id, "observer") : undefined;
     const ep = new CotalEndpoint({
@@ -1140,7 +1161,7 @@ function deliveryDetail(live: boolean, responder: DeliveryResponderState): strin
  *  with its own recorded TLS requirement. A bare TCP/INFO probe would green-light a plaintext broker
  *  that has substituted for a TLS-required mesh — the FAIL1 attack — so a list that only asks "is
  *  anything listening" cannot report on the one property the record claims. */
-async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps, offline: readonly string[]): Promise<StatusResult["meshes"]> {
+async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps, offline: readonly string[], preflight: SelectedPreflight): Promise<StatusResult["meshes"]> {
   // A registry file that cannot be read is named, and the readable records are still listed and
   // checked. Only an absent directory or pointer is an empty registry or no current mesh.
   const unreadable: StatusResult["meshes"]["unreadable"] = [];
@@ -1171,6 +1192,15 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
   const chosen = selected.ok ? selected.target : undefined;
   // A `--server` that names another address is the only broker dialed for the selected space.
   const checked = (m: MeshEntry) => all || (m.space === chosen?.space && m.server === chosen.server);
+  const check = async (m: MeshEntry): Promise<BrokerCheck | "not-checked"> => {
+    if (!checked(m)) return "not-checked";
+    if (preflight && m.space === chosen?.space && m.server === chosen.server) {
+      if (preflight.ok) return "reachable";
+      if (preflight.kind === "slow-link" || preflight.kind === "broker-stopped" || preflight.kind === "unreachable") return preflight.kind;
+      return preflight.kind === "tls-trust" || preflight.kind === "tls-unsupported" ? "unreachable" : "reachable";
+    }
+    return brokerCheck(m.server, m.tlsRequired);
+  };
   const items = await Promise.all(
     entries.map(async (m) => ({
       space: m.space,
@@ -1182,7 +1212,7 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
       eventsRequired: m.policy?.events === "required",
       modeChecked: m.unchecked !== true,
       current: m.space === current,
-      check: checked(m) ? ((await isReachable(m.server, m.tlsRequired ? { tls: true } : {})) ? "reachable" as const : "unreachable" as const) : "not-checked" as const,
+      check: await check(m),
       catalog: m.origin === "catalog" ? { name: m.catalogName && m.catalogName !== m.space ? m.catalogName : null, fetchedAt: m.catalogFetchedAt ?? null, error: m.catalogError ?? null } : null,
     })),
   );
@@ -1237,7 +1267,7 @@ function rootStoreProblem(root: string): ReturnType<typeof storeWriteProblem> {
   try { return storeWriteProblem(recorded ?? join(root, ".cotal", "nats")); } catch { return undefined; }
 }
 
-async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[]): Promise<SelectedResult> {
+async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
@@ -1355,7 +1385,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     hints.push(moved.remedy);
     return { resolved: false, code: "moved-folder", message: moved.message };
   }
-  const preflight = await preflightTarget(target);
+  if (preflight === undefined) throw new Error("status: selected non-user target has no preflight observation");
   if (!preflight.ok) {
     // A `--server` address that is not the one recorded for the space says nothing about whether its
     // stack runs, so Next names that address as the refusal of other commands does. A stopped stack
@@ -1575,7 +1605,7 @@ function folderSection(f: StatusResult["folder"], selected: SelectedResult): Sec
 }
 
 function meshesSections(m: StatusResult["meshes"]): Section[] {
-  const check = { reachable: cell("reachable", "ok"), unreachable: cell("down", "failed"), "not-checked": cell("not checked", "hint") } as const;
+  const check = { reachable: cell("reachable", "ok"), unreachable: cell("down", "failed"), "slow-link": cell("not answering", "failed"), "broker-stopped": cell("broker process is stopped", "failed"), "not-checked": cell("not checked", "hint") } as const;
   const blocks: Section["blocks"][number][] = [];
   if (!m.items.length && !m.unreadable.length) blocks.push({ kind: "lines", lines: [cell("none", "hint")] });
   else
@@ -1768,7 +1798,7 @@ function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
   if (s.connection === "ok" || s.connection === "reachable") return stateCell("reachable", "ok");
   const states: Readonly<Record<string, string>> = {
     unreachable: "unreachable",
-    "slow-link": "connection timed out",
+    "slow-link": "not answering",
     "broker-stopped": `broker process ${s.brokerPid} is stopped`,
     "tls-trust": "TLS could not be verified",
     "tls-unsupported": "listener does not offer required TLS",
@@ -1805,7 +1835,7 @@ function spaceStateCell(r: StatusResult, entry: StatusResult["meshes"]["items"][
   // `--all` with a `--server` that names another, the row shows its own address's check.
   if (selected && r.selected.resolved && entry.check !== "not-checked" && r.selected.server !== null && r.selected.server === entry.server) return connectionCell(r.selected);
   if (entry.check === "not-checked") return "";
-  return stateCell(entry.check === "reachable" ? "reachable" : "unreachable", entry.check === "reachable" ? "ok" : "failed");
+  return stateCell(entry.check === "slow-link" ? "not answering" : entry.check === "broker-stopped" ? "broker process is stopped" : entry.check, entry.check === "reachable" ? "ok" : "failed");
 }
 
 /**
@@ -1888,7 +1918,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
     ...(r.stackManager ? [["Manager", r.stackManager.endpoint === "answered" ? stateCell("answering", "ok") : r.stackManager.endpoint === "not-answering" ? stateCell(`not answering · stack-manager pid ${r.stackManager.pid}`, "failed") : stateCell("endpoint not checked", "hint")] as [string, Cell]] : []),
     ["Access", s.mode === "user" ? "user sign-in" : s.mode === "auth" ? "static auth" : "open"],
     ["Project", s.rootGone ? stateCell(`${s.root} · folder is gone`, "failed") : s.root],
-    ["Default agent", r.machine.defaults ? `${r.machine.defaults.harness ?? "application not set"} · persona ${r.machine.defaults.persona ?? "not set"}` : stateCell("saved defaults could not be read", "failed")],
+    ["Default agent", r.machine.defaults ? `${r.machine.defaults.harness ?? "application unresolved"} · persona ${r.machine.defaults.persona ?? "not set"}` : stateCell("saved defaults could not be read", "failed")],
     ["Persona catalog", s.personas.default === "valid" ? "default available" : stateCell(s.personas.default === "invalid" ? "default is invalid" : s.personas.default === "unreadable" ? "could not be read" : "no default persona", s.personas.default === "invalid" || s.personas.default === "unreadable" ? "failed" : "hint")],
   ];
   if (s.tlsRequired) rows.push(["Transport", "TLS required"]);
@@ -2462,14 +2492,14 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
     return { name: "manager", verdict: lease || credential.kind === "user" ? "serving" : "not-serving", facts };
   } catch (e) {
     // A no-responder service rail or an absent manager registry is definitive no-service evidence.
-    // The lease and PID answer whether that missing service belongs to an extant component (not
-    // serving) or an absent one; any other failed probe remains a refusal.
+    // A dead local PID is absent even while its lease awaits expiry. Without a PID record, the
+    // lease still identifies an extant component; any other failed probe remains a refusal.
     const noService = managerNoService(e);
     facts.push(noService ? "serve no answer" : `serve probe refused: ${(e as Error).message}`);
     if (!noService) return { name: "manager", verdict: "refused", facts };
     const liveRecord = record.kind === "live";
     const hasLease = facts.some((fact) => fact.startsWith("lease holder "));
-    return { name: "manager", verdict: liveRecord || hasLease ? "not-serving" : "absent", facts };
+    return { name: "manager", verdict: liveRecord || (record.kind !== "dead" && hasLease) ? "not-serving" : "absent", facts };
   } finally {
     await close?.();
   }
