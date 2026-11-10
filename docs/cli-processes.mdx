@@ -695,7 +695,10 @@ alone.
 `--daemon-home <dir>` runs or reaches a separate daemon whose own state lives in `<dir>`: its
 sign-in session, its per-space identity, register request and service store, all at the paths
 below with `<dir>` in place of `<COTAL_HOME>`. Spaces are still read from the shared Cotal home's
-mesh registry, which this daemon never writes. Its socket is
+mesh registry, which this daemon never writes. `spaces --refresh` updates only the separate
+home's catalog cache; it does not add or remove shared registrations, write shared sentinel files,
+or clear the default selected space. Its space list still shows the shared registry. Use
+`cotal sync` from the shared Cotal home to apply that home's signed-in catalogs there. Its socket is
 `$XDG_RUNTIME_DIR/cotal/home-<16 hex>/daemon.sock` (on macOS the same name under the cache
 directory, on Windows the pipe `\\.\pipe\cotal-daemon-<SID>-home-<16 hex>`), derived from the
 directory, so it runs beside the default daemon. `<dir>` must already exist as an absolute
