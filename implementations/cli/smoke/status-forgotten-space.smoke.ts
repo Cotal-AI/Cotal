@@ -1,7 +1,7 @@
 /**
  * After `cotal space forget`, the folder's `.cotal/` names no space. `cotal status` there selects
  * no space and dials nothing, the same way `persona`, `team` and `spawn --dry-run` refuse there.
- * An empty `.cotal/` still names a bare `up`.
+ * An empty `.cotal/` also names no space to these reads and previews.
  *
  * Driven through the built binary in a sandboxed COTAL_HOME. No broker is started.
  *
@@ -61,12 +61,25 @@ check("the report names space create for this folder, not a bare up", plain.stdo
 const components = run(["status", "--components"]);
 check("status --components refuses the folder that names no space and probes no default broker", /target\s+refused · no-meshes/.test(components.stdout) && !components.stdout.includes("4222") && !components.stderr.includes("4222"), shown(components));
 
-// A `.cotal/` with nothing in it names no records, and a bare `up` there is how a space starts.
+// An empty control directory does not create an implicit space for reads or launch previews.
 const fresh = mkdtempSync(join(home, "fresh-"));
 mkdirSync(join(fresh, ".cotal"));
 const freshPlain = run(["status", "--plain"], fresh);
-check("control: an empty project still names a bare up", read(freshPlain) && freshPlain.stdout.includes(`cotal up\` in ${realpathSync.native(fresh)} to start one`) && !freshPlain.stdout.includes("space create <name>"), shown(freshPlain));
+check("an empty project names space preparation without an assumed space", read(freshPlain) && freshPlain.stdout.includes("space create <name>") && !/^Mesh: /m.test(freshPlain.stdout), shown(freshPlain));
+for (const args of [["persona"], ["team"], ["whoami"], ["spawn", "--dry-run"]]) {
+  const result = run([...args, "--json"], fresh);
+  check(`${args[0]} refuses an empty project without assuming main`, result.status === 2 && result.envelope?.target == null && !result.stdout.includes('"space": "main"'), shown(result));
+}
 check("its selection is stated once, with the step only under Next", (freshPlain.stdout.match(/no space is registered or prepared here/g) ?? []).length === 1 && /Selected space\n\s+no space is registered or prepared here for \S+\n/.test(freshPlain.stdout), shown(freshPlain));
+
+const freshManifest = join(fresh, "cotal.yaml");
+writeFileSync(freshManifest, "kind: Mesh\nspace: fresh-declared\nagents: []\n");
+const freshChild = join(fresh, "child");
+mkdirSync(freshChild);
+const freshEntry = run([], freshChild);
+check("entry help finds a manifest above an empty project's child", freshEntry.status === 0 && freshEntry.stdout.includes(freshManifest) && freshEntry.stdout.includes("fresh-declared"), shown(freshEntry));
+const freshPersona = run(["persona", "--json"], freshChild);
+check("an empty project's child names its manifest without assuming main", freshPersona.status === 2 && freshPersona.envelope?.target == null && freshPersona.stdout.includes(freshManifest) && freshPersona.stdout.includes("fresh-declared"), shown(freshPersona));
 
 // Entry help discovers the same project-root manifest from a child directory as the command readers.
 const manifestPath = join(root, "cotal.yaml");

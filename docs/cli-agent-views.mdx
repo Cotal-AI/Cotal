@@ -38,7 +38,9 @@ preference or the default. Only a managed preview reports an unknown local harne
 `HARNESS_UNKNOWN` warning, or the `PREFERENCE_INVALID` warning `config` gives when only
 `COTAL_DEFAULT_AGENT` chose it. Its `completeness` remains `not-checked`, because the selected
 manager checks its own connectors at launch. In a folder whose `.cotal/` names no space, as after
-`space forget`, the preview refuses with no space selected and names the folder.
+`space forget`, the preview refuses with no space selected and names the folder. An empty
+`.cotal/` also names no space to persona, team, identity and spawn previews. Explicit `up` can still
+initialize that folder.
 
 When no space is selected, bare `cotal` names a `cotal.yaml` beside the command or at the discovered
 project root and offers that file's check and boot actions. The file must declare `kind: Mesh` and

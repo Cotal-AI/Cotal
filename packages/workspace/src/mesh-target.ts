@@ -1156,10 +1156,10 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
         `another mesh ("${onDefault.space}") is running at ${DEFAULT_SERVER}`,
         { space: onDefault.space, server: DEFAULT_SERVER },
       );
-    // A folder whose records name no space, as after `space forget`, is not a mesh named the
-    // held default. Read-only commands and a launch agree with `status`: nothing is selected
-    // here. A `cotal.yaml` in the folder is named, not launched.
-    if (rootNamesNoSpace(root)) {
+    // Empty control directories and records left after `space forget` name no space. Reads and
+    // previews agree with `status` instead of assuming the held default. A nearby team file is
+    // named, not launched; explicit `up` has its own initialization path.
+    if (rootHidesNoManifest(root)) {
       const manifest = nearbyMeshManifest(cwd, root);
       throw new MeshTargetError("no-meshes", `no space is registered or prepared here for ${root}`, { root, ...(manifest ? { manifest } : {}) });
     }

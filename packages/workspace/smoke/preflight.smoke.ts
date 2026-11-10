@@ -276,10 +276,9 @@ check("message: open-wants-auth does NOT claim a space name", !preflightMessage(
   const refused = (() => { try { return resolveMeshTarget(forgotten); } catch (e) { return e; } })();
   check("a folder whose records name no space refuses, naming the folder and no assumed space",
     isWorkspaceTargetError(refused) && refused.code === "no-meshes" && refused.details.root === forgotten && refused.details.manifest === undefined, refused);
-  check("control: an empty .cotal/ still resolves local-space and is not flagged", (() => {
-    const t = resolveMeshTarget(empty);
-    return t.source === "local-space" && t.namesNoSpace === undefined;
-  })());
+  const emptyRefused = (() => { try { return resolveMeshTarget(empty); } catch (e) { return e; } })();
+  check("an empty .cotal/ refuses without assuming a space",
+    isWorkspaceTargetError(emptyRefused) && emptyRefused.code === "no-meshes" && emptyRefused.details.root === empty && emptyRefused.details.space === undefined, emptyRefused);
   const declared = mkdtempSync(join(home, "declared-"));
   mkdirSync(join(declared, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(declared, ".cotal", "agents", "default.md"), "---\nname: default\n---\n");
