@@ -605,6 +605,7 @@ successful Manager readiness probe.
 Manager state stays under the daemon's own per-space directory. Its `manager.log` captures stdout
 and stderr with mode `0600`, rotates at 1 MiB, and retains one previous file as `manager.log.1`.
 Status includes `lastExit` after a crash and `lastStop` for graceful, terminated or killed shutdowns.
+A Manager that exits before readiness reports its exit code or signal and its last stderr line.
 A stopped row keeps its instance and last observation, clears the PID, and names setup as its next
 step. An expired or revoked daemon session names `cotal daemon login --idp <url>` in both the refusal
 and its next step. Status also includes `logError` if logging fails. Every five seconds the daemon

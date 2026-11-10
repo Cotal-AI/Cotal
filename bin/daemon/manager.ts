@@ -256,10 +256,12 @@ export function createHostedManagers(home = homeCotalDir()) {
         generationAttempts.delete(child);
         if (l.child === child) l.child = undefined;
         resolve();
+        const lastLine = stderr.trim().split("\n").pop()?.slice(-500);
+        const exitReason = `Manager exited (${signal ?? `code ${code}`})${lastLine ? `: ${lastLine}` : ""}`;
+        l.view = { ...l.view, pid: undefined, lastExit: exitReason };
+        if (!nativeReason) nativeReason = exitReason;
         if (!l.stopping && !closed && (l.view.state === "answering" || (l.view.state === "starting" && !l.starting))) {
-          const last = stderr.trim().split("\n").pop()?.slice(-500);
-          const reason = `Manager exited (${signal ?? `code ${code}`})${last ? `: ${last}` : ""}`;
-          l.view = { ...l.view, reason, lastExit: reason };
+          l.view = { ...l.view, reason: exitReason };
           schedule(l);
         }
       });
