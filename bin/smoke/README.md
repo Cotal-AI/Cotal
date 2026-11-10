@@ -24,6 +24,14 @@ checksum-verified binary through `COTAL_BROKER_LOG_NATS`. This does not replace 
 PATH for other suites. To run the logging suite locally, set that variable to the absolute path
 of a NATS 2.15.1 binary after building the workspace.
 
+## Daemon entry checks
+
+After building the workspace and the platform's daemon host primitives, run
+`pnpm smoke:daemon-install-native`. It checks native service definitions and starts the built
+native-service entry and ordinary CLI in separate private profiles. It never installs a host
+service. The entry checks retain their private fixtures and print the path; use a short `TMPDIR`
+so temporary Unix bind sockets fit the platform's path limit.
+
 ## Inventory command resolution
 
 The inventory uses one reader for direct `pnpm [run] smoke:*` commands and package-filtered
