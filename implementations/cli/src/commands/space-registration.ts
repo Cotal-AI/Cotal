@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, rmdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { listSpaces, token } from "@cotal-ai/core";
@@ -52,6 +52,7 @@ import {
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
+import { mkdirPrivate } from "../lib/private-directory.js";
 import { adoptionRefusal, adoptStackJournal, journalRecordedElsewhere, releaseStackDefinitions } from "../lib/stack-journal.js";
 import {
   candidateTarget,
@@ -541,7 +542,7 @@ export function recordLocalSpace(name: string, root: string): { file: string; pr
   const dir = join(root, ".cotal");
   // Making `.cotal` is the first write, so a root this account cannot write is refused with nothing written.
   let made: string | undefined;
-  try { made = mkdirSync(dir, { recursive: true, mode: 0o700 }); }
+  try { made = mkdirPrivate(dir); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT" && lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink())
       throw refuse("TARGET_NOT_FOUND", `${dir} links to ${resolve(root, readlinkSync(dir))}, which does not exist; nothing was written`, target, "remove the link or make the folder it names, then run this create again");
