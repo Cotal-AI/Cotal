@@ -191,13 +191,15 @@ The file is private to its owner and versioned:
 ```
 
 `revision` counts writes that change a value. A write holds a lock and replaces the file atomically.
+If writing the lock or replacement fails, Cotal attempts to remove its temporary file and reports
+the original error. It does not sweep other writers' temporary files.
 If the revision changed after the command read it, the write refuses with `CONFLICT`.
 
 Each write makes the replacement file private with mode `0600`, regardless of its prior mode.
 A changed mode produces `PREFERENCES_MODE_CHANGED`; a read-only file does not prevent `config set` or `unset`.
 
 Invalid JSON, an unsupported schema version, an unknown key, or an invalid value stops commands that use defaults.
-Help, completion, `version`, and `docs` remain available. `status` reports the unreadable part and exits 4.
+Help, completion, `version`, `docs`, and `daemon` remain available. Machine-daemon operations do not use preference defaults. `status` reports the unreadable part and exits 4.
 The error names the file and fix. Cotal never resets it automatically.
 An initial UTF-8 byte order mark is accepted and omitted on the next write. UTF-16 is refused with the instruction to save as UTF-8.
 Symlinks, FIFOs, devices, and folders at `preferences.json` are refused with `PERMISSION_DENIED` before opening them.

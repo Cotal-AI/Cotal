@@ -88,6 +88,8 @@ import {
   CommandFailure,
   codeSpan,
   commandFailureReport,
+  failureEnvelope,
+  writeEnvelope,
   isCommandFailure,
   protectedLocalDirectory,
   jsonFlag,
@@ -243,7 +245,7 @@ import {
   requestsTls,
   stackUp,
   stackUpForegroundNotice,
-  stackUpInterruptNotice,
+  stackUpInterrupted,
   keptOnUp,
   selectedOnUp,
   type ExistingStorePin,
@@ -1526,7 +1528,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
     // its child, and the notice names what it left running. It is installed before the lock, so no
     // moment of the start exits without it.
-    const release = values.foreground ? undefined : noticeOnInterrupt(() => { settleInterruptedLaunches(); return stackUpInterruptNotice(meshRoot, stackSpace, values["no-manager"] === true); });
+    const release = values.foreground ? undefined : noticeOnInterrupt(() => {
+      settleInterruptedLaunches();
+      const failure = stackUpInterrupted(meshRoot, stackSpace, values["no-manager"] === true);
+      if (presentation === "json") writeEnvelope(failureEnvelope("up", failure));
+      return `${failure.message} ${failure.remedy}`;
+    });
     try {
       const stackLock = acquireStackOperationLock(meshRoot);
       const native = controllerStackNative();
@@ -5452,13 +5459,19 @@ function writeOpenBrokerConf(storeDir: string, space: string, opts: { port: numb
 
 /** Write a broker configuration that `up` renders again on every start. Something other than this
  *  account's own regular file at its path, such as a symlink or a folder, is refused by name and
- *  left as it is. Moving it aside loses nothing, because the next `up` writes the file again. */
+ *  left as it is. Moving it aside loses nothing, because the next `up` writes the file again.
+ *  Other write failures name the path and errno, and remain known failures before a launch. */
 function writeBrokerConfig(path: string, text: string): void {
   try { writeSecretFile(path, text); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "EPERM" && code !== "EISDIR" && code !== "EACCES") throw error;
-    const entry = lstatSync(path, { throwIfNoEntry: false });
+    // A nonblocking write-only open can fail ENXIO for non-regular entries before the secure
+    // writer can inspect its descriptor. An absent or regular entry still means a write failure.
+    const entry = code === "EPERM" || code === "EISDIR" || code === "EACCES" || code === "ENXIO" ? lstatSync(path, { throwIfNoEntry: false }) : undefined;
+    if (code !== "EPERM" && code !== "EISDIR" && code !== "EACCES" && (!entry || entry.isFile()))
+      throw new CommandFailure("failed", "OPERATION_FAILED", `up could not write the broker configuration ${path}${code ? ` (${code})` : ""}; nothing was started`, {
+        target: { path }, remedy: `correct the write failure at ${path}, then run \`cotal up\` again, which writes the configuration again`,
+      });
     const what = entry?.isSymbolicLink() ? "is a symlink" : entry?.isDirectory() ? "is a folder" : code === "EACCES" ? "cannot be written by this account" : "is not a regular file this account owns";
     throw new CommandFailure("refused", "PERMISSION_DENIED", `the broker configuration ${path} ${what}, so up cannot write it; it was left as it is and nothing was started`, {
       target: { path }, remedy: `move it aside, as mv ${shellWord(path)} ${shellWord(`${path}.old`)} does, then run \`cotal up\` again, which writes it from the space's trust`,

@@ -215,7 +215,10 @@ runs the guarded stack stop, and a `TimeoutStopSec` long enough for that stop. T
 on its own, without the request-bound stop's receipts.
 
 A detached `up` interrupted by SIGINT, SIGTERM or SIGHUP stops where it is and exits 130, 143 or
-129. A member it was launching, with the launch recorded and its child not yet recorded, is recorded
+129. Once the controller start has begun, `up --json` also writes one envelope on stdout. It carries
+the running members in `changed`, the recovery commands in `error.remedy`, and outcome `unknown`
+while members run or `failed` when none run. The notice stays on stderr and the signal exit code
+is unchanged. A member it was launching, with the launch recorded and its child not yet recorded, is recorded
 on the way out: `failed` when no child was spawned yet, or with the child's process when one was, so
 the next `up` or `down` settles it from evidence. Members it already started keep running, and it
 names them and the next step: `cotal up`
@@ -527,6 +530,13 @@ route described below. Recovery re-entry keeps its recorded mode.
 
 
 ### Controller recovery
+
+A broker configuration write that runs out of space or exceeds a file-size limit reports
+`OPERATION_FAILED`, exit 5, with the configuration path and filesystem error code. No member was
+started by that preparation. Correct the write failure and run `cotal up` again. The failed write
+is a known outcome, so `status` does not treat it as an interrupted start or add `--no-manager`
+to its recovery command. Permission and non-regular-file refusals, including FIFOs and Unix sockets,
+keep `PERMISSION_DENIED` and name moving the configuration entry aside.
 
 A whole-stack `up` or `down` takes the root's maintenance lock before it reads the journal. While
 another whole-stack or maintenance command holds it, the command refuses `LIFECYCLE_BLOCKED` and

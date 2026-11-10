@@ -20,14 +20,18 @@
  *     `/Create /XML` then `/Run`, a task whose command changed refuses removal, and remove disables,
  *     ends only a running task, and deletes it;
  *  N5 the receipt dispatch on this OS: a receipt from before mechanisms reads as systemd, and a
- *     LaunchAgent receipt refuses CONFLICT here with nothing removed.
+ *     LaunchAgent receipt refuses CONFLICT here with nothing removed;
+ *  N6 Linux built-CLI receipt binding against real files and recording native-tool subprocesses:
+ *     valid default/managed receipts work; redirected paths, wrong units and copied homes refuse
+ *     before any native mutation or file removal. No real systemd or linger change occurs.
  *
- * Not covered here: a real launchd domain or Task Scheduler. Those need a macOS or Windows host.
+ * Real supervisor lifecycle acceptance belongs to daemon-install-real.smoke.mjs on disposable hosts.
  *
  * Run: tsx bin/smoke/daemon-install-native.smoke.ts   (POSIX; the Windows adapter runs on its fake)
  */
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,7 +63,7 @@ function recorder(answer: (call: Call) => Partial<NativeResult>): { run: NativeR
 
 // The physical path: macOS puts the temp dir under /var, a symlink, which a protected service
 // directory refuses as it would for a user, and the fixture home here stands in for a real one.
-const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-daemon-install-native-")));
+const root = realpathSync(mkdtempSync(join(tmpdir(), "dni-")));
 const savedHome = process.env.HOME;
 try {
   const uid = process.getuid?.();
@@ -72,13 +76,13 @@ try {
     check("default label", launchAgentLabel(undefined) === "ai.cotal.daemon");
     check("home label is derived from the home", launchAgentLabel("/x") === `ai.cotal.daemon.${sha("/x").slice(0, 16)}`);
     const { text, sha256 } = renderLaunchAgent({ label: "ai.cotal.daemon", argv, searchPath: "/usr/bin:/bin", workingDirectory: "/Users/a", logPath: "/Users/a/.cotal/daemon/daemon.log" });
-    check("arguments are escaped, one string each", text.includes("<string>/Users/a b/&amp;&lt;home&gt;</string>") && (text.match(/<string>/g) ?? []).length === argv.length + 5, text);
+    check("arguments are escaped, one string each", text.includes("<string>/Users/a b/&amp;&lt;home&gt;</string>") && (text.match(/<string>/g) ?? []).length === argv.length + 6, text);
     check("directory is carried by the bootstrap's arguments", text.includes(`<string>${xmlText(bootstrap)}</string><string>/Users/a</string><string>daemon</string><string>serve</string>`));
     const alias = renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, "/usr/local/bin/cotal", "daemon", "serve"], searchPath: "/bin", workingDirectory: "/Users/a", logPath: "/log" });
     check("a CLI alias still pins this package's bootstrap", alias.text.includes(`<string>${xmlText(bootstrap)}</string>`) && !alias.text.includes("/usr/local/bin/daemon-cwd.js"));
     check("no unobservable WorkingDirectory property is emitted", !text.includes("<key>WorkingDirectory</key>"));
     check("KeepAlive and RunAtLoad are true", text.includes("<key>KeepAlive</key><true/>") && text.includes("<key>RunAtLoad</key><true/>"));
-    check("PATH is pinned", text.includes("<key>EnvironmentVariables</key><dict><key>PATH</key><string>/usr/bin:/bin</string></dict>"));
+    check("PATH is pinned", text.includes("<key>PATH</key><string>/usr/bin:/bin</string>") && text.includes("<key>COTAL_DAEMON_NATIVE_SERVICE</key><string>1</string>"));
     check("digest is of the exact bytes", sha256 === sha(text));
     check("a control character refuses", code(() => renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, "a\nb"], searchPath: "/bin", workingDirectory: "/", logPath: "/l" })) === "USAGE_INVALID");
     check("a relative executable refuses", code(() => renderLaunchAgent({ label: "ai.cotal.daemon", argv: ["node", "x"], searchPath: "/bin", workingDirectory: "/", logPath: "/l" })) === "USAGE_INVALID");
@@ -159,6 +163,23 @@ try {
     }
     observedJob = originalJob;
     r.calls.length = 0;
+    service.restart(receipt);
+    check("restarting a loaded owned job force-kickstarts only its exact target", JSON.stringify(r.calls.map(c => [c.file, ...c.args])) === JSON.stringify([
+      ["/bin/launchctl", "print", target], ["/bin/launchctl", "kickstart", "-k", target],
+    ]), r.calls);
+    printStatus = 113;
+    r.calls.length = 0;
+    service.restart(receipt);
+    check("restarting an unloaded owned job bootstraps only its recorded plist", JSON.stringify(r.calls.map(c => [c.file, ...c.args])) === JSON.stringify([
+      ["/bin/launchctl", "print", target], ["/bin/launchctl", "bootstrap", `gui/${uid}`, plist],
+    ]), r.calls);
+    printStatus = 0;
+    observedJob = { state: "loaded", job: { label, program: "/foreign", programArguments: loadedArgv } };
+    r.calls.length = 0;
+    check("restarting a job with changed ownership refuses CONFLICT", code(() => service.restart(receipt)) === "CONFLICT");
+    check("refused restart sends no native mutation and preserves the plist", r.calls.every(c => c.file === "/bin/launchctl" && c.args[0] === "print") && sha(readFileSync(plist)) === receipt.unitSha256, r.calls);
+    observedJob = originalJob;
+    r.calls.length = 0;
     service.start(receipt);
     check("starting a loaded job never force-restarts it", r.calls.some((call) => call.args[0] === "kickstart") && !r.calls.some((call) => call.args.includes("-k")));
     const newSource = readFileSync(plist, "utf8");
@@ -219,7 +240,7 @@ try {
     check("restarts by a one-minute repetition that ignores a running instance", t.text.includes("<Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>") && t.text.includes("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>") && !t.text.includes("<Duration>"));
     check("no run-time or battery limit", t.text.includes("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>") && t.text.includes("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>") && t.text.includes("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"));
     check("the command is the executable, unquoted", t.command === winArgv[0] && t.text.includes(`<Command>${winArgv[0]}</Command>`));
-    check("a C runtime split of the arguments returns them unchanged", JSON.stringify(splitWindows(t.arguments)) === JSON.stringify(winArgv.slice(1)), [t.arguments, splitWindows(t.arguments)]);
+    check("a C runtime split of the arguments returns them unchanged", JSON.stringify(splitWindows(t.arguments)) === JSON.stringify([winArgv[1], "C:\\Program Files\\cotal\\daemon-native.js", ...winArgv.slice(3)]), [t.arguments, splitWindows(t.arguments)]);
     check("% refuses", code(() => windowsArgument("%APPDATA%")) === "UNSUPPORTED");
     check("a double quote refuses", code(() => windowsArgument('a"b')) === "UNSUPPORTED");
     check("a relative executable refuses", code(() => renderScheduledTask({ sid, argv: ["node.exe"], workingDirectory: "C:\\" })) === "UNSUPPORTED");
@@ -283,6 +304,21 @@ try {
     r.calls.length = 0;
     service.start(receipt);
     check("starting a running task does not restart it", schtasks(r.calls) === "");
+    r.calls.length = 0;
+    service.restart(receipt);
+    check("restarting a running owned task ends then runs only that task", schtasks(r.calls) === `/End /TN ${name} | /Run /TN ${name}`, r.calls);
+    task = { present: true, ...security, state: "Ready", actions: 1, ...recorded };
+    r.calls.length = 0;
+    service.restart(receipt);
+    check("restarting an inactive owned task runs without ending it", schtasks(r.calls) === `/Run /TN ${name}`, r.calls);
+    task = { present: true, ...security, state: "Running", actions: 1, ...recorded, userId: "S-1-5-18" };
+    r.calls.length = 0;
+    check("restarting a task with changed ownership refuses CONFLICT", code(() => service.restart(receipt)) === "CONFLICT");
+    check("refused restart sends no schtasks mutation and preserves the definition", schtasks(r.calls) === "" && sha(readFileSync(plan.unitPath)) === receipt.unitSha256, r.calls);
+    task = { present: false };
+    r.calls.length = 0;
+    check("restarting an absent task refuses TARGET_NOT_FOUND", code(() => service.restart(receipt)) === "TARGET_NOT_FOUND");
+    check("absent restart neither creates nor runs a task", schtasks(r.calls) === "" && sha(readFileSync(plan.unitPath)) === receipt.unitSha256, r.calls);
     task = { present: true, ...security, state: "Ready", actions: 1, ...recorded };
     r.calls.length = 0;
     service.start(receipt);
@@ -315,11 +351,61 @@ try {
     const paths: DaemonPaths = { dir: join(root, "lrun"), socket: join(root, "lrun", "s"), state, lock: join(state, "daemon.lock") };
     const receiptFile = join(state, "service-unit.json");
     writeFileSync(receiptFile, JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath: join(state, "gone.service"), unitSha256: "0".repeat(64), installedAt: "t" }));
-    check("a receipt without a mechanism is a systemd unit", code(() => planUninstall(paths)) === "TARGET_NOT_FOUND");
+    check("a receipt without a mechanism is a systemd unit", code(() => planUninstall(paths, undefined)) === "TARGET_NOT_FOUND");
     writeFileSync(receiptFile, JSON.stringify({ v: 1, mechanism: "launchd-agent", unit: "ai.cotal.daemon", unitPath: receiptFile, unitSha256: "0".repeat(64), installedAt: "t" }));
-    check("a LaunchAgent receipt refuses CONFLICT on Linux", code(() => planUninstall(paths)) === "CONFLICT");
+    check("a LaunchAgent receipt refuses CONFLICT on Linux", code(() => planUninstall(paths, undefined)) === "CONFLICT");
     check("and the receipt is kept", lstatSync(receiptFile).isFile());
   } else console.log(`  ○ UNTESTED N5: the dispatch cells read a Linux receipt; this is ${process.platform}`);
+
+  console.log("N6 Linux receipt binding through the built CLI and real files");
+  if (process.platform === "linux") {
+    const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
+    const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
+    const runtime = join(root, "rt"); mkdirSync(runtime, { mode: 0o700 });
+    for (const kind of ["default", "managed", "outside-path", "wrong-unit", "copied-home"]) {
+      const dir = join(root, kind); mkdirSync(dir, { mode: 0o700 });
+      for (const name of ["home", "cotal", "a", "b", "config", "native"]) mkdirSync(join(dir, name), { mode: 0o700 });
+      const a = join(dir, "a"), b = join(dir, "b");
+      const context = { home: join(dir, "home"), config: join(dir, "config"), calls: join(dir, "calls.jsonl"), units: ["cotal-daemon.service", `cotal-daemon-${sha(a).slice(0, 16)}.service`, `cotal-daemon-${sha(b).slice(0, 16)}.service`] };
+      const configFile = join(dir, "context.json"); writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
+      for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
+      Object.assign(env, { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: `${join(dir, "native")}:/usr/local/bin:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
+      const call = (verb: string, home: string | undefined, flags: string[] = []) => {
+        const child = spawnSync(process.execPath, [cli, "daemon", verb, ...(home ? ["--daemon-home", home] : []), ...flags, "--json"], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
+        if (child.error || child.signal) throw new Error(`N6 ${verb} did not exit normally`);
+        const doc = JSON.parse(child.stdout) as { outcome: string; error?: { code: string } };
+        return { status: child.status, doc };
+      };
+      const effects = (): number => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { operation: string }).filter((c) => !["directory-read", "linger-read"].includes(c.operation)).length : 0;
+      const home = kind === "default" ? undefined : a;
+      const receiptFile = join(home ?? join(dir, "cotal", "daemon"), "service-unit.json");
+      const installed = call("install", home);
+      if (installed.status !== 0) throw new Error(`N6 ${kind} install fixture refused ${JSON.stringify(installed.doc)}`);
+      const receipt = JSON.parse(readFileSync(receiptFile, "utf8")) as UnitReceipt;
+      if (kind === "default" || kind === "managed") {
+        check(`N6 valid ${kind} receipt plans and starts`, call("uninstall", home, ["--dry-run"]).status === 0 && call("start", home).status === 0);
+        const removed = call("uninstall", home, ["--yes"]);
+        check(`N6 valid ${kind} receipt removes its source and receipt`, removed.status === 0 && !existsSync(receipt.unitPath) && !existsSync(receiptFile));
+        continue;
+      }
+      let selected = home, changed = { ...receipt };
+      let unrelated: string | undefined;
+      if (kind === "outside-path") {
+        unrelated = join(context.home, "unrelated.txt");
+        writeFileSync(unrelated, readFileSync(receipt.unitPath), { mode: 0o600 });
+        changed = { ...receipt, unitPath: unrelated };
+      } else if (kind === "wrong-unit") changed = { ...receipt, unit: context.units[2]! };
+      else selected = b;
+      const selectedReceipt = join(selected!, "service-unit.json");
+      writeFileSync(selectedReceipt, JSON.stringify(changed), { mode: 0o600 });
+      const before = effects();
+      const results = [call("uninstall", selected, ["--dry-run"]), call("start", selected), call("uninstall", selected, ["--yes"])];
+      check(`N6 ${kind} refuses plan, start and uninstall`, results.every((r) => r.status === 2 && r.doc.error?.code === "CONFLICT"));
+      check(`N6 ${kind} submits no service action`, effects() === before);
+      check(`N6 ${kind} keeps source, receipt and unrelated file`, existsSync(receipt.unitPath) && existsSync(selectedReceipt) && (unrelated === undefined || existsSync(unrelated)));
+    }
+  } else console.log(`  ○ UNTESTED N6: Linux CLI receipt binding; this is ${process.platform}`);
 } finally {
   if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
   rmSync(root, { recursive: true, force: true });

@@ -373,10 +373,14 @@ check("pruneMesh mismatch refuses a catalog record", pruneMesh("catalog-kept") =
 removeMesh("catalog-kept");
 // …and the copy stops telling the operator to `cotal up` a mesh that runs somewhere else.
 const manualT = { ...T, space: "theirs", origin: "manual" as const };
-check("unreachable copy for a registered mesh names `cotal meshes rm`, not `cotal up`", (() => {
+check("unreachable copy for a registered mesh names `cotal space forget`, not legacy removal or `cotal up`", (() => {
   const m = preflightMessage("unreachable", manualT, false);
-  return m.includes("cotal meshes rm theirs") && !m.includes("cotal up");
+  return m.includes("cotal space forget theirs") && !m.includes("cotal meshes rm") && !m.includes("cotal up");
 })(), preflightMessage("unreachable", manualT, false));
+check("unreachable catalog copy names provider removal and sync, not locally refused forget", (() => {
+  const m = preflightMessage("unreachable", { ...manualT, origin: "catalog" }, false);
+  return m.includes("remove it from the provider's catalog") && m.includes("cotal sync") && !m.includes("cotal space forget") && !m.includes("cotal meshes rm") && !m.includes("cotal up");
+})());
 // A user-mode target never reaches preflightTarget, so this arm has to throw the same refusal.
 {
   const userBase = { ...T, mode: "user" as const, space: "hosted", root: "/tmp/hosted-root" };
@@ -384,7 +388,7 @@ check("unreachable copy for a registered mesh names `cotal meshes rm`, not `cota
   check("user-mode preflight of a hand-registered mesh refuses through the shared unreachable sentence",
     manualUser instanceof ConnectRefusal && manualUser.kind === "transient" && manualUser.code === "TARGET_UNAVAILABLE"
       && manualUser.rendered === preflightMessage("unreachable", { ...userBase, origin: "manual" }, false)
-      && manualUser.rendered.includes("cotal meshes rm hosted") && !manualUser.rendered.includes("cotal up"),
+      && manualUser.rendered.includes("cotal space forget hosted") && !manualUser.rendered.includes("cotal meshes rm") && !manualUser.rendered.includes("cotal up"),
     manualUser instanceof ConnectRefusal ? manualUser.rendered : String(manualUser));
   const upUser = await preflightOrThrow({ ...userBase, origin: "up" }).then(() => undefined, (e: unknown) => e);
   check("user-mode preflight of an up record still names `cotal up` at the recorded root",

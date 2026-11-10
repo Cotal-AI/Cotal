@@ -274,7 +274,7 @@ try {
   const denied = await run(["history", "general", "--json", "--creds", probe, "--space", space, "--server", servers]);
   check("a credential that may not read history is a PERMISSION_DENIED refusal, exit 2, not an empty page", denied.status === 2 && denied.envelope?.outcome === "refused" && denied.envelope.error?.code === "PERMISSION_DENIED" && denied.envelope.result === null, shown(denied));
   // A credential another space's account issued is rejected, and the refusal names the space its
-  // permissions name. One for this space's name from a foreign account names no other space.
+  // permissions name. One for this registered space from a foreign account names its local identity mismatch.
   const elsewhere = join(home, "elsewhere.creds"), sameName = join(home, "same-name.creds");
   writeFileSync(elsewhere, await mintCreds(await createSpaceAuth("elsewhere"), newIdentity(), "observer"), { mode: 0o600 });
   writeFileSync(sameName, await mintCreds(await createSpaceAuth(space), newIdentity(), "observer"), { mode: 0o600 });
@@ -282,7 +282,9 @@ try {
   check("another space's credential is PERMISSION_DENIED, exit 2, naming the space it is for",
     crossed.status === 2 && crossed.envelope?.error?.code === "PERMISSION_DENIED" && crossed.envelope.error.message.endsWith(`${elsewhere} is a credential for space "elsewhere", not "${space}"`) && (crossed.envelope.target as { credentialSpace?: string } | null)?.credentialSpace === "elsewhere" && (crossed.envelope.error.remedy ?? "").includes(`cotal auth mint <label> --space ${space}`), shown(crossed));
   const foreign = await run(["history", "general", "--json", "--creds", sameName, "--space", space, "--server", servers]);
-  check("a rejected credential naming this space keeps the plain rejection", foreign.status === 2 && foreign.envelope?.error?.code === "PERMISSION_DENIED" && /^credentials rejected at \S+$/.test(foreign.envelope.error.message), shown(foreign));
+  check("a rejected credential naming this registered space names its different local identity and the same-profile mint",
+    foreign.status === 2 && foreign.envelope?.error?.code === "PERMISSION_DENIED" && foreign.envelope.error.message.includes(`space "${space}" has a different local identity`)
+      && Boolean(foreign.envelope.error.remedy?.includes("cotal auth mint <label> --profile observer --out <new file>")), shown(foreign));
   // With that space registered here at another address, a `--server` at this broker is the mismatch:
   // the next step drops it, and following the first step with `--server` kept says so again.
   const inHome = (f: () => void) => {
@@ -449,12 +451,12 @@ try {
     { membersEnded, stderr: ml.stderr() });
 
   // A credential the broker rejects, as after `reset space` replaced the trust it was minted from.
-  // Given as a file it ends a follow with the one-shot's Next; minted by the follow from the space's
-  // trust, the Next says to run it again.
+  // A raw connection with no file or local trust context keeps the broker's generic guidance;
+  // minted by the follow from the space's trust, the Next says to run it again.
   const rejected = await mintCreds(await createSpaceAuth(space), newIdentity(), "observer");
   const given = await credentialEnded({ server: servers, space, tls: false, creds: rejected });
   const minted = await credentialEnded({ server: servers, space, tls: false, creds: rejected, auth });
-  check("a rejected --creds file ends a follow PERMISSION_DENIED with the one-shot's Next", given?.code === "PERMISSION_DENIED" && given.failure().remedy === foreign.envelope?.error?.remedy, { given: given?.failure(), oneShot: foreign.envelope?.error });
+  check("a rejected raw credential ends a follow PERMISSION_DENIED without claiming a local identity change", given?.code === "PERMISSION_DENIED" && given.failure().message === `credentials rejected at ${servers}` && given.failure().remedy === "check your creds, or the broker wants different auth", given?.failure());
   check("a rejected credential the follow minted ends it PERMISSION_DENIED saying to run it again",
     minted?.code === "PERMISSION_DENIED" && minted.failure().message === given?.failure().message && /run it again/.test(minted.failure().remedy ?? ""), minted?.failure());
 
@@ -604,6 +606,56 @@ try {
       made.status === 0 && partial.status === 4 && partial.envelope?.outcome === "partial" && partial.envelope.error?.code === "OPERATION_PARTIAL"
         && /^The purge reported 0 messages removed, but channel metadata removal was not confirmed\./.test(partial.envelope.error.message) && cleaned.status === 0 && removedOf(cleaned) === true,
       { made: shown(made), partial: shown(partial), cleaned: shown(cleaned) });
+  }
+
+  // Channel policy labels describe each field's source, including explicit values equal to defaults.
+  {
+    const channel = (...args: string[]) => run(["channel", ...args, "--space", space, "--plain"]);
+    const fields = (stdout: string) => Object.fromEntries([...stdout.matchAll(/^\s+(Replay|Window|Delivery):\s+(.+)$/gm)].map((match) => [match[1], match[2]]));
+    const policyIs = (r: { status: number; stdout: string }, replay: string, window: string, delivery: string) =>
+      r.status === 0 && JSON.stringify(fields(r.stdout)) === JSON.stringify({ Replay: replay, Window: window, Delivery: delivery });
+    const row = (stdout: string, name: string) => stdout.split("\n").find((line) => line.trimStart().startsWith(`#${name} `))?.trim().replace(/\s{2,}/g, "  ");
+    const builtIn = await channel("show", "policy-unregistered");
+    const builtInDefaults = await channel("defaults");
+    check("built-in replay, retained-history window and delivery are marked inherited",
+      policyIs(builtIn, "on - inherited", "retained history - inherited", "durable - inherited")
+        && policyIs(builtInDefaults, "on - inherited", "retained history - inherited", "durable - inherited"), { show: shown(builtIn), defaults: shown(builtInDefaults) });
+    const defaults = await channel("defaults", "--delivery", "live", "--no-replay", "--window", "1h");
+    const created = await channel("set", "policy", "--desc", "Operations");
+    check("control: channel policy defaults and metadata are saved through the CLI", defaults.status === 0 && created.status === 0, { defaults: shown(defaults), created: shown(created) });
+    const inherited = await channel("show", "policy");
+    const listed = await channel();
+    check("channel show marks every inherited policy field with inherited",
+      policyIs(inherited, "off - inherited", "1h - inherited", "live - inherited"), shown(inherited));
+    check("channel list uses inherited for replay and delivery as show does",
+      listed.status === 0 && row(listed.stdout, "policy") === "#policy  Operations  off - inherited  live - inherited", shown(listed));
+    const structured = await run(["channel", "show", "policy", "--space", space, "--json"]);
+    const registry = (structured.envelope?.result as unknown as { registry?: { defaults?: object; channels?: Record<string, object> } })?.registry;
+    check("JSON keeps stored metadata without presentation marks or resolved overrides",
+      structured.status === 0 && JSON.stringify(registry?.channels?.policy) === JSON.stringify({ description: "Operations" })
+        && JSON.stringify(registry?.defaults) === JSON.stringify({ replay: false, replayWindow: "1h", deliveryClass: "live" }), shown(structured));
+    const defaultsCard = await channel("defaults");
+    check("saved channel defaults are explicit and carry no inheritance marks", policyIs(defaultsCard, "off", "1h", "live"), shown(defaultsCard));
+    const missing = await channel("show", "policy-unregistered");
+    check("an unsaved channel marks every field inherited too", policyIs(missing, "off - inherited", "1h - inherited", "live - inherited"), shown(missing));
+    const mixedSet = await channel("set", "policy", "--no-replay");
+    const mixed = await channel("show", "policy");
+    const mixedList = await channel();
+    check("an explicit false equal to the default is unmarked while other fields stay inherited",
+      mixedSet.status === 0 && policyIs(mixed, "off", "1h - inherited", "live - inherited") && mixedList.status === 0
+        && row(mixedList.stdout, "policy") === "#policy  Operations  off  live - inherited", { show: shown(mixed), list: shown(mixedList) });
+    const explicitSet = await channel("set", "policy", "--replay", "--window", "30m", "--delivery", "durable");
+    const explicit = await channel("show", "policy");
+    const explicitList = await channel();
+    check("control: explicit replay, window and delivery overrides carry no inheritance marks",
+      explicitSet.status === 0 && policyIs(explicit, "on", "30m", "durable") && explicitList.status === 0
+        && row(explicitList.stdout, "policy") === "#policy  Operations  on  durable", { show: shown(explicit), list: shown(explicitList) });
+    const sameSet = await channel("set", "policy", "--no-replay", "--window", "1h", "--delivery", "live");
+    const same = await channel("show", "policy");
+    const sameList = await channel();
+    check("explicit settings equal to defaults are still unmarked",
+      sameSet.status === 0 && policyIs(same, "off", "1h", "live") && sameList.status === 0
+        && row(sameList.stdout, "policy") === "#policy  Operations  off  live", { show: shown(same), list: shown(sameList) });
   }
 
   // ── channel members on an open mesh, which runs no delivery service to write the feed ─────────

@@ -154,8 +154,9 @@ for (let i = 0; i < 50; i++) {
 // An open space must be one the broker serves, so the open broker serves the names added below.
 const SERVED = ["open1", "open3", "open4", "open5"];
 {
-  const { setupSpaceStreams } = await import("@cotal-ai/core");
+  const { setupSpaceStreams, seedChannelRegistry } = await import("@cotal-ai/core");
   for (const space of SERVED) await setupSpaceStreams({ servers: LIVE, space });
+  await seedChannelRegistry({ servers: LIVE, space: "open1", file: { channels: { general: { description: "General" } } } });
 }
 
 const root = projectRoot("proj");
@@ -221,10 +222,22 @@ setCurrent("keep");
   check("the registry holds it", findMesh("open1")?.server === LIVE && findMesh("open1")?.origin === "manual");
   check("the selection is unchanged", getCurrent() === "keep" && r?.space?.current === false, getCurrent());
 
+  const sent = await json(["send", "--space", "open1", "-c", "general", "x"]);
+  check("control: send to an answering registered broker stores the message", sent.status === 0 && sent.env?.outcome === "ok" && sent.env.result?.stored === true, shown(sent));
+
   const again = await json(["space", "add", "open1", "--server", LIVE, "--root", root]);
   check("adding a registered name is CONFLICT, exit 2, naming forget and --force", refused(again, 2, "CONFLICT") && /space forget open1/.test(again.env?.error?.remedy ?? "") && /--force/.test(again.env?.error?.remedy ?? ""), shown(again));
   const replaced = await json(["space", "add", "open1", "--server", DEAD, "--root", root, "--force"]);
   check("--force replaces a registration added by hand, unchecked", replaced.status === 0 && replaced.env?.result.replaced === true && replaced.env.result.verified === false && replaced.env.result.space.check === "not-checked" && findMesh("open1")?.server === DEAD, shown(replaced));
+
+  const beforeSend = registryFiles();
+  const offline = await json(["send", "--space", "open1", "-c", "general", "x"]);
+  check("send to an unreachable registration refuses with space forget in its JSON remedy",
+    refused(offline, 2, "TARGET_UNAVAILABLE") && offline.env?.error?.remedy === "start it where it runs, or `cotal space forget open1` to unregister it", shown(offline));
+  const offlineHuman = await run(["send", "--space", "open1", "-c", "general", "x"]);
+  check("the human refusal names space forget, not legacy removal or local startup, and keeps the registrations",
+    offlineHuman.status === 2 && offlineHuman.stderr.includes("cotal space forget open1") && !offlineHuman.stderr.includes("cotal meshes rm") && !offlineHuman.stderr.includes("cotal up") &&
+      JSON.stringify(registryFiles()) === JSON.stringify(beforeSend), shown(offlineHuman));
 
   recordMesh({ space: "started", server: LIVE, root, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const overUpBare = await json(["space", "add", "started", "--server", LIVE, "--root", root]);

@@ -21,8 +21,7 @@ import {
   hasMeshTargetFlags,
   inOperationSpace,
   isCommandFailure,
-  brokerUrlCredentialRefusal,
-  brokerUrlHasUserinfo,
+  checkServer,
   isConnectRefusal,
   isMeshRegistryError,
   isSeededCommand,
@@ -142,9 +141,9 @@ function structured(cmd: Command, first: string | undefined): boolean {
 
 /** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a group of the
  *  command's boolean short flags. Read from the words, because a usage error has no parse, so the mode
- *  is the first word that is not a flag. */
+ *  is the first positional after skipping declared option values. */
 function asksForJson(cmd: Command, args: readonly string[]): boolean {
-  if (!structured(cmd, args.find((word) => !word.startsWith("-")))) return false;
+  if (!structured(cmd, metadataPositionals(cmd, args).positionals[0]?.value)) return false;
   const booleans = new Set((cmd.flags ?? []).flatMap((flag) => (flag.type === "boolean" && flag.short ? [flag.short] : [])));
   const end = args.indexOf("--");
   return (end === -1 ? args : args.slice(0, end)).some(
@@ -458,11 +457,13 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain, undefined, rest);
     throw error;
   }
-  // The NATS client keeps only the host and port of a broker URL, so a user and password in it were
-  // dropped in silence and the command connected with whatever credential it resolved instead. A
-  // command whose own check names this, such as `up`'s, has refused above. The value is never repeated.
-  if (cmd.flags?.some((flag) => flag.name === "server") && typeof canonical.values.server === "string" && brokerUrlHasUserinfo(canonical.values.server))
-    failureExit(cmd, brokerUrlCredentialRefusal("--server"), json, canonical.values.plain === true);
+  // The TCP client drops URL components beyond host and port. Apply registration's syntax rule
+  // before any command connects. A command's narrower rule, such as `up`'s, has run above.
+  if (cmd.flags?.some((flag) => flag.name === "server") && typeof canonical.values.server === "string") {
+    const checked = checkServer(canonical.values.server, "--server");
+    if (!checked.ok)
+      failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true);
+  }
   return canonical;
 }
 
@@ -474,7 +475,7 @@ function storeDirRefusal(value: string): CommandFailure {
 }
 
 /** The commands that never read the working folder, so they run from one that was removed. */
-const FOLDERLESS = new Set(["help", "version", "completion", "docs", "telemetry"]);
+const FOLDERLESS = new Set(["help", "version", "completion", "docs", "telemetry", "daemon"]);
 
 /** A working folder removed before this process read it fails every cwd read the command makes, and
  *  Node caches the first read that succeeds. One read refuses that case before the command's own
@@ -708,8 +709,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (!cmd || !parsed) throw new Error("internal error: dispatch reached its effects without a parsed command");
   // A preferences file that does not validate stops every command that could act on a default, as a
   // broken config file does, so nothing runs on a default the person did not mean. Help, shell
-  // completion, version and docs use no preference, and status reports the file as a warning, so they
-  // still run. `--help` on a command has already returned above.
+  // completion, version, docs and machine-daemon operations need no preference defaults, and status
+  // reports the file as a warning, so they still run. `--help` has already returned above.
   if (!cmd.name.startsWith("__") && cmd.name !== "help" && cmd.name !== "completion") {
     // A relative COTAL_HOME would name another home in each folder a command runs in, and a
     // COTAL_HOME that cannot be a directory can hold no record: both stop them before any command
@@ -719,10 +720,11 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     const homeProblem = cotalHomeProblem();
     if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no
-    // records, and every reader would otherwise report a different wrong cause.
-    const dirProblem = cmd.name === "version" || workingFolderRemoved() ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
+    // records, and every reader would otherwise report a different wrong cause. The machine daemon
+    // uses its selected home, not the invoking project's records.
+    const dirProblem = cmd.name === "version" || cmd.name === "daemon" || workingFolderRemoved() ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
     if (dirProblem) failureExit(cmd, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
-    if (!["version", "docs", "status"].includes(cmd.name)) {
+    if (!["version", "docs", "status", "daemon"].includes(cmd.name)) {
       try {
         cachedPreferences();
       } catch (e) {

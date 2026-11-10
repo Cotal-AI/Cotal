@@ -62,11 +62,11 @@ export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }): stri
 export function watchReport(snapshot: MeshSnapshot, filter: WatchFilter): Report {
   const hint = "This observer's snapshot, not a complete history or proof of task completion.";
   if (filter === "roster" || filter === "waiting") {
-    const rows = filter === "waiting" ? snapshot.signals.waiting : snapshot.agents;
-    return { sections: [{ title: filter === "waiting" ? "Reported waiting" : "Agent roster", blocks: [rows.length ? {
-      kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "role", label: "Role" }, { key: "state", label: "Reported state" }, { key: "activity", label: "Reported activity" }, { key: "id", label: "Identity" }],
-      rows: rows.map((row) => ({ name: row.card.name, role: row.card.role ?? "none", state: { text: row.status === "working" ? "working · progress unknown" : row.status, tone: row.status === "waiting" ? "waiting" : "hint" }, activity: row.activity || "not reported", id: row.card.id })),
-    } : { kind: "lines", lines: [filter === "waiting" ? "No waiting report in this observer snapshot." : "No agents in this observer snapshot."] },
+    const rows = filter === "waiting" ? snapshot.signals.waiting : [...snapshot.agents, ...snapshot.endpoints];
+    return { sections: [{ title: filter === "waiting" ? "Reported waiting" : "Participant roster", blocks: [rows.length ? {
+      kind: "table", columns: [{ key: "name", label: filter === "roster" ? "Participant" : "Agent" }, ...(filter === "roster" ? [{ key: "kind", label: "Kind" }] : []), { key: "role", label: "Role" }, { key: "state", label: "Reported state" }, { key: "activity", label: "Reported activity" }, { key: "id", label: "Identity" }],
+      rows: rows.map((row) => ({ name: row.card.name, kind: row.card.kind, role: row.card.role ?? "none", state: { text: row.status === "working" ? "working · progress unknown" : row.status, tone: row.status === "waiting" ? "waiting" : "hint" }, activity: row.activity || "not reported", id: row.card.id })),
+    } : { kind: "lines", lines: [filter === "waiting" ? "No waiting report in this observer snapshot." : "No participants in this observer snapshot."] },
     { kind: "lines", lines: [{ text: filter === "waiting" ? "Presence carries heartbeat time, not how long a task has waited. No blocked-duration estimate is made." : hint, tone: "hint" }] }] }] };
   }
   if (filter === "channels") return { sections: [{ title: "Observed channels", blocks: [snapshot.channels.length ? {

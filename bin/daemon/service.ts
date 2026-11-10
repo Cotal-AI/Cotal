@@ -42,6 +42,20 @@ import { FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, 
 import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness } from "./register.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
 
+/** Map registration outcomes consistently for setup and service status. */
+export function fromRegister(r: RegisterResult): ServiceConnectionState {
+  switch (r.outcome) {
+    case "approval-required": case "pending": return "approval-pending";
+    case "refused": return "reason" in r ? "refused" : "unavailable";
+    case "not-signed-in": return "not-signed-in";
+    case "not-registered": return "not-registered";
+    case "not-user-auth": case "unsupported-by-space": return "unsupported";
+    case "account-mismatch": case "conflict": return "conflict";
+    case "local-state-error": return "local-state-error";
+    default: return "unavailable";
+  }
+}
+
 const SENTENCE: Record<ServiceConnectionState, string> = {
   "not-requested": "this daemon has not requested registration with this space; run `cotal daemon register --space <s>` first",
   "not-registered": "this space is not registered on this machine; add it with `cotal meshes add`",
@@ -53,6 +67,7 @@ const SENTENCE: Record<ServiceConnectionState, string> = {
   connecting: "the daemon is connecting to the space; it is not connected yet",
   connected: "connected: the broker accepted this daemon's service connection and the space accepted it as ready",
   unavailable: "the space or its broker could not be reached; nothing is connected, and connecting again retries the same requests",
+  "local-state-error": "the daemon could not use its local service records; inspect its identity, registration, ready and renewal records and their permissions, and restore the original record if damaged; nothing is connected",
   ended: "the space ended this daemon's service authority; nothing is connected, and connecting again will not reconnect it",
   disconnected: "not connected",
 };
@@ -173,18 +188,6 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     l.closing = undefined;
   }
 
-  const fromRegister = (r: RegisterResult): ServiceConnectionState => {
-    switch (r.outcome) {
-      case "approval-required": case "pending": return "approval-pending";
-      case "refused": return "reason" in r ? "refused" : "unavailable";
-      case "not-signed-in": return "not-signed-in";
-      case "not-registered": return "not-registered";
-      case "not-user-auth": case "unsupported-by-space": return "unsupported";
-      case "account-mismatch": case "conflict": return "conflict";
-      default: return "unavailable";
-    }
-  };
-
   /** Ask the space to accept this witness as ready, on a fresh access bearer from the source, under
    *  one persisted ready request per witness. Sets `connected` only if the broker is still up. */
   async function ready(l: Live, space: string, witness: ServiceRegistrationWitness, store: SecretStore, dir: string): Promise<void> {
@@ -193,7 +196,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     if (!flush) { l.state = "unavailable"; return; }
     await flush();
     const requestId = await readyRequestId(store, witness);
-    if (requestId === undefined) { l.state = "unavailable"; return; }
+    if (requestId === undefined) { l.state = "local-state-error"; return; }
     let token: string;
     try { token = await l.source!.bearer(); } catch { return sourceFailed(l); }
     let answer;
@@ -225,6 +228,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   function sourceFailed(l: Live): void {
     const s = l.source?.state();
     if (s?.state === "ended") { l.state = "ended"; l.reason = ENDED.has(s.reason) ? s.reason : "unrecognized"; }
+    else if (s?.state === "unavailable" && s.cause === "store") l.state = "local-state-error";
     else l.state = "unavailable";
   }
 
@@ -259,7 +263,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     if (!provider.serviceEndpointRenewal || !provider.serviceEndpointAuthority || !provider.serviceEndpointInfo) { l.state = "unsupported"; return result(space); }
     const store = daemonServiceStore(home, space, workspaceSecretStore(entry.root));
     const dir = userAuthStateDir(entry.root, space, { readOnly: true });
-    const source = provider.serviceEndpointRenewal({ store, dir, witness });
+    const source = provider.serviceEndpointRenewal({ store, dir, sessionDir: home, witness });
     l.source = source;
     let grant: EpServeGrant;
     const pull = async () => {

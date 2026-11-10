@@ -48,6 +48,10 @@ const commands = (...names: string[]): ExtensionRef[] => names.map((name) => ({ 
 // host a manager hosts runs with (@cotal-ai/runtime). Nothing else in the CLI is imported, and the
 // command's flags, refusals and exit are `runCli`'s as for any other command.
 registry.provide({ provides: commands("supervise", "__daemon-manager", "__service-manager"), load: importing("manager", "auth", "runtime") });
+registry.provide({ provides: commands("__machine-manager"), load: async () => {
+  await importing("manager", "auth", "runtime")();
+  await import("./daemon/manager-entry.js");
+} });
 registry.provide({ provides: commands("deliver", "__daemon-deliver", "__service-delivery", "feedback-intake", "__service-feedback-intake"), load: importing("delivery", "auth") });
 registry.provide({ provides: commands("auth-service", "__daemon-auth-service", "__service-auth"), load: importing("auth") });
 registry.provide({ provides: [{ kind: "registry-service", name: "builtin" }], load: () => import("@cotal-ai/registry") });
@@ -61,6 +65,7 @@ const argv = process.argv.slice(2);
 const word = commandWord(argv);
 if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
 else await importing(...(Object.keys(surfaces) as Surface[]))();
+if (word === "update") await import("./daemon/update-entry.js");
 
 // A CLI must exit quietly when its stdout is closed early — piped to `head`, a pager that quits,
 // or a shell's process substitution (`source <(cotal completion script bash)`). Node otherwise turns the

@@ -90,9 +90,15 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
     return { outcome: "refused", space, message: SENTENCE.refused };
   }
 
-  const identity = claimIdentityRecord(daemonIdentityFile(space, home), "daemon service identity", parseIdentity(space), () => ({
-    v: 1, kind: KIND, space, endpoint: DAEMON_ENDPOINT, instanceId: mintLifecycleUid(), accountPublicKey,
-  }));
+  let identity: DaemonServiceIdentity;
+  try {
+    identity = claimIdentityRecord(daemonIdentityFile(space, home), "daemon service identity", parseIdentity(space), () => ({
+      v: 1, kind: KIND, space, endpoint: DAEMON_ENDPOINT, instanceId: mintLifecycleUid(), accountPublicKey,
+    }));
+  } catch {
+    return { outcome: "local-state-error", space,
+      message: "the daemon could not read or create its local service identity; inspect service-identity.json and its permissions, and restore the original record if damaged" };
+  }
   if (identity.accountPublicKey !== accountPublicKey)
     return { outcome: "account-mismatch", space, pinnedAccountPublicKey: identity.accountPublicKey, observedAccountPublicKey: accountPublicKey,
       message: "the space now answers with a different account than this daemon pinned; nothing was changed. Confirm the space was not replaced before removing the daemon's identity for it by hand" };
