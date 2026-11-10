@@ -31,7 +31,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { CommandFailure } from "@cotal-ai/workspace";
@@ -352,6 +352,39 @@ export function startInstalled(paths: DaemonPaths): UninstallPlan {
   if (service) service.start(receipt);
   else submitSystemdUnitControl("start", plan.unit);
   return plan;
+}
+
+/** The executable and entry pinned by the verified native source, compared with this CLI. */
+export function installedDaemonIdentity(paths: DaemonPaths): { same: boolean; installed: string; current: string } {
+  const { receipt, plan } = recordedUnit(paths);
+  const bytes = readFileSync(receipt.unitPath);
+  const decode = (value: string) => value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
+  let argv: string[];
+  if (plan.mechanism === "systemd-user") {
+    const line = /^ExecStart=(.*)$/m.exec(bytes.toString("utf8"))?.[1];
+    if (!line) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon unit has no readable executable and entry");
+    argv = [...line.matchAll(/"((?:\\.|[^"\\])*)"|([^\s"]+)/g)].map(match => (match[1] ?? match[2]!).replace(/\\([\\"])/g, "$1").replaceAll("%%", "%").replaceAll("$$", "$"));
+  } else if (plan.mechanism === "launchd-agent") {
+    const array = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(bytes.toString("utf8"))?.[1] ?? "";
+    argv = [...array.matchAll(/<string>([^<]*)<\/string>/g)].map(match => decode(match[1]!));
+  } else {
+    const text = bytes.subarray(2).toString("utf16le");
+    const executable = decode(/<Command>([^<]*)<\/Command>/.exec(text)?.[1] ?? "");
+    const args = decode(/<Arguments>([^<]*)<\/Arguments>/.exec(text)?.[1] ?? "");
+    argv = [executable, ...[...args.matchAll(/"([^"]*)"|(\S+)/g)].map(match => match[1] ?? match[2]!)];
+  }
+  const expected = daemonServeArgv(receipt.daemonHome);
+  const coordinate = (args: string[]) => {
+    const daemon = args.indexOf("daemon");
+    const entry = daemon >= 2 ? args[daemon - 1]! : args[0]!;
+    return { executable: args[0], entry };
+  };
+  const installed = coordinate(argv), current = coordinate(expected);
+  // launchd pins the adjacent cwd bootstrap instead of cotal.js itself.
+  if (plan.mechanism === "launchd-agent") installed.entry = argv[argv.indexOf("daemon") - 2]!.replace(/daemon-cwd\.js$/, "cotal.js");
+  if (!installed.executable || !installed.entry) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon installation could not be identified");
+  const canonical = (path: string) => { try { return realpathSync(path); } catch { return path; } };
+  return { same: canonical(installed.executable) === canonical(current.executable!) && canonical(installed.entry) === canonical(current.entry), installed: `${installed.executable} ${installed.entry}`, current: `${current.executable} ${current.entry}` };
 }
 
 /** Restart only the source and native job recorded for this daemon. */

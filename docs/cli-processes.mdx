@@ -619,8 +619,13 @@ those removed intents. Pause and rename are not implemented.
 
 Setup reuses completed stages but probes an existing Manager again, pinned to its recorded instance,
 before reporting launch-readiness. If the running daemon's version or protocol differs from the
-invoking CLI, setup prepares all hosted children through the local preservation guard, restarts
-its recorded native service, and waits for the matching daemon. An occupied legacy Manager blocks
+invoking CLI, setup first compares the recorded service's executable and entry with this CLI.
+For the same installation it prepares hosted children through the local preservation guard,
+restarts its recorded native service, and waits for the matching daemon. A different installation
+is never restarted. Setup uses it when its protocol and hosting operations are compatible.
+Otherwise the refusal names both installations and asks you to run setup from the daemon's
+installation, or run `cotal daemon uninstall` and then setup from this installation.
+An occupied legacy Manager blocks
 that preparation and remains running. Stop its seats before retrying setup.
 A bare npm replacement reconciles the new generation's connectors under the preservation fence
 before the daemon exits for native restart. A failed reconcile leaves activation pending with its

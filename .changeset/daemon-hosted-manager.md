@@ -15,6 +15,9 @@ Setup restarts a mismatched daemon through its recorded native service. Installe
 verifies the new entry before releasing the daemon to its recorded supervisor. `cotal update`
 checks hosted custody and waits for hosted Manager readiness to return. Self-update also reloads
 a mismatched default daemon from the same installation when it hosts no Managers.
+Setup and update never restart a service pinned to another installation. Setup reuses compatible
+hosting operations or names both installations and the reinstall choices. Update reports the
+other daemon's installation and version after reconciling its own installation.
 Update keeps its ordinary continuity checks when Linux has no runtime directory for a daemon.
 Setup reconciles the stock connectors before hosting and prepares the default persona in the
 Manager's own catalog. A bare npm upgrade reconciles the replacement connectors before activation

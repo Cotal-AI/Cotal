@@ -65,18 +65,27 @@ await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
 const port = (control.address() as AddressInfo).port;
 env.npm_config_registry = `http://127.0.0.1:${(registry.address() as AddressInfo).port}`;
 writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nconst op=process.argv.at(-2); if(!['stop','start'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
-const bytes = `[Service]\nExecStart="${process.execPath}" "${join(repo, "bin/dist/cotal.js")}" daemon serve\nRestart=always\n`;
+const foreign = process.argv.includes("--foreign");
+const bytes = `[Service]\nExecStart="${process.execPath}" "${foreign ? join(root, "another-install/dist/cotal.js") : join(repo, "bin/dist/cotal.js")}" daemon serve\nRestart=always\n`;
 const unitPath = join(root, "cotal-daemon.service");
 writeFileSync(unitPath, bytes, { mode: 0o600 });
 writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(bytes).digest("hex"), installedAt: new Date().toISOString() }));
 try {
-  const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "update"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...(process.argv.includes("--setup-foreign") ? ["daemon", "setup", "--space", "absent", "--no-manager", "--wait", "0", "--json"] : ["update"])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", b => output += String(b)); child.stderr.on("data", b => output += String(b));
   const code = await new Promise(resolve => child.once("exit", resolve));
   const after = await status();
-  if (!calls.includes("/stop") || !calls.includes("/start") || after.result.version === "0.0.0") throw new Error(`R2-5 empty daemon not reloaded: ${JSON.stringify({ code, calls, after, output })}`);
-  console.log("PASS R2-5 empty default daemon reload through shipped update");
+  if (foreign) {
+    console.log("R2-4 foreign update", JSON.stringify({ code, calls, after, output }));
+    if (process.argv.includes("--setup-foreign")) {
+      if (calls.length || !output.includes("TARGET_NOT_FOUND") || after.result.version !== "0.0.0") throw new Error("R2-4 compatible foreign setup restarted the daemon");
+    } else if (calls.length || !output.includes("another-install") || !output.includes("0.0.0")) throw new Error("R2-4 update restarted or failed to identify another installation");
+    console.log("PASS R2-4 foreign installation is left running");
+  } else {
+    if (!calls.includes("/stop") || !calls.includes("/start") || after.result.version === "0.0.0") throw new Error(`R2-5 empty daemon not reloaded: ${JSON.stringify({ code, calls, after, output })}`);
+    console.log("PASS R2-5 empty default daemon reload through shipped update");
+  }
 } finally {
   await old.close();
   if (replacement) await killAndAwaitExit(replacement, "SIGTERM");

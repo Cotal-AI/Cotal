@@ -6,7 +6,7 @@ import { CommandFailure, homeCotalDir, resolveControlTarget } from "@cotal-ai/wo
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { restartInstalled } from "./install.js";
+import { installedDaemonIdentity, restartInstalled } from "./install.js";
 
 const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
@@ -53,6 +53,11 @@ const composed: Command = { ...command, async run(args) {
   const paths = daemonPaths();
   const current = await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");
+  const installation = installedDaemonIdentity(paths);
+  if (!installation.same) {
+    console.log(`machine daemon: ${installation.installed} runs Cotal ${current.result.version}; another installation was left running`);
+    return;
+  }
   if (current.result.version !== updateRuntime.version()) {
     const hosted = (current.result.managers ?? []).some((manager) => manager.state !== "stopped");
     if (hosted) await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
