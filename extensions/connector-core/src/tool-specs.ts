@@ -9,8 +9,8 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, sharedNameIds, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, type ControlReply, type InlinePersona, type PersonaEndpoint, type PresenceStatus } from "@cotal-ai/core";
-import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
+import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, sharedNameIds, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, isAnycastSeq, type AnycastStatus, type ControlReply, type InlinePersona, type PersonaEndpoint, type PresenceStatus } from "@cotal-ai/core";
+import { afterRecallMark, type MeshAgent, type InboxItem, type InboxScope } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
 import { attributionSafe, fmtDeliveryItem, fmtItem, fmtFrom } from "./framing.js";
@@ -31,13 +31,79 @@ export interface ToolResult {
 const ok = (text: string): ToolResult => ({ text });
 const err = (text: string): ToolResult => ({ text, isError: true });
 
+/** How many holders a `cotal_anycast` result names before it counts the rest. */
+const NAMED_HOLDERS = 8;
+
+/** A holder by name and id. Both reach this from peers or the record, so neither may break a line. */
+function holderLabel(h: { id: string; name: string }): string {
+  return `${attributionSafe(h.name)} (${attributionSafe(h.id)})`;
+}
+
+/** The holders of a role, by name and id, from one roster read; `when` says which read. */
+function holdersLine(holders: { id: string; name: string }[] | undefined, when = "at send"): string {
+  if (holders === undefined) return `holders unknown ${when}: the presence view was not current`;
+  if (!holders.length) return `0 holders online ${when}`;
+  const named = holders.slice(0, NAMED_HOLDERS).map(holderLabel).join(", ");
+  const more = holders.length > NAMED_HOLDERS ? ` and ${holders.length - NAMED_HOLDERS} more` : "";
+  return `${holders.length === 1 ? "holder" : "holders"} online ${when}: ${named}${more}`;
+}
+
+const TAKEN_MEANS =
+  "Taken means that holder's connector was about to show it to its agent, not that the agent read, ran or finished it.";
+
+function takenFollowUp(taker: { id: string; name: string }): string {
+  return `Ask ${attributionSafe(taker.name)} with cotal_dm about the work, or use cotal_run for work you need followed to the end.`;
+}
+
+const UNKNOWN_OUTCOME =
+  "Its outcome is unknown: a holder on an older connector may have taken it without a recorded take, it may have been dropped as malformed, or its record expired a day after it left the queue.";
+
+function removalLine(status: Extract<AnycastStatus, { state: "cancelled" }>): string {
+  if (status.removal === "deleted") return "It was removed from the queue before any holder took it.";
+  if (status.removal === "already-gone")
+    return "It had already left the queue when the delivery daemon went to remove it: an earlier removal whose answer was lost may have taken it off, the queue may have been recreated, or a holder on an older connector, which records no take, may have taken it.";
+  return "No holder can take it now; the delivery daemon has not finished removing it from the queue.";
+}
+
+/** A request's status, as `cotal_anycast` with `seq` reports it (SPEC §8.1). */
+function renderAnycastStatus(status: AnycastStatus, holders?: { id: string; name: string }[]): string {
+  const seq = status.seq;
+  if (status.state === "unknown")
+    return `No request seq ${seq} from you is on the queue, and the delivery daemon holds no record of it. ${UNKNOWN_OUTCOME}`;
+  if (status.state === "cancelled") return `Request seq ${seq} on @${status.role} is cancelled. ${removalLine(status)}`;
+  if (status.state === "waiting")
+    return `Request seq ${seq} on @${status.role} is waiting on the queue, and no holder has taken it (${holdersLine(holders, "now")}). ` +
+      `A busy holder may already have it. If that holder does not confirm it in time, it goes back on the queue for a holder. Cancel it with seq ${seq} and cancel: true.`;
+  const before = status.previous
+    ? ` Before that, ${holderLabel(status.previous)} took it and did not confirm it before its ack wait ran out, so ${attributionSafe(status.previous.name)} may also have started it.`
+    : "";
+  return `Request seq ${seq} on @${status.role} was taken by ${holderLabel(status.taker)} at ${new Date(status.at).toISOString()}.${before} ` +
+    `${TAKEN_MEANS} ${takenFollowUp(status.taker)}`;
+}
+
+/** A cancel's outcome, as `cotal_anycast` with `seq` and `cancel: true` reports it (SPEC §8.1). */
+function renderAnycastCancel(status: AnycastStatus): string {
+  const seq = status.seq;
+  if (status.state === "cancelled") return `Cancelled request seq ${seq} on @${status.role}. ${removalLine(status)}`;
+  if (status.state === "taken")
+    return `Not cancelled: request seq ${seq} on @${status.role} was already taken by ${holderLabel(status.taker)}. ${TAKEN_MEANS} ${takenFollowUp(status.taker)}`;
+  if (status.state === "unknown")
+    return `Not cancelled: no request seq ${seq} from you is on the queue, and the delivery daemon holds no record of it. ${UNKNOWN_OUTCOME}`;
+  return `Not cancelled: request seq ${seq} on @${status.role} is still waiting. Try the cancel again.`;
+}
+
 /** A local inbox read cannot establish that a session is receiving from the mesh. */
 function inboxConnectionWarning(agent: MeshAgent): string {
   const state = agent.connectionState;
   const channelIssue = agent.channelDeliveryIssue;
-  if (state === "ready" || state === "stalled") return channelIssue ?? "";
+  // A role request whose take the delivery daemon could not decide is held, not shown (SPEC §8.1).
+  const held = agent.heldTakes();
+  const heldIssue = held.count && held.detail
+    ? `${held.count} role request${held.count === 1 ? " is" : "s are"} held and not shown: ${held.detail}`
+    : undefined;
+  if (state === "ready" || state === "stalled") return [channelIssue, heldIssue].filter(Boolean).join("\n");
   const issue = agent.connectionIssue;
-  return [channelIssue, `Mesh connection is not ready (${state})${issue ? `: ${issue.slice(0, 500)}` : "."}\nLocally buffered messages are still readable; an empty buffer does not mean no new mesh messages.`].filter(Boolean).join("\n");
+  return [channelIssue, heldIssue, `Mesh connection is not ready (${state})${issue ? `: ${issue.slice(0, 500)}` : "."}\nLocally buffered messages are still readable; an empty buffer does not mean no new mesh messages.`].filter(Boolean).join("\n");
 }
 
 /** Cap on the JSON text a generic endpoint tool returns into the session. */
@@ -293,6 +359,10 @@ export function renderInbox(opts: {
    * each of its items is acked by receive key.
    */
   strictIds?: ReadonlySet<string>;
+  /** Receive keys this reply may show, from an earlier render of the same items in the same order,
+   *  so what it shows of the ordered lane is still an unbroken prefix. Anything else is only named
+   *  as held. */
+  only?: ReadonlySet<string>;
 }): InboxResponse {
   const budget = opts.budget ?? INBOX_WINDOW_CHARS;
   const peek = opts.peek ?? false;
@@ -352,6 +422,7 @@ export function renderInbox(opts: {
   for (const i of ordered) {
     const strict = strictIds.has(i.recvKey);
     if (strict && strictGap) continue;
+    if (opts.only && !opts.only.has(i.recvKey)) continue;
     const cost = itemCost(i);
     if (used + cost > budget) {
       // In the ordered lane even a message no response could carry whole is a gap: the mark would
@@ -385,6 +456,78 @@ export function renderInbox(opts: {
     text = assemble(shown, held, "full");
   }
   return { text, shown, held, stuck };
+}
+
+/** One inbox reply once the held role requests it carries are taken. `offered` is the buffer it was
+ *  rendered over and `buffered` what of the buffer may be shown now. `part` is the message whose
+ *  next part the reply carries when it carries no whole one, if the first pass took it. */
+interface TakenReply {
+  reply: InboxResponse;
+  offered: InboxItem[];
+  buffered: InboxItem[];
+  part?: InboxItem;
+}
+
+/** How many times one read chooses its reply again after a take of a request it chose is refused. */
+export const READ_TAKE_ROUNDS = 8;
+
+/**
+ * Render one reply over the inbox preview, take the held role requests it carries (or the one it
+ * carries part of), then render it again over what may be shown now (SPEC §8.1). The second pass
+ * shows only what the first chose, so a reply never takes a request it does not show. It renders a
+ * subset of the first pass's items in the same order, so it fits wherever the first did. `extra`
+ * rides after the buffer and needs no take, such as focus recall. `warning` is read at each render,
+ * so the reply reports what the takes left held. A read whose caller is gone takes nothing.
+ */
+async function takeForReply(
+  agent: MeshAgent,
+  scope: InboxScope,
+  opts: Omit<Parameters<typeof renderInbox>[0], "items" | "only" | "warning"> & { warning: () => string; signal?: AbortSignal },
+  extra: readonly InboxItem[] = [],
+): Promise<TakenReply> {
+  const { warning, signal, ...render } = opts;
+  let pending: Set<string> | undefined;
+  let preview: InboxItem[] = [];
+  let chosen = new Set<string>();
+  let shown = new Set<string>();
+  let part: InboxItem | undefined;
+  let taken = new Set<string>();
+  let showable: Set<string> | undefined;
+  const undecided = new Set<string>();
+  for (let round = 0; round < READ_TAKE_ROUNDS && !signal?.aborted; round++) {
+    const got = await agent.takeChosen(scope, (p) => {
+      // A read carries only what was pending when it began, so mail arriving meanwhile cannot push
+      // out a request an earlier round took.
+      pending ??= new Set(p.map((i) => i.recvKey));
+      preview = p.filter((i) => pending!.has(i.recvKey));
+      const candidates = showable ? preview.filter((i) => showable!.has(i.recvKey)) : preview;
+      const first = renderInbox({ ...render, warning: warning(), items: [...candidates, ...extra] });
+      shown = new Set(first.shown.map((i) => i.recvKey));
+      part = first.shown.length ? undefined : candidates.find((i) => first.stuck.has(i.recvKey));
+      const picked = [...candidates.filter((i) => shown.has(i.recvKey)), ...(part ? [part] : [])];
+      chosen = new Set(picked.map((i) => i.recvKey));
+      return picked;
+    });
+    taken = new Set(got.map((i) => i.recvKey));
+    // A refused take leaves room another message can use, so the reply is chosen again without it. A
+    // take still undecided would only repeat its wait if chosen again, so the reply is chosen once
+    // more from what needs no take, and the undecided request waits for a later read.
+    const missed = [...chosen].filter((k) => !taken.has(k));
+    if (!missed.length || showable) break;
+    const open = new Set(agent.inboxPreview(scope).map((i) => i.recvKey));
+    for (const k of missed) if (open.has(k)) undecided.add(k);
+    if (undecided.size) showable = new Set(agent.peekInbox(scope).map((i) => i.recvKey));
+  }
+  // A chosen request whose take was refused or is still undecided leaves this reply entirely. A reply
+  // chosen again from what needs no take offers only that, so a request never asked is not named.
+  const live = new Set(agent.inboxKeys(scope));
+  const offered = preview.filter((i) => live.has(i.recvKey) && !undecided.has(i.recvKey) && (!chosen.has(i.recvKey) || taken.has(i.recvKey)) && (!showable || showable.has(i.recvKey)));
+  return {
+    reply: renderInbox({ ...render, warning: warning(), items: [...offered, ...extra], only: shown }),
+    offered,
+    buffered: agent.peekInbox(scope),
+    part: part && taken.has(part.recvKey) ? part : undefined,
+  };
 }
 
 /** How much the held-note is allowed to say, in the order it gives ground when the window is tight:
@@ -1073,19 +1216,21 @@ export function cotalToolSpecs(
           return ok(text);
         };
         if (agent.attention !== "focus") {
-          const connectionWarning = inboxConnectionWarning(agent);
-          const warning = [connectionWarning, storedNote].filter(Boolean).join("\n");
-          const buffered = agent.peekInbox(inboxScope);
-          const { text, shown, held, stuck } = renderInbox({
-            items: buffered,
+          // A peek shows bodies too, so a peek takes what it shows like any read.
+          const { reply: rendered, offered, buffered, part: taken } = await takeForReply(agent, inboxScope, {
             peek,
-            warning,
+            warning: () => [inboxConnectionWarning(agent), storedNote].filter(Boolean).join("\n"),
+            signal: call?.signal,
             head: (s) =>
               pulls
                 ? `${s.length} pull-only message${s.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
                 : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? ` (peek: nothing cleared${stillDelivered})` : ""}:`,
           });
-          if (!buffered.length)
+          const { text, shown, held, stuck } = rendered;
+          // Asked after the takes: one this read asked for can have been held since.
+          const connectionWarning = inboxConnectionWarning(agent);
+          const warning = [connectionWarning, storedNote].filter(Boolean).join("\n");
+          if (!offered.length) {
             return reply(
               [warning, pulls
                 ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued; peek to read ${automaticPending === 1 ? "it" : "them"} now.` : ""}`
@@ -1093,11 +1238,12 @@ export function cotalToolSpecs(
                 : connectionWarning ? "Local inbox buffer is empty."
                   : (agent.connectionState === "ready" ? emptyInboxNote?.() : undefined) ?? "Inbox empty, no new messages."].filter(Boolean).join("\n\n"),
             );
+          }
           if (!shown.length) {
             const part = partReply({
               agent,
-              item: buffered.find((i) => stuck.has(i.recvKey)),
-              offered: buffered,
+              item: taken ?? buffered.find((i) => stuck.has(i.recvKey)),
+              offered,
               stuck,
               peek: keeps(),
               warning,
@@ -1119,9 +1265,6 @@ export function cotalToolSpecs(
         const before = new Set(agent.peekInbox("all").map((i) => i.recvKey));
         const underway = new Set([...(partOffsets.get(agent)?.keys() ?? [])].filter((k) => !before.has(k)));
         const recall = await agent.recallAmbient(underway);
-        // Read after recall, which can hand an id-less message back into the buffer (#662).
-        const buffered = agent.peekInbox(inboxScope);
-        const bufferedIds = new Set(buffered.map((i) => i.recvKey));
         // RECALL HAS TO ADVANCE, or windowing it starves it. Recall is re-derived from an unchanged
         // frontier on every call, so showing its first window and stopping there returned the same
         // prefix forever while the reply promised a next batch: measured as three identical replies
@@ -1164,21 +1307,26 @@ export function cotalToolSpecs(
         aheadFresh.sort(byTsThenId);
         const fresh = [...clocked, ...aheadFresh];
         const aheadIds = new Set(aheadFresh.map((i) => i.recvKey));
-        const connectionWarning = inboxConnectionWarning(agent);
-        const warning = [connectionWarning, storedNote, droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
+        const focusWarning = () => [inboxConnectionWarning(agent), storedNote, droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
           .filter(Boolean)
           .join(" ");
-        const { text, shown: all, stuck } = renderInbox({
-          items: [...buffered, ...fresh],
+        // Taken after recall, which can hand an id-less message back into the buffer (#662).
+        const { reply: rendered, offered, buffered, part: taken } = await takeForReply(agent, inboxScope, {
           peek,
-          warning,
+          warning: focusWarning,
+          signal: call?.signal,
           strictIds: new Set(clocked.map((i) => i.recvKey)),
           head: (s) =>
             pulls
               ? `${s.length} message${s.length === 1 ? "" : "s"}. Buffered pull-only items were cleared; normal focus channel items are read-only recall:`
               : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? ` (peek: live buffer not cleared${stillDelivered})` : ""} in focus mode; channel items are recall since you focused:`,
-        });
-        if (!buffered.length && !fresh.length && !recall.droppedChannels.length && !aheadWithheld.length)
+        }, fresh);
+        const bufferedIds = new Set(buffered.map((i) => i.recvKey));
+        const { text, shown: all, stuck } = rendered;
+        // Asked after the takes: one this read asked for can have been held since.
+        const connectionWarning = inboxConnectionWarning(agent);
+        const warning = focusWarning();
+        if (!offered.length && !fresh.length && !recall.droppedChannels.length && !aheadWithheld.length)
           return reply(
             [connectionWarning, storedNote, pulls
               ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued; peek to read ${automaticPending === 1 ? "it" : "them"} now.` : ""}`
@@ -1190,12 +1338,13 @@ export function cotalToolSpecs(
           // ahead record, so the mark never passes a message that has not been handed over.
           const first = clocked[0];
           const item =
+            taken ??
             buffered.find((i) => stuck.has(i.recvKey)) ??
             (first && stuck.has(first.recvKey) ? first : aheadFresh.find((i) => stuck.has(i.recvKey)));
           const part = partReply({
             agent,
             item,
-            offered: [...buffered, ...fresh],
+            offered: [...offered, ...fresh],
             stuck,
             peek: keeps(),
             warning,
@@ -1321,28 +1470,51 @@ export function cotalToolSpecs(
       title: "Cotal: ask any agent of a role",
       description:
         "Ask whoever holds a role. Use it only when the team was built for it, with agents that hold the role to take requests, such as a pool of reviewers started with cotal_spawn and role. " +
-        "The request waits until one of them takes it, which can take a while if they are all busy. Without such a pool, mention a named agent on the task's channel, send a DM, or spawn a helper. " +
+        "The request waits on the role's queue until one of them takes it, which can take a while if they are all busy, and one sent while no agent holds the role is kept for the next that does. Without such a pool, mention a named agent on the task's channel, send a DM, or spawn a helper. " +
+        "The result gives the request's seq and the holders online at send. Except on an open mesh, you get a notice naming the holder that takes it, seq alone reads the request's status, and seq with cancel: true cancels it while it still waits. A cancel is refused once a holder took the request. " +
         "Anycast does not follow the work after someone takes it. To follow work to the end, use cotal_run. " +
         'Example: `{role: "review-frontend", text: "Review issue #812, the checkout button. Post your findings on #review.checkout."}`',
       schema: {
-        role: z.string().describe("The role to address (e.g. reviewer)."),
-        text: z.string().describe("The request."),
+        role: z.string().optional().describe("Send: the role to address (e.g. reviewer). Give it with text."),
+        text: z.string().optional().describe("Send: the request."),
+        seq: z.number().optional().describe("Status or cancel: the seq a send returned. Give it alone for the request's status."),
+        cancel: z.boolean().optional().describe("Cancel: true, with seq, cancels that request while it still waits."),
       },
-      async run(agent, _config, { role, text: msg }: { role: string; text: string }) {
+      async run(agent, config, { role, text: msg, seq, cancel }: { role?: string; text?: string; seq?: number; cancel?: boolean }) {
+        // One call does one thing, and a call that is not exactly one of them changes nothing.
+        const sending = role !== undefined || msg !== undefined;
+        const asking = seq !== undefined || cancel !== undefined;
+        if (sending && asking)
+          return err("cotal_anycast does one thing per call: send with role and text, read a status with seq, or cancel with seq and cancel: true. Nothing was sent, read or cancelled.");
+        if (asking) {
+          if (seq === undefined) return err("cancel needs the seq of the request to cancel. Nothing was cancelled.");
+          if (!isAnycastSeq(seq)) return err(`seq must be a whole number of at least 1, the seq a send returned; got ${seq}. Nothing was read or cancelled.`);
+          if (cancel === false) return err("cancel takes only true. Give seq alone for the request's status. Nothing was read or cancelled.");
+          if (!isAuthed(config))
+            return err("This is an open mesh: it runs no delivery daemon, so it keeps no record of a request after its send, and a request cannot be read or cancelled by seq.");
+          try {
+            const status = cancel ? await agent.cancelAnycast(seq) : await agent.anycastStatus(seq);
+            const holders = status.state === "waiting" ? await agent.roleHolders(status.role) : undefined;
+            return ok(cancel ? renderAnycastCancel(status) : renderAnycastStatus(status, holders));
+          } catch (e) {
+            return err(`Couldn't ${cancel ? "cancel" : "read the status of"} request seq ${seq}: ${(e as Error).message}`);
+          }
+        }
+        if (role === undefined || msg === undefined)
+          return err("A send needs both role and text. Nothing was sent.");
         try {
-          const { ack, holdersAtSend: n } = await agent.anycast(role, msg);
+          const { ack, holdersAtSend } = await agent.anycast(role, msg);
           const dup = ack.duplicate ? " duplicate publication." : "";
-          const at =
-            n === undefined
-              ? "holders unknown at send: the presence view was not current"
-              : `${n} holder${n === 1 ? "" : "s"} online at send`;
           // Zero holders is not a failure: the queue keeps the request for whoever takes the role
           // next. Say so, so it reads neither as delivered nor as lost.
           const none =
-            n === 0
+            holdersAtSend?.length === 0
               ? ` No present agent holds @${role}, so the request waits on its queue until one does. Roles match exactly; cotal_roster shows the roles present.`
               : "";
-          return ok(`Request stored as seq ${ack.seq} on the @${role} queue (${at}; delivery not confirmed).${dup}${none}`);
+          const follow = isAuthed(config)
+            ? ` You get a notice naming the holder that takes it. Read its status with seq ${ack.seq}, or cancel it with seq ${ack.seq} and cancel: true while it waits.`
+            : "";
+          return ok(`Request stored as seq ${ack.seq} on the @${role} queue (${holdersLine(holdersAtSend)}; delivery not confirmed).${dup}${none}${follow}`);
         } catch (e) {
           return err(`Couldn't send: ${(e as Error).message}`);
         }

@@ -248,6 +248,46 @@ This page does not promise a rolling upgrade. Nothing in the current release lin
 authority versions at once. Where the broker and the manager run separately, the mesh is down for a
 window during the upgrade. The sections below describe that window so you can schedule it.
 
+## Anycast takes after 0.154.0
+
+On an authenticated mesh a role holder now shows a role request only after the delivery daemon
+records its take ([SPEC §8.1](../SPEC.md#81-anycast-request-status)). The sender gets a notice
+naming the holder and can read or cancel the request by seq. Two credential shapes change for it:
+an agent credential gains a take subject for its role and for each `role:<r>` token, and the
+delivery credential gains reads of the task stream, the `cotal_anycast_<space>` bucket and the
+notice publish.
+
+### What changes for you
+
+- Restart the delivery daemon at this version, on a credential minted at this version. `cotal up`
+  mints one when it starts the daemon, and the daemon creates the records bucket when it starts, so
+  an existing space needs no setup step. Until then, holders on the new connector keep role requests
+  unshown and report that the daemon predates anycast takes.
+- A daemon at this version on an older delivery credential still serves durable delivery, but it
+  records no takes. It logs, and every take, status and cancel answers,
+  `this delivery daemon's credential was minted before anycast request records existed`. This
+  matters for a `deliver --spaces` host, which reads each space's credential from the root.
+- Respawn every seat that holds a role. A role credential minted before this version has no take
+  subject, so the new connector on it holds role requests and reports
+  `this seat's credential was minted before anycast takes existed`. Seats without a role are
+  unaffected.
+- A seat still on an older connector shows role requests without a take, as before. Its requests
+  read `waiting` until it acks them, and a cancel can find one already gone, so upgrade every role
+  holder before you rely on status or cancel.
+- An open mesh is unchanged. It runs no delivery daemon, so it has no notices, status or cancel.
+- Before you delete or recreate a space's task stream, stop every delivery daemon that serves the
+  space and wait until each has exited and its broker connection has closed. A cancel's delete names
+  only the stream and the seq, so one still in flight when the stream is recreated removes the
+  request the new stream stores at that seq, and the cancel reads `deleted`.
+- An SDK embedder that implements pi's `InboxSource` itself adds `inboxPreview` and `takeChosen`.
+  A `MeshAgent` has both. A host built on `MeshAgent` shows a role request only from what
+  `takeChosen` returns, because `peekInbox` never returns one still held for its take.
+  `incoming` fires once when a held request arrives, and again only if its take lands after
+  `takeChosen` stopped waiting, or if a link drop ended its take, once the link is back up. A
+  notice that counts waiting messages without showing them reads `inboxPending`, which includes
+  held requests. `inboxWake` and `pendingWake` leave held requests out while a take the daemon
+  could not decide is waited out, and `incoming` announces them again when that wait ends.
+
 ## Static spawns are bounded by the spawner's evidence after 0.140.8
 
 On a static mesh, an agent that could spawn could hand its helper any channel or capability, because

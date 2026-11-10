@@ -179,7 +179,7 @@ try {
 
   // ---- cotal_anycast ----
   const held = await run(me, "cotal_anycast", { role: "default", text: "for a held role" });
-  check("a role someone holds gets no waiting note", !held.isError && held.text.includes("(1 holder online at send") && !held.text.includes("waits on its queue"), held.text);
+  check("a role someone holds gets no waiting note", !held.isError && held.text.includes("(holder online at send: scout (") && !held.text.includes("waits on its queue"), held.text);
   const waiting = await run(me, "cotal_anycast", { role: "reviewer", text: "queued for a reviewer" });
   check(
     "a role nobody holds says the request waits on its queue",

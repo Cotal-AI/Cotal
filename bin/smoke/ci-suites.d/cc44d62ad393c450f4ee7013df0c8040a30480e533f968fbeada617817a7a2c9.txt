@@ -1,0 +1,3 @@
+# Claude Code counts a role request held for its take in its batch notices, and a hook that takes
+# and shows it pushes no notice on top. Mutation-proofed - extensions/connector-claude-code/smoke/mutations/anycast-take-wake-auth.json.
+smoke:claude-anycast-take-wake:auth

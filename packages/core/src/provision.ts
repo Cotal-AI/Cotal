@@ -85,6 +85,10 @@ import {
   livenessServeFilter,
   livenessReplyGrant,
   isTransferStream,
+  takeSubject,
+  takeServeFilter,
+  takeReplyGrant,
+  anycastBucket,
 } from "./subjects.js";
 import { LIVENESS_PLANES } from "./liveness.js";
 import {
@@ -1587,7 +1591,7 @@ export function permissionsFor(
   const uid = assertLifecycleToken(pr.lifecycleUid);
   const chatHistD = chatHistDurable(pr.owner, pr.actor, uid), dmD = dmDurable(pr.owner, pr.actor, uid);
   const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor, uid); // Plane-3 per-member delivery (bind-only)
-  const svcDs = taskRoles(opts.role, opts.capabilities).map(taskDurable);
+  const roles = taskRoles(opts.role, opts.capabilities);
   const pubAllow = [
     // peer publish — owner+actor identity + channel scope, built from the real builders. Default-deny:
     // ONLY the declared allowPublish channels (none by default) get a chat-publish grant.
@@ -1689,7 +1693,7 @@ export function permissionsFor(
     // `$KV.cotal_manager_*.>`), so do NOT add a broad `KV_*` or `$KV.<space>.>` grant that would
     // silently re-open it.
   ];
-  if (svcDs.length > 0) {
+  if (roles.length > 0) {
     // TASK consumer: BIND ONLY the pre-created durable (svc_<role>) of its own role and of each
     // `role:<r>` token it holds. Like DM, the create-time filter_subject isn't reliably
     // ACL-constrainable, so no create path is allowed — the privileged provisioner pre-creates
@@ -1697,12 +1701,17 @@ export function permissionsFor(
     // role-less agent holds no TASK grant at all, so it can neither read the task stream's state
     // nor enumerate its subjects.
     pubAllow.push(`$JS.API.STREAM.INFO.${TASK}`);
-    for (const svcD of svcDs)
+    for (const role of roles) {
+      const svcD = taskDurable(role);
       pubAllow.push(
         `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,
         `$JS.API.CONSUMER.MSG.NEXT.${TASK}.${svcD}`,
         `$JS.ACK.${TASK}.${svcD}.>`,
+        // The take of one delivered request (SPEC §8.1), pinned to this role and this principal, so a
+        // credential takes only for a role whose queue it binds. Its reply rides the sub row below.
+        takeSubject(space, role, pr.owner, pr.actor),
       );
+    }
   }
   // Spawn / admin capability control reach rides the v0.4 ep rows below (the manager `ctl` rail is
   // deleted) — the spawn set (owner-mode manager lifecycle) and the admin instrument set
@@ -1807,7 +1816,9 @@ export function permissionsFor(
   const livenessReplies = LIVENESS_PLANES.map((plane) => `${livenessSubject(space, plane, pr.owner, pr.actor)}.>`);
   // Manager control replies ride the v0.4 ep reply rail (in `epSub`, keyed on the caller triple) —
   // the `ctl.<tier>.<id>.reply.>` subtrees are gone with the ctl rail.
-  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...livenessReplies, ...subChat, ...epSub] } };
+  // A take's reply rides the take's own request subtree, like the delivery control replies.
+  const takeReplies = roles.map((role) => `${takeSubject(space, role, pr.owner, pr.actor)}.>`);
+  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...takeReplies, ...livenessReplies, ...subChat, ...epSub] } };
 }
 
 /** The reads a launch on one Manager needs: `status` (its execution mode and which connectors it
@@ -2523,7 +2534,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // ownership list consumed by inventory and teardown. The provisioner holds create-or-verify only on
   // those authority stores; lifecycle/session writes ride their narrower executor credentials.
   const buckets = [
-    presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, deliveryBucket, managerBucket,
+    presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, anycastBucket, deliveryBucket, managerBucket,
   ].map((b) => `KV_${b(space)}`);
   // STREAM.CREATE + INFO for each (idempotent setup at `cotal up`; CREATE is create-if-matching, INFO covers
   // the client's existence checks). NO DELETE/PURGE — provisioning never tears a stream down.
@@ -3003,6 +3014,7 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
   const CHAT = chatStream(space), INBOX = inboxStream(space), DLV = dlvStream(space);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
   const MKV = `KV_${membersBucket(space)}`, AKV = `KV_${aclBucket(space)}`, DKV = `KV_${deliveryBucket(space)}`;
+  const TASK = taskStream(space), AKVR = `KV_${anycastBucket(space)}`;
   const kvRead = (bucket: string) => [
     `$JS.API.STREAM.INFO.${bucket}`,
     `$JS.API.STREAM.MSG.GET.${bucket}`, // kv.get
@@ -3095,9 +3107,25 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     // stale rather than as its own health. Bounded to the `.reply.` leaf, so it cannot publish to
     // the request subjects and forge a probe from a peer.
     livenessReplyGrant(space, "delivery"),
+    // Anycast request status (SPEC §8.1). The daemon reads a request at the seq a take, status or
+    // cancel names, and deletes one its sender cancelled while it waited: a read of every request
+    // body in the space and a delete of any of them, both bounded by the take record. It owns the
+    // records bucket, creating it on a mesh that predates it, and lists it for the maintenance pass.
+    // It DMs a request's sender from its own principal only, and answers takes on their bounded
+    // reply leaf.
+    `$JS.API.STREAM.INFO.${TASK}`,
+    `$JS.API.STREAM.MSG.GET.${TASK}`,
+    `$JS.API.STREAM.MSG.DELETE.${TASK}`,
+    `$JS.API.STREAM.CREATE.${AKVR}`,
+    ...kvRead(AKVR),
+    `$JS.API.DIRECT.GET.${AKVR}.>`,
+    `$KV.${anycastBucket(space)}.>`,
+    unicastSubject(space, "*", "*", pr.owner, pr.actor), // inst.*.*.<o>.<a>: a notice to a sender, as itself
+    takeReplyGrant(space),
   ];
   const sub = [
     `_INBOX_${pr.connId}.>`,
+    takeServeFilter(space), // serve anycast takes (queue-grouped; role + owner+actor caller slots)
     `${p}.ctl.delivery.*.*`, // serve the delivery control service (queue-grouped; owner+actor caller slots)
     `${p}.ctl.delivery-admin.*.*`, // serve the privileged admin rail (reloadCreds; eviction executor next)
     // Serve the delivery plane's liveness probe (#1577), queue-grouped. Presence-only: the handler

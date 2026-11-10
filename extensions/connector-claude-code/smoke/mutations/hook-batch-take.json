@@ -1,0 +1,26 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/agui-start-source.smoke.ts"
+  ],
+  "guard": "a Claude Code hook batch takes only the role requests it carries (SPEC §8.1), so a request too large for any hook stays held and its sender can still cancel it",
+  "command": "pnpm smoke:claude-start-source",
+  "completionMarker": "claude-start-source smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/hook-batch-take.json",
+  "why": [
+    "The hook chooses what fits one batch inside its take. Taking every held request in the preview and",
+    "trimming afterwards records a take for requests the batch never shows.",
+    "",
+    "NO BUILD STEP: the suite imports ../src/hooks.js."
+  ],
+  "mutations": [
+    {
+      "name": "the hook batch takes every held request in the preview instead of the ones it carries",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "      items = await agent.takeChosen(\"automatic\", (pending) => (chosen = fitting(pending)));",
+      "replace": "      items = fitting(await agent.takeChosen(\"automatic\", (pending) => (chosen = pending)));",
+      "expectRed": "hook:the-batch-takes-only-the-requests-it-carries",
+      "cell": "hook:the-batch-takes-only-the-requests-it-carries",
+      "note": "The two requests too large for any hook are taken anyway, so their senders cannot cancel requests this session has not shown."
+    }
+  ]
+}

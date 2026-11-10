@@ -613,7 +613,11 @@ export async function runCodexHost(): Promise<void> {
       if (override) {
         parts.push(override);
       } else {
-        const items = agent.peekInbox("automatic");
+        // A role request is shown only once its take is recorded (SPEC §8.1).
+        const items = await agent.takeChosen("automatic", (preview) => preview);
+        // The take awaits, so the checks above are made again: when a turn began meanwhile, such as
+        // one the attached TUI started, its boundary drives the batch.
+        if (shuttingDown || driver.busy || awaitingTurnEnd) return;
         if (items.length === 0 && !turnPeek) return;
         if (items.length > 0) {
           ids = items.map((i) => i.recvKey);
@@ -663,10 +667,11 @@ export async function runCodexHost(): Promise<void> {
       for (;;) {
         const surfacedSet = new Set(surfaced);
         // `surfaced` holds receive keys, so an empty-id item already in the turn is not steered twice.
-        const items = agent
-          .peekInbox("automatic")
-          .filter((i) => !surfacedSet.has(i.recvKey) && (i.kind !== "channel" || i.mentionsMe));
-        if (items.length === 0 || !driver.busy) return;
+        const items = await agent.takeChosen("automatic", (preview) =>
+          preview.filter((i) => !surfacedSet.has(i.recvKey) && (i.kind !== "channel" || i.mentionsMe)));
+        // The take awaits: a turn of ours that ended meanwhile leaves the items to its boundary drive,
+        // even when a turn this host did not start is running now.
+        if (items.length === 0 || !driver.busy || !awaitingTurnEnd) return;
         const inj = formatInjection(items);
         if (!inj) return;
         // The steer RPC and the turn's terminal notification can race in one stdout chunk. The

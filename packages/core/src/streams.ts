@@ -35,6 +35,7 @@ import {
   aclBucket,
   aclKey,
   membershipBucket,
+  anycastBucket,
   deliveryBucket,
   managerBucket,
   inboxStream,
@@ -142,6 +143,12 @@ export const LEGACY_MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
  *  subscription patterns, history is one, and the feed is display-only, so an agent that exceeds
  *  this native per-message bound loses its derived view rather than reserving storage for every space. */
 export const MEMBERSHIP_MAX_VALUE_SIZE = 256 * 1024;
+
+/** Maximum serialized row in the anycast records KV (SPEC §8.1). A row holds one request and the
+ *  notices it still owes. A write past this native per-message bound is refused, so its take is
+ *  answered busy and the request waits rather than proceeding unrecorded. The bucket reserves no
+ *  storage: history is one, and a row is removed a day after its request leaves the queue. */
+export const ANYCAST_RECORD_MAX_VALUE_SIZE = 64 * 1024;
 
 /** The `max_bytes` a per-space artifact Object Store carried before the reservation was removed:
  *  4 GiB, the stock value every store created by that code holds. Kept for ONE purpose —
@@ -291,6 +298,13 @@ export async function ensureMembershipStore(
       `membership store ${stream} reconcile did not take: max_bytes=${config.max_bytes}, ` +
       `max_msgs_per_subject=${config.max_msgs_per_subject}, max_msg_size=${config.max_msg_size}`,
     );
+}
+
+/** Native creation inputs for the delivery daemon's anycast request records (SPEC §8.1). No TTL: the
+ *  daemon removes a row a day after its request leaves the queue and never while it is queued. Both
+ *  space setup and the daemon create it, the daemon for a mesh that predates the bucket. */
+export function anycastStoreDefinition(space: string) {
+  return { bucket: anycastBucket(space), createOptions: { history: 1, max_bytes: -1, maxValueSize: ANYCAST_RECORD_MAX_VALUE_SIZE } };
 }
 
 /**
@@ -870,6 +884,8 @@ export async function setupSpaceStreams(opts: {
     // one-key-per-agent history and native value-size ceiling bound it without a storage reservation.
     // Pre-created so the scoped writer holds no STREAM.CREATE; legacy stock reservations reconcile.
     await ensureMembershipStore(jsm, kvm, opts.space);
+    const anycast = anycastStoreDefinition(opts.space);
+    await kvm.create(anycast.bucket, anycast.createOptions);
     // The two §13.12 AUTHORITY stores (records + auth): every auth-mode mesh now carries a
     // lifecycle registry — user mode's service re-ensures at its own boot, the STATIC manager's
     // start reconcile re-ensures for pre-existing spaces — and the up-time seed creates

@@ -1,0 +1,143 @@
+{
+  "suite": [
+    "packages/core/smoke/anycast-request-status.smoke.ts"
+  ],
+  "command": "pnpm smoke:anycast-request-status:auth",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=69",
+  "mutations": [
+    {
+      "name": "a request row is written over instead of created, so two takes can both win",
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "else await this.deps.kv.create(key, bytes);",
+      "replace": "else await this.deps.kv.put(key, bytes);",
+      "expectRed": "3a every race had exactly one winner",
+      "cell": "3a every race had exactly one winner and a matching status"
+    },
+    {
+      "name": "a holder's take of a cancelled request is not refused",
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "if (row?.state === \"cancelled\" && row.id === req.id)",
+      "replace": "if (false)",
+      "expectRed": "2c the holder's take is refused as cancelled",
+      "cell": "2c the holder's take is refused as cancelled, so its copy is dropped unseen"
+    },
+    {
+      "name": "a take with the same delivery count replaces the holder already recorded",
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "if (t.count > current.count) {",
+      "replace": "if (t.count >= current.count) {",
+      "expectRed": "8b another holder on the same delivery is refused",
+      "cell": "8b another holder on the same delivery is refused"
+    },
+    {
+      "name": "status answers a sender other than the request's own",
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "if (row.sender !== q.caller || (q.id !== undefined && row.id !== q.id)) return { state: \"unknown\", seq: q.seq };",
+      "replace": "if (q.id !== undefined && row.id !== q.id) return { state: \"unknown\", seq: q.seq };",
+      "expectRed": "1k a foreign sender reads nothing",
+      "cell": "1k a foreign sender reads nothing"
+    },
+    {
+      "name": "a cancel of a taken request is not refused",
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "if (status.state !== \"waiting\") return { status };",
+      "replace": "if (status.state !== \"waiting\" && status.state !== \"taken\") return { status };",
+      "expectRed": "1i a cancel after the take is refused with the taker",
+      "cell": "1i a cancel after the take is refused with the taker"
+    },
+    {
+      "name": "a notice that fails to send is dropped from the row's outbox",
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "await this.deps.send(row.sender, event);",
+      "replace": "await this.deps.send(row.sender, event).catch(() => {});",
+      "expectRed": "7b the owed notice stays in the row's outbox",
+      "cell": "7b the owed notice stays in the row's outbox"
+    },
+    {
+      "name": "a request still queued on the stream gets a leftAt",
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "if (epoch === row.epoch && stored?.id === row.id) return;",
+      "replace": "",
+      "expectRed": "7d a request still queued gets no leftAt",
+      "cell": "7d a request still queued gets no leftAt"
+    },
+    {
+      "name": "a take under the wrong role is accepted when its id matches",
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "if (stored.role !== role || stored.id !== req.id)",
+      "replace": "if (stored.id !== req.id)",
+      "expectRed": "5a a reviewer naming a quick request under its own role is refused",
+      "cell": "5a a reviewer naming a quick request under its own role is refused"
+    },
+    {
+      "name": "a daemon whose credential predates the records stops arming Plane-3",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "if (!isPermissionDenied(e)) throw e;",
+      "replace": "throw e;",
+      "expectRed": "6e a daemon on a credential from before the records still arms Plane-3",
+      "cell": "6e a daemon on a credential from before the records still arms Plane-3"
+    },
+    {
+      "name": "a holder's credential may take for any role",
+      "file": "packages/core/src/provision.ts",
+      "find": "takeSubject(space, role, pr.owner, pr.actor),",
+      "replace": "takeSubject(space, \"*\", pr.owner, pr.actor),",
+      "expectRed": "5d the request is still waiting after all three",
+      "cell": "5d the request is still waiting after all three",
+      "note": "With the take grant widened to any role, the broker still refuses the reply subscription, so 5b reads credential-outdated, but the take itself is published and recorded; 5d sees the request is no longer waiting."
+    },
+    {
+      "name": "the endpoint asks an open mesh for request status",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "if (!this.authed) throw new Error(\"an open mesh runs no delivery daemon",
+      "replace": "if (false) throw new Error(\"an open mesh runs no delivery daemon",
+      "expectRed": "9a status on an open mesh is refused, naming why",
+      "cell": "9a status on an open mesh is refused, naming why"
+    },
+    {
+      "name": "a copy from the old stream is taken instead of refused as a mismatch",
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "      if (req.epoch !== epoch)\n        return { ok: false, code: \"mismatch\"",
+      "replace": "      if (false)\n        return { ok: false, code: \"mismatch\"",
+      "expectRed": "10e a holder's copy from the old stream is refused as a mismatch",
+      "cell": "10e a holder's copy from the old stream is refused as a mismatch",
+      "note": "A copy from a recreated stream takes the newer request stored at its seq."
+    },
+    {
+      "name": "a take naming its holder by a multi-line name is accepted",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    try { assertValidName(req.from.name); } catch (e) {",
+      "replace": "    try { } catch (e) {",
+      "expectRed": "5f a take naming its holder by a multi-line name is refused",
+      "cell": "5f a take naming its holder by a multi-line name is refused",
+      "note": "A holder name with a line break reaches the record and every notice and status that prints it."
+    },
+    {
+      "name": "a retried cancel misreads the error for a message already removed",
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "  return (e as { code?: unknown } | null)?.code === 10043 || /no message found/i.test(",
+      "replace": "  return (e as { code?: unknown } | null)?.code === 10037 || /no message found/i.test(",
+      "expectRed": "10b the retried cancel finishes the removal as already gone",
+      "cell": "10b the retried cancel finishes the removal as already gone",
+      "note": "nats-server answers a delete of a seq inside the stream's range, already gone, with 10043 `sequence <n> not found`. Without it the retried cancel throws instead of recording already-gone, and the sweep throws on the same row every ten minutes."
+    },
+    {
+      "name": "a take carries the endpoint's newest epoch instead of the one its copy was read under",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "m.info.deliveryCount, epoch, () => m.nak())",
+      "replace": "m.info.deliveryCount, this.taskEpoch!, () => m.nak())",
+      "expectRed": "10k a second copy from the old stream is refused as a mismatch",
+      "cell": "10k a second copy from the old stream is refused as a mismatch after the endpoint read the new time",
+      "note": "A take that reads the endpoint's stream time when it runs, instead of when its copy arrived, sends the new stream's time for a copy buffered from the old one once a refusal has refreshed it."
+    },
+    {
+      "name": "a lost create race throws instead of reading as a loss",
+      "file": "packages/core/src/anycast-requests.ts",
+      "find": "      if (isCasLoss(e)) return false;",
+      "replace": "      if (e === undefined) return false;",
+      "expectRed": "3a every race had exactly one winner and a matching status",
+      "cell": "3a every race had exactly one winner and a matching status",
+      "note": "A record write that no longer reads the broker's CAS-loss code throws when a raced take and cancel both write one row, so the loser fails instead of retrying."
+    }
+  ]
+}

@@ -5,7 +5,7 @@
 // TOOLREC → also leave in the rollout the two records a real tool call leaves;
 // SLOW → hold the turn open ~1.2s (a steer window); HANG → hold until an interrupt
 // arrives, else self-interrupt after ~1s; FAIL → fail in the same frame the turn started in;
-// default → complete.
+// WAITEND → hold the turn until FAKE_CODEX_END_MARK exists; default → complete.
 //
 // Like the real thing, this fake is an MCP *client*: the cotal_* tools are not on the
 // websocket at all, they are fetched over the loopback HTTP endpoint named in its own
@@ -384,6 +384,11 @@ async function runTurn(text) {
     notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "interrupted" } });
     return;
   }
+  if (text.includes("WAITEND")) {
+    // Hold the turn open until FAKE_CODEX_END_MARK exists, so a smoke decides when it ends.
+    while (!existsSync(process.env.FAKE_CODEX_END_MARK)) await new Promise((r) => setTimeout(r, 25));
+    journal({ ev: "ownEnd", turnId });
+  }
   if (text.includes("SLOW")) await new Promise((r) => setTimeout(r, 1200));
   if (text.includes("HANG") && !hangUsed) {
     hangUsed = true;
@@ -682,4 +687,27 @@ function onChunk(d) {
         if (id !== undefined) write({ jsonrpc: "2.0", id, error: { code: -32601, message: `unhandled: ${method}` } });
     }
   }
+}
+
+// A turn this host did not start, as the attached TUI produces when a human types: it begins when
+// FAKE_CODEX_FOREIGN_MARK exists and ends when FAKE_CODEX_FOREIGN_END exists. Removing both marks
+// arms it again.
+if (process.env.FAKE_CODEX_FOREIGN_MARK) {
+  let foreign;
+  let armed = true;
+  setInterval(() => {
+    if (!armed && !existsSync(process.env.FAKE_CODEX_FOREIGN_MARK) && !existsSync(process.env.FAKE_CODEX_FOREIGN_END)) armed = true;
+    if (armed && !foreign && existsSync(process.env.FAKE_CODEX_FOREIGN_MARK)) {
+      armed = false;
+      foreign = `turn_foreign_${++turnSeq}`;
+      activeTurn = foreign;
+      journal({ ev: "foreignStart", turnId: foreign });
+      notify("turn/started", { threadId: THREAD, turn: { id: foreign, status: "inProgress" } });
+    } else if (foreign && existsSync(process.env.FAKE_CODEX_FOREIGN_END)) {
+      if (activeTurn === foreign) activeTurn = undefined;
+      journal({ ev: "foreignEnd", turnId: foreign });
+      notify("turn/completed", { threadId: THREAD, turn: { id: foreign, status: "completed" } });
+      foreign = undefined;
+    }
+  }, 25).unref();
 }

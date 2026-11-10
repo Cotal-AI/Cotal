@@ -82,7 +82,7 @@ const accepted = Object.keys(spec.schema.shape);
 // that much and treats anything else as the tool having run.
 class InertAgent extends EventEmitter {
   reached: string[] = [];
-  peekInbox() { return []; }
+  inboxPreview() { return []; }
   drainInbox() { return []; }
   inboxCount() { return 0; }
 }

@@ -154,6 +154,7 @@ The **sender** of every delivery is a principal (§2), carried as **two adjacent
 | Multicast | `cotal.<space>.chat.<owner>.<actor>.<channel...>` | 3–4 | §4 multicast |
 | Unicast | `cotal.<space>.inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor>` | 5–6 | §4 unicast |
 | Anycast | `cotal.<space>.svc.<role>.<owner>.<actor>` | 4–5 | §4 anycast |
+| Anycast take | `cotal.<space>.take.<role>.<owner>.<actor>` | 4-5 | §8.1 request/reply |
 | Endpoint rails | `cotal.<space>.ep.<one\|all\|inst\|reply>.…`, `cotal.<space>.ep<c\|e\|f\|j\|r\|t\|w\|s>.…` | see §13.2 | §13 control surface |
 | Plane liveness | `cotal.<space>.live.<plane>.<owner>.<actor>` | 4-5 | §6.1 request/reply |
 | Trace | `cotal.<space>.trace.<instance>` | n/a | reserved |
@@ -166,7 +167,8 @@ Token indexing is zero-based on `subject.split(".")`: `cotal` = 0, `<space>` = 1
 
 - `chat`: sender owner at token 3, actor at token 4; the channel is everything after, tokens 5+,
   so it may be hierarchical (`team.backend`).
-- `svc`: route target at token 3; sender owner at token 4, actor at token 5.
+- `svc`: route target at token 3; sender owner at token 4, actor at token 5. The `take` rail
+  (§8.1) has the same layout, with the role at token 3.
 - `ep`: per-mode arities with the caller as the trailing identity tokens; §13.2 defines them.
 - `inst`: recipient owner+actor at tokens 3–4; sender owner+actor at tokens 5–6.
 
@@ -236,12 +238,15 @@ per-message metadata (`MessageMeta` need not carry it); it MUST NOT assume one c
 
 Unicast (`to`) and anycast (`toService`) are at-least-once via their own DM/TASK consumers (§8),
 unicast within the space's DM history limit (§8). They have no channel membership and are not subject
-to the per-channel delivery-class mechanism. An `@mention` (§5) on a `live` channel additionally
-writes a durable copy to each mentioned target **authorized to read that channel** (its
-`allowSubscribe` covers the channel), so an authorized but offline target still receives it; an
-`@mention` MUST NOT deliver channel content to a target outside its read ACL. Durable mention
-routing resolves each lowercased name to a unique current instance id from presence at publish time;
-an ambiguous (multiple live matches) or unresolvable name yields no durable copy, and authorization is checked against the resolved id's current `allowSubscribe`. A
+to the per-channel delivery-class mechanism. In auth mode a holder records its take of an anycast
+request with the delivery daemon before it shows the request, so the sender learns who took it and
+can cancel it while it waits (§8.1). An `@mention` (§5) on a `live` channel additionally writes a
+durable copy to each mentioned target **authorized to read that channel** (its `allowSubscribe`
+covers the channel), so an authorized but offline target still receives it; an `@mention` MUST NOT
+deliver channel content to a target outside its read ACL. Durable mention routing resolves each
+lowercased name to a unique current instance id from presence at publish time; an ambiguous
+(multiple live matches) or unresolvable name yields no durable copy, and authorization is checked
+against the resolved id's current `allowSubscribe`. A
 target authorized for a channel is **mention-reachable** there whether or not it is currently joined; this is intentional (an `@mention` can pull an authorized peer in) and is distinct
 from membership; a client SHOULD distinguish "joined" (actively subscribed) from "readable /
 mention-reachable" (in `allowSubscribe`) so an unjoined channel is not treated as "cannot reach me
@@ -776,6 +781,7 @@ KV buckets are also streams and are pre-created:
 | `cotal_presence_<space>` | presence (§6) | 6000 ms |
 | `cotal_channels_<space>` | channel registry (§7) | none |
 | `cotal_membership_<space>` | derived channel-membership feed (below), history 1 per key, maximum value 262144 bytes, no global byte reservation | none |
+| `cotal_anycast_<space>` | anycast request records (§8.1), history 1 per key, maximum value 65536 bytes, no global byte reservation | none |
 
 **Derived channel-membership feed (observability).** `cotal_membership_<space>` is a per-agent
 (key = `card.id`) derived view of who is subscribed to each channel: the **union** of an agent's
@@ -793,6 +799,152 @@ manifest's channels for other members. It is **DISPLAY-ONLY and broker-derived**
 input to any delivery, ACL, or authorization decision (authority for those stays the broker's
 `sub.allow` and the members registry), and it is not part of the normative wire contract a client
 must implement.
+
+### 8.1 Anycast request status
+
+This subsection applies in auth mode. There the delivery daemon (the `delivery` profile, Appendix
+B) keeps a record of each anycast request that a holder took or that its sender cancelled, and a
+holder takes each role request before it shows it. The sender gets a notice naming the holder that
+took the request, can read its status, and can cancel it while it waits. An open mesh runs no
+delivery daemon, so anycast there behaves as §4 says and a client MUST refuse a status read or a
+cancel.
+
+**Take.** A holder takes a request that its `svc_<role>` consumer delivered with a core request on
+`cotal.<space>.take.<role>.<owner>.<actor>`, for its own role and principal, whose reply subject is
+`<take subject>.reply.<uuid>`. The daemon drops a take with any other reply target unanswered. The
+body is `{ from: { id, name }, seq, id, count, epoch }`: `seq` is the request's `TASK_<space>`
+stream sequence, `id` is its `CotalMessage.id`, `count` is the broker's delivery count for the copy
+the holder holds, 1 on the first delivery, and `epoch` is the stream's creation time as the holder
+last read it: when it bound the consumer that delivered the copy, or again after a `mismatch`.
+`from.name` is the holder's display name: well-formed UTF-16 on a single line of at most 128
+characters, with no surrounding
+whitespace, `/` or `\`. The daemon takes the role from the subject and the holder from the subject's sender tokens, and refuses
+a body whose `from.id` is another principal or whose `from.name` breaks those rules. It reads the
+request stored at `seq` with `STREAM.MSG.GET`, a leader-served read, and reads the stream's creation
+time before and after it, retrying when a stream recreation fell between them. A take whose `epoch`
+is not that creation time is refused `mismatch`, so a copy from a stream since recreated cannot
+take a newer request stored at the same `seq`. It answers `{ ok: true }` or
+`{ ok: false, code, error }`:
+
+| `code` | Meaning | Holder |
+| --- | --- | --- |
+| `cancelled` | the sender cancelled the request | forgets its copy |
+| `taken` | a take at this delivery count or a later one holds the request | forgets its copy |
+| `gone` | nothing is stored at `seq`, and no cancel is recorded | forgets its copy |
+| `mismatch` | the request at `seq` is not this role and id, the copy is from an older stream, or the take is malformed | reads the creation time again, naks its copy if that time moved, and forgets it |
+| `busy` | the daemon could not decide the take now | keeps its copy and asks again later |
+
+A holder MUST NOT show a role request until a take of the copy it holds returns `ok`, and it takes
+a request only when it is about to show it, because a take ends the sender's chance to cancel. A
+host that shows part of its inbox chooses what it will show first and takes only the requests in
+that choice. A count, a wake or a preview never takes; only a read that shows bodies does. A holder forgets a
+refused copy without acking it: a cancelled request is already deleted, and one another holder took
+stays with that holder. After a `mismatch` it reads the stream's creation time again. When that time
+differs from the copy's `epoch`, the consumer is on a recreated stream, so it naks the copy first and
+the broker delivers it again at once, carrying the new time. A redelivery that mismatches again
+carries the time just read, so it is forgotten and not nakked. It restarts the copy's ack wait
+(`+WPI`) before it asks, and once the take returns it shows the request only if it still holds that
+copy, with the same delivery count, an ack
+wait that has not run out, and no reconnect since it asked. Otherwise it takes the newer copy. A
+request taken and not yet shown when the holder's connection drops is taken again before it is
+shown, and so is one whose take is still waiting for its answer then. A read after the drop asks
+again on the new link rather than waiting on that take, and a take whose connection closes ends with
+it. A holder asks for no take while its connection is down, so a read then is offered none of its
+held requests, and once the connection is back the holder tells its host about each one again. A
+held request keeps its place in the order the holder received its messages, so it is offered, and
+once taken shown, where it arrived. A host that shows its inbox one batch at a time MAY fill a full
+batch with role requests before the channel posts that arrived ahead of them.
+
+**Record.** The daemon keeps one row per request in `cotal_anycast_<space>` (history 1, no TTL)
+under the key `r.<epoch>.<seq>`, where `<epoch>` is the `TASK_<space>` stream's creation time
+with every character outside `[0-9A-Za-z]` removed. A recreated stream reuses sequences, and its
+requests never match an older row. A row holds the request's id, role and sender, read from the
+stored request, and its state: `taken` with the taker, its delivery count and the time, or
+`cancelled`. A row's first write is a create-if-absent and every later write is a CAS on its
+revision, so a take and a cancel that race for one request cannot both win. A take is decided
+against the row:
+
+- With no row, the take wins and the row becomes `taken` by this holder.
+- The same holder at the same count wins again, with no write.
+- A higher delivery count moves the take to that holder. When the holder changes, the row keeps the
+  previous one.
+- Any other take is refused `taken`, and a take of a cancelled request is refused `cancelled`.
+
+The daemon removes a row a day after it first finds the request off the queue, and never while the
+request is queued. It checks every row when it starts and every ten minutes after.
+
+**Restore.** A backup does not hold `cotal_anycast_<space>`: it is control state and comes back
+empty. A restore recreates `TASK_<space>` with a new creation time, so no row written before it
+could match a restored request. The restore brings back the requests the queue held when the backup
+was made and recreates its consumers from checkpoints, so their delivery counts start over. A
+request a holder had taken and not yet acked by then is on the queue again, including one that
+holder finished and acked after the backup. The broker delivers it again at delivery count 1, as it
+redelivers any request left unacked, and any holder of the role may take it and do the work again.
+Its status reads `waiting` until that take. The redelivery is the work queue's own behavior, and the
+records change only what the sender reads.
+
+**Status and cancel.** A sender reads or cancels one of its own requests with the `anycastStatus`
+and `anycastCancel` ops of the `delivery` control service. The arguments are `{ seq, id? }`: `seq`
+is the stream sequence the send's publish ack returned, and `id`, when given, limits the answer to
+that request. The caller is the authenticated subject sender, and a request whose stored or
+recorded sender is another principal reads `unknown`. The reply `data` is one of:
+
+- `{ state: "waiting", seq, role }`: the request is on the queue and has no row. No holder that
+  follows this subsection has shown it, though it may sit unshown in a holder's buffer.
+- `{ state: "taken", seq, role, taker: { id, name }, previous?, at }`: `previous` names the holder
+  the take moved from, and `at` is the time of the take in milliseconds.
+- `{ state: "cancelled", seq, role, removal }`: `removal` is `pending` while the daemon has not
+  finished deleting the request, `deleted` once it has, and `already-gone` when the request had left
+  the queue before the daemon could delete it: an earlier delete whose reply was lost removed it,
+  the stream was recreated, or a holder that does not take acked it.
+- `{ state: "unknown", seq }`: there is no row, and nothing of the caller's is on the queue at
+  `seq`.
+
+A cancel succeeds only while the request waits. The daemon creates a `cancelled` row with
+`removal: "pending"`, reads the stream's creation time, deletes the request from `TASK_<space>` by
+seq when that time still matches the row, and records how the request left. A cancel of a request a holder took is refused,
+and its reply is the `taken` status, which names the taker. A cancel retried after a lost reply
+finishes a removal the first attempt left pending. A third op, `anycastTakes`, answers
+`{ takes: true }`. A holder whose take finds no responder calls it to tell an older daemon, which
+answers the op as not supported, from a daemon that is not running.
+
+**Notice.** When a take wins with no row, and when a take moves to a different holder, the daemon
+sends the request's sender a DM from its own principal. The message has a text part and a data part
+`{ "cotalAnycastNotice": { seq, role, event, taker, previous? } }`, where `event` is `taken` or
+`redelivered`. Its `id`, which is also its JetStream message id, is `anycast.<epoch>.<seq>.<rev>`
+for the row's transition counter `<rev>`, so a resend after a crash is dropped as a duplicate. The
+row keeps the notices it owes until each is published. A receiver MUST treat a DM as a notice only
+when its sender is the principal that holds the space's delivery lease; a DM from anyone else that
+carries the data part is an ordinary DM. The check is on the principal and not on the lease's
+incarnation, because a daemon that restarts sends the notices an earlier run left owed. A notice is
+not a question and needs no answer.
+
+**A holder that cannot take.** On an auth mesh a holder keeps a role request unshown and asks again
+later when its take gets no answer, a `busy` answer, an older daemon's answer that the take rail is
+not supported, or a broker permission error, which means its credential was minted before the take
+grant existed. It reports the cause to its operator: a delivery daemon to restart at this version, a
+seat to respawn for a current credential, or no daemon running. A held copy is renewed only when the
+holder asks again, so its ack wait can run out, and the broker then redelivers the request.
+
+**Limits.**
+
+- A take records that the holder's connector was about to show the request. It does not record that
+  the agent read it, started it or finished it. Anycast does not follow work to its end; a workflow
+  run (§14) does.
+- The daemon cannot verify a delivery count, so a holder of the role can claim a later delivery and
+  move a take to itself. The sender then gets a `redelivered` notice.
+- A holder whose connector predates this subsection shows requests without a take. Such a request
+  reads `waiting` until that holder acks it and `unknown` after, and a cancel can find it
+  `already-gone`.
+- A seq names whatever the queue stores there now. After a stream recreation a bare seq can name a
+  newer request from the same sender; giving `id` rules that out.
+- JetStream deletes a message by stream and seq, with no condition on the stream's creation time.
+  If `TASK_<space>` is deleted and recreated between the daemon's read of that time and its delete,
+  the delete removes whatever request the new stream stores at that seq, and the cancel reads
+  `deleted`. Before deleting or recreating the stream, an operator stops every delivery daemon
+  that serves the space and waits until each has exited and its broker connection has closed, so no
+  delete is still in flight, then starts the daemon against the new stream. A removal left pending
+  then reads `already-gone`.
 
 ---
 
@@ -4781,7 +4933,12 @@ hazard (on the `allow_direct=false` buckets a leader-consistent get is precisely
 `STREAM.MSG.GET`). Every OTHER subject-scoped read is NON-fencing and uses the
 last-by-subject `DIRECT.GET.<stream>.<subject>` form, which the broker confines by subject
 tokens. (The pre-v0.4 messaging-surface CHKV/DLVKV reads in Appendix B are the v0.3 binding,
-outside this matrix; their confused-deputy exposure is the §9 in-scope-for-v0.4 remediation.)
+outside this matrix; their confused-deputy exposure is the §9 in-scope-for-v0.4 remediation.
+The delivery profile's `STREAM.MSG.GET` on `TASK_<space>` for anycast request status (§8.1) is
+also a messaging-surface read outside this matrix. It is a FENCING read held by that trusted
+single-purpose profile and granted to no other: the request it returns at a seq, or its absence,
+gates the take's CAS on `KV_cotal_anycast_<space>`. It reaches every request body in the space,
+as Appendix B states.)
 
 **Read service (fencing reads are leader-served).** A read is FENCING when its result, a
 value, a revision, OR an authoritative ABSENCE, gates a subsequent CAS or authorizes an
@@ -5479,9 +5636,10 @@ mint at the spawner's own coordinate, the projection of an empty grant is subtra
 remaining row MUST be covered by the evidence's `permissions` with no overlapping deny. A part
 whose projection adds no row is refused, so a token no agent mint maps is never read as an empty
 grant. `run` carries the whole `spawn` set, so a `run` holder may hand on `spawn`. A role, and a
-`role:<r>` token, project to the rows that bind the role's task-queue durable. An agent mint grants
-those rows for the agent's own role and for each `role:<r>` token in its capabilities, so a spawner
-hands on a role it was given either way. An endpoint command projects to the request rows an agent
+`role:<r>` token, project to the rows that bind the role's task-queue durable and take the requests
+it delivers (§8.1). An agent mint grants those rows for the agent's own role and for each
+`role:<r>` token in its capabilities, so a spawner hands on a role it was given either way. An
+endpoint command projects to the request rows an agent
 mint grants for its caller capability, with the reply rail and, for a goal-bearing command, the
 progress read, so a spawner hands on a command only when its own credential carries the same request
 row; a spawner whose grant pins one instance cannot hand on the class command. An instance-pinned
@@ -6778,6 +6936,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 
 - `inbox`
 - `P.live.<manager|delivery>.<owner>.<actor>.>` (replies to its own plane liveness probes, §6.1)
+- for its own role and for each `role:<r>` token in its capabilities (§13.15): `P.take.<role>.<owner>.<actor>.>` (replies to its own anycast takes, §8.1)
 - `P.ep.reply.*.*.*.<owner>.<actor>.<uid>.*` (exact arity; the agent's own endpoint reply rail: every endpoint's replies to THIS caller triple + nonce, §13.2; replies never ride the per-connection `inbox`)
 - with a listing generation `<g>` (§13.15): `P.ep.v1.reply.*.*.*.<owner>.<actor>.<uid>.<g>.*`, its own versioned reply rail
 - `P.epe.…`; the exact fully-qualified event subtrees of every minted read capability
@@ -6836,9 +6995,12 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.API.CONSUMER.CREATE.<CHKV>.>`
 - `$JS.API.CONSUMER.INFO.<CHKV>.>`
 - `$JS.API.STREAM.MSG.GET.<DLVKV>` (delivery lease/readiness; read-only, non-gating)
-- if `role` is set: `$JS.API.STREAM.INFO.<TASK>`, `$JS.API.CONSUMER.INFO.<TASK>.<svcD>`,
+- for its own role and for each `role:<r>` token in its capabilities (§13.15), each `<role>` with
+  its own `svcD`: `$JS.API.STREAM.INFO.<TASK>`, `$JS.API.CONSUMER.INFO.<TASK>.<svcD>`,
   `$JS.API.CONSUMER.MSG.NEXT.<TASK>.<svcD>`, `$JS.ACK.<TASK>.<svcD>.>` (stream-level state is
-  gated with the bind grants, so a role-less agent holds nothing at all on `TASK`)
+  gated with the bind grants, so a role-less agent holds nothing at all on `TASK`), and
+  `P.take.<role>.<owner>.<actor>` (the take of a request that role's consumer delivered, as me,
+  §8.1)
 
 `pub.deny` (the agent binds these consumers, never creates them; its only consumer-create grant is the pinned per-channel `chatHistD` history create):
 
@@ -7039,7 +7201,13 @@ single-function profiles, each granting only the verbs its function needs and no
   is alive would, using `evictPrincipal` to find out, kill the holder before it could refuse.
   `gone` requires a complete, single-server-proven sweep (§13.13); an under-reporting sweep is
   `unknown`, which never authorizes. The former
-  `delivery-admin` control tier is deleted with the v0 rail (§13.11).
+  `delivery-admin` control tier is deleted with the v0 rail (§13.11). For anycast request status
+  (§8.1) it serves `P.take.*.*.*`, queue-grouped, and publishes only under its `.reply.` leaf; reads
+  `STREAM.INFO` and `STREAM.MSG.GET` on `TASK`, and `STREAM.MSG.DELETE` there to remove a request
+  its sender cancelled; creates, reads and writes `KV_cotal_anycast_<space>`; and publishes a
+  sender's notice on `P.inst.*.*.<owner>.<actor>` as itself. The `TASK` read reaches every request
+  body in the space and the delete reaches any request, so both are bounded only by the profile's
+  trust.
 - `membership-rw`: the derived channel-membership graph feed reader/writer.
 - `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe`: the
   human-CLI and maintenance surfaces, each scoped to its verbs. `teardown` also lists stream names,
@@ -7144,6 +7312,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 | 2026-11-03 | **A participant that reads presence on demand reads the channel registry on demand (§7, Appendix B), additive.** It reads with batched Direct Gets, which bind no consumer, before it shows the registry and before it resolves a join's or leave's delivery class. The agent's `$JS.API.DIRECT.GET.<CHKV>` row now also serves this read. |
 | 2026-11-02 | **The chat history limit has no age by default (§8).** A new space starts with no age limit and 1000 per sender, the pair every stream held before the limit was configurable, and setting up an existing space MUST NOT change its limit. The reference implementation no longer moves a stream to 30 days when `cotal up` starts its broker, so an upgrade deletes no post. The rule that the limit MUST NOT be set to no age is removed. |
 | 2026-11-01 | **Durable membership of a channel family (§7, §8, §9, Appendix B), additive except one refusal.** A durable membership names a concrete channel or a family such as `team.>`: concrete segments and a final `>`, with no `*` and not the root `>`. A family covers every channel under it, now and later, and each keeps its own delivery class, so the member's backstop holds posts on the durable ones only. A member holds one copy of a post however many of its rows cover the channel. A family join, and any pattern in `subscribe`, lies within one `allowSubscribe` entry, so an agent definition whose `subscribe` pattern only matches an entry, such as `perm.>` under `perm.*`, is now refused. The members registry stores a family's final `>` as `=`, the derived feed's `durable` list keeps a family as recorded, and the deprovisioner's exact-key grant covers a family row. A client SHOULD tell a member when a backstop copy arrives with the 1000-copy store full. |
+| 2026-10-30 | **Anycast request status (§3, §4, §8.1, Appendix B), additive.** In auth mode a holder takes a role request on `cotal.<space>.take.<role>.<owner>.<actor>` just before it shows it, and only the requests it is about to show, and the delivery daemon records the take in `cotal_anycast_<space>`, one CAS-fenced row per request keyed by the `TASK` stream's creation time and the request's sequence. The sender gets a DM notice from the daemon naming the holder that took the request, and a second notice when a redelivery moves the take to another holder. The new `anycastStatus` and `anycastCancel` ops on the `delivery` control service read and cancel the caller's own request by seq; a cancel succeeds only while the request waits. JetStream deletes by stream and seq with no condition on the stream's creation time, so a `TASK` stream deleted and recreated between the daemon's read of that time and its delete loses the request the new stream stores at that seq, and the cancel reads `deleted`; operators stop every delivery daemon serving the space and wait until each has exited and its connection has closed before recreating `TASK`. A take carries the `TASK` stream's creation time as the holder read it, and one from a stream since recreated is refused. Agents with a role gain the take publish and its reply subscription. A holder on an auth mesh that cannot take holds the request unshown and reports why. An open mesh is unchanged and refuses status and cancel. |
 | 2026-10-30 | **A terminal-started static seat is issued (§13.15).** A foreground spawn or a bare join on a static space minted an unissued credential, so its seat held no evidence and handed on no grant. The terminal now activates the seat's own §13.1 lifecycle and issues the credential against its gate. The generation's horizon is the expiry the person set, or `0xffffffff` (2106-02-07) when none; the credential is never renewed; and a clean exit retires the lifecycle and its issuances. Additive. |
 | 2026-10-30 | **A static spawn bounds the helper's role, and a static agent mint maps `role:<r>` (§13.15), breaking.** A static spawner could hand its helper any role, because the role was outside the bound. The bound now measures the role as the rows that bind its task-queue durable, and the agent mint grants those rows for each `role:<r>` token in the agent's capabilities as well as for its own role, so a spawner hands on a role it was given either way. A spawn that hands on a role its spawner was not given is refused, naming the `role:<r>` token. A user-auth mint is unchanged. No wire change. |
 | 2026-10-30 | **A hosted helper is bounded by the caller that asked for it (§13.6, §14.8), breaking.** A participant manager's enrollment made the manager the helper's ledger parent, so any agent of the owner that could reach the manager's `spawn` command got a helper bounded by the manager's grant. The enrollment request gains `spawn: { served, runId? }`. The issuing host reads every manager `spawn` request subject and makes the caller of an observed one the parent, or the run's starter for a run's spawn. It refuses a subject it did not observe, or one another enrollment took for another helper or token digest, and answers a retry of the same enrollment again. A hosted run's admission gains `delegation`, the starter's ledger row at admission, and the run's helpers must also fall within it. The loopback `verify-enrollment` door decides the same parent and bound and answers `parent`, which a host platform that writes its own grants must record, filling an omitted list from no more than the parent's grant. A grant's read is the set its durables read, so a target that names only a subscribe set is measured as reading it, and an enrollment retry whose read set is not its grant's is refused with `conflict`. A host that predates the field refuses an enrollment carrying it, and a reader that predates `delegation` refuses an admission carrying it. |

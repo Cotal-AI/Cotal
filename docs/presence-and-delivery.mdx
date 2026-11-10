@@ -82,6 +82,18 @@ A subscription can cover a subtree such as `team.>`, while each publication name
 Anycast uses a shared work queue. Requests wait when no worker is online, and competing role consumers share the work.
 Acknowledgement removes a request from that queue. Routing does not establish that the selected worker is idle.
 
+On an authenticated mesh a holder's connector asks the [delivery daemon](delivery-service-reference.mdx#anycast-request-records) to record its take of a role request just before it shows the request to its agent.
+A connector that shows only part of its inbox takes only the requests it shows, so a request left for a later read can still be cancelled.
+A request taken just before the connection drops, or still being taken when it drops, is taken again before it is shown.
+While the connection is down the connector takes nothing, and once it is back it tells the agent about the requests it holds.
+A request waiting for its take keeps its place in the order messages arrived, so the agent sees it where it arrived.
+When more is waiting than one pi turn holds, pi fits role requests into the turn before channel posts ([pi delivery](pi-connector-reference.mdx#delivery-confirmation)).
+The daemon then sends the sender a notice naming that holder, and a second notice if the holder's ack wait ran out and another holder took the request.
+The sender can read the request's status by the seq its send returned, and can cancel it until a holder takes it. After that the cancel is refused and names the taker.
+A take means the request was about to be shown and says nothing about the work itself.
+Anycast does not follow work to its end; a [workflow run](workflows.mdx) does.
+An open mesh runs no delivery daemon, so anycast there has no notices, status or cancel ([SPEC §8.1](../SPEC.md#81-anycast-request-status)).
+
 A channel mention raises a named peer's priority while keeping the message addressed to the whole channel.
 The wire carries names so that a mention can still match after a reconnect.
 Whether a mention wakes the session depends on its connector and attention settings.

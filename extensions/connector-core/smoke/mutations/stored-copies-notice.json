@@ -13,7 +13,7 @@
     "",
     "S3 clears it on a peek, so the read after the peek loses it.",
     "",
-    "S4 and S5 drop it from the reply outside and inside focus mode, and S8 from a focus reply with recall to report.",
+    "S4 and S5 drop it from the reply outside and inside focus mode, S8 from a focus reply with recall to report, and S9 from a read outside focus mode that shows a message, which builds its reply from what it takes.",
     "",
     "S6 clears the notice when the read starts, as before the fix, so a recall that throws loses it.",
     "",
@@ -83,8 +83,8 @@
     {
       "name": "S8 a focus reply with recall to report drops the notice",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "const warning = [connectionWarning, storedNote, droppedNote(recall.droppedChannels)",
-      "replace": "const warning = [connectionWarning, droppedNote(recall.droppedChannels)",
+      "find": "const focusWarning = () => [inboxConnectionWarning(agent), storedNote, droppedNote(recall.droppedChannels)",
+      "replace": "const focusWarning = () => [inboxConnectionWarning(agent), droppedNote(recall.droppedChannels)",
       "expectRed": "in focus mode a read with recall to report carries the notice once",
       "cell": "in focus mode a read with recall to report carries the notice once"
     },
@@ -95,6 +95,14 @@
       "replace": "this._storedCopiesLimit = 1000;",
       "expectRed": "the notice names the count the endpoint reported",
       "cell": "the notice names the count the endpoint reported"
+    },
+    {
+      "name": "S10 a read that shows a message drops the notice",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "warning: () => [inboxConnectionWarning(agent), storedNote].filter(Boolean).join(\"\\n\"),",
+      "replace": "warning: () => inboxConnectionWarning(agent),",
+      "expectRed": "a read that shows a message carries the notice once",
+      "cell": "a read that shows a message carries the notice once"
     }
   ]
 }

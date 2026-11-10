@@ -1,0 +1,3 @@
+# A delivery daemon's notice reaches the Hermes sidecar marked as one, renders as the daemon's
+# notice, runs in a chat of its own, and a turn's answer to it is sent nowhere.
+smoke:hermes-anycast-notice:auth
