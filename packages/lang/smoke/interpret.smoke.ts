@@ -1446,11 +1446,12 @@ a.agent = "changed";`;
     }
   }
   const P = `
+let a = null;
 try {
-  const a = await spawn("w", { name: "a" });
+  a = await spawn("w", { name: "a" });
   await sleep("1s", { name: "after" });
 } finally {
-  await notify(["ops"], { decision: "cleanup", outcome: "ran" })
+  await notify([a], { decision: "cleanup", outcome: "ran" })
 }
 `;
   // Pinned up front, like the host-stop cells: a run that halts has no result to take pins from,

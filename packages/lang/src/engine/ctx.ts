@@ -24,10 +24,9 @@ import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, ty
 import type { Journal } from "../journal.js";
 import type { RunPins } from "../pins.js";
 import { NotCrossable, Prng, assertNoCode, assertWritable, born as stampBirth, deepFreeze, setOwn } from "../values.js";
-import type { AgentHandleValue } from "../effects.js";
 import { digest, type ScopeKind } from "../keys.js";
 import { currentFrame, withFrame, type EngineFrame } from "./frame.js";
-import { dispatchPrimitive, freeConstructors, onceBodyNotCallable, option, performScope, runScope, type EffectHost, type Frame as ScopeFrame } from "../perform.js";
+import { agentHandles, dispatchPrimitive, freeConstructors, onceBodyNotCallable, option, performScope, runScope, type EffectHost, type Frame as ScopeFrame } from "../perform.js";
 import { PRIMITIVES } from "../primitives.js";
 import type { RunOptions } from "../interpret.js";
 
@@ -518,7 +517,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     // sub-team IS, so editing the member list diverges rather than resuming into a different room.
     const subject = spec.hashesSubject
       ? {
-          members: (first as AgentHandleValue[]).map((m) => m.agent),
+          members: agentHandles(first, "argument 1 of `conclave`").map((m) => m.agent),
           channel: (option(bag, "channel") as string | undefined) ?? null,
         }
       : undefined;
