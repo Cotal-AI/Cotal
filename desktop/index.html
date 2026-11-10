@@ -1,10 +1,13 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light dark"><link rel="icon" href="../assets/cotal-mark.svg" type="image/svg+xml"><title>Cotal</title></head>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light"><link rel="icon" href="/src/brand.svg" type="image/svg+xml"><title>Cotal</title></head>
 <body>
   <div class="app loading">
     <aside class="sidebar">
-      <div class="brand"><img class="brand-mark" src="../assets/cotal-mark.svg" alt=""><strong>cotal</strong></div>
+      <div class="brand"><img class="brand-mark" src="/src/brand.svg" alt=""><strong>cotal</strong></div>
+      <div class="sidebar-footer"><div class="machine"><p id="machine-name">This computer</p><p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span></div><span class="status-pill"><span id="tray-indicator" class="dot"></span><span id="tray-label">Checking connection</span></span></div>
+    </aside>
+    <main>
       <ol id="journey" aria-label="Connection steps">
         <li data-stage="welcome"><span class="step-marker">1</span><span>Welcome</span></li>
         <li data-stage="sign-in"><span class="step-marker">2</span><span>Sign in</span></li>
@@ -12,9 +15,6 @@
         <li data-stage="connect"><span class="step-marker">4</span><span>Connect</span></li>
         <li data-stage="finished"><span class="step-marker">5</span><span>Ready</span></li>
       </ol>
-      <div class="sidebar-footer"><div class="machine"><p id="machine-name">This computer</p><p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span></div><span id="tray-indicator" class="dot"></span><span id="tray-label">Checking connection</span></div>
-    </aside>
-    <main>
       <section class="connection-card" aria-labelledby="connection-title">
         <h1 id="loading-title" data-testid="loading-title"><span id="loading-icon" aria-hidden="true"></span>Checking this computer…</h1>
         <span id="connection-icon" class="connection-icon" aria-hidden="true"></span>
@@ -28,7 +28,7 @@
             <div id="custom-host" hidden><label for="provider">Cotal host sign-in URL</label><input id="provider" type="url" required autocomplete="url" aria-describedby="host-help"><p id="host-help" class="muted">Ask the person running your Cotal host for its sign-in URL.</p></div>
             <div id="login-actions" class="actions"><button id="login" class="button primary" type="submit">Continue with Cotal Cloud</button><button id="other-host" class="text-button" type="button">Use another Cotal host</button></div>
           </form>
-          <div id="approval" class="approval" hidden><p class="waiting-line" data-testid="waiting-line"><span class="dot in-flight" aria-hidden="true"></span>Waiting for your browser</p><p>Enter this code if your browser asks.</p><div class="code-row"><strong id="approval-code"></strong><button id="copy-code" data-testid="copy-code" class="text-button" type="button">Copy</button></div><p class="muted" id="approval-expiry" data-testid="approval-expiry"></p><button id="open-approval" class="button primary" type="button">Open approval page</button><p class="muted">Do not share the approval link or code.</p></div>
+          <div id="approval" class="approval" hidden><p class="waiting-line" data-testid="waiting-line"><span class="dot in-flight" aria-hidden="true"></span>Waiting for your browser</p><p>Enter this code if your browser asks.</p><div class="approval-terminal"><div class="terminal-bar"><span>Approval code</span><button id="copy-code" data-testid="copy-code" class="text-button" type="button">Copy</button></div><div class="code-row"><strong id="approval-code"></strong><span class="caret" aria-hidden="true"></span></div></div><p class="muted" id="approval-expiry" data-testid="approval-expiry"></p><button id="open-approval" class="button primary" type="button">Open approval page</button><p class="muted">Do not share the approval link or code.</p></div>
           <p id="service-explanation" class="footnote">Continuing prepares a background service that runs as your user, not an administrator, even after this window closes. Your login stays in that service, never in this app.</p>
         </div>
         <div id="space-panel" hidden><label for="space">Your space</label><select id="space"><option value="">Choose a space</option></select><div class="actions"><button id="choose-space" class="button primary" type="button">Continue</button><button id="sync" class="text-button" type="button">Refresh spaces</button></div></div>

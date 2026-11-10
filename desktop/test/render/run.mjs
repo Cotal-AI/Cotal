@@ -36,6 +36,8 @@ try {
     try {
       const page = await context.newPage();
       const errors = [];
+      const requests = [];
+      page.on("request", request => requests.push(request.url()));
       page.on("pageerror", error => errors.push(error.message));
       page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
       await page.addInitScript(nativeStub, scenario.state);
@@ -57,7 +59,6 @@ try {
           window.__motionObserver.observe(document.querySelector(".connection-card"), { attributes: true, childList: true, subtree: true });
         });
       }
-      const initialTop = await page.locator(".connection-card").evaluate(el => el.getBoundingClientRect().top);
       if (scenario.act) await scenario.act(page);
       if (scenario.act && process.env.MOTION) {
         const animations = await page.evaluate(() => {
@@ -84,7 +85,8 @@ try {
           assert.ok(contained, `${name}: growing card contains incoming content at ${time}ms`);
           const opacity = await page.locator("#connection-title").evaluate(el => Number(getComputedStyle(el).opacity));
           assert.ok(opacity >= .3, `${name}: nonblank content at ${time}ms`);
-          assert.ok(scenario.name === "notice" || top === initialTop, `${name}: card anchor at ${time}ms`);
+          const headerBottom = await page.locator(".sidebar").evaluate(el => el.getBoundingClientRect().bottom);
+          assert.ok(top >= headerBottom, `${name}: centered card clears header at ${time}ms`);
         }
         await page.evaluate(() => { for (const a of window.__motion) a.cancel(); });
       }
@@ -92,6 +94,45 @@ try {
       await page.screenshot({ path: `${output}/${name}.png`, fullPage: true });
       if (scenario.expect) await scenario.expect(page);
       assert.deepEqual(errors, [], `${name}: browser errors`);
+      assert.ok(requests.every(url => new URL(url).origin === address), `${name}: same-origin requests only`);
+      await page.evaluate(async () => {
+        await document.fonts.ready;
+        await Promise.all([document.fonts.load('800 32px "Bricolage Grotesque"'), document.fonts.load('400 14px "Geist"'), document.fonts.load('600 28px "Geist Mono"')]);
+        await document.fonts.ready;
+      });
+      const brand = await page.evaluate(async () => {
+        await Promise.all([document.fonts.load('800 32px "Bricolage Grotesque"'), document.fonts.load('400 14px "Geist"'), document.fonts.load('600 28px "Geist Mono"')]);
+        const style = selector => getComputedStyle(document.querySelector(selector));
+        const colors = ["--paper", "--card", "--ink", "--ink-2", "--dim", "--faint", "--rule", "--blue", "--yellow", "--orange", "--green", "--green-ink", "--gold", "--gold-ink", "--red", "--red-ink", "--blue-ink", "--orange-ink", "--t-gold", "--t-teal", "--t-violet", "--t-blue", "--t-orange", "--t-green", "--t-red", "--on-ink", "--on-ink-dim"];
+        const probe = document.createElement("span"); probe.id = "brand-color-probe";
+        const sheet = [...document.styleSheets].find(sheet => sheet.href?.startsWith(location.origin));
+        const rule = sheet.insertRule("#brand-color-probe { transition: none !important; }", sheet.cssRules.length);
+        document.body.append(probe);
+        const allowed = new Set(["rgba(0, 0, 0, 0)"]);
+        for (const token of colors) { probe.style.color = `var(${token})`; allowed.add(getComputedStyle(probe).color); }
+        probe.remove(); sheet.deleteRule(rule);
+        await document.fonts.ready;
+        await Promise.all([document.fonts.load('800 32px "Bricolage Grotesque"'), document.fonts.load('400 14px "Geist"'), document.fonts.load('600 28px "Geist Mono"')]);
+        const invalid = [];
+        for (const el of document.querySelectorAll("body *")) {
+          for (const pseudo of [null, "::before", "::after"]) {
+            const s = getComputedStyle(el, pseudo);
+            for (const property of ["color", "backgroundColor"]) if (!allowed.has(s[property])) invalid.push(`${el.id || el.tagName}${pseudo || ""}: ${property} ${s[property]}`);
+          }
+        }
+        return { title: style("#connection-title").fontFamily, body: style("body").fontFamily, code: style("#approval-code").fontFamily,
+          loaded: ['800 32px "Bricolage Grotesque"', '400 14px "Geist"', '600 28px "Geist Mono"'].every(font => document.fonts.check(font)),
+          background: style(":root").backgroundColor,
+          primary: [...document.querySelectorAll(".primary:not(:disabled)")].map(el => getComputedStyle(el).backgroundColor), invalid };
+      });
+      assert.ok(brand.title.startsWith('"Bricolage Grotesque"'), `${name}: display font`);
+      assert.ok(brand.body.startsWith('Geist') || brand.body.startsWith('"Geist"'), `${name}: body font`);
+      assert.ok(brand.code.startsWith('"Geist Mono"'), `${name}: code font`);
+      assert.ok(brand.loaded, `${name}: all three fonts loaded ${JSON.stringify(await page.evaluate(() => [...document.fonts].map(f => ({family:f.family,status:f.status,weight:f.weight}))))}`);
+      assert.equal(brand.background, "rgb(255, 252, 238)", `${name}: paper background`);
+      assert.ok(brand.primary.every(color => color === "rgb(32, 43, 67)"), `${name}: navy primary buttons`);
+      assert.deepEqual(brand.invalid, [], `${name}: token-only colors`);
+      assert.ok(["bricolage-grotesque", "geist-latin", "geist-mono"].every(font => requests.some(url => url.includes(font) && url.endsWith(".woff2"))), `${name}: local font files requested`);
       const geometry = await page.evaluate(() => {
         const failures = [];
         const root = document.documentElement;
