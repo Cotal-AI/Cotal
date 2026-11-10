@@ -133,14 +133,17 @@ async function oauthError(res: Response, cancel?: AbortSignal): Promise<OAuthErr
   }
 }
 
+/** Local IdP configuration that must be corrected before making a request. */
+export class IdpConfigurationError extends Error {}
+
 /** Per-request timeout budget (ms). Default 30s; `COTAL_IDP_TIMEOUT_MS` overrides for a slow IdP
  *  (or a test). A malformed override fails loud rather than silently reverting to the default. */
-function idpTimeoutMs(): number {
+export function idpTimeoutMs(): number {
   const raw = process.env.COTAL_IDP_TIMEOUT_MS;
   if (raw === undefined) return 30_000;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0)
-    throw new Error(`COTAL_IDP_TIMEOUT_MS must be a positive number of milliseconds - got "${raw}"`);
+    throw new IdpConfigurationError(`COTAL_IDP_TIMEOUT_MS must be a positive number of milliseconds - got "${raw}"`);
   return n;
 }
 
