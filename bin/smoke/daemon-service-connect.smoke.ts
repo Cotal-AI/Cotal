@@ -22,6 +22,8 @@
  *      same machine home reaches `connected` with nothing run against it, reports exactly 1 resumed
  *      connection, and reuses the same persisted activate and renew ids. After an explicit
  *      disconnect a restart resumes nothing;
+ *  C6b shipped startup with authority or broker unavailable retries recorded intent, serves after
+ *      recovery without a connect command, and cancels pending retries on disconnect and shutdown;
  *  C7  outage: with the authority door unreachable, a fresh connect is not `connected`; once the
  *      door is back it is `connected` again;
  *  C7b a changed authority account stays account-mismatch in the socket, CLI and offline status,
@@ -110,6 +112,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--hosting-only") && !title.startsWith("H1")) return;
   if (process.argv.includes("--account-mismatch-only") && !/^(C1 |C2 |C7b |C10 )/.test(title)) return;
+  if (process.argv.includes("--service-only") && title.startsWith("H1")) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
 }
@@ -205,10 +208,11 @@ const hits: Array<{ space: string; method: string; path: string }> = [];
 /** C7: spaces whose authority door the relay drops, as an unreachable auth service. */
 const relayDown = new Set<string>();
 const changedAccount = new Map<string, string>();
+const droppedRequests = new Map<string, number>();
 const withoutIssuer = new Set<string>();
 async function relay(space: string, target: string): Promise<string> {
   const s = createHttpServer(async (req, res) => {
-    if (relayDown.has(space)) { req.socket.destroy(); return; }
+    if (relayDown.has(space)) { droppedRequests.set(space, (droppedRequests.get(space) ?? 0) + 1); req.socket.destroy(); return; }
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     hits.push({ space, method: req.method ?? "", path: new URL(req.url!, "http://x").pathname });
@@ -541,6 +545,88 @@ try {
       d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
       check("C6 a restart after an explicit disconnect resumes 0 connections and is not connected", d.counters.connectionsResumed === 0 && stateOf(await statusS(ON)) !== "connected", { counters: d.counters, state: stateOf(await statusS(ON)) });
       check("C6 instrument: connected again for the cells that follow", stateOf(await connectS(ON)) === "connected");
+    });
+
+    await cell("C6b shipped startup retries unavailable intent and cancels pending retries", async () => {
+      seedUnitReceipt();
+      await d.close();
+      const original = findMesh(ON)!;
+      const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"),
+        XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home,
+        COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      const entry = join(repo, "bin/dist/cotal.js");
+      let child: ChildProcess | undefined;
+      const stop = async (signal: NodeJS.Signals) => {
+        if (child) await killAndAwaitExit(child, signal);
+        child = undefined;
+      };
+      const start = async () => {
+        child = spawn(process.execPath, [entry, "daemon", "serve"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        child.stdout!.resume(); child.stderr!.resume();
+        for (let i = 0; i < 100; i++) {
+          try { await ask(paths.socket, { op: "status" }, 1000); return; } catch { await sleep(100); }
+        }
+        throw new Error("C6b shipped daemon did not publish its local endpoint");
+      };
+      const cli = async (mode: string) => {
+        const proc = spawn(process.execPath, [entry, "daemon", mode, "--space", ON, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        proc.stdout.on("data", (b) => { out += String(b); }); proc.stderr.on("data", (b) => { err += String(b); });
+        const timer = setTimeout(() => proc.kill("SIGKILL"), 40_000);
+        const code = await new Promise<number | null>((resolve) => proc.once("exit", resolve)); clearTimeout(timer);
+        frames.push(out, err);
+        return { code, doc: JSON.parse(out) as Record<string, any> };
+      };
+      try {
+        for (const dependency of ["authority", "broker"]) {
+          if (dependency === "authority") relayDown.add(ON);
+          else { recordMesh({ ...original, server: brokerPathUrl }); cutBrokerPath(); }
+          await start();
+          check(`C6b ${dependency} startup reports unavailable without blocking local status`, (await waitState(ON, (s) => s === "unavailable", 15_000)) === "unavailable");
+          const outage = await cli("service-status");
+          check(`C6b ${dependency} CLI reports dependency refusal`, outage.code === 2 && outage.doc.error?.code === "DEPENDENCY_UNAVAILABLE", outage);
+          if (dependency === "authority") {
+            const before = droppedRequests.get(ON) ?? 0;
+            await sleep(1500);
+            check("C6b an unavailable startup makes another authority attempt", (droppedRequests.get(ON) ?? 0) > before);
+            relayDown.delete(ON);
+            const response = await fetch(`${original.userAuth!.endpoints!.url}/service-endpoint-authority`);
+            check("C6b authority recovery is independently reachable", response.status === 200);
+            await response.arrayBuffer();
+          } else brokerPathUp = true;
+          const recovered = await waitState(ON, (s) => s === "connected", 15_000);
+          const status = await cli("service-status");
+          check(`C6b ${dependency} recovery connects without service-connect`, recovered === "connected" && status.code === 0 && status.doc.result?.state === "connected", status);
+          check(`C6b ${dependency} recovery serves an authorized caller`, (await probeMachine()).reply.ok);
+          await stop("SIGKILL");
+        }
+        recordMesh(original);
+        for (const action of ["disconnect", "shutdown"]) {
+          relayDown.add(ON);
+          await start();
+          check(`C6b ${action} instrument: resume is unavailable`, (await waitState(ON, (s) => s === "unavailable", 15_000)) === "unavailable");
+          if (action === "disconnect") {
+            const disconnected = await cli("service-disconnect");
+            check("C6b disconnect cancels remembered intent during outage", disconnected.code === 0 && !existsSync(intentFile(ON)), disconnected);
+          } else await stop("SIGTERM");
+          const before = droppedRequests.get(ON) ?? 0;
+          await sleep(2500);
+          check(`C6b ${action} leaves no pending retry`, (droppedRequests.get(ON) ?? 0) === before);
+          relayDown.delete(ON);
+          if (action === "disconnect") {
+            await stop("SIGTERM");
+            await start();
+            const status = await cli("service-status");
+            check("C6b disconnected intent stays disconnected after restart", status.code === 2 && stateOf(await statusS(ON)) === "disconnected");
+            check("C6b explicit connect restores intent for shutdown control", (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
+            await stop("SIGKILL");
+          } else check("C6b shutdown closes its socket but retains intent", !existsSync(paths.socket) && existsSync(intentFile(ON)));
+        }
+      } finally {
+        relayDown.delete(ON); brokerPathUp = true; recordMesh(original);
+        await stop("SIGTERM");
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      }
     });
 
     await cell("C12 held past two access-bearer lifetimes: the space keeps it ready and connected returns after each reconnect", async () => {

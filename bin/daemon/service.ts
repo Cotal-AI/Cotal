@@ -21,7 +21,8 @@
  * `<COTAL_HOME>/daemon/<space segment>/service-connect.json`, and `service-disconnect` removes it.
  * A restarted daemon reads those records and connects each space again, so the connections it held
  * before a crash come back without anyone running `service-connect`. Only a connection the space
- * accepted is recorded, so a refused space is not retried on every start.
+ * accepted is recorded, so a refused space is not retried on every start. An unavailable resume
+ * retries with bounded backoff until dependencies recover; other refusals stop the retry.
  *
  * The stock guest seam verifies each pulled credential against the registered authority's issuer
  * and keys and this daemon's embedded closure. Each opened transport binds the existing void
@@ -135,7 +136,7 @@ export interface ServiceConnections {
   status(space: string): ServiceConnectionResult;
   /** Connect every space with a recorded intent. Resolves with the spaces that reached `connected`. */
   resume(): Promise<readonly string[]>;
-  /** Close every connection, source and endpoint. Used at daemon shutdown. */
+  /** Cancel retries and close every connection, source and endpoint. Used at daemon shutdown. */
   close(): Promise<void>;
 }
 
@@ -159,6 +160,7 @@ function intentSpace(path: string): string | undefined {
 export function createServiceConnections(home: string = homeCotalDir()): ServiceConnections {
   const live = new Map<string, Live>();
   const queue = new Map<string, Promise<unknown>>();
+  const retries = new Map<string, ReturnType<typeof setTimeout>>();
   let closed = false;
 
   const result = (space: string): ServiceConnectionResult => {
@@ -333,14 +335,36 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   const forget = (space: string): void => {
     rmSync(daemonConnectIntentFile(space, home), { force: true });
   };
+  const cancelRetry = (space: string): void => {
+    clearTimeout(retries.get(space));
+    retries.delete(space);
+  };
+  /** Retry only remembered intent and only an unavailable attempt. Recheck inside the per-space
+   *  queue so a timer already queued when disconnect runs cannot restore a forgotten connection. */
+  async function connectRemembered(space: string, delay = 1000): Promise<ServiceConnectionResult> {
+    if (closed || intentSpace(daemonConnectIntentFile(space, home)) !== space) return result(space);
+    cancelRetry(space);
+    const r = await connectOnce(space);
+    if (!closed && r.state === "unavailable") {
+      const timer = setTimeout(() => {
+        retries.delete(space);
+        void serial(space, () => connectRemembered(space, Math.min(delay * 2, 30_000)));
+      }, delay);
+      timer.unref();
+      retries.set(space, timer);
+    }
+    return r;
+  }
 
   return {
     connect: (space) => serial(space, async () => {
-      const r = await connectOnce(space);
+      cancelRetry(space);
+      const r = intentSpace(daemonConnectIntentFile(space, home)) === space ? await connectRemembered(space) : await connectOnce(space);
       if (r.state === "connected") { try { remember(space); } catch { /* the connection is up either way */ } }
       return r;
     }),
     disconnect: (space) => serial(space, async () => {
+      cancelRetry(space);
       const l = live.get(space);
       if (l) { await teardown(l); live.delete(space); }
       // A disconnect is explicit, so it must outlive a restart: forget the intent before answering.
@@ -356,11 +380,13 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
         const space = intentSpace(join(home, "daemon", entry, "service-connect.json"));
         if (space !== undefined) spaces.push(space);
       }
-      const settled = await Promise.all(spaces.map((space) => serial(space, () => connectOnce(space))));
+      const settled = await Promise.all(spaces.map((space) => serial(space, () => connectRemembered(space))));
       return settled.filter((r) => r.state === "connected").map((r) => r.space);
     },
     async close() {
       closed = true;
+      for (const space of retries.keys()) cancelRetry(space);
+      await Promise.all([...queue.values()]);
       await Promise.all([...live.values()].map((l) => teardown(l)));
       live.clear();
     },
