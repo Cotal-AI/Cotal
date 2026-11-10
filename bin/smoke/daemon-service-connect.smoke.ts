@@ -103,6 +103,7 @@ const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"]
 const setupHintsOnly = process.argv.includes("--setup-hints-only");
 const cancelOnly = process.argv.includes("--cancel-only");
 const keepFixture = process.argv.includes("--keep-fixture");
+const desktopGapOnly = process.argv.includes("--desktop-gap-only");
 const originalPath = process.env.PATH;
 const setupProgressOnly = process.argv.includes("--setup-progress-only");
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
@@ -132,6 +133,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--clock-behind-only") && !/^(C1 |C2 |C15 |C18 |C10 )/.test(title)) return;
+  if (desktopGapOnly && !/^(C1 |C2 |D0 |C10 )/.test(title)) return;
   if (setupProgressOnly && !/^(C1 |C1b |C2 |C4 |C17 |C17b |C10 )/.test(title)) return;
   if (process.argv.includes("--hosting-only") && !title.startsWith("H1")) return;
   if (process.argv.includes("--account-mismatch-only") && !/^(C1 |C2 |C7b |C10 )/.test(title)) return;
@@ -437,6 +439,23 @@ try {
     const doc = format === "--json" ? JSON.parse(out) as Record<string, any> : undefined;
     return { status, doc, out, err };
   };
+  const desktop = async (request: Record<string, unknown>) => {
+    const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "desktop"], {
+      cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rtDir, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
+      stdio: ["pipe", "pipe", "pipe"], timeout: 180_000, killSignal: "SIGKILL",
+    });
+    let out = "", err = "";
+    child.stdout.on("data", (b) => { out += String(b); });
+    child.stderr.on("data", (b) => { err += String(b); });
+    child.stdin.end(`${JSON.stringify(request)}\n`);
+    const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+    if (code !== 0) throw new Error(`desktop adapter exited ${code}: ${err}`);
+    frames.push(out, err);
+    const events = out.trim().split("\n").map((line) => JSON.parse(line) as Record<string, any>);
+    const result = events.at(-1)!;
+    if (result.event !== "result") throw new Error("desktop adapter returned no final result");
+    return { ...result, events };
+  };
   const stateOf = (f: Frame) => resultOf(f).state as string | undefined;
   const waitState = async (space: string, want: (s: string | undefined) => boolean, ms = 60_000) => {
     const t0 = Date.now(); let last: string | undefined;
@@ -609,6 +628,23 @@ try {
       check("C2 the private renewal record exists, mode 0600 in a 0700 directory",
         filesUnder(daemonDir).filter((p) => p.includes("service-renewal") && p.endsWith(".json")).every((p) => (statSync(join(daemonDir, p)).mode & 0o777) === 0o600)
         && filesUnder(daemonDir).some((p) => p.includes("service-renewal")));
+    });
+
+    await cell("D0 current desktop connection has no hosted launch target", async () => {
+      const registered = await desktop({ op: "register", space: ON });
+      const connected = await desktop({ op: "service-connect", space: ON });
+      const status = await desktop({ op: "status" });
+      const manager = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+      check("D0 current app register and service-connect really reach connected", registered.ok === true && registered.result.outcome === "registered" && connected.ok === true && connected.result.state === "connected", connected);
+      check("D0 independently verified machine service is ready", await instanceStatus(ON) === "ready");
+      console.log("  D0 BASELINE GAP", JSON.stringify({ connected: connected.result.state, managers: status.result.managers, managerState: manager.state }));
+      check("D0 connected app has zero hosted Managers and no launch-ready instance", status.ok === true && status.result.managers.length === 0 && manager.state === "stopped" && !manager.instanceId, manager);
+      let refusal = "";
+      try { await resolveControlTarget({ space: ON }, "control-caller-privileged", undefined, { onRefusal: "throw", readOnly: true }); }
+      catch (error) { refusal = String(error); }
+      check("D0 real launch caller cannot resolve a Manager target", refusal.length > 0, refusal);
+      const setup = await desktop({ op: "setup", space: ON, idp: idpUrl });
+      check("D0 current app boundary refuses the missing stock setup operation", setup.ok === false && setup.error.code === "BAD_REQUEST", setup);
     });
 
     await cell("C15 an explicitly granted native caller reaches the daemon's registered command", async () => {
