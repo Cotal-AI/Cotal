@@ -1,5 +1,9 @@
 # @cotal-ai/pi
 
+## 0.157.1
+
+No changes in this release.
+
 ## 0.157.0
 
 No changes in this release.
