@@ -765,8 +765,9 @@ GUI domain that does not answer refuses `TARGET_UNAVAILABLE`, and so does runnin
 `uninstall` boots the job out and removes the plist.
 
 On Windows it is a scheduled task. It writes the task definition to `service-task.xml` in the
-daemon's state directory and registers it with `schtasks /Create /XML`, then runs it. The task
-starts at this user's logon and runs with the user's own token at least privilege, so no password is
+daemon's state directory and registers it with `schtasks /Create /XML`, then runs it. The stock CLI
+task starts the packaged `daemon-native.js` entry, which marks the native launch before loading
+the CLI. The task starts at this user's logon and runs with the user's own token at least privilege, so no password is
 stored and a standard account can install it without elevation. Its logon trigger repeats every
 minute and skips a start while the daemon runs, so a daemon that exits starts again within a
 minute. The daemon is a console program, so its console window shows in the user's session.
