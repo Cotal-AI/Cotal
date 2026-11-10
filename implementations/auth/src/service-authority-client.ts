@@ -96,8 +96,9 @@ async function send(url: string, init: RequestInit, mutation: boolean): Promise<
   return response;
 }
 
-export async function readRemoteServiceAuthorityInfo(base: string, space: string): Promise<ServiceAuthorityInfo> {
-  const response = await send(serviceAuthorityUrl(base), { method: "GET", headers: { "cache-control": "no-store" } }, false);
+export async function readRemoteServiceAuthorityInfo(base: string, space: string, signal?: AbortSignal): Promise<ServiceAuthorityInfo> {
+  const response = await send(serviceAuthorityUrl(base), { method: "GET", headers: { "cache-control": "no-store" },
+    signal: AbortSignal.any([AbortSignal.timeout(30_000), ...(signal ? [signal] : [])]) }, false);
   if (!response.ok) {
     await response.body?.cancel().catch(() => {});
     throw new ServiceAuthorityTransportError("service authority account metadata request failed", "not-executed", response.status);

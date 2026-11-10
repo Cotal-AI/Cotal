@@ -32,6 +32,9 @@ export const DAEMON_ENDPOINT = "ai.cotal.machine";
 /** Shared diagnosis when the live authority no longer matches the daemon's pinned account. */
 export const ACCOUNT_MISMATCH_MESSAGE = "the space now answers with a different account than this daemon pinned; nothing was changed. Confirm the space was not replaced before removing the daemon's identity for it by hand";
 
+/** Fixed clock diagnosis for a provider proof already expired on this machine. */
+const IDP_CREDENTIAL_EXPIRED_MESSAGE = "the sign-in provider returned a credential that is expired according to this machine's clock; check this machine's and the authority's clocks, then connect again; nothing is connected";
+
 const KIND = "cotal-daemon-service-identity";
 
 export interface DaemonServiceIdentity {
@@ -73,7 +76,8 @@ const SENTENCE = {
 
 /** Check readiness for `space`. `home` is the machine home where the stock session and the daemon's
  *  own state live. */
-export async function connectCheck(space: string, home: string = homeCotalDir()): Promise<ConnectCheckResult> {
+export async function connectCheck(space: string, home: string = homeCotalDir(), signal?: AbortSignal): Promise<ConnectCheckResult> {
+  signal?.throwIfAborted();
   const entry = findMesh(space);
   if (!entry) return { outcome: "not-registered", space, message: SENTENCE["not-registered"] };
   const ua = entry.mode === "user" ? entry.userAuth : undefined;
@@ -85,16 +89,17 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
   // The cached handle's presence and advisory expiry do not prove the IdP still accepts it.
   // Reuse the stock bounded JWT cache, so readiness and registration agree on revocation.
   try {
-    const jwt = await fetchIdpJwt(ua.idp.url, session.token);
+    const jwt = await fetchIdpJwt(ua.idp.url, session.token, signal);
     const header = decodeProtectedHeader(jwt), claims = decodeJwt(jwt);
     const signature = jwt.split(".")[2] ?? "";
     const now = Date.now() / 1000;
     // This is a usability check only. The space still verifies the signature and pinned claims.
     if (typeof header.alg !== "string" || !header.alg || header.alg === "none" || !/^[A-Za-z0-9_-]+$/.test(signature) || base64url.decode(signature).length === 0
       || typeof claims.sub !== "string" || !claims.sub
-      || typeof claims.exp !== "number" || !Number.isFinite(claims.exp) || claims.exp <= now
+      || typeof claims.exp !== "number" || !Number.isFinite(claims.exp)
       || (claims.nbf !== undefined && (typeof claims.nbf !== "number" || !Number.isFinite(claims.nbf) || claims.nbf > now)))
       return { outcome: "refused", space, message: "the space's sign-in provider gave an answer the daemon cannot use" };
+    if (claims.exp <= now) return { outcome: "credential-expired", space, message: IDP_CREDENTIAL_EXPIRED_MESSAGE };
   }
   catch (e) {
     if (e instanceof IdpSessionRejectedError) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"],
@@ -107,7 +112,7 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
   try {
     const provider = resolveAuthProvider();
     if (!provider.serviceEndpointInfo) return { outcome: "unsupported-by-space", space, message: SENTENCE["unsupported-by-space"] };
-    const info = await provider.serviceEndpointInfo({ store: workspaceSecretStore(entry.root), dir: userAuthStateDir(entry.root, space, { readOnly: true }), space });
+    const info = await provider.serviceEndpointInfo({ store: workspaceSecretStore(entry.root), dir: userAuthStateDir(entry.root, space, { readOnly: true }), space, signal });
     accountPublicKey = info.accountPublicKey;
   } catch (e) {
     const status = (e as { httpStatus?: number }).httpStatus;
@@ -117,6 +122,7 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
     return { outcome: "refused", space, message: SENTENCE.refused };
   }
 
+  signal?.throwIfAborted();
   let identity: DaemonServiceIdentity;
   try {
     identity = claimIdentityRecord(daemonIdentityFile(space, home), "daemon service identity", parseIdentity(space), () => ({

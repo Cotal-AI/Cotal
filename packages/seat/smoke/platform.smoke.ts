@@ -4,9 +4,10 @@
  * No top-of-file skip. References #1297.
  */
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, chmodSync, mkdirSync, readdirSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, chmodSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { unsupportedTransport } from "../src/protocol.js";
 import { nativeHelperPath, unsupportedNativeArch } from "../src/peercred.js";
@@ -26,6 +27,43 @@ const childEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => {
   const env = { ...process.env, ...extra };
   for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
   return env;
+};
+
+// Header fixtures exercise packaging validation only; they are never loaded or published.
+const writeHostFixtures = (root: string): string[] => {
+  const args: string[] = [];
+  for (const platform of ["darwin", "win32"]) for (const arch of ["x64", "arm64"]) {
+    const path = join(root, "build", "Release", `${platform}-${arch}`, "peercred.node");
+    mkdirSync(dirname(path), { recursive: true });
+    const buf = Buffer.alloc(platform === "darwin" ? 32 : 88);
+    if (platform === "darwin") {
+      buf.writeUInt32LE(0xfeedfacf, 0);
+      buf.writeUInt32LE(arch === "x64" ? 0x01000007 : 0x0100000c, 4);
+      buf.writeUInt32LE(8, 12);
+    } else {
+      buf.write("MZ");
+      buf.writeUInt32LE(64, 60);
+      buf.write("PE\0\0", 64);
+      buf.writeUInt16LE(arch === "x64" ? 0x8664 : 0xaa64, 68);
+      buf.writeUInt16LE(0x2000, 86);
+    }
+    writeFileSync(path, buf);
+    args.push(`--${platform}-${arch}`, path);
+  }
+  return args;
+};
+const outputInventory = (root: string): string => {
+  const files: Array<[string, string]> = [];
+  const visit = (path: string, relative: string): void => {
+    if (!existsSync(path)) return;
+    for (const entry of readdirSync(path, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const name = join(relative, entry.name);
+      if (entry.isDirectory()) visit(join(path, entry.name), name);
+      else files.push([name, createHash("sha256").update(readFileSync(join(path, entry.name))).digest("hex")]);
+    }
+  };
+  for (const name of ["dist", "build"]) visit(join(root, name), name);
+  return JSON.stringify(files);
 };
 
 const err = unsupportedTransport("darwin");
@@ -234,6 +272,7 @@ if (process.platform !== "linux") {
         { status: oneArch.status, stdout: oneArch.stdout, stderr: oneArch.stderr },
       );
       writeElf("arm64", 183);
+      writeHostFixtures(tree);
       const both = spawnSync(
         process.execPath,
         [
@@ -244,7 +283,7 @@ if (process.platform !== "linux") {
         ],
         { encoding: "utf8" },
       );
-      check("assembled linux-x64 plus linux-arm64 is packable", both.status === 0, {
+      check("assembled Linux, macOS and Windows helpers are packable", both.status === 0, {
         status: both.status,
         stdout: both.stdout,
         stderr: both.stderr,
@@ -254,6 +293,22 @@ if (process.platform !== "linux") {
     }
   }
 
+  const sourcePkgRoot = pkgRoot;
+  const originalOutputs = outputInventory(sourcePkgRoot);
+  const cloneRoot = mkdtempSync(join(tmpdir(), "cotal-seat-platform-"));
+  try {
+  const repo = join(sourcePkgRoot, "..", "..");
+  const pkgRoot = join(cloneRoot, "packages", "seat");
+  cpSync(sourcePkgRoot, pkgRoot, {
+    recursive: true,
+    filter: (source) => !source.split(sep).includes("node_modules"),
+  });
+  // Reuse the installed toolchain, as the installed-distribution smoke does. Only the copy is packed.
+  for (const name of ["package.json", "pnpm-workspace.yaml", "tsconfig.base.json"]) copyFileSync(join(repo, name), join(cloneRoot, name));
+  symlinkSync(join(repo, "node_modules"), join(cloneRoot, "node_modules"), "dir");
+  symlinkSync(join(sourcePkgRoot, "node_modules"), join(pkgRoot, "node_modules"), "dir");
+  mkdirSync(join(cloneRoot, "scripts"));
+  copyFileSync(join(repo, "scripts", "seat-assemble-natives.mjs"), join(cloneRoot, "scripts", "seat-assemble-natives.mjs"));
   {
     const sources = mkdtempSync(join(tmpdir(), "cotal-seat-asm-src-"));
     const saved: Array<{ dest: string; backup?: string }> = [];
@@ -277,7 +332,7 @@ if (process.platform !== "linux") {
       const arm64 = writeElf("arm64", 183);
       const assembled = spawnSync(
         process.execPath,
-        [join(pkgRoot, "..", "..", "scripts", "seat-assemble-natives.mjs"), "--x64", x64, "--arm64", arm64],
+        [join(pkgRoot, "..", "..", "scripts", "seat-assemble-natives.mjs"), "--x64", x64, "--arm64", arm64, ...writeHostFixtures(sources)],
         { encoding: "utf8" },
       );
       const destArm = join(pkgRoot, "build", "Release", "linux-arm64", "peercred.node");
@@ -338,6 +393,7 @@ if (process.platform !== "linux") {
       );
     }
 
+    rmSync(join(pkgRoot, "dist"), { recursive: true, force: true });
     const refuseDir = mkdtempSync(join(tmpdir(), "cotal-seat-pack-gated-"));
     const gated = spawnSync("pnpm", ["pack", "--pack-destination", refuseDir], { cwd: pkgRoot, encoding: "utf8" });
     check(
@@ -345,6 +401,7 @@ if (process.platform !== "linux") {
       gated.status !== 0,
       { status: gated.status, stdout: gated.stdout, stderr: gated.stderr },
     );
+    check("refused pack preserves the caller's compiled output and native helpers", outputInventory(sourcePkgRoot) === originalOutputs);
     rmSync(refuseDir, { recursive: true, force: true });
 
     const writePackedElf = (arch: string, machine: number): string => {
@@ -358,7 +415,7 @@ if (process.platform !== "linux") {
     };
     const assembled = spawnSync(
       process.execPath,
-      [join(pkgRoot, "..", "..", "scripts", "seat-assemble-natives.mjs"), "--x64", writePackedElf("x64", 62), "--arm64", writePackedElf("arm64", 183)],
+      [join(pkgRoot, "..", "..", "scripts", "seat-assemble-natives.mjs"), "--x64", writePackedElf("x64", 62), "--arm64", writePackedElf("arm64", 183), ...writeHostFixtures(packState)],
       { encoding: "utf8" },
     );
     check(
@@ -368,7 +425,6 @@ if (process.platform !== "linux") {
         existsSync(join(pkgRoot, "build", "Release", "linux-arm64", "peercred.node")),
       { status: assembled.status, stdout: assembled.stdout, stderr: assembled.stderr },
     );
-    rmSync(join(pkgRoot, "dist"), { recursive: true, force: true });
     check("assembled package inventory starts with no dist directory", !existsSync(join(pkgRoot, "dist")));
     const succeedDir = mkdtempSync(join(tmpdir(), "cotal-seat-pack-assembled-"));
     const assembledPack = spawnSync("pnpm", ["pack", "--pack-destination", succeedDir], { cwd: pkgRoot, encoding: "utf8" });
@@ -388,6 +444,8 @@ if (process.platform !== "linux") {
           !files.includes("package/build/Release/peercred.node"),
         files.filter((f) => f.includes("peercred") || f.includes("build/")),
       );
+      check("the tarball ships all six platform and architecture helpers", ["linux", "darwin", "win32"].every((platform) =>
+        ["x64", "arm64"].every((arch) => files.includes(`package/build/Release/${platform}-${arch}/peercred.node`))), files);
       check("the tarball ships dist/index.js compiled by prepack", files.includes("package/dist/index.js"), files);
       check("the tarball ships dist/index.d.ts compiled by prepack", files.includes("package/dist/index.d.ts"), files);
     }
@@ -408,6 +466,10 @@ if (process.platform !== "linux") {
     }
     rmSync(packDir, { recursive: true, force: true });
     rmSync(packState, { recursive: true, force: true });
+  }
+  } finally {
+    rmSync(cloneRoot, { recursive: true, force: true });
+    check("assembly and pack leave the caller's compiled output and native helpers unchanged", outputInventory(sourcePkgRoot) === originalOutputs);
   }
   }
 }

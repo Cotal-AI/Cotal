@@ -208,6 +208,33 @@ try {
       saveIdpSession(home, IDP, { token: "accepted-fixture-session", expiresAt: 1, sub: "smoke-sub" });
     });
 
+    await cell("C3c only a well-shaped expired proof gets the clock diagnosis", async () => {
+      resetHits();
+      const now = Date.now() / 1000;
+      const cases: Array<[string, Record<string, unknown>, Record<string, unknown>, string, string]> = [
+        ["expired", { alg: "EdDSA" }, { sub: "smoke-sub", exp: now - 1 }, "fixture", "credential-expired"],
+        ["missing-exp", { alg: "EdDSA" }, { sub: "smoke-sub" }, "fixture", "refused"],
+        ["invalid-exp", { alg: "EdDSA" }, { sub: "smoke-sub", exp: "old" }, "fixture", "refused"],
+        ["future-nbf", { alg: "EdDSA" }, { sub: "smoke-sub", exp: now - 1, nbf: now + 60 }, "fixture", "refused"],
+        ["missing-sub", { alg: "EdDSA" }, { exp: now - 1 }, "fixture", "refused"],
+        ["unsigned", { alg: "none" }, { sub: "smoke-sub", exp: now - 1 }, "fixture", "refused"],
+        ["missing-signature", { alg: "EdDSA" }, { sub: "smoke-sub", exp: now - 1 }, "", "refused"],
+      ];
+      try {
+        for (const [name, header, claims, signature, outcome] of cases) {
+          saveIdpSession(home, IDP, { token: `shape-${name}`, expiresAt: 1, sub: "smoke-sub" });
+          const token = [header, claims].map(value => Buffer.from(JSON.stringify(value)).toString("base64url")).join(".") + `.${signature}`;
+          idpAnswer = { status: 200, body: { token } };
+          const r = await ask(paths.socket, { op: "connect-check", space: "ready" });
+          check(`C3c ${name} stays fail-closed as ${outcome}`, resultOf(r).outcome === outcome, r);
+          check(`C3c ${name} sends no authority request and pins nothing`, hits.length === 0 && identityFiles().length === 0);
+        }
+      } finally {
+        idpAnswer = "accepted";
+        saveIdpSession(home, IDP, { token: "accepted-fixture-session", expiresAt: 1, sub: "smoke-sub" });
+      }
+    });
+
     await cell("C4 service endpoints off at the space", async () => {
       resetHits();
       answer = { status: 404 };

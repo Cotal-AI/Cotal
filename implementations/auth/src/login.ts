@@ -441,8 +441,8 @@ async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: 
   return { jwt: body.token, response: res };
 }
 
-export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise<string> {
-  return (await fetchIdpJwtResponse(idpUrl, sessionToken)).jwt;
+export async function fetchIdpJwt(idpUrl: string, sessionToken: string, signal?: AbortSignal): Promise<string> {
+  return (await fetchIdpJwtResponse(idpUrl, sessionToken, signal)).jwt;
 }
 
 /** The whole login operation, in the only safe order: device sign-in, then PROVE the session
