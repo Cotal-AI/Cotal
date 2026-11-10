@@ -204,6 +204,8 @@ let accountDesired = false;
 let accountRevision = 1;
 let accountBindingRevision = 1;
 let accountHttp = 200;
+let accountHang = false;
+let accountHangs = 0;
 let catalog: unknown;
 let catalogSpace: string | undefined;
 let catalogTarget: string | undefined;
@@ -231,6 +233,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (accountOnly && req.url?.startsWith("/api/cli/machines/")) {
     const machineId = req.url.split("/")[4];
     if (req.method === "PUT") { res.end(JSON.stringify({ v: 1, machine: { id: machineId, lastSeenAt: new Date().toISOString() } })); return; }
+    if (accountHang && req.method === "GET") { accountHangs++; return; }
     if (accountHttp !== 200) { res.writeHead(accountHttp); res.end(accountHttp === 304 ? undefined : "{}"); return; }
     const snapshot = catalog as { account: unknown; spaces: { id: string }[] };
     const spaces = accountDesired ? snapshot.spaces : [];
@@ -1687,6 +1690,16 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           await approve(host, ON, fixture.owner);
           await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A1 desired 200 connects real broker service");
           await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          accountHttp = 503; await sleep(5500);
+          check("A2c 503 never disconnects a connected space", (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
+          accountHttp = 304; await sleep(5500);
+          check("A2d 304 never disconnects a connected space", (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
+          accountHttp = 200;
+          accountHang = true;
+          for (let i = 0; i < 20 && !accountHangs; i++) await sleep(500);
+          await sleep(31_000);
+          check("A2e real request timeout never disconnects connected space", accountHangs > 0 && (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
+          accountHang = false;
           const humanStatus = await plainCommand("status");
           check("A2a CLI human status names account computer and desired revision", humanStatus.code === 0 && humanStatus.out.includes("Account computer") && humanStatus.out.includes("Desired revision") && humanStatus.out.includes(ON), humanStatus);
           const jsonStatus = await cli("status");
