@@ -15,8 +15,8 @@
  * registration an earlier release made under such a name is still headed with it.
  * On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A stack journal
- * whose members this home has no record of, with a live manager, stands for a stack running under
- * another Cotal home: create, down and status there name that home, and so do ps and who with
+ * whose members this home has no record of, with a live manager, reports missing member
+ * records: create, down and status name that fact, and so do ps and who with
  * another space selected. A folder path with a control
  * character or a bidirectional formatting mark is refused by create and up before anything is written. A stopped stack whose broker
  * bind does not serve its recorded address refuses up and is started again with the --host it names.
@@ -566,7 +566,7 @@ if (process.platform === "linux") {
   writeFileSync(awayRecord, String(awayManager.pid), { mode: 0o600 });
   const journal = readFileSync(stackJournalPath(awayRoot), "utf8"), before = registryFiles();
   const otherHome = (r: Awaited<ReturnType<typeof json>>) =>
-    refused(r, 2, "TARGET_UNAVAILABLE") && /another Cotal home/.test(r.env?.error?.message ?? "") && /COTAL_HOME set to the Cotal home the stack was started under/.test(r.env?.error?.remedy ?? "");
+    refused(r, 2, "TARGET_UNAVAILABLE") && /member records.*missing|member records are missing/.test(r.env?.error?.message ?? "") && /COTAL_HOME set to the Cotal home the stack was started under/.test(r.env?.error?.remedy ?? "");
   const unchanged = () => readFileSync(stackJournalPath(awayRoot), "utf8") === journal && JSON.stringify(registryFiles()) === JSON.stringify(before) && awayManager.exitCode === null;
   const create = await json(["space", "create", "away", "--root", awayRoot]);
   check("space create over a stack running under another Cotal home refuses TARGET_UNAVAILABLE with the COTAL_HOME step, and prepares nothing",
@@ -585,13 +585,13 @@ if (process.platform === "linux") {
     if (selected === undefined) clearCurrent(); else setCurrent(selected);
     removeMesh("awaysel");
     check("ps and who there with another space selected still refuse with the COTAL_HOME step, naming no stopped space of this folder",
-      otherHome(read) && text.status === 2 && /another Cotal home/.test(text.stderr) && !/this folder holds|restart it with `cotal up`/.test(text.stdout + text.stderr) && unchanged(), { ps: shown(read), who: shown(text) });
+      otherHome(read) && text.status === 2 && /member records.*missing|member records are missing/.test(text.stderr) && !/this folder holds|restart it with `cotal up`/.test(text.stdout + text.stderr) && unchanged(), { ps: shown(read), who: shown(text) });
   }
   // A space this home prepared at the root does not hide the other home.
   recordPreparedSpace({ space: "away", root: awayRoot, ts });
   const status = await json(["status"], awayRoot);
   check("status there names the other home even when this home prepared a space at the root",
-    status.status === 0 && status.env?.result?.selected?.code === "not-started" && /runs under another Cotal home/.test(status.env.result.selected.message ?? ""), shown(status));
+    status.status === 0 && status.env?.result?.selected?.code === "not-started" && /member records are missing/.test(status.env.result.selected.message ?? ""), shown(status));
   removePreparedSpace("away");
   await new Promise((done) => { awayManager.once("exit", done); awayManager.kill("SIGKILL"); });
   rmSync(awayRecord);

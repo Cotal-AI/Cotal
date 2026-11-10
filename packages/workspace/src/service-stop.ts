@@ -77,7 +77,14 @@ export function publishServiceStopRequest(context: StopContext, value: NativeSer
 
 /** Read from the native child before choosing any stop policy. A missing request authorizes nothing. */
 export function readServiceStopRequest(context: StopContext): NativeServiceStopRequest | undefined {
-  const bytes = readLocalRecordSource(serviceStopRequestPath(context), 8192, true);
+  let bytes: Buffer | undefined;
+  try { bytes = readLocalRecordSource(serviceStopRequestPath(context), 8192, true); }
+  catch (error) {
+    // The child can outlive removal of its home, including this directory. There is then no
+    // request to accept. Permission, link and malformed-record failures still refuse.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
   return bytes === undefined ? undefined : request(decodeLocalJson(bytes), context);
 }
 

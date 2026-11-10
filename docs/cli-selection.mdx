@@ -443,6 +443,12 @@ and `cotal up`, and `status` names the same step. A selection does not change th
 that holds such a journal or configuration and no registration, as a moved project does, is refused
 the same way and never reaches the selected space.
 
+When the journal names running members but this Cotal home has no instance records for them,
+commands report the missing records. They do not infer that the stack runs under another home.
+If the original home's records were removed, the project's `cotal down --dry-run` and
+`cotal down --yes` provide the [creation-pinned recovery stop](cli-shutdown.mdx#missing-home-records).
+If another home still holds the records, use that home instead.
+
 A copied or moved project folder keeps a stack journal that names the folder it was recorded in.
 `space create <name>` there refuses `CONFLICT`, exit 2, and names `cotal space create <name> --adopt
 --root <root>`, and `status` names the same command. `--adopt` takes the journal over: it rewrites it

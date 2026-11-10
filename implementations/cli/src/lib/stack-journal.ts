@@ -1,7 +1,8 @@
 /** The root-local whole-stack journal: which controller definitions and full instances one local
  *  stack owns, and the last whole-stack operation's per-member outcome. One owner-private file at
  *  `<root>/.cotal/stack-controller.json`. It is not a service record, unit receipt or team ledger,
- *  and it grants no stop authority by itself: every effect still rechecks the instance records. */
+ *  and it grants no PID-only stop authority: recovery requires the launching home, host and exact
+ *  process creation pins; ordinary stops still recheck the instance records. */
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmdirSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
@@ -9,7 +10,7 @@ import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
-import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
+import { observeServiceProcess, processServiceHost, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
 import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, abandonUnresolvedLaunch, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -52,7 +53,7 @@ export type StackMemberState = "planned" | "not-attempted" | "started" | "reused
  *  and the new definition's revision before the launch, so a crash in between is resolved from the
  *  replacement's own record (see {@link withSettledMembers}). */
 export interface StackReplacement { operation: string; instanceId: string; launchRequestId: string; definitionRevision?: string }
-export interface StackMember { role: StackRole; definition: string; instanceId: string | null; state: StackMemberState; code?: string; replacement?: StackReplacement }
+export interface StackMember { role: StackRole; definition: string; instanceId: string | null; state: StackMemberState; code?: string; replacement?: StackReplacement; process?: { pid: number; token: string } }
 export interface StackJournal {
   schemaVersion: 1;
   kind: "cotal-stack-controller";
@@ -62,6 +63,8 @@ export interface StackJournal {
   /** Pinned at the first whole-stack up. An open stack has no delivery member and no credential;
    *  only a user stack has an auth-service member. */
   mode: StackMode;
+  /** Local recovery authority when the home records are lost. Never inferred for older journals. */
+  recovery?: { home: string; host: string };
   members: StackMember[];
   /** The broker inputs this stack's broker was last prepared from. A later preparation of the same
    *  stopped broker reuses them rather than a default store, and an explicit request that differs
@@ -132,7 +135,7 @@ function unreadable(root: string): never {
 }
 
 function validate(input: unknown, root: string): StackJournal {
-  const value = localRecordObject(input, ["schemaVersion", "kind", "root", "space", "server", "mode", "members", "broker", "operation", "updatedAt"]);
+  const value = localRecordObject(input, ["schemaVersion", "kind", "root", "space", "server", "mode", "members", "broker", "operation", "updatedAt", "recovery"]);
   // A journal written before the auth-service role existed carries exactly broker, delivery and
   // manager rows. It is read with an explicit not-attempted auth row for auth/open stacks only;
   // the next write records the current shape. A user stack never has that legacy shape.
@@ -140,11 +143,15 @@ function validate(input: unknown, root: string): StackJournal {
     value.members = [value.members[0], { role: "auth", definition: STACK_DEFINITION.auth, instanceId: null, state: "not-attempted" }, ...value.members.slice(1)];
   if (value.schemaVersion !== 1 || value.kind !== "cotal-stack-controller" || typeof value.root !== "string" || !isAbsolute(value.root) || typeof value.space !== "string" || !value.space || typeof value.server !== "string" || !value.server || !STACK_MODES.includes(value.mode as StackMode) || typeof value.updatedAt !== "string" || !Array.isArray(value.members) || value.members.length !== STACK_ROLES.length) invalid(root);
   const members = (value.members as unknown[]).map((row, index) => {
-    const member = localRecordObject(row, ["role", "definition", "instanceId", "state", "code", "replacement"]);
+    const member = localRecordObject(row, ["role", "definition", "instanceId", "state", "code", "replacement", "process"]);
     const role = STACK_ROLES[index]!;
     if (member.role !== role || member.definition !== STACK_DEFINITION[role] || !STATES.includes(String(member.state)) || member.code !== undefined && (typeof member.code !== "string" || !/^[A-Z_]{1,64}$/.test(member.code))) invalid(root);
     if (member.instanceId !== null) { try { serviceOperationId(member.instanceId); } catch { invalid(root); } }
     if (member.replacement !== undefined) replacementOf(member.replacement, root);
+    if (member.process !== undefined) {
+      const pin = localRecordObject(member.process, ["pid", "token"]);
+      if (member.instanceId === null || !Number.isInteger(pin.pid) || Number(pin.pid) <= 0 || Number(pin.pid) > 2_147_483_647 || typeof pin.token !== "string" || !/^[0-9]{1,20}$/.test(pin.token)) invalid(root);
+    }
     if (!stackRoleApplies(value.mode as StackMode, role) && (member.instanceId !== null || member.state !== "not-attempted" || member.replacement !== undefined)) invalid(root);
     return member as unknown as StackMember;
   });
@@ -155,9 +162,18 @@ function validate(input: unknown, root: string): StackJournal {
   const maintained = operation.kind === "preserve" || operation.kind === "resume";
   if (maintained !== (operation.maintenanceAttemptId !== undefined) || maintained && (operation.withAgents !== false || typeof operation.maintenanceAttemptId !== "string" || !MAINTENANCE_ATTEMPT_ID.test(operation.maintenanceAttemptId))) invalid(root);
   const broker = value.broker === undefined ? undefined : brokerInputs(value.broker, root);
+  if (value.recovery !== undefined) {
+    const recovery = localRecordObject(value.recovery, ["home", "host"]);
+    if (typeof recovery.home !== "string" || !isAbsolute(recovery.home) || typeof recovery.host !== "string" || !/^[0-9a-f]{64}$/.test(recovery.host)) invalid(root);
+  }
   if (value.root !== root) recordedElsewhere(root, value.root as string, value.space as string, members);
   const { broker: _broker, ...rest } = value as unknown as StackJournal;
   return { ...rest, members, ...(broker ? { broker } : {}), operation: operation as unknown as StackJournal["operation"] };
+}
+
+/** The machine, boot and account that may use journal process pins for a local recovery stop. */
+export function stackRecoveryHost(): string {
+  return createHash("sha256").update(JSON.stringify(processServiceHost())).digest("hex");
 }
 
 function replacementOf(input: unknown, root: string): StackReplacement {
@@ -597,11 +613,11 @@ function resolveReplacement(journal: StackJournal, row: StackMember): StackMembe
   const space = journal.space, rows = serviceInstances(space, row.definition), found = rows[0];
   const target = { root: journal.root, space, operation: journal.operation.id, definition: row.definition, recorded: row.instanceId, replacement: replacement.instanceId, launchRequestId: replacement.launchRequestId, found: rows.map((item) => item.name) };
   if (rows.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a stack definition has several instance records; the journaled replacement was not resolved", { target });
-  if (!found) return { ...member, instanceId: null };
+  if (!found) return { ...member, instanceId: null, process: undefined };
   if (found.name === row.instanceId) return member;
   const value = found.record.value;
   if (replacement.operation === journal.operation.id && replacement.definitionRevision !== undefined && found.name === replacement.instanceId && value.launchRequestId === replacement.launchRequestId && value.definitionRevision === replacement.definitionRevision && serviceDefinitionStore(space).read(row.definition)?.record.revision === replacement.definitionRevision)
-    return { ...member, instanceId: found.name };
+    return { ...member, instanceId: found.name, process: value.process };
   throw new CommandFailure("refused", "CONFLICT", "the definition's instance record is not the replacement this stack journal recorded for its operation; neither was adopted", { target, remedy: `inspect it with \`cotal service status ${row.definition} --instance ${found.name} --space ${space}\`` });
 }
 
@@ -776,7 +792,7 @@ export function releaseStackDefinitions(root: string, space: string): { released
   const isRetired = (row: StackMember) => retired.some((item) => item.definition === row.definition && item.instanceId === row.instanceId);
   if (journal?.journal.space === space && journal.journal.members.some(isRetired)) {
     try {
-      writeStackJournal(root, journal, { ...journal.journal, members: journal.journal.members.map((row) => isRetired(row) ? { ...row, instanceId: null } : row), updatedAt: new Date().toISOString() });
+      writeStackJournal(root, journal, { ...journal.journal, members: journal.journal.members.map((row) => isRetired(row) ? { ...row, instanceId: null, process: undefined } : row), updatedAt: new Date().toISOString() });
     } catch (error) {
       throw new CommandFailure("partial", "OPERATION_PARTIAL", `the stopped stack definitions were removed, but the stack journal still names their instances: ${(error as Error).message}`, { target: { space, root }, changed: released.map((name) => ({ kind: "service-definition", name })), remedy: `inspect ${stackJournalPath(root)} and the service instances it names with \`cotal service --space ${space}\`; it was not reset` });
     }

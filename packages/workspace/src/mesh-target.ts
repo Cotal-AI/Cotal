@@ -473,8 +473,8 @@ function unfinishedStackSpace(root: string): string | undefined {
 }
 
 /** Whether `root`'s stack journal names member instances of which this Cotal home holds no record,
- *  while a manager or delivery record under the root fronts a live process: the stack runs under
- *  another `COTAL_HOME`, whose registration and service records this one cannot see. A journal that
+ *  while a manager or delivery record under the root fronts a live process. The records may have
+ *  been removed, or the stack may use another home. A journal that
  *  names no instance, a stopped stack, or a record that cannot be read answers false. */
 export function stackRunsUnderOtherHome(root: string, journal: { space?: unknown; members?: unknown }): boolean {
   const space = journal.space;
@@ -1049,7 +1049,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // space is left out, so no caller reads this root offline as a prepared space. A stack running
     // under another Cotal home is named before any space this home prepared here, which cannot start.
     const stack = stackRecord(root);
-    if (stack?.home !== undefined) throw new MeshTargetError("not-started", `the stack in ${root} runs under another Cotal home`, { root, ...stack });
+    if (stack?.home !== undefined) throw new MeshTargetError("not-started", `the stack in ${root} has no member records in this Cotal home`, { root, ...stack });
     // A space prepared here and not started has no broker: the default address may be another's.
     const prepared = preparedSpaceAt(root);
     if (prepared) notStarted(prepared.space);

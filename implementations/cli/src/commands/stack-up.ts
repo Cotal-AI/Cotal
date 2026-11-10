@@ -68,7 +68,7 @@ import { prepareKernelServiceStop, prepareProcessService, readServiceLog, remove
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
-import { foreignLocalProcesses, newStackOperation, readStackJournal, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, newStackOperation, readStackJournal, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackRecoveryHost, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { missingStoreWarning, sharedStoreAtStart, sharedStoreWarning, type StoreTenant } from "../lib/store-dir.js";
 import { assertManagerLogin, assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
@@ -319,7 +319,7 @@ export function controllerStackApplies(root: string, space: string, values: Pars
 /** Returns a settled active restore of the recorded stack that was admitted, for the result to name. */
 function stackPreflight(root: string, space: string, recorded: StackJournal | undefined, ownAttempt?: string): string | undefined {
   // Its members' own pidfiles would read as legacy processes under a Cotal home with no record of them.
-  if (recorded && stackRunsUnderOtherHome(root, recorded)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this root's controller stack runs under another Cotal home; this one holds no record of its members, so nothing was started, adopted or replaced", { target: { root, space, cotalHome: homeCotalDir() }, remedy: stackHomeRemedy() });
+  if (recorded && stackRunsUnderOtherHome(root, recorded)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this root's controller stack has missing member records in this Cotal home; nothing was started, adopted or replaced", { target: { root, space, cotalHome: homeCotalDir() }, remedy: stackHomeRemedy() });
   const maintenance: { fenced: boolean; admittedRestore?: string } = recorded ? stackMaintenanceFence(root, recorded) : { fenced: readMaintenanceJournal(root) !== undefined };
   if (maintenance.fenced) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; the controller stack did not substitute an ordinary startup", { target: { root, space } });
   const legacy = foreignLocalProcesses(root, space);
@@ -788,8 +788,11 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const roles = STACK_ROLES.filter((role) => stackRoleApplies(mode, role) && !(role === "manager" && request.noManager));
   // A replacement an earlier `up` journaled is resolved from its own record before it is carried over.
   const recordedMembers = current ? withSettledMembers(current.journal, undefined).members : [];
-  const members: StackMember[] = STACK_ROLES.map((role) => ({ role, definition: STACK_DEFINITION[role], instanceId: recordedMembers.find((row) => row.role === role)?.instanceId ?? null, state: roles.includes(role) ? "planned" : "not-attempted" }));
-  let journal: StackJournal = { schemaVersion: 1, kind: "cotal-stack-controller", root, space, server, mode, ...(recordedBroker ? { broker: recordedBroker } : {}), members, operation: newStackOperation("up"), updatedAt: new Date().toISOString() };
+  const members: StackMember[] = STACK_ROLES.map((role) => {
+    const recorded = recordedMembers.find((row) => row.role === role);
+    return { role, definition: STACK_DEFINITION[role], instanceId: recorded?.instanceId ?? null, process: roles.includes(role) ? undefined : recorded?.process, state: roles.includes(role) ? "planned" : "not-attempted" };
+  });
+  let journal: StackJournal = { schemaVersion: 1, kind: "cotal-stack-controller", root, space, server, mode, recovery: { home: resolve(homeCotalDir()), host: stackRecoveryHost() }, ...(recordedBroker ? { broker: recordedBroker } : {}), members, operation: newStackOperation("up"), updatedAt: new Date().toISOString() };
   // The whole scoped plan is durable before the first effect. A crash after this reads as unsettled
   // until the next whole-stack operation settles it from its members' evidence.
   let snapshot: StackJournalSnapshot = writeStackJournal(root, current ?? recorded, journal);
@@ -819,7 +822,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       process.stderr.write(`Starting ${definition.name}; waiting up to ${Math.round(definition.record.value.readiness.timeoutMs / 1000)}s for its readiness check\n`);
     // A redefined member starts its replacement under the IDs the journal already names.
     const started = await startProcessService(definition, replacement ? { replacement: { instanceId: replacement.instanceId, launchRequestId: replacement.launchRequestId } } : current[0] ? { instance: current[0].name } : {});
-    mark(role, { instanceId: started.instance.name, state: started.noOp ? "reused" : "started", replacement: undefined });
+    mark(role, { instanceId: started.instance.name, state: started.noOp ? "reused" : "started", replacement: undefined, process: started.instance.record.value.process });
     if (!started.noOp) changed.push(instanceProjection(started.instance));
     return started.instance;
   };

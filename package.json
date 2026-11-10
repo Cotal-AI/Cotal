@@ -903,7 +903,7 @@
     "smoke:config-preferences": "pnpm --filter cotal-ai... build && tsx bin/smoke/config-preferences.smoke.ts",
     "smoke:completion-status": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/completion-status.smoke.ts",
     "smoke:space-reads": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/space-reads.smoke.ts",
-    "smoke:space-registration": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/space-registration.smoke.ts",
+    "smoke:space-registration": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/space-registration.smoke.ts && tsx implementations/cli/smoke/stack-lost-records.smoke.ts && tsx implementations/cli/smoke/stack-lost-records-transitions.smoke.ts && tsx implementations/cli/smoke/stack-lost-records-relaunch.smoke.ts && tsx implementations/cli/smoke/stack-lost-records-first-launch.smoke.ts",
     "smoke:space-export": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/space-export.smoke.ts",
     "smoke:target-resolution": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/target-resolution.smoke.ts",
     "smoke:legacy-manager-report": "tsx implementations/cli/smoke/legacy-manager-report.smoke.ts",
