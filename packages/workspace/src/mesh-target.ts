@@ -55,7 +55,8 @@ export interface MeshTarget {
   /** Who registered the mesh this target came from — see {@link MeshEntry.origin}. Absent for a
    *  target resolved off disk rather than a record. Surfaces read it to say the right thing when
    *  the broker is down: an `up` mesh is restarted with `cotal up`, a `manual` one runs somewhere
-   *  this machine does not control (so the local remedy is `cotal meshes rm`, not `cotal up`). */
+   *  this machine does not control (the local remedy is `cotal space forget`). A `catalog` entry
+   *  follows its provider's catalog and is removed by `cotal sync` when no longer listed. */
   origin?: MeshEntry["origin"];
   /** For a broker address `--server` supplied: the address this machine records for the target's
    *  space, when it records one for this root. A probe of another address says nothing about that
