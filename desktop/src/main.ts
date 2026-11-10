@@ -2,6 +2,7 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { approvalUrl, connectionView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, type Frame, type Request } from "./model";
+import { icon, type Icon } from "./icons";
 import "./style.css";
 
 const el = <T extends HTMLElement>(id: string): T => {
@@ -9,7 +10,12 @@ const el = <T extends HTMLElement>(id: string): T => {
   if (!node) throw new Error(`Missing element ${id}`);
   return node as T;
 };
-const text = (id: string, value: string) => { el(id).textContent = value; };
+const text = (id: string, value: string) => { if (el(id).textContent !== value) el(id).textContent = value; };
+function setIcon(node: Element, name: Icon): void {
+  if (node.getAttribute("data-icon") === name) return;
+  node.setAttribute("data-icon", name); node.replaceChildren(icon(name));
+}
+setIcon(el("machine-icon"), "computer");
 type Stage = "welcome" | "sign-in" | "space" | "connect" | "finished";
 let stage: Stage = "welcome";
 let ready = false;
@@ -36,7 +42,7 @@ let applications: readonly string[] = [];
 const selectedSpace = () => el<HTMLSelectElement>("space").value;
 const spaceLabel = () => el<HTMLSelectElement>("space").selectedOptions[0]?.textContent ?? selectedSpace();
 const connected = () => !upgradeNeeded && connection?.space === selectedSpace() && connection?.state === "launch-ready";
-const welcome = "Connect this computer to launch agent applications from your space's dashboard. People authorized in the space can launch them as your operating-system user, with those applications' own sign-in and file permissions.";
+const welcome = "Launch agent applications from your space’s dashboard. People authorized in that space can launch them as your operating-system user, with your applications’ sign-in and file permissions.";
 const progressNames = ["Background service", "Sign-in", "Space", "Agent applications", "Ready"];
 type ProgressState = "waiting" | "running" | "done" | "failed";
 let progress: ProgressState[] = progressNames.map(() => "waiting");
@@ -70,7 +76,9 @@ function refusal(error: unknown): void {
 function renderProgress(): void {
   el("setup-progress").replaceChildren(...progressNames.map((name, index) => {
     const li = document.createElement("li"); li.dataset.state = progress[index];
-    const mark = document.createElement("span"); mark.className = "progress-mark"; mark.textContent = progress[index] === "done" ? "✓" : progress[index] === "failed" ? "!" : String(index + 1);
+    const mark = document.createElement("span"); mark.className = "progress-mark";
+    if (progress[index] === "waiting") mark.textContent = String(index + 1);
+    else setIcon(mark, progress[index] === "done" ? "check" : progress[index] === "failed" ? "warning" : "spinner");
     const label = document.createElement("span"); label.textContent = name;
     const status = document.createElement("small"); status.textContent = progress[index][0].toUpperCase() + progress[index].slice(1);
     li.append(mark, label, status); return li;
@@ -114,16 +122,18 @@ function showStage(next: Stage, focus = false): void {
   el("login-actions").hidden = loginActive;
   el("service-explanation").hidden = loginActive;
   text("step-caption", finished ? "Ready for your next agent" : `Step ${["welcome", "sign-in", "space", "connect", "finished"].indexOf(next) + 1} of 5`);
+  el("step-caption").hidden = finished;
+  if (finished) el("details").hidden = true;
   let title: string, description: string;
   if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
-  else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Your browser handles sign-in. Return here after you approve this computer."; }
+  else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
   else if (next === "space") { title = "Choose your space"; description = "A space is where your team and agent applications work together. Choose which one can use this computer."; }
   else if (finished) { title = connectionView("launch-ready").title; description = connectionView("launch-ready").description; }
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Connect this computer to make it available to your space."; }
   text("connection-title", title); text("connection-description", description);
-  text("connection-icon", finished ? "✓" : next === "welcome" ? "◉" : "◌");
+  setIcon(el("connection-icon"), el("notice").classList.contains("error") ? "warning" : finished ? "check" : next === "welcome" ? "computer" : next === "sign-in" ? "browser" : next === "space" ? "space" : setupActive ? "spinner" : "connect");
   text("selected-space", `Space: ${spaceLabel()}`); text("connected-space", `Connected to ${spaceLabel()}`);
   text("login", linked || customHost || next === "sign-in" ? "Continue in browser" : "Continue with Cotal Cloud");
   el("other-host").hidden = customHost || linked;
@@ -135,8 +145,9 @@ function showStage(next: Stage, focus = false): void {
     const done = index < active || finished;
     item.dataset.state = done ? "done" : index === active ? "current" : "upcoming";
     if (index === active) item.setAttribute("aria-current", "step"); else item.removeAttribute("aria-current");
-    item.querySelector(".step-marker")!.textContent = done ? "✓" : String(index + 1);
-    item.querySelector("small")!.textContent = done ? "Done" : index === active ? "Current step" : "Upcoming";
+    const marker = item.querySelector(".step-marker")!;
+    if (done) setIcon(marker, "check");
+    else if (marker.textContent !== String(index + 1)) { marker.removeAttribute("data-icon"); marker.textContent = String(index + 1); }
   }
   if (focus) el("connection-title").focus();
   buttons();
@@ -152,6 +163,12 @@ function buttons(): void {
   el<HTMLButtonElement>("choose-space").disabled = busy || !selectedSpace();
   for (const id of ["space", "change-space", "another-space", "sign-in-again", "retry-login", "refresh", "autostart"]) (el(id) as HTMLButtonElement).disabled = busy;
 }
+function showApplications(manager: unknown): void {
+  const names: Record<string, string> = { claude: "Claude Code", codex: "Codex", hermes: "Hermes", jcode: "Jcode", opencode: "OpenCode", pi: "pi" };
+  const connectors = (manager as { connectors?: { agent?: string; state?: string }[] })?.connectors ?? [];
+  const available = connectors.filter(c => c.state === "available" && typeof c.agent === "string").map(c => names[c.agent!] ?? c.agent!);
+  text("connected-applications", available.length ? `Available to launch: ${new Intl.ListFormat("en").format(available)}.` : "Agent applications are ready to launch from your dashboard.");
+}
 async function request(body: Request): Promise<Record<string, unknown>> {
   const events = new Channel<Frame>();
   events.onmessage = (frame) => {
@@ -163,7 +180,7 @@ async function request(body: Request): Promise<Record<string, unknown>> {
       const expiry = new Date(String(frame.prompt.expiresAt ?? ""));
       text("approval-expiry", Number.isNaN(expiry.valueOf()) ? "" : `Code expires at ${expiry.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`);
       el("approval").hidden = false;
-      notice("Waiting for you to approve sign-in in your browser.");
+      notice("Waiting for your browser.");
       if (loginActive) showStage("sign-in");
       void invoke("open_browser", { url: approval }).catch(refusal);
     } catch (error) { refusal(error); }
@@ -198,7 +215,7 @@ async function refresh(): Promise<void> {
     }
     if (space) {
       const manager = Array.isArray(status.managers) ? status.managers.find((item) => item.space === space) : undefined;
-      if (launchReady(manager)) { instances.set(space, manager.instanceId); state("launch-ready", space); buttons(); return; }
+      if (launchReady(manager)) { instances.set(space, manager.instanceId); showApplications(manager); state("launch-ready", space); buttons(); return; }
       instances.delete(space);
       const service = await request({ op: "service-status", space });
       if (!current()) return;
@@ -287,7 +304,7 @@ el("connect").addEventListener("click", () => void action(async () => {
     const result = await request({ op: "setup", space, idp });
     if (result.launchReady !== true || !launchReady(result.manager)) throw new Error("Setup did not confirm that this computer can launch agent applications.");
     applicationRefusals.delete(space); upgradeNeeded = false;
-    instances.set(space, (result.manager as { instanceId: string }).instanceId);
+    instances.set(space, (result.manager as { instanceId: string }).instanceId); showApplications(result.manager);
     progress = progressNames.map(() => "done"); renderProgress();
     completedSetup = true;
     state("launch-ready", space); notice(""); showStage("finished", true);
