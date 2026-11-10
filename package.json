@@ -10,6 +10,7 @@
   },
   "scripts": {
     "smoke:server-intent:live": "tsx implementations/cli/smoke/server-intent-live.smoke.ts",
+    "smoke:local-write-failure": "tsx bin/smoke/local-write-failure.smoke.ts",
     "smoke:no-manager-credential-warning:live": "tsx implementations/cli/smoke/no-manager-credential-warning-live.smoke.ts",
     "typecheck": "pnpm build && pnpm -r typecheck",
     "build": "pnpm -r build",

@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { listSpaces, token } from "@cotal-ai/core";
+import { agentFilePath, listSpaces, token } from "@cotal-ai/core";
 import {
   CommandFailure,
   authDir,
@@ -22,6 +22,7 @@ import {
   isMeshRegistryError,
   keepsRegistration,
   loadMeshes,
+  localWriteFailure,
   pinnedFetch,
   PinnedFetchRefused,
   preparedRecordSpace,
@@ -427,7 +428,12 @@ export async function spaceCreate(rest: readonly string[], rootFlag: string | un
   const adoptedFrom = adopt ? adoptStackJournal(root, name) : undefined;
   const prepared = recordLocalSpace(name, root);
   const written = [...(adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : []), { what: "prepared space", path: prepared.file }];
-  const persona = seedDefaultPersona(root);
+  let persona: ReturnType<typeof seedDefaultPersona>;
+  try { persona = seedDefaultPersona(root); }
+  catch (error) {
+    const path = agentFilePath(root, "default");
+    throw localWriteFailure(error, path, { target: { space: name, root }, changed: written }) ?? error;
+  }
   if (persona) written.push(persona);
   const result: SpaceCreated = { kind: "space-created", space: name, root, preparedAt: prepared.preparedAt, current: getCurrent() === name, written };
   writeResult(presentation, { command: "space", target: { space: name }, result }, createdView);
@@ -541,6 +547,10 @@ export function recordLocalSpace(name: string, root: string): { file: string; pr
   const preparedAt = new Date().toISOString();
   try { return { file: recordPreparedSpace({ space: name, root, ts: preparedAt }), preparedAt }; }
   catch (error) {
+    if (isCommandFailure(error) && error.code === "TARGET_UNAVAILABLE") {
+      if (made !== undefined) rmdirSync(dir);
+      throw error;
+    }
     if (!unwritable(error)) throw error;
     // The empty `.cotal` this call made goes too, so the refusal leaves the root as it was.
     if (made !== undefined) rmdirSync(dir);

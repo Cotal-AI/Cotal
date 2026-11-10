@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { linkSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, linkSync, mkdirSync, openSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
 
@@ -181,13 +181,17 @@ function inspectLockSnapshot(path: string): LockInspection & { readonly ino?: nu
  *  success, false if the path already exists. */
 function publishAtomic(path: string, content: string): boolean {
   const tmp = `${path}.${randomBytes(8).toString("hex")}.tmp`;
-  writeFileSync(tmp, content, { mode: 0o600, flag: "wx" });
+  // Exclusive open precedes cleanup, so an existing temp never becomes ours to remove.
+  const fd = openSync(tmp, "wx", 0o600);
   try {
-    linkSync(tmp, path);
-    return true;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
-    throw e;
+    try { writeFileSync(fd, content); } finally { closeSync(fd); }
+    try {
+      linkSync(tmp, path);
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw e;
+    }
   } finally {
     try {
       unlinkSync(tmp);

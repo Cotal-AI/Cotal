@@ -2,6 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync } from "no
 import { dirname, join } from "node:path";
 import { acquireLock, globalConfigDir, token, utf16Problem, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, type OutputWarning } from "./output.js";
+import { localWriteFailure } from "./local-write.js";
 import { localRecordAccess, protectedLocalDirectory, shellPath } from "./protected-records.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
 import { chatNameProblem } from "./chat-name.js";
@@ -320,6 +321,8 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
     lock = acquireLock(`${preferencesPath()}.lock`, { label: "a preferences write", waitMs: 10_000 });
   } catch (e) {
     // Nothing is written before the lock is held, so a folder that cannot be written is a definite refusal.
+    const failure = localWriteFailure(e, preferencesPath());
+    if (failure) throw failure;
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "EACCES" || code === "EPERM" || code === "EROFS")
       throw new CommandFailure("refused", "PERMISSION_DENIED", `the preferences folder ${dir} cannot be ${existsSync(dir) ? "written" : "created"} (${code}); nothing was changed`, {
@@ -350,6 +353,8 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
     cached = { path: preferencesPath(), prefs: next };
     const oldMode = old ? old.mode & 0o777 : undefined;
     return { changed: true, revision: next.revision, ...(oldMode !== undefined && oldMode !== 0o600 ? { replacedMode: oldMode } : {}) };
+  } catch (error) {
+    throw localWriteFailure(error, preferencesPath()) ?? error;
   } finally {
     lock.release();
   }

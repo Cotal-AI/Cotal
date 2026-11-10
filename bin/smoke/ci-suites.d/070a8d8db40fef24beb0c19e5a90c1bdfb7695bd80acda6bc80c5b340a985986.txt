@@ -1,0 +1,2 @@
+# Local capacity failures must name the file, preserve saved data and offer a next step.
+smoke:local-write-failure
