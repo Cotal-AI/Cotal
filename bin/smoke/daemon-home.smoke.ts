@@ -360,6 +360,8 @@ try {
       rmSync(blocked);
       rmSync(corrupt);
       slugs = ["catalog-kept", "catalog-added"];
+      const recovered = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 duplicate fixture starts from a fully applied healthy catalog", recovered.status === 0 && recovered.doc.result?.refresh === "complete" && recovered.doc.result?.unreadable === 0, recovered.doc);
       const canonical = meshFile("catalog-kept");
       const legacy = join(home, "meshes", "catalog-kept.json");
       const keptBytes = readFileSync(canonical, "utf8");
