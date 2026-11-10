@@ -11,7 +11,6 @@ test("the desktop terminal workflow requests registration before connecting", ()
     "cotal daemon start",
     "cotal daemon login --idp <url>",
     "cotal daemon spaces --refresh",
-    "cotal daemon register --space <space>",
-    "cotal daemon service-connect --space <space>",
+    "cotal daemon setup --space <space> --idp <url>",
   ]);
 });

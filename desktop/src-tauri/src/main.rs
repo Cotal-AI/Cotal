@@ -19,7 +19,7 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
         .ok_or("the application has no directory")?;
     let node = directory.join(format!("{}.exe", cotal_desktop::NODE_SIDECAR));
     let runtime = directory.join("runtime");
-    let entry = runtime.join("dist").join("cotal.js");
+    let entry = runtime.join("dist").join("daemon-native.js");
     if !node.is_file() || !entry.is_file() || !runtime.join("desktop-runtime.json").is_file() {
         return Err("the complete packaged stock runtime is required".into());
     }

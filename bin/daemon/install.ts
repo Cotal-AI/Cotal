@@ -93,7 +93,7 @@ function unitValue(value: string, exec = false): string {
 
 /** The invocation's own `PATH`, pinned absolute. A relative or empty entry would resolve against
  *  whichever directory the unit happens to start in, so it refuses instead. */
-function pinnedPath(value = process.env.PATH ?? "", grammar: Pick<typeof posix, "delimiter" | "isAbsolute"> = { delimiter, isAbsolute }): string {
+export function pinnedPath(value = process.env.PATH ?? "", grammar: Pick<typeof posix, "delimiter" | "isAbsolute"> = { delimiter, isAbsolute }): string {
   const entries = value.split(grammar.delimiter).filter((entry) => entry !== "");
   if (!entries.length || entries.some((entry) => !grammar.isAbsolute(entry))) throw new CommandFailure("refused", "UNSUPPORTED", "the daemon unit needs an absolute, pinned PATH; a relative or empty entry was not inherited");
   return entries.join(grammar.delimiter);
@@ -149,6 +149,7 @@ export function daemonServeArgv(daemonHome: string | undefined): string[] {
     const launcher = join(dirname(cli[0]!), "cotal-desktop.exe");
     if (!existsSync(launcher)) throw new CommandFailure("refused", "UNSUPPORTED", "the packaged desktop daemon launcher is missing; no console-program task was substituted");
     assertScheduledEntry(join(dirname(entry), "cotal.js"));
+    assertScheduledEntry(join(dirname(entry), "daemon-native.js"));
     return [launcher, "--daemon", ...(daemonHome !== undefined ? ["--daemon-home", daemonHome] : [])];
   }
   if (process.platform === "win32") {

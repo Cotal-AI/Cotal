@@ -72,7 +72,7 @@ async fn daemon_request(
                     let frame: Value = serde_json::from_slice(&line).map_err(|_| "The daemon client returned an invalid JSON frame.")?;
                     if frame.get("v").and_then(Value::as_u64) != Some(1) { return Err("The daemon client protocol is unsupported.".into()); }
                     match frame.get("event").and_then(Value::as_str) {
-                        Some("login-prompt") => on_event.send(frame).map_err(|_| "The application closed its approval view.")?,
+                        Some("login-prompt" | "setup-progress") => on_event.send(frame).map_err(|_| "The application closed its progress view.")?,
                         Some("result") if result.is_none() => result = Some(frame),
                         _ => return Err("The daemon client returned an unexpected frame.".into()),
                     }

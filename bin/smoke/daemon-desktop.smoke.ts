@@ -137,6 +137,10 @@ try {
   const skew = await request({ op: "register", space: "test" });
   check("app refuses a mutation against another daemon version", skew.ok === false && skew.error.code === "VERSION_MISMATCH");
   check("version refusal sends no registration", daemon.counters.registersAnswered === 0);
+  const savedAcrossUpgrade = await request({ op: "spaces", refresh: false });
+  check("a replacement app can list saved spaces without mutating a compatible old daemon", savedAcrossUpgrade.ok === true && Array.isArray(savedAcrossUpgrade.result.spaces));
+  const refreshAcrossUpgrade = await request({ op: "spaces", refresh: true });
+  check("catalog refresh remains refused across mismatched versions", refreshAcrossUpgrade.ok === false && refreshAcrossUpgrade.error.code === "VERSION_MISMATCH");
   console.log(`daemon-desktop: ${checks} passed, 0 failed (native Linux IPC; no service install, login or broker)`);
 } finally {
   await daemon?.close();

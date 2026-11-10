@@ -14,16 +14,17 @@
       <section class="connection-card" aria-labelledby="connection-title">
         <div class="connection-heading"><span id="connection-icon" class="connection-icon" aria-hidden="true">◌</span><div><h2 id="connection-title">Checking your connection</h2><p id="connection-description">A running daemon is not yet a connected machine.</p></div><button id="refresh" class="button secondary" type="button">Refresh</button></div>
         <div id="notice" role="status" aria-live="polite" hidden></div>
+        <ol id="setup-progress" aria-label="Setup progress" aria-live="polite" hidden></ol>
         <div id="install-panel" hidden><p>The background service keeps your connection running when you close this window. It runs as your operating-system user, not as an administrator.</p><button id="install" class="button primary" type="button">Set up background service</button></div>
       </section>
       <section class="panel" aria-labelledby="sign-in-title"><div class="section-heading"><span class="step">1</span><h2 id="sign-in-title">Sign in</h2></div><p class="muted">Approve in your browser. Your login stays in the daemon, never in this app.</p>
         <form id="login-form"><label for="provider">Cotal sign-in provider</label><div class="input-row"><input id="provider" type="url" placeholder="https://your-cotal-host/api/auth" required autocomplete="url"><button id="login" class="button secondary" type="submit">Continue in browser</button></div></form>
         <div id="approval" class="approval" hidden><div><p>Enter this code if your browser asks</p><strong id="approval-code"></strong><p class="muted" id="approval-expiry"></p></div><button id="open-approval" class="button primary" type="button">Open approval page</button></div>
       </section>
-      <section class="panel" aria-labelledby="space-title"><div class="section-heading"><span class="step">2</span><h2 id="space-title">Connect to a space</h2><button id="sync" class="text-button" type="button">Refresh spaces</button></div><p class="muted">Choose a signed-in space. Its owner approves this machine before it connects.</p>
+      <section class="panel" aria-labelledby="space-title"><div class="section-heading"><span class="step">2</span><h2 id="space-title">Connect to a space</h2><button id="sync" class="text-button" type="button">Refresh spaces</button></div><p class="muted">Choose a signed-in space to launch agents on this computer from the dashboard.</p>
         <label for="space">Space</label><select id="space"><option value="">No spaces loaded</option></select>
-        <div class="actions"><button id="connect" class="button primary" type="button" disabled>Request connection</button><button id="disconnect" class="button secondary" type="button" disabled>Disconnect from space</button></div>
-        <p class="footnote">Connecting does not enable remote code execution or grant access to your files. Those permissions are separate.</p>
+        <div class="actions"><button id="connect" class="button primary" type="button" disabled>Connect this computer</button><button id="disconnect" class="button secondary" type="button" disabled>Disconnect from space</button></div>
+        <p class="footnote">Connecting hosts a Manager. Authorized people in this space can launch agent applications as your operating-system user. Agent applications keep their own sign-in and file permissions.</p>
       </section>
       <section class="panel preferences"><div><h2>Open at login</h2><p class="muted">Show Cotal in your menu bar or system tray after you sign in.</p></div><label class="switch"><input id="autostart" type="checkbox" aria-label="Open Cotal at login"><span></span></label></section>
       <footer><span>Closing this window leaves the daemon running.</span><button id="dashboard" class="text-button" type="button">Open dashboard ↗</button></footer>
