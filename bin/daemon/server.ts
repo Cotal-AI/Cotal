@@ -29,7 +29,7 @@ import { registerDaemon } from "./register.js";
 import { createServiceConnections } from "./service.js";
 import { homeCotalDir } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
-import { withIdpSessionDir } from "@cotal-ai/auth";
+import { idpTimeoutMs, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
@@ -107,6 +107,8 @@ function listen(server: Server, path: string): Promise<void> {
 
 export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
   assertSupportedPlatform();
+  // Refuse local IdP configuration before publishing readiness or resuming any connection.
+  idpTimeoutMs();
   const uid = process.platform === "win32" ? undefined : (opts.uid ?? process.geteuid!());
   const { paths } = opts;
   // The lifetime lock comes before any endpoint path, for both daemon forms. A second serve for the

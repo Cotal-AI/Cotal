@@ -752,6 +752,11 @@ directory from `systemctl --user show-environment`. When neither variable names 
 `XDG_RUNTIME_DIR` is not the user manager's runtime directory, it refuses `DEPENDENCY_UNAVAILABLE`
 and names that command. Each refusal's Next says to run it from a logged-in session.
 
+`serve` validates `COTAL_IDP_TIMEOUT_MS` in its own environment before opening the endpoint or
+resuming connections. The value must be whole milliseconds from `1` to `2147483647`.
+A malformed value refuses startup with `USAGE_INVALID` and names the setting and supported range.
+Correct it before starting the daemon again. No sign-in request or session write occurs.
+
 `serve` runs in the foreground and prints one ready line, `daemon ready at <socket>`, on stdout once
 the endpoint is bound and checked. Newly installed native jobs carry a launch marker. Automatic
 generation activation requires that marker and a verified recorded source from the same installation.

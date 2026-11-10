@@ -78,6 +78,8 @@ export {
   requireIdpSession,
   normalizeIdpUrl,
   probeIdpJwks,
+  idpTimeoutMs,
+  IdpConfigurationError,
   IdpLoginCancelled,
   IdpUnreachableError,
   IdpSessionRejectedError,

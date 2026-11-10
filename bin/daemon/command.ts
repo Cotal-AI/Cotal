@@ -26,7 +26,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, homeCotalDir, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, spaceFlag, writeResult, type Report } from "@cotal-ai/workspace";
-import { normalizeIdpUrl } from "@cotal-ai/auth";
+import { IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
@@ -112,6 +112,7 @@ const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVA
 };
 
 function asFailure(e: unknown): unknown {
+  if (e instanceof IdpConfigurationError) return new CommandFailure("refused", "USAGE_INVALID", e.message, { remedy: "correct COTAL_IDP_TIMEOUT_MS in the daemon environment before starting it again" });
   if (!(e instanceof EndpointRefusal)) return e;
   const r = REFUSAL[e.code];
   const remedy = e.remedy ?? r.remedy;
