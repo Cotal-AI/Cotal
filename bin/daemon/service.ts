@@ -163,7 +163,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
 
   const result = (space: string): ServiceConnectionResult => {
     const l = live.get(space);
-    const state = l?.state ?? "disconnected";
+    const state = l?.state ?? (existsSync(daemonRegisterFile(space, home)) ? "disconnected" : "not-requested");
     return { space, state, message: SENTENCE[state], ...(l?.instanceId ? { instanceId: l.instanceId } : {}),
       ...(state === "ended" && l?.reason ? { reason: l.reason } : {}) };
   };

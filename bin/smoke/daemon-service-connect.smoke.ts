@@ -31,7 +31,8 @@
  *  C10 no IdP session, JWT, access bearer or renewal proof in any frame or CLI output;
  *  C11 the CLI through the composition root, after C9's restart: `service-status` is not connected
  *      (state is per daemon process), `service-connect` for the revoked registration refuses and never
- *      connects, `service-connect` with no register request refuses TARGET_NOT_FOUND, and
+ *      connects, status without a register request consistently refuses TARGET_NOT_FOUND before
+ *      and after a connect attempt, explicit disconnect and daemon restart, and
  *      `service-disconnect` answers disconnected;
  *  C12 a connection held past two 60 s access-bearer lifetimes stays connected or connecting (never
  *      unavailable or ended), is connected for at least 80% of 1 s samples and at the end, and the
@@ -423,7 +424,9 @@ try {
   let assignmentDigest = "";
   try {
     await cell("C1 connect before approval is approval-pending, never connected", async () => {
+      check("C1 before registration status is not-requested", stateOf(await statusS(ON)) === "not-requested");
       await ask(paths.socket, { op: "register", space: ON });
+      check("C1 a saved register request without a connection is disconnected", stateOf(await statusS(ON)) === "disconnected");
       const r = await connectS(ON);
       check("C1 approval-pending", r.ok === true && stateOf(r) === "approval-pending", r);
       check("C1 no renewal record written for this space", !filesUnder(daemonDir).some((p) => p.includes("service-renewal")), filesUnder(daemonDir));
@@ -1684,10 +1687,28 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       check("C11 after a daemon restart `service-status` for the revoked registration is not connected, exit 2", st.status === 2 && st.doc!.result === null && st.doc!.error?.code !== undefined && st.doc!.error.code !== "OK", { status: st.status, out: st.out.slice(0, 400) });
       const re = await cli(["service-connect", "--space", ON]);
       check("C11 `service-connect` for the revoked registration refuses (exit 2) and never connects", re.status === 2 && re.doc!.outcome === "refused" && re.doc!.result === null, { status: re.status, out: re.out.slice(0, 400) });
+      const missing = "no-such-space";
+      const notRequested = async (space: string, stage: string) => {
+        const status = await cli(["service-status", "--space", space]);
+        check(`C11 ${space} status ${stage} refuses TARGET_NOT_FOUND / NOT_REQUESTED`, status.status === 2 && status.doc!.error?.code === "TARGET_NOT_FOUND" && status.doc!.error?.cause?.code === "NOT_REQUESTED", { status: status.status, out: status.out.slice(0, 400) });
+      };
+      await notRequested(missing, "before any connect");
+      const absent = await cli(["service-connect", "--space", missing]);
+      check("C11 unknown space connect refuses NOT_REQUESTED", absent.status === 2 && absent.doc!.error?.cause?.code === "NOT_REQUESTED", absent.out.slice(0, 400));
+      await notRequested(missing, "after a failed connect");
+      const disconnectMissing = await cli(["service-disconnect", "--space", missing]);
+      check("C11 disconnecting an unknown space still succeeds", disconnectMissing.status === 0 && disconnectMissing.doc!.result?.state === "disconnected", disconnectMissing.out.slice(0, 400));
+      await notRequested(missing, "after explicit disconnect");
+      await d.close();
+      d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      await notRequested(missing, "after daemon restart");
+      await notRequested(OFF, "for a listed space with no register request");
       const off = await cli(["service-connect", "--space", OFF]);
       check("C11 `service-connect` with no register request refuses TARGET_NOT_FOUND (exit 2)", off.status === 2 && off.doc!.error?.code === "TARGET_NOT_FOUND" && off.doc!.error?.cause?.code === "NOT_REQUESTED", { status: off.status, out: off.out.slice(0, 400) });
+      await notRequested(OFF, "after a failed connect");
       const dis = await cli(["service-disconnect", "--space", OFF]);
       check("C11 `cotal daemon service-disconnect` answers disconnected (exit 0)", dis.status === 0 && dis.doc!.result?.state === "disconnected", { status: dis.status, out: dis.out.slice(0, 400) });
+      await notRequested(OFF, "after explicit disconnect");
     });
 
     await cell("C10 nothing secret crosses the endpoint or the CLI", async () => {

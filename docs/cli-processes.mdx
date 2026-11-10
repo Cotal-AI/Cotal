@@ -973,7 +973,10 @@ never reached connected records nothing, so a space that refuses is not retried 
 The resume runs after the local endpoint is published, so a space that is slow or unreachable does
 not delay `status`, and `service-status` reports what each one actually reached. An ended
 connection is remembered only until the daemon stops.
-`service-status` reads the daemon's current answer without contacting the space. `service-disconnect`
+`service-status` reads the daemon's current answer without contacting the space. Without a local
+register request it reports `TARGET_NOT_FOUND` (`NOT_REQUESTED`), including before any connect
+attempt and after a restart. With a register request but no connection attempt in this process,
+it reports `disconnected` until a connection starts. `service-disconnect`
 drains the responder and closes the connection, removes that space's resume record so the
 disconnect outlives a restart, and stopping the daemon closes all of them without removing a record.
 
