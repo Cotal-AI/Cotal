@@ -385,14 +385,15 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   let closed: Promise<void> | undefined;
   const close = (): Promise<void> => {
     closed ??= (async () => {
-      // A resume still in flight is awaited first, so a stop never races a connect it started.
-      await resumed;
+      // Cancel network work before waiting for startup resume to settle.
+      const servicesClosed = services.close();
       // An in-flight sign-in is cancelled through the stock fence before the listener goes away.
       await login.close();
       await managers.close();
       await managersResumed;
       // Every service connection, its endpoint and its renewal source close before the socket does.
-      await services.close();
+      await servicesClosed;
+      await resumed;
       for (const s of sockets) s.destroy();
       await endpoint.close();
       // The lock is released only once this daemon's own endpoint is gone. If its socket is still

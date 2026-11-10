@@ -73,7 +73,8 @@ const SENTENCE = {
 
 /** Check readiness for `space`. `home` is the machine home where the stock session and the daemon's
  *  own state live. */
-export async function connectCheck(space: string, home: string = homeCotalDir()): Promise<ConnectCheckResult> {
+export async function connectCheck(space: string, home: string = homeCotalDir(), signal?: AbortSignal): Promise<ConnectCheckResult> {
+  signal?.throwIfAborted();
   const entry = findMesh(space);
   if (!entry) return { outcome: "not-registered", space, message: SENTENCE["not-registered"] };
   const ua = entry.mode === "user" ? entry.userAuth : undefined;
@@ -85,7 +86,7 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
   // The cached handle's presence and advisory expiry do not prove the IdP still accepts it.
   // Reuse the stock bounded JWT cache, so readiness and registration agree on revocation.
   try {
-    const jwt = await fetchIdpJwt(ua.idp.url, session.token);
+    const jwt = await fetchIdpJwt(ua.idp.url, session.token, signal);
     const header = decodeProtectedHeader(jwt), claims = decodeJwt(jwt);
     const signature = jwt.split(".")[2] ?? "";
     const now = Date.now() / 1000;
@@ -107,7 +108,7 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
   try {
     const provider = resolveAuthProvider();
     if (!provider.serviceEndpointInfo) return { outcome: "unsupported-by-space", space, message: SENTENCE["unsupported-by-space"] };
-    const info = await provider.serviceEndpointInfo({ store: workspaceSecretStore(entry.root), dir: userAuthStateDir(entry.root, space, { readOnly: true }), space });
+    const info = await provider.serviceEndpointInfo({ store: workspaceSecretStore(entry.root), dir: userAuthStateDir(entry.root, space, { readOnly: true }), space, signal });
     accountPublicKey = info.accountPublicKey;
   } catch (e) {
     const status = (e as { httpStatus?: number }).httpStatus;
@@ -117,6 +118,7 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
     return { outcome: "refused", space, message: SENTENCE.refused };
   }
 
+  signal?.throwIfAborted();
   let identity: DaemonServiceIdentity;
   try {
     identity = claimIdentityRecord(daemonIdentityFile(space, home), "daemon service identity", parseIdentity(space), () => ({

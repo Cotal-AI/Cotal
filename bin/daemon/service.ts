@@ -120,11 +120,13 @@ async function readyRequestId(store: SecretStore, witness: ServiceRegistrationWi
 }
 
 interface Live {
+  abort: AbortController;
   state: ServiceConnectionState;
   reason?: string;
   remedy?: string;
   instanceId?: string;
   source?: ServiceEndpointRenewal;
+  sourceClosing?: Promise<void>;
   endpoint?: CotalEndpoint;
   serving: Set<EpServeHandle>;
   flush?: () => Promise<void>;
@@ -166,6 +168,8 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   const live = new Map<string, Live>();
   const queue = new Map<string, Promise<unknown>>();
   const retries = new Map<string, ReturnType<typeof setTimeout>>();
+  const disconnecting = new Set<string>();
+  const registering = new Map<string, AbortController>();
   let closed = false;
 
   const result = (space: string): ServiceConnectionResult => {
@@ -187,15 +191,24 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   /** State changes from endpoint callbacks between awaits; read it fresh. */
   const stateOf = (l: Live): ServiceConnectionState => l.state;
 
+  function cancel(l: Live): void {
+    l.abort.abort();
+    // Source close aborts its own credential pull. Retain that first close promise, because
+    // a second close may return before the first one's pull has settled.
+    l.sourceClosing ??= l.source?.close().catch(() => {});
+  }
+
   async function teardown(l: Live): Promise<void> {
     l.closing ??= (async () => {
-      const ep = l.endpoint, src = l.source;
+      const ep = l.endpoint;
+      cancel(l);
       l.endpoint = undefined; l.source = undefined; l.brokerUp = false; l.flush = undefined;
       const drains = [...l.serving].map((handle) => handle.stop().catch(() => {}));
       await ep?.stop().catch(() => {});
       await Promise.all(drains);
       l.serving.clear();
-      await src?.close().catch(() => {});
+      await l.sourceClosing;
+      await l.readying;
     })();
     await l.closing;
     l.closing = undefined;
@@ -204,10 +217,13 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   /** Ask the space to accept this witness as ready, on a fresh access bearer from the source, under
    *  one persisted ready request per witness. Sets `connected` only if the broker is still up. */
   async function ready(l: Live, space: string, witness: ServiceRegistrationWitness, store: SecretStore, dir: string): Promise<void> {
+    const signal = l.abort.signal;
+    signal.throwIfAborted();
     const provider = resolveAuthProvider();
     const flush = l.flush;
     if (!flush) { l.state = "unavailable"; return; }
     await flush();
+    signal.throwIfAborted();
     const requestId = await readyRequestId(store, witness);
     if (requestId === undefined) { l.state = "local-state-error"; return; }
     let token: string;
@@ -216,7 +232,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     try {
       answer = (await provider.serviceEndpointAuthority!({ store, dir, request: { v: 1, kind: "service-endpoint-authority", operation: "ready", requestId,
         space, accountPublicKey: witness.accountPublicKey, endpoint: witness.endpoint, instanceId: witness.instanceId, witness },
-        proof: { kind: "service-access", token } })).result;
+        proof: { kind: "service-access", token }, signal })).result;
     } catch (e) {
       if (!(e instanceof ServiceAuthorityTransportError)) { /* a local failure: no claim */ }
       l.state = "unavailable";
@@ -230,7 +246,8 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     if (answer.state === "denied" && answer.reason === "rate-limited") { l.state = "unavailable"; return; }
     l.state = "ended";
     l.reason = answer.state === "denied" && ENDED.has(answer.reason) ? answer.reason : "unrecognized";
-    await teardown(l);
+    // Do not await teardown from inside the ready promise it must settle.
+    setImmediate(() => void teardown(l));
   }
 
   /** Start a `ready` for the current broker connection, at most one at a time. Never rejects: a
@@ -261,21 +278,22 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   }
 
   async function connectInner(space: string): Promise<ServiceConnectionResult> {
-    if (closed) return { space, state: "disconnected", message: SENTENCE.disconnected };
+    if (closed || disconnecting.has(space)) return { space, state: "disconnected", message: SENTENCE.disconnected };
     const current = live.get(space);
     if (current?.state === "ended") return result(space);
     if (current?.endpoint && current.state === "connected") return result(space);
     if (current) await teardown(current);
-    const l: Live = current ?? { state: "connecting", brokerUp: false, serving: new Set() };
+    if (closed || disconnecting.has(space)) return { space, state: "disconnected", message: SENTENCE.disconnected };
     // Keep the last dependency failure visible while retrying it, until a new outcome is known.
-    if (l.state !== "unavailable") l.state = "connecting";
-    l.reason = undefined; l.remedy = undefined;
+    const l: Live = { abort: new AbortController(), state: current?.state === "unavailable" ? "unavailable" : "connecting", brokerUp: false, serving: new Set() };
+    const signal = l.abort.signal;
     live.set(space, l);
 
     if (!existsSync(daemonRegisterFile(space, home))) { l.state = "not-requested"; return result(space); }
     const entry = findMesh(space);
     if (!entry || entry.mode !== "user" || !entry.userAuth) { l.state = entry ? "unsupported" : "not-registered"; return result(space); }
-    const w = await daemonWitness(space, home);
+    const w = await daemonWitness(space, home, signal);
+    signal.throwIfAborted();
     if ("outcome" in w) { l.state = fromRegister(w); l.remedy = "remedy" in w ? w.remedy : undefined; return result(space); }
     const witness = w.witness;
     l.instanceId = witness.instanceId;
@@ -287,14 +305,18 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     l.source = source;
     let grant: EpServeGrant;
     const pull = async () => {
+      signal.throwIfAborted();
       const credential = await source.credential();
-      const info = await provider.serviceEndpointInfo!({ store, dir, space });
+      signal.throwIfAborted();
+      const info = await provider.serviceEndpointInfo!({ store, dir, space, signal });
+      signal.throwIfAborted();
       if (info.accountPublicKey !== witness.accountPublicKey) throw new Error("the service authority account changed");
       grant = await authorizeGuestServeGrant({ accountPublicKey: witness.accountPublicKey, result: credential,
         registration: DAEMON_REGISTRATION, authenticity: serveAuthenticityOf(info) });
       return credential.accessBearer;
     };
     try { await pull(); } catch (e) { sourceFailed(l, e); await teardown(l); return result(space); }
+    signal.throwIfAborted();
 
     const onEnd = () => {
       // The source ends inside the endpoint's own refresh: tear down after that call returns.
@@ -304,7 +326,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
       space, servers: entry.server, sentinelCreds: source.sentinelCreds!,
       bearer: async () => { try { return await pull(); } finally { onEnd(); } },
       onConnection: (nc) => {
-        if (l.endpoint !== endpoint) return;
+        if (signal.aborted || l.endpoint !== endpoint) return;
         const contract = compileContract({ root: VOID_SCHEMA });
         const handle = serveEndpoint(nc, space, grant, [{ command: "machine-status", contract: { input: contract, output: contract }, handler: () => null }], { public: true });
         l.serving.add(handle);
@@ -333,6 +355,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     });
     l.endpoint = endpoint;
     try { await endpoint.start(); } catch (e) { if (stateOf(l) !== "ended") sourceFailed(l, e); await teardown(l); return result(space); }
+    signal.throwIfAborted();
     l.brokerUp = true;
     await readyOnce(l, space, witness, store, dir);
     const after = stateOf(l);
@@ -365,7 +388,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     if (closed || intentSpace(daemonConnectIntentFile(space, home)) !== space) return result(space);
     cancelRetry(space);
     const r = await connectOnce(space);
-    if (!closed && r.state === "unavailable") {
+    if (!closed && !disconnecting.has(space) && r.state === "unavailable") {
       const timer = setTimeout(() => {
         retries.delete(space);
         void serial(space, () => connectRemembered(space, fastRetries > 1 ? 1000 : Math.min(delay * 2, 30_000), Math.max(0, fastRetries - 1)));
@@ -378,14 +401,22 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
 
   return {
     register: (space) => serial(space, async () => {
-      const r = await registerDaemon(space, home);
-      const current = live.get(space);
-      // Registration alone cannot replace a live transport's state or revive ended authority.
-      if (!closed && !current?.endpoint && current?.state !== "ended") {
-        live.set(space, { state: r.outcome === "registered" ? "disconnected" : fromRegister(r),
-          brokerUp: false, serving: new Set(), ...("remedy" in r ? { remedy: r.remedy } : {}) });
+      if (closed || disconnecting.has(space)) return { outcome: "refused", space,
+        message: "the daemon is stopping or disconnecting this space; no registration request was sent" };
+      const abort = new AbortController();
+      registering.set(space, abort);
+      try {
+        const r = await registerDaemon(space, home, abort.signal);
+        const current = live.get(space);
+        // Registration alone cannot replace a live transport's state or revive ended authority.
+        if (!abort.signal.aborted && !closed && !current?.endpoint && current?.state !== "ended") {
+          live.set(space, { abort: new AbortController(), state: r.outcome === "registered" ? "disconnected" : fromRegister(r),
+            brokerUp: false, serving: new Set(), ...("remedy" in r ? { remedy: r.remedy } : {}) });
+        }
+        return r;
+      } finally {
+        registering.delete(space);
       }
-      return r;
     }),
     connect: (space) => serial(space, async () => {
       cancelRetry(space);
@@ -393,14 +424,26 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
       if (r.state === "connected") { try { remember(space); } catch { /* the connection is up either way */ } }
       return r;
     }),
-    disconnect: (space) => serial(space, async () => {
+    async disconnect(space) {
       cancelRetry(space);
-      const l = live.get(space);
-      if (l) { await teardown(l); live.delete(space); }
-      // A disconnect is explicit, so it must outlive a restart: forget the intent before answering.
-      forget(space);
-      return { space, state: "disconnected", message: SENTENCE.disconnected };
-    }),
+      // Cancellation must happen outside the queue: its head may be awaiting this space.
+      disconnecting.add(space);
+      registering.get(space)?.abort();
+      const current = live.get(space);
+      if (current) cancel(current);
+      return serial(space, async () => {
+        try {
+          cancelRetry(space);
+          const l = live.get(space);
+          if (l) { await teardown(l); live.delete(space); }
+          // A disconnect is explicit, so it must outlive a restart: forget the intent before answering.
+          forget(space);
+          return { space, state: "disconnected", message: SENTENCE.disconnected };
+        } finally {
+          disconnecting.delete(space);
+        }
+      });
+    },
     status: (space) => result(space),
     async resume() {
       let entries: string[];
@@ -416,6 +459,8 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     async close() {
       closed = true;
       for (const space of retries.keys()) cancelRetry(space);
+      for (const abort of registering.values()) abort.abort();
+      for (const l of live.values()) cancel(l);
       await Promise.all([...queue.values()]);
       await Promise.all([...live.values()].map((l) => teardown(l)));
       live.clear();

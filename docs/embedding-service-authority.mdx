@@ -31,6 +31,8 @@ name the submitted closure set. Inline artifacts include each closure manifest a
 documents, within the envelope byte limit; native per-closure walk limits still apply. The client does not transmit
 the local host capability or read callout signing material. Local setup needs the client sentinel
 projection written by `prepareServer`; a missing projection refuses rather than reading server secrets.
+`serviceEndpointInfo` accepts an optional `signal` to cancel its metadata request.
+`serviceEndpointAuthority` carries cancellation through sign-in proof acquisition and the authority request.
 
 ### Host lifecycle requirements
 
