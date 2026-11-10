@@ -1584,6 +1584,27 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("3A authority outage never restarts a healthy IPC-responsive hosted Manager", after.state === "answering" && after.pid === manager.pid && after.restarts === manager.restarts, after);
           return;
         }
+        if (process.argv.includes("--prepare-observation-repro")) {
+          process.kill(manager.pid, "SIGSTOP");
+          try {
+            const frozen = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 10_000));
+            check("6217 failed observation withdraws answering", frozen.state === "starting", frozen);
+            const prepared = ask(paths.socket, { op: "managers-prepare-restart" }, 30_000);
+            setTimeout(() => process.kill(manager.pid, "SIGCONT"), 500);
+            const result = await prepared;
+            check("6217 preparation reobserves a recovered child instead of trusting stale failure", result.ok === true, result);
+            await ask(paths.socket, { op: "managers-abort-restart" }, 30_000);
+          } finally { process.kill(manager.pid, "SIGCONT"); }
+          const after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 10_000));
+          check("6217 preparation keeps the original Manager alive", after.pid === manager.pid && after.state === "answering", after);
+          process.kill(manager.pid, "SIGSTOP");
+          try {
+            const refused = await ask(paths.socket, { op: "managers-prepare-restart" }, 45_000);
+            const error = refused.error as { message?: string; remedy?: string } | undefined;
+            check("6217 unavailable preparation names its actual condition and retry", refused.ok === false && String(error?.message).includes("generation request") && String(error?.remedy).includes("same command again"), refused);
+          } finally { process.kill(manager.pid, "SIGCONT"); }
+          return;
+        }
         if (process.argv.includes("--fresh-status-repro")) {
           process.kill(manager.pid, "SIGSTOP");
           try {
