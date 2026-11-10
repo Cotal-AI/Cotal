@@ -229,6 +229,9 @@ envelope cannot be written to stdout, and the exit code is the same either way. 
 subcommands and is near none of them is a usage error that lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.
 
+An interrupted controller `up --json` writes its envelope on stdout and keeps the recovery notice
+on stderr. It exits with the signal's code, as [startup](cli-startup.mdx#up) describes.
+
 A subcommand's help has its own `structured output` line, and only the forms that show one write a
 document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ext root` and
 `ext seed` report as text, refuse `--json` and `--plain` with a usage error, and exit 1 on any
