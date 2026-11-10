@@ -557,6 +557,11 @@ Each mode accepts only its listed flags. A flag from another mode refuses with `
 before any daemon or service action, including `--dry-run` on `serve`. Bare `cotal daemon` lists
 the declared modes and points to `cotal help daemon`, which works without a running daemon.
 `desktop` serves the desktop app's bounded JSON request on stdin; it has its own protocol output.
+Its `about` request reads host metadata without resolving or contacting a daemon. Other requests
+resolve the selected daemon only after request validation. A path-resolution refusal returns a
+versioned `result` frame with `ok: false`, rather than ordinary CLI text. On Linux, a missing or
+overlong runtime path is reported as `NO_RUNTIME_DIR` with a fixed message naming `XDG_RUNTIME_DIR`;
+no raw diagnostic is forwarded.
 
 Once a daemon mode begins, its JSON failure names that mode in `command`, as success does.
 It retains the selected space or normalized login provider in `target` once that value is accepted.
@@ -569,8 +574,8 @@ user service on Linux, a LaunchAgent on macOS, or a scheduled task on Windows. I
 start a Manager or grant remote execution or file access. Its registered service exposes
 `machine-status`. A space connection requires owner approval, broker acceptance and space readiness.
 It has local transport implementations for Linux, macOS and Windows. On macOS and Windows the endpoint needs the `@cotal-ai/seat` native helper built for that
-platform; where none is built or shipped, every command refuses `UNSUPPORTED`
-(`UNSUPPORTED_PLATFORM`), and so does any other platform.
+platform; where none is built or shipped, daemon endpoint operations refuse `UNSUPPORTED`
+(`UNSUPPORTED_PLATFORM`), and so do those operations on any other platform.
 
 `start` starts the recorded, unchanged service without restarting an instance that is already running.
 `spaces` lists the registry through the daemon; `--refresh` uses the daemon-held sign-in to refresh

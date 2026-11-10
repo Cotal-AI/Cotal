@@ -389,8 +389,7 @@ async function run(args: ParsedArgs): Promise<void> {
     if (subcommand.flagNames?.includes("space") && typeof space === "string" && space.trim()) recordOperationContext({ target: { space } });
   }
   if (mode === "desktop") {
-    const { paths, home } = resolveTarget(args);
-    return runDesktopBridge({ paths, version: binVersion(), peerUid, peerPid, ...(home ? { daemonHome: home } : {}) });
+    return runDesktopBridge({ resolveTarget: () => target(args), version: binVersion(), peerUid, peerPid });
   }
   if (mode === "spaces") {
     const { paths } = resolveTarget(args);

@@ -1,7 +1,7 @@
 /** Live Linux local-control checks through the actual desktop stdio entry, with an owned daemon. */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -33,10 +33,12 @@ Object.assign(process.env, { HOME: join(root, "home"), XDG_RUNTIME_DIR: join(roo
 const paths = daemonPaths();
 const version = (JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")) as { version: string }).version;
 let daemon: RunningDaemon | undefined;
-async function request(value: unknown): Promise<Record<string, any>> {
+async function request(value: unknown, opts: { runtime?: boolean | string; daemonHome?: string } = {}): Promise<Record<string, any>> {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
+  if (opts.runtime === false) delete env.XDG_RUNTIME_DIR;
+  else if (typeof opts.runtime === "string") env.XDG_RUNTIME_DIR = opts.runtime;
   return await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(repo, "bin/cotal.ts"), "daemon", "desktop"], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(repo, "bin/cotal.ts"), "daemon", "desktop", ...(opts.daemonHome ? ["--daemon-home", opts.daemonHome] : [])], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "", stderrBytes = 0;
     const deadline = setTimeout(() => { child.kill("SIGKILL"); }, 30_000);
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); if (stdout.length > 256 * 1024) child.kill("SIGKILL"); });
@@ -54,12 +56,30 @@ try {
   const about = await request({ op: "about" });
   check("real stock CLI bridge reports its package version", about.ok === true && about.result.version === version);
   check("about does not install or start a daemon", !existsSync(paths.socket));
+  const noRuntime = await request({ op: "about" }, { runtime: false });
+  check("about returns host metadata without a runtime directory", noRuntime.v === 1 && noRuntime.event === "result" && noRuntime.ok === true && noRuntime.result.version === version && typeof noRuntime.result.memoryBytes === "number");
+  const runtimeMessage = "The daemon runtime path is unavailable or too long. On Linux, check XDG_RUNTIME_DIR for the intended operating-system user.";
+  for (const op of ["status", "install", "spaces"]) {
+    const refused = await request({ op }, { runtime: false });
+    check(`${op} frames a missing runtime directory without raw diagnostics`, refused.v === 1 && refused.event === "result" && refused.ok === false && refused.error.code === "NO_RUNTIME_DIR" && refused.error.message === runtimeMessage);
+  }
+  const longRuntime = await request({ op: "status" }, { runtime: join(root, "x".repeat(160)) });
+  check("an overlong runtime path gets the same truthful fixed message", longRuntime.ok === false && longRuntime.error.code === "NO_RUNTIME_DIR" && longRuntime.error.message === runtimeMessage);
+  const malformed = await request({ op: "status", path: "PRIVATE_PATH_MARKER" }, { runtime: false });
+  check("malformed input is framed before daemon-path resolution", malformed.ok === false && malformed.error.code === "BAD_REQUEST" && !JSON.stringify(malformed).includes("PRIVATE_PATH_MARKER"));
+  check("metadata and path refusals created no daemon state", !existsSync(paths.socket) && !existsSync(paths.state));
   const absent = await request({ op: "status" });
   check("missing daemon is not reported connected", absent.ok === false);
   daemon = await serveDaemon({ paths, version, peerUid: (sock) => peerCredentials(sock).uid });
   const status = await request({ op: "status" });
   check("kernel-authenticated bridge reaches the actual daemon pid", status.ok === true && status.result.pid === process.pid);
   check("local readiness is explicit", status.result.state === "ready");
+  const managed = join(root, "managed"); mkdirSync(managed, { mode: 0o700 });
+  const selected = await request({ op: "status" }, { daemonHome: managed });
+  check("lazy resolution preserves the explicitly selected daemon home", selected.ok === false && selected.error.code === "NOT_RUNNING");
+  chmodSync(managed, 0o755);
+  const loose = await request({ op: "status" }, { daemonHome: managed });
+  check("selected-home protection refusals remain framed without repairing permissions", loose.ok === false && loose.error.code === "DIR_WRONG_MODE" && (statSync(managed).mode & 0o777) === 0o755);
   const list = await request({ op: "spaces", refresh: false });
   check("fresh daemon has an empty truthful space list", list.ok === true && list.result.kind === "spaces" && list.result.spaces.length === 0);
   const sync = await request({ op: "spaces", refresh: true });
