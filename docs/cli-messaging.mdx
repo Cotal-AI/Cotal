@@ -420,7 +420,10 @@ a muted channel is dropped, so the inbox can gain fewer messages than `backfille
 remembers at least the last 4096 messages it handled for this.
 
 A `live` gap means the connection dropped or is reconnecting, so live channel messages may be
-missed until it returns. Its reason defaults to
+missed until it returns. A transport disconnect updates the session state and emits the gap without
+waiting for reconnect attempts to finish. A short transport reconnect restores the same session;
+after a full connection rebuild, the session waits for its binding before reporting connected.
+Its reason defaults to
 `connection <state>: live channel messages may be missed until it returns`. An `inbox` gap means
 the held buffer was full: channel messages were dropped and direct messages were left for the broker
 to redeliver. Its reason counts each kind that happened. One gap covers the drops of up to a second,

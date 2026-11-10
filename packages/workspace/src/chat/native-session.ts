@@ -180,6 +180,8 @@ export class NativeChatSession implements AdmittedChatSession {
    *  reports, this session's own row included. The first subscriber gets it, so nothing is lost. */
   private early: SessionEvent[] | undefined = [];
   private state: ConnectionState = "connected";
+  private bound = true;
+  private transportConnected = true;
   private attention: "open" | "dnd" | "focus" = "open";
   private closed: Promise<CloseReport> | undefined;
   /** Why the session ended itself, when it could not continue. */
@@ -190,11 +192,13 @@ export class NativeChatSession implements AdmittedChatSession {
   private overflow = { channelDropped: 0, directedDeferred: 0 };
   private overflowTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly onMessage = (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta);
-  /** The endpoint drops its connection during a reconnect this session asked for. That outage was
-   *  reported when the reconnect started, so the state stays reconnecting until it is back. */
   private readonly onConnection = (s: { connected: boolean }) => {
-    if (s.connected) this.setState("connected");
-    else if (this.state !== "reconnecting") this.setState("disconnected");
+    this.bound = s.connected;
+    this.updateConnection();
+  };
+  private readonly onTransport = (s: { connected: boolean }) => {
+    this.transportConnected = s.connected;
+    this.updateConnection();
   };
   /** The last row each roster member's presence event carried, as JSON. */
   private readonly rows = new Map<string, string>();
@@ -230,6 +234,7 @@ export class NativeChatSession implements AdmittedChatSession {
     const ep = inputs.endpoint;
     ep.on("message", this.onMessage);
     ep.on("connection", this.onConnection);
+    ep.on("transport", this.onTransport);
     ep.on("presence", this.onPresence);
     ep.on("error", this.onError);
     ep.on("warning", this.onWarning);
@@ -497,6 +502,7 @@ export class NativeChatSession implements AdmittedChatSession {
       const ep = this.inputs.endpoint;
       ep.off("message", this.onMessage);
       ep.off("connection", this.onConnection);
+      ep.off("transport", this.onTransport);
       ep.off("presence", this.onPresence);
       ep.off("warning", this.onWarning);
       this.reportOverflow();
@@ -533,6 +539,13 @@ export class NativeChatSession implements AdmittedChatSession {
     const present = await chatStreamPresent(this.inputs.endpoint, this.inputs.identity.space, this.inputs.identity.mode);
     if (present === true) this.streamsGone = undefined;
     else if (present === false) this.streamsGone = spaceStreamsAbsent(this.inputs.identity.space, undefined).message;
+  }
+
+  /** A transient socket drop keeps the binding but loses live traffic. A fresh dial is not ready
+   *  until its full bind returns. An explicit reconnect has already reported its outage. */
+  private updateConnection(): void {
+    if (this.bound && this.transportConnected) this.setState("connected");
+    else if (this.state !== "reconnecting") this.setState("disconnected");
   }
 
   private setState(s: ConnectionState, reason?: string): void {
