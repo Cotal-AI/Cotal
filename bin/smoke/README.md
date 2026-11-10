@@ -120,6 +120,13 @@ tally wins. Per-row counting is used only when neither is present.
 can join it. On a host other stacks share, set `COTAL_SMOKE_SHARED_HOST=1`: those cells then skip
 and print why.
 
+`pnpm smoke:orphan-seat-succession` keeps its manager hosts and detached seats inside a
+recorded private sandbox. It records each seat at spawn, including seats created after manager
+readiness, and waits for the successor to launch before normal teardown. On Linux the smoke-kit
+watchdog removes remaining sandbox processes when the suite exits, including after a signal.
+The predecessor stays alive during the succession assertions; this cleanup is test ownership,
+not a change to production orphan custody.
+
 ## Failure reports
 
 Pass caught values directly as a separate console argument, such as `console.error(prefix, e)`.
