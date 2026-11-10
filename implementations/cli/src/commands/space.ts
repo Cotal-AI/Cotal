@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
-  brokerAnswers,
+  brokerCheck,
   findMesh,
   findPreparedSpace,
   folderSpace,
@@ -18,9 +18,9 @@ import {
   plainFlag,
   preparedLifecycle,
   presentationOf,
-  pruneStaleMeshes,
   writeResult,
   type Cell,
+  type BrokerCheck,
   type MeshEntry,
   type OutputWarning,
   type Presentation,
@@ -56,7 +56,7 @@ const usage = (message: string): CommandFailure => new CommandFailure("refused",
 
 /** Whether a registration's broker answered. A discovered catalog entry is never dialed by a read, so
  *  its broker is `not-checked` rather than a guessed answer. */
-export type Check = "reachable" | "unreachable" | "not-checked";
+export type Check = BrokerCheck | "not-checked";
 
 /** One registered space, as `cotal space` lists it: the same row `cotal status --json` gives under
  *  `meshes.items`. */
@@ -125,7 +125,7 @@ export interface SpaceDetail extends Omit<SpaceRow, "catalog"> {
 /**
  * `cotal space` lists the spaces this machine can reach, and `cotal space show [<name>]` shows one in
  * full. Both read the local registry and probe brokers; neither writes anything. A broker that does
- * not answer leaves its registration in place, reported `unreachable`. Spaces `space create`
+ * not answer leaves its registration in place, with timeouts distinct from refused connections. Spaces `space create`
  * prepared are listed apart, with no broker to probe. `space add`, `space create` and
  * `space forget` change what is recorded (see `space-registration.ts`).
  */
@@ -160,12 +160,11 @@ export async function space(args: ParsedArgs): Promise<void> {
 
 async function read(sub: "show" | undefined, rest: string[], presentation: Presentation): Promise<void> {
   if (sub === undefined) {
-    const sweep = await pruneStaleMeshes();
     const current = getCurrent() ?? null;
-    const offline = new Set(sweep.offline);
-    const items = loadMeshes().map((m) => row(m, current, m.origin === "catalog" ? "not-checked" : offline.has(m.space) ? "unreachable" : "reachable"));
+    const items = await Promise.all(loadMeshes().map(async (m) => row(m, current, m.origin === "catalog" ? "not-checked" : await brokerCheck(m.server, m.tlsRequired))));
+    const offline = items.filter((m) => m.check !== "reachable" && m.check !== "not-checked").map((m) => m.space);
     const prepared = loadPreparedSpaces().map((p) => preparedRow(p, current));
-    const folder = folderSpaceOverSelection(process.cwd(), current, sweep.offline) ?? null;
+    const folder = folderSpaceOverSelection(process.cwd(), current, offline) ?? null;
     const result: SpacesResult = { kind: "spaces", current, currentRecorded: current === null || items.some((s) => s.current), folder, items, prepared };
     writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarnings(result) }, spacesView);
     return;
@@ -195,11 +194,11 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
       writeResult(presentation, { command: "space", target: { space: p.space }, result }, preparedView);
       return;
     }
-    const check: Check = m.origin === "catalog" ? "not-checked" : (await brokerAnswers(m.server)) ? "reachable" : "unreachable";
+    const check: Check = m.origin === "catalog" ? "not-checked" : await brokerCheck(m.server, m.tlsRequired);
     // The space this folder registered is the target of the commands run here only while it runs,
     // which its broker answering shows.
     if (current !== null && registered !== undefined && registered !== current) {
-      if (check === "unreachable") noteFolderSpaceShown(registered, "stopped", current);
+      if (check !== "reachable" && check !== "not-checked") noteFolderSpaceShown(registered, "stopped", current);
       else noteFolderSpace(registered, current);
     }
     writeResult(presentation, { command: "space", target: { space: m.space }, result: detail(m, current, check) }, spaceView);
@@ -263,6 +262,8 @@ function selectionWarnings(result: SpacesResult): OutputWarning[] {
 const originText = (origin: SpaceRow["origin"]): string => (origin === "manual" ? "registered" : origin === "catalog" ? "discovered" : "started here");
 
 function checkCell(s: Pick<SpaceRow, "check">): Cell {
+  if (s.check === "slow-link") return { text: "not answering", tone: "waiting", mark: "●" };
+  if (s.check === "broker-stopped") return { text: "broker process is stopped", tone: "waiting", mark: "●" };
   if (s.check === "reachable") return { text: "reachable", tone: "ok", mark: "●" };
   if (s.check === "unreachable") return { text: "unreachable", tone: "waiting", mark: "●" };
   return { text: "not checked", tone: "hint", mark: "○" };

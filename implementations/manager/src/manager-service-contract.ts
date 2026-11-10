@@ -949,6 +949,7 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
           winner: { type: "string" },
           lostRace: { type: "string" },
           asks: { type: "string" },
+          schema: {},
           addressee: { type: "string" },
           deadlineAt: { type: "number" },
           onExpiry: { type: "string" },

@@ -68,7 +68,9 @@ A peer message is not proof of the person's authorization to perform an action.
 The receipt names the destination and message identifier without repeating the body. Direct and
 role sends include the broker's stored sequence. Storage does not confirm delivery, acceptance
 or completion. A direct send to an agent the roster shows offline also warns on stderr:
-`<agent> is offline. The message is stored and delivered when <agent> reconnects; a new agent spawned as <agent> does not receive it.`
+`<agent> is offline. The message is stored, but delivery is not confirmed. Only the same lifecycle can receive it, while its inbox still exists. If the session ended or its inbox was removed, it cannot receive this message. A new session or agent named <agent> does not receive it.`
+An offline presence card can outlive a retired session's inbox. Opening another chat under the same
+name creates a new lifecycle and does not recover that message.
 `--json` lists it as the `RECIPIENT_OFFLINE` warning. Use `--json/-j` for the same receipt as one versioned envelope, `--plain` for a text report, or
 `--verbose/-v` to show the actual sending principal. A post to an unregistered channel warns
 `CHANNEL_UNREGISTERED`: it says whether the channel already has messages or this message starts it,
@@ -91,7 +93,10 @@ than its cap refuses every write with JetStream error 10023 and stores nothing, 
 `DEPENDENCY_UNAVAILABLE` (exit 2), naming the store and the `--max-file-store` cap this machine
 recorded for it. Its Next is `cotal history clear --yes`, which purges the space's channel history;
 a larger cap applies after that through `cotal down` and `cotal up --max-file-store <bytes>`. Any other unconfirmed publish outcome is
-unknown and never retried automatically. A broker that cannot write its store sends no
+unknown and never retried automatically. A lost acknowledgement stays `OPERATION_UNKNOWN` (exit 3)
+even if the stream is later found missing: the message may have been stored before deletion.
+A missing space confirmed while opening the sender still refuses before publishing.
+A broker that cannot write its store sends no
 acknowledgement at all, so when such a publish times out and the space's broker log on this machine
 records a store write failure, the `OPERATION_UNKNOWN` message names its time, cause and file and
 says the message was probably not stored. Its Next names the fix for that cause, write access to
@@ -206,6 +211,12 @@ and it writes its punctuation in ASCII as every plain report does.
 diagnostics on stderr. Closing stdin ends the session. `--stdio` does not combine with `--plain`,
 and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
 
+In the terminal view, Tab opens the recipient picker. Type `#<channel>`, `@<name>`,
+`@<owner>.<actor>` or `role:<role>`, then Enter to choose. A `:to` line is refused without
+sending it, clears the previous recipient and opens the picker. Choose a recipient before
+sending anything else. A send already in flight still reports its outcome without restoring
+the previous recipient. Enter sends to the recipient shown above the composer.
+
 In `--plain`, a line you type becomes the draft, and it is sent only when you answer `y` to the
 question that follows. Any other answer keeps the draft unsent. A slash command typed as the answer
 runs, and the question is asked again. A new draft that replaces a kept one says so, with the kept
@@ -227,8 +238,8 @@ A message posted on a channel carries the `@<name>` words its text holds as ment
 `cotal send -c` does, so it wakes the agents it names. A `--stdio` `send` carries only the
 `mentions` its request lists.
 
-A direct message to an agent the roster shows offline is stored, and the view adds a notice that
-the agent receives it when it reconnects, as [`send`](#send) warns. `--stdio` carries that roster
+A direct message to an agent the roster shows offline is stored, and the view adds the same
+lifecycle and inbox limits as [`send`](#send). `--stdio` carries that roster
 status as `recipientStatusAtSend` in the stored result.
 
 Message times show in local time, with the date when it is not today, the same way `history`
@@ -267,13 +278,22 @@ admissions take no role.
 A session that ends by leaving, by end of input or at its lifetime exits 0 when its connection
 close was confirmed and it was retired, or was an open-mesh session with nothing to retire. It exits
 4 when its connection close was confirmed and its retirement was requested but not confirmed. It
-exits 3 when the retirement outcome is unknown, its connection close was not confirmed, or no close
-was observed. A session that cannot reconnect because its inbox is gone from the broker, as when the
+exits 3 when the retirement outcome is unknown and the session did not end itself, when its
+connection close was not confirmed, or when no close was observed. A session that cannot reconnect because its inbox is gone from the broker, as when the
 space restarted and retired it while the connection was down, ends by itself with that reason and
-exits 5 when its close is confirmed. On a static mesh, leaving waits up to 30 seconds for the
+exits 5 when its close is confirmed. A manager restart does the same while the connection stays
+up: the old manager retires the session and removes its inbox, the session writes its end record
+saying the inbox is gone and to open a new session, and the process exits 5. That exit holds when
+the retire call does not reach the old manager and the close report says the retirement outcome is
+unknown. Until the end record, a send to the old name can be stored for a session that is still
+listed and will never be told. A send after the record does not resolve the old name.
+
+On a static mesh, leaving waits up to 30 seconds for the
 manager to answer the retirement. When the delivery daemon does not answer, the manager waits 15
 seconds for it, then reports the retirement pending and names the daemon, and the session exits 4.
-In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
+In the terminal view Ctrl-C and Ctrl-D leave. A slash command the grammar refuses clears the input
+line after the refusal, so the next command is not typed onto it. A line kept because the session
+is not connected, a send is in flight, or no recipient is chosen stays as it is. With `--plain` or `--stdio`, Ctrl-C ends
 input and the session closes, then exits 130. A terminate signal exits 143 and a hangup 129. A
 signal that arrives before the view starts is held: no session is opened if admission has not
 begun, and a session admitted meanwhile is closed at once. The exit status is still the signal's.
@@ -325,7 +345,7 @@ as `cotal send` refuses an empty message.
 | `inbox` | optional `peek` (default `false`) | `ok`: `peek`, `messages` |
 | `roster` | none | `ok`: `rows`, `view` |
 | `channelInfo` | `channel` | `ok`: `channel`, `registered`, `replay`, `readable`, `postable`, optional `description` and `instructions` |
-| `connection` | none | `ok`: `state`, `identity`, `bufferedInbox`, `joinedChannels`, `attention`, `channelModes` |
+| `connection` | none | `ok`: `state`, `identity`, `bufferedInbox`, `joinedChannels`, `attention`, `channelModes`, optional `reason` |
 | `invoke` | `endpoint` (1 to 200 characters), `command` (1 to 128), optional `args` (an object) and `timeoutMs` (an integer from 1 to 120000, default 30000) | `ok`: the endpoint's data, or `null` when it returned none |
 
 `identity` in the `connection` result names the session, and no other record names its space. It
@@ -343,6 +363,19 @@ with `code`, `message` and, when the native layer gave one, `cause` with its own
 have happened. The session never retries it, and it reports an unexpected failure of its own the
 same way. `failed` (`OPERATION_FAILED`) is a step that did not complete and had no effect. `stored`
 means the broker's stream accepted the message. It does not say anyone read it.
+
+Before a `send`, `dm` or `anycast` publishes on an authenticated or locally created space, it checks
+the chat stream. When that stream is absent, the request refuses with `TARGET_UNAVAILABLE` and the
+same message `cotal send` gives, without publishing. An unreadable stream check does not establish
+absence. After an attempted publish fails, the session refreshes its stream observation but keeps
+the publish's original outcome. A lost acknowledgement remains `unknown` even if the stream was
+subsequently deleted: the message may already have been stored.
+
+An observed absence makes a later `connection` report `state` `disconnected` with that message as `reason`.
+The broker connection itself is unchanged. A later `connection`, while that observation stands, reads
+the chat stream again. When the stream is present, as after `cotal up` creates it again, `state` is
+the connection's own and `reason` is absent. A stored `send`, `dm` or `anycast` clears the observation
+too. A read that fails leaves it as it was.
 
 
 ### Unsolicited records
@@ -404,8 +437,10 @@ reconnect gives that reason instead, and its `close` carries it as `lost`.
 When stdin ends, the requests already read finish first. `close` has `retirement` (`retired`,
 `requested`, `unknown` or `not-applicable`), `connectionClosed` (`confirmed` or `not-confirmed`) and
 `message`. A static session's `close` can carry `credentialValidUntil` in epoch milliseconds: the
-broker accepts its credential until then unless its eviction was verified. Once the session has
-ended by itself and before the `end` record, a request refuses with `LIFECYCLE_BLOCKED` and
+broker accepts its credential until then unless its eviction was verified. A missing chat stream
+does not prove that session retirement completed. An unconfirmed retirement stays `unknown`, even
+when sending is refused because the stream is absent. Once the session has ended by itself and
+before the `end` record, a request refuses with `LIFECYCLE_BLOCKED` and
 `the session is ending; no new requests are accepted`. When the reader closes stdout, stderr says
 `stdout closed by the reader; ending the session`, and no later record is written, `end` included.
 Any other failed write, such as to a full disk, says `stdout could not be written; ending the
@@ -429,7 +464,11 @@ under `Not decoded` with its key and the decode error, and the key is left in th
 channel resolves to the default policy, as an endpoint's registry watch does. `show` of that
 channel and `defaults` when the defaults key does not decode say the same. A `set` or `defaults`
 that would write such a key refuses with `CONFLICT` and leaves the bytes as they are. `remove`
-of that key removes the entry. `show` includes inherited replay and delivery settings.
+of that key removes the entry. `show` includes resolved replay, window and delivery settings.
+Each value with no per-channel override is marked `inherited`, whether it comes from space
+defaults or the built-in policy. The inventory uses the same mark for replay and delivery.
+Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the
+mark identifies values supplied by the built-in policy.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
 records. A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
@@ -555,8 +594,9 @@ message in the window came from it, and the principal otherwise. `--dms` reads t
 names, waiting up to two seconds for it. `result.items[].to` is the principal.
 A line break or other control character in a message's text shows as its `\uXXXX` escape in the
 text and `--plain` reports, so a message cannot clear the screen or start a row of its own.
-A row shows the first 500 characters of a longer message and marks the cut with the message's size.
-`--json` carries the text as it was sent, in `result.items[].text`.
+A row shows the first 500 code units of a longer message and marks the cut with the code units not
+shown. `--json` carries the text as it was sent, in `result.items[].text`. The count is code units,
+the same measure a cut `watch` line uses.
 
 Retained history is not every message sent. The chat stream keeps a post until its sender has posted
 the space's per-sender count of newer ones on that channel, or until it is older than the space's age
@@ -700,7 +740,8 @@ Each candidate's `from` is the sender principal
 parsed from its stored message subject, which the broker binds to the sender's
 credential. The sender's own card is not printed, and a candidate that cannot
 be decoded is withheld and reported as partial. Recipient contents are not
-printed. The retained `deliver pending` spelling keeps its earlier output shape.
+printed. The retained `deliver pending` spelling uses this reader with `--json`, including
+candidate IDs and refusals in one receipt. Without `--json`, it keeps its earlier text output.
 
 
 ## Clearing retained history [#clearing-retained-history]

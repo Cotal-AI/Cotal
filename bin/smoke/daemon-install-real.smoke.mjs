@@ -1,4 +1,4 @@
-/** Opt-in lifecycle of a real per-user service on disposable GitHub-hosted macOS/Windows runners.
+/** Opt-in lifecycle of a real per-user service on disposable GitHub-hosted Linux/macOS/Windows runners.
  * Uses the built CLI and its ownership checks. Never signs in, connects, or force-removes a job.
  */
 import assert from "node:assert/strict";
@@ -10,8 +10,8 @@ import { fileURLToPath } from "node:url";
 
 if (process.env.COTAL_TEST_REAL_SERVICE !== "1" || process.env.GITHUB_ACTIONS !== "true"
   || process.env.RUNNER_ENVIRONMENT !== "github-hosted"
-  || !["darwin", "win32"].includes(process.platform) || !process.env.RUNNER_TEMP) {
-  console.error("REFUSED: real daemon service tests require explicit opt-in on a disposable GitHub-hosted macOS/Windows runner.");
+  || !["linux", "darwin", "win32"].includes(process.platform) || !process.env.RUNNER_TEMP) {
+  console.error("REFUSED: real daemon service tests require explicit opt-in on a disposable GitHub-hosted Linux/macOS/Windows runner.");
   process.exit(2);
 }
 
@@ -75,14 +75,37 @@ async function statusUntil(ready) {
   throw new Error(`status did not become ${ready ? "ready" : "NOT_RUNNING"}: ${r.body.error?.code ?? r.body.outcome}`);
 }
 
+/** Read only named systemd properties, never its process arguments or environment. */
+function linuxUnit() {
+  const child = spawnSync("/usr/bin/systemctl", ["--user", "show", plan.unit, "--all", "--no-pager",
+    "--property=LoadState,ActiveState,FragmentPath,MainPID"], {
+    encoding: "utf8", timeout: 10_000, maxBuffer: 16 * 1024, stdio: ["ignore", "pipe", "pipe"],
+  });
+  assert.ok(!child.error && !child.signal && (child.status === 0 || child.status === 4), "systemd property lookup completed");
+  const entries = child.stdout.trim().split("\n").map(line => {
+    const at = line.indexOf("=");
+    assert.ok(at > 0, "systemd returned property assignments");
+    return [line.slice(0, at), line.slice(at + 1)];
+  });
+  assert.deepEqual(entries.map(([key]) => key).sort(), ["ActiveState", "FragmentPath", "LoadState", "MainPID"]);
+  return Object.fromEntries(entries);
+}
+
+function linuxUnitAbsent() {
+  const unit = linuxUnit();
+  return unit.LoadState === "not-found" && unit.ActiveState === "inactive"
+    && unit.FragmentPath === "" && unit.MainPID === "0";
+}
+
 async function verifyRemoved() {
   check("receipt removed", !existsSync(receipt));
   check("service source removed", !existsSync(plan.unitPath));
-  // The shipped plan reads the exact native job and refuses anything except absence. An arbitrary
-  // nonzero schtasks exit is not evidence of absence, and launchctl display text is not authority.
+  // macOS/Windows plans read the native job. Linux's plan only renders the unit, so also require
+  // systemd's explicit not-found state. An arbitrary nonzero native exit is never absence proof.
   const absent = ok("install", "--dry-run");
   check("native supervisor confirms the same isolated name is absent", absent.state === "would-install"
-    && absent.unit === plan.unit && absent.sha256 === plan.sha256);
+    && absent.unit === plan.unit && absent.sha256 === plan.sha256
+    && (process.platform !== "linux" || linuxUnitAbsent()));
   await statusUntil(false);
   check("local endpoint refuses NOT_RUNNING", true);
   clean = true;
@@ -94,7 +117,14 @@ try {
   check("plan isolates the daemon home and native service", plan.daemonHome === home
     && plan.state === "would-install" && (process.platform === "darwin"
       ? /^ai\.cotal\.daemon\.[a-f0-9]{16}$/.test(plan.unit) && plan.mechanism === "launchd-agent"
-      : /^cotal-daemon-[a-f0-9]{16}-S-1-/.test(plan.unit) && plan.mechanism === "scheduled-task"));
+      : process.platform === "win32"
+        ? /^cotal-daemon-[a-f0-9]{16}-S-1-/.test(plan.unit) && plan.mechanism === "scheduled-task"
+        : /^cotal-daemon-[a-f0-9]{16}\.service$/.test(plan.unit) && plan.mechanism === "systemd-user"));
+  if (process.platform === "linux") {
+    check("systemd confirms the isolated unit is absent before install", !existsSync(plan.unitPath) && linuxUnitAbsent());
+    check("Linux plan uses the prepared lingering user service", plan.lingerAlready === true
+      && plan.restart === "always" && plan.wantedBy === "default.target");
+  }
   installAttempted = true;
   const installed = ok("install");
   check("install confirms the planned service", installed.state === "installed" && installed.unit === plan.unit);
@@ -103,6 +133,11 @@ try {
     && recorded.unitSha256 === plan.sha256 && recorded.unitPath === plan.unitPath && recorded.daemonHome === home);
   const first = (await statusUntil(true)).body.result;
   check("installed service answers with a PID and start time", Number.isInteger(first.pid) && first.pid > 0 && typeof first.startedAt === "string");
+  if (process.platform === "linux") {
+    const unit = linuxUnit();
+    check("systemd supervises the answering daemon from the recorded unit", unit.LoadState === "loaded"
+      && unit.ActiveState === "active" && unit.FragmentPath === plan.unitPath && Number(unit.MainPID) === first.pid);
+  }
   ok("start");
   const second = (await statusUntil(true)).body.result;
   check("start preserves the running instance", second.pid === first.pid && second.startedAt === first.startedAt);

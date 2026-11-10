@@ -11,6 +11,7 @@
  */
 
 import type { StepKey } from "./keys.js";
+import { deepFreeze } from "./values.js";
 
 // ---- values that cross the boundary ---------------------------------------------------------
 
@@ -411,6 +412,11 @@ export class RunHeld extends Error {
  *
  * `timeout` is the checkpoint's own option when it set one, so L4007 can say whether the deadline
  * came from it or from the run's default.
+ *
+ * The record this returns is the value the program receives, and it is built here, after the journal
+ * froze the raw outcome. Freezing it is what makes the result the program holds the same frozen
+ * value the journal recorded, on the live path and on replay. The nested `value` is already frozen
+ * by the share; the record around it was the one left writable.
  */
 export function applyCheckpointPolicy(
   raw: CheckpointRaw,
@@ -418,20 +424,20 @@ export function applyCheckpointPolicy(
   timeout?: string,
 ): CheckpointResultValue {
   if (raw.outcome === "resolved") {
-    return {
+    return deepFreeze({
       status: "resolved",
       ...(raw.value !== undefined ? { value: raw.value } : {}),
       ...(raw.by !== undefined ? { by: raw.by } : {}),
       ...(raw.artifact !== undefined ? { artifact: raw.artifact } : {}),
       at: raw.at,
-    };
+    });
   }
   // `escalate` reaching here means the chain is FINISHED: the interpreter already performed the
   // one hop, and a second expiry settles exactly as `proceed` would (design 5.5, one hop). Only
   // `fail` throws. Treating escalate as a throw made a completed escalation raise L4007, which is
   // the opposite of what the stop rule says happens.
   const disposition = onExpiry ?? "fail";
-  if (disposition === "proceed" || disposition === "escalate") return { status: "expired", at: raw.at };
+  if (disposition === "proceed" || disposition === "escalate") return deepFreeze({ status: "expired", at: raw.at });
   // Say where the deadline came from: the same expiry reads the same under the checkpoint's own
   // `timeout` and under the run's default, and the fix differs between the two.
   const source = timeout !== undefined

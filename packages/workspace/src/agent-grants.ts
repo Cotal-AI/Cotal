@@ -19,7 +19,8 @@ export function agentGrants(nats: { pub?: { allow?: string[] }; sub?: { allow?: 
 }
 
 /** The `auth mint` flags that give a new key these grants, each led by a space. A new key holds only
- *  the grants its mint names, so both ACL flags are named even when empty. */
+ *  the grants its mint names, so both ACL flags are named even when empty and persona defaults
+ *  are disabled, including a role the original credential did not hold. */
 export function grantMintFlags(grants: AgentGrants): string {
-  return ` --allow-subscribe ${shellPath(grants.read.join(","))} --allow-publish ${shellPath(grants.post.join(","))}${grants.role ? ` --role ${grants.role}` : ""}`;
+  return ` --allow-subscribe ${shellPath(grants.read.join(","))} --allow-publish ${shellPath(grants.post.join(","))}${grants.role ? ` --role ${grants.role}` : ""} --no-persona`;
 }

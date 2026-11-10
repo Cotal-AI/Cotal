@@ -582,7 +582,9 @@ async function runStartedDelivery(
     if (registered !== undefined) {
       log.err(
         registered.origin === "manual" || registered.origin === "catalog"
-          ? `✗ delivery: no broker answered at ${server} - "${space}" is registered here but its mesh is not up; start it where it runs, or \`cotal meshes rm ${space}\` to unregister it`
+          ? `✗ delivery: no broker answered at ${server} - "${space}" is registered here but its mesh is not up; ${registered.origin === "catalog"
+            ? "start it where it runs, or remove it from the provider's catalog and run `cotal sync` to unregister it here"
+            : `start it where it runs, or \`cotal space forget ${space}\` to unregister it`}`
           : `✗ delivery: no mesh running at ${server} - mesh "${space}" is recorded at ${registered.root} but not running; run \`cotal up\` there to restart`,
       );
       if (held) throw new Error(`delivery: no broker answered at ${server}`);

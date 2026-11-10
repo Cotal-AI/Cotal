@@ -63,8 +63,8 @@ function parseRecord(raw: string, witnessDigest: string): RenewalRecord {
 }
 
 /** Build the renewal source for one witness over the provider's own authority client. */
-export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: SecretStore; dir: string; witness: ServiceRegistrationWitness }): ServiceEndpointRenewal {
-  const { store, dir, witness } = opts;
+export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: SecretStore; dir: string; sessionDir?: string; witness: ServiceRegistrationWitness }): ServiceEndpointRenewal {
+  const { store, dir, sessionDir, witness } = opts;
   if (!provider.serviceEndpointAuthority) throw new Error("this auth provider does not host service endpoints");
   const authority = provider.serviceEndpointAuthority.bind(provider);
   const witnessDigest = serviceWitnessDigest(witness), key = serviceRenewalKey(witness);
@@ -90,15 +90,15 @@ export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: Se
     state = { state: "ended", reason };
     throw new Error(`service renewal ended (${reason}); nothing more will be requested for this registration`);
   };
-  const outage = (sentence: string): never => {
-    state = { state: "unavailable" };
+  const outage = (sentence: string, cause?: "store"): never => {
+    state = { state: "unavailable", ...(cause ? { cause } : {}) };
     throw new Error(sentence);
   };
 
   /** The stored record, with any store or parse failure reported as fixed text. */
   async function readRecord(): Promise<RenewalRecord> {
     try { return await record(); } catch (e) {
-      return outage(e instanceof Error && e.message === UNREADABLE ? `${UNREADABLE}; nothing was sent` : "service renewal could not read its record from the store; nothing was sent");
+      return outage(e instanceof Error && e.message === UNREADABLE ? `${UNREADABLE}; nothing was sent` : "service renewal could not read its record from the store; nothing was sent", "store");
     }
   }
 
@@ -112,7 +112,7 @@ export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: Se
       space: witness.space, accountPublicKey: witness.accountPublicKey, endpoint: witness.endpoint, instanceId: witness.instanceId, witness } as ServiceAuthorityRequest;
     let answer: { result: ServiceAuthorityResult; sentinelCreds: string };
     try {
-      answer = await authority({ store, dir, request, signal: abort.signal, ...(renewing ? { proof: { kind: "service-renewal", token: m.renewalProof } } : {}) });
+      answer = await authority({ store, dir, ...(sessionDir === undefined ? {} : { sessionDir }), request, signal: abort.signal, ...(renewing ? { proof: { kind: "service-renewal", token: m.renewalProof } } : {}) });
     } catch (e) {
       if (closed) throw new Error("service renewal is closed");
       if (e instanceof ServiceAuthorityTransportError) outage(`service renewal is unavailable (${operation} not confirmed); the next pull replays the same request`);
@@ -131,7 +131,7 @@ export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: Se
     if (c.accessExpiresAt <= nowS()) outage("service renewal received an access bearer that has already expired; the next pull replays the same request");
     const material: Material = { accessBearer: c.accessBearer, accessExpiresAt: c.accessExpiresAt, renewalProof: c.renewalProof, renewalExpiresAt: c.renewalExpiresAt };
     try { await store.put(key, JSON.stringify({ ...rec, material } satisfies RenewalRecord)); }
-    catch { outage("service renewal could not store its new material; the next pull replays the same request"); }
+    catch { outage("service renewal could not store its new material; the next pull replays the same request", "store"); }
     sentinelCreds = answer!.sentinelCreds;
     state = { state: "current", accessExpiresAt: material.accessExpiresAt, renewalExpiresAt: material.renewalExpiresAt };
     const { renewalProof: _proof, renewalExpiresAt: _renewal, ...credential } = c;

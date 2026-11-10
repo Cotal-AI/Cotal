@@ -21,8 +21,7 @@ import {
   hasMeshTargetFlags,
   inOperationSpace,
   isCommandFailure,
-  brokerUrlCredentialRefusal,
-  brokerUrlHasUserinfo,
+  checkServer,
   isConnectRefusal,
   isMeshRegistryError,
   isSeededCommand,
@@ -142,9 +141,9 @@ function structured(cmd: Command, first: string | undefined): boolean {
 
 /** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a group of the
  *  command's boolean short flags. Read from the words, because a usage error has no parse, so the mode
- *  is the first word that is not a flag. */
+ *  is the first positional after skipping declared option values. */
 function asksForJson(cmd: Command, args: readonly string[]): boolean {
-  if (!structured(cmd, args.find((word) => !word.startsWith("-")))) return false;
+  if (!structured(cmd, metadataPositionals(cmd, args).positionals[0]?.value)) return false;
   const booleans = new Set((cmd.flags ?? []).flatMap((flag) => (flag.type === "boolean" && flag.short ? [flag.short] : [])));
   const end = args.indexOf("--");
   return (end === -1 ? args : args.slice(0, end)).some(
@@ -182,7 +181,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   // Under --json the envelope alone reports the failure. Its text report goes to stderr only when the
   // envelope cannot be written, and the exit status below stands either way.
   if (!json) writeReport();
-  else try { writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure, warnings))); }
+  else try { writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure, warnings, scope))); }
   catch (error) {
     reportLostOutput(error as NodeJS.ErrnoException);
     try { writeReport(); } catch { /* stderr failed too; the exit status still says so */ }
@@ -458,11 +457,13 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain, undefined, rest);
     throw error;
   }
-  // The NATS client keeps only the host and port of a broker URL, so a user and password in it were
-  // dropped in silence and the command connected with whatever credential it resolved instead. A
-  // command whose own check names this, such as `up`'s, has refused above. The value is never repeated.
-  if (cmd.flags?.some((flag) => flag.name === "server") && typeof canonical.values.server === "string" && brokerUrlHasUserinfo(canonical.values.server))
-    failureExit(cmd, brokerUrlCredentialRefusal("--server"), json, canonical.values.plain === true);
+  // The TCP client drops URL components beyond host and port. Apply registration's syntax rule
+  // before any command connects. A command's narrower rule, such as `up`'s, has run above.
+  if (cmd.flags?.some((flag) => flag.name === "server") && typeof canonical.values.server === "string") {
+    const checked = checkServer(canonical.values.server, "--server");
+    if (!checked.ok)
+      failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true);
+  }
   return canonical;
 }
 

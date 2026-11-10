@@ -126,6 +126,8 @@ export interface ConnectionReport {
   readonly joinedChannels: readonly string[];
   readonly attention: AttentionMode;
   readonly channelModes: Readonly<Record<string, ChannelMode>>;
+  /** Why `state` is not the live transport's own state, such as the space's streams being gone. */
+  readonly reason?: string;
 }
 
 export interface ChannelInfo {

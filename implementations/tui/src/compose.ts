@@ -97,7 +97,7 @@ export function submit(
     case "nothing":
       return { state, effect: { kind: "none" } }
     case "hold":
-      return note(d.tone, d.text)
+      return d.clear ? consumed({ kind: "none" }, { key, tone: d.tone, lines: [d.text] }) : note(d.tone, d.text)
     case "leave":
       return watching ? note("hint", "no chat session is open") : consumed({ kind: "end" })
     case "slash": {

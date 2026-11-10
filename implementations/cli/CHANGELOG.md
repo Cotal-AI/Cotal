@@ -1,5 +1,121 @@
 # @cotal-ai/cli
 
+## 0.153.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.153.1
+  - @cotal-ai/workspace@0.153.1
+
+## 0.153.0
+
+### Minor Changes
+
+- 3646835: Return one JSON receipt from `cotal deliver pending --json`, including candidate IDs and not-found refusals.
+  The retained spelling uses the `cotal pending` reader, its bounded limits and its exit codes.
+  Read facts and candidates from `result` instead of the old first-line object and trailing text.
+  Plain output is unchanged.
+  Inspection skips connector installation, and parser refusals remain structured when value-taking
+  options precede the pending mode. Receipts consistently name the invoked command.
+
+### Patch Changes
+
+- f98799a: Report broker configuration write failures without suggesting a manager-free restart.
+  The failure names the configuration path and filesystem error code and records a known outcome before any member starts.
+  Non-regular entries, including FIFOs and Unix sockets, refuse with the move-aside remedy.
+- be11326: The terminal chat view refuses `:to` commands instead of posting them to the channel. It clears the previous recipient and opens the picker so the next private message cannot go to that channel. Completing an earlier send or command preserves the current recipient and draft.
+- b2f7b0b: Credential joins now explain missing channel read grants and mismatched lifecycle UIDs separately.
+  The join reference includes the channel grants needed by its credential-minting example, and known
+  grant failures no longer point at the delivery daemon.
+- 05bfec0: Enable shell path completion for the daemon's `--daemon-home` option.
+- c967868: Report a killed manager as absent immediately when its status service does not answer.
+  An unexpired lease no longer changes a stale local PID record to not-serving, so the component exit code stays consistent before and after lease expiry.
+- bd1008e: Stop a user-auth stack from its hosting folder without an IdP sign-in, including stacks started with `--no-manager`.
+  The missing-pidfile lease check uses the folder's signing authority and still refuses to stop a broker under a daemon that renews its lease.
+- e8b4a5f: Interrupted `cotal up --json` writes a receipt naming the members left running and the recovery commands.
+  The controller start keeps its stderr notice and signal exit code for SIGINT, SIGTERM and SIGHUP.
+- b4eba66: Offline registered spaces now name `cotal space forget` as the command to unregister them.
+  The connection refusal and delivery daemon no longer suggest the hidden legacy `cotal meshes rm` command.
+  Discovered spaces instead name removal from the provider's catalog followed by `cotal sync`, since their registrations cannot be forgotten locally.
+- 8d15e70: Offline direct-message receipts no longer promise delivery to a session that has ended.
+  The shared send and chat notice explains that delivery requires the same lifecycle and a surviving inbox. A new session under the same name does not inherit the message.
+- 853378d: Show failed service starts as unknown or failed in the service list instead of running or stopped. Saved services now display their distinct recorded instance states, while the next command still accounts for a process left running after failed readiness.
+- 7aaa5bf: Show the default persona's pinned harness in status so it matches a bare spawn.
+  If the selected persona cannot be read or validated, report an unresolved application rather than the saved harness preference.
+  Reject non-regular persona files without blocking status or launch previews on a named pipe.
+- Updated dependencies [b4eba66]
+- Updated dependencies [8d15e70]
+- Updated dependencies [7aaa5bf]
+- Updated dependencies [9bdc7f4]
+  - @cotal-ai/workspace@0.153.0
+  - @cotal-ai/core@0.153.0
+
+## 0.152.0
+
+### Patch Changes
+
+- d6e7b75: Channel reports consistently mark inherited replay, window and delivery settings.
+  The channel list and detail view use `inherited` for values without a saved override, including built-in policy values. Explicit settings remain unmarked even when they match the defaults.
+- c7b64d4: Keep a separate daemon's catalog refresh from changing shared registrations, sentinel files or the default selected space.
+- 1fec76f: Commands now reject invalid broker URLs and honor TLS schemes in `--server`.
+  Per-command connections share registration's URL validation, preserve WebSocket routes,
+  and require TLS for secure schemes on registered and raw connections.
+- e044ab0: Refuse a direct launch preview when its effective harness is unknown. `spawn --dry-run` now reports `DEPENDENCY_UNAVAILABLE` with exit 2 for an unknown flag, persona pin or preference instead of reporting success with a warning. Managed previews still leave connector validation to the selected manager.
+- f40b049: Show chat sessions and service endpoints alongside agents in the watch roster.
+  The plain and terminal views include each participant's kind, reported state and identity,
+  and update when endpoint presence changes.
+- Updated dependencies [4bd669c]
+- Updated dependencies [1f4700a]
+- Updated dependencies [1fec76f]
+  - @cotal-ai/core@0.152.0
+  - @cotal-ai/workspace@0.152.0
+
+## 0.151.3
+
+### Patch Changes
+
+- 6b64880: Refuse chat sends before publishing when a space's chat stream is absent, and report that absence in the connection state. Preserve unknown outcomes for lost publish acknowledgements and unconfirmed session retirement.
+- 35ddf95: A connected chat session ends and says its inbox is gone when a manager restart removes that inbox.
+  
+  The endpoint warns as soon as the broker reports that DM consumer deleted, and the session closes with that reason instead of staying connected with no record. The process exits 5 when the connection close is confirmed, including when the old manager does not answer the retirement. A later send to the old name is refused rather than stored (#6017).
+- 15b04d7: `cotal completion` accepts a shell startup file that your own user private group can write. Atomic replacements preserve its group and mode, and validate the temporary file before writing shell content.
+  
+  On a host whose default umask is 002, a `~/.bashrc` or `~/.zshrc` you own is left group-writable. Completion treated every group-writable file as unsafe, so `cotal completion` exited 4 and `cotal completion install` refused it while still telling you to run the install. A group-writable file or folder you own is now accepted when its group is your proven user private group and it has no extended ACL, the same rule as every other protected path. A file another account could write, a symlink, and a file you do not own are still refused. When a `chmod` fixes the file, `cotal completion` offers that `chmod` before `install`. A path that contains the words of the following sentence stays whole in that command.
+- 97e0466: Keep the daemon mode and accepted target in JSON failure reports. The shared operation scope carries this context to the existing error renderer without changing outcomes, exit codes or credential handling.
+- a0eaa04: The guided service add form now shows a preset option's default and treats Enter as leaving that option to it.
+  
+  Typing a value still uses that value. An empty answer leaves the option to its default, including Enter on a yes-or-no option, and an option with no default stays required. The flag form is unchanged.
+- d948e5e: A membership follow stays running through a broker outage that lasts longer than the connection's own reconnect.
+  
+  When the watch closes, the follow reports the lost connection once and reads the feed again once the endpoint re-establishes it. The gap and the current census follow, and the follow ends on an interrupt or a credential that can no longer connect (#6041).
+- de5f4e4: Keep an unacknowledged send's outcome unknown if its stream is later deleted. A later missing-stream observation cannot prove the message was never stored; refusals established before publishing remain unchanged.
+- 1ed400a: A cut `cotal watch` line names `cotal history <channel> --json`, the read that returns the whole message, and a cut history row counts the omitted text in code units, the same measure watch uses.
+- Updated dependencies [6b64880]
+- Updated dependencies [35ddf95]
+- Updated dependencies [15b04d7]
+- Updated dependencies [97e0466]
+  - @cotal-ai/workspace@0.151.3
+  - @cotal-ai/core@0.151.3
+
+## 0.151.2
+
+### Patch Changes
+
+- 1d47635: `cotal backup inspect` now refuses an artifact whose declared file is a symbolic link, FIFO or device, naming that file and the fault `not-regular`.
+  
+  Verify and restore already refused that file. Inspect checked the declared names and then reported the artifact as fine, so an operator who inspected before restoring was told a copy that cannot be restored was sound.
+- 0adb23c: A refused slash command in chat clears the input line.
+  
+  The refusal stays in the transcript, and the next command is typed on an empty line. A line kept because the session is not connected, a send is in flight, or no recipient is chosen stays. `/reply` with text says that it only chooses the recipient and that the message is typed after it.
+- f2f0a2b: Guided service and endpoint forms validate answers at each question so invalid input can be corrected without losing earlier answers.
+  
+  Preset answers use the option schema and path checks, including the broker server's existing address restrictions. Imports and endpoint references are checked before the form advances, and whole-definition validation remains in place before saving.
+- b709d87: A foreground `cotal up` on the retained launcher exits 130 on Ctrl-C and 143 on SIGTERM. A space named after its folder keeps its registration when that stop finishes.
+- 014d1d3: Let a file-form teardown dry-run inspect the recorded stack when no additive ledger exists, with consistent text and structured output. Keep explicit run selection and legacy ledger previews on their existing teardown path without requiring launch-time persona files. When file-form apply finds a recorded stack without an additive ledger, name the bare stack stop instead of suggesting an unknown run ID.
+- Updated dependencies [0adb23c]
+  - @cotal-ai/workspace@0.151.2
+  - @cotal-ai/core@0.151.2
+
 ## 0.151.1
 
 ### Patch Changes

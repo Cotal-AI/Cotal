@@ -1,7 +1,7 @@
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, isCommandFailure, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, verifiedExtensionServicePresets, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, isCommandFailure, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
 import { cliVersion } from "./version.js";
@@ -156,18 +156,10 @@ export function presetDefaultOptions(preset: ServicePreset, space: string, root:
   return filled;
 }
 
-/** `verb` is the command a refusal for a missing option repeats: `add <name>` or `start`. */
-export function servicePresetDefinition(preset: ServicePreset, space: string, given: ParsedArgs["values"], root: string, verb = "add <name>", migrate = true): ServiceDefinitionInput {
+/** The option values `values` names, parsed as the preset declares them. A value that is not its
+ *  declared JSON, or that is too long, is the same usage refusal either caller reports. */
+function parsedPresetOptions(preset: ServicePreset, values: ParsedArgs["values"]): Record<string, unknown> {
   const { properties } = optionProperties(preset), options: Record<string, unknown> = {};
-  const flags = servicePresetFlags(preset);
-  const missing = presetMissingOptions(preset, given);
-  const line = verb === "start" ? `cotal service start ${preset.name}` : `cotal service ${verb} --preset ${preset.name}`;
-  // The line also names each default this space cannot fill, so it works the first time it is run.
-  if (missing.length) {
-    const unfilled = presetUnfilledDefaults(preset, space, root, given);
-    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: `${line} ${[...missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()), ...unfilled.map((row) => `--${row.name} ${row.value}`)].join(" ")}`, selfContained: true, remedyIsCommand: true });
-  }
-  const values: ParsedArgs["values"] = { ...presetDefaultOptions(preset, space, root, given, migrate), ...given };
   for (const [option, schema] of Object.entries(properties)) {
     const name = presetFlagName(option), value = values[name], negative = values[`no-${name}`];
     if (value !== undefined && negative !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a preset boolean option and its negative form cannot both be supplied");
@@ -184,11 +176,44 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
     } else if (schema.type === "string") options[option] = value;
     else {
       try { options[option] = JSON.parse(value); }
-      catch { throw new CommandFailure("refused", "USAGE_INVALID", `--${name} is not valid JSON for its declared ${String(schema.type)} type; numeric values use JSON number syntax and bodies are not echoed`); }
+      catch { throw new CommandFailure("refused", "USAGE_INVALID", `--${name} is not valid JSON for its declared ${String(schema.type)} type; numeric values use JSON number syntax and bodies are not echoed`, { selfContained: true }); }
       const over = overLongItem(options[option], schema);
-      if (over) throw new CommandFailure("refused", "USAGE_INVALID", `--${name} argument ${over.index + 1} has ${over.length} characters, and each holds at most ${over.max}; the value was not printed`);
+      if (over) throw new CommandFailure("refused", "USAGE_INVALID", `--${name} argument ${over.index + 1} has ${over.length} characters, and each holds at most ${over.max}; the value was not printed`, { selfContained: true });
     }
   }
+  return options;
+}
+
+/** The refusal for one answer, from the same parse and closed schema {@link servicePresetDefinition}
+ *  uses. The other options are absent, so only this answer is judged. */
+export function presetOptionRefusal(preset: ServicePreset, name: string, value: string): string | undefined {
+  const option = Object.keys(optionProperties(preset).properties).find((option) => presetFlagName(option) === name);
+  if (!option) return `--${name} is not an option of the ${preset.name} preset`;
+  let parsed: unknown;
+  try { parsed = parsedPresetOptions(preset, { [name]: value })[option]; }
+  catch (error) { return isCommandFailure(error) ? error.message : String(error); }
+  const { adapter } = optionProperties(preset);
+  const label = (key: string) => `--${presetFlagName(key)}`;
+  try {
+    validateServiceAdapterOptions({ ...adapter.declaration, optionsSchema: { ...adapter.declaration.optionsSchema, required: [] } }, { [option]: parsed }, label);
+    if (adapter.declaration.paths?.[option]) validateServiceAdapterPaths(adapter.declaration, { [option]: parsed }, label);
+  }
+  catch (error) { return isCommandFailure(error) ? error.message : String(error); }
+  return undefined;
+}
+
+/** `verb` is the command a refusal for a missing option repeats: `add <name>` or `start`. */
+export function servicePresetDefinition(preset: ServicePreset, space: string, given: ParsedArgs["values"], root: string, verb = "add <name>", migrate = true): ServiceDefinitionInput {
+  const flags = servicePresetFlags(preset);
+  const missing = presetMissingOptions(preset, given);
+  const line = verb === "start" ? `cotal service start ${preset.name}` : `cotal service ${verb} --preset ${preset.name}`;
+  // The line also names each default this space cannot fill, so it works the first time it is run.
+  if (missing.length) {
+    const unfilled = presetUnfilledDefaults(preset, space, root, given);
+    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: `${line} ${[...missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()), ...unfilled.map((row) => `--${row.name} ${row.value}`)].join(" ")}`, selfContained: true, remedyIsCommand: true });
+  }
+  const values: ParsedArgs["values"] = { ...presetDefaultOptions(preset, space, root, given, migrate), ...given };
+  const options = parsedPresetOptions(preset, values);
   // A refused option value is named by the flag the person typed, and the preset's help says what each takes.
   try { resolveServiceAdapter(preset.adapter, options, true, (option) => `--${presetFlagName(option)}`); }
   catch (error) {

@@ -366,7 +366,7 @@ log("rounds", rounds, r.status);`,
   ],
   [
     "notify and monitor, which journal and answer nothing",
-    'const a = await spawn("one");\nawait notify([a], { decision: "build", outcome: "blocked" });\nawait monitor([a], { name: "m" });\nlog("done");',
+    'const a = await spawn("one");\nawait notify([a], { decision: "build", outcome: "blocked" });\nawait monitor(a, { name: "m" });\nlog("done");',
     {},
   ],
   // `waitUntil` ON BOTH ENGINES, and the row is deliberately one that OBSERVES MORE THAN ONCE. A

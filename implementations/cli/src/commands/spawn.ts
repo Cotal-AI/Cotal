@@ -145,7 +145,7 @@ import { askManagerFolder, askSpawnPlace, managerPin, managerSelection, managers
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
-import { callerHarness, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { callerHarness, missingConnector, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -549,13 +549,6 @@ export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRe
  *  true, so the import's own refusal reports it. */
 function connectorListed(name: string): boolean {
   try { return manifestExtensionNames("connector").includes(name); } catch { return true; }
-}
-
-/** The refusal for a harness with no installed connector, naming the package when it is official. */
-function missingConnector(name: string, target: object): CommandFailure {
-  const pkg = OFFICIAL_CONNECTORS[name];
-  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no connector "${name}" is installed`, { target,
-    remedy: pkg ? `add it with \`cotal ext add ${pkg}\`` : "install its integration with `cotal ext add <npm-package>`, or check the name" });
 }
 
 /** #867: the name a spawn sends must already be a mintable identity, and the check must not wait

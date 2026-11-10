@@ -12,7 +12,7 @@
  * Run: pnpm smoke:completion-status
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { assertSmokeSandboxDown, createSuite } from "@cotal-ai/smoke-kit";
@@ -24,6 +24,9 @@ if (!existsSync(BIN)) {
 }
 const { check, finish } = createSuite();
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "ZDOTDIR" && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
+// A fixture that tests a group-writable path sets that mode itself. Everything else is created at
+// 0755, including on a host whose umask would otherwise make a new directory 0775.
+process.umask(0o022);
 const roots: string[] = [];
 process.on("exit", () => {
   for (const dir of roots) rmSync(dir, { recursive: true, force: true });
@@ -69,6 +72,49 @@ const outcomeOf = (stdout: string): unknown => {
     return undefined;
   }
 };
+
+/** A supplementary group id, when this account has one. */
+function supplementaryGroup(): string | undefined {
+  const gid = process.getgid?.();
+  return spawnSync("id", ["-G"], { encoding: "utf8" }).stdout.trim().split(/\s+/).find((value) => /^\d+$/.test(value) && value !== String(gid ?? ""));
+}
+
+/** Whether `chgrp` put every path in `gid`, as stat reports it afterwards. */
+function assignedGroup(gid: string, paths: string[]): boolean {
+  if (spawnSync("chgrp", [gid, ...paths], { encoding: "utf8" }).status !== 0) return false;
+  return paths.every((path) => spawnSync("stat", ["-c", "%g", path], { encoding: "utf8" }).stdout.trim() === gid);
+}
+
+/** Whether getent shows that the caller's primary group is a user private group. */
+function primaryGroupIsPrivate(): boolean {
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  if (uid === undefined || gid === undefined) return false;
+  const self = spawnSync("getent", ["passwd", String(uid)], { encoding: "utf8" });
+  const group = spawnSync("getent", ["group", String(gid)], { encoding: "utf8" });
+  const all = spawnSync("getent", ["passwd"], { encoding: "utf8" });
+  if (self.status !== 0 || group.status !== 0 || all.status !== 0) return false;
+  const fields = self.stdout.split(":");
+  const name = fields[0];
+  if (!name || Number(fields[3]) !== gid) return false;
+  const members = (group.stdout.split(":")[3] ?? "").trim().split(",").filter(Boolean);
+  if (members.some((member) => member !== name)) return false;
+  return !all.stdout.split("\n").some((row) => {
+    const account = row.split(":");
+    return account[0] !== "" && Number(account[2]) !== uid && Number(account[3]) === gid;
+  });
+}
+
+/** A PATH that still has getent but not `command`, so a missing-tool refusal is that tool's. */
+function pathWithout(command: string): string | undefined {
+  if (spawnSync("sh", ["-c", `command -v ${command}`], { encoding: "utf8" }).status !== 0) return undefined;
+  const bin = mkdtempSync(join(tmpdir(), "cotal-completion-path-"));
+  roots.push(bin);
+  const getent = spawnSync("sh", ["-c", "command -v getent"], { encoding: "utf8" }).stdout.trim();
+  if (!getent) return undefined;
+  symlinkSync(getent, join(bin, "getent"));
+  return bin;
+}
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 // ── Status on a fresh machine ─────────────────────────────────────────────────────────────────────
@@ -206,52 +252,164 @@ if (process.platform !== "win32") {
   check("the report warns that the rc is a symlink", report.status === 4 && reportEnv?.warnings.some((w: { code: string; message: string }) => w.code === "COMPLETION_UNREADABLE" && w.message === `${rc} is a symlink, which completion does not follow; its contents were not printed`) === true, shown(report));
 }
 
-// ── a group-writable startup file and stub folder, as umask 002 leaves them, share one refusal ──────
+// ── a startup file another local account could write, and a stub folder it could write, share one refusal ─
 // The file used to get "shell integration needs an owned, bounded regular file" with no path or chmod.
+// Group write is accepted only for the caller's proven user private group, so this case uses a shared group.
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const s = sandbox("/bin/bash");
   const rc = join(s.home, ".bashrc");
   const folder = join(s.xdg, "cotal");
+  const shared = supplementaryGroup();
   writeFileSync(rc, "# mine\n");
   chmodSync(rc, 0o664);
   mkdirSync(folder, { recursive: true });
   chmodSync(folder, 0o775);
-  const refused = s.run(["completion", "install", "bash", "--json"]);
-  const error = refused.stdout.startsWith("{") ? JSON.parse(refused.stdout).error : undefined;
-  check("install refuses a group-writable rc and stub folder at once, exit 2, naming each with its mode and writing nothing", refused.status === 2 && error?.code === "PERMISSION_DENIED" && error.message.includes(`${rc} is writable by group or others (mode 0664)`) && error.message.includes(`${folder} is writable by group or others (mode 0775)`) && readdirSync(folder).length === 0 && readFileSync(rc, "utf8") === "# mine\n", shown(refused));
-  const report = s.run(["completion", "--json"]);
-  const reportEnv = report.stdout.startsWith("{") ? JSON.parse(report.stdout) : undefined;
-  check("the report names the rc and its mode", report.status === 4 && reportEnv?.warnings.some((w: { code: string; message: string }) => w.code === "COMPLETION_UNREADABLE" && w.message.startsWith(`${rc} is writable by group or others (mode 0664)`)) === true, shown(report));
-  const chmod = /^(chmod go-w [^;]+) and run the command again/.exec(error?.remedy ?? "")?.[1];
-  const fixed = chmod ? spawnSync("sh", ["-c", chmod], { encoding: "utf8" }) : undefined;
-  const installed = s.run(["completion", "install", "bash"]);
-  check("running its one chmod lets install wire the rc", chmod === `chmod go-w ${rc} ${folder}` && fixed?.status === 0 && installed.status === 0 && readFileSync(rc, "utf8").includes(join(folder, "completion.bash")), { chmod, install: shown(installed) });
+  const assigned = shared !== undefined && assignedGroup(shared, [rc, folder]);
+  check("a shared-group file refusal runs only after chgrp puts it in a supplementary group", shared === undefined || assigned, { shared, assigned });
+  if (assigned) {
+    const refused = s.run(["completion", "install", "bash", "--json"]);
+    const error = refused.stdout.startsWith("{") ? JSON.parse(refused.stdout).error : undefined;
+    check("install refuses a group-writable rc and stub folder at once, exit 2, naming each with its mode and writing nothing", refused.status === 2 && error?.code === "PERMISSION_DENIED" && error.message.includes(`${rc} is group-writable and its group is not your primary group (mode 0664)`) && error.message.includes(`${folder} is group-writable and its group is not your primary group (mode 0775)`) && readdirSync(folder).length === 0 && readFileSync(rc, "utf8") === "# mine\n", shown(refused));
+    const report = s.run(["completion", "--json"]);
+    const reportEnv = report.stdout.startsWith("{") ? JSON.parse(report.stdout) : undefined;
+    check("the report names the rc and its mode", report.status === 4 && reportEnv?.warnings.some((w: { code: string; message: string }) => w.code === "COMPLETION_UNREADABLE" && w.message.startsWith(`${rc} is group-writable and its group is not your primary group (mode 0664)`)) === true, shown(report));
+    const text = s.run(["completion"]);
+    const next = text.stdout.slice(text.stdout.indexOf("Next"));
+    check("Next offers the file chmod before install", text.status === 4 && next.indexOf(`chmod g-w ${rc}`) >= 0 && next.indexOf(`chmod g-w ${rc}`) < next.indexOf("cotal completion install bash"), shown(text));
+    const chmod = /^(chmod g-w [^;]+) and run the command again/.exec(error?.remedy ?? "")?.[1];
+    const fixed = chmod ? spawnSync("sh", ["-c", chmod], { encoding: "utf8" }) : undefined;
+    const installed = s.run(["completion", "install", "bash"]);
+    check("running its one chmod lets install wire the rc", chmod === `chmod g-w ${rc} ${folder}` && fixed?.status === 0 && installed.status === 0 && readFileSync(rc, "utf8").includes(join(folder, "completion.bash")), { chmod, install: shown(installed) });
+  }
 }
 
-// ── a group-writable config folder with nothing installed is one named warning and a complete report ─
+// The words that follow a chmod in a refusal can also occur inside a shell-quoted path. Next has to
+// offer the whole command, not stop at the first copy of those words.
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const parent = sandbox("/bin/bash");
+  const home = join(parent.home, "home and run the command again suffix");
+  const rc = join(home, ".bashrc");
+  mkdirSync(home);
+  writeFileSync(rc, "# mine\n");
+  chmodSync(rc, 0o664);
+  const shared = supplementaryGroup();
+  const assigned = shared !== undefined && assignedGroup(shared, [rc]);
+  check("a quoted path whose name contains the remedy wording is grouped before its chmod is checked", shared === undefined || assigned, { shared, assigned });
+  if (assigned) {
+    const text = parent.run(["completion"], { HOME: home, USERPROFILE: home });
+    const command = text.stdout.split("\n").map((line) => line.trim()).find((line) => line.startsWith("chmod "))?.split("  ")[0];
+    const syntax = command ? spawnSync("/bin/sh", ["-n", "-c", command], { encoding: "utf8" }) : undefined;
+    const install = parent.run(["completion", "install", "bash", "--json"], { HOME: home, USERPROFILE: home });
+    const remedy = install.stdout.startsWith("{") ? JSON.parse(install.stdout).error?.remedy : undefined;
+    check("Next offers the whole quoted chmod, and install's remedy is that command plus its trailing sentence", text.status === 4 && command === `chmod g-w '${rc}'` && syntax?.status === 0 && typeof remedy === "string" && remedy.startsWith(`${command} and run the command again`), { command, syntax: syntax?.stderr, remedy });
+  }
+}
+
+// A startup file left group-writable by umask 002 is accepted when its group is the caller's proven
+// user private group and it has no extended ACL. getfacl has to be installed, and the primary group
+// has to be private. A host that has neither does not assert the acceptance.
+if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfacl", ["--version"], { encoding: "utf8" }).status === 0 && primaryGroupIsPrivate()) {
+  const s = sandbox("/bin/bash");
+  const rc = join(s.home, ".bashrc");
+  writeFileSync(rc, "# mine\n");
+  chmodSync(rc, 0o664);
+  const status = s.run(["completion"]);
+  const installed = s.run(["completion", "install", "bash"]);
+  check("install accepts a group-writable rc in the caller's user private group, exit 0, and the status does not warn", status.status === 0 && !status.stderr.includes("group-writable") && installed.status === 0 && readFileSync(rc, "utf8").includes("completion.bash"), { status: shown(status), install: shown(installed) });
+  const group = supplementaryGroup();
+  if (group) {
+    const inherited = sandbox("/bin/bash");
+    const startup = join(inherited.home, ".bashrc");
+    const original = "# private-group startup\n";
+    writeFileSync(startup, original);
+    chmodSync(startup, 0o664);
+    const gid = statSync(startup).gid;
+    check("the setgid regression has a supplementary-group parent", assignedGroup(group, [inherited.home]));
+    chmodSync(inherited.home, 0o2750);
+    const install = inherited.run(["completion", "install", "bash", "--json"]);
+    check("install preserves the startup file's private group and mode under a setgid parent",
+      install.status === 0 && statSync(startup).gid === gid && (statSync(startup).mode & 0o777) === 0o664, shown(install));
+    const after = inherited.run(["completion", "--json"]);
+    check("the replacement remains safe on the next status read", after.status === 0, shown(after));
+    const uninstall = inherited.run(["completion", "uninstall", "bash", "--json"]);
+    check("uninstall also preserves the private group, mode and original text",
+      uninstall.status === 0 && statSync(startup).gid === gid && (statSync(startup).mode & 0o777) === 0o664 && readFileSync(startup, "utf8") === original, shown(uninstall));
+  }
+  const barePath = pathWithout("getfacl");
+  if (barePath) {
+    const bare = sandbox("/bin/bash");
+    const bareRc = join(bare.home, ".bashrc");
+    writeFileSync(bareRc, "# mine\n");
+    chmodSync(bareRc, 0o664);
+    const bareStatus = bare.run(["completion"], { PATH: barePath });
+    const bareNext = bareStatus.stdout.slice(bareStatus.stdout.indexOf("Next"));
+    check("without getfacl, Next offers chmod before install", bareStatus.status === 4 && bareStatus.stderr.includes("getfacl is not installed") && bareNext.indexOf(`chmod g-w ${bareRc}`) >= 0 && bareNext.indexOf(`chmod g-w ${bareRc}`) < bareNext.indexOf("cotal completion install bash"), shown(bareStatus));
+    const bareInstall = bare.run(["completion", "install", "bash"], { PATH: barePath });
+    check("without getfacl, install refuses and writes nothing", bareInstall.status === 2 && !existsSync(join(bare.xdg, "cotal")), shown(bareInstall));
+  }
+  if (spawnSync("setfacl", ["--version"], { encoding: "utf8" }).status === 0) {
+    const acl = sandbox("/bin/bash");
+    const aclRc = join(acl.home, ".bashrc");
+    writeFileSync(aclRc, "# mine\n");
+    chmodSync(aclRc, 0o664);
+    const granted = spawnSync("setfacl", ["-m", "u:nobody:rw", aclRc], { encoding: "utf8" });
+    check("an extended ACL can be granted on the private-group file", granted.status === 0, { stderr: granted.stderr.slice(0, 200) });
+    if (granted.status === 0) {
+      const aclStatus = acl.run(["completion"]);
+      const aclNext = aclStatus.stdout.slice(aclStatus.stdout.indexOf("Next"));
+      const aclInstall = acl.run(["completion", "install", "bash"]);
+      check("an extended ACL offers chmod before install and install writes nothing", aclStatus.status === 4 && aclStatus.stderr.includes("extended ACL") && aclNext.indexOf(`chmod g-w ${aclRc}`) >= 0 && aclNext.indexOf(`chmod g-w ${aclRc}`) < aclNext.indexOf("cotal completion install bash") && aclInstall.status === 2 && !existsSync(join(acl.xdg, "cotal")), { status: shown(aclStatus), install: shown(aclInstall) });
+    }
+  }
+}
+
+// The acceptance above needs getfacl. When it is not installed, a group-writable file in the proven
+// private group is still refused, and the status offers its chmod before install.
+if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfacl", ["--version"], { encoding: "utf8" }).status !== 0 && primaryGroupIsPrivate()) {
+  const bare = sandbox("/bin/bash");
+  const bareRc = join(bare.home, ".bashrc");
+  writeFileSync(bareRc, "# mine\n");
+  chmodSync(bareRc, 0o664);
+  const bareStatus = bare.run(["completion"]);
+  const bareNext = bareStatus.stdout.slice(bareStatus.stdout.indexOf("Next"));
+  check("without getfacl, Next offers chmod before install", bareStatus.status === 4 && bareStatus.stderr.includes("getfacl is not installed") && bareNext.indexOf(`chmod g-w ${bareRc}`) >= 0 && bareNext.indexOf(`chmod g-w ${bareRc}`) < bareNext.indexOf("cotal completion install bash"), shown(bareStatus));
+  const bareInstall = bare.run(["completion", "install", "bash"]);
+  check("without getfacl, install refuses and writes nothing", bareInstall.status === 2 && !existsSync(join(bare.xdg, "cotal")), shown(bareInstall));
+}
+
+// ── a config folder a shared group can write, with nothing installed, is one named warning and a complete report ─
 // It used to be exit 4 for absent files, with an unnamed ownership line per shell and a Next that refused.
+// The caller's user private group is accepted, so the folder is given a group that is not primary.
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const s = sandbox("/bin/bash");
+  const shared = supplementaryGroup();
   mkdirSync(s.xdg);
   chmodSync(s.xdg, 0o775);
-  const report = s.run(["completion", "--json"]);
-  const env = report.stdout.startsWith("{") ? JSON.parse(report.stdout) as { outcome: string; warnings: { code: string; message: string }[]; result: { shells: { shell: string; state: string; ownership: string }[] } } : undefined;
-  const fix = `chmod go-w ${s.xdg}`;
-  check("absent files under a group-writable config folder are missing and the report is complete, exit 0",
-    report.status === 0 && env?.outcome === "ok" && ["bash", "zsh", "fish"].every((shell) => env.result.shells.some((row) => row.shell === shell && row.state === "missing" && row.ownership === "unrecorded")), shown(report));
-  check("the folder is one warning naming it, its mode and the chmod that fixes it",
-    env?.warnings.length === 1 && env.warnings[0]!.code === "COMPLETION_FOLDER_UNSAFE" && env.warnings[0]!.message === `${s.xdg} is writable by group or others (mode 0775); completion does not open the bash, zsh and fish completion files under it, and install and uninstall refuse there; ${fix} fixes it`, env?.warnings);
-  const text = s.run(["completion"]);
-  const next = text.stdout.slice(text.stdout.indexOf("Next"));
-  check("Next offers the chmod first, then install, and no uninstall with nothing installed",
-    text.status === 0 && next.trimStart().startsWith(`Next\n  ${fix} `) && /cotal completion install bash/.test(next) && !/cotal completion uninstall/.test(next) && text.stderr.split("\n").filter((line) => line.startsWith("!")).length === 1, shown(text));
+  const assigned = shared !== undefined && assignedGroup(shared, [s.xdg]);
+  check("a shared-group folder warning runs only after chgrp puts it in a supplementary group", shared === undefined || assigned, { shared, assigned });
+  if (assigned) {
+    const report = s.run(["completion", "--json"]);
+    const env = report.stdout.startsWith("{") ? JSON.parse(report.stdout) as { outcome: string; warnings: { code: string; message: string }[]; result: { shells: { shell: string; state: string; ownership: string }[] } } : undefined;
+    const fix = `chmod g-w ${s.xdg}`;
+    check("absent files under a group-writable config folder are missing and the report is complete, exit 0",
+      report.status === 0 && env?.outcome === "ok" && ["bash", "zsh", "fish"].every((shell) => env.result.shells.some((row) => row.shell === shell && row.state === "missing" && row.ownership === "unrecorded")), shown(report));
+    check("the folder is one warning naming it, its mode and the chmod that fixes it",
+      env?.warnings.length === 1 && env.warnings[0]!.code === "COMPLETION_FOLDER_UNSAFE" && env.warnings[0]!.message === `${s.xdg} is group-writable and its group is not your primary group (mode 0775); completion does not open the bash, zsh and fish completion files under it, and install and uninstall refuse there; chmod g-w ${s.xdg} fixes it`, env?.warnings);
+    const text = s.run(["completion"]);
+    const next = text.stdout.slice(text.stdout.indexOf("Next"));
+    check("Next offers the chmod first, then install, and no uninstall with nothing installed",
+      text.status === 0 && next.trimStart().startsWith(`Next\n  ${fix} `) && /cotal completion install bash/.test(next) && !/cotal completion uninstall/.test(next) && text.stderr.split("\n").filter((line) => line.startsWith("!")).length === 1, shown(text));
+  }
   chmodSync(s.xdg, 0o700);
   check("the install Next offers then works", s.run(["completion", "install", "bash"]).status === 0);
-  chmodSync(s.xdg, 0o775);
-  const installed = s.run(["completion"]);
-  const installedNext = installed.stdout.slice(installed.stdout.indexOf("Next"));
-  check("with files under the folder the report is partial, and Next offers the chmod and no install or uninstall that would refuse",
-    installed.status === 4 && installedNext.includes(fix) && !/cotal completion (?:un)?install/.test(installedNext) && /fix the folder the warning names/.test(installed.stderr), shown(installed));
+  if (assigned && assignedGroup(shared!, [s.xdg])) {
+    chmodSync(s.xdg, 0o770);
+    const installed = s.run(["completion"]);
+    const installedNext = installed.stdout.slice(installed.stdout.indexOf("Next"));
+    const fix = `chmod g-w ${s.xdg}`;
+    check("with files under the folder the report is partial, and Next offers the chmod and no install or uninstall that would refuse",
+      installed.status === 4 && installedNext.includes(fix) && !/cotal completion (?:un)?install/.test(installedNext) && /fix the folder the warning names/.test(installed.stderr), shown(installed));
+  }
   chmodSync(s.xdg, 0o700);
 }
 
@@ -379,7 +537,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
 // the prepared space, as `space show` does.
 {
   const s = sandbox();
-  for (const words of [["run", "start", "--file", ""], ["run", "simulate", "p.cotal.js", "--handler", ""], ["auth", "mint", "x", "--out", ""], ["watch", "--creds", ""]]) {
+  for (const words of [["run", "start", "--file", ""], ["run", "simulate", "p.cotal.js", "--handler", ""], ["auth", "mint", "x", "--out", ""], ["watch", "--creds", ""], ["daemon", "serve", "--daemon-home", ""], ["daemon", "status", "--daemon-home", ""], ["daemon", "setup", "--daemon-home", ""]]) {
     const r = s.run(["__complete", ...words]);
     check(`${words.join(" ")} completes from the shell's file names`, r.status === 0 && r.stdout.trimEnd() === ":default", shown(r));
   }
@@ -531,6 +689,12 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("bash narrows them to the typed prefix", prefix.status === 0 && prefix.stdout === "plain.yaml\n", { status: prefix.status, stdout: prefix.stdout });
   const keys = bash(`cotal config set ""`);
   check("bash offers no file names where the value takes none", keys.status === 0 && keys.stdout.includes("color\n") && !keys.stdout.includes("plain.yaml"), { status: keys.status, stdout: keys.stdout });
+  const daemonHome = join(work, "daemon home");
+  mkdirSync(daemonHome, { mode: 0o700 });
+  const homes = bash(`cotal daemon serve --daemon-home "${join(work, "daemon")}"`);
+  check("bash completes an absolute daemon-home directory containing spaces", homes.status === 0 && homes.stdout === `${daemonHome}\n`, { status: homes.status, stdout: homes.stdout });
+  const idp = bash(`cotal daemon login --idp ""`);
+  check("bash does not offer paths for the daemon's provider URL", idp.status === 0 && idp.stdout.trim() === "", { status: idp.status, stdout: idp.stdout });
   const zshStub = s.run(["completion", "script", "zsh"]).stdout;
   check("the zsh stub calls _files for a path value", /\[\[ "\$directive" == default \]\] && _files/.test(zshStub), zshStub);
   if (spawnSync("zsh", ["-fc", "true"]).status === 0) {
@@ -586,7 +750,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const modes = offered(["space", "add", "x", "--mode"]);
   check("space add --mode offers its modes", exactly(modes, ["auth", "open", "user"]), shown(modes));
   const history = offered(["history", "--space", "rr"]);
-  check("history offers clear and the channels the space's personas declare", exactly(history, ["clear", "review"]), shown(history));
+  check("history offers clear, limit and the channels the space's personas declare", exactly(history, ["clear", "limit", "review"]), shown(history));
   const channel = offered(["channel", "remove", "--space", "rr"]);
   check("channel remove offers those channels", exactly(channel, ["review"]), shown(channel));
   for (const [words, values] of [[["send", "--space", "rr", "--channel"], ["review"]], [["chat", "--space", "rr"], ["review"]], [["spawn", "--space", "rr", "--subscribe"], ["review"]],
@@ -637,7 +801,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   renameSync(agents, `${agents}.away`);
   for (const words of declared) {
     const r = offered(words);
-    check(`${words.join(" ")} offers no declared value when the catalog folder does not exist`, exactly(r, words[0] === "history" ? ["clear"] : []), shown(r));
+    check(`${words.join(" ")} offers no declared value when the catalog folder does not exist`, exactly(r, words[0] === "history" ? ["clear", "limit"] : []), shown(r));
   }
   renameSync(`${agents}.away`, agents);
   // A path lets the shell complete file names; any other value does not.

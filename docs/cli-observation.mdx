@@ -118,8 +118,9 @@ comes back, after a broker restart too, the feed resumes and reports the transit
 `--plain` or a noninteractive invocation uses the attributed line stream. Interactive filters
 are not supported by that stream. A line carries at most 16,384 code units of a message's text, the
 observer stream's row bound. A longer message is cut there, and its line ends with the count not
-shown and the read that shows it whole: `cotal history <channel>`, or `cotal history --dms` for a
-direct message. Authenticated observer views keep direct messages out of
+shown and the read that carries the whole text: `cotal history <channel> --json`, or
+`cotal history --dms --json` for a direct message. A text or plain `history` row cuts a long message
+again. Authenticated observer views keep direct messages out of
 the channel tap. Opening this view never launches, stops or attaches an agent. If the reader
 of the stream closes it, as `| head` does, the observer stops at its next line, so on a quiet mesh it
 runs until a message arrives or Ctrl-C ends it with exit 130.
@@ -149,7 +150,9 @@ control request. Connection or authorization failure is an error, not an empty c
 
 `watch --view` accepts `feed`, `events`, `messages`, `roster`, `channels`, `waiting`, `dms` and
 `topology`; `activity` remains the feed spelling. The terminal cycles available views with `f`.
-Roster and waiting rows show reported state without inventing blocked duration. Channel counts
+The roster includes agents and endpoints, including chat sessions and the manager, with each
+participant's kind and identity. Waiting rows cover agents reporting a waiting state.
+Both views show reported state without inventing blocked duration. Channel counts
 keep retained messages separate from observed arrivals. Topology displays broker-sourced live
 patterns and durable channels, not task dependencies or permission grants. A durable family
 membership such as `team.>` links to each durable-class channel under it. Missing or unreadable

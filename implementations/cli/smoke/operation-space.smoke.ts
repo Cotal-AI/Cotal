@@ -13,7 +13,8 @@
  * saved keeps its draft and names it, a malformed `--on` names the command to rerun, and no create
  * takes the seeded default's launch name. Removing the seeded default says so, and a launch preview
  * refuses a missing persona as the launch does. A managed preview exits 0, and both previews name
- * the persona's source in words and warn about an unknown harness. A managed preview names its
+ * the persona's source in words. A direct preview refuses an unknown harness; a managed preview
+ * warns because its execution host is not checked. A managed preview names its
  * `--runtime` and what this host said about it, and `--runtime auto` is refused before anything is
  * resolved. No broker is started.
  *
@@ -192,12 +193,12 @@ const noFile = cotal("spawn", "--file", "missing.md", "--dry-run", "--json");
 check("spawn --dry-run of a missing --file names the file it checked",
   noFile.status === 2 && noFile.envelope?.error?.code === "TARGET_NOT_FOUND" && noFile.envelope.error.message === `no persona "missing.md": ${join(root, "missing.md")} was not found`, shown(noFile));
 const noDefault = cotal("spawn", "--dry-run", "--plain");
-check("spawn --dry-run with no default persona names cotal up in the space's root",
-  noDefault.status === 2 && noDefault.stderr.includes(`no default persona in ${catalog} (mesh "opsp")`) && noDefault.stderr.includes(`run \`cotal up\` in ${root} to write one`) && !noDefault.stderr.includes("team deploy"), shown(noDefault));
+check("spawn --dry-run with no default persona previews the shipped default without writing it",
+  noDefault.status === 0 && noDefault.stdout.includes("the launch writes the shipped default persona here; the preview wrote nothing") && !existsSync(agentFilePath(root, "default")), shown(noDefault));
 
-// A managed preview shows the request and exits 0. Both previews say where the persona came from in
-// words, and warn about a harness no connector here provides.
-interface Preview { requested?: { source?: string }; persona?: { source?: string } }
+// A managed preview cannot validate the execution host. A direct preview knows its effective
+// harness and refuses an unknown name before reporting success, regardless of its source.
+interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string }
 const managed = cotal("spawn", "-d", "nosuch", "--dry-run", "--json");
 const managedResult = (managed.envelope as unknown as { result?: Preview; completeness?: string } | undefined);
 check("a managed spawn --dry-run exits 0, not-checked, with the name's source as argument",
@@ -207,12 +208,32 @@ check("a managed preview warns about an unknown harness and labels the default p
   managedHarness.status === 0 && managedHarness.stderr.includes('! no harness "nosuch"; known harnesses:') && managedHarness.stdout.includes("Persona source:            the default persona") && !managedHarness.stdout.includes("explicit-or-product-default"), shown(managedHarness));
 writeFileSync(join(root, "pv.md"), "---\nname: pv\nrole: reviewer\nsubscribe: []\n---\n");
 const direct = cotal("spawn", "--file", "pv.md", "--harness", "nosuch", "--dry-run", "--json");
-const warnings = (direct.envelope as unknown as { warnings?: { code: string }[]; result?: Preview } | undefined);
-check("a direct preview of an unknown --harness exits 0 with a HARNESS_UNKNOWN warning and the file's source",
-  direct.status === 0 && same(warnings?.warnings?.map((w) => w.code), ["HARNESS_UNKNOWN"]) && warnings?.result?.persona?.source === "file", shown(direct));
-const fromEnv = outcome(spawnSync(process.execPath, [BIN, "spawn", "--file", "pv.md", "--dry-run", "--plain"], { cwd: root, env: { ...env, COTAL_DEFAULT_AGENT: "nosuch" }, encoding: "utf8", timeout: 120_000 }));
-check("a harness only COTAL_DEFAULT_AGENT chose gets the warning config gives",
-  fromEnv.status === 0 && fromEnv.stderr.includes('! COTAL_DEFAULT_AGENT: no harness "nosuch"') && fromEnv.stdout.includes("a persona file (--file)"), shown(fromEnv));
+check("a direct preview of an unknown --harness is refused DEPENDENCY_UNAVAILABLE, exit 2",
+  direct.status === 2 && direct.envelope?.outcome === "refused" && direct.envelope.error?.code === "DEPENDENCY_UNAVAILABLE"
+    && direct.envelope.error.message === 'no connector "nosuch" is installed' && direct.envelope.target?.space === "opsp"
+    && direct.envelope.target.path === join(root, "pv.md")
+    && direct.envelope.error.remedy === "install its integration with `cotal ext add <npm-package>`, or check the name", shown(direct));
+for (const format of [[], ["--plain"], ["--json"]]) {
+  const fromEnv = outcome(spawnSync(process.execPath, [BIN, "spawn", "--file", "pv.md", "--dry-run", ...format], { cwd: root, env: { ...env, COTAL_DEFAULT_AGENT: "nosuch" }, encoding: "utf8", timeout: 120_000 }));
+  check(`a harness only COTAL_DEFAULT_AGENT chose is refused in ${format[0] ?? "text"} output`,
+    fromEnv.status === 2 && (format[0] === "--json"
+      ? fromEnv.envelope?.outcome === "refused" && fromEnv.envelope.error?.code === "DEPENDENCY_UNAVAILABLE" && fromEnv.stderr === ""
+      : fromEnv.stdout === "" && fromEnv.stderr.includes('no connector "nosuch" is installed') && !fromEnv.stderr.includes("! ")), shown(fromEnv));
+}
+const uppercase = cotal("spawn", "--file", "pv.md", "--harness", "OPENCODE", "--dry-run", "--json");
+check("a direct preview refuses a case-mismatched harness without normalizing it",
+  uppercase.status === 2 && uppercase.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && uppercase.envelope.error.message === 'no connector "OPENCODE" is installed', shown(uppercase));
+const knownDirect = cotal("spawn", "--file", "pv.md", "--harness", "opencode", "--dry-run", "--json");
+const knownPreview = knownDirect.envelope as unknown as { result?: Preview; warnings?: unknown[] } | undefined;
+check("a known harness still previews the file's source without warnings or importing its connector",
+  knownDirect.status === 0 && knownPreview?.result?.harness === "opencode" && knownPreview.result.persona?.source === "file" && same(knownPreview.warnings, []), shown(knownDirect));
+writeFileSync(join(root, "pin.md"), "---\nname: pinned\nagent: nosuch\n---\n");
+const pinned = cotal("spawn", "--file", "pin.md", "--dry-run", "--json");
+check("an unknown persona harness pin is refused by a direct preview",
+  pinned.status === 2 && pinned.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && pinned.envelope.error.message === 'no connector "nosuch" is installed', shown(pinned));
+const overridden = outcome(spawnSync(process.execPath, [BIN, "spawn", "--file", "pin.md", "--harness", "opencode", "--dry-run", "--json"], { cwd: root, env: { ...env, COTAL_DEFAULT_AGENT: "nosuch" }, encoding: "utf8", timeout: 120_000 }));
+check("a valid explicit harness overrides an unknown persona pin and environment default",
+  overridden.status === 0 && (overridden.envelope as unknown as { result?: Preview } | undefined)?.result?.harness === "opencode", shown(overridden));
 
 // A managed preview names the runtime it asks for and what this host said about it. This sandbox has
 // no runtime extension installed, so only the built-in pty is available here.

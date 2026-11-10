@@ -1,5 +1,73 @@
 # @cotal-ai/runtime
 
+## 0.153.1
+
+### Patch Changes
+
+- 058a3e6: Run checks now identify unchanged programs, show both hashes for edits, and name terminal runs.
+  The read-only comparison no longer implies that it moves a run to another program or makes a completed or failed run resumable.
+- @cotal-ai/core@0.153.1
+  - @cotal-ai/lang@0.153.1
+  - @cotal-ai/workspace@0.153.1
+
+## 0.153.0
+
+### Patch Changes
+
+- d7888be: Hosted runs record their final status after a broker outage instead of remaining marked as running after the driver releases them. The manager retains the attempt while retrying the status write, including when NATS returns before JetStream, stops recovery when its connection closes, and never overwrites a successor's status.
+- 3d2e1f4: Simulation results files now report their path, cause and next step when they cannot be read or parsed, and accept a leading UTF-8 byte-order mark.
+  
+  The results-file reader shares the program reader's regular-file checks and keeps rejecting invalid UTF-8 before simulation.
+- Updated dependencies [b4eba66]
+- Updated dependencies [8d15e70]
+- Updated dependencies [7aaa5bf]
+- Updated dependencies [9bdc7f4]
+  - @cotal-ai/workspace@0.153.0
+  - @cotal-ai/core@0.153.0
+  - @cotal-ai/lang@0.153.0
+
+## 0.152.0
+
+### Minor Changes
+
+- d26134d: Workflow commands now require a regular source file and promptly refuse devices, FIFOs and sockets with their kind named.
+  Symlinks to regular files still work. Pipe and process substitution inputs, including pipes with a writer, must be saved to a regular file first.
+
+### Patch Changes
+
+- 4bd669c: Show an open checkpoint's declared schema in workflow status views.
+  Record it with the question and include it in both text and JSON output, without validating checkpoint answers against it.
+- 4b75e8b: Refuse simulation results files that are not valid UTF-8 instead of silently replacing their bytes.
+  The refusal names the handler file and asks for UTF-8 text before any simulation runs.
+- Updated dependencies [4bd669c]
+- Updated dependencies [1f4700a]
+- Updated dependencies [1fec76f]
+  - @cotal-ai/core@0.152.0
+  - @cotal-ai/workspace@0.152.0
+  - @cotal-ai/lang@0.152.0
+
+## 0.151.3
+
+### Patch Changes
+
+- Updated dependencies [6b64880]
+- Updated dependencies [35ddf95]
+- Updated dependencies [c854313]
+- Updated dependencies [15b04d7]
+- Updated dependencies [97e0466]
+  - @cotal-ai/workspace@0.151.3
+  - @cotal-ai/core@0.151.3
+  - @cotal-ai/lang@0.151.3
+
+## 0.151.2
+
+### Patch Changes
+
+- Updated dependencies [0adb23c]
+  - @cotal-ai/workspace@0.151.2
+  - @cotal-ai/core@0.151.2
+  - @cotal-ai/lang@0.151.2
+
 ## 0.151.1
 
 ### Patch Changes

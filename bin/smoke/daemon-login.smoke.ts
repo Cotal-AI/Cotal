@@ -527,6 +527,8 @@ try {
       const run = await runCli(rt, sBase);
       check("L14 the CLI exits non-zero for the failure", run.status !== 0 && run.status !== -1, { status: run.status, out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
       check("L14 instrument: the CLI reported a failed sign-in (failed, OPERATION_FAILED)", failedEnvelope(run.out), { status: run.status, out: run.out.slice(0, 600) });
+      const doc = JSON.parse(run.out) as { command?: string; target?: { idp?: string } };
+      check("L14 a failed sign-in retains its command and provider target", doc.command === "daemon login" && doc.target?.idp === sBase, doc);
       check("L14 neither stdout nor stderr carries the provider's text", !run.out.includes(needle) && !run.err.includes(needle), { out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
     } finally { await d.close(); }
   });
@@ -559,6 +561,7 @@ try {
       let doc: Record<string, any> = {};
       try { doc = JSON.parse(run.out) as Record<string, any>; } catch { /* reported below */ }
       check("L16 exit 2, refused PERMISSION_DENIED with native code DENIED", run.status === 2 && doc.outcome === "refused" && doc.error?.code === "PERMISSION_DENIED" && JSON.stringify(doc).includes("DENIED"), { status: run.status, out: run.out.slice(0, 400) });
+      check("L16 a denied sign-in retains its command and provider target", doc.command === "daemon login" && doc.target?.idp === sBase, doc);
       check("L16 nothing persisted", !sessionSaved(home));
     } finally { await d.close(); }
   });

@@ -119,11 +119,20 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
   let reference: EndpointReference;
   if (typeof args.values.file === "string") reference = importEndpointReference(resolve(args.values.file), space);
   else {
-    const nativeClass = await prompts.text({ message: "Native endpoint class", placeholder: "reviews" });
+    const nativeClass = await prompts.text({
+      message: "Native endpoint class", placeholder: "reviews",
+      validate: (value) => { try { validateEndpointReference({ schemaVersion: 1, space, endpoint: value?.trim() ? value : " " }, space); return undefined; } catch (error) { return error instanceof Error ? error.message : String(error); } },
+    });
     if (prompts.isCancel(nativeClass)) return cancelled();
-    const instance = await prompts.text({ message: "Full instance pin, or leave empty for class selection", defaultValue: "" });
+    const instance = await prompts.text({
+      message: "Full instance pin, or leave empty for class selection", defaultValue: "",
+      validate: (value) => { try { validateEndpointReference({ schemaVersion: 1, space, endpoint: nativeClass, ...(value ? { instanceId: value } : {}) }, space); return undefined; } catch (error) { return error instanceof Error ? error.message : String(error); } },
+    });
     if (prompts.isCancel(instance)) return cancelled();
-    const credential = await prompts.text({ message: "Protected caller credential file, or leave empty for the normal caller", defaultValue: "" });
+    const credential = await prompts.text({
+      message: "Protected caller credential file, or leave empty for the normal caller", defaultValue: "",
+      validate: (value) => { try { validateEndpointReference({ schemaVersion: 1, space, endpoint: nativeClass, ...(instance ? { instanceId: instance } : {}), ...(value ? { credentialRef: { kind: "file", path: value } } : {}) }, space); return undefined; } catch (error) { return error instanceof Error ? error.message : String(error); } },
+    });
     if (prompts.isCancel(credential)) return cancelled();
     reference = validateEndpointReference({ schemaVersion: 1, space, endpoint: nativeClass, ...(instance ? { instanceId: instance } : {}), ...(credential ? { credentialRef: { kind: "file", path: credential } } : {}) }, space);
   }
