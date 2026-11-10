@@ -543,6 +543,30 @@ try {
       check("C17b the space it did connect is untouched", stateOf(await statusS(ON)) === "connected");
     });
 
+    await cell("C17c setup stops on local record damage without waiting for an owner", async () => {
+      const file = join(home, "daemon", regFile(ON)!);
+      const original = readFileSync(file);
+      const marker = "PRIVATE_SETUP_RECORD_MARKER";
+      for (const phase of ["before-registration", "before-connect"]) {
+        await disconnectS(ON);
+        const lines: string[] = [];
+        let failure: Record<string, any> | undefined;
+        try {
+          if (phase === "before-registration") writeFileSync(file, marker);
+          const started = Date.now();
+          try {
+            await runSetup({ paths, daemonHome: undefined, space: ON, peerUid, peerPid, waitSeconds: 60,
+              report: (line) => { lines.push(line); if (phase === "before-connect" && line.startsWith("register: ")) writeFileSync(file, marker); },
+              onPrompt: () => { throw new Error("setup asked for an unnecessary sign-in"); } });
+          } catch (e) { failure = e as Record<string, any>; }
+          check(`C17c ${phase} refuses local state without the approval wait`, failure?.outcome === "refused" && failure?.code === "CONFLICT" && failure?.native?.code === "LOCAL_STATE_ERROR" && Date.now() - started < 5000, failure && { outcome: failure.outcome, code: failure.code, native: failure.native });
+          check(`C17c ${phase} keeps the damaged record private and creates no resume intent`, readFileSync(file, "utf8") === marker && !JSON.stringify({ lines, message: failure?.message }).includes(marker) && !existsSync(intentFile(ON)));
+        } finally { writeFileSync(file, original); }
+        const restored = await connectS(ON);
+        check(`C17c ${phase} restores the same registration and serves again`, stateOf(restored) === "connected" && readFileSync(file).equals(original) && (await probeMachine()).reply.ok);
+      }
+    });
+
     await cell("C16 an authority without issuer identity cannot start a serving daemon", async () => {
       await disconnectS(ON);
       withoutIssuer.add(ON);

@@ -39,8 +39,9 @@
  *  R11 (B1) the machine's IdP session is rejected (expired or revoked) before the first send: the
  *      daemon reports not-signed-in with the fixed sign-in sentence, never unconfirmed; 0 POST; the
  *      CLI refuses AUTH_REQUIRED (exit 2);
- *  R12 (F2) a refusal without a stock reason (here a malformed register request record, which the
- *      server's catch answers) is DEPENDENCY_UNAVAILABLE, not PERMISSION_DENIED; 0 POST;
+ *  R12 damaged local identity and registration records refuse CONFLICT / LOCAL_STATE_ERROR,
+ *      stay byte-identical, disclose no stored text and send 0 POST; restoring the original records
+ *      recovers the same identities. A real authority outage remains a dependency refusal;
  *  R13 (B2) schema: an answer carrying an unknown denial reason, an unknown pending phase or a
  *      proposal id of the wrong shape yields only fixed text in the frame. The CLI's only input is
  *      that frame, so its output cannot carry the remote text either.
@@ -166,11 +167,13 @@ const idpUrl = `${idpOrigin}/api/auth`;
 
 // Count every request reaching each public face's authority route, through a counting relay.
 const hits: Array<{ space: string; method: string; path: string }> = [];
+let dropAuthority = false;
 async function relay(space: string, target: string): Promise<string> {
   const s = createHttpServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     hits.push({ space, method: req.method ?? "", path: new URL(req.url!, "http://x").pathname });
+    if (dropAuthority) { req.socket.destroy(); return; }
     const up = await fetch(`${target}${req.url}`, { method: req.method, headers: { "content-type": req.headers["content-type"] ?? "application/json" }, body: chunks.length ? Buffer.concat(chunks) : undefined, redirect: "manual" });
     const headers: Record<string, string> = {};
     up.headers.forEach((v, k) => { if (k !== "content-length" && k !== "transfer-encoding") headers[k] = v; });
@@ -333,17 +336,6 @@ try {
       check("R6 the persisted requestId is unchanged (no fresh key)", regRecord(DENY)?.requestId === req1, regRecord(DENY));
     });
 
-    await cell("R12 (F2) a refusal without a stock reason is not a permission denial", async () => {
-      const f = regFile(DENY)!;
-      writeFileSync(join(home, "daemon", f), "{\"v\":1}");
-      const before = posts(DENY);
-      const r = await ask(paths.socket, { op: "register", space: DENY });
-      check("R12 instrument: the daemon answers refused with no reason", resultOf(r).outcome === "refused" && !("reason" in resultOf(r)), r);
-      const c = await cli(DENY);
-      check("R12 CLI refuses DEPENDENCY_UNAVAILABLE with exit 2", c.status === 2 && c.doc.error?.code === "DEPENDENCY_UNAVAILABLE", { status: c.status, out: c.out.slice(0, 400) });
-      check("R12 0 POST", posts(DENY) === before, hits.filter((h) => h.space === DENY));
-    });
-
     await cell("R13 (B2) unknown remote text never reaches the frame", async () => {
       const marker = "Zq9-remote-text-" + "x".repeat(100);
       const ids = { space: ON, requestId: "0".repeat(32), endpoint: "ai.cotal.machine", instanceId: "i" };
@@ -389,6 +381,46 @@ try {
       check("R9 daemon state holds no session handle, JWT, bearer or renewal proof", ![SESSION, ...jwtsIssued].some((s) => text.includes(s)) && !/accessBearer|renewalProof/.test(text), files);
       check("R9 no manager-instance file under the home or participant root", ![home, participant].some((p) => readdirSync(p, { recursive: true }).map(String).some((f) => f.includes("manager-instance"))));
     });
+    await cell("R12 local record failures differ from a remote outage", async () => {
+      const f = regFile(ON)!;
+      const requestFile = join(home, "daemon", f);
+      const identityFile = join(dirname(requestFile), "service-identity.json");
+      const records = [
+        { name: "identity", file: identityFile, modes: ["connect-check", "register", "service-connect"] },
+        { name: "registration", file: requestFile, modes: ["register", "service-connect"] },
+      ];
+      const connected = await cli(ON, "service-connect");
+      check("R12 control: valid records connect to the real broker and complete readiness", connected.status === 0 && connected.doc.result?.state === "connected", connected.doc);
+      await cli(ON, "service-disconnect");
+      const marker = "PRIVATE_LOCAL_RECORD_MARKER";
+      for (const record of records) {
+        const original = readFileSync(record.file);
+        try {
+          for (const damaged of [marker, JSON.stringify({ v: 1, secret: marker })]) {
+            writeFileSync(record.file, damaged);
+            for (const mode of record.modes) {
+              const before = posts(ON);
+              const c = await cli(ON, mode);
+              check(`R12 ${record.name} ${mode} identifies local state`, c.status === 2 && c.doc.error?.code === "CONFLICT" && c.doc.error?.cause?.code === "LOCAL_STATE_ERROR" && c.doc.command === `daemon ${mode}` && c.doc.target?.space === ON, { status: c.status, code: c.doc.error?.code, cause: c.doc.error?.cause });
+              check(`R12 ${record.name} ${mode} keeps the record, hides its contents and sends no POST`, readFileSync(record.file, "utf8") === damaged && !(c.out + c.err).includes(marker) && posts(ON) === before);
+            }
+            const status = await cli(ON, "service-status");
+            check(`R12 ${record.name} failure remains a local-state status`, status.status === 2 && status.doc.error?.code === "CONFLICT" && status.doc.error?.cause?.code === "LOCAL_STATE_ERROR", status.doc.error);
+          }
+        } finally { writeFileSync(record.file, original); }
+        const restored = await cli(ON, "service-connect");
+        check(`R12 restoring the original ${record.name} recovers without changing its identity`, restored.status === 0 && restored.doc.result?.state === "connected" && readFileSync(record.file).equals(original), restored.doc);
+        await cli(ON, "service-disconnect");
+      }
+      dropAuthority = true;
+      try {
+        const outage = await cli(ON, "connect-check");
+        check("R12 a real authority transport failure is still a dependency refusal", outage.status === 2 && outage.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && outage.doc.error?.cause?.code === "UNREACHABLE", outage.doc.error);
+      } finally { dropAuthority = false; }
+      const recovered = await cli(ON, "connect-check");
+      check("R12 the healthy authority remains usable after the outage", recovered.status === 0 && recovered.doc.result?.outcome === "ready-to-register", recovered.doc);
+    });
+
     await cell("R14 a separate daemon home uses its own session for registration and activation", async () => {
       const managed = join(root, "managed"); mkdirSync(managed, { mode: 0o700 });
       saveIdpSession(managed, idpUrl, { token: MANAGED_SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });

@@ -800,6 +800,13 @@ relays that sign-in proof. The request ID is saved before the first send, at
 after a restart, replays the same request unchanged. The stock writer does not guarantee durability
 across power loss.
 
+An identity or registration record that cannot be read or created refuses `CONFLICT`
+(`LOCAL_STATE_ERROR`), with fixed text naming the local records. Check their file permissions and
+restore the original record if it is damaged. Existing records are not replaced and their contents
+are not printed. `service-status` retains this diagnosis after a failed connection attempt, and
+`setup` stops instead of waiting for owner approval. Recovery must preserve the instance and request
+IDs; removing a damaged file to mint a new request is not an automatic repair.
+
 The fixed service name binds to one owner per space. Different owners in a shared space need distinct
 operator-approved endpoint names; this command does not yet select one. The operator must verify or
 delegate the namespace before binding it.
@@ -817,7 +824,7 @@ name. A refusal by the space is `PERMISSION_DENIED` with the space's reason as t
 as `PROPOSAL_REFUSED`. A reason the daemon does not recognize is reported as `UNRECOGNIZED`, and the
 space's own text is never shown. A new proposal after a refusal needs a new request, which `register`
 does not send. A sign-in the provider rejects (expired or revoked) is `AUTH_REQUIRED`: run
-`cotal daemon login` again. A failure before anything was sent is `DEPENDENCY_UNAVAILABLE`. Only a
+`cotal daemon login` again. An unreachable auth provider is `DEPENDENCY_UNAVAILABLE`. Only a
 request whose outcome is unconfirmed is `OPERATION_UNKNOWN`: run the same command again
 to replay it. A changed registration for the same instance is refused `CONFLICT` and nothing is sent.
 
