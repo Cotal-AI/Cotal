@@ -6,13 +6,15 @@
  *
  * The smallest port that joins, checks the model, creates ONE session, drives turns into it over
  * the authenticated HTTP API (`/api/session/:id/prompt` — 2.x has no `prompt_async`), registers the
- * cotal_* tools and maps the event stream to presence. Reuses `plugin.ts`'s exported seams
+ * cotal_* tools, maps the event stream to presence, and publishes the session's AG-UI event plane
+ * from its message list (`agui-source2.ts`, `agui-map2.ts`). Reuses `plugin.ts`'s exported seams
  * (env config, `MeshAgent` construction, `modelRefusalSentence`, `SurfacedBatch`, `settleWithin`)
  * rather than duplicating them; the model check and session/turn routes are 2.x's own
  * (`/api/model`, `/api/session`, `/api/session/:id/prompt`) because the 2.x response shapes
  * differ from 1.x's (`{data:...}` wrapping, no `prompt_async`).
  */
-import { loadAgentFile, type PresenceStatus } from "@cotal-ai/core";
+import { randomUUID } from "node:crypto";
+import { loadAgentFile, principalKey, type PresenceStatus } from "@cotal-ai/core";
 import {
   configFromEnv,
   eventPlaneArmed,
@@ -22,9 +24,20 @@ import {
   scrubLaunchMaterial,
   briefing,
   registerOnceExit,
+  AguiEmitter,
+  AguiEmitterHolder,
+  eventPlaneStopped,
+  BoundStartSource,
+  EventWal,
+  FileSubjectFrontier,
+  ensureEventWalDir,
+  resolveEventsStateRoot,
+  type PrincipalLock,
 } from "@cotal-ai/connector-core";
 import { modelRefusalSentence, SurfacedBatch, settleWithin } from "./plugin.js";
 import type { OpenCode2Context, OpenCode2Event } from "./opencode2-types.js";
+import { OpenCode2SessionSource, type OpenCode2MessagePage, type OpenCode2Record } from "./agui-source2.js";
+import { createOpenCode2Mapper } from "./agui-map2.js";
 import { buildCotalTools2 } from "./tools.js";
 
 function log(msg: string): void {
@@ -37,11 +50,6 @@ interface SetupState {
   ready: Promise<() => Promise<void>>;
 }
 const guard = globalThis as { __cotalOpencodeSetup?: SetupState };
-
-/** The 2.x `/api/session/:id/message` shape is `{data:[{type, text|content, model, agent}]}` and
- *  the `content` element shape was not measured, so `agui-source.ts` cannot read it truthfully. */
-const EVENTS_REFUSAL =
-  "opencode connector: the AG-UI event plane is not carried on OpenCode 2.x yet; spawn with --no-events";
 
 /** 2.x model check: `GET /api/model` lists the configured model directly (no `/provider.all`
  *  nesting to walk, unlike 1.x's `verifyServerModel`). Same refusal sentence shape, different
@@ -116,10 +124,8 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
 /** Validate and register one session before queuing its agent start. */
 async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>> {
   const config = configFromEnv();
-  if (eventPlaneArmed(config)) {
-    log(EVENTS_REFUSAL);
-    process.exit(1);
-  }
+  // Read before anything is queued, so an unreadable COTAL_EVENTS refuses with nothing started.
+  const eventsArmed = eventPlaneArmed(config);
   // Both readers of the launch material have now read it (the same rule as 1.x — see plugin.ts).
   scrubLaunchMaterial();
   config.connector = "opencode";
@@ -150,6 +156,60 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }
+
+  /** A session's message list, newest first, 200 messages a page (measured: the server refuses
+   *  more). A later page is named by its cursor alone, which carries the order. */
+  const sessionSource = (id: string): OpenCode2SessionSource =>
+    new OpenCode2SessionSource({
+      page: (next) =>
+        opencodeApi<OpenCode2MessagePage>(
+          `/api/session/${encodeURIComponent(id)}/message?limit=200&${next === undefined ? "order=desc" : `cursor=${encodeURIComponent(next)}`}`,
+          undefined,
+          30_000,
+        ),
+      onVanished: (cursor) => log(`AG-UI: the resume cursor was removed from the session (revert): ${cursor}`),
+    });
+
+  /** This principal's event WAL lock, held from the emitter's first start until teardown. */
+  let eventLock: PrincipalLock | undefined;
+
+  /**
+   * Publishes the session's activity as AG-UI events on `events.<owner>.<actor>`. It is bound to the
+   * one session this adapter creates, and reads that session from its first record: the session is
+   * new, so everything in it is this seat's to publish. Turn ends are records in the list, so no run
+   * is closed out of band and `sourceEnd` is never asked. The emitter starts on the first adopt and
+   * the holder starts it again after a failure, from the same source.
+   */
+  function eventHolder(): AguiEmitterHolder<OpenCode2Record> {
+    let bound: BoundStartSource<OpenCode2Record> | undefined;
+    return new AguiEmitterHolder<OpenCode2Record>(
+      async (id: string) => {
+        bound ??= new BoundStartSource(sessionSource(id), "");
+        await agent.whenConnected(20_000);
+        const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
+        const { walPath, subjectPath, lock } = await ensureEventWalDir({
+          workspaceRoot: resolveEventsStateRoot(process.env),
+          space: config.space,
+          principal,
+          threadId: id,
+        });
+        eventLock = lock;
+        const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
+        const wal = await EventWal.open(walPath, { space: config.space, threadId: id, principal, subjectMayExist: false });
+        // A re-established plane starts with the log's run open, so the mapper continues it.
+        const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
+        return AguiEmitter.start<OpenCode2Record>({
+          endpoint: agent.ep,
+          wal,
+          subjectFrontier,
+          source: bound,
+          map: createOpenCode2Mapper({ threadId: id, mintRunId: () => randomUUID(), resumeRunId }),
+        });
+      },
+      { onError: eventPlaneStopped({ log }), sourceEnd: (id) => sessionSource(id).end() },
+    );
+  }
+  const events = eventsArmed ? eventHolder() : undefined;
 
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const persona = def?.persona || undefined;
@@ -418,15 +478,26 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       process.exit(1);
     },
   );
+  // The event plane is bound here for the same reason: a refused setup must leave no emitter waiting
+  // on an agent that never starts. The source reads the session from its first record and the flush
+  // reads it at once, so binding after a prompt has landed loses nothing.
+  void sessionReady.then((id) => {
+    if (id === undefined || controller.signal.aborted) return;
+    events?.adopt(id);
+    events?.flush(id);
+  });
 
   // The event stream — a detached loop, never awaited here (setup must return). Maps
   // `session.execution.*`, `permission.asked` and session lifecycle events to presence and
   // turn-end/ack the same way plugin.ts's own event switch does, trimmed to this adapter's
-  // single-session scope (no swap, no `/new` reset).
+  // single-session scope (no swap, no `/new` reset), and wakes the event plane.
   const eventLoop = (async () => {
     try {
       for await (const ev of ctx.event.subscribe({ signal: controller.signal })) {
         const data = ev.data ?? {};
+        // Only a durable event of the session changes its message list, and the list already holds
+        // the change when the event arrives (measured), so each one is the wake to read it again.
+        if (events?.path !== undefined && ev.durable?.aggregateID === events.path) events.flush(events.path);
         switch (ev.type) {
           case "session.created": {
             // Adopt the first session id we see if none is set yet (mirrors `ours()` in plugin.ts);
@@ -504,6 +575,9 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   const teardown = async (): Promise<void> => {
     controller.abort();
     await settleWithin(eventLoop, EVENT_QUIESCE_MS, "opencode 2.x event loop at teardown");
+    // The reads already queued still publish while the endpoint is up; the lock goes back after them.
+    await settleWithin(events?.close(), EVENT_QUIESCE_MS, "event holder at teardown");
+    await eventLock?.release().catch((e: Error) => log(`event WAL lock release failed: ${e.message}`));
     await agent.stop();
   };
   // A once seat that must end itself, because its task's handoff could not be reported, runs the
