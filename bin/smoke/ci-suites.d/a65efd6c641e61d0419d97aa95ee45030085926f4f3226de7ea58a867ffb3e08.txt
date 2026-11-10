@@ -1,0 +1,2 @@
+# Service inventory keeps failed starts distinct from process liveness.
+smoke:service-list-state

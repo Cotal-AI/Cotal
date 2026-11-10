@@ -48,7 +48,13 @@ cotal service remove <name> [--instance <id>] [--yes]
 
 A service is a saved definition in one space plus the instances started from it. Bare `service`
 lists every service you can name here with its state and the one command that moves it on: the
-built-in services (the presets), whether started or not, and the ones you added. Nothing starts a
+built-in services (the presets), whether started or not, and the ones you added. For saved services,
+State shows the instance's recorded state, as `service status` does. If several instances have
+different recorded states, it lists each distinct state. An HTTP readiness deadline leaves `unknown`,
+even when the process is still running, and an exit before readiness leaves `failed`. These are recorded
+outcomes, not fresh readiness checks. The instance table shows the separate process observation.
+Next still names `status` while any instance's process is running, so a failed start that left a
+process does not suggest starting another. Nothing starts a
 dependency for you: starting the manager does not start its broker. A member of a controller stack,
 `stack-broker`, `stack-auth`, `stack-delivery` or `stack-manager`, starts and stops with the stack.
 While it is stopped its Next is bare `cotal up`, and `service start` or `service restart` of it
