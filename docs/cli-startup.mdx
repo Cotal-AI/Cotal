@@ -215,7 +215,10 @@ runs the guarded stack stop, and a `TimeoutStopSec` long enough for that stop. T
 on its own, without the request-bound stop's receipts.
 
 A detached `up` interrupted by SIGINT, SIGTERM or SIGHUP stops where it is and exits 130, 143 or
-129. A member it was launching, with the launch recorded and its child not yet recorded, is recorded
+129. Once the controller start has begun, `up --json` also writes one envelope on stdout. It carries
+the running members in `changed`, the recovery commands in `error.remedy`, and outcome `unknown`
+while members run or `failed` when none run. The notice stays on stderr and the signal exit code
+is unchanged. A member it was launching, with the launch recorded and its child not yet recorded, is recorded
 on the way out: `failed` when no child was spawned yet, or with the child's process when one was, so
 the next `up` or `down` settles it from evidence. Members it already started keep running, and it
 names them and the next step: `cotal up`
