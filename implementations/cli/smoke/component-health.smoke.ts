@@ -384,12 +384,33 @@ try {
     /Manager\s+not serving \(pid \d+\)/.test(bareText) && bareText.includes("service endpoint not answering") && !/Manager\s+running \(pid/.test(bareText), bareText);
   check("bare status keeps exit 0 when the manager is not serving (#2073)", bare.status === 0, bareText);
 
-  await stop(holder);
+  // A missing PID record does not contradict a live lease holder.
+  rmSync(managerRecord);
+  const leaseOnly = cli("status", "--components", "--space", SPACE, "--server", server);
+  const leaseOnlyText = `${leaseOnly.stdout}${leaseOnly.stderr}`;
+  check("a manager lease without a local PID record still reads not-serving (2)",
+    leaseOnly.status === 2 && /manager\s+not-serving · lease holder /.test(leaseOnlyText), leaseOnlyText);
+  writeFileSync(managerRecord, String(held.pid));
+
+  // #6053: leave the stale PID record and real lease behind, as a crashed manager does.
+  const holderExited = new Promise<void>((resolve) => holder!.once("exit", () => resolve()));
+  holder.kill("SIGKILL");
+  await holderExited;
   holder = undefined;
-  rmSync(managerRecord, { force: true });
-  // The manager lease has a 10s TTL. The absent control must wait for its real expiry: deleting
-  // the PID record alone would still be a present lease-holder case, not an absent component.
+  const killed = cli("status", "--components", "--space", SPACE, "--server", server);
+  const killedText = `${killed.stdout}${killed.stderr}`;
+  check("a killed manager is absent (1) before its lease expires (#6053)",
+    killed.status === 1 &&
+      killedText.includes(`manager          absent · pid ${held.pid} · stale pidfile · lease holder `) &&
+      killedText.includes(`lease pid ${held.pid} · serve no answer`), killedText);
+
+  // The same stale record must stay absent after the manager lease's 10s TTL.
   await sleep(10_500);
+  const expired = cli("status", "--components", "--space", SPACE, "--server", server);
+  const expiredText = `${expired.stdout}${expired.stderr}`;
+  check("a killed manager stays absent (1) after its lease expires (#6053)",
+    expired.status === 1 && expiredText.includes(`manager          absent · pid ${held.pid} · stale pidfile · lease absent · serve no answer`), expiredText);
+  rmSync(managerRecord);
 
   const oldAbsent = cli("ps", "--space", SPACE, "--server", server);
   const oldAbsentText = `${oldAbsent.stdout}${oldAbsent.stderr}`;
