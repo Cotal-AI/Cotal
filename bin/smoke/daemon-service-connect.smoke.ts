@@ -179,12 +179,12 @@ class MemoryStore implements SecretStore /* the auth services' stores; the daemo
 }
 
 // ---------- owned sandbox ----------
-const root = mkdtempSync(join(scratchParent, "cdr-"));
+const root = mkdtempSync(join(scratchParent, process.argv.includes("--account-only") ? "dacct-" : "cdr-"));
 chmodSync(root, 0o700);
 const home = join(root, "home"), participant = join(root, "participant"), rtDir = join(root, "rt"), jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}a2b2-js-`));
 for (const d of [home, participant, rtDir]) mkdirSync(d, { mode: 0o700 });
 process.env.COTAL_HOME = home;
-if (setupProgressOnly) {
+if (setupProgressOnly || process.argv.includes("--account-only")) {
   process.env.HOME = home;
   process.env.XDG_CONFIG_HOME = join(root, "config");
   process.env.XDG_RUNTIME_DIR = rtDir;
@@ -199,6 +199,11 @@ const key = await generateKeyPair("EdDSA");
 const jwk = { ...await exportJWK(key.publicKey), kid: "a2b2-idp" };
 const SESSION = "a2b2-session-handle-not-a-secret";
 let idpOrigin = "";
+const accountOnly = process.argv.includes("--account-only");
+let accountDesired = false;
+let accountRevision = 1;
+let accountBindingRevision = 1;
+let accountHttp = 200;
 let catalog: unknown;
 let catalogSpace: string | undefined;
 let catalogTarget: string | undefined;
@@ -222,6 +227,15 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (req.url === "/api/auth/device/token") {
     if (recoverOnApproval) idpRevoked = false;
     return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
+  }
+  if (accountOnly && req.url?.startsWith("/api/cli/machines/")) {
+    const machineId = req.url.split("/")[4];
+    if (req.method === "PUT") { res.end(JSON.stringify({ v: 1, machine: { id: machineId, lastSeenAt: new Date().toISOString() } })); return; }
+    if (accountHttp !== 200) { res.writeHead(accountHttp); res.end(accountHttp === 304 ? undefined : "{}"); return; }
+    const snapshot = catalog as { account: unknown; spaces: { id: string }[] };
+    const spaces = accountDesired ? snapshot.spaces : [];
+    res.setHeader("etag", JSON.stringify(accountRevision));
+    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
   }
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
   if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(catalog));
@@ -1660,6 +1674,33 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         writeFileSync(join(pathBin, "systemctl"), `#!${process.execPath}\nconst args=process.argv.slice(2);if(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}const op=args.includes('daemon-reload')?'daemon-reload':args.at(-2);if(!['stop','start','disable','daemon-reload'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
       }
       try {
+        if (accountOnly) {
+          saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+          accountDesired = true;
+          const observed = async () => resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+          const waitAccount = async (predicate: (s: Record<string, any>) => boolean, label: string) => {
+            let value: Record<string, any> = {};
+            for (let i = 0; i < 120; i++) { value = await observed(); if (predicate(value)) break; await sleep(500); }
+            check(label, predicate(value), value); return value;
+          };
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "approval-pending"), "A0 desired registration remains pending without owner approval");
+          await approve(host, ON, fixture.owner);
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A1 desired 200 connects real broker service");
+          await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          await ask(paths.socket, { op: "service-disconnect", space: ON }, 100_000);
+          accountRevision++;
+          await sleep(6000);
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "removed on this computer"), "A3 unrelated machine revision cannot clear local veto");
+          accountHttp = 304; await sleep(5500);
+          check("A4 304 keeps local veto", (await observed()).account?.spaces?.some((r: any) => r.observed === "removed on this computer"));
+          accountHttp = 503; await sleep(5500);
+          check("A5 503 keeps local veto", (await observed()).account?.spaces?.some((r: any) => r.observed === "removed on this computer"));
+          accountHttp = 200; accountBindingRevision = ++accountRevision;
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A6 same-binding revision releases local veto");
+          accountDesired = false; accountRevision++;
+          await waitAccount(s => !s.account?.spaces?.some((r: any) => r.space === ON) && s.managers?.every((r: any) => r.space !== ON || r.state === "stopped"), "A7 desired removal disconnects service and stops Manager");
+          return;
+        }
         if (explicitHome) {
           saveIdpSession(explicitHome, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
           recordMesh({ ...original, server: published.server, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString(), userAuth: { ...published.userAuth, remote: true, sentinelCredsPath: original.userAuth!.sentinelCredsPath } });
