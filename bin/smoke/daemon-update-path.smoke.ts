@@ -23,6 +23,17 @@ const env: NodeJS.ProcessEnv = {
   XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: runtime, TMPDIR: join(root, "tmp"),
   COTAL_HOME: home, COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1", NO_COLOR: "1",
 };
+// Setup must validate usage without the dispatcher's operator-global connector reconcile.
+const usageConfig = join(root, "usage-config");
+const usageEnv: NodeJS.ProcessEnv = { ...env, XDG_CONFIG_HOME: usageConfig };
+delete usageEnv.COTAL_SKIP_CONNECTOR_SEED;
+const usage = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "setup", "--json"], { cwd: root, env: usageEnv, stdio: ["ignore", "pipe", "pipe"] });
+let usageOutput = "";
+usage.stdout.on("data", chunk => usageOutput += String(chunk));
+usage.stderr.on("data", chunk => usageOutput += String(chunk));
+const usageCode = await new Promise(resolve => usage.once("exit", resolve));
+if (usageCode !== 1 || !usageOutput.includes("USAGE_INVALID") || existsSync(join(usageConfig, "cotal", "seed")) || existsSync(join(usageConfig, "cotal", "extensions.json"))) throw new Error(`setup usage error changed connector state: ${usageOutput}`);
+console.log("PASS setup usage error does not reconcile connectors");
 const paths = daemonPaths(env, home);
 if (process.argv.includes("--childless")) {
   const directory = join(home, "daemon", "space.72656675736564");
@@ -99,13 +110,13 @@ if (process.argv.includes("--provenance")) {
   }
 }
 try {
-  const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...(process.argv.includes("--setup-foreign") ? ["daemon", "setup", "--space", "absent", "--no-manager", "--wait", "0", "--json"] : ["update"])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...(process.argv.includes("--setup-foreign") || process.argv.includes("--setup-start-fails") ? ["daemon", "setup", "--space", "absent", "--no-manager", "--wait", "0", "--json"] : ["update"])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", b => output += String(b)); child.stderr.on("data", b => output += String(b));
   const code = await new Promise(resolve => child.once("exit", resolve));
   if (process.argv.includes("--start-fails")) {
     console.log("R2-12 failed native start", JSON.stringify({ code, calls, output }));
-    if (!output.includes("owned native start denied") || !output.includes("cotal daemon start")) throw new Error("R2-12 native failure or recovery command missing");
+    if (code === 0 || calls.join(",") !== "/stop,/start" || !output.includes("owned native start denied") || !output.includes("cotal daemon start")) throw new Error("R2-12 native failure or recovery command missing");
     console.log("PASS R2-12 native error and daemon start recovery retained");
   } else {
   const after = await status();
@@ -117,7 +128,7 @@ try {
     } else if (calls.length || !output.includes("another-install") || !output.includes("0.0.0")) throw new Error("R2-4 update restarted or failed to identify another installation");
     console.log("PASS R2-4 foreign installation is left running");
   } else {
-    if (!calls.includes("/stop") || !calls.includes("/start") || after.result.version === "0.0.0") throw new Error(`R2-5 empty daemon not reloaded: ${JSON.stringify({ code, calls, after, output })}`);
+    if (code !== 0 || !calls.includes("/stop") || !calls.includes("/start") || after.result.version === "0.0.0") throw new Error(`R2-5 empty daemon not reloaded: ${JSON.stringify({ code, calls, after, output })}`);
     console.log("PASS R2-5 empty default daemon reload through shipped update");
   }
   }

@@ -24,6 +24,11 @@ live custody that cannot be confirmed. Native restart failures retain their caus
 Update keeps its ordinary continuity checks when Linux has no runtime directory for a daemon.
 New native jobs mark their launch, and generation activation verifies that marker against the
 recorded same-install source before exiting for the supervisor.
+Setup reports unsupported machine-service registration with the same state as service status and
+preserves the provider session check in its sign-in step.
+Setup requires an available connector in the hosted Manager's fresh status before reporting launch-ready,
+and allows time for daemon reconciliation before Manager readiness.
+Setup validates usage without installing or reconciling connector packages in the invoking shell.
 The daemon reconciles stock connectors in its own environment before hosting and prepares the
 default persona in the Manager's own catalog. A bare npm upgrade prepares idle Managers and
 restarts first. The new daemon refuses stale connectors with a repair command and backed-off

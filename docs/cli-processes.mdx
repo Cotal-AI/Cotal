@@ -578,19 +578,22 @@ its catalogs. Name collisions and unreadable registrations are reported rather t
 The desktop app uses these same controls. Its source and native build instructions are in the
 [desktop README](../desktop/README.md). Closing its tray UI does not stop the installed daemon.
 
-`setup` makes a computer ready to launch agents from a space with one command. It installs the user
+`setup` validates its arguments before changing connector state. It makes a computer ready to launch agents from a space with one command. It installs the user
 service, discovers the space through the daemon-held sign-in, signs in by device code when needed,
-and starts the space's Manager. Before starting it, setup reconciles the stock connectors through
-the same first-run path as `spawn` and refuses if that preparation fails. The hosted Manager gets
+and asks the daemon to start the space's Manager. Before starting it, the daemon reconciles stock
+connectors in its own environment and refuses if that preparation fails. The hosted Manager gets
 the stock default persona in its own catalog, without replacing an existing file, so
 `cotal spawn --on <instance> --space <space>` can launch it. Setup succeeds when that registered
-instance answers `status`.
+instance answers `status` with an available connector. With no available connector it refuses with
+`no available connector` and a harness-install next step. Connector availability is read from the
+daemon-hosted Manager, not from the invoking shell.
 The separate `ai.cotal.machine` registration and connection are reported even while owner approval
 is pending. That approval never holds up agent launches. JSON reports `launchReady: true`, the
 registered Manager at `manager.instanceId`, its `manager` status and the separate machine
 `registration`. The top-level `instanceId`, when present, identifies the machine-service registration.
 The human report prints `Manager instance: <id>` and the machine-service connection state using
-the same words as `service-status`.
+the same words as `service-status`. A space without machine-service endpoints reports `unsupported`
+while the sign-in step retains the session check's result.
 Progress goes to stderr, so `--json` writes one document on stdout. Missing `supervise` scope
 refuses with the Manager's reason and next step.
 
