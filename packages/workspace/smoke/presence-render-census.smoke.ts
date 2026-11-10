@@ -5,6 +5,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { assertSmokeProof } from "./presence-render-proofs.js";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
@@ -361,10 +362,12 @@ for (const entry of manifest.entries) {
   if (entry.class === "honest-text") {
     assert.ok(entry.proof, `honest-text entry lacks output/shared-renderer proof: ${entry.path}: ${entry.anchor}`);
     const proofBody = readFileSync(join(root, entry.proof!.path), "utf8");
-    const proofCount = proofBody.split(entry.proof!.anchor).length - 1;
-    assert.equal(proofCount, 1, `honest-text proof anchor must exist exactly once in ${entry.proof!.path} but occurs ${proofCount} time(s): ${entry.proof!.anchor}`);
-    if (entry.proof!.path.includes("/smoke/")) assert.ok(/assert|check|ok\(/.test(entry.proof!.anchor), `smoke proof is not an output assertion: ${entry.proof!.path}: ${entry.proof!.anchor}`);
-    else assert.equal(proofAnchors.get(entry.proof!.path), entry.proof!.anchor, `honest-text source proof is not a checked honest renderer: ${entry.proof!.path}: ${entry.proof!.anchor}`);
+    if (entry.proof!.path.includes("/smoke/")) assertSmokeProof(entry.path, entry.proof!, proofBody);
+    else {
+      const proofCount = proofBody.split(entry.proof!.anchor).length - 1;
+      assert.equal(proofCount, 1, `honest-text proof anchor must exist exactly once in ${entry.proof!.path} but occurs ${proofCount} time(s): ${entry.proof!.anchor}`);
+      assert.equal(proofAnchors.get(entry.proof!.path), entry.proof!.anchor, `honest-text source proof is not a checked honest renderer: ${entry.proof!.path}: ${entry.proof!.anchor}`);
+    }
   } else assert.equal(entry.proof, undefined, `${entry.class} entry must not carry honest-text proof: ${entry.path}: ${entry.anchor}`);
 }
 
