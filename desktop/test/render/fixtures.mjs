@@ -15,7 +15,7 @@ export function nativeStub(scenario) {
     async invoke(command, args) {
       if (command === "plugin:deep-link|get_current") return state.link ? [state.link] : null;
       if (command === "plugin:event|listen") return 1;
-      if (command === "plugin:autostart|is_enabled") return true;
+      if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: false, pinOffer: false, pinMessage: "" };
       if (command === "open_browser" || command === "set_connection_state" || command.startsWith("plugin:")) return null;
       if (command !== "daemon_request") throw new Error(`Unexpected native command: ${command}`);
       const request = args.request; let index = 0;
