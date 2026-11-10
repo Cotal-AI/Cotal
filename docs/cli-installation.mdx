@@ -191,6 +191,13 @@ recovery guidance instead of suggesting another update that would meet the same 
 
 ### Manager continuity
 
+If an older updater refuses an answering hosted Manager as `starting`, install the fixed release
+with npm directly in the same installation prefix. For an installer-managed Unix installation,
+run `npm install -g --prefix "$HOME/.local/share/cotal" cotal-ai@<version>` using its Node runtime.
+For an npm-managed installation, use its existing npm prefix. After saving and stopping active
+seats, restart the recorded daemon service, then run `cotal update` to reconcile matching extensions.
+The direct npm installation does not call the older updater's Manager-state check.
+
 For Managers hosted by the machine daemon, `update` checks every active hosted instance before
 reconciliation, even with `--space`, because restarting the global installation affects them all.
 It pins each status request to its instance and refuses unreadable custody or a non-answering

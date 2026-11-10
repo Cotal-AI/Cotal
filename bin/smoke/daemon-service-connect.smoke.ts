@@ -75,6 +75,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
+import { Transform } from "node:stream";
 import { peerCredentials } from "@cotal-ai/seat";
 import { connect as connectNats } from "@nats-io/transport-node";
 import {
@@ -357,6 +358,7 @@ try {
   // C13: the BRK space's participant reaches the broker through a TCP pass-through the suite can cut,
   // so a broker loss is the daemon's alone; the auth services keep their own broker connections.
   let brokerPathUp = true;
+  let brokerReplyDelay = process.argv.includes("--cold-restart-repro") ? 100 : 0;
   const pathSockets = new Set<Socket>();
   const brokerPath: NetServer = createNetServer((inbound) => {
     if (!brokerPathUp) { inbound.destroy(); return; }
@@ -364,7 +366,11 @@ try {
     pathSockets.add(inbound); pathSockets.add(outbound);
     const drop = () => { inbound.destroy(); outbound.destroy(); pathSockets.delete(inbound); pathSockets.delete(outbound); };
     inbound.on("error", drop); outbound.on("error", drop); inbound.on("close", drop); outbound.on("close", drop);
-    inbound.pipe(outbound); outbound.pipe(inbound);
+    inbound.pipe(outbound);
+    outbound.pipe(new Transform({ transform(chunk, _encoding, done) {
+      if (brokerReplyDelay) setTimeout(() => done(null, chunk), brokerReplyDelay);
+      else done(null, chunk);
+    } })).pipe(inbound);
   });
   await new Promise<void>((r) => brokerPath.listen(0, "127.0.0.1", () => r()));
   const brokerPathUrl = `nats://127.0.0.1:${(brokerPath.address() as AddressInfo).port}`;
@@ -1436,6 +1442,7 @@ try {
       const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
       const original = findMesh(ON)!;
       const published = await (await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as { server: string; tlsRequired?: boolean; userAuth: NonNullable<MeshEntry["userAuth"]> };
+      if (process.argv.includes("--cold-restart-repro") || process.argv.includes("--slow-status-repro")) published.server = brokerPathUrl;
       const deliveryStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${ON}` });
       const composition = { injected: true } as const;
       await deliveryStore.put(deliveryCredsKey(ON, composition), await mintCreds(ctx[0]!.auth, newIdentity(), "delivery"));
@@ -1732,6 +1739,64 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         }
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--slow-status-repro")) {
+          brokerReplyDelay = 350;
+          try {
+            const begin = Date.now();
+            const raw = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+            console.log("6270 delayed status", JSON.stringify({ elapsedMs: Date.now() - begin, managers: raw.managers }));
+            check("6270 raw daemon status remains answering on a delayed broker", raw.managers?.some((row: any) => row.instanceId === manager.instanceId && row.state === "answering"), raw.managers);
+            const desktop = spawn(process.execPath, [cliEntry, "daemon", "desktop"], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
+            desktop.stdin.end(`${JSON.stringify({ op: "status" })}\n`);
+            let output = "";
+            desktop.stdout.on("data", chunk => { output += String(chunk); });
+            desktop.stderr.resume();
+            await new Promise<void>(resolve => desktop.once("exit", () => resolve()));
+            const frame = JSON.parse(output);
+            console.log("6270 desktop status", JSON.stringify(frame));
+            check("6270 desktop stdio status preserves connected Manager on a delayed broker", frame.ok && frame.result?.managers?.some((row: any) => row.instanceId === manager.instanceId && row.state === "answering"), frame);
+            const metadata = createHttpServer((_req, res) => res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: fixtureVersion }, versions: { [fixtureVersion]: { name: "cotal-ai", version: fixtureVersion } } })));
+            await new Promise<void>(resolve => metadata.listen(0, "127.0.0.1", resolve));
+            try {
+              const updating = spawn(process.execPath, [cliEntry, "update", "--space", ON], { cwd: root, env: { ...env, npm_config_registry: `http://127.0.0.1:${(metadata.address() as AddressInfo).port}` }, stdio: ["ignore", "pipe", "pipe"] });
+              let text = "";
+              updating.stdout.on("data", chunk => { text += String(chunk); });
+              updating.stderr.on("data", chunk => { text += String(chunk); });
+              await new Promise<void>(resolve => updating.once("exit", () => resolve()));
+              console.log("6270 update continuity", text.slice(0, 2000));
+              check("6270 updater reaches reconciliation after fresh pinned custody on delayed broker", text.includes("answered; 0 seat(s)") && text.includes("Built-in connectors") && !text.includes("running manager continuity check:"), text);
+            } finally { await new Promise<void>(resolve => metadata.close(() => resolve())); }
+          } finally { brokerReplyDelay = 0; }
+          return;
+        }
+        if (process.argv.includes("--cold-restart-repro")) {
+          const client = { versionSkew: (text: string) => text, roster: async () => [] };
+          for (let run = 1; run <= 3; run++) {
+            const started = Date.now();
+            await killAndAwaitExit(child, "SIGTERM");
+            child = await startDaemon();
+            const daemonReadyMs = Date.now() - started;
+            let replacement: Record<string, any> = {};
+            while (Date.now() - started < 100_000) {
+              replacement = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+              if (replacement.state === "answering" || replacement.state === "refused") break;
+              await sleep(100);
+            }
+            const answeringMs = Date.now() - started;
+            check(`6267 restart ${run} answers within 30s without setup`, replacement.state === "answering" && answeringMs < 30_000, { answeringMs, replacement });
+            const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", replacement.instanceId, { onRefusal: "throw", readOnly: true });
+            const resolves: number[] = [];
+            for (const temperature of ["cold", "warm"]) {
+              const begin = Date.now();
+              const resolved = await askManager(client, ON, target.server, "resolveAgent", { name: "default", agent: "daemon-smoke" }, target.auth, "owner", 10_000, { instanceId: replacement.instanceId });
+              resolves.push(Date.now() - begin);
+              check(`6267 restart ${run} ${temperature} resolve succeeds within 10s`, resolved.ok && resolves.at(-1)! < 10_000, resolved);
+            }
+            console.log("6267 timing", JSON.stringify({ run, startedAt: new Date(started).toISOString(), daemonReadyMs, answeringMs, coldResolveMs: resolves[0], warmResolveMs: resolves[1] }));
+          }
+          console.log("6267 manager log", readFileSync(join(home, "daemon", spaceSegment(ON), "manager", "manager.log"), "utf8").replace(/http:\/\/127\.0\.0\.1:\d+\/#t=\S+/g, "<private-console>"));
+          return;
+        }
         if (process.argv.includes("--generation-process-skew-repro")) {
           if (!upgrading) throw new Error("generation process skew requires a private installed fixture");
           const metadataFile = join(globalPrefix, "lib/node_modules/cotal-ai/package.json");

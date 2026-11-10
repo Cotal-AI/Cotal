@@ -34,7 +34,9 @@ const composed: Command = { ...command, async run(args) {
     hostedSpaces = active.map((manager) => manager.space);
     if (!active.length) return updateRuntime.reportRunningManager(flags);
     for (const manager of active) {
-      if (!manager.instanceId || manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager for ${manager.space} is ${manager.state}; its custody must answer before update`, { remedy: `run cotal daemon service-disconnect --space ${manager.space}, correct its sign-in or connection, then run cotal update again` });
+      // A failed earlier observation is not proof that a retained child's endpoint cannot answer.
+      // Keep the fresh, instance-pinned custody check below as the authority for update admission.
+      if (!manager.instanceId) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager for ${manager.space} is ${manager.state}; its custody must answer before update`, { remedy: `run cotal daemon service-disconnect --space ${manager.space}, correct its sign-in or connection, then run cotal update again` });
       const reply = await withIdpSessionDir(homeCotalDir(), async () => {
         const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
         return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
