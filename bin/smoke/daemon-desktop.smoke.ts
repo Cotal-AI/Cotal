@@ -1,17 +1,18 @@
 /** Live Linux local-control checks through the actual desktop stdio entry, with an owned daemon. */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
 import { skipSuite } from "@cotal-ai/smoke-kit";
-import { recordMesh } from "@cotal-ai/workspace";
+import { homeCotalDir, recordMesh, spaceSegment } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { parseDesktopRequest, readDesktopRequest } from "../daemon/desktop.js";
 import { serveDaemon, type RunningDaemon } from "../daemon/server.js";
+import { parseRequest } from "../daemon/protocol.js";
 
 if (process.platform !== "linux") skipSuite("daemon-desktop: live Linux control only; native macOS/Windows acceptance is separate");
 let checks = 0;
@@ -100,6 +101,31 @@ try {
   check("unsigned-in JSON refresh retains the list with an authentication refusal", refused.outcome === "refused" && refused.error.code === "AUTH_REQUIRED" && refused.result.refresh === "not-signed-in" && refused.result.spaces[0]?.space === "saved-local");
   const unchanged = await request({}, { cli: ["spaces", "--json"] });
   check("listing without refresh still succeeds when signed out", unchanged.outcome === "ok" && unchanged.result.refresh === "not-requested");
+  const invalidNames = ["space.with.dot", "s".repeat(65), "équipe"];
+  const validNames = ["space_with_dot", "A", "s".repeat(64)];
+  for (const space of [...invalidNames, ...validNames]) recordMesh({ space, server: "nats://127.0.0.1:4222", mode: "open", root, ts: new Date().toISOString() });
+  const records = invalidNames.map((space) => join(homeCotalDir(), "meshes", `${spaceSegment(space)}.json`));
+  const beforeRecords = records.map((file) => readFileSync(file, "utf8"));
+  const control = await request({}, { cli: ["connect-check", "--space", "space_with_dot", "--json"], exit: 2 });
+  check("addressable open-mode control reaches the connection check", control.error.code === "UNSUPPORTED" && control.error.cause.code === "NOT_USER_AUTH");
+  const broken = join(homeCotalDir(), "meshes", "broken.json");
+  writeFileSync(broken, "{", { mode: 0o600 });
+  const filtered = await request({ op: "spaces" });
+  check("desktop lists only addressable spaces and counts unsupported names beside damaged records", filtered.ok === true && filtered.result.unreadable === invalidNames.length + 1 && filtered.result.spaces.length === validNames.length + 1 && filtered.result.spaces.every((entry: { space: string }) => ["saved-local", ...validNames].includes(entry.space)));
+  const partial = await request({}, { cli: ["spaces", "--json"], exit: 4 });
+  check("CLI JSON reports a partial listing with the same unreadable count and spaces", partial.outcome === "partial" && partial.result.unreadable === filtered.result.unreadable && JSON.stringify(partial.result.spaces) === JSON.stringify(filtered.result.spaces));
+  const partialText = await request({}, { cli: ["spaces", "--plain"], exit: 4 });
+  check("CLI text does not offer dotted names and reports unreadable registrations", !partialText.stdout.includes("space.with.dot") && partialText.stdout.includes("space_with_dot") && /Unreadable:\s+4/.test(partialText.stdout));
+  for (const entry of filtered.result.spaces as { space: string }[]) {
+    for (const op of ["connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const) {
+      check(`listed ${entry.space} is addressable by ${op} on both boundaries`, parseDesktopRequest({ op, space: entry.space }).op === op && parseRequest(JSON.stringify({ v: 1, id: "test", op, space: entry.space })).ok);
+    }
+  }
+  for (const space of invalidNames) {
+    assert.throws(() => parseDesktopRequest({ op: "connect-check", space }));
+    check("unsupported registry name remains refused by the daemon protocol", !parseRequest(JSON.stringify({ v: 1, id: "test", op: "connect-check", space })).ok);
+  }
+  check("listing leaves unsupported and damaged records unchanged", records.every((file, i) => readFileSync(file, "utf8") === beforeRecords[i]) && readFileSync(broken, "utf8") === "{");
   const foreignInstall = await request({ op: "install" });
   check("an answering daemon without an owned install receipt is not adopted", foreignInstall.ok === false && foreignInstall.error.code === "CONFLICT");
   check("refused adoption creates no service receipt", !existsSync(join(paths.state, "service-unit.json")));
