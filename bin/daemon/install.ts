@@ -39,6 +39,7 @@ import { assertSystemdSource, createSystemdSource, daemonArgv, submitSystemdUnit
 import type { DaemonPaths } from "./endpoint.js";
 import { launchAgentService, xmlText } from "./install-darwin.js";
 import { scheduledTaskService } from "./install-win32.js";
+import { daemonCommandCopy } from "./guidance.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
 export type ServiceMechanism = "systemd-user" | "launchd-agent" | "scheduled-task";
@@ -247,13 +248,15 @@ function directive(bytes: string, name: string): string {
   return new RegExp(`\n${name}=(.*)\n`).exec(bytes)?.[1] ?? "absent";
 }
 
-function refuseInstalled(paths: DaemonPaths): void {
+function refuseInstalled(paths: DaemonPaths, daemonHome: string | undefined): void {
   const existing = readReceipt(paths);
-  if (existing) throw new CommandFailure("refused", "CONFLICT", `this daemon already has an installed unit (${existing.unit}); remove it with \`cotal daemon uninstall\` before installing again`);
+  if (existing) throw new CommandFailure("refused", "CONFLICT", `this daemon already has an installed unit (${existing.unit})`, {
+    remedy: `remove it with \`${daemonCommandCopy("uninstall", daemonHome)}\` before installing again`,
+  });
 }
 
 function nativeInstallPlan(service: NativeService, paths: DaemonPaths, daemonHome: string | undefined): NativePlan {
-  refuseInstalled(paths);
+  refuseInstalled(paths, daemonHome);
   return service.plan(paths, daemonHome, daemonServeArgv(daemonHome), pinnedPath);
 }
 
@@ -266,7 +269,7 @@ export function planInstall(paths: DaemonPaths, daemonHome: string | undefined):
   }
   const user = invokingUser();
   const rendered = renderDaemonUnit(systemdUserUnitDirectory(), daemonHome);
-  refuseInstalled(paths);
+  refuseInstalled(paths, daemonHome);
   return { mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, sha256: rendered.sha256, user, lingerAlready: lingerEnabled(user),
     restart: directive(rendered.bytes, "Restart"), wantedBy: directive(rendered.bytes, "WantedBy"), ...(daemonHome !== undefined ? { daemonHome } : {}) };
 }

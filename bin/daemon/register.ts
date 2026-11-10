@@ -22,6 +22,7 @@ import { contractDigest, resolveAuthProvider, ServiceAuthorityTransportError, si
 import { claimIdentityRecord, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { connectCheck, DAEMON_ENDPOINT } from "./connect.js";
 import type { RegisterResult } from "./protocol.js";
+import { daemonCommandCopy } from "./guidance.js";
 
 /** The daemon's existing void liveness contract. It reports no machine metadata or vitals.
  *  It is ephemeral, untargeted and ungoverned, the shape the service door admits. */
@@ -71,7 +72,7 @@ const PHASES = new Set(["approved-unregistered"]);
 /** A stock proposal id: 64 lowercase hex characters (`service-host-ops.ts`, `hexN(proposalId, 64)`). */
 const PROPOSAL_ID = /^[0-9a-f]{64}$/;
 
-const NOT_SIGNED_IN = "this machine's sign-in was not accepted by the space's provider (expired, revoked or missing); run `cotal daemon login --idp <url>`";
+const NOT_SIGNED_IN = "this machine's sign-in was not accepted by the space's provider (expired, revoked or missing)";
 const NOT_SENT = "the daemon could not send the registration request; nothing was sent and nothing is connected";
 const UNUSABLE = "the space answered the registration with something the daemon does not use; run the same command again";
 
@@ -130,7 +131,8 @@ async function sendRegister(space: string, home: string): Promise<RegisterResult
     // Everything else failed before any send. A sign-in the IdP rejected (stock `fetchIdpJwt`'s fixed
     // 401 sentence; it carries no code) or none at all (`signed-out`) needs a new sign-in.
     if ((e as { code?: unknown }).code === "signed-out" || /rejected the cached session/.test((e as Error).message ?? ""))
-      return { outcome: "not-signed-in", space, message: NOT_SIGNED_IN };
+      return { outcome: "not-signed-in", space, message: NOT_SIGNED_IN,
+        remedy: `run \`${daemonCommandCopy("login", home, ["--idp", entry.userAuth!.idp.url])}\`` };
     return { outcome: "refused", space, message: NOT_SENT };
   }
   return { result, ids };

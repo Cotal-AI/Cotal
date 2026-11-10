@@ -1617,6 +1617,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           const managedIntent = join(managedHome, "daemon", spaceSegment(ON), "manager-host.json");
           check("H7 explicit home signs in and hosts its own answering Manager", setupManaged.code === 0 && setupManaged.doc.result?.launchReady === true && managed?.state === "answering" && existsSync(managedIntent), setupManaged);
           check("H7 never-approved machine registration does not delay readiness", setupManaged.code === 0 && setupManaged.doc.result?.state === "approval-pending" && ["approval-required", "pending"].includes(setupManaged.doc.result?.registration?.outcome), setupManaged);
+          const pendingManaged = await cli("setup", "--no-manager", "--space", ON, "--wait", "0", "--daemon-home", managedHome);
+          check("H7 pending setup remedy keeps the selected daemon and service-only mode", pendingManaged.code === 4 && pendingManaged.doc.error?.remedy === `ask the space owner to approve this machine, then run \`cotal daemon setup --space ${ON} --no-manager --daemon-home ${managedHome}\` again`, pendingManaged);
           check("H7 explicit home does not host in the default daemon", resultOf(await ask(paths.socket, { op: "manager-status", space: ON })).state === "stopped" && !existsSync(intent));
           const recorder = join(root, "native-recorder");
           mkdirSync(recorder, { mode: 0o700 });

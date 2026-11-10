@@ -34,6 +34,7 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { applyInstall, applyUninstall, daemonStartedByOwnedService, planInstall, planUninstall, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runSetup } from "./setup.js";
+import { daemonCommandCopy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { watchDaemonGeneration } from "./generation.js";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
@@ -203,7 +204,7 @@ async function connectCheckCommand(args: ParsedArgs): Promise<void> {
   }
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the connect check: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ConnectCheckResult = reply.result;
-  const native = { native: { code: r.outcome.toUpperCase().replaceAll("-", "_") } };
+  const native = { native: { code: r.outcome.toUpperCase().replaceAll("-", "_") }, ...("remedy" in r ? { remedy: r.remedy } : {}) };
   if (r.outcome === "not-registered") throw new CommandFailure("refused", "TARGET_NOT_FOUND", r.message, native);
   if (r.outcome === "not-user-auth" || r.outcome === "unsupported-by-space") throw new CommandFailure("refused", "UNSUPPORTED", r.message, native);
   if (r.outcome === "not-signed-in") throw new CommandFailure("refused", "AUTH_REQUIRED", r.message, native);
@@ -233,7 +234,7 @@ async function registerCommand(args: ParsedArgs): Promise<void> {
   }
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the registration request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: RegisterResult = reply.result;
-  const native = { native: { code: (r.outcome === "refused" && "reason" in r ? r.reason : r.outcome).toUpperCase().replaceAll("-", "_") } };
+  const native = { native: { code: (r.outcome === "refused" && "reason" in r ? r.reason : r.outcome).toUpperCase().replaceAll("-", "_") }, ...("remedy" in r ? { remedy: r.remedy } : {}) };
   if (r.outcome === "not-registered") throw new CommandFailure("refused", "TARGET_NOT_FOUND", r.message, native);
   if (r.outcome === "not-user-auth" || r.outcome === "unsupported-by-space") throw new CommandFailure("refused", "UNSUPPORTED", r.message, native);
   if (r.outcome === "not-signed-in") throw new CommandFailure("refused", "AUTH_REQUIRED", r.message, native);
@@ -279,7 +280,8 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
       : r.state === "approval-pending" || r.state === "connecting" ? "LIFECYCLE_BLOCKED"
       : r.state === "disconnected" ? "TARGET_UNAVAILABLE"
       : "DEPENDENCY_UNAVAILABLE";
-    throw new CommandFailure("refused", code, `${r.message}${r.manager ? `; Manager ${r.manager.state}${r.manager.reason ? `: ${r.manager.reason}` : ""}` : ""}`, { ...native, ...(r.manager?.next ? { remedy: r.manager.next } : {}) });
+    const remedy = r.remedy ?? r.manager?.next;
+    throw new CommandFailure("refused", code, `${r.message}${r.manager ? `; Manager ${r.manager.state}${r.manager.reason ? `: ${r.manager.reason}` : ""}` : ""}`, { ...native, ...(remedy ? { remedy } : {}) });
   }
   writeResult(presentation, { command: `daemon ${op}`, target: { space }, result: r }, () => ({ sections: [
     { title: "Machine service and Manager", blocks: [
@@ -302,7 +304,7 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
         { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Digest", r.sha256], ["User", r.user], ...(r.mechanism === "systemd-user" ? [["Linger", r.lingerAlready ? "already enabled" : dry ? "would be enabled" : "enabled by this install"] as [string, string]] : []), ["Restart", r.restart], ["Started by", r.wantedBy], ...(r.daemonHome ? [["Daemon home", r.daemonHome] as [string, string]] : [])] },
         { kind: "lines", lines: [{ text: dry
           ? "Nothing was written, enabled or started."
-          : r.mechanism === "systemd-user" ? "It starts at login, restarts on its own, and keeps running after you log out. Read it with `cotal daemon status`, and remove it with `cotal daemon uninstall`." : "It starts at login and recovers after an exit while you are signed in. Read it with `cotal daemon status`, and remove it with `cotal daemon uninstall`.", tone: "hint" }] },
+          : `${r.mechanism === "systemd-user" ? "It starts at login, restarts on its own, and keeps running after you log out." : "It starts at login and recovers after an exit while you are signed in."} Read it with \`${daemonCommandCopy("status", home)}\`, and remove it with \`${daemonCommandCopy("uninstall", home)}\`.`, tone: "hint" }] },
       ] },
     ] }));
     return;
@@ -365,7 +367,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
       { kind: "lines", lines: [
         ...r.steps.map((s) => ({ text: `${s.step}: ${s.outcome}`, tone: "hint" as const })),
         ...(r.manager ? [{ text: `Agents can now be launched on this computer from space ${r.space} through Manager instance ${r.manager.instanceId}.`, tone: "hint" as const }, { text: `Machine service: ${r.state}.`, tone: "hint" as const }] : []),
-        { text: "The daemon runs as a user service, restarts on its own and reconnects after a restart. Read it with `cotal daemon service-status`, and close the connection with `cotal daemon service-disconnect`.", tone: "hint" as const },
+        { text: `The daemon runs as a user service, restarts on its own and reconnects after a restart. Read it with \`${daemonCommandCopy("service-status", home, ["--space", space])}\`, and close the connection with \`${daemonCommandCopy("service-disconnect", home, ["--space", space])}\`.`, tone: "hint" as const },
       ] },
     ] },
   ] }));

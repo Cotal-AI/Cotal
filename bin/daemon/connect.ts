@@ -20,6 +20,7 @@ import { assertLifecycleToken, isAccountNkey, mintLifecycleUid, resolveAuthProvi
 import { claimIdentityRecord, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { loadIdpSession } from "@cotal-ai/auth";
 import type { ConnectCheckResult } from "./protocol.js";
+import { daemonCommandCopy } from "./guidance.js";
 
 /** The service name the daemon proposes for itself. Single-label names are reserved for reference
  *  endpoints and a third-party name must be reverse-DNS, so this is the reverse-DNS of cotal.ai.
@@ -62,7 +63,7 @@ function parseIdentity(space: string) {
 const SENTENCE = {
   "not-registered": "this space is not registered on this machine; add it with `cotal meshes add`",
   "not-user-auth": "this space does not use user sign-in, so the daemon cannot connect to it as its own service",
-  "not-signed-in": "this machine is not signed in to the space's provider; run `cotal daemon login --idp <url>`",
+  "not-signed-in": "this machine is not signed in to the space's provider",
   "unsupported-by-space": "the space's auth service does not host service endpoints, so the daemon cannot register with it",
   unreachable: "the space's auth service could not be reached",
   refused: "the space's auth service gave an answer the daemon cannot use",
@@ -77,7 +78,8 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
   if (!ua) return { outcome: "not-user-auth", space, message: SENTENCE["not-user-auth"] };
   let session;
   try { session = loadIdpSession(home, ua.idp.url); } catch { session = undefined; }
-  if (!session) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"] };
+  if (!session) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"],
+    remedy: `run \`${daemonCommandCopy("login", home, ["--idp", ua.idp.url])}\`` };
 
   let accountPublicKey: string;
   try {

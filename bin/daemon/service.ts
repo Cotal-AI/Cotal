@@ -42,6 +42,7 @@ import { FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, 
 import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness, registerDaemon } from "./register.js";
 import { ACCOUNT_MISMATCH_MESSAGE } from "./connect.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
+import { daemonCommandCopy } from "./guidance.js";
 
 /** Map registration outcomes consistently for setup and service status. */
 export function fromRegister(r: RegisterResult): ServiceConnectionState {
@@ -59,9 +60,9 @@ export function fromRegister(r: RegisterResult): ServiceConnectionState {
 }
 
 const SENTENCE: Record<ServiceConnectionState, string> = {
-  "not-requested": "this daemon has not requested registration with this space; run `cotal daemon register --space <s>` first",
+  "not-requested": "this daemon has not requested registration with this space",
   "not-registered": "this space is not registered on this machine; add it with `cotal meshes add`",
-  "not-signed-in": "this machine is not signed in to the space's provider; run `cotal daemon login --idp <url>`",
+  "not-signed-in": "this machine is not signed in to the space's provider",
   unsupported: "the space's auth service does not host service endpoints, so the daemon cannot connect to it",
   "approval-pending": "the space owner has not approved this daemon yet, or the space is still registering it; nothing is connected",
   refused: "the space refused this daemon's registration; nothing is connected",
@@ -119,6 +120,7 @@ async function readyRequestId(store: SecretStore, witness: ServiceRegistrationWi
 interface Live {
   state: ServiceConnectionState;
   reason?: string;
+  remedy?: string;
   instanceId?: string;
   source?: ServiceEndpointRenewal;
   endpoint?: CotalEndpoint;
@@ -166,7 +168,10 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   const result = (space: string): ServiceConnectionResult => {
     const l = live.get(space);
     const state = l?.state ?? "disconnected";
+    const remedy = state === "not-requested" ? `run \`${daemonCommandCopy("register", home, ["--space", space])}\` first`
+      : state === "not-signed-in" ? l?.remedy : undefined;
     return { space, state, message: SENTENCE[state], ...(l?.instanceId ? { instanceId: l.instanceId } : {}),
+      ...(remedy !== undefined ? { remedy } : {}),
       ...(state === "ended" && l?.reason ? { reason: l.reason } : {}) };
   };
   /** One operation per space at a time: concurrent connects share the outcome of the first. */
@@ -254,14 +259,14 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     if (current?.endpoint && current.state === "connected") return result(space);
     if (current) await teardown(current);
     const l: Live = current ?? { state: "connecting", brokerUp: false, serving: new Set() };
-    l.state = "connecting"; l.reason = undefined;
+    l.state = "connecting"; l.reason = undefined; l.remedy = undefined;
     live.set(space, l);
 
     if (!existsSync(daemonRegisterFile(space, home))) { l.state = "not-requested"; return result(space); }
     const entry = findMesh(space);
     if (!entry || entry.mode !== "user" || !entry.userAuth) { l.state = entry ? "unsupported" : "not-registered"; return result(space); }
     const w = await daemonWitness(space, home);
-    if ("outcome" in w) { l.state = fromRegister(w); return result(space); }
+    if ("outcome" in w) { l.state = fromRegister(w); l.remedy = "remedy" in w ? w.remedy : undefined; return result(space); }
     const witness = w.witness;
     l.instanceId = witness.instanceId;
     const provider = resolveAuthProvider();

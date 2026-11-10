@@ -96,7 +96,7 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
 // ---------- owned sandbox ----------
 const root = mkdtempSync(join(scratchParent, "cdh-"));
 chmodSync(root, 0o700);
-const home = join(root, "home"), rt = join(root, "rt"), meshRoot = join(root, "mesh"), managed = join(root, "managed"), user = join(root, "user");
+const home = join(root, "home"), rt = join(root, "rt"), meshRoot = join(root, "mesh"), managed = join(root, "managed '$home"), user = join(root, "user");
 for (const d of [home, rt, meshRoot, managed, user]) mkdirSync(d, { mode: 0o700 });
 process.env.COTAL_HOME = home;
 const legacy = daemonPaths({ XDG_RUNTIME_DIR: rt });
@@ -254,6 +254,30 @@ try {
     check("H1 the legacy socket keeps its inode and mtime", legacyAfter.ino === legacyBefore.ino && legacyAfter.mtimeMs === legacyBefore.mtimeMs, { legacyBefore, legacyAfter });
     check("H1 D/daemon.lock is held by the managed serve, whose record names its pid", !lockFree(managed) && lockRecordPid(managed) === managedServe.child.pid, { free: lockFree(managed), recorded: lockRecordPid(managed), pid: managedServe.child.pid });
     check("H1 no lock was created in the legacy home", !existsSync(lockFile(home)));
+  });
+
+  await cell("H1b remedies retain the selected daemon and known provider or space", async () => {
+    recordMesh(userMesh("needs-login"));
+    const quotedHome = `'${managed.replace(/'/g, `'\\''`)}'`;
+    for (const extra of [[], ["--daemon-home", managed]]) {
+      const homeFlag = extra.length ? ` --daemon-home ${quotedHome}` : "";
+      for (const mode of ["connect-check", "register"]) {
+        const expected = `run \`cotal daemon login --idp '${IDP}'${homeFlag}\``;
+        const result = await cli([mode, "--space", "needs-login", ...extra, "--json"]);
+        check(`H1b ${mode} JSON has a concrete sign-in remedy (${extra.length ? "managed" : "default"})`, result.status === 2 && result.doc.error?.cause?.code === "NOT_SIGNED_IN" && result.doc.error.remedy === expected && !result.out.includes("<url>"), result);
+        const plain = await cli([mode, "--space", "needs-login", ...extra, "--plain"]);
+        check(`H1b ${mode} plain prints the same Next`, plain.status === 2 && plain.err.includes("Next") && plain.err.includes(expected), plain.err);
+      }
+    }
+    for (const mode of ["service-connect", "service-status"]) {
+      const result = await cli([mode, "--space", "needs-login", "--daemon-home", managed, "--json"]);
+      const expected = `run \`cotal daemon register --space needs-login --daemon-home ${quotedHome}\` first`;
+      check(`H1b ${mode} JSON names the selected space and daemon`, result.status === 2 && result.doc.error?.cause?.code === "NOT_REQUESTED" && result.doc.error.remedy === expected && !result.out.includes("<s>"), result);
+      const plain = await cli([mode, "--space", "needs-login", "--daemon-home", managed, "--plain"]);
+      check(`H1b ${mode} plain prints the same Next`, plain.status === 2 && plain.err.includes("Next") && plain.err.includes(expected), plain.err);
+    }
+    const st = await cli(["status", "--daemon-home", managed, "--json"]);
+    check("H1b refusal reads leave the selected daemon serving", st.status === 0 && st.doc.result?.pid === managedServe?.child.pid, st.doc);
   });
 
   await cell("G1 flags are scoped before daemon actions", async () => {

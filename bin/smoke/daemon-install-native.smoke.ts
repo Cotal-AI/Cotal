@@ -407,19 +407,25 @@ try {
       for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
       const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
       Object.assign(env, { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: `${join(dir, "native")}:/usr/local/bin:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
-      const call = (verb: string, home: string | undefined, flags: string[] = []) => {
-        const child = spawnSync(process.execPath, [cli, "daemon", verb, ...(home ? ["--daemon-home", home] : []), ...flags, "--json"], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
+      const call = (verb: string, home: string | undefined, flags: string[] = [], plain = false) => {
+        const child = spawnSync(process.execPath, [cli, "daemon", verb, ...(home ? ["--daemon-home", home] : []), ...flags, plain ? "--plain" : "--json"], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
         if (child.error || child.signal) throw new Error(`N6 ${verb} did not exit normally`);
-        const doc = JSON.parse(child.stdout) as { outcome: string; error?: { code: string } };
-        return { status: child.status, doc };
+        const doc = (plain ? {} : JSON.parse(child.stdout)) as { outcome?: string; error?: { code: string; remedy?: string } };
+        return { status: child.status, doc, out: child.stdout };
       };
       const effects = (): number => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { operation: string }).filter((c) => !["directory-read", "linger-read"].includes(c.operation)).length : 0;
       const home = kind === "default" ? undefined : a;
       const receiptFile = join(home ?? join(dir, "cotal", "daemon"), "service-unit.json");
-      const installed = call("install", home);
+      const installed = call("install", home, [], true);
       if (installed.status !== 0) throw new Error(`N6 ${kind} install fixture refused ${JSON.stringify(installed.doc)}`);
       const receipt = JSON.parse(readFileSync(receiptFile, "utf8")) as UnitReceipt;
       if (kind === "default" || kind === "managed") {
+        const again = call("install", home);
+        const suffix = home ? ` --daemon-home ${home}` : "";
+        check(`N6 ${kind} install hints retain the selected daemon`, installed.out.includes(`Read it with \`cotal daemon status${suffix}\`, and remove it with \`cotal daemon uninstall${suffix}\`.`), installed.out);
+        check(`N6 repeat ${kind} install names the selected uninstall`, again.status === 2 && again.doc.error?.code === "CONFLICT" && again.doc.error.remedy === `remove it with \`cotal daemon uninstall${suffix}\` before installing again`, again.doc);
+        const retry = spawnSync(process.execPath, [cli, "daemon", "install", ...(home ? ["--daemon-home", home] : []), "--plain"], { cwd: dir, env, encoding: "utf8", timeout: 30_000 });
+        check(`N6 repeat ${kind} install prints its Next in plain output`, retry.status === 2 && retry.stderr.includes(again.doc.error!.remedy!), retry.stderr);
         check(`N6 valid ${kind} receipt plans and starts`, call("uninstall", home, ["--dry-run"]).status === 0 && call("start", home).status === 0);
         const removed = call("uninstall", home, ["--yes"]);
         check(`N6 valid ${kind} receipt removes its source and receipt`, removed.status === 0 && !existsSync(receipt.unitPath) && !existsSync(receiptFile));
