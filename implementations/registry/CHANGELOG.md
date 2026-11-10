@@ -1,5 +1,12 @@
 # @cotal-ai/registry
 
+## 0.155.0
+
+### Patch Changes
+
+- Updated dependencies [fb752e3]
+  - @cotal-ai/core@0.155.0
+
 ## 0.154.0
 
 ### Patch Changes

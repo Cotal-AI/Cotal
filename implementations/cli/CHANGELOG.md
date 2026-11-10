@@ -1,5 +1,42 @@
 # @cotal-ai/cli
 
+## 0.155.0
+
+### Minor Changes
+
+- fb752e3: On an authenticated mesh a sender now learns which holder took an anycast request and can cancel it while it waits. A `cotal_anycast` send names the holders online at send by name and id. Just before a holder's connector shows a role request to its agent, it records its take with the delivery daemon, and the daemon sends the sender a notice naming that holder, with a second notice if the request's ack wait ran out and another holder took it. The Claude Code, Codex, Jcode, OpenCode, Hermes and pi connectors and `cotal_inbox` take only the requests they show, so a request left for a later read can still be cancelled. When more is waiting than one pi turn holds, pi fits role requests into the turn before channel posts. `MeshAgent` gains `inboxPreview` and `takeChosen` for that, and `inboxPending` for a notice that counts held requests without showing them; pi's exported `InboxSource` requires the first two. `cotal_anycast` with `seq` reads the request's status, and with `seq` and `cancel: true` cancels it while it waits; a cancel of a taken request is refused and names the taker. The daemon keeps one CAS-fenced record per request in a new `cotal_anycast_<space>` bucket, serves takes on `cotal.<space>.take.<role>.<owner>.<actor>`, and answers the new `anycastStatus` and `anycastCancel` ops on its control service (SPEC §8.1). A take carries the task stream's creation time, and the daemon refuses one from a stream since recreated. Backups exclude the bucket and `cotal restore` recreates it empty.
+  
+  Two credential shapes change. An agent credential gains a take subject for its role and for each `role:<r>` token it holds, and the delivery credential gains task-stream reads and deletes, the records bucket and a DM publish as itself. Restart the delivery daemon at this version and respawn every seat that holds a role. Until then a holder on the new connector keeps role requests unshown and reports which of the two it needs. A daemon on an older credential keeps serving durable delivery and records no takes. An open mesh is unchanged and refuses status and cancel. docs/UPGRADING.md has the steps.
+
+### Patch Changes
+
+- c179f8f: Refuse adding the auth-service preset until its hosting root has prepared user-auth state.
+  The refusal names `cotal up --user-auth --idp <url>` and saves no definition or instance.
+- c787def: Refreshing daemon spaces continues when an unrelated local registration is damaged.
+  Healthy catalog entries update while the damaged file stays untouched and the listing reports
+  the unreadable count with a partial outcome.
+  Failure reporting and catalog removal also preserve damaged canonical registrations when a usable
+  legacy duplicate exists.
+- 1847f14: Status now leads with recovery when an interrupted backup create or restore holds the store.
+  Its Next section and JSON hints use the maintenance journal's recovery step instead of offering
+  a restart that would refuse. Ready preserved cuts and committed restores keep their existing advice.
+- b0bfafa: Stop a local stack safely after its Cotal home records are lost.
+  The project journal retains launch-time host and process creation pins for a guarded Linux recovery stop, and missing-record diagnostics no longer assume another home holds the records. Keep those pins aligned with instance retirement and replacement, preserve skipped members across startup, and leave a completed stop unchanged when its pinned members are gone.
+- 43cbaa0: Stop assuming the default space after a project forgets its space or when its control directory is empty. Persona, team, identity and spawn previews now report that no space is selected. Explicit startup can still initialize an empty project.
+  
+  Name a nearby Mesh team file and its declared space in the available next steps. Entry help also finds the project-root file from a subdirectory, and unrelated prepared-space inventory no longer hides its actions. Discovery skips non-regular and oversized files and does not launch the team.
+- f35b309: Report a moved or deleted stack folder instead of an authentication failure when inspecting its space from another folder.
+  
+  Status and space show name the recorded root and the command that stops its stack, including when the broker has recreated directories at the old path.
+- d0186cf: Warn when a local stack's broker store has been replaced, before a restart can silently lose retained history.
+  
+  Record the store directory identity at broker startup and compare it in status, shutdown previews, shutdown and startup. Status checks both the current folder and the selected local stack, without duplicate warnings for one root, and reports an unreadable stack journal with its permission repair.
+- Updated dependencies [fb752e3]
+- Updated dependencies [b0bfafa]
+- Updated dependencies [43cbaa0]
+  - @cotal-ai/core@0.155.0
+  - @cotal-ai/workspace@0.155.0
+
 ## 0.154.0
 
 ### Minor Changes
