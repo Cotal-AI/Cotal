@@ -24,6 +24,8 @@
  *  N6 Linux built-CLI receipt binding against real files and recording native-tool subprocesses:
  *     valid default/managed receipts work; redirected paths, wrong units and copied homes refuse
  *     before any native mutation or file removal. No real systemd or linger change occurs.
+ *  N7 Linux dry-run prerequisites: missing loginctl refuses with recovery guidance in plain and
+ *     JSON output; an answering loginctl still plans successfully. Neither writes or mutates.
  *
  * Real supervisor lifecycle acceptance belongs to daemon-install-real.smoke.mjs on disposable hosts.
  *
@@ -406,6 +408,44 @@ try {
       check(`N6 ${kind} keeps source, receipt and unrelated file`, existsSync(receipt.unitPath) && existsSync(selectedReceipt) && (unrelated === undefined || existsSync(unrelated)));
     }
   } else console.log(`  ○ UNTESTED N6: Linux CLI receipt binding; this is ${process.platform}`);
+
+  console.log("N7 Linux dry-run loginctl prerequisite through the built CLI");
+  if (process.platform === "linux") {
+    const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
+    const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
+    for (const available of [false, true]) {
+      const dir = join(root, available ? "preview-ready" : "preview-missing-loginctl");
+      mkdirSync(dir, { mode: 0o700 });
+      for (const name of ["home", "cotal", "daemon", "config", "runtime", "native"]) mkdirSync(join(dir, name), { mode: 0o700 });
+      const daemonHome = join(dir, "daemon");
+      const unit = `cotal-daemon-${sha(daemonHome).slice(0, 16)}.service`;
+      const context = { home: join(dir, "home"), config: join(dir, "config"), calls: join(dir, "calls.jsonl"), units: [unit] };
+      const configFile = join(dir, "context.json");
+      writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
+      for (const name of available ? ["systemctl", "loginctl"] : ["systemctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
+      // No host PATH entries: the missing-tool cell must not find the machine's loginctl.
+      const env = { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: join(dir, "runtime"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: join(dir, "native"), DAEMON_UNIT_FIXTURE: configFile, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      for (const format of ["plain", "json"]) {
+        const child = spawnSync(process.execPath, [cli, "daemon", "install", "--daemon-home", daemonHome, "--dry-run", `--${format}`], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
+        if (child.error || child.signal) throw new Error(`N7 ${format} did not exit normally`);
+        if (format === "json") {
+          const doc = JSON.parse(child.stdout) as { outcome: string; error?: { code: string; message: string; remedy?: string }; result?: { state: string; lingerAlready: boolean } };
+          check(`N7 ${available ? "ready" : "missing loginctl"} JSON outcome`, child.status === (available ? 0 : 2) && doc.outcome === (available ? "ok" : "refused"), doc);
+          check(`N7 ${available ? "ready" : "missing loginctl"} JSON guidance`, available
+            ? doc.result?.state === "would-install" && doc.result.lingerAlready === true
+            : doc.error?.code === "DEPENDENCY_UNAVAILABLE" && /loginctl/.test(doc.error.message) && !/no unit was written/.test(doc.error.message) && /loginctl.*PATH/.test(doc.error.remedy ?? "") && /logged-in session/.test(doc.error.remedy ?? ""), doc);
+        } else {
+          const output = child.stdout + child.stderr;
+          check(`N7 ${available ? "ready" : "missing loginctl"} plain outcome and guidance`, available
+            ? child.status === 0 && /Would install/.test(output) && /Linger:\s+already enabled/.test(output) && /Nothing was written, enabled or started\./.test(output)
+            : child.status === 2 && /DEPENDENCY_UNAVAILABLE/.test(output) && !/no unit was written/.test(output) && /Next\s+make loginctl available on PATH/.test(output) && /logged-in session/.test(output), output);
+        }
+        check(`N7 ${available ? "ready" : "missing loginctl"} ${format} writes no unit or receipt`, !existsSync(join(context.config, "systemd", "user", unit)) && !existsSync(join(daemonHome, "service-unit.json")));
+      }
+      const operations = readFileSync(context.calls, "utf8").trim().split("\n").map((line) => (JSON.parse(line) as { operation: string }).operation);
+      check(`N7 ${available ? "ready" : "missing loginctl"} performs only prerequisite reads`, JSON.stringify(operations) === JSON.stringify(available ? ["directory-read", "linger-read", "directory-read", "linger-read"] : ["directory-read", "directory-read"]), operations);
+    }
+  } else console.log(`  ○ UNTESTED N7: Linux CLI prerequisites; this is ${process.platform}`);
 } finally {
   if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
   rmSync(root, { recursive: true, force: true });
