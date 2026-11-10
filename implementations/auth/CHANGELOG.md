@@ -1,5 +1,14 @@
 # @cotal-ai/auth
 
+## 0.157.3
+
+### Patch Changes
+
+- 8ad8b1b: Retry a rate-limited IdP token read once when its advertised delay fits the original timeout. Honor Retry-After and X-Retry-After without replaying Manager startup, authority preparation or any other operation that consumes the proof.
+- @cotal-ai/core@0.157.3
+  - @cotal-ai/lang@0.157.3
+  - @cotal-ai/workspace@0.157.3
+
 ## 0.157.2
 
 ### Patch Changes
