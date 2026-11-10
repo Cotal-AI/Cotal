@@ -92,13 +92,28 @@ const tones: Record<Tone, (s: string) => string> = {
   title: c.bold,
 };
 
-/** Punctuation as plain writes it, wherever it appears, so a plain report is ASCII apart from
- *  other characters of the content itself, such as the letters of a name. */
+/** Punctuation as plain writes prose. Literal code spans and command cells keep their spelling. */
 const PLAIN_PUNCTUATION: Readonly<Record<string, string>> = { "·": "-", "…": "...", "→": "->", "↳": "->", "—": "-", "–": "-" };
 
 /** `text` with its punctuation in ASCII, as plain writes it. */
 export function plainPunctuation(text: string): string {
   return text.replace(/[·…→↳—–]/g, (glyph) => PLAIN_PUNCTUATION[glyph]!).replace(/§ ?/g, "section ");
+}
+
+/** Convert prose without changing a command's literal arguments inside matching backtick runs. */
+function plainProse(text: string): string {
+  const runs = [...text.matchAll(/`+/g)];
+  let start = 0, shown = "";
+  for (let i = 0; i < runs.length; i++) {
+    const open = runs[i]!;
+    const close = runs.findIndex((run, index) => index > i && run[0].length === open[0].length);
+    if (close < 0) continue;
+    const end = runs[close]!.index! + runs[close]![0].length;
+    shown += plainPunctuation(text.slice(start, open.index)) + text.slice(open.index, end);
+    start = end;
+    i = close;
+  }
+  return shown + plainPunctuation(text.slice(start));
 }
 
 /** Whether the locale's character set is UTF-8. POSIX takes the character type from `LC_ALL`, else
@@ -128,7 +143,7 @@ export function stderrLines(prefix: string, text: string, paint: (s: string) => 
   const ascii = !localeIsUtf8();
   const lead = ascii ? plainPunctuation(prefix.replace("✗", "!")) : prefix;
   const shown = oneLine(text);
-  const words = ascii ? plainPunctuation(shown) : shown;
+  const words = ascii && !whole ? plainProse(shown) : shown;
   return paintFor(process.stderr, () => hang(lead, whole ? [words] : words, terminalWidth(process.stderr)).map(paint));
 }
 
@@ -142,7 +157,7 @@ const marks = (style: Style): boolean => style === "rich" && localeIsUtf8();
 
 const textOf = (cell: Cell, style: Style): string => {
   const text = oneLine(typeof cell === "string" ? cell : cell.text);
-  return marks(style) ? text : plainPunctuation(text);
+  return marks(style) || (typeof cell !== "string" && cell.tone === "command") ? text : plainProse(text);
 };
 
 /** One cell as `style` draws it. The width it occupies is that of its escaped text, plus the mark

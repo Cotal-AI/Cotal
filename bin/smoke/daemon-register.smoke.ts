@@ -268,9 +268,10 @@ try {
       try {
         const before = posts(ON);
         const r = await ask(paths.socket, { op: "register", space: ON });
-        check("R11 not-signed-in with the fixed sign-in sentence (not unconfirmed)", resultOf(r).outcome === "not-signed-in" && /cotal daemon login/.test(String(resultOf(r).message)), r);
+        check("R11 not-signed-in with the provider-specific sign-in remedy (not unconfirmed)", resultOf(r).outcome === "not-signed-in" && String(resultOf(r).remedy).includes(idpUrl) && /cotal daemon login/.test(String(resultOf(r).remedy)), r);
         const c = await cli(ON);
         check("R11 CLI refuses AUTH_REQUIRED with exit 2", c.status === 2 && c.doc.error?.code === "AUTH_REQUIRED", { status: c.status, out: c.out.slice(0, 400) });
+        check("R11 CLI retains the known provider in its remedy", c.doc.error?.remedy?.includes(idpUrl) && !c.out.includes("<url>"), c.doc.error);
         check("R11 0 POST reached the authority route", posts(ON) === before, hits.filter((h) => h.space === ON));
       } finally { idpRevoked = false; }
     });
@@ -419,6 +420,17 @@ try {
       } finally { dropAuthority = false; }
       const recovered = await cli(ON, "connect-check");
       check("R12 the healthy authority remains usable after the outage", recovered.status === 0 && recovered.doc.result?.outcome === "ready-to-register", recovered.doc);
+    });
+
+    await cell("R11b registered service operations retain the rejected-session remedy", async () => {
+      idpRevoked = true;
+      try {
+        const registration = await cli(ON);
+        for (const mode of ["service-connect", "service-status"]) {
+          const service = await cli(ON, mode);
+          check(`R11b ${mode} retains the sign-in remedy`, service.status === 2 && service.doc.error?.cause?.code === "NOT_SIGNED_IN" && service.doc.error.remedy === registration.doc.error?.remedy && service.doc.error.remedy?.includes(idpUrl), service.doc.error);
+        }
+      } finally { idpRevoked = false; }
     });
 
     await cell("R14 a separate daemon home uses its own session for registration and activation", async () => {

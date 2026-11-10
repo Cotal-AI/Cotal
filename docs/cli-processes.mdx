@@ -553,6 +553,12 @@ cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plai
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
+Space-specific daemon commands require an explicit `--space <s>` even when `cotal use`
+has selected a space. `daemon status` can omit it to read the daemon and all hosted Managers.
+After setup, use `cotal daemon service-status --space <s>` to read the machine connection and
+`cotal daemon service-disconnect --space <s>` to close it.
+Setup prints these commands with `--space=<s>` so names beginning with a hyphen also work.
+
 Daemon commands use the machine home, not the invoking project's `.cotal` records. They run from
 a removed working directory or a folder with a `.cotal` file, and malformed preferences do not
 block them. Machine-home validation and the permissions required for each operation still apply.
@@ -713,7 +719,11 @@ refusal carrying the space's own reason, such as `PERMISSION_DENIED` (`PROPOSAL_
 connection stage is never reached. With `--no-manager`, only a connected machine exits 0.
 
 `--idp` is needed only when this machine is not signed in. Without it, a machine that needs a
-sign-in refuses `AUTH_REQUIRED` (`NOT_SIGNED_IN`) and names the flag, before any registration.
+sign-in refuses `AUTH_REQUIRED` (`NOT_SIGNED_IN`) and names the provider's login command, before
+any registration.
+An expired or revoked session rejected by the provider needs a new device sign-in, even when a
+cached session remains on disk. A provider outage or unusable response stops setup with
+`DEPENDENCY_UNAVAILABLE`, without asking for a new sign-in or reporting the session as valid.
 A daemon that is already answering while no installed unit is recorded for it refuses `CONFLICT`
 (`RUNNING_WITHOUT_UNIT`): installing then would start a second daemon that the lifetime lock
 refuses, and the running one is not a persistent service. Stop it and run `setup` again, or keep it
@@ -763,6 +773,9 @@ service control or file removal, even when the file's bytes match the recorded d
 On Linux, an unrecorded file, directory or symlink at the unit path refuses `install`, including
 `--dry-run`, with `CONFLICT` before linger or service changes. A path that cannot be inspected
 refuses `TARGET_UNAVAILABLE`; only a missing path permits planning to continue.
+
+Install and setup guidance retains the selected `--daemon-home`. Setup's service commands also
+retain `--space`, and a service-only setup retry keeps `--no-manager`.
 On macOS and Windows, a plist, task definition, loaded label or
 registered task that no install recorded refuses the install `CONFLICT` with nothing written, and a
 registered task that no longer runs the recorded command refuses `uninstall` `CONFLICT`.
@@ -929,16 +942,35 @@ The sign-in cache check includes provider keys and session records, not only the
 
 `connect-check` asks the running daemon whether it could register with a space as its own service.
 The daemon is not a Manager and never borrows a Manager's identity or authority. The check reads
-the space's registration on this machine and the daemon's sign-in, then the space's public account
-identity from its auth service (`GET <exchange>/service-endpoint-authority`, no redirects). It sends
-no registration and holds no credential. A space whose auth service does not host service endpoints
+the space's registration on this machine and validates the daemon's sign-in through the provider's
+token exchange, then reads the space's public account identity from its auth service
+(`GET <exchange>/service-endpoint-authority`, no redirects). It sends
+no registration and persists no credential. The exchange reuses the stock in-memory JWT cache for
+at most 60 seconds, never past the JWT's expiry margin. The provider decides whether a cached
+session is expired or revoked; the expiry on disk is advisory. A space whose auth service does not
+host service endpoints
 refuses `UNSUPPORTED` (`UNSUPPORTED_BY_SPACE`). The daemon does not fall back to anything else.
+Before declaring readiness, the daemon checks that the returned proof has a signed JWT shape with
+a decodable signature segment, a subject and a future expiry, and no future not-before time. This does not
+verify its signature or replace the space's claim checks. An unusable proof refuses
+`DEPENDENCY_UNAVAILABLE` (`REFUSED`) without asking for another device sign-in.
+The connection-check caller allows 65 seconds for the token exchange and authority read, whose
+default request limits are 30 seconds each. Registration allows 95 seconds, and service connection
+allows 160 seconds for the subsequent stages.
 
 The other refusals are `TARGET_NOT_FOUND` (`NOT_REGISTERED`) for a space this machine has not
 registered, `UNSUPPORTED` (`NOT_USER_AUTH`) for a space without user sign-in, `AUTH_REQUIRED`
 (`NOT_SIGNED_IN`) when the machine is not signed in to the space's provider, and
-`DEPENDENCY_UNAVAILABLE` (`UNREACHABLE` or `REFUSED`) when the auth service cannot be reached or
-answers with something unusable.
+`DEPENDENCY_UNAVAILABLE` (`UNREACHABLE` or `REFUSED`) when the sign-in provider or auth service
+cannot be reached or answers with something unusable.
+
+Sign-in refusals include a Next command with the space's registered provider URL. A service
+connection without a registration request names the selected space in its register command.
+These remedies appear in both terminal output and JSON `error.remedy`, with `--daemon-home`
+when a separate daemon was selected. POSIX arguments are shell-quoted, and Windows copy targets
+PowerShell. Option values beginning with a hyphen use the attached `--space=<space>` form so
+copying a recovery command does not parse the value as another option.
+Terminal guidance preserves Unicode punctuation in command arguments, including daemon homes.
 
 On success it reports `ready-to-register` with the space's account, the daemon's service name
 `ai.cotal.machine` and the daemon's own instance ID. Nothing has been registered. The space owner must
@@ -1023,8 +1055,14 @@ record for, so the connections it held before a crash come back with nothing to 
 are at `<COTAL_HOME>/daemon/<space segment>/service-connect.json`, mode `0600`. A connect that
 never reached connected records nothing, so a space that refuses is not retried at every start.
 The resume runs after the local endpoint is published, so a space that is slow or unreachable does
-not delay `status`, and `service-status` reports what each one actually reached. An ended
-connection is remembered only until the daemon stops.
+not delay `status`, and `service-status` reports what each one actually reached. If a remembered
+connection is unavailable, the daemon retries every second for the first ten retries, then doubles
+the delay up to 30 seconds between attempts. Its status stays unavailable during a retry until a
+new outcome is known.
+A broker connection lost during startup's ready call is also retried. Recovery needs no manual
+`service-connect`. Other refusals, including ended authority and damaged local records, stop these
+retries. Disconnect and shutdown cancel them. An ended connection is remembered only until the
+daemon stops.
 `service-status` reads the daemon's current answer without contacting the space. With no current
 answer, it reports `NOT_REQUESTED` (`TARGET_NOT_FOUND`) when this daemon has no saved register
 request for the space, including after a restart. A saved request alone reports `disconnected`;

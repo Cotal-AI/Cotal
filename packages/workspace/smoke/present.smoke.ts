@@ -26,6 +26,7 @@ const {
   workspaceErrorParts,
   wrapWords,
   writeResult,
+  stderrLines,
 } = await import("@cotal-ai/workspace");
 import type { Report } from "@cotal-ai/workspace";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -224,6 +225,24 @@ const wide = "cotal service add <name> --preset exec-endpoint --contract <file> 
 const wideNext = renderReport({ sections: [{ title: "Services", blocks: [{ kind: "table", columns: [{ key: "name", label: "Service" }, { key: "state", label: "State" }, { key: "next", label: "Next" }], rows: [{ name: { text: "exec-endpoint", tone: "command" }, state: "not started", next: { text: wide, tone: "command" } }] }] }] }, "plain", 80).split("\n");
 check(`an ${wide.length}-column next: command keeps one line at 80 columns`, wideNext.some((line) => line.trim() === wide) && wideNext.filter((line) => line.includes("--handler")).length === 1, wideNext);
 const wideRemedy = nextLines(wide);
+const literalPath = "/srv/managed\u2014unicode\u00b7\u2026\u2192\u21b3\u2013\u00a7/tick`home";
+const literalCommand = `cotal daemon status --daemon-home '${literalPath}'`;
+const literalSpan = codeSpan(literalCommand);
+const literalProse = `inspect\u2014then run ${literalSpan}; wait\u2026`;
+for (const style of ["plain", "rich"] as const) {
+  const rendered = renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [literalProse] }] }] }, style);
+  check(`${style} preserves punctuation in a matching double-backtick command span`, rendered.includes(literalSpan), rendered);
+}
+const literalPlain = nextLines(literalProse).join("\n");
+check("plain converts prose punctuation without changing literal command bytes", literalPlain.includes("inspect-then run") && literalPlain.includes(literalSpan) && literalPlain.includes("wait..."), literalPlain);
+const literalWhole = renderReport(commandFailureReport(new CommandFailure("refused", "TARGET_UNAVAILABLE", "not running", { remedy: literalCommand, remedyIsCommand: true })), "plain");
+check("a whole-command remedy keeps Unicode punctuation without a code span", literalWhole.includes(literalCommand), literalWhole);
+const safeSpan = renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [codeSpan("cotal '\u001b[2J\n\u202e'")] }] }] }, "plain");
+check("literal spans still escape terminal controls and bidi formatting", safeSpan.includes("\\u001b[2J\\u000a\\u202e") && !safeSpan.includes("\u001b"), safeSpan);
+process.env.LC_ALL = "C";
+const literalLocale = stderrLines("  ↳ ", literalProse, text => text).join("\n");
+check("non-UTF8 stderr normalizes prose but preserves literal command punctuation", literalLocale.includes(literalSpan) && literalLocale.includes("inspect-then"), literalLocale);
+process.env.LC_ALL = "C.UTF-8";
 const commandRemedy = renderReport(commandFailureReport(new CommandFailure("refused", "USAGE_INVALID", "the exec-endpoint preset needs --contract, --handler", { remedy: wide, remedyIsCommand: true })), "plain", 80).split("\n");
 check(`a refusal whose remedy is one ${wide.length}-column command keeps it on one line under Next at 80 columns; the same text without remedyIsCommand wraps`,
   commandRemedy.at(-1) === `  ${wide}` && commandRemedy.at(-2) === "Next" && !wideRemedy.some((line) => line.includes(wide)), { commandRemedy, wideRemedy });

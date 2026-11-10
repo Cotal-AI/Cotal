@@ -25,6 +25,9 @@
  *      same machine home reaches `connected` with nothing run against it, reports exactly 1 resumed
  *      connection, and reuses the same persisted activate and renew ids. After an explicit
  *      disconnect a restart resumes nothing;
+ *  C6b shipped startup with authority or broker unavailable retries recorded intent, keeps the
+ *      dependency refusal visible during a held retry, retries broker loss during ready, serves
+ *      after recovery, and cancels pending retries on disconnect and shutdown;
  *  C7  outage: with the authority door unreachable, a fresh connect is not `connected`; once the
  *      door is back it is `connected` again;
  *  C7b a changed authority account stays account-mismatch in the socket, CLI and offline status,
@@ -50,6 +53,7 @@
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
  * Account pin regression only: add --account-mismatch-only (C1, C2, C7b and C10).
  * Offline status regression only: add --status-only (C0, C1, C2, C3, C5, C6, C10 and C15).
+ * Add --setup-hints-only to run approval and setup follow-up checks with a leading-hyphen space.
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
@@ -85,6 +89,7 @@ if (process.platform !== "linux") skipSuite(`daemon-service-connect smoke: Linux
 const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
 const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
 const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
+const setupHintsOnly = process.argv.includes("--setup-hints-only");
 const originalPath = process.env.PATH;
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
@@ -115,6 +120,10 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--hosting-only") && !title.startsWith("H1")) return;
   if (process.argv.includes("--account-mismatch-only") && !/^(C1 |C2 |C7b |C10 )/.test(title)) return;
   if (process.argv.includes("--status-only") && !/^C(0|1|2|3|5|6|10|15) /.test(title)) return;
+  if (process.argv.includes("--service-only") && title.startsWith("H1")) return;
+  if (process.argv.includes("--resume-only") && !/^(C1 |C2 |C15 |C6b )/.test(title)) return;
+  if (setupHintsOnly && !["C1 ", "C2 ", "C17 "].some((prefix) => title.startsWith(prefix))) return;
+  if (process.argv.includes("--setup-session-only") && !title.startsWith("H2")) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
 }
@@ -167,6 +176,8 @@ let catalogTarget: string | undefined;
 const jwtsIssued: string[] = [];
 /** R11: the IdP rejects the session handle, as for an expired or revoked session. */
 let idpRevoked = false;
+let tokenFailure: "unreachable" | "unusable" | undefined;
+let recoverOnApproval = false;
 let deviceCodeRequests = 0;
 let deviceFailure: "denied" | "expired" | "unreachable" | undefined;
 let catalogUnavailable = false;
@@ -177,7 +188,10 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/device/code") { deviceCodeRequests++; if (deviceFailure === "unreachable") { req.socket.destroy(); return; } return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 })); }
   if (req.url === "/api/auth/device/token" && deviceFailure) { res.writeHead(400); return void res.end(JSON.stringify({ error: deviceFailure === "denied" ? "access_denied" : "expired_token" })); }
-  if (req.url === "/api/auth/device/token") return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
+  if (req.url === "/api/auth/device/token") {
+    if (recoverOnApproval) idpRevoked = false;
+    return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
+  }
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
   if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(catalog));
   if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
@@ -191,6 +205,8 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     return void res.end(Buffer.from(await answer.arrayBuffer()));
   }
   if (req.url === "/api/auth/jwks") return void res.end(JSON.stringify({ keys: [jwk] }));
+  if (req.url === "/api/auth/token" && tokenFailure === "unreachable") { req.socket.destroy(); return; }
+  if (req.url === "/api/auth/token" && tokenFailure === "unusable") { res.writeHead(503); return void res.end("{}"); }
   if (req.url === "/api/auth/token" && idpRevoked) { res.writeHead(401); return void res.end("{}"); }
   if (req.url === "/api/auth/token" && (req.headers.authorization ?? "") === `Bearer ${SESSION}`) {
     if (catalog) res.setHeader("link", `<${idpOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`);
@@ -210,10 +226,17 @@ const hits: Array<{ space: string; method: string; path: string }> = [];
 /** C7: spaces whose authority door the relay drops, as an unreachable auth service. */
 const relayDown = new Set<string>();
 const changedAccount = new Map<string, string>();
+const droppedAt = new Map<string, number[]>();
+const authorityGates = new Map<string, () => Promise<void>>();
+const readyGates = new Map<string, () => Promise<void>>();
 const withoutIssuer = new Set<string>();
 async function relay(space: string, target: string): Promise<string> {
   const s = createHttpServer(async (req, res) => {
-    if (relayDown.has(space)) { req.socket.destroy(); return; }
+    if (relayDown.has(space)) {
+      const times = droppedAt.get(space) ?? []; times.push(Date.now()); droppedAt.set(space, times);
+      req.socket.destroy(); return;
+    }
+    if (req.method === "GET" && req.url === "/service-endpoint-authority") await authorityGates.get(space)?.();
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     hits.push({ space, method: req.method ?? "", path: new URL(req.url!, "http://x").pathname });
@@ -228,6 +251,7 @@ async function relay(space: string, target: string): Promise<string> {
       info.accountPublicKey = changedAccount.get(space);
       body = Buffer.from(JSON.stringify(info));
     }
+    if (req.method === "POST" && req.url === "/service-endpoint-authority" && JSON.parse(Buffer.concat(chunks).toString()).request?.operation === "ready") await readyGates.get(space)?.();
     if (withoutIssuer.has(space) && req.method === "GET" && req.url === "/service-endpoint-authority" && up.ok) {
       const info = JSON.parse(body.toString()) as Record<string, unknown>;
       delete info.issuer; delete info.keys;
@@ -245,7 +269,7 @@ const posts = (space: string) => hits.filter((h) => h.space === space && h.metho
 
 const broker = await createBrokerAuth("a2b2-broker");
 const stamp = Date.now();
-const spaces = ["on", "off", "deny", "brk"].map((s) => `a2b2-${s}-${stamp}`);
+const spaces = ["on", "off", "deny", "brk", "session"].map((s) => `${setupHintsOnly ? "-" : ""}a2b2-${s}-${stamp}`);
 const accounts = await Promise.all(spaces.map((s) => createSpaceAccountAuth(broker, s)));
 const handles: AuthServiceHandle[] = [];
 let nats: ChildProcess | undefined, release: (() => void) | undefined;
@@ -446,7 +470,7 @@ try {
           const json = await cli(["service-status", "--space", space]);
           check(`C0 ${phase}: JSON status for ${space} refuses NOT_REQUESTED`, json.status === 2 && json.doc?.error?.code === "TARGET_NOT_FOUND" && json.doc?.error?.cause?.code === "NOT_REQUESTED", json.doc);
           const plain = await cli(["service-status", "--space", space], "--plain");
-          check(`C0 ${phase}: text status for ${space} names the missing request`, plain.status === 2 && plain.err.includes("NOT_REQUESTED") && plain.err.includes("TARGET_NOT_FOUND") && plain.err.includes("cotal daemon register --space <s>"), plain.err);
+          check(`C0 ${phase}: text status for ${space} names the missing request`, plain.status === 2 && plain.err.includes("NOT_REQUESTED") && plain.err.includes("TARGET_NOT_FOUND") && plain.err.includes(`cotal daemon register --space ${space}`), plain.err);
         }
       }
       check("C0 status and refused connect never contact the space", hits.length === beforeHits, { beforeHits, afterHits: hits.length });
@@ -577,6 +601,156 @@ try {
       check("C6 instrument: connected again for the cells that follow", stateOf(await connectS(ON)) === "connected");
     });
 
+    await cell("C6b shipped startup retries unavailable intent and cancels pending retries", async () => {
+      seedUnitReceipt();
+      await d.close();
+      const original = findMesh(ON)!;
+      const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"),
+        XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home,
+        COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      const entry = join(repo, "bin/dist/cotal.js");
+      let child: ChildProcess | undefined;
+      const stop = async (signal: NodeJS.Signals) => {
+        if (child) await killAndAwaitExit(child, signal);
+        child = undefined;
+      };
+      const start = async () => {
+        child = spawn(process.execPath, [entry, "daemon", "serve"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        child.stdout!.resume(); child.stderr!.resume();
+        for (let i = 0; i < 100; i++) {
+          try { await ask(paths.socket, { op: "status" }, 1000); return; } catch { await sleep(100); }
+        }
+        throw new Error("C6b shipped daemon did not publish its local endpoint");
+      };
+      const cli = async (mode: string) => {
+        const proc = spawn(process.execPath, [entry, "daemon", mode, "--space", ON, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        proc.stdout.on("data", (b) => { out += String(b); }); proc.stderr.on("data", (b) => { err += String(b); });
+        const timer = setTimeout(() => proc.kill("SIGKILL"), 40_000);
+        const code = await new Promise<number | null>((resolve) => proc.once("exit", resolve)); clearTimeout(timer);
+        frames.push(out, err);
+        return { code, doc: JSON.parse(out) as Record<string, any> };
+      };
+      try {
+        // Pause a real retry request so a status sample cannot miss its in-flight state.
+        relayDown.add(ON);
+        await start();
+        check("C6b slow retry instrument: startup is unavailable", (await waitState(ON, (s) => s === "unavailable", 15_000)) === "unavailable");
+        let entered!: () => void, release!: () => void;
+        const requested = new Promise<void>((resolve) => { entered = resolve; });
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        authorityGates.set(ON, async () => { entered(); await held; });
+        relayDown.delete(ON);
+        try {
+          await Promise.race([requested, sleep(15_000).then(() => { throw new Error("C6b retry did not reach authority gate"); })]);
+          const status = await cli("service-status");
+          check("C6b in-flight background retry preserves dependency refusal", status.code === 2 && status.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && status.doc.error?.cause?.code === "UNAVAILABLE", status);
+        } finally { authorityGates.delete(ON); release(); }
+        check("C6b released retry connects and serves", (await waitState(ON, (s) => s === "connected", 15_000)) === "connected" && (await probeMachine()).reply.ok);
+        await stop("SIGKILL");
+
+        // Let the authority accept ready, but drop the broker before delivering that answer.
+        recordMesh({ ...original, server: brokerPathUrl });
+        let readyEntered!: () => void, releaseReady!: () => void;
+        const readyRequested = new Promise<void>((resolve) => { readyEntered = resolve; });
+        const readyHeld = new Promise<void>((resolve) => { releaseReady = resolve; });
+        readyGates.set(ON, async () => { readyEntered(); await readyHeld; });
+        try {
+          await start();
+          await Promise.race([readyRequested, sleep(15_000).then(() => { throw new Error("C6b startup did not reach ready gate"); })]);
+          cutBrokerPath();
+          await sleep(500);
+          readyGates.delete(ON); releaseReady();
+          const state = await waitState(ON, (s) => s === "unavailable", 15_000);
+          check("C6b broker lost during ready leaves retryable unavailable state", state === "unavailable", state);
+          brokerPathUp = true;
+          check("C6b broker lost during ready recovers and serves without service-connect", (await waitState(ON, (s) => s === "connected", 15_000)) === "connected" && (await probeMachine()).reply.ok);
+        } finally { readyGates.delete(ON); releaseReady(); brokerPathUp = true; }
+        await stop("SIGKILL");
+        recordMesh(original);
+
+        for (const dependency of ["authority", "broker"]) {
+          const droppedBeforeStart = droppedAt.get(ON)?.length ?? 0;
+          if (dependency === "authority") relayDown.add(ON);
+          else { recordMesh({ ...original, server: brokerPathUrl }); cutBrokerPath(); }
+          await start();
+          check(`C6b ${dependency} startup reports unavailable without blocking local status`, (await waitState(ON, (s) => s === "unavailable", 15_000)) === "unavailable");
+          const outage = await cli("service-status");
+          check(`C6b ${dependency} CLI reports dependency refusal`, outage.code === 2 && outage.doc.error?.code === "DEPENDENCY_UNAVAILABLE", outage);
+          if (dependency === "authority") {
+            const deadline = Date.now() + 5000;
+            while ((droppedAt.get(ON)?.length ?? 0) < droppedBeforeStart + 2 && Date.now() < deadline) await sleep(25);
+            check("C6b an unavailable startup makes another authority attempt", (droppedAt.get(ON)?.length ?? 0) >= droppedBeforeStart + 2);
+            relayDown.delete(ON);
+            const response = await fetch(`${original.userAuth!.endpoints!.url}/service-endpoint-authority`);
+            check("C6b authority recovery is independently reachable", response.status === 200);
+            await response.arrayBuffer();
+          } else brokerPathUp = true;
+          const recovered = await waitState(ON, (s) => s === "connected", 15_000);
+          const status = await cli("service-status");
+          check(`C6b ${dependency} recovery connects without service-connect`, recovered === "connected" && status.code === 0 && status.doc.result?.state === "connected", status);
+          check(`C6b ${dependency} recovery serves an authorized caller`, (await probeMachine()).reply.ok);
+          await stop("SIGKILL");
+        }
+        // Recover just after a third failed authority attempt, where immediate exponential
+        // backoff otherwise leaves four seconds before the next attempt.
+        recordMesh(original);
+        relayDown.add(ON);
+        const droppedBefore = droppedAt.get(ON)?.length ?? 0;
+        await start();
+        const retryDeadline = Date.now() + 15_000;
+        while ((droppedAt.get(ON)?.length ?? 0) < droppedBefore + 3 && Date.now() < retryDeadline) await sleep(25);
+        check("C6b recovery-latency instrument: three startup attempts failed", (droppedAt.get(ON)?.length ?? 0) >= droppedBefore + 3);
+        relayDown.delete(ON);
+        const recoveredAt = Date.now();
+        const promptly = await waitState(ON, (s) => s === "connected", 3000);
+        check("C6b early outage recovers within three seconds of authority restoration", promptly === "connected", { state: promptly, elapsedMs: Date.now() - recoveredAt });
+        check("C6b recovery latency positive control eventually connects and serves", (await waitState(ON, (s) => s === "connected", 15_000)) === "connected" && (await probeMachine()).reply.ok);
+        await stop("SIGKILL");
+        relayDown.add(ON);
+        const timesBefore = droppedAt.get(ON)?.length ?? 0;
+        await start();
+        const scheduleDeadline = Date.now() + 100_000;
+        while ((droppedAt.get(ON)?.length ?? 0) < timesBefore + 16 && Date.now() < scheduleDeadline) await sleep(100);
+        const times = (droppedAt.get(ON) ?? []).slice(timesBefore);
+        const gaps = times.slice(1).map((time, i) => time - times[i]!);
+        console.log(`  C6b startup retry gaps ms: ${gaps.join(",")}`);
+        check("C6b first ten retries stay near one second", gaps.length >= 15 && gaps.slice(0, 10).every((gap) => gap >= 950 && gap < 2000), gaps);
+        check("C6b long outage backs off to the thirty-second cap", [2000, 4000, 8000, 16000, 30000].every((delay, i) => gaps[i + 10] !== undefined && gaps[i + 10]! >= delay - 50 && gaps[i + 10]! < delay + 2000), gaps);
+        const longOutage = await cli("service-status");
+        check("C6b capped outage keeps dependency status", longOutage.code === 2 && longOutage.doc.error?.code === "DEPENDENCY_UNAVAILABLE", longOutage);
+        await stop("SIGKILL");
+        relayDown.delete(ON);
+        recordMesh(original);
+        for (const action of ["disconnect", "shutdown"]) {
+          relayDown.add(ON);
+          await start();
+          check(`C6b ${action} instrument: resume is unavailable`, (await waitState(ON, (s) => s === "unavailable", 15_000)) === "unavailable");
+          if (action === "disconnect") {
+            const disconnected = await cli("service-disconnect");
+            check("C6b disconnect cancels remembered intent during outage", disconnected.code === 0 && !existsSync(intentFile(ON)), disconnected);
+          } else await stop("SIGTERM");
+          const before = droppedAt.get(ON)?.length ?? 0;
+          await sleep(2500);
+          check(`C6b ${action} leaves no pending retry`, (droppedAt.get(ON)?.length ?? 0) === before);
+          relayDown.delete(ON);
+          if (action === "disconnect") {
+            await stop("SIGTERM");
+            await start();
+            const status = await cli("service-status");
+            check("C6b disconnected intent stays disconnected after restart", status.code === 2 && stateOf(await statusS(ON)) === "disconnected");
+            check("C6b explicit connect restores intent for shutdown control", (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
+            await stop("SIGKILL");
+          } else check("C6b shutdown closes its socket but retains intent", !existsSync(paths.socket) && existsSync(intentFile(ON)));
+        }
+      } finally {
+        authorityGates.delete(ON); readyGates.delete(ON);
+        relayDown.delete(ON); brokerPathUp = true; recordMesh(original);
+        await stop("SIGTERM");
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      }
+    });
+
     await cell("C12 held past two access-bearer lifetimes: the space keeps it ready and connected returns after each reconnect", async () => {
       const samples: string[] = [];
       const t0 = Date.now();
@@ -619,6 +793,26 @@ try {
       check("C17 the connection it made is recorded for resume", existsSync(intentFile(ON)));
       check("C17 the space reads this instance ready", stateOf(await statusS(ON)) === "connected");
       check("C17 nothing secret reached its progress lines", !lines.some((l) => [SESSION, ...jwtsIssued].some((t) => l.includes(t))) && !lines.some((l) => /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(l)));
+      const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_STATE_HOME: join(root, "state"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+      const cli = async (args: string[]) => {
+        const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        child.stdout.on("data", (b) => { out += String(b); });
+        child.stderr.on("data", (b) => { err += String(b); });
+        const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+        try { return { code: await new Promise<number | null>((resolve) => child.once("exit", resolve)), out, err }; }
+        finally { clearTimeout(timer); }
+      };
+      const setup = await cli(["daemon", "setup", "--no-manager", `--space=${ON}`, "--wait", "0", "--plain"]);
+      const spaceOption = ON.startsWith("-") ? `--space=${ON}` : `--space ${ON}`;
+      check("C17 shipped setup retains its space in both follow-up options, attaching leading-hyphen values", setup.code === 0 && setup.out.includes(`cotal daemon service-status ${spaceOption}`) && setup.out.includes(`cotal daemon service-disconnect ${spaceOption}`), setup);
+      const suggested = [...setup.out.matchAll(/`(cotal daemon service-(?:status|disconnect) [^`]+)`/g)].map((match) => match[1]!);
+      check("C17 setup offers two copyable follow-up commands", suggested.length === 2, suggested);
+      for (const command of suggested) {
+        const result = await cli(command.split(" ").slice(1));
+        check(`C17 suggested ${command.includes("service-status") ? "status" : "disconnect"} command succeeds verbatim`, result.code === 0 && new RegExp(`Machine service:\\s+${command.includes("service-status") ? "connected" : "disconnected"}(?:\\n|$)`).test(result.out), result);
+      }
+      check("C17 restore connection after the suggested disconnect", stateOf(await connectS(ON)) === "connected");
     });
 
     await cell("BASELINE shipped setup connects but provides no Manager to call", async () => {
@@ -759,6 +953,70 @@ try {
       } finally {
         d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
         if (crashed) check("C14 the successor recovered the crashed child's socket by itself (1 recovery)", d.counters.socketsRecovered === 1, d.counters);
+      }
+    });
+
+    await cell("H2 shipped setup recovers rejected cached sessions without relogin on outages", async () => {
+      seedUnitReceipt();
+      await d.close();
+      const sessionSpace = spaces[4]!;
+      const sessionHost = svc[4]!.serviceEndpointHost!;
+      const sessionOwner = deriveOwnerForIdpSubject((await loadOwnerSecret(ctx[4]!.store, sessionSpace))!, idpOrigin, "machine-owner");
+      const cliEntry = join(repo, "bin/dist/cotal.js");
+      const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+      const cli = async (...args: string[]) => {
+        const child = spawn(process.execPath, [cliEntry, "daemon", ...args, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
+        const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
+        return { code, doc: JSON.parse(out) as Record<string, any>, err };
+      };
+      const start = async () => {
+        const child = spawn(process.execPath, [cliEntry, "daemon", "serve"], { cwd: root, env, stdio: ["ignore", "ignore", "ignore"] });
+        for (let i = 0; i < 100 && !existsSync(paths.socket) && child.exitCode === null; i++) await sleep(100);
+        if (!existsSync(paths.socket)) { await killAndAwaitExit(child, "SIGTERM"); throw new Error("shipped daemon did not bind its socket"); }
+        return child;
+      };
+      let child = await start();
+      recoverOnApproval = true;
+      try {
+        const login = await cli("login", "--idp", idpUrl);
+        check("H2 initial device login succeeds", login.code === 0);
+        idpRevoked = true;
+        console.log("  H2 waiting past the stock 60-second JWT cache cap");
+        await sleep(61_000);
+        const setupArgs = ["setup", "--no-manager", "--space", sessionSpace, "--wait", "0"];
+        const before = deviceCodeRequests;
+        const rejected = await cli("connect-check", "--space", sessionSpace);
+        const missing = await cli(...setupArgs);
+        check("H2 rejected cached session refuses connect-check and setup without --idp", rejected.code === 2 && rejected.doc.error?.code === "AUTH_REQUIRED" && missing.code === 2 && missing.doc.error?.code === "AUTH_REQUIRED" && deviceCodeRequests === before);
+        const recovered = await cli(...setupArgs, "--idp", idpUrl);
+        check("H2 revoked session starts one new device sign-in and reaches registration", deviceCodeRequests === before + 1 && recovered.err.includes("Approval code") && recovered.code === 4 && recovered.doc.error?.code === "OPERATION_PARTIAL" && recovered.doc.error?.cause?.code === "APPROVAL_PENDING", { code: recovered.code, error: recovered.doc.error });
+        await approve(sessionHost, sessionSpace, sessionOwner);
+        const validBefore = deviceCodeRequests;
+        const valid = await cli(...setupArgs, "--idp", idpUrl);
+        check("H2 valid session reuses sign-in and connects after approval", valid.code === 0 && valid.doc.result?.state === "connected" && deviceCodeRequests === validBefore && valid.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "already-signed-in"), { code: valid.code, error: valid.doc.error });
+        await cli("service-disconnect", "--space", sessionSpace);
+        await killAndAwaitExit(child, "SIGTERM");
+        saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: 1, sub: "machine-owner" });
+        idpRevoked = true;
+        child = await start();
+        for (const failure of ["unreachable", "unusable"] as const) {
+          tokenFailure = failure;
+          const requests = deviceCodeRequests, authorityPosts = posts(sessionSpace);
+          const unavailable = await cli(...setupArgs, "--idp", idpUrl);
+          check(`H2 ${failure} provider stops without device login or registration`, unavailable.code === 2 && unavailable.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && deviceCodeRequests === requests && posts(sessionSpace) === authorityPosts && !unavailable.err.includes("already signed in"));
+        }
+        tokenFailure = undefined;
+        const expired = await cli("connect-check", "--space", sessionSpace);
+        const expiredBefore = deviceCodeRequests;
+        const renewed = await cli(...setupArgs, "--idp", idpUrl);
+        check("H2 expired rejected session also signs in once and reconnects", expired.code === 2 && expired.doc.error?.code === "AUTH_REQUIRED" && renewed.code === 0 && renewed.doc.result?.state === "connected" && deviceCodeRequests === expiredBefore + 1);
+        await cli("service-disconnect", "--space", sessionSpace);
+      } finally {
+        tokenFailure = undefined; idpRevoked = false; recoverOnApproval = false;
+        await killAndAwaitExit(child, "SIGTERM");
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
       }
     });
 
@@ -1647,6 +1905,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           const managedIntent = join(managedHome, "daemon", spaceSegment(ON), "manager-host.json");
           check("H7 explicit home signs in and hosts its own answering Manager", setupManaged.code === 0 && setupManaged.doc.result?.launchReady === true && managed?.state === "answering" && existsSync(managedIntent), setupManaged);
           check("H7 never-approved machine registration does not delay readiness", setupManaged.code === 0 && setupManaged.doc.result?.state === "approval-pending" && ["approval-required", "pending"].includes(setupManaged.doc.result?.registration?.outcome), setupManaged);
+          const pendingManaged = await cli("setup", "--no-manager", "--space", ON, "--wait", "0", "--daemon-home", managedHome);
+          check("H7 pending setup remedy keeps the selected daemon and service-only mode", pendingManaged.code === 4 && pendingManaged.doc.error?.remedy === `ask the space owner to approve this machine, then run \`cotal daemon setup --space ${ON} --no-manager --daemon-home ${managedHome}\` again`, pendingManaged);
           check("H7 explicit home does not host in the default daemon", resultOf(await ask(paths.socket, { op: "manager-status", space: ON })).state === "stopped" && !existsSync(intent));
           const recorder = join(root, "native-recorder");
           mkdirSync(recorder, { mode: 0o700 });

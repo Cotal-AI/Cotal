@@ -50,7 +50,8 @@
     "@cotal-ai/registry": "workspace:*",
     "@cotal-ai/runtime": "workspace:*",
     "@cotal-ai/seat": "workspace:*",
-    "@cotal-ai/workspace": "workspace:*"
+    "@cotal-ai/workspace": "workspace:*",
+    "jose": "^6.2.3"
   },
   "devDependencies": {
     "@cotal-ai/connector-claude-code": "workspace:*",
