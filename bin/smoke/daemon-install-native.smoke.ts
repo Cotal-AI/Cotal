@@ -182,10 +182,25 @@ try {
     const refreshed = refreshedDaemonPath("launchd-agent", readFileSync(plist, "utf8"), "/new-bin:/bin")!;
     writeFileSync(plist, refreshed, { mode: 0o600 });
     const refreshedReceipt = { ...receipt, unitSha256: sha(refreshed) };
-    service.restart(refreshedReceipt, true);
-    check("N2 refreshed PATH reload boots out then bootstraps the verified plist", JSON.stringify(r.calls.map(c => [c.file, ...c.args])) === JSON.stringify([
-      ["/bin/launchctl", "print", target], ["/bin/launchctl", "bootout", target], ["/bin/launchctl", "bootstrap", `gui/${uid}`, plist],
-    ]), r.calls);
+    let unloading = false, unloadReads = 0;
+    const delayed = recorder(call => {
+      if (call.args[0] === "bootout") unloading = true;
+      if (call.args[0] === "print" && unloading) return { status: ++unloadReads <= 2 ? 0 : 113 };
+      return {};
+    });
+    launchAgentService(delayed.run, () => originalJob).restart(refreshedReceipt, true);
+    check("N2 reload waits for two loaded reads then absence before bootstrap", unloadReads === 3 && JSON.stringify(delayed.calls.map(c => [c.file, ...c.args])) === JSON.stringify([
+      ["/bin/launchctl", "print", target], ["/bin/launchctl", "bootout", target],
+      ["/bin/launchctl", "print", target], ["/bin/launchctl", "print", target], ["/bin/launchctl", "print", target],
+      ["/bin/launchctl", "bootstrap", `gui/${uid}`, plist],
+    ]), delayed.calls);
+    const stuck = recorder(() => ({}));
+    let timeout: unknown;
+    const started = Date.now();
+    try { launchAgentService(stuck.run, () => originalJob).restart(refreshedReceipt, true); }
+    catch (error) { timeout = error; }
+    const elapsed = Date.now() - started;
+    check("N2 never-unloaded job refuses within bound without bootstrap and names setup recovery", timeout instanceof CommandFailure && timeout.code === "OPERATION_UNKNOWN" && timeout.outcome === "unknown" && timeout.message.includes("did not unload") && timeout.remedy?.includes("same setup command again") === true && timeout.remedy.includes("recorded service") && elapsed >= 10_000 && elapsed < 15_000 && !stuck.calls.some(call => call.args[0] === "bootstrap"), { elapsed, timeout: timeout instanceof Error ? timeout.message : timeout, calls: stuck.calls.length });
     check("N2 refreshed receipt remains accepted for uninstall", code(() => service.check(refreshedReceipt)) === "none");
     writeFileSync(plist, plan.bytes, { mode: 0o600 });
     printStatus = 113;

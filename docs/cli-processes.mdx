@@ -603,6 +603,9 @@ terminal that runs setup, then run the same setup command again. On Linux and ma
 terminal resolves an application the Manager cannot find, setup refreshes the service's pinned PATH.
 Terminal directories come first, followed by existing service directories without duplicates.
 Setup updates the recorded service source and digest, reloads it, and checks availability again.
+On macOS, reload waits up to ten seconds for the old LaunchAgent to unload before loading the plist.
+If it does not unload, setup reports an unconfirmed outcome. Run the same setup command again to
+start the recorded service.
 It restarts only after every hosted Manager confirms it has no seats and blocks new launches.
 If any seat is active, nothing is changed or restarted. Stop the seats and run the setup command
 named in the refusal from the same terminal. Windows scheduled tasks do not pin PATH.
