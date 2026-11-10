@@ -89,7 +89,9 @@ limit stays readable. A record or a journal row too large for one reply refuses 
 exit 2, and names `cotal run show <run-id> --local`, which reads the run's stream from its
 project folder with no reply. A manager from release 0.99.3 or earlier reads no journal page, so
 through it both refuse `UNSUPPORTED` and name the same local read. An open pause prints its question
-under `Needs an answer`, and only then does Next offer `answer`. A checkpoint with a `to` prints
+under `Needs an answer`, along with its recorded checkpoint schema as JSON when present, and only
+then does Next offer `answer`. The schema is guidance; checkpoint answers are not checked against it.
+A checkpoint with a `to` prints
 beside its question whom it escalates to, and once it has escalated, until when that attempt is open. A pause counts as open while its
 last journal row is pending, so a settled or expired one is not listed there.
 A pause settled with an accepted answer prints its value as JSON plus the recorded answerer,
@@ -132,7 +134,7 @@ with its `code` and `message`, and `revoked` or `revocationUnreadable` when the 
 step row carries its `step` key, the `effect` kind and its `name`, `state`, `outcome`, the recorded
 `status` and `errorCode` once settled, the recorded `errorMessage` of a failed or refused step,
 and `startedAt` and `endedAt` in epoch milliseconds. An open
-pause adds its `asks`, its `deadlineAt`, and for a checkpoint the `onExpiry` it was armed with and
+pause adds its `asks`, its `deadlineAt`, and for a checkpoint its recorded `schema`, the `onExpiry` it was armed with and
 the `addressee` its `to` names. A checkpoint's escalation is armed with `proceed`, so it never
 escalates again. A settled pause adds its `answer` and its `amendments`, as the text view prints
 them. A field the
