@@ -71,6 +71,15 @@ tell application "System Events"
 end tell
 APPLESCRIPT
 sleep 2
+cat > "$out/hidden.swift" <<'SWIFT'
+import AppKit
+let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "ai.cotal.desktop")
+guard apps.count == 1 else { fatalError("Close terminated the app rather than hiding it") }
+let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]
+guard !windows.contains(where: { ($0[kCGWindowOwnerPID as String] as? Int32) == apps[0].processIdentifier && ($0[kCGWindowLayer as String] as? Int) == 0 }) else { fatalError("Close did not hide the Cotal window") }
+print("close kept app running with no visible top-level window")
+SWIFT
+swift "$out/hidden.swift" | tee "$out/hidden-before-reopen.txt"
 /usr/bin/osascript -e 'tell application id "ai.cotal.desktop" to reopen'
 sleep 2
 swift "$out/query.swift" | tee "$out/visible-after-reopen.txt"
@@ -94,4 +103,4 @@ print("background launch kept window hidden")
 SWIFT
 swift "$out/background.swift" | tee "$out/background.txt"
 /usr/bin/osascript -e 'tell application id "ai.cotal.desktop" to quit'
-printf '{"platform":"macOS","architecture":"%s","result":"passed","checks":["dmg-install","layout-recorded","regular-activation","visible-window","reopen","quit","disconnected-login-absent","background-hidden"]}\n' "$(uname -m)" > "$out/result.json"
+printf '{"platform":"macOS","architecture":"%s","result":"passed","checks":["dmg-install","layout-recorded","regular-activation","visible-window","close-hidden","reopen","quit","disconnected-login-absent","background-hidden"]}\n' "$(uname -m)" > "$out/result.json"

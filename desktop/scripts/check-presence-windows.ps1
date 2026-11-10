@@ -8,6 +8,8 @@ Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type @'
 using System;
+using System.Collections.Generic;
+using System.Text;
 using System.Runtime.InteropServices;
 public static class PresenceWindow {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
@@ -16,6 +18,19 @@ public static class PresenceWindow {
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  public delegate bool EnumWindowProc(IntPtr h, IntPtr data);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowProc callback, IntPtr data);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder text, int count);
+  public static string[] DescribeWindows() {
+    var rows = new List<string>();
+    EnumWindows((h, data) => {
+      uint pid; GetWindowThreadProcessId(h, out pid);
+      var title = new StringBuilder(512); GetWindowText(h, title, title.Capacity);
+      rows.Add(String.Format("{0}\t{1}\t{2}\t{3}", pid, h.ToInt64(), IsWindowVisible(h), title));
+      return true;
+    }, IntPtr.Zero);
+    return rows.ToArray();
+  }
 }
 '@
 function Screenshot($name) {
@@ -33,12 +48,15 @@ function Wait-Window($path) {
     $handle = [PresenceWindow]::FindWindow($null, 'Cotal')
     [uint32]$windowPid = 0
     if ($handle -ne [IntPtr]::Zero) { [PresenceWindow]::GetWindowThreadProcessId($handle, [ref]$windowPid) | Out-Null }
+    @{ second = $i; processes = @($processes | Select-Object Id, Path, MainWindowTitle); matchingWindow = $handle.ToInt64(); windowPid = $windowPid } | ConvertTo-Json -Depth 4 -Compress | Add-Content (Join-Path $out 'window-wait.jsonl')
     if ($processes.Count -eq 1 -and $windowPid -eq $processes[0].Id -and [PresenceWindow]::IsWindowVisible($handle)) {
       $processes[0] | Add-Member -NotePropertyName PresenceHandle -NotePropertyValue $handle
       return $processes[0]
     }
     Start-Sleep 1
   }
+  [PresenceWindow]::DescribeWindows() | Set-Content (Join-Path $out 'window-timeout.txt')
+  Screenshot 'window-timeout.png'
   throw 'Cotal did not present one top-level window.'
 }
 function Shortcuts($path) {
@@ -57,6 +75,7 @@ function Shortcuts($path) {
 $results = @()
 foreach ($kind in @('nsis', 'msi')) {
   $owned = $null
+  $launch = $null
   $installed = $false
   try {
     if ($kind -eq 'nsis') {
@@ -74,7 +93,8 @@ foreach ($kind in @('nsis', 'msi')) {
     if (!(Test-Path $path)) { throw 'Installed executable missing.' }
     $links = @(Shortcuts $path)
     $links | Set-Content (Join-Path $out "$kind-shortcuts.txt")
-    Start-Process -FilePath $path | Out-Null
+    $launch = Start-Process -FilePath $path -PassThru -RedirectStandardOutput (Join-Path $out "$kind-stdout.log") -RedirectStandardError (Join-Path $out "$kind-stderr.log")
+    $launch.Id | Set-Content (Join-Path $out "$kind-launched-pid.txt")
     $owned = Wait-Window $path
     $handle = $owned.PresenceHandle
     if (![PresenceWindow]::IsWindowVisible($handle)) { throw 'Cotal window is hidden.' }
@@ -119,6 +139,9 @@ foreach ($kind in @('nsis', 'msi')) {
     $installed = $false
     $results += @{ installer = $kind; result = 'passed'; checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'explorer-taskbar-button', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login') }
   } finally {
+    if ($launch -and (Get-Process -Id $launch.Id -ErrorAction SilentlyContinue)) {
+      Stop-Process -Id $launch.Id -ErrorAction SilentlyContinue
+    }
     if ($owned -and !(Get-Process -Id $owned.Id -ErrorAction SilentlyContinue).HasExited) { Stop-Process -Id $owned.Id -ErrorAction SilentlyContinue }
     if ($installed) { Write-Warning "$kind cleanup is incomplete. Disposable runner owns remaining installation." }
   }
