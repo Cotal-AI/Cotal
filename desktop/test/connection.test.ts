@@ -143,6 +143,7 @@ test("launch readiness, application retry and polling follow the selected space"
     button("disconnect").click();
     await settle();
     assert.equal(title(), "Disconnected from this space");
+    assert.equal(doc.getElementById("notice")!.textContent, "", "disconnect uses one status sentence without a duplicate notice");
     assert.equal(button("connect").disabled, false);
     await releaseConnected();
     assert.equal(title(), "Disconnected from this space", "old connected status cannot undo disconnect");
@@ -199,6 +200,6 @@ test("launch readiness, application retry and polling follow the selected space"
     daemonVersion = "older";
     button("refresh").click(); await settle();
     assert.equal(button("connect").disabled, false, "an app replacement keeps stock setup available");
-    assert.match(doc.getElementById("notice")!.textContent!, /different versions/);
+    assert.equal(title(), "Your connection needs an update");
   } finally { win.close(); }
 });

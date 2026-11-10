@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "Cotal",
-        "width": 940,
-        "height": 900,
+        "width": 880,
+        "height": 660,
         "minWidth": 560,
         "minHeight": 660,
         "visible": false

@@ -25,6 +25,33 @@ concurrency:
   group: desktop-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir desktop exec playwright-core install --with-deps chromium
+      - run: pnpm --dir desktop test:render
+      - name: Verify desktop motion
+        run: pnpm --dir desktop test:render
+        env:
+          MOTION: '1'
+          CASES: waiting,signed-in,spaces,connecting,ready,no-application,declined,progress-done,notice,details-open
+          SHOTS: test/render/artifacts/motion
+      - name: Upload desktop renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-render
+          path: desktop/test/render/artifacts
+          if-no-files-found: error
+          retention-days: 7
   native-build:
     strategy:
       fail-fast: false
