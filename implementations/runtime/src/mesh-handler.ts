@@ -1804,18 +1804,30 @@ export class MeshHandler {
       // seat's death, a refused handoff, a cancellation) is not a reply, whatever the relay
       // records later: `wait(replied)` reads the verdict this branch raised, never a stale yield.
       this.turnGoals.get(`${name}#${uid}`)?.delete(goalId);
-      if (e instanceof Cancelled) await this.cancelTimer(primary);
       // In particular a read that exhausted its retry budget must not leave a live relay that
       // tells the seat its later yield continued a turn the run already abandoned. The ordinary
       // turn verdicts already have an authority: death, the shared deadline, or a yielded handoff.
       // Do not ask a dead manager to confirm the client's independent deadline or death verdict.
       const terminal = e instanceof EffectError && ["L4002", "L4003", "L4004", "L4005"].includes(e.code);
       if (!terminal) {
-        try {
-          await this.withdrawCancelledRelay(goalId, deadlineAt);
-        } catch (withdrawal) {
-          throw new AggregateError([e, withdrawal],
-            `${e instanceof Error ? e.message : String(e)}; turn relay withdrawal failed: ${withdrawal instanceof Error ? withdrawal.message : String(withdrawal)}`);
+        // Neither cleanup failure may prevent the other resource from being retired.
+        const cleanup = await Promise.allSettled([
+          this.cancelTimer(primary),
+          this.withdrawCancelledRelay(goalId, deadlineAt),
+        ]);
+        const failures = cleanup.flatMap((r, i) => r.status === "rejected"
+          ? [{ resource: i === 0 ? "primary timer claim" : "relay withdrawal", error: r.reason as unknown }]
+          : []);
+        if (failures.length > 0) {
+          const message = `${e instanceof Error ? e.message : String(e)}; turn cleanup failed: `
+            + failures.map((f) => `${f.resource}: ${f.error instanceof Error ? f.error.message : String(f.error)}`).join("; ");
+          const cause = new AggregateError([e, ...failures.map((f) => f.error)], message);
+          if (e instanceof EffectError) {
+            const error = new EffectError(e.code, e.kind, message, e.detail);
+            error.cause = cause;
+            throw error;
+          }
+          throw cause;
         }
       }
       throw e;

@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/runtime": patch
+"@cotal-ai/lang": patch
 ---
 
 Workflow turns survive a transient timeout while waiting for an agent's yield.

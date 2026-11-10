@@ -1026,6 +1026,8 @@ if (!placedHostOnly) {
         && String((got as { message?: string })?.message).includes(read), got);
       const fact = await import("@cotal-ai/core").then(({ readGoalResult }) => readGoalResult(goalCtx, { endpoint: EP, caller: CALLER, goalId: persistentId }));
       c(`${read}: an abandoned turn's relay is cancelled before the handler returns`, fact?.state === "cancelled", fact);
+      const timer = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: persistentId });
+      c(`${read}: an abandoned turn's primary timer is claimed before the handler returns`, timer?.settle === "resumed", timer);
     } finally { restorePersistent(); }
   }
 
@@ -1054,6 +1056,8 @@ if (!placedHostOnly) {
   try {
     const got = await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(faultId).ctx)), 20_000, "a non-timeout poll fault");
     c("a genuine poll fault is raised on its first attempt unchanged", faults === 1 && (got as { message?: string })?.message === "presence read refused", got);
+    const timer = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: faultId });
+    c("a genuine poll fault also claims the abandoned primary timer", timer?.settle === "resumed", timer);
   } finally { restoreFault(); }
 
   const starvedNotices: string[] = [];
@@ -1096,6 +1100,52 @@ if (!placedHostOnly) {
   } finally {
     deadlineSeam.expired = originalExpired;
     cleanup.withdrawCancelledRelay = originalWithdraw;
+  }
+
+  for (const [code, kind] of [["L4026", "pause-unanswered"], ["L4025", "host-starved"]] as const) {
+    for (const failedCleanup of ["relay withdrawal", "primary timer claim"]) {
+      const runId = `tn-cleanup-${code}-${failedCleanup.split(" ")[0]}`;
+      const handler = pollingHandler(runId, []);
+      const seam = handler as unknown as PollSeam & {
+        withdrawCancelledRelay(...args: unknown[]): Promise<void>;
+        cancelTimer(...args: unknown[]): Promise<void>;
+      };
+      const originalDeath = seam.presenceDeath;
+      const originalWithdraw = seam.withdrawCancelledRelay;
+      const originalTimer = seam.cancelTimer;
+      let timerAttempted = false, withdrawalAttempted = false;
+      const primary = new EffectError(code, kind, `${code} presenceDeath failed`, { attempts: 6 });
+      seam.presenceDeath = async () => { throw primary; };
+      seam.withdrawCancelledRelay = async (...args) => {
+        withdrawalAttempted = true;
+        if (failedCleanup === "relay withdrawal") throw new Error(`${failedCleanup} refused`);
+        return originalWithdraw.apply(handler, args);
+      };
+      seam.cancelTimer = async (...args) => {
+        timerAttempted = true;
+        if (failedCleanup === "primary timer claim") throw new Error(`${failedCleanup} refused`);
+        return originalTimer.apply(handler, args);
+      };
+      try {
+        const out = await withDeadline(driven({
+          space: SPACE, endpoint: EP, kv, runId, lease: lease(),
+          source: `const worker = await spawn("builder"); await turn(worker, { name: "cleanup", deadline: "5m" });`,
+          handler,
+        }), 30_000, `journaled ${code} with failed ${failedCleanup}`);
+        const entry = (await journalEntries(runId, "turn")).findLast((e) => e.state === "settled");
+        c(`${code}: a failed ${failedCleanup} preserves the classified failure in the real run journal`,
+          entry?.error?.code === code && entry.error.kind === kind
+          && entry.error.message.includes("presenceDeath failed") && entry.error.message.includes(`${failedCleanup} refused`),
+          { out, error: entry?.error });
+        c(`${code}/${failedCleanup}: cleanup preserves the primary detail and attempts both resources`,
+          entry?.error?.detail?.attempts === 6 && timerAttempted && withdrawalAttempted,
+          { error: entry?.error, timerAttempted, withdrawalAttempted });
+      } finally {
+        seam.presenceDeath = originalDeath;
+        seam.withdrawCancelledRelay = originalWithdraw;
+        seam.cancelTimer = originalTimer;
+      }
+    }
   }
 }
 
@@ -1271,7 +1321,7 @@ async function readGoalResultData(goalId: string): Promise<Record<string, unknow
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = placedHostOnly ? 18 : 92;
+const EXPECTED_CELLS = placedHostOnly ? 18 : 104;
 const ran = ok + fail;
 console.log(`mesh-turn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
