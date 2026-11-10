@@ -96,7 +96,7 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
 // ---------- owned sandbox ----------
 const root = mkdtempSync(join(scratchParent, "cdh-"));
 chmodSync(root, 0o700);
-const home = join(root, "home"), rt = join(root, "rt"), meshRoot = join(root, "mesh"), managed = join(root, "managed '$home"), user = join(root, "user");
+const home = join(root, "home"), rt = join(root, "rt"), meshRoot = join(root, "mesh"), managed = join(root, "managed\u2014unicode '$home"), user = join(root, "user");
 for (const d of [home, rt, meshRoot, managed, user]) mkdirSync(d, { mode: 0o700 });
 process.env.COTAL_HOME = home;
 const legacy = daemonPaths({ XDG_RUNTIME_DIR: rt });
@@ -295,6 +295,12 @@ try {
         if (result.doc.error?.remedy !== remedy) throw new Error("unexpected copied registration command");
         const copied = await cli(result.doc.error.remedy.slice(5, -7));
         check(`H1c copied ${mode} remedy reaches ${space} on the selected daemon`, copied.status === 2 && copied.doc.command === "daemon register" && copied.doc.target?.space === space && copied.doc.error?.cause?.code === "NOT_SIGNED_IN" && copied.doc.error.remedy?.includes(IDP) === true && copied.doc.error.remedy.includes(quotedHome), copied);
+        const plain = await cli([mode, `--space=${space}`, "--daemon-home", managed, "--plain"]);
+        const printed = /`([^`]+)`/.exec(plain.err)?.[1];
+        check(`H1c ${mode} plain command preserves Unicode punctuation for ${space}`, plain.status === 2 && printed === command, plain);
+        if (printed !== command) throw new Error("plain command changed the selected daemon home");
+        const copiedPlain = await cli(printed);
+        check(`H1c copied plain ${mode} remedy reaches ${space}`, copiedPlain.status === 2 && copiedPlain.doc.target?.space === space && copiedPlain.doc.error?.cause?.code === "NOT_SIGNED_IN", copiedPlain);
       }
       const setup = await cli(["setup", "--no-manager", `--space=${space}`, "--daemon-home", managed, "--wait", "0", "--json"]);
       check(`H1c setup manual recovery retains ${space}`, setup.status === 2 && setup.doc.error?.cause?.code === "RUNNING_WITHOUT_UNIT", setup);

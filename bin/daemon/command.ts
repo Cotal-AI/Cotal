@@ -25,7 +25,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, homeCotalDir, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, spaceFlag, writeResult, type Report } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, homeCotalDir, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, spaceFlag, writeResult, type Report } from "@cotal-ai/workspace";
 import { IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
@@ -304,7 +304,7 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
         { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Digest", r.sha256], ["User", r.user], ...(r.mechanism === "systemd-user" ? [["Linger", r.lingerAlready ? "already enabled" : dry ? "would be enabled" : "enabled by this install"] as [string, string]] : []), ["Restart", r.restart], ["Started by", r.wantedBy], ...(r.daemonHome ? [["Daemon home", r.daemonHome] as [string, string]] : [])] },
         { kind: "lines", lines: [{ text: dry
           ? "Nothing was written, enabled or started."
-          : `${r.mechanism === "systemd-user" ? "It starts at login, restarts on its own, and keeps running after you log out." : "It starts at login and recovers after an exit while you are signed in."} Read it with \`${daemonCommandCopy("status", home)}\`, and remove it with \`${daemonCommandCopy("uninstall", home)}\`.`, tone: "hint" }] },
+          : `${r.mechanism === "systemd-user" ? "It starts at login, restarts on its own, and keeps running after you log out." : "It starts at login and recovers after an exit while you are signed in."} Read it with ${codeSpan(daemonCommandCopy("status", home))}, and remove it with ${codeSpan(daemonCommandCopy("uninstall", home))}.`, tone: "hint" }] },
       ] },
     ] }));
     return;
@@ -367,7 +367,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
       { kind: "lines", lines: [
         ...r.steps.map((s) => ({ text: `${s.step}: ${s.outcome}`, tone: "hint" as const })),
         ...(r.manager ? [{ text: `Agents can now be launched on this computer from space ${r.space} through Manager instance ${r.manager.instanceId}.`, tone: "hint" as const }, { text: `Machine service: ${r.state}.`, tone: "hint" as const }] : []),
-        { text: `The daemon runs as a user service, restarts on its own and reconnects after a restart. Read it with \`${daemonCommandCopy("service-status", home, [["--space", space]])}\`, and close the connection with \`${daemonCommandCopy("service-disconnect", home, [["--space", space]])}\`.`, tone: "hint" as const },
+        { text: `The daemon runs as a user service, restarts on its own and reconnects after a restart. Read it with ${codeSpan(daemonCommandCopy("service-status", home, [["--space", space]]))}, and close the connection with ${codeSpan(daemonCommandCopy("service-disconnect", home, [["--space", space]]))}.`, tone: "hint" as const },
       ] },
     ] },
   ] }));

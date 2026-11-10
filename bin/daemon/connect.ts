@@ -17,7 +17,7 @@
  */
 import { join } from "node:path";
 import { assertLifecycleToken, isAccountNkey, mintLifecycleUid, resolveAuthProvider } from "@cotal-ai/core";
-import { claimIdentityRecord, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { claimIdentityRecord, codeSpan, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { loadIdpSession } from "@cotal-ai/auth";
 import type { ConnectCheckResult } from "./protocol.js";
 import { daemonCommandCopy } from "./guidance.js";
@@ -79,7 +79,7 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
   let session;
   try { session = loadIdpSession(home, ua.idp.url); } catch { session = undefined; }
   if (!session) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"],
-    remedy: `run \`${daemonCommandCopy("login", home, [["--idp", ua.idp.url]])}\`` };
+    remedy: `run ${codeSpan(daemonCommandCopy("login", home, [["--idp", ua.idp.url]]))}` };
 
   let accountPublicKey: string;
   try {

@@ -399,7 +399,7 @@ try {
     const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
     const runtime = join(root, "rt"); mkdirSync(runtime, { mode: 0o700 });
     for (const kind of ["default", "managed", "outside-path", "wrong-unit", "copied-home"]) {
-      const dir = join(root, kind); mkdirSync(dir, { mode: 0o700 });
+      const dir = join(root, `${kind}\u2014unicode`); mkdirSync(dir, { mode: 0o700 });
       for (const name of ["home", "cotal", "a", "b", "config", "native"]) mkdirSync(join(dir, name), { mode: 0o700 });
       const a = join(dir, "a"), b = join(dir, "b");
       const context = { home: join(dir, "home"), config: join(dir, "config"), calls: join(dir, "calls.jsonl"), units: ["cotal-daemon.service", `cotal-daemon-${sha(a).slice(0, 16)}.service`, `cotal-daemon-${sha(b).slice(0, 16)}.service`] };
@@ -421,8 +421,13 @@ try {
       const receipt = JSON.parse(readFileSync(receiptFile, "utf8")) as UnitReceipt;
       if (kind === "default" || kind === "managed") {
         const again = call("install", home);
-        const suffix = home ? ` --daemon-home ${home}` : "";
+        const suffix = home ? ` --daemon-home '${home}'` : "";
         check(`N6 ${kind} install hints retain the selected daemon`, installed.out.includes(`Read it with \`cotal daemon status${suffix}\`, and remove it with \`cotal daemon uninstall${suffix}\`.`), installed.out);
+        const printed = /remove it with `([^`]+)`/.exec(installed.out)?.[1];
+        if (printed !== `cotal daemon uninstall${suffix}`) throw new Error("unexpected install removal hint");
+        const copied = spawnSync("/bin/sh", ["-c", `cotal() { exec "$COPY_NODE" "$COPY_CLI" "$@"; }\n${printed} --dry-run --json`], { cwd: dir, env: { ...env, COPY_NODE: process.execPath, COPY_CLI: cli }, encoding: "utf8", timeout: 30_000 });
+        const copiedDoc = JSON.parse(copied.stdout) as { result?: { unit?: string; state?: string } };
+        check(`N6 copied ${kind} install hint reaches its recorded Unicode-home unit`, copied.status === 0 && copiedDoc.result?.unit === receipt.unit && copiedDoc.result.state === "would-remove", copiedDoc);
         check(`N6 repeat ${kind} install names the selected uninstall`, again.status === 2 && again.doc.error?.code === "CONFLICT" && again.doc.error.remedy === `remove it with \`cotal daemon uninstall${suffix}\` before installing again`, again.doc);
         const retry = spawnSync(process.execPath, [cli, "daemon", "install", ...(home ? ["--daemon-home", home] : []), "--plain"], { cwd: dir, env, encoding: "utf8", timeout: 30_000 });
         check(`N6 repeat ${kind} install prints its Next in plain output`, retry.status === 2 && retry.stderr.includes(again.doc.error!.remedy!), retry.stderr);

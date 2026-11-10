@@ -13,7 +13,7 @@
  * It composes the existing commands and adds no new authority. Pausing, renaming and disconnecting
  * stay separate commands; this one does not absorb them.
  */
-import { CommandFailure, resolveOnPath } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, resolveOnPath } from "@cotal-ai/workspace";
 import type { DaemonPaths } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
 import { loginFromCli } from "./cli-login.js";
@@ -114,7 +114,7 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
     // and do not quietly use the running daemon either, because it is not a persistent service.
     if (await daemonAnswers(opts)) {
       throw new CommandFailure("refused", "CONFLICT", `a daemon already answers ${opts.paths.socket} and no installed unit is recorded for it, so this would install a second one that its lifetime lock refuses; nothing was installed`, {
-        remedy: `stop that daemon and run this again, or keep it and run \`${daemonCommandCopy("register", opts.daemonHome, [["--space", opts.space]])}\` and \`${daemonCommandCopy("service-connect", opts.daemonHome, [["--space", opts.space]])}\` by hand`,
+        remedy: `stop that daemon and run this again, or keep it and run ${codeSpan(daemonCommandCopy("register", opts.daemonHome, [["--space", opts.space]]))} and ${codeSpan(daemonCommandCopy("service-connect", opts.daemonHome, [["--space", opts.space]]))} by hand`,
         native: { code: "RUNNING_WITHOUT_UNIT" },
       });
     }
@@ -132,7 +132,7 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
     if (reply.ok) {
       const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
       if (!installation.same) {
-        const remedy = `run setup from ${installation.installed}, or run \`${daemonCommandCopy("uninstall", opts.daemonHome)}\` then setup from ${installation.current}`;
+        const remedy = `run setup from ${installation.installed}, or run ${codeSpan(daemonCommandCopy("uninstall", opts.daemonHome))} then setup from ${installation.current}`;
         if (reply.result.protocol !== DAEMON_PROTOCOL_VERSION) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; its protocol is incompatible and it was not restarted`, { remedy });
         if (!opts.noManager) {
           try { await managerViaDaemon(opts, { op: "manager-status", space: opts.space }); }
@@ -267,11 +267,11 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     if (!hasSpace() && opts.idp && !signedInToProvider()) {
       opts.report("sign-in: approve this machine on another device");
       const signed = await loginFromCli({ ...opts, idp: opts.idp });
-      if (!signed.ok) throw new CommandFailure("refused", "AUTH_REQUIRED", `the daemon refused discovery sign-in: ${signed.code} ${signed.message}`, { native: { code: signed.code }, remedy: `run \`${daemonCommandCopy("login", opts.daemonHome, [["--idp", opts.idp]])}\`` });
+      if (!signed.ok) throw new CommandFailure("refused", "AUTH_REQUIRED", `the daemon refused discovery sign-in: ${signed.code} ${signed.message}`, { native: { code: signed.code }, remedy: `run ${codeSpan(daemonCommandCopy("login", opts.daemonHome, [["--idp", opts.idp]]))}` });
       if (signed.result.outcome === "failed") {
         const failed = signed.result;
         if (failed.reason === "local-state-error") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", failed.message, { native: { code: failed.reason.toUpperCase() }, remedy: failed.remedy });
-        throw new CommandFailure("refused", failed.reason === "unreachable" ? "DEPENDENCY_UNAVAILABLE" : "PERMISSION_DENIED", failed.message, { native: { code: failed.reason.toUpperCase() }, remedy: `run \`${daemonCommandCopy("login", opts.daemonHome, [["--idp", opts.idp]])}\`` });
+        throw new CommandFailure("refused", failed.reason === "unreachable" ? "DEPENDENCY_UNAVAILABLE" : "PERMISSION_DENIED", failed.message, { native: { code: failed.reason.toUpperCase() }, remedy: `run ${codeSpan(daemonCommandCopy("login", opts.daemonHome, [["--idp", opts.idp]]))}` });
       }
       steps.push({ step: "sign-in", outcome: "signed-in", detail: `signed in as ${signed.result.label || signed.result.sub}` });
       opts.report(`sign-in: signed in as ${signed.result.label || signed.result.sub}`);
@@ -280,7 +280,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     }
     if (!hasSpace()) {
       const refreshFailed = !discovered.ok || ("result" in discovered && "refresh" in discovered.result && ["failed", "partial"].includes(discovered.result.refresh));
-      throw new CommandFailure("refused", refreshFailed ? "DEPENDENCY_UNAVAILABLE" : "TARGET_NOT_FOUND", refreshFailed ? "the daemon could not refresh its signed-in space catalogs" : "this space was not found in the daemon's signed-in catalogs", { remedy: `run \`${daemonCommandCopy("setup", opts.daemonHome, [["--space", opts.space], ...(opts.idp ? [["--idp", opts.idp] as const] : [])])}\`${opts.idp ? "" : " with --idp <auth base URL>"}; ask the space owner to grant this account access` });
+      throw new CommandFailure("refused", refreshFailed ? "DEPENDENCY_UNAVAILABLE" : "TARGET_NOT_FOUND", refreshFailed ? "the daemon could not refresh its signed-in space catalogs" : "this space was not found in the daemon's signed-in catalogs", { remedy: `run ${codeSpan(daemonCommandCopy("setup", opts.daemonHome, [["--space", opts.space], ...(opts.idp ? [["--idp", opts.idp] as const] : [])]))}${opts.idp ? "" : " with --idp <auth base URL>"}; ask the space owner to grant this account access` });
     }
     steps.push({ step: "discover", outcome: "registered", detail: "the daemon discovered the requested space" });
     opts.report("discover: the requested space is registered on this machine");
@@ -323,7 +323,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     if (inspectedExisting || refreshed) manager = await managerViaDaemon(opts, { op: "manager-start", space: opts.space }) as HostedManager;
     steps.push({ step: "manager", outcome: manager.state, detail: manager.reason ?? manager.instanceId ?? manager.state });
     opts.report(`manager: ${manager.state}${manager.instanceId ? `, instance ${manager.instanceId}` : ""}`);
-    if (manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", manager.reason ?? "the hosted Manager is not answering yet", { remedy: manager.next ?? `read \`${daemonCommandCopy("status", opts.daemonHome, [["--space", opts.space]])}\``, native: { code: manager.state.toUpperCase() } });
+    if (manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", manager.reason ?? "the hosted Manager is not answering yet", { remedy: manager.next ?? `read ${codeSpan(daemonCommandCopy("status", opts.daemonHome, [["--space", opts.space]]))}`, native: { code: manager.state.toUpperCase() } });
     const available = manager.connectors?.filter(connector => connector.state === "available") ?? [];
     opts.report(`connectors: ${available.length} available`);
     if (!available.length) {
@@ -359,8 +359,8 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
   if (!TERMINAL.has(end.state)) {
     throw new CommandFailure("partial", "OPERATION_PARTIAL", `${end.message}. The daemon is installed and running, and its registration request is sent`, {
       remedy: end.state === "approval-pending"
-        ? `ask the space owner to approve this machine, then run \`${daemonCommandCopy("setup", opts.daemonHome, [["--space", opts.space], "--no-manager"])}\` again`
-        : `read \`${daemonCommandCopy("service-status", opts.daemonHome, [["--space", opts.space]])}\`, then run \`${daemonCommandCopy("setup", opts.daemonHome, [["--space", opts.space], "--no-manager"])}\` again`,
+        ? `ask the space owner to approve this machine, then run ${codeSpan(daemonCommandCopy("setup", opts.daemonHome, [["--space", opts.space], "--no-manager"]))} again`
+        : `read ${codeSpan(daemonCommandCopy("service-status", opts.daemonHome, [["--space", opts.space]]))}, then run ${codeSpan(daemonCommandCopy("setup", opts.daemonHome, [["--space", opts.space], "--no-manager"]))} again`,
       native, target,
     });
   }
@@ -371,7 +371,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     : end.state === "account-mismatch" || end.state === "conflict" || end.state === "local-state-error" ? "CONFLICT"
     : "PERMISSION_DENIED";
   throw new CommandFailure("refused", code, `${end.message}. The daemon is installed and running, and nothing is connected`, {
-    remedy: `read \`${daemonCommandCopy("service-status", opts.daemonHome, [["--space", opts.space]])}\``,
+    remedy: `read ${codeSpan(daemonCommandCopy("service-status", opts.daemonHome, [["--space", opts.space]]))}`,
     native, target,
   });
 }

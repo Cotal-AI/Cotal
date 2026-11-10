@@ -19,7 +19,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { contractDigest, resolveAuthProvider, ServiceAuthorityTransportError, singleDocumentClosure, VOID_SCHEMA_DIGEST, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness } from "@cotal-ai/core";
-import { claimIdentityRecord, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { claimIdentityRecord, codeSpan, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { connectCheck, DAEMON_ENDPOINT } from "./connect.js";
 import type { RegisterResult } from "./protocol.js";
 import { daemonCommandCopy } from "./guidance.js";
@@ -132,7 +132,7 @@ async function sendRegister(space: string, home: string): Promise<RegisterResult
     // 401 sentence; it carries no code) or none at all (`signed-out`) needs a new sign-in.
     if ((e as { code?: unknown }).code === "signed-out" || /rejected the cached session/.test((e as Error).message ?? ""))
       return { outcome: "not-signed-in", space, message: NOT_SIGNED_IN,
-        remedy: `run \`${daemonCommandCopy("login", home, [["--idp", entry.userAuth!.idp.url]])}\`` };
+        remedy: `run ${codeSpan(daemonCommandCopy("login", home, [["--idp", entry.userAuth!.idp.url]]))}` };
     return { outcome: "refused", space, message: NOT_SENT };
   }
   return { result, ids };

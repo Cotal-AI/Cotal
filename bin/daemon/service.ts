@@ -38,7 +38,7 @@ import {
   type EpServeGrant, type EpServeHandle, type SecretStore, type ServiceEndpointRenewal, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
-import { FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { codeSpan, FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness, registerDaemon } from "./register.js";
 import { ACCOUNT_MISMATCH_MESSAGE } from "./connect.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
@@ -168,7 +168,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   const result = (space: string): ServiceConnectionResult => {
     const l = live.get(space);
     const state = l?.state ?? "disconnected";
-    const remedy = state === "not-requested" ? `run \`${daemonCommandCopy("register", home, [["--space", space]])}\` first`
+    const remedy = state === "not-requested" ? `run ${codeSpan(daemonCommandCopy("register", home, [["--space", space]]))} first`
       : state === "not-signed-in" ? l?.remedy : undefined;
     return { space, state, message: SENTENCE[state], ...(l?.instanceId ? { instanceId: l.instanceId } : {}),
       ...(remedy !== undefined ? { remedy } : {}),

@@ -34,7 +34,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure } from "@cotal-ai/workspace";
 import { assertSystemdSource, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import type { DaemonPaths } from "./endpoint.js";
 import { launchAgentService, xmlText } from "./install-darwin.js";
@@ -251,7 +251,7 @@ function directive(bytes: string, name: string): string {
 function refuseInstalled(paths: DaemonPaths, daemonHome: string | undefined): void {
   const existing = readReceipt(paths);
   if (existing) throw new CommandFailure("refused", "CONFLICT", `this daemon already has an installed unit (${existing.unit})`, {
-    remedy: `remove it with \`${daemonCommandCopy("uninstall", daemonHome)}\` before installing again`,
+    remedy: `remove it with ${codeSpan(daemonCommandCopy("uninstall", daemonHome))} before installing again`,
   });
 }
 

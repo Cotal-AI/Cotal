@@ -241,9 +241,11 @@ failure.
 
 A command whose `structured output` line also names `plain` takes `--plain`, which writes the same
 report as plain lines: no color, ASCII labels, and no marks other than the `!` that begins a warning
-or failure line on stderr. Plain writes these punctuation marks in ASCII wherever they appear: `·`
+or failure line on stderr. Plain writes these punctuation marks in ASCII in prose: `·`
 and long dashes as `-`, `…` as `...`, `→` and `↳` as `->`, and `§` as `section`. Other characters,
-such as the letters of a name or a message, are written as they are.
+such as the letters of a name or a message, are written as they are. Commands and matching
+backtick spans retain their literal punctuation, including punctuation in quoted paths. Control
+and formatting characters are still displayed as escapes for terminal safety.
 Under a locale whose character set is not UTF-8, as `LC_ALL`, then `LC_CTYPE`, then `LANG` decide,
 reports and error lines draw their marks and punctuation as plain does, and keep their color. With
 none of the three set, the marks are drawn in UTF-8. Windows consoles are always treated as UTF-8.
