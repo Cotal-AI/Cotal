@@ -914,4 +914,4 @@ export { submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUni
 export { launchAgent } from "./lib/manifest/live.js";
 
 // The machine daemon refreshes the same catalog while retaining its own sign-in session.
-export { prepareCatalogTargets } from "./commands/sync.js";
+export { prepareCatalogTargets, importAccountComputerSpace, validateCatalogSnapshot, type SpaceCatalogSnapshot } from "./commands/sync.js";
