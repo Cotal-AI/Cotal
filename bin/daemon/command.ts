@@ -216,6 +216,7 @@ async function connectCheckCommand(args: ParsedArgs): Promise<void> {
   if (r.outcome === "not-registered") throw new CommandFailure("refused", "TARGET_NOT_FOUND", r.message, native);
   if (r.outcome === "not-user-auth" || r.outcome === "unsupported-by-space") throw new CommandFailure("refused", "UNSUPPORTED", r.message, native);
   if (r.outcome === "not-signed-in") throw new CommandFailure("refused", "AUTH_REQUIRED", r.message, native);
+  if (r.outcome === "credential-expired") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", r.message, native);
   if (r.outcome === "unreachable") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, native);
   if (r.outcome === "account-mismatch" || r.outcome === "local-state-error") throw new CommandFailure("refused", "CONFLICT", r.message, native);
   if (r.outcome !== "ready-to-register") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, native);
@@ -246,6 +247,7 @@ async function registerCommand(args: ParsedArgs): Promise<void> {
   if (r.outcome === "not-registered") throw new CommandFailure("refused", "TARGET_NOT_FOUND", r.message, native);
   if (r.outcome === "not-user-auth" || r.outcome === "unsupported-by-space") throw new CommandFailure("refused", "UNSUPPORTED", r.message, native);
   if (r.outcome === "not-signed-in") throw new CommandFailure("refused", "AUTH_REQUIRED", r.message, native);
+  if (r.outcome === "credential-expired") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", r.message, native);
   if (r.outcome === "unreachable") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, native);
   if (r.outcome === "account-mismatch" || r.outcome === "conflict" || r.outcome === "local-state-error") throw new CommandFailure("refused", "CONFLICT", r.message, native);
   // Only a refusal carrying the space's stock reason is a denial; one without is the daemon's own failure.
@@ -285,7 +287,7 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
       : r.state === "not-signed-in" ? "AUTH_REQUIRED"
       : r.state === "refused" || r.state === "ended" || r.state === "credential-not-yet-valid" ? "PERMISSION_DENIED"
       : r.state === "account-mismatch" || r.state === "conflict" || r.state === "local-state-error" ? "CONFLICT"
-      : r.state === "approval-pending" || r.state === "connecting" ? "LIFECYCLE_BLOCKED"
+      : r.state === "approval-pending" || r.state === "connecting" || r.state === "credential-expired" ? "LIFECYCLE_BLOCKED"
       : r.state === "disconnected" ? "TARGET_UNAVAILABLE"
       : "DEPENDENCY_UNAVAILABLE";
     const remedy = r.remedy ?? r.manager?.next;
