@@ -23,6 +23,11 @@ const env: NodeJS.ProcessEnv = {
   COTAL_HOME: home, COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1", NO_COLOR: "1",
 };
 const paths = daemonPaths(env, home);
+if (process.argv.includes("--childless")) {
+  const directory = join(home, "daemon", "space.72656675736564");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  writeFileSync(join(directory, "manager-refusal.json"), JSON.stringify({ space: "refused", state: "refused", restarts: 0, reason: "sign-in missing" }), { mode: 0o600 });
+}
 const old = await serveDaemon({ paths, version: "0.0.0", sessionDir: home });
 let replacement: ChildProcess | undefined;
 const calls: string[] = [];
@@ -76,6 +81,7 @@ try {
   child.stdout.on("data", b => output += String(b)); child.stderr.on("data", b => output += String(b));
   const code = await new Promise(resolve => child.once("exit", resolve));
   const after = await status();
+  if (process.argv.includes("--childless") && !output.includes("no live child")) throw new Error(`R2-10 childless refusal blocked update: ${output}`);
   if (foreign) {
     console.log("R2-4 foreign update", JSON.stringify({ code, calls, after, output }));
     if (process.argv.includes("--setup-foreign")) {

@@ -25,11 +25,14 @@ const composed: Command = { ...command, async run(args) {
       throw error;
     }
     // Updating this installation restarts the machine daemon, including spaces not selected by flags.
-    const active = managers.filter((manager) => manager.state !== "stopped");
+    for (const manager of managers) {
+      if (manager.pid === undefined) console.log(`hosted Manager ${manager.space}: ${manager.state}; no live child, skipped`);
+    }
+    const active = managers.filter((manager) => manager.pid !== undefined);
     hostedSpaces = active.map((manager) => manager.space);
     if (!active.length) return updateRuntime.reportRunningManager(flags);
     for (const manager of active) {
-      if (!manager.instanceId || manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager for ${manager.space} is ${manager.state}; its custody must answer before update`, { remedy: `read cotal daemon status --space ${manager.space}` });
+      if (!manager.instanceId || manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager for ${manager.space} is ${manager.state}; its custody must answer before update`, { remedy: `run cotal daemon service-disconnect --space ${manager.space}, correct its sign-in or connection, then run cotal update again` });
       const reply = await withIdpSessionDir(homeCotalDir(), async () => {
         const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
         return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
@@ -59,7 +62,7 @@ const composed: Command = { ...command, async run(args) {
     return;
   }
   if (current.result.version !== updateRuntime.version()) {
-    const hosted = (current.result.managers ?? []).some((manager) => manager.state !== "stopped");
+    const hosted = (current.result.managers ?? []).some((manager) => manager.pid !== undefined);
     if (hosted) await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
     try { restartInstalled(paths); }
     catch (error) {
