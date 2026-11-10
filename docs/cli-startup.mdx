@@ -156,8 +156,9 @@ Terminal Ctrl-C reaches the CLI owner, which stops the manager through the same 
 `cotal down` (see [`down`](cli-shutdown.mdx#down)), then the rest of the stack, and reports managed agents under
 the same rule. When the manager stop is refused, Ctrl-C prints the refusal with the reap route and
 leaves the stack running, including the manager, broker, delivery and any auth service. A second
-interrupt during teardown does not start another stop. Windows keeps its existing console signal
-behavior. The `-f` form is a
+interrupt during teardown does not start another stop. A legacy foreground start suppresses a
+control-plane startup error that arrives while its guarded stop is in progress. Startup errors
+outside that stop are still reported. Windows keeps its existing console signal behavior. The `-f` form is a
 [manifest deploy](#manifest-deploys).
 
 

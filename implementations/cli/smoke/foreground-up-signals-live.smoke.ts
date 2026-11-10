@@ -3,6 +3,7 @@
  * is replaced. POSIX process-group signals model terminal Ctrl-C, unlike CLI-only kill().
  * Ready static stacks are probed through public status/ps. A bounded startup-refusal cell suspends
  * only its pinned manager before natural capability publication and always resumes it for cleanup.
+ * A manager killed before readiness, without a stop request, must still report a degraded startup.
  * A controller-route cell interrupts a prepared root's foreground `up` while it is still starting,
  * and again as it writes its start receipt, and another cuts a ready one's stop as a closed terminal
  * does. A third shows that a second foreground `up` refuses while one holds the stack, and that one
@@ -55,7 +56,7 @@ function token(path: string): ProcessIdentityRecord | undefined {
   return pin.kind === "match" ? pin.record : undefined;
 }
 
-async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean }): Promise<boolean> {
+async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean }): Promise<boolean> {
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
   for (const p of [root, home, mesh, join(mesh, ".cotal"), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
@@ -91,7 +92,33 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       // Normal signal cells wait for postStart's durable registration, not merely a bound socket.
       // The auth cell deliberately interrupts earlier at the natural manager birth record.
       return options.auth ? token(managerPath) !== undefined : token(brokerPath) !== undefined && existsSync(join(home, "machine", "meshes", `space.${spaceKey(space)}.json`)) && await portOpen(port);
-    }, 90_000, () => err.slice(-3000), options.refusal ? 2 : 20);
+    }, 90_000, () => err.slice(-3000), options.refusal || options.managerCrash ? 2 : 20);
+    if (options.managerCrash) {
+      const manager = token(managerPath); assert.ok(manager && live(manager));
+      assert.equal(existsSync(capabilityPath), false, "owned manager has not published readiness before the crash");
+      if (options.signal) {
+        assert.ok(child.pid);
+        process.kill(-child.pid, options.signal);
+      }
+      process.kill(manager.pid, "SIGKILL");
+      if (options.signal) {
+        await until(() => state.exited, 60_000, () => err.slice(-3000));
+        await waitForOwnedChild(() => state.closed, 3_000, `${root}: interrupted startup streams drained`);
+        assert.equal(state.code, options.signal === "SIGTERM" ? 143 : 130, "interrupted startup retains its signal exit"); passed++;
+        assert.equal(await portOpen(port), false, "interrupted startup closes its broker"); passed++;
+        assert.equal([...owned.values()].some(live), false, "interrupted startup leaves no recorded owned process"); passed++;
+        assert.doesNotMatch(err, /control plane degraded/, "a startup failure during the guarded stop is not reported as degradation"); passed++;
+        console.log(`PASS foreground-up-signals ${name}: manager exit during an interrupted startup is not reported as degradation`);
+        return true;
+      }
+      await until(() => /control plane degraded:.*exited before it came up/.test(err), 20_000, () => err.slice(-3000));
+      assert.equal(live(manager), false, "the failed manager's recorded birth is gone"); passed++;
+      assert.equal(state.exited, false, "a genuine startup failure does not masquerade as an operator stop"); passed++;
+      assert.equal(await portOpen(port), true, "the degraded stack's broker remains running"); passed++;
+      assert.match(err, /Spawn and retirement require a functioning control plane/); passed++;
+      console.log(`PASS foreground-up-signals ${name}: genuine manager startup failure reported before any stop request`);
+      return true;
+    }
     let refusalBoundary = false;
     if (options.refusal) {
       const manager = token(managerPath); assert.ok(manager && live(manager));
@@ -463,6 +490,8 @@ passed += 10;
 await cell("group", {});
 await cell("term", { signal: "SIGTERM" });
 await cell("double", { twice: true });
+await cell("auth-startup-failure", { auth: true, managerCrash: true });
+await cell("auth-interrupted-failure", { auth: true, managerCrash: true, signal: "SIGINT" });
 await cell("auth-early", { auth: true, twice: true });
 await cell("auth-ready", { auth: true, ready: true });
 await cell("auth-ready-term", { auth: true, ready: true, signal: "SIGTERM" });
