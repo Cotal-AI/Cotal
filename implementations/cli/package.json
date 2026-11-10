@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/cli",
   "description": "Cotal mesh CLI: up, join, watch, console, spawn, mint, channels, history, ext.",
-  "version": "0.152.0",
+  "version": "0.153.1",
   "homepage": "https://cotal.ai",
   "license": "Apache-2.0",
   "repository": {
@@ -13,6 +13,18 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./default-persona": {
+      "types": "./dist/lib/default-persona.d.ts",
+      "import": "./dist/lib/default-persona.js"
+    },
+    "./update": {
+      "types": "./dist/commands/update.d.ts",
+      "import": "./dist/commands/update.js"
+    },
+    "./self-exec": {
+      "types": "./dist/lib/self-exec.d.ts",
+      "import": "./dist/lib/self-exec.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

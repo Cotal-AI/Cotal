@@ -46,7 +46,7 @@
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
-import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -54,29 +54,36 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { peerCredentials } from "@cotal-ai/seat";
+import { connect as connectNats } from "@nats-io/transport-node";
 import {
   CotalEndpoint, EpEnvelopeError, SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA, compileContract, epCall, unansweredRequest, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig, setupSpaceStreams,
-  writeSecretFileAtomic, type SecretStore,
+  standaloneConnectOpts, issuedUserCaller, resolveService, invokeCommand,
+  writeSecretFileAtomic, mintMembershipObserverCreds, mintConnectionEvictorCreds, type SecretStore,
 } from "@cotal-ai/core";
 import {
-  deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadOwnerSecret, saveIdpSession,
+  deleteIdpSession, deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadOwnerSecret, saveIdpSession,
   saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
-import { recordMesh, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
+import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
+import { askManager } from "@cotal-ai/workspace/control";
+import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
-import { daemonPaths } from "../daemon/endpoint.js";
+import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
 import { daemonConnectIntentFile } from "../daemon/service.js";
 import { runSetup } from "../daemon/setup.js";
 import { serveDaemon } from "../daemon/server.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-service-connect smoke: Linux only; skipped on ${process.platform}`);
 const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
+const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
+const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
 const originalPath = process.env.PATH;
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
+const fixtureVersion = (JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")) as { version: string }).version;
 const authRequire = createRequire(join(repo, "implementations", "auth", "package.json"));
 // jose is a dependency of implementations/auth, not of this package; resolve it from its owner, as the
 // daemon-login smoke resolves better-auth. Typed structurally for what this file uses.
@@ -97,6 +104,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, JSON.stringify(extra ?? "")?.slice(0, 600)); }
 };
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
+  if (process.argv.includes("--hosting-only") && !title.startsWith("H1")) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
 }
@@ -142,14 +150,39 @@ const key = await generateKeyPair("EdDSA");
 const jwk = { ...await exportJWK(key.publicKey), kid: "a2b2-idp" };
 const SESSION = "a2b2-session-handle-not-a-secret";
 let idpOrigin = "";
+let catalog: unknown;
+let catalogSpace: string | undefined;
+let catalogTarget: string | undefined;
 const jwtsIssued: string[] = [];
 /** R11: the IdP rejects the session handle, as for an expired or revoked session. */
 let idpRevoked = false;
+let deviceCodeRequests = 0;
+let deviceFailure: "denied" | "expired" | "unreachable" | undefined;
+let catalogUnavailable = false;
+let catalogAuthorityDown = false;
+let standingRenewals = 0;
+let catalogAuthorityRequests = 0;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
+  if (req.url === "/api/auth/device/code") { deviceCodeRequests++; if (deviceFailure === "unreachable") { req.socket.destroy(); return; } return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 })); }
+  if (req.url === "/api/auth/device/token" && deviceFailure) { res.writeHead(400); return void res.end(JSON.stringify({ error: deviceFailure === "denied" ? "access_denied" : "expired_token" })); }
+  if (req.url === "/api/auth/device/token") return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
+  if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
+  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(catalog));
+  if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
+    catalogAuthorityRequests++;
+    if (catalogAuthorityDown) { res.writeHead(503); res.end("{}"); return; }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    if (Buffer.concat(chunks).toString().includes('"renewStandingBundle"')) standingRenewals++;
+    const answer = await fetch(`${catalogTarget}${req.url.slice(`/space/${catalogSpace}`.length)}`, { method: req.method, headers: { "content-type": "application/json" }, ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) });
+    res.writeHead(answer.status);
+    return void res.end(Buffer.from(await answer.arrayBuffer()));
+  }
   if (req.url === "/api/auth/jwks") return void res.end(JSON.stringify({ keys: [jwk] }));
   if (req.url === "/api/auth/token" && idpRevoked) { res.writeHead(401); return void res.end("{}"); }
   if (req.url === "/api/auth/token" && (req.headers.authorization ?? "") === `Bearer ${SESSION}`) {
+    if (catalog) res.setHeader("link", `<${idpOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`);
     const now = Math.floor(Date.now() / 1000);
     const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + 120).sign(key.privateKey);
     jwtsIssued.push(token);
@@ -231,6 +264,7 @@ try {
   }
   const svc = await Promise.all(ctx.map((c, i) => startAuthService({ context: { accountPublicKey: c.auth.account.pub, lifecycleUid: mintLifecycleUid() }, space: c.space, servers,
     store: c.store, storeIdentity: c.store.identity, stateDir: c.stateDir, publicFace: { port: 0, trustedProxy: false },
+    ...(process.argv.includes("--renewal-abort-repro") ? { standingRenewableTtlSeconds: 40 } : {}),
     ...(i === 1 ? {} : { serviceEndpoints: { startup: { kind: "normal" as const },
       callerPayload: { observerCreds: () => mintServiceCallerPayloadObserverCreds({ pub: c.auth.sys.pub, signingSeed: c.auth.sys.signingSeed! }) } } }) })));
   handles.push(...svc);
@@ -275,16 +309,16 @@ try {
   /** Where a space's resume intent is recorded, read the way the daemon derives it. */
   const intentFile = (space: string) => daemonConnectIntentFile(space, home);
   const filesUnder = (dir: string) => existsSync(dir) ? readdirSync(dir, { recursive: true }).map(String) : [];
-  /** A real unit file and receipt in the fixture manager's reported directory. The native-tool
-   *  fixture admits directory reads only; no operational service is installed or controlled. */
-  const seedUnitReceipt = (): string => {
+  /** A real unit and receipt in the fixture manager's reported directory. Operational native
+   *  calls reach only an owned recorder; the default fixture admits directory reads only. */
+  const seedUnitReceipt = (entry = join(repo, "bin/dist/cotal.js"), marked = false): string => {
     const native = join(root, "native"), config = join(root, "config");
     mkdirSync(native, { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "systemd", "user"), { recursive: true, mode: 0o700 });
     writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(" ") !== "--user show-environment") process.exit(89);\nconsole.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});\n`, { mode: 0o700 });
     process.env.PATH = `${native}:${originalPath ?? ""}`;
     const unitPath = join(config, "systemd", "user", "cotal-daemon.service");
-    const unitBytes = "[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nRestart=always\n\n[Install]\nWantedBy=default.target\n";
+    const unitBytes = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nExecStart="${process.execPath}" "${entry}" daemon serve\n${marked ? "Environment=COTAL_DAEMON_NATIVE_SERVICE=1\n" : ""}Restart=always\n\n[Install]\nWantedBy=default.target\n`;
     writeFileSync(unitPath, unitBytes, { mode: 0o600 });
     mkdirSync(join(home, "daemon"), { recursive: true, mode: 0o700 });
     writeFileSync(join(home, "daemon", "service-unit.json"), `${JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
@@ -359,7 +393,7 @@ try {
     } finally { await caller.stop(); }
   };
 
-  let d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+  let d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
   let assignmentDigest = "";
   try {
     await cell("C1 connect before approval is approval-pending, never connected", async () => {
@@ -377,7 +411,7 @@ try {
       const lines: string[] = [];
       let failure: Record<string, any> | undefined;
       try {
-        await runSetup({ paths, daemonHome: undefined, space: ON, peerUid, peerPid, waitSeconds: 0,
+        await runSetup({ paths, daemonHome: undefined, noManager: true, space: ON, peerUid, peerPid, waitSeconds: 0,
           report: (l) => lines.push(l), onPrompt: () => { throw new Error("setup asked for a sign-in it did not need"); } });
       } catch (e) { failure = e as Record<string, any>; }
       check("C1b it ends partial, not a success and not a plain failure", failure?.outcome === "partial", failure && { outcome: failure.outcome, code: failure.code });
@@ -468,7 +502,7 @@ try {
       const before = filesUnder(daemonDir).filter((p) => p.includes("service-renewal") && p.endsWith(".json")).map((p) => readFileSync(join(daemonDir, p), "utf8"));
       const ids0 = before.map((t) => { const o = JSON.parse(t) as Record<string, string>; return `${o.activateRequestId}/${o.renewRequestId}`; });
       await d.close();
-      d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
       // Nothing is run against this daemon: the state it reports is the one its own resume reached.
       const st = await waitState(ON, (x) => x === "connected", 90_000);
       check("C6 it reaches connected with nothing run against it", st === "connected", st);
@@ -478,7 +512,7 @@ try {
       // And the other direction: an explicit disconnect must not come back.
       check("C6 instrument: an explicit disconnect forgets the intent", stateOf(await disconnectS(ON)) === "disconnected" && !existsSync(intentFile(ON)));
       await d.close();
-      d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
       check("C6 a restart after an explicit disconnect resumes 0 connections and is not connected", d.counters.connectionsResumed === 0 && stateOf(await statusS(ON)) !== "connected", { counters: d.counters, state: stateOf(await statusS(ON)) });
       check("C6 instrument: connected again for the cells that follow", stateOf(await connectS(ON)) === "connected");
     });
@@ -513,7 +547,7 @@ try {
       await disconnectS(ON);
       check("C17 instrument: not connected, and no resume record, before setup runs", stateOf(await statusS(ON)) === "disconnected" && !existsSync(intentFile(ON)));
       const lines: string[] = [];
-      const r = await runSetup({ paths, daemonHome: undefined, space: ON, peerUid, peerPid, waitSeconds: 60,
+      const r = await runSetup({ paths, daemonHome: undefined, noManager: true, space: ON, peerUid, peerPid, waitSeconds: 60,
         report: (l) => lines.push(l), onPrompt: () => { throw new Error("setup asked for a sign-in it did not need"); } });
       check("C17 it reaches connected", r.state === "connected", r);
       check("C17 it ran four steps, in order", r.steps.map((x) => x.step).join(",") === "install,sign-in,register,connect", r.steps);
@@ -527,13 +561,34 @@ try {
       check("C17 nothing secret reached its progress lines", !lines.some((l) => [SESSION, ...jwtsIssued].some((t) => l.includes(t))) && !lines.some((l) => /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(l)));
     });
 
+    await cell("BASELINE shipped setup connects but provides no Manager to call", async () => {
+      const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), "daemon", "setup", "--no-manager", "--space", ON, "--wait", "0", "--json"], {
+        cwd: root,
+        env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let out = "", err = "";
+      child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
+      const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
+      const doc = JSON.parse(out) as { result?: { state?: string } };
+      check("BASELINE shipped setup exits 0 connected", code === 0 && doc.result?.state === "connected", { code, out, err });
+      const idpToken = (await (await fetch(`${idpUrl}/token`, { headers: { authorization: `Bearer ${SESSION}` } })).json() as { token: string }).token;
+      const catalogResponse = await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/manager-instances`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken }) });
+      const catalog = await catalogResponse.json() as { complete?: boolean; instances?: unknown[] };
+      check("BASELINE owner's complete Manager catalog is empty", catalogResponse.ok && catalog.complete === true && catalog.instances?.length === 0, catalog);
+      const callerResponse = await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/exchange`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken, actor: "cli", view: "manager-caller" }) });
+      const refusal = await callerResponse.json() as { error?: string; code?: string };
+      check("BASELINE manager-caller has no Manager to call", !callerResponse.ok, { status: callerResponse.status, ...refusal });
+      console.log(`  BASELINE connected setup exit=${code}, complete catalog instances=${catalog.instances?.length}, manager-caller HTTP=${callerResponse.status}`);
+    });
+
     await cell("C17b setup stops at the space's own refusal and connects nothing", async () => {
       // A refused proposal is not a wait: nothing is pending, so this is a refusal at the register
       // step and the connect step never runs.
       const lines: string[] = [];
       let failure: Record<string, any> | undefined;
       try {
-        await runSetup({ paths, daemonHome: undefined, space: DENY, peerUid, peerPid, waitSeconds: 60,
+        await runSetup({ paths, daemonHome: undefined, noManager: true, space: DENY, peerUid, peerPid, waitSeconds: 60,
           report: (l) => lines.push(l), onPrompt: () => { throw new Error("setup asked for a sign-in it did not need"); } });
       } catch (e) { failure = e as Record<string, any>; }
       check("C17b it refuses rather than claiming a connection", failure?.outcome === "refused" && failure?.code === "PERMISSION_DENIED", failure && { outcome: failure.outcome, code: failure.code });
@@ -555,7 +610,7 @@ try {
           if (phase === "before-registration") writeFileSync(file, marker);
           const started = Date.now();
           try {
-            await runSetup({ paths, daemonHome: undefined, space: ON, peerUid, peerPid, waitSeconds: 60,
+            await runSetup({ paths, daemonHome: undefined, noManager: true, space: ON, peerUid, peerPid, waitSeconds: 60,
               report: (line) => { lines.push(line); if (phase === "before-connect" && line.startsWith("register: ")) writeFileSync(file, marker); },
               onPrompt: () => { throw new Error("setup asked for an unnecessary sign-in"); } });
           } catch (e) { failure = e as Record<string, any>; }
@@ -642,8 +697,767 @@ try {
           }
         }
       } finally {
-        d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
         if (crashed) check("C14 the successor recovered the crashed child's socket by itself (1 recovery)", d.counters.socketsRecovered === 1, d.counters);
+      }
+    });
+
+    await cell("H1 shipped setup hosts an answering Manager independently of machine approval", async () => {
+      seedUnitReceipt();
+      await d.close();
+      const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
+      const original = findMesh(ON)!;
+      const published = await (await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as { server: string; tlsRequired?: boolean; userAuth: NonNullable<MeshEntry["userAuth"]> };
+      const deliveryStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${ON}` });
+      const composition = { injected: true } as const;
+      await deliveryStore.put(deliveryCredsKey(ON, composition), await mintCreds(ctx[0]!.auth, newIdentity(), "delivery"));
+      await deliveryStore.put(membershipRwCredsKey(ON, composition), await mintCreds(ctx[0]!.auth, newIdentity(), "membership-rw"));
+      await deliveryStore.put(membershipObserverCredsKey(ON, composition), await mintMembershipObserverCreds(ctx[0]!.auth, newIdentity()));
+      await deliveryStore.put(connectionEvictorCredsKey(ON, composition), await mintConnectionEvictorCreds(ctx[0]!.auth, newIdentity()));
+      const delivery = await startDeliveryService({ context: { accountPublicKey: ctx[0]!.auth.account.pub, lifecycleUid: mintLifecycleUid() }, space: ON, servers, store: deliveryStore, storeIdentity: deliveryStore.identity, stateDir: join(root, "delivery") });
+      let secondDelivery: Awaited<ReturnType<typeof startDeliveryService>> | undefined;
+      // Like remote-manager-goal-reader: this owned loopback stack is plaintext, while the public
+      // face advertises production TLS. Pin the fixture transport explicitly, with a warm policy.
+      recordMesh({ ...original, server: published.server, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString(), userAuth: { ...published.userAuth, remote: true, sentinelCredsPath: original.userAuth!.sentinelCredsPath } });
+      const discovery = { ...published, space: ON, tlsRequired: false, userAuth: { ...published.userAuth, endpoints: { url: `${idpOrigin}/space/${ON}` } } };
+      catalogSpace = ON; catalogTarget = svc[0]!.publicUrl!.replace(/\/$/, "");
+      catalog = { v: 1, account: { idpUrl, issuer: idpOrigin, sub: "machine-owner" }, spaces: [{ id: ON, slug: ON, name: "Daemon smoke", kind: "team", role: "owner", registration: discovery }] };
+      removeMesh(ON);
+      check("H0 requested space is absent from local registry before setup", findMesh(ON) === undefined);
+      deleteIdpSession(home, idpUrl);
+      const prefix = join(root, "config", "cotal", "extensions");
+      const pkg = join(prefix, "node_modules", "daemon-smoke-connector");
+      mkdirSync(pkg, { recursive: true });
+      writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "daemon-smoke-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": ">=0.1.0" } }));
+      const coreUrl = pathToFileURL(upgrading ? join(root, "global-cli/lib/node_modules/cotal-ai/node_modules/@cotal-ai/core/dist/index.js") : join(repo, "packages/core/dist/index.js")).href;
+      const seatScript = join(root, "seat.mjs");
+      writeFileSync(seatScript, `import {CotalEndpoint} from ${JSON.stringify(coreUrl)}; import {readFileSync} from 'node:fs'; import {execFile} from 'node:child_process';
+const cmd=JSON.parse(process.env.COTAL_BEARER_CMD); const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(e,out)=>e?reject(e):resolve(out.trim())));
+const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(process.env.COTAL_SENTINEL_CREDS,'utf8'),lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,card:{owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,name:process.env.COTAL_NAME,kind:'agent'}});ep.on('error',()=>{});await ep.start();`);
+      writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],${process.argv.includes("--dashboard-shape-repro") ? 'eventChannel: p=>"events."+p.owner+"."+p.actor,' : ""}buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
+      writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: process.argv.includes("--dashboard-shape-repro") }] }] }));
+      const cleanSeed = process.argv.includes("--hosted-seed-repro") || process.argv.includes("--daemon-seed-repro");
+      if (cleanSeed) rmSync(prefix, { recursive: true });
+      else if (!upgrading) {
+        const seed = join(root, "config", "cotal", "seed");
+        mkdirSync(seed, { recursive: true, mode: 0o700 });
+        for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: ["claude", "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
+        writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: fixtureVersion }));
+        writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: fixtureVersion }));
+      }
+      const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+      if (process.argv.includes("--daemon-seed-repro")) env.COTAL_ALLOW_CHECKOUT_SEED = "1";
+      if (process.argv.includes("--hosted-seed-repro")) {
+        delete env.COTAL_SKIP_CONNECTOR_SEED;
+        env.COTAL_ALLOW_CHECKOUT_SEED = "1";
+      }
+      if (upgrading && !upgradeFixture) throw new Error("upgrade proofs require COTAL_DAEMON_UPGRADE_FIXTURE from build-daemon-upgrade-fixture.mjs");
+      let npmRegistry: ReturnType<typeof createHttpServer> | undefined;
+      let npmRegistryUrl = "";
+      if (process.argv.includes("--update-repro")) {
+        npmRegistry = createHttpServer((request, response) => {
+          response.setHeader("content-type", "application/json");
+          if (request.url?.includes(".tgz")) { response.setHeader("content-type", "application/octet-stream"); response.end(readFileSync(join(upgradeFixture!, "cotal-ai-0.151.3.tgz"))); return; }
+          const metadata = JSON.parse(readFileSync(join(upgradeFixture!, "hoisted-fix2-0.151.3/package.json"), "utf8"));
+          const bytes = readFileSync(join(upgradeFixture!, "cotal-ai-0.151.3.tgz"));
+          response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: "0.151.3" }, versions: { "0.151.3": { ...metadata, dist: { tarball: `${npmRegistryUrl}/cotal-ai-0.151.3.tgz`, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` } } } }));
+        });
+        await new Promise<void>((resolve) => npmRegistry!.listen(0, "127.0.0.1", resolve));
+        npmRegistryUrl = `http://127.0.0.1:${(npmRegistry.address() as AddressInfo).port}`;
+        env.npm_config_registry = npmRegistryUrl;
+      }
+      let cliEntry = join(repo, "bin", "dist", "cotal.js");
+      const npmRun = async (args: string[]) => {
+        const child = spawn("npm", args, { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let output = "";
+        child.stdout.on("data", (b) => { output += String(b); }); child.stderr.on("data", (b) => { output += String(b); });
+        const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
+        console.log("  npm fixture", JSON.stringify({ args, code, output: output.slice(-1500) }));
+        if (code !== 0) throw new Error("owned npm fixture install failed");
+      };
+      const globalPrefix = join(root, "global-cli");
+      if (upgrading) {
+        await npmRun(["install", "-g", "--prefix", globalPrefix, "--ignore-scripts", join(upgradeFixture!, "cotal-ai-0.151.2.tgz")]);
+        cliEntry = join(globalPrefix, "lib/node_modules/cotal-ai/dist/cotal.js");
+        seedUnitReceipt(cliEntry, true);
+      }
+      const connectorUpgrade = process.argv.includes("--upgrade-connectors-repro");
+      if (upgrading) {
+        const fixturePackage = join(root, "daemon-smoke-connector");
+        renameSync(pkg, fixturePackage);
+        const adding = spawn(process.execPath, [cliEntry, "ext", "add", fixturePackage], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let addingOutput = "";
+        adding.stdout.on("data", (b) => { addingOutput += String(b); }); adding.stderr.on("data", (b) => { addingOutput += String(b); });
+        const added = await new Promise<number | null>((resolve) => adding.once("exit", resolve));
+        if (added !== 0) throw new Error(`owned stand-in ext add failed: ${addingOutput}`);
+        const seed = join(root, "config", "cotal", "seed");
+        mkdirSync(seed, { recursive: true, mode: 0o700 });
+        for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: [...(connectorUpgrade ? [] : ["claude"]), "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
+        writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: "0.151.2" }));
+        writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: "0.151.2" }));
+        if (connectorUpgrade) {
+        const seedChild = spawn(process.execPath, [cliEntry, "ext", "seed"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let output = ""; seedChild.stdout.on("data", (b) => { output += String(b); }); seedChild.stderr.on("data", (b) => { output += String(b); });
+        const code = await new Promise<number | null>((resolve) => seedChild.once("exit", resolve));
+        const installed = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
+        check("U0 actual seed installs one current-generation stock connector", code === 0 && installed.some((entry: { pkg: string; source?: string; version: string }) => entry.pkg === "@cotal-ai/connector-claude-code" && entry.source === "seeded" && entry.version === "0.151.2"), { code, output });
+        }
+      }
+      const cli = async (...args: string[]) => {
+        const child = spawn(process.execPath, [cliEntry, "daemon", ...args, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
+        const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
+        return { code, doc: JSON.parse(out) as Record<string, any>, err };
+      };
+      const plainCommand = async (...args: string[]) => {
+        const process = spawn(globalThis.process.execPath, [cliEntry, "daemon", ...args, "--plain"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "", err = "";
+        process.stdout.on("data", (b) => { out += String(b); }); process.stderr.on("data", (b) => { err += String(b); });
+        const code = await new Promise<number | null>((resolve) => process.once("exit", resolve));
+        console.log("  H1 plain stdout", JSON.stringify(out));
+        console.log("  H1 plain stderr", JSON.stringify(err));
+        return { code, out, err };
+      };
+      const startDaemon = async (managedHome?: string) => {
+        const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
+        const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] });
+        child.stdout.resume(); child.stderr.on("data", (chunk) => { if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) console.log("  owned daemon", String(chunk).trim()); });
+        for (let i = 0; i < 100; i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
+        await killAndAwaitExit(child, "SIGTERM");
+        throw new Error("shipped daemon did not answer");
+      };
+      if (process.argv.includes("--setup-no-connectors-repro")) {
+        writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["cotal-owned-missing-harness"],buildLaunch:()=>{throw new Error("unavailable connector must not launch")}});`);
+        const manifest = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8"));
+        manifest.extensions[0].connectors[0].requires = ["cotal-owned-missing-harness"];
+        writeFileSync(join(prefix, "extensions.json"), JSON.stringify(manifest));
+      }
+      let child = await startDaemon();
+      let recordingRestart = process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro");
+      const watchRecordedRestart = (owned: ChildProcess) => owned.once("exit", (code) => {
+        if (recordingRestart && code === 0) void startDaemon().then((next) => { child = next; watchRecordedRestart(next); });
+      });
+      if (recordingRestart) watchRecordedRestart(child);
+      let upgradeControl: ReturnType<typeof createHttpServer> | undefined;
+      if (process.argv.includes("--update-repro") || process.argv.includes("--setup-upgrade-repro")) {
+        const recorder = join(root, "upgrade-native");
+        mkdirSync(recorder, { mode: 0o700 });
+        upgradeControl = createHttpServer(async (request, response) => {
+          if (request.url === "/stop") { recordingRestart = false; await killAndAwaitExit(child, "SIGTERM"); }
+          else if (request.url === "/start") { child = await startDaemon(); recordingRestart = true; watchRecordedRestart(child); }
+          else { response.writeHead(404).end(); return; }
+          response.end("done");
+        });
+        await new Promise<void>((resolve) => upgradeControl!.listen(0, "127.0.0.1", resolve));
+        const controlPort = (upgradeControl.address() as AddressInfo).port;
+        writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\n(async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}if(!['--user --no-ask-password --no-pager stop cotal-daemon.service','--user --no-ask-password --no-pager start cotal-daemon.service'].includes(args))process.exit(99);const op=args.includes(' stop ')?'stop':'start';const r=await fetch('http://127.0.0.1:${controlPort}/'+op);if(!r.ok)process.exit(99);})();\n`, { mode: 0o700 });
+        env.PATH = `${recorder}:${env.PATH}`;
+      }
+      try {
+        const setup = await cli("setup", "--space", ON, "--idp", idpUrl);
+        console.log("  H1 setup", JSON.stringify(setup));
+        if (process.argv.includes("--setup-no-connectors-repro")) {
+          check("3A setup refuses no available connector", setup.code === 2 && setup.doc.error?.message?.includes("no available connector") && !!setup.doc.error?.remedy, setup);
+          return;
+        }
+        check("H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
+        check("H0 fresh setup prints device URL and code on stderr", setup.err.includes(`${idpOrigin}/approve?code=DAEMON`) && setup.err.includes("Approval code") && setup.err.includes("DAEMON"));
+        check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
+        if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
+        const manager = setup.doc.result.manager;
+        if (process.argv.includes("--setup-unsupported-repro")) {
+          const other = ctx[1]!;
+          grantActor(other.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(other.store, OFF))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
+          const offEntry = findMesh(OFF)!;
+          recordMesh({ ...offEntry, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString() });
+          const unsupported = await cli("setup", "--space", OFF);
+          const human = await plainCommand("setup", "--space", OFF);
+          console.log("3A unsupported setup", JSON.stringify({ unsupported, human }));
+          check("3A unsupported space reports unsupported machine service", unsupported.doc.result?.state === "unsupported" && human.out.includes("Machine service: unsupported."), { unsupported, human });
+          check("3A unsupported service preserves verified sign-in", unsupported.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "already-signed-in"), unsupported);
+          return;
+        }
+        if (process.argv.includes("--daemon-seed-repro")) {
+          const installed = existsSync(join(prefix, "extensions.json")) ? JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions : [];
+          check("3A daemon reconciles seven stock packages even when setup skips first-use seed", installed.filter((entry: { source?: string }) => entry.source === "seeded").length === 7, installed);
+          return;
+        }
+        if (process.argv.includes("--stock-persona-repro")) {
+          const showDefault = async (instanceId: string) => {
+            const process_ = spawn(process.execPath, [cliEntry, "persona", "show", "default", "--on", instanceId, "--space", ON, "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+            let output = "";
+            process_.stdout.on("data", (chunk) => { output += String(chunk); });
+            process_.stderr.on("data", (chunk) => { output += String(chunk); });
+            const code = await new Promise<number | null>((resolve) => process_.once("exit", resolve));
+            return { code, output };
+          };
+          const hosted = await showDefault(manager.instanceId);
+          await cli("service-disconnect", "--space", ON);
+          const stock = spawn(process.execPath, [cliEntry, "manager", "start", "--foreground", "--space", ON], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+          let diagnostics = "";
+          stock.stdout.on("data", (chunk) => { diagnostics += String(chunk); });
+          stock.stderr.on("data", (chunk) => { diagnostics += String(chunk); });
+          try {
+            let selected: Awaited<ReturnType<typeof resolveControlTarget>> | undefined;
+            for (let i = 0; i < 120 && stock.exitCode === null; i++) {
+              try { selected = await resolveControlTarget({ space: ON }, "control-caller-privileged", undefined, { onRefusal: "throw", readOnly: true }); if (selected.auth.managerInstanceId) break; } catch { /* original stock entry has not answered yet */ }
+              await sleep(250);
+            }
+            if (!selected?.auth.managerInstanceId) throw new Error(`stock manager start never answered: ${diagnostics.slice(-1500)}`);
+            const fresh = await showDefault(selected.auth.managerInstanceId);
+            console.log("  3A stock default parity", JSON.stringify({ hosted, stock: fresh, stockInstance: selected.auth.managerInstanceId }));
+            check("3A stock manager-start and hosted default have the same owner readability", hosted.code === 2 && fresh.code === hosted.code && hosted.output.includes("TARGET_NOT_FOUND") && fresh.output.includes("TARGET_NOT_FOUND"), { hosted, fresh });
+          } finally { await killAndAwaitExit(stock, "SIGTERM"); }
+          return;
+        }
+        if (process.argv.includes("--dashboard-shape-repro")) {
+          const webLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "web", scope: ["spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
+          const view = await cotalAuthProvider.userCredentials({ store: workspaceSecretStore(findMesh(ON)!.root), dir: userAuthStateDir(findMesh(ON)!.root, ON), space: ON, actor: "web", view: "manager-caller", managerInstanceId: manager.instanceId });
+          const target = { server: findMesh(ON)!.server, auth: { bearer: view.bearer, sentinelCreds: view.sentinelCreds, epCaller: { owner: fixture.owner, actor: "web", uid: webLifecycle } } };
+          const options = standaloneConnectOpts({ bearer: target.auth.bearer, sentinelCreds: target.auth.sentinelCreds, tls: false });
+          const nc = await connectNats({ servers: target.server, ...options });
+          try {
+            const caller = await issuedUserCaller(nc, ON, String(options.name), target.auth.epCaller!);
+            const service = await resolveService(nc, ON, "manager", caller, { instanceId: manager.instanceId });
+            const call = async (command: string, args?: Record<string, unknown>) => {
+              const reply = await invokeCommand(nc, ON, service, command, args, { deadlineMs: 40_000 });
+              check(`Dashboard ${command} answers from pinned hosted instance`, reply.reply.ok && reply.responder.instanceId === manager.instanceId, reply.reply);
+              return reply.reply.ok ? reply.reply.data as any : undefined;
+            };
+            const personaName = `cloud_${createHash("sha256").update("owned dashboard proof").digest("hex").slice(0, 16)}`;
+            check("Dashboard caller uses owner web actor distinct from daemon cli", caller.owner === fixture.owner && caller.actor === "web", caller);
+            await call("list-personas");
+            await call("define-persona", { name: personaName, persona: "Owned dashboard launch proof." });
+            const saved = await call("show-persona", { name: personaName });
+            check("Dashboard defined persona is readable by its owner web caller", JSON.stringify(saved).includes("Owned dashboard launch proof."), saved);
+            await call("resolve-agent", { name: personaName, agent: "daemon-smoke" });
+            await call("models", {});
+            const liveStatus = await call("status");
+            check("Dashboard resolved harness is available before Launch", liveStatus?.connectors?.some((row: any) => row.agent === "daemon-smoke" && row.state === "available"), liveStatus);
+            const launched = await call("spawn", { name: personaName, agent: "daemon-smoke" });
+            console.log("  Dashboard exact spawn result", JSON.stringify(launched));
+            let terminal: any;
+            for (let i = 0; i < 120 && launched?.goalId; i++) {
+              const result = await invokeCommand(nc, ON, service, "goal-result", { goalId: launched.goalId }, { deadlineMs: 5000 });
+              terminal = result.reply.ok ? result.reply.data : result.reply.error;
+              if (typeof terminal?.result?.state === "string") break;
+              await sleep(250);
+            }
+            console.log("  Dashboard exact spawn terminal", JSON.stringify(terminal));
+            check("Dashboard exact spawn shape observes owned seat join", terminal?.result?.state === "succeeded" && terminal?.result?.committer?.instanceId === manager.instanceId, terminal);
+          } finally { await nc.drain(); }
+          const selected = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+          await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, selected.server, "stop", { name: `cloud_${createHash("sha256").update("owned dashboard proof").digest("hex").slice(0, 16)}` }, selected.auth, "owner", 10_000, { instanceId: manager.instanceId });
+          return;
+        }
+        if (process.argv.includes("--ipc-health-repro")) {
+          await sleep(1500);
+          const before = catalogAuthorityRequests;
+          await sleep(11_000);
+          check("3A periodic hosted liveness makes no authority calls", catalogAuthorityRequests === before, { before, after: catalogAuthorityRequests });
+          catalogAuthorityDown = true;
+          try { await sleep(8000); }
+          finally { catalogAuthorityDown = false; }
+          let after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 5000));
+          for (let i = 0; i < 80 && after.state !== "answering"; i++) { await sleep(250); after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 5000)); }
+          check("3A authority outage never restarts a healthy IPC-responsive hosted Manager", after.state === "answering" && after.pid === manager.pid && after.restarts === manager.restarts, after);
+          return;
+        }
+        if (process.argv.includes("--fresh-status-repro")) {
+          process.kill(manager.pid, "SIGSTOP");
+          try {
+            const service = await cli("service-status", "--space", ON);
+            const direct = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 30_000));
+            console.log("  R2-6 fresh status results", JSON.stringify({ service, direct }));
+            check("R2-6 immediate service-status probes instead of returning remembered success", service.code !== 0 && service.doc.error?.remedy?.includes(ON), service);
+            check("R2-6 manager-status observes failed pinned instance", direct.state !== "answering" && direct.instanceId === manager.instanceId && typeof direct.reason === "string", direct);
+          } finally { process.kill(manager.pid, "SIGCONT"); }
+          const recovered = await cli("service-status", "--space", ON);
+          check("R2-6 next service-status freshly confirms restored same instance", recovered.code === 0 && recovered.doc.result?.manager?.instanceId === manager.instanceId && recovered.doc.result?.manager?.state === "answering", recovered);
+          return;
+        }
+        if (process.argv.includes("--fence-exit-repro")) {
+          const prepared = await ask(paths.socket, { op: "managers-prepare-restart" }, 30_000);
+          check("R2-9 instrument: real hosted generation fence is held", prepared.ok === true, prepared);
+          process.kill(manager.pid, "SIGKILL");
+          await sleep(500);
+          const during = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+          check("R2-9 child exit under pending fence withdraws answering and records signal", during.state !== "answering" && String(during.lastExit).includes("SIGKILL"), during);
+          await ask(paths.socket, { op: "managers-abort-restart" }, 30_000);
+          let after: Record<string, any> = {};
+          for (let i = 0; i < 120; i++) {
+            after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+            if (after.state === "answering" && after.pid !== manager.pid) break;
+            await sleep(250);
+          }
+          check("R2-9 rollback reschedules exited hosted Manager", after.state === "answering" && after.pid !== manager.pid, after);
+          return;
+        }
+        if (process.argv.includes("--renewal-abort-repro")) {
+          const initial = standingRenewals;
+          for (let i = 0; i < 180 && standingRenewals === initial; i++) await sleep(250);
+          check("R2-2 remote standing renewal runs before preservation", standingRenewals > initial, { initial, standingRenewals });
+          const prepared = await ask(paths.socket, { op: "managers-prepare-restart" }, 30_000);
+          const aborted = await ask(paths.socket, { op: "managers-abort-restart" }, 30_000);
+          check("R2-2 real hosted preservation fence prepares and aborts", prepared.ok === true && aborted.ok === true, { prepared, aborted });
+          const atAbort = standingRenewals;
+          process.kill(child.pid!, "SIGSTOP");
+          try { await sleep(32_000); }
+          finally { process.kill(child.pid!, "SIGCONT"); }
+          console.log("  R2-2 renewal counts", JSON.stringify({ initial, atAbort, after: standingRenewals }));
+          check("R2-2 remote standing renewal continues after aborted preservation", standingRenewals > atAbort, { atAbort, standingRenewals });
+          return;
+        }
+        if (process.argv.includes("--hosted-login-repro")) {
+          const managedHome = join(root, "login-home");
+          mkdirSync(managedHome, { mode: 0o700 });
+          const managedPaths = daemonPathsFor(managedHome, env);
+          saveIdpSession(managedHome, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+          const owned = await startDaemon(managedHome);
+          try {
+            idpRevoked = true;
+            const refusal = resultOf(await ask(managedPaths.socket, { op: "manager-start", space: ON }, 100_000));
+            check("3A explicit-home login reason and Next target the owning daemon", refusal.state === "refused" && refusal.reason?.includes(`--daemon-home ${managedHome}`) && refusal.next?.includes(`--daemon-home ${managedHome}`), refusal);
+          } finally { idpRevoked = false; await killAndAwaitExit(owned, "SIGTERM"); }
+          await cli("service-disconnect", "--space", ON);
+          idpRevoked = true;
+          let missing: Record<string, any>;
+          try { missing = resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 100_000)); }
+          finally { idpRevoked = false; }
+          const remedy = `cotal daemon login --idp ${idpUrl}`;
+          console.log("  HM009 login refusal", JSON.stringify(missing));
+          check("HM009 sign-in refusal names same daemon login in reason and Next", missing.state === "refused" && missing.reason?.includes(remedy) && missing.next?.includes(remedy), missing);
+          return;
+        }
+        if (process.argv.includes("--hosted-corrupt-repro")) {
+          const corruptSpace = `${ON}-corrupt`;
+          const corruptDir = join(home, "daemon", spaceSegment(corruptSpace));
+          mkdirSync(corruptDir, { recursive: true, mode: 0o700 });
+          for (const name of ["manager-host.json", "manager-refusal.json"]) {
+            const file = join(corruptDir, name);
+            writeFileSync(file, "not-json", { mode: 0o600 });
+            const all = await cli("status");
+            console.log("  HM008 running corruption", JSON.stringify({ name, all }));
+            const rows = all.doc.result?.managers ?? [];
+            check(`HM008 ${name} status isolates corrupt space with named file`, all.code === 0 && rows.some((row: any) => row.space === corruptSpace && row.state === "refused" && row.reason?.includes(file)) && rows.some((row: any) => row.space === ON && row.state === "answering"), all);
+            rmSync(file);
+          }
+          const intent = join(home, "daemon", spaceSegment(ON), "manager-host.json");
+          const recorder = join(root, "corrupt-native");
+          mkdirSync(recorder, { mode: 0o700 });
+          writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\nif(process.argv.slice(2).join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}\nif(process.argv.slice(2).join(' ')!=='--user --no-ask-password --no-pager start cotal-daemon.service')process.exit(99);\n`, { mode: 0o700 });
+          env.PATH = `${recorder}:${env.PATH}`;
+          writeFileSync(intent, "not-json", { mode: 0o600 });
+          const repaired = await cli("setup", "--space", ON);
+          console.log("  HM008 setup repair", JSON.stringify(repaired));
+          check("HM008 setup repairs live corrupt hosting record without internal output error", repaired.code === 0 && repaired.doc.result?.launchReady === true && JSON.parse(readFileSync(intent, "utf8")).space === ON, repaired);
+          const refusal = join(home, "daemon", spaceSegment(ON), "manager-refusal.json");
+          writeFileSync(refusal, "not-json", { mode: 0o600 });
+          await killAndAwaitExit(child, "SIGTERM");
+          child = await startDaemon();
+          const restarted = await cli("status");
+          check("HM008 corrupt refusal survives restart as a named per-space refusal", restarted.code === 0 && restarted.doc.result?.managers?.some((row: any) => row.space === ON && row.state === "refused" && row.reason?.includes(refusal)), restarted);
+          const repairedRefusal = await cli("setup", "--space", ON);
+          check("HM008 setup repairs restarted refusal and restores readiness", repairedRefusal.code === 0 && repairedRefusal.doc.result?.launchReady === true && !existsSync(refusal), repairedRefusal);
+          await killAndAwaitExit(child, "SIGTERM");
+          const timeout = await cli("setup", "--space", ON);
+          check("HM008 actual daemon start timeout emits supported dependency refusal", timeout.code === 2 && timeout.doc.outcome === "refused" && timeout.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && !JSON.stringify(timeout).includes("internal error"), timeout);
+          return;
+        }
+        if (process.argv.includes("--hosted-seed-repro")) {
+          const manifest = join(prefix, "extensions.json");
+          const installed = existsSync(manifest) ? JSON.parse(readFileSync(manifest, "utf8")).extensions : [];
+          console.log("  HM003 connectors after fresh setup", JSON.stringify(installed.map((entry: { pkg: string; source?: string; version: string }) => ({ pkg: entry.pkg, source: entry.source, version: entry.version }))));
+          check("HM003 fresh setup reconciles stock connector packages before readiness", installed.filter((entry: { source?: string }) => entry.source === "seeded").length === 7);
+          return;
+        }
+        if (!process.argv.includes("--skip-default-probe")) {
+          const statusPlain = await plainCommand("status");
+          console.log("  HM001 plain daemon status", JSON.stringify(statusPlain));
+          check("HM001 plain status exposes hosted Manager and instance", statusPlain.code === 0 && statusPlain.out.includes(manager.instanceId) && statusPlain.out.includes("Manager"), statusPlain);
+          const defaultLaunch = spawn(process.execPath, [cliEntry, "spawn", "--on", manager.instanceId, "--space", ON, "--harness", "daemon-smoke", "--no-events", "--detach", "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+          let out = "", err = "";
+          defaultLaunch.stdout.on("data", (b) => { out += String(b); }); defaultLaunch.stderr.on("data", (b) => { err += String(b); });
+          const code = await new Promise<number | null>((resolve) => defaultLaunch.once("exit", resolve));
+          console.log("  HM002 default launch", JSON.stringify({ code, out, err }));
+          check("HM002 default spawn joins after setup alone", code === 0 && JSON.parse(out).result?.readiness === "joined", { code, out, err });
+          if (process.argv.includes("--hosted-stopped-repro")) {
+            const observed = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
+            await cli("service-disconnect", "--space", ON);
+            const stopped = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
+            const refused = await plainCommand("service-status", "--space", ON);
+            console.log("  HM006 stopped observation", JSON.stringify({ observed, stopped, refused }));
+            check("HM006 stopped status retains instance and last observation", stopped?.state === "stopped" && stopped?.instanceId === observed?.instanceId && stopped?.observedAt === observed?.observedAt, stopped);
+            check("HM006 stopped service-status names setup remedy", refused.code !== 0 && refused.err.includes(`cotal daemon setup --space ${ON}`), refused);
+            return;
+          }
+          if (process.argv.includes("--hosted-health-repro")) {
+            const before = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
+            process.kill(manager.pid, "SIGSTOP");
+            try {
+              await sleep(25_000);
+              const after = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
+              const service = await cli("service-status", "--space", ON);
+              console.log("  HM007 stopped occupied Manager observation", JSON.stringify({ before, after, service }));
+              check("HM007 failed periodic probe withdraws answering and advances observation", after?.state !== "answering" && after?.observedAt > before?.observedAt && after?.instanceId === manager.instanceId && typeof after?.next === "string", after);
+              check("HM007 failed hosted health makes service-status nonzero", service.code !== 0, service);
+              let alive = false;
+              try { process.kill(manager.pid, 0); alive = true; } catch { /* failure reported */ }
+              check("HM007 unknown occupied custody is not killed by health recovery", alive && after?.pid === manager.pid, after);
+            } finally { process.kill(manager.pid, "SIGCONT"); }
+            let recovered: any;
+            for (let i = 0; i < 100; i++) {
+              recovered = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
+              if (recovered?.state === "answering") break;
+              await sleep(250);
+            }
+            check("HM007 periodic probe recovers same occupied instance without setup", recovered?.state === "answering" && recovered?.instanceId === manager.instanceId, recovered);
+            const selected = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+            const reply = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, selected.server, "managerStatus", undefined, selected.auth, "owner", 3000, { instanceId: manager.instanceId });
+            check("HM007 occupied seat survives health outage", reply.ok && (reply.data as { agentCount?: number })?.agentCount === 1, reply);
+            await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, selected.server, "stop", { name: "default_agent" }, selected.auth, "owner", 10_000, { instanceId: manager.instanceId });
+            catalogAuthorityDown = true;
+            try { await sleep(8000); }
+            finally { catalogAuthorityDown = false; }
+            const empty = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
+            check("HM007 authority outage keeps empty IPC-responsive child custody", empty?.pid === manager.pid && empty?.restarts === recovered?.restarts, empty);
+            check("HM007 same empty Manager answers after authority returns", empty?.state === "answering" && empty?.instanceId === manager.instanceId, empty);
+            return;
+          }
+          if (process.argv.includes("--generation-cause-repro")) {
+            const occupied = await ask(paths.socket, { op: "managers-prepare-restart" }, 30_000);
+            console.log("  R2-8 occupied refusal", JSON.stringify(occupied));
+            check("R2-8 occupied fence refusal names actual seats and selected space", occupied.ok === false && errorOf(occupied).code === "SEATS_ACTIVE" && String(errorOf(occupied).message).includes(ON) && String(errorOf(occupied).remedy).includes(ON) && /seat/i.test(String(errorOf(occupied).message)), occupied);
+            await ask(paths.socket, { op: "managers-abort-restart" }, 30_000);
+          }
+          const defaultFile = join(home, "daemon", spaceSegment(ON), "manager", ".cotal", "agents", "default.md");
+          const editedDefault = `${readFileSync(defaultFile, "utf8")}\nOwned fixture edit.\n`;
+          writeFileSync(defaultFile, editedDefault);
+          await cli("setup", "--space", ON);
+          check("HM002 repeated setup keeps an edited hosted persona", readFileSync(defaultFile, "utf8") === editedDefault);
+          const selected = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+          await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, selected.server, "stop", { name: "default_agent" }, selected.auth, "owner", 10_000, { instanceId: manager.instanceId });
+          if (process.argv.includes("--hosted-default-repro")) return;
+        }
+        const deviceBeforeMissing = deviceCodeRequests;
+        const missing = await cli("setup", "--space", `${ON}-missing`, "--idp", idpUrl);
+        check("H0 absent space does not repeat a valid provider device sign-in", missing.code === 2 && missing.doc.error?.code === "TARGET_NOT_FOUND" && deviceCodeRequests === deviceBeforeMissing, { missing, deviceCodeRequests, deviceBeforeMissing });
+        catalogUnavailable = true;
+        try {
+          const failedCatalog = await cli("setup", "--space", `${ON}-missing`, "--idp", idpUrl);
+          check("H0 failed catalog refresh is dependency refusal, not missing target or new sign-in", failedCatalog.code === 2 && failedCatalog.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && deviceCodeRequests === deviceBeforeMissing, failedCatalog);
+        } finally { catalogUnavailable = false; }
+        if (process.argv.includes("--discovery-repro")) return;
+        check("H1 setup retains machine-service instanceId separately from Manager", setup.doc.result.instanceId === setup.doc.result.registration?.instanceId && setup.doc.result.instanceId !== manager.instanceId);
+        const badWait = await cli("setup", "--space", ON, "--wait", "0");
+        check("H1 wait without no-manager refuses usage", badWait.code === 1 && badWait.doc.error?.code === "USAGE_INVALID");
+        const log = join(home, "daemon", spaceSegment(ON), "manager", "manager.log");
+        check("H1 hosted Manager keeps a private bounded diagnostic log", existsSync(log) && (statSync(log).mode & 0o777) === 0o600 && statSync(log).size <= 1024 * 1024);
+        const plain = await plainCommand("setup", "--space", ON);
+        check("H1 human success names launch-ready computer, space and instance", plain.code === 0 && plain.out.includes(`Agents can now be launched on this computer from space ${ON} through Manager instance ${manager.instanceId}.`));
+        check("HM004 setup uses the same machine-service connection state as status", plain.out.includes(`Machine service: ${setup.doc.result.state}.`), plain.out);
+        check("H1 human fields distinguish Manager and machine-service instances", plain.out.includes(`Manager instance: ${manager.instanceId}`) && /Instance:\s+/.test(plain.out));
+        const plainStatus = await plainCommand("service-status", "--space", ON);
+        check("H1 service-status names independent machine service and answering Manager", plainStatus.code === 0 && plainStatus.out.includes("Machine service and Manager") && !plainStatus.out.includes("\nDisconnected\n") && plainStatus.out.includes(manager.instanceId));
+        const daemonStatus = await cli("status", "--space", ON);
+        console.log("  H1 status JSON", JSON.stringify(daemonStatus.doc));
+        check("H1 per-space status carries the same Manager instance", daemonStatus.doc.result?.managers?.[0]?.instanceId === manager.instanceId);
+        if (!upgrading) {
+          const prepared = await ask(paths.socket, { op: "managers-prepare-restart" });
+          const fenced = await ask(paths.socket, { op: "manager-start", space: ON });
+          const aborted = await ask(paths.socket, { op: "managers-abort-restart" });
+          const resumed = await cli("setup", "--space", ON);
+          if (process.argv.includes("--generation-cause-repro")) {
+            check("R2-8 pending generation refusal names transition cause", fenced.ok === false && errorOf(fenced).code === "GENERATION_PENDING" && /generation|transition/.test(String(errorOf(fenced).message)), fenced);
+            return;
+          }
+          check("H1 restart fence denies admission and rollback restores fresh readiness", prepared.ok === true && fenced.ok === false && aborted.ok === true && resumed.code === 0 && resumed.doc.result?.manager?.instanceId === manager.instanceId, { prepared, fenced, aborted, resumed });
+        }
+        if (process.argv.includes("--setup-upgrade-repro")) {
+          // Setup only replaces its recorded installation. A different prefix is foreign reuse.
+          await npmRun(["install", "-g", "--prefix", globalPrefix, "--ignore-scripts", join(upgradeFixture!, "cotal-ai-0.151.3.tgz")]);
+          const setupNew = await cli("setup", "--space", ON);
+          const after = await cli("status", "--space", ON);
+          check("U3 setup restarts recorded old-generation daemon and restores readiness", setupNew.code === 0 && after.doc.result?.version === "0.151.3" && setupNew.doc.result?.manager?.state === "answering", { setupNew, after });
+          return;
+        }
+        if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) {
+          let activeTarget: Awaited<ReturnType<typeof resolveControlTarget>> | undefined;
+          if (process.argv.includes("--upgrade-active-repro")) {
+            activeTarget = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+            const launched = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "start", { name: "npm_upgrade_custody", agent: "daemon-smoke", events: false, persona: { prompt: "Owned direct upgrade custody smoke.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, activeTarget.auth, "owner", 40_000, { instanceId: manager.instanceId });
+            check("U1 direct upgrade starts with a real legacy seat", launched.ok, launched.error);
+          }
+          if (process.argv.includes("--update-repro")) {
+            const other = ctx[1]!;
+            grantActor(other.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(other.store, OFF))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
+            const secondStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${OFF}` });
+            await secondStore.put(deliveryCredsKey(OFF, composition), await mintCreds(other.auth, newIdentity(), "delivery"));
+            await secondStore.put(membershipRwCredsKey(OFF, composition), await mintCreds(other.auth, newIdentity(), "membership-rw"));
+            await secondStore.put(membershipObserverCredsKey(OFF, composition), await mintMembershipObserverCreds(other.auth, newIdentity()));
+            await secondStore.put(connectionEvictorCredsKey(OFF, composition), await mintConnectionEvictorCreds(other.auth, newIdentity()));
+            secondDelivery = await startDeliveryService({ context: { accountPublicKey: other.auth.account.pub, lifecycleUid: mintLifecycleUid() }, space: OFF, servers, store: secondStore, storeIdentity: secondStore.identity, stateDir: join(root, "second-delivery") });
+            const secondEntry = findMesh(OFF)!;
+            recordMesh({ ...secondEntry, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString() });
+            const second = resultOf(await ask(paths.socket, { op: "manager-start", space: OFF }, 100_000));
+            check("U2 a second space has an answering hosted Manager", second.state === "answering", second);
+            const secondTarget = await resolveControlTarget({ space: OFF }, "control-caller-privileged", second.instanceId, { onRefusal: "throw", readOnly: true });
+            const secondCaller = { versionSkew: (text: string) => text, roster: async () => [] };
+            const seat = await askManager(secondCaller, OFF, secondTarget.server, "start", { name: "upgrade_custody", agent: "daemon-smoke", events: false, persona: { prompt: "Owned update custody smoke, no model.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, secondTarget.auth, "owner", 40_000, { instanceId: second.instanceId });
+            check("U2 unselected Manager has a real legacy seat", seat.ok, seat.error);
+            const blocked = spawn(process.execPath, [cliEntry, "update", "--self", "--space", ON], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+            let blockedOutput = "";
+            blocked.stdout.on("data", (bytes) => { blockedOutput += String(bytes); }); blocked.stderr.on("data", (bytes) => { blockedOutput += String(bytes); });
+            const blockedCode = await new Promise<number | null>((resolve) => blocked.once("exit", resolve));
+            check("U2 global update refuses unselected legacy custody before install", blockedCode !== 0 && blockedOutput.includes("active legacy seats") && !blockedOutput.includes("installing cotal-ai@"), { blockedCode, blockedOutput });
+            await askManager(secondCaller, OFF, secondTarget.server, "stop", { name: "upgrade_custody" }, secondTarget.auth, "owner", 10_000, { instanceId: second.instanceId });
+            const seed = join(root, "config", "cotal", "seed");
+            mkdirSync(seed, { recursive: true, mode: 0o700 });
+            for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: ["claude", "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
+            writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: "0.151.2" }));
+            writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: "0.151.2" }));
+            env.npm_config_prefix = globalPrefix;
+            const updater = spawn(process.execPath, [cliEntry, "update", "--self", "--space", ON], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+            let output = ""; updater.stdout.on("data", (b) => { output += String(b); }); updater.stderr.on("data", (b) => { output += String(b); });
+            const code = await new Promise<number | null>((resolve) => updater.once("exit", resolve));
+            console.log("  UPDATE REPRO", JSON.stringify({ code, output }));
+            check("U2 cotal update self checks both hosted instances and completes native reconcile", code === 0 && output.includes(`instance ${manager.instanceId} answered`) && output.includes(`instance ${second.instanceId} answered`));
+            const secondAfter = resultOf(await ask(paths.socket, { op: "manager-status", space: OFF }));
+            check("U2 update waits for both hosted Managers to answer again", secondAfter.state === "answering");
+          } else {
+            await npmRun(["install", "-g", "--prefix", globalPrefix, "--ignore-scripts", join(upgradeFixture!, "cotal-ai-0.151.3.tgz")]);
+            if (process.argv.includes("--generation-cold-seed-repro")) {
+              const payload = join(globalPrefix, "lib/node_modules/cotal-ai/seeded-connectors/claude");
+              renameSync(payload, `${payload}.held`);
+              try {
+                await sleep(8000);
+                const held = await cli("status", "--space", ON);
+                const row = held.doc.result?.managers?.[0];
+                check("3A replacement restarts before reconcile and refuses stale connectors without an old Manager", held.doc.result?.version === "0.151.3" && row?.state === "refused" && row?.pid === undefined && /reconcil|seed/i.test(String(row?.reason)), held);
+              } finally { renameSync(`${payload}.held`, payload); }
+              // Recovery must happen on the daemon's backed-off retry, without another setup.
+              let recovered: Awaited<ReturnType<typeof cli>> | undefined;
+              for (let i = 0; i < 240; i++) {
+                recovered = await cli("status", "--space", ON);
+                if (recovered.doc.result?.managers?.[0]?.state === "answering") break;
+                await sleep(500);
+              }
+              check("3A failed startup reconciliation retries into an answering new-generation Manager", recovered?.doc.result?.version === "0.151.3" && recovered?.doc.result?.managers?.[0]?.state === "answering", recovered);
+              return;
+            }
+            if (connectorUpgrade) {
+              const payload = join(globalPrefix, "lib/node_modules/cotal-ai/seeded-connectors/claude");
+              renameSync(payload, `${payload}.held`);
+              try {
+                await sleep(5000);
+                const held = await cli("status", "--space", ON);
+                check("U0 missing replacement connector blocks activation without stopping old daemon", held.doc.result?.version === "0.151.2" && held.doc.result?.managers?.[0]?.state === "answering", held);
+              } finally { renameSync(`${payload}.held`, payload); }
+            }
+          }
+          if (activeTarget) {
+            await sleep(4000);
+            const held = await cli("status", "--space", ON);
+            const status = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "managerStatus", undefined, activeTarget.auth, "owner", 3000, { instanceId: manager.instanceId });
+            check("U1 installed replacement waits without killing active legacy custody", held.doc.result?.version === "0.151.2" && status.ok && (status.data as { agentCount?: number }).agentCount === 1, { held, status });
+            if (process.argv.includes("--watcher-seat-repro")) {
+              const waiting = held.doc.result?.generation;
+              check("R2-1 occupied replacement is visible in daemon status", waiting?.installed === "0.151.3" && waiting?.waiting?.includes("1 seat(s)") && waiting?.waiting?.includes(ON), held);
+              const admitted = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "start", { name: "watcher_admission", agent: "daemon-smoke", events: false, persona: { prompt: "Owned admission during pending version.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, activeTarget.auth, "owner", 40_000, { instanceId: manager.instanceId });
+              check("R2-1 waiting version does not block a new seat", admitted.ok, admitted);
+              await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "stop", { name: "watcher_admission" }, activeTarget.auth, "owner", 10_000, { instanceId: manager.instanceId });
+            }
+            await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "stop", { name: "npm_upgrade_custody" }, activeTarget.auth, "owner", 10_000, { instanceId: manager.instanceId });
+          }
+          let after: Awaited<ReturnType<typeof cli>> | undefined;
+          for (let i = 0; i < 160; i++) {
+            try { after = await cli("status", "--space", ON); if (after.doc.result?.version === "0.151.3" && after.doc.result?.managers?.[0]?.state === "answering") break; } catch { /* recorded restart is between generations */ }
+            await sleep(250);
+          }
+          console.log("  UPGRADE REPRO", JSON.stringify(after));
+          check("U1 npm upgrade restarts daemon at the installed generation", after?.doc.result?.version === "0.151.3");
+          const current = after?.doc.result?.managers?.[0];
+          const selected = await resolveControlTarget({ space: ON }, "control-caller-privileged", current?.instanceId ?? manager.instanceId, { onRefusal: "throw", readOnly: true });
+          const reply = await askManager({ versionSkew: (s: string) => s, roster: async () => [] }, ON, selected.server, "managerStatus", undefined, selected.auth, "owner", 3000, { instanceId: current?.instanceId ?? manager.instanceId });
+          console.log("  UPGRADE MANAGER", JSON.stringify(reply));
+          check("U1 npm upgrade restores answering Manager at installed generation", reply.ok && (reply.data as { version?: string })?.version === "0.151.3");
+          if (connectorUpgrade) {
+            const installed = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
+            check("U0 replacement activation installs core-matched seeded connector", installed.some((entry: { pkg: string; source?: string; version: string }) => entry.pkg === "@cotal-ai/connector-claude-code" && entry.source === "seeded" && entry.version === "0.151.3"));
+            const meta = JSON.parse(readFileSync(join(prefix, "node_modules/@cotal-ai/connector-claude-code/package.json"), "utf8"));
+            check("U0 installed connector bytes identify replacement generation", meta.version === "0.151.3");
+          }
+          return;
+        }
+        if (!process.argv.includes("--upgrade-repro")) {
+          process.kill(manager.pid, "SIGSTOP");
+          try {
+            const rerun = await cli("setup", "--space", ON);
+            console.log("  READINESS REPRO", JSON.stringify(rerun));
+            check("H1 setup refuses a live child that does not answer", rerun.code === 2 && rerun.doc.result === null);
+          } finally { process.kill(manager.pid, "SIGCONT"); }
+          if (process.argv.includes("--readiness-repro")) return;
+          const recovered = await cli("setup", "--space", ON);
+          check("H1 resumed child answers a fresh setup probe", recovered.code === 0 && recovered.doc.result?.manager?.state === "answering");
+        }
+        check("H0 setup discovers the space through daemon-held sign-in", findMesh(ON)?.origin === "catalog");
+        const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+        const client = { versionSkew: (s: string) => s, roster: async () => [] };
+        const status = await askManager(client, ON, servers, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
+        check("H1 independent manager-caller status answers from selected instance", status.ok);
+        const launch = await askManager(client, ON, servers, "start", { name: "daemon_smoke_seat", agent: "daemon-smoke", events: false, persona: { prompt: "Smoke stand-in, no model or external services.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, target.auth, "owner", 40_000, { instanceId: manager.instanceId });
+        console.log("  H1 spawn goal", JSON.stringify({ ok: launch.ok, error: launch.error, receipt: launch.request }));
+        check("H1 spawn goal is accepted by hosted instance (installed stand-in connector)", launch.request !== undefined && launch.request.managerInstanceId === manager.instanceId);
+        check("H1 stand-in seat joins through native user auth", launch.ok, launch.error);
+        if (launch.ok) await askManager(client, ON, servers, "stop", { name: "daemon_smoke_seat" }, target.auth, "owner", 10_000, { instanceId: manager.instanceId });
+        const intent = join(home, "daemon", `space.${Buffer.from(ON).toString("hex")}`, "manager-host.json");
+        check("H1 hosting intent recorded after status", existsSync(intent));
+        process.kill(manager.pid, "SIGKILL");
+        let replacement: Record<string, any> = {};
+        for (let i = 0; i < 200; i++) { replacement = resultOf(await ask(paths.socket, { op: "manager-status", space: ON })); if (replacement.state === "answering" && replacement.pid !== manager.pid) break; await sleep(250); }
+        check("H2 killed Manager restarts and answers without a command", replacement.state === "answering" && replacement.pid !== manager.pid, replacement);
+        check("H2 unexpected child exit retains its native signal", String(replacement.lastExit).includes("SIGKILL"));
+        const predecessorManager = replacement.pid;
+        await killAndAwaitExit(child, "SIGKILL");
+        child = await startDaemon();
+        for (let i = 0; i < 200; i++) { replacement = resultOf(await ask(paths.socket, { op: "manager-status", space: ON })); if (replacement.state === "answering") break; await sleep(250); }
+        check("H3 killed daemon resumes answering Manager without setup", replacement.state === "answering", replacement);
+        let predecessorAlive = false;
+        try { process.kill(predecessorManager, 0); predecessorAlive = true; } catch { /* owned predecessor exited */ }
+        check("H3 killed daemon leaves no unsupervised Manager predecessor", !predecessorAlive);
+        await cli("service-disconnect", "--space", ON);
+        check("H4 disconnect forgets intent and stops Manager", !existsSync(intent) && resultOf(await ask(paths.socket, { op: "manager-status", space: ON })).state === "stopped");
+        grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: cliLifecycle, scope: [], allowSubscribe: [], allowPublish: [] });
+        const refused = await cli("setup", "--space", ON);
+        const before = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+        const plainRefused = await plainCommand("service-status", "--space", ON);
+        check("H5 service-status refusal includes Manager state, cause and next action", plainRefused.code === 2 && plainRefused.err.includes("Manager refused") && plainRefused.err.includes("supervise") && plainRefused.err.includes("Next"), plainRefused);
+        await sleep(3500);
+        const after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+        check("H5 missing supervise scope refuses with native cause and remedy", refused.code === 2 && /supervise|scope/i.test(refused.doc.error?.message ?? "") && /supervise/.test(refused.doc.error?.remedy ?? ""), refused);
+        check("H5 one permanent refusal, no child restart loop or intent", before.state === "refused" && after.state === "refused" && before.restarts === after.restarts && !existsSync(intent), { before, after });
+        await cli("service-disconnect", "--space", ON);
+        await cli("setup", "--no-manager", "--space", ON, "--wait", "0");
+        check("H6 --no-manager starts no child or hosting intent", resultOf(await ask(paths.socket, { op: "manager-status", space: ON })).state === "stopped" && !existsSync(intent));
+        grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: cliLifecycle, scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
+        idpRevoked = true;
+        try {
+          const rejected = resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 100_000));
+          await sleep(1500);
+          const later = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+          check("H6 revoked native IdP session is a permanent structured refusal", rejected.state === "refused" && later.state === "refused" && rejected.restarts === later.restarts, { rejected, later });
+        } finally { idpRevoked = false; await cli("service-disconnect", "--space", ON); }
+        const managedHome = join(root, "managed-daemon");
+        mkdirSync(managedHome, { mode: 0o700 });
+        const managedPaths = daemonPathsFor(managedHome, env);
+        const managedUnit = `cotal-daemon-${createHash("sha256").update(managedHome).digest("hex").slice(0, 16)}.service`;
+        const unitPath = join(root, "config", "systemd", "user", managedUnit);
+        const unitBytes = `[Unit]\nDescription=Owned recording fixture\n[Service]\nExecStart="${process.execPath}" "${cliEntry}" daemon serve --daemon-home "${managedHome}"\nRestart=always\n`;
+        writeFileSync(unitPath, unitBytes, { mode: 0o600 });
+        writeFileSync(join(managedHome, "service-unit.json"), JSON.stringify({ v: 1, unit: managedUnit, unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString(), daemonHome: managedHome }), { mode: 0o600 });
+        let managedChild = await startDaemon(managedHome);
+        try {
+          for (const failure of ["denied", "expired", "unreachable"] as const) {
+            deviceFailure = failure;
+            try {
+              const rejected = await cli("setup", "--space", `${ON}-missing`, "--idp", idpUrl, "--daemon-home", managedHome);
+              check(`H7 discovery ${failure} retains native reason and actionable refusal`, rejected.code === 2 && rejected.doc.error?.code === (failure === "unreachable" ? "DEPENDENCY_UNAVAILABLE" : "PERMISSION_DENIED") && rejected.doc.error?.cause?.code === failure.toUpperCase() && rejected.doc.error?.remedy?.includes("daemon login"), rejected);
+            } finally { deviceFailure = undefined; }
+          }
+          const setupManaged = await cli("setup", "--space", ON, "--idp", idpUrl, "--daemon-home", managedHome);
+          let managed = setupManaged.doc.result?.manager;
+          const managedIntent = join(managedHome, "daemon", spaceSegment(ON), "manager-host.json");
+          check("H7 explicit home signs in and hosts its own answering Manager", setupManaged.code === 0 && setupManaged.doc.result?.launchReady === true && managed?.state === "answering" && existsSync(managedIntent), setupManaged);
+          check("H7 never-approved machine registration does not delay readiness", setupManaged.code === 0 && setupManaged.doc.result?.state === "approval-pending" && ["approval-required", "pending"].includes(setupManaged.doc.result?.registration?.outcome), setupManaged);
+          check("H7 explicit home does not host in the default daemon", resultOf(await ask(paths.socket, { op: "manager-status", space: ON })).state === "stopped" && !existsSync(intent));
+          const recorder = join(root, "native-recorder");
+          mkdirSync(recorder, { mode: 0o700 });
+          const nativeLog = join(root, "native-recorder.log");
+          const nativeControl = createHttpServer(async (request, response) => {
+            if (request.url !== "/stop") { response.writeHead(404).end(); return; }
+            await killAndAwaitExit(managedChild, "SIGTERM");
+            response.end("stopped");
+          });
+          await new Promise<void>((resolve) => nativeControl.listen(0, "127.0.0.1", resolve));
+          const nativePort = (nativeControl.address() as AddressInfo).port;
+          writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\nconst fs=require('node:fs'); (async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}fs.appendFileSync(${JSON.stringify(nativeLog)},args+'\\n');if(args==='--user --no-ask-password --no-pager stop ${managedUnit}'){const r=await fetch('http://127.0.0.1:${nativePort}/stop');if(!r.ok)process.exit(99);}else if(!['--user --no-ask-password --no-pager disable ${managedUnit}','--user --no-ask-password --no-pager daemon-reload'].includes(args))process.exit(99);})();\n`, { mode: 0o700 });
+          const priorPath = env.PATH;
+          env.PATH = `${recorder}:${priorPath}`;
+          let removed;
+          if (!process.argv.includes("--shutdown-repro")) {
+            process.kill(managed.pid, "SIGSTOP");
+            const uninstalling = ask(managedPaths.socket, { op: "managers-stop" }, 15_000);
+            const ended = await Promise.race([uninstalling.then(() => true), sleep(12_000).then(() => false)]);
+            console.log("  STOP REPRO bounded uninstall", ended);
+            check("H8 unresponsive owned child cannot hang uninstall", ended);
+            try { process.kill(managed.pid, "SIGCONT"); } catch { /* forced stop already reaped it */ }
+            await uninstalling;
+            check("H8 forced child stop is visible in Manager status", resultOf(await ask(managedPaths.socket, { op: "manager-status", space: ON })).lastStop === "killed");
+            managed = (await cli("setup", "--space", ON, "--daemon-home", managedHome)).doc.result?.manager;
+            check("H8 uninstall begins with a new hosted child alive", managed?.state === "answering");
+            process.kill(managed.pid, "SIGSTOP");
+            managedChild.kill("SIGTERM");
+            await sleep(250);
+            const raced = await ask(managedPaths.socket, { op: "manager-start", space: ON }, 1500);
+            check("H8 start racing shutdown receives a refusal", raced.ok === false && ["MANAGER_UNAVAILABLE", "GENERATION_PENDING"].includes(String(errorOf(raced).code)), raced);
+            try { process.kill(managed.pid, "SIGCONT"); } catch { /* owned child was already reaped */ }
+            await killAndAwaitExit(managedChild, "SIGTERM");
+            managedChild = await startDaemon(managedHome);
+            managed = (await cli("setup", "--space", ON, "--daemon-home", managedHome)).doc.result?.manager;
+          } else if (process.argv.includes("--shutdown-repro")) {
+            process.kill(managed.pid, "SIGSTOP");
+            managedChild.kill("SIGTERM");
+            await sleep(250);
+            let raced: Frame = {};
+            try { raced = await ask(managedPaths.socket, { op: "manager-start", space: ON }, 1500); } catch { /* expected baseline leaves no response */ }
+            console.log("  SHUTDOWN REPRO frame", JSON.stringify(raced));
+            check("H8 start racing shutdown receives a refusal", raced.ok === false && ["MANAGER_UNAVAILABLE", "GENERATION_PENDING"].includes(String(errorOf(raced).code)), raced);
+            try { process.kill(managed.pid, "SIGCONT"); } catch { /* child already exited */ }
+            return;
+          }
+          try { removed ??= await cli("uninstall", "--yes", "--daemon-home", managedHome); }
+          finally { env.PATH = priorPath; nativeControl.close(); }
+          check("H8 uninstall removes the owned recorded unit and hosting intent", removed.code === 0 && removed.doc.result?.state === "removed" && !existsSync(unitPath) && !existsSync(managedIntent), removed);
+          let managerAlive = false;
+          if (typeof managed?.pid === "number") { try { process.kill(managed.pid, 0); managerAlive = true; } catch { /* the owned Manager exited */ } }
+          check("H8 uninstall leaves the real hosted Manager exited and records native removal", typeof managed?.pid === "number" && !managerAlive && !existsSync(managedPaths.socket) && !existsSync(join(managedHome, "service-unit.json")) && readFileSync(nativeLog, "utf8").trim().split("\n").length === 3);
+          check("H8 uninstall leaves the default daemon answering", resultOf(await ask(paths.socket, { op: "status" })).state === "ready");
+        } finally { await killAndAwaitExit(managedChild, "SIGTERM"); }
+        const defaultSetup = await cli("setup", "--space", ON);
+        const defaultManager = defaultSetup.doc.result?.manager;
+        check("HM005 default home has an answering Manager before uninstall", defaultManager?.state === "answering", defaultSetup);
+        const defaultRecorder = join(root, "default-native");
+        mkdirSync(defaultRecorder, { mode: 0o700 });
+        const defaultControl = createHttpServer(async (request, response) => {
+          if (request.url !== "/stop") { response.writeHead(404).end(); return; }
+          await killAndAwaitExit(child, "SIGTERM"); response.end("stopped");
+        });
+        await new Promise<void>((resolve) => defaultControl.listen(0, "127.0.0.1", resolve));
+        const defaultPort = (defaultControl.address() as AddressInfo).port;
+        writeFileSync(join(defaultRecorder, "systemctl"), `#!${process.execPath}\n(async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}if(args==='--user --no-ask-password --no-pager stop cotal-daemon.service'){const r=await fetch('http://127.0.0.1:${defaultPort}/stop');if(!r.ok)process.exit(99);}else if(!['--user --no-ask-password --no-pager disable cotal-daemon.service','--user --no-ask-password --no-pager daemon-reload'].includes(args))process.exit(99);})().catch(()=>process.exit(99));\n`, { mode: 0o700 });
+        const defaultPath = env.PATH;
+        env.PATH = `${defaultRecorder}:${env.PATH}`;
+        try {
+          const removed = await cli("uninstall", "--yes");
+          check("HM005 default-home uninstall reports Removed and forgets hosting", removed.code === 0 && removed.doc.result?.state === "removed" && !existsSync(intent), removed);
+          let alive = false;
+          try { process.kill(defaultManager.pid, 0); alive = true; } catch { /* retained owned Manager exited */ }
+          check("HM005 native stop leaves actual hosted Manager and socket gone", !alive && !existsSync(paths.socket));
+          seedUnitReceipt();
+          child = await startDaemon();
+          check("HM005 later installation resumes no hosted Manager", (await cli("status")).doc.result?.managers?.length === 0);
+        } finally { env.PATH = defaultPath; defaultControl.close(); }
+      } finally {
+        recordingRestart = false;
+        await killAndAwaitExit(child, "SIGTERM");
+        npmRegistry?.close();
+        upgradeControl?.close();
+        recordMesh(original);
+        catalog = undefined; catalogSpace = undefined; catalogTarget = undefined;
+        await delivery.close();
+        await secondDelivery?.close();
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home });
       }
     });
 
@@ -666,7 +1480,7 @@ try {
       let refused = false;
       try { await ask(paths.socket, { op: "service-status", space: ON }, 2000); } catch { refused = true; }
       check("C9 nothing answers after shutdown", refused);
-      d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+      d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     });
 
     await cell("C11 the CLI through the composition root", async () => {

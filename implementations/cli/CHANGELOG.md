@@ -1,5 +1,55 @@
 # @cotal-ai/cli
 
+## 0.153.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.153.1
+  - @cotal-ai/workspace@0.153.1
+
+## 0.153.0
+
+### Minor Changes
+
+- 3646835: Return one JSON receipt from `cotal deliver pending --json`, including candidate IDs and not-found refusals.
+  The retained spelling uses the `cotal pending` reader, its bounded limits and its exit codes.
+  Read facts and candidates from `result` instead of the old first-line object and trailing text.
+  Plain output is unchanged.
+  Inspection skips connector installation, and parser refusals remain structured when value-taking
+  options precede the pending mode. Receipts consistently name the invoked command.
+
+### Patch Changes
+
+- f98799a: Report broker configuration write failures without suggesting a manager-free restart.
+  The failure names the configuration path and filesystem error code and records a known outcome before any member starts.
+  Non-regular entries, including FIFOs and Unix sockets, refuse with the move-aside remedy.
+- be11326: The terminal chat view refuses `:to` commands instead of posting them to the channel. It clears the previous recipient and opens the picker so the next private message cannot go to that channel. Completing an earlier send or command preserves the current recipient and draft.
+- b2f7b0b: Credential joins now explain missing channel read grants and mismatched lifecycle UIDs separately.
+  The join reference includes the channel grants needed by its credential-minting example, and known
+  grant failures no longer point at the delivery daemon.
+- 05bfec0: Enable shell path completion for the daemon's `--daemon-home` option.
+- c967868: Report a killed manager as absent immediately when its status service does not answer.
+  An unexpired lease no longer changes a stale local PID record to not-serving, so the component exit code stays consistent before and after lease expiry.
+- bd1008e: Stop a user-auth stack from its hosting folder without an IdP sign-in, including stacks started with `--no-manager`.
+  The missing-pidfile lease check uses the folder's signing authority and still refuses to stop a broker under a daemon that renews its lease.
+- e8b4a5f: Interrupted `cotal up --json` writes a receipt naming the members left running and the recovery commands.
+  The controller start keeps its stderr notice and signal exit code for SIGINT, SIGTERM and SIGHUP.
+- b4eba66: Offline registered spaces now name `cotal space forget` as the command to unregister them.
+  The connection refusal and delivery daemon no longer suggest the hidden legacy `cotal meshes rm` command.
+  Discovered spaces instead name removal from the provider's catalog followed by `cotal sync`, since their registrations cannot be forgotten locally.
+- 8d15e70: Offline direct-message receipts no longer promise delivery to a session that has ended.
+  The shared send and chat notice explains that delivery requires the same lifecycle and a surviving inbox. A new session under the same name does not inherit the message.
+- 853378d: Show failed service starts as unknown or failed in the service list instead of running or stopped. Saved services now display their distinct recorded instance states, while the next command still accounts for a process left running after failed readiness.
+- 7aaa5bf: Show the default persona's pinned harness in status so it matches a bare spawn.
+  If the selected persona cannot be read or validated, report an unresolved application rather than the saved harness preference.
+  Reject non-regular persona files without blocking status or launch previews on a named pipe.
+- Updated dependencies [b4eba66]
+- Updated dependencies [8d15e70]
+- Updated dependencies [7aaa5bf]
+- Updated dependencies [9bdc7f4]
+  - @cotal-ai/workspace@0.153.0
+  - @cotal-ai/core@0.153.0
+
 ## 0.152.0
 
 ### Patch Changes

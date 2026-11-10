@@ -77,7 +77,7 @@ export function renderLaunchAgent(input: LaunchAgentInput): { text: string; sha2
     '<plist version="1.0"><dict>',
     entry("Label", input.label),
     `<key>ProgramArguments</key><array>${argv.map(str).join("")}</array>`,
-    `<key>EnvironmentVariables</key><dict>${entry("PATH", input.searchPath)}</dict>`,
+    `<key>EnvironmentVariables</key><dict>${entry("PATH", input.searchPath)}${entry("COTAL_DAEMON_NATIVE_SERVICE", "1")}</dict>`,
     entry("StandardOutPath", input.logPath),
     entry("StandardErrorPath", input.logPath),
     "<key>RunAtLoad</key><true/>",
@@ -200,6 +200,11 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
     start(receipt: UnitReceipt) {
       const id = uid();
       if (owned(receipt)) step(["kickstart", `gui/${id}/${receipt.unit}`]);
+      else step(["bootstrap", `gui/${id}`, receipt.unitPath]);
+    },
+    restart(receipt: UnitReceipt) {
+      const id = uid();
+      if (owned(receipt)) step(["kickstart", "-k", `gui/${id}/${receipt.unit}`]);
       else step(["bootstrap", `gui/${id}`, receipt.unitPath]);
     },
     remove(receipt: UnitReceipt) {

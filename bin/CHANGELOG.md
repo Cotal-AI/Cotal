@@ -1,5 +1,62 @@
 # cotal-ai
 
+## 0.153.1
+
+### Patch Changes
+
+- 058a3e6: Run checks now identify unchanged programs, show both hashes for edits, and name terminal runs.
+  The read-only comparison no longer implies that it moves a run to another program or makes a completed or failed run resumable.
+- Updated dependencies [058a3e6]
+  - @cotal-ai/runtime@0.153.1
+  - @cotal-ai/manager@0.153.1
+  - @cotal-ai/connector-core@0.153.1
+  - @cotal-ai/auth@0.153.1
+  - @cotal-ai/cli@0.153.1
+  - @cotal-ai/delivery@0.153.1
+  - @cotal-ai/registry@0.153.1
+  - @cotal-ai/core@0.153.1
+  - @cotal-ai/seat@0.153.1
+  - @cotal-ai/workspace@0.153.1
+
+## 0.153.0
+
+### Patch Changes
+
+- 5a54686: Clear the previous account's cached catalog and discovered registrations when the default daemon signs in as a different account. Separate daemon homes clean only their own cache. Credential files are retained.
+- 05bfec0: Enable shell path completion for the daemon's `--daemon-home` option.
+- 63f38d9: Distinguish unreadable or unwritable daemon identity and registration records from remote outages. Report a local-state conflict without replacing records or exposing their contents, and stop setup rather than waiting for approval.
+- 33995bb: Enforce the daemon request-line byte limit before buffering each fragment, including unfinished tails after valid requests. Close oversized connections consistently while accepting multiple valid lines independently.
+- 0224fc9: Read desktop host metadata without requiring a daemon runtime directory. Return daemon-path failures through the bounded desktop JSON protocol instead of unframed CLI errors.
+- 9bdc7f4: Failed preference and prepared-space writes now clean up their temporary files.
+  Exclusive private-record writes also remove a newly created partial file on failure without
+  removing a file that already belonged to another writer.
+- Updated dependencies [f98799a]
+- Updated dependencies [be11326]
+- Updated dependencies [ba1d826]
+- Updated dependencies [b2f7b0b]
+- Updated dependencies [05bfec0]
+- Updated dependencies [c967868]
+- Updated dependencies [bd1008e]
+- Updated dependencies [e8b4a5f]
+- Updated dependencies [b4eba66]
+- Updated dependencies [8d15e70]
+- Updated dependencies [3646835]
+- Updated dependencies [d7888be]
+- Updated dependencies [853378d]
+- Updated dependencies [3d2e1f4]
+- Updated dependencies [7aaa5bf]
+- Updated dependencies [9bdc7f4]
+  - @cotal-ai/cli@0.153.0
+  - @cotal-ai/manager@0.153.0
+  - @cotal-ai/workspace@0.153.0
+  - @cotal-ai/delivery@0.153.0
+  - @cotal-ai/runtime@0.153.0
+  - @cotal-ai/core@0.153.0
+  - @cotal-ai/auth@0.153.0
+  - @cotal-ai/connector-core@0.153.0
+  - @cotal-ai/registry@0.153.0
+  - @cotal-ai/seat@0.153.0
+
 ## 0.152.0
 
 ### Patch Changes

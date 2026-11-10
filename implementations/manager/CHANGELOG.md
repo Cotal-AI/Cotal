@@ -1,5 +1,27 @@
 # @cotal-ai/manager
 
+## 0.153.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.153.1
+  - @cotal-ai/seat@0.153.1
+  - @cotal-ai/workspace@0.153.1
+
+## 0.153.0
+
+### Patch Changes
+
+- ba1d826: Local seat inventory failures now show the store path, native read error and a next step.
+  Plain listings no longer say that no drain was submitted.
+- Updated dependencies [b4eba66]
+- Updated dependencies [8d15e70]
+- Updated dependencies [7aaa5bf]
+- Updated dependencies [9bdc7f4]
+  - @cotal-ai/workspace@0.153.0
+  - @cotal-ai/core@0.153.0
+  - @cotal-ai/seat@0.153.0
+
 ## 0.152.0
 
 ### Patch Changes

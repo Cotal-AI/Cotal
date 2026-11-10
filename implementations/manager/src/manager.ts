@@ -1909,6 +1909,7 @@ export class Manager {
   private leaseStopping = false;
   /** The class-2 renewal owner's half-TTL schedule; armed only on auth meshes. */
   private credRenewTimer?: ReturnType<typeof setInterval>;
+  private resumeCredRenewal?: () => void;
   /** #2073: the `endpoint-serve` credential's OWN renewal, armed from its `[renewAt, exp)` window
    *  (`credsRenewalDelayMs`) rather than left to `credRenewTimer`'s boot-phased TTL/4 tick, which can
    *  miss the window by ordering. Re-armed at registration and after every successful re-mint;
@@ -2564,20 +2565,24 @@ export class Manager {
         } catch {}
       }
       const intervalMs = Math.min(credRenewIntervalMs(5 * 60), credRenewIntervalMs(standingTtl));
-      this.credRenewTimer = setInterval(async () => {
-        try {
-          if (this.remoteAuthority?.renewStandingBundle) await this.renewRemoteStandingBundle();
-          else await this.renewRemoteExecutor();
-        } catch (e) {
-          console.error(`! remote manager renewal pass failed: ${rejectionText(e)}`);
-        }
-        try {
-          await this.runHosting?.renew();
-        } catch (e) {
-          console.error(`! remote run-hosting renewal pass failed: ${rejectionText(e)}`);
-        }
-      }, intervalMs);
-      this.credRenewTimer.unref?.();
+      this.resumeCredRenewal = () => {
+        if (this.credRenewTimer || this.leaseStopping) return;
+        this.credRenewTimer = setInterval(async () => {
+          try {
+            if (this.remoteAuthority?.renewStandingBundle) await this.renewRemoteStandingBundle();
+            else await this.renewRemoteExecutor();
+          } catch (e) {
+            console.error(`! remote manager renewal pass failed: ${rejectionText(e)}`);
+          }
+          try {
+            await this.runHosting?.renew();
+          } catch (e) {
+            console.error(`! remote run-hosting renewal pass failed: ${rejectionText(e)}`);
+          }
+        }, intervalMs);
+        this.credRenewTimer.unref?.();
+      };
+      this.resumeCredRenewal();
     }
     // stop() fences before it waits for an accepted startup reconciliation terminal. Once that
     // terminal drains, start() and stop() resume from the same await boundary; start must observe
@@ -3360,6 +3365,7 @@ export class Manager {
       this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
       this.credRenewTimer.unref?.();
     }
+    this.resumeCredRenewal?.();
     // Exit watchers were suppressed while the fence stood: reconcile every child that died during
     // preparation now, or its slot/credential footprint would linger unreaped after the abort.
     for (const agent of [...this.agents.values()]) {
@@ -9311,6 +9317,9 @@ export class Manager {
       await nc.drain().catch(() => nc.close());
     }
   }
+
+  /** Parent-local inventory read. It does not enter maintenance or change admission. */
+  hostedSeatCount(): number { return this.agents.size; }
 
   /** The served manager-level health summary. Given an owner, `agentCount` counts only that owner's
    *  seats, as `ps` lists them ({@link psOwnerFilter}), so a person reading a shared Manager does not

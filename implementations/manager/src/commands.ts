@@ -706,6 +706,40 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
+  // Only the machine-daemon composition root opts into its private parent channel.
+  if (args.values["machine-parent"] === true && process.connected) {
+    let pending = Promise.resolve();
+    let heldAttempt: string | undefined;
+    process.on("message", (raw: unknown) => {
+      if (!raw || typeof raw !== "object") return;
+      const frame = raw as { kind?: unknown; attemptId?: unknown; op?: unknown };
+      if (frame.kind !== "machine-generation" || typeof frame.attemptId !== "string" || !["inspect", "prepare", "abort"].includes(String(frame.op))) return;
+      const attemptId = frame.attemptId;
+      pending = pending.then(async () => {
+        try {
+          if (frame.op === "inspect") {
+            process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: true, seats: mgr.hostedSeatCount() });
+            return;
+          } else if (frame.op === "abort") {
+            if (heldAttempt === attemptId) { mgr.abortPreservation(attemptId); heldAttempt = undefined; }
+            else if (heldAttempt) throw new Error("another parent attempt holds the manager");
+          } else {
+            heldAttempt = attemptId;
+            const plan = await mgr.preparePreservation(attemptId);
+            if (!plan.ok || plan.inventory.agents.length !== 0) {
+              mgr.abortPreservation(attemptId);
+              heldAttempt = undefined;
+              process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: false });
+              return;
+            }
+          }
+          process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: true });
+        } catch {
+          process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: false });
+        }
+      });
+    });
+  }
   const managerContext = { root: managerRoot, space };
   // Until the settled record exists, a release only drops a managed child's exact starting slot.
   // A failed start or a stop that wins the start leaves no settled legacy record behind.

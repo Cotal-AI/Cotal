@@ -1,5 +1,31 @@
 # @cotal-ai/runtime
 
+## 0.153.1
+
+### Patch Changes
+
+- 058a3e6: Run checks now identify unchanged programs, show both hashes for edits, and name terminal runs.
+  The read-only comparison no longer implies that it moves a run to another program or makes a completed or failed run resumable.
+- @cotal-ai/core@0.153.1
+  - @cotal-ai/lang@0.153.1
+  - @cotal-ai/workspace@0.153.1
+
+## 0.153.0
+
+### Patch Changes
+
+- d7888be: Hosted runs record their final status after a broker outage instead of remaining marked as running after the driver releases them. The manager retains the attempt while retrying the status write, including when NATS returns before JetStream, stops recovery when its connection closes, and never overwrites a successor's status.
+- 3d2e1f4: Simulation results files now report their path, cause and next step when they cannot be read or parsed, and accept a leading UTF-8 byte-order mark.
+  
+  The results-file reader shares the program reader's regular-file checks and keeps rejecting invalid UTF-8 before simulation.
+- Updated dependencies [b4eba66]
+- Updated dependencies [8d15e70]
+- Updated dependencies [7aaa5bf]
+- Updated dependencies [9bdc7f4]
+  - @cotal-ai/workspace@0.153.0
+  - @cotal-ai/core@0.153.0
+  - @cotal-ai/lang@0.153.0
+
 ## 0.152.0
 
 ### Minor Changes

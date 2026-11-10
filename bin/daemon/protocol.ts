@@ -15,12 +15,17 @@
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
-export const DAEMON_OPS = ["status", "spaces", "login-start", "login-cancel", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+export const DAEMON_OPS = ["status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
 export type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
 const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readonly optional: readonly string[] }> = {
   status: { required: [], optional: [] },
+  "manager-start": { required: ["space"], optional: [] },
+  "manager-status": { required: ["space"], optional: [] },
+  "managers-stop": { required: [], optional: [] },
+  "managers-prepare-restart": { required: [], optional: [] },
+  "managers-abort-restart": { required: [], optional: [] },
   spaces: { required: [], optional: ["refresh"] },
   "login-start": { required: ["idp"], optional: ["clientId"] },
   "login-cancel": { required: ["attempt"], optional: [] },
@@ -32,6 +37,11 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
 };
 
 export type DaemonRequest =
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-start"; readonly space: string }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-status"; readonly space: string }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-stop" }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-prepare-restart" }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-abort-restart" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "spaces"; readonly refresh?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "status" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-start"; readonly idp: string; readonly clientId?: string }
@@ -44,9 +54,11 @@ export type DaemonRequest =
 
 export type ProtocolErrorCode =
   | "BAD_JSON" | "NOT_OBJECT" | "BAD_VERSION" | "UNKNOWN_FIELD" | "BAD_ID" | "UNKNOWN_OP" | "LINE_TOO_LONG"
-  | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "SPACES_UNAVAILABLE";
+  | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "GENERATION_PENDING";
 
 export interface DaemonStatus {
+  readonly generation?: { readonly installed: string; readonly running: string; readonly waiting: string };
+  readonly managers?: readonly HostedManager[];
   /** The local control listener is bound and verified. It does NOT mean connected to a mesh or Cloud. */
   readonly state: "ready";
   readonly protocol: typeof DAEMON_PROTOCOL_VERSION;
@@ -54,6 +66,22 @@ export interface DaemonStatus {
   readonly pid: number;
   readonly startedAt: string;
   readonly uptimeMs: number;
+}
+
+export interface HostedManager {
+  readonly connectors?: readonly { readonly agent: string; readonly state: string; readonly reason?: string }[];
+  readonly space: string;
+  readonly state: "starting" | "answering" | "restarting" | "refused" | "stopped";
+  readonly instanceId?: string;
+  readonly pid?: number;
+  readonly restarts: number;
+  readonly reason?: string;
+  readonly lastRefusal?: string;
+  readonly next?: string;
+  readonly lastStop?: "graceful" | "terminated" | "killed";
+  readonly observedAt?: string;
+  readonly lastExit?: string;
+  readonly logError?: string;
 }
 
 /** What a person needs to approve the sign-in, and when the code stops working. */
@@ -103,6 +131,7 @@ export type ServiceConnectionState =
   | "not-requested" | "not-registered" | "not-signed-in" | "unsupported" | "approval-pending" | "refused" | "conflict"
   | "connecting" | "connected" | "unavailable" | "ended" | "disconnected" | "local-state-error";
 export interface ServiceConnectionResult {
+  readonly manager?: HostedManager;
   readonly space: string;
   readonly state: ServiceConnectionState;
   readonly message: string;
@@ -115,13 +144,14 @@ export interface DaemonSpaces {
   readonly refresh: "not-requested" | "complete" | "partial" | "failed";
   readonly unreadable: number;
   readonly collisions: number;
+  readonly signedInProviders?: readonly string[];
   readonly spaces: readonly { readonly space: string; readonly label: string; readonly mode: "auth" | "open" | "user"; readonly idp?: string }[];
 }
 
 type Envelope = { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string | null };
 export type DaemonResponse =
-  | (Envelope & { readonly ok: true; readonly result: DaemonSpaces | DaemonStatus | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult })
-  | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode; readonly message: string } })
+  | (Envelope & { readonly ok: true; readonly result: HostedManager | DaemonSpaces | DaemonStatus | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult })
+  | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode; readonly message: string; readonly remedy?: string } })
   | (Envelope & { readonly ok: true; readonly event: "login-prompt"; readonly attempt: string; readonly prompt: LoginPrompt })
   | (Envelope & { readonly ok: true; readonly event: "login-result"; readonly attempt: string; readonly result: LoginResult });
 
@@ -162,12 +192,12 @@ export function parseRequest(line: string): ParsedRequest {
     if (obj.refresh !== undefined && typeof obj.refresh !== "boolean") return bad(id, "refresh must be a boolean");
     return { ok: true, request: { v, id, op, ...(obj.refresh !== undefined ? { refresh: obj.refresh } : {}) } };
   }
-  if (op === "status") return { ok: true, request: { v, id, op } };
+  if (op === "status" || op === "managers-stop" || op === "managers-prepare-restart" || op === "managers-abort-restart") return { ok: true, request: { v, id, op } };
   if (op === "login-cancel") {
     if (typeof obj.attempt !== "string" || !ATTEMPT_PATTERN.test(obj.attempt)) return bad(id, "attempt must be the 22-character attempt id from login-prompt");
     return { ok: true, request: { v, id, op, attempt: obj.attempt } };
   }
-  if (op === "connect-check" || op === "register" || op === "service-connect" || op === "service-disconnect" || op === "service-status") {
+  if (op === "manager-start" || op === "manager-status" || op === "connect-check" || op === "register" || op === "service-connect" || op === "service-disconnect" || op === "service-status") {
     if (typeof obj.space !== "string" || !SPACE_PATTERN.test(obj.space)) return bad(id, "space must be 1-64 characters of [A-Za-z0-9_-]");
     return { ok: true, request: { v, id, op, space: obj.space } };
   }
