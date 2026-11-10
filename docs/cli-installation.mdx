@@ -258,7 +258,13 @@ manager left under a detached custodian, but it starts no new custodian. An inco
 ### CLI upgrade
 
 With `--self`, the selected running manager is reported before any global install. When a newer
-release exists, Cotal then installs the exact version it validated, resolves and verifies that
+release exists, Cotal first downloads and integrity-checks its `cotal-ai` archive and the archives
+of its first-party runtime dependency closure through npm, using a temporary cache and no install
+scripts. Each registry request has a 15-second timeout and no retries. Missing archives or invalid
+metadata refuse before global installation or connector reconciliation, with a registry propagation
+hint and a request to check registry access and try again in a few minutes. This preflight does not
+guarantee later registry requests or third-party dependency downloads will succeed.
+Cotal then installs the exact version it validated, resolves and verifies that
 package in npm's global root, then launches that binary with the same `--space` / `--server` /
 `--creds` selection to reconcile connectors and first-party extensions to the new generation. An npx
 or dev-clone invocation therefore installs and continues through a separate global copy; it never

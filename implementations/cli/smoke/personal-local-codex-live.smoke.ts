@@ -322,7 +322,7 @@ ${readFileSync(join(codexHome, "config.toml"), "utf8")}`);
     await stopped(later.p);
     check("no conversation identity is left on this mesh", identities(space).length === 0);
     await observer.stop();
-    const down = cotal(s, "down");
+    const down = cotal(s, "down", "--yes");
     check(`the ${kind} mesh stops`, down.status === 0);
     s.up = false;
   }
@@ -333,7 +333,7 @@ ${readFileSync(join(codexHome, "config.toml"), "utf8")}`);
   // A plugin server retires what it holds as Codex ends it; let that finish before its mesh stops,
   // then remove only this suite's own records that a failed run left.
   await until(() => sandboxes.every((s) => identities(s.space).length === 0), "", 15_000).catch(() => {});
-  for (const s of sandboxes) if (s.up) cotal(s, "down");
+  for (const s of sandboxes) if (s.up) cotal(s, "down", "--yes");
   for (const s of sandboxes) for (const r of identities(s.space)) rmSync(r.dir, { recursive: true, force: true });
   model.closeAllConnections();
   await new Promise<void>((resolve) => model.close(() => resolve()));

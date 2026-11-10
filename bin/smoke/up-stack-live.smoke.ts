@@ -193,8 +193,8 @@ try {
     const autoEntry = JSON.parse(readFileSync(join(home, "meshes", "space.6175746f.json"), "utf8")) as { server: string };
     ok("auto-port mesh is not recorded on the default server", autoEntry.server !== DEFAULT_SERVER, autoEntry);
     ok("auto-port mesh broker is reachable", await portOpenAt(Number(new URL(autoEntry.server).port)), autoEntry);
-    cliIn(autoRoot, "down");
-    if (startedOccupant) cliIn(occupantRoot, "down");
+    cliIn(autoRoot, "down", "--yes");
+    if (startedOccupant) cliIn(occupantRoot, "down", "--yes");
   }
 
   // The warning needs a real invocation id, 32 hex characters, and the unit's MainPID equal to the
@@ -211,7 +211,7 @@ try {
   ok("up --detach keeps starting under the false-green unit shape", warned.status === 0, warnedOutput);
   ok("up --detach warns about the exact systemd unit", warnedOutput.includes("cotal-warning.service is Type=oneshot with RemainAfterExit=yes"), warnedOutput);
   ok("up --detach warning names the operator guide section", warnedOutput.includes("Supervising the detached stack"), warnedOutput);
-  cliIn(warningRoot, "down");
+  cliIn(warningRoot, "down", "--yes");
 
   // 1) the full stack comes up from ONE command, JWT-authed by default.
   const up = cli("up", "--detach", "--server", SERVER);
@@ -384,7 +384,7 @@ try {
 
   // 3) down stops the whole stack, symmetric with up. Poll: the SIGTERM'd manager/daemon shut
   //    down gracefully, which can take a few seconds on slow CI.
-  const down = cli("down");
+  const down = cli("down", "--yes");
   ok("down exits 0", down.status === 0, down.stdout + down.stderr);
   ok("its stop lines follow the mesh heading and end with the step that starts it again", plain(down.stdout).startsWith(`Mesh: ${SPACE}\n\n✓ stopped`) && /\nNext\n\s+cotal up\s+Start it again\s*$/.test(plain(down.stdout)), down.stdout);
   let dead = false;
@@ -405,7 +405,7 @@ try {
   const twin = join(mkdtempSync(join(tmpdir(), "cotal-upstack-twin-")), SPACE);
   mkdirSync(twin);
   const twinUp = cliIn(twin, "up", "--detach", "--server", `nats://127.0.0.1:${await freePort()}`);
-  if (twinUp.status === 0) cliIn(twin, "down");
+  if (twinUp.status === 0) cliIn(twin, "down", "--yes");
   ok("a bare up in another folder of the same name refuses CONFLICT, exit 2, naming this one, and writes nothing",
     twinUp.status === 2 && /Code:\s+CONFLICT/.test(plain(twinUp.stderr)) && plain(twinUp.stderr).includes(`"${SPACE}" is already registered at ${SERVER} for ${realpathSync(root)}`) && !existsSync(join(twin, ".cotal")), twinUp.stdout + twinUp.stderr);
   rmSync(resolve(twin, ".."), { recursive: true, force: true });
@@ -413,7 +413,7 @@ try {
   // occupied one is, and starts nothing there.
   const other = mkdtempSync(join(tmpdir(), "cotal-upstack-other-"));
   const otherUp = cliIn(other, "up", "--detach", "--server", SERVER);
-  if (otherUp.status === 0) cliIn(other, "down");
+  if (otherUp.status === 0) cliIn(other, "down", "--yes");
   ok("another folder's up at this stopped space's address refuses CONFLICT, exit 2, naming this one, and writes nothing",
     otherUp.status === 2 && /Code:\s+CONFLICT/.test(plain(otherUp.stderr)) && plain(otherUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) && !existsSync(join(other, ".cotal")), otherUp.stdout + otherUp.stderr);
   // A manifest names its broker in `broker.servers`, and that address is held by the same rule, so
@@ -447,7 +447,7 @@ try {
       plain(heldRead.stderr).includes(`cotal space forget ${SPACE}`) && existsSync(heldFile), heldRead.stdout + heldRead.stderr);
   rmSync(heldFile, { force: true });
   rmSync(heldRoot, { recursive: true, force: true });
-  ok("its down exits 0", cli("down").status === 0);
+  ok("its down exits 0", cli("down", "--yes").status === 0);
   // The kept registration does not make the stopped stack look like one to stop.
   const again = cli("down");
   ok("a second down reports the stack not running, names cotal up, and exits 0",
@@ -513,7 +513,7 @@ try {
   if (openHealedPid) pids.push(openHealedPid);
   ok("the Next's bare cotal up restores the missing manager and exits 0",
     openHealed.status === 0 && alive(openHealedPid) && openManagerPid() === openHealedPid && !/stopped stack/.test(openHealed.stdout), plain(openHealed.stdout + openHealed.stderr));
-  const openRootDown = cliIn(openRoot, "down");
+  const openRootDown = cliIn(openRoot, "down", "--yes");
   for (let i = 0; i < 24 && alive(openHealedPid); i++) await sleep(500);
   ok("down stops the open root's stack", openRootDown.status === 0 && !alive(openHealedPid), plain(openRootDown.stdout + openRootDown.stderr));
 
@@ -535,7 +535,7 @@ try {
   );
   ok("open summary omits auth-only components", !/running in the background:.*(?:delivery daemon|user-auth service)/.test(open.stdout), open.stdout);
   ok("a folder that now names its space gets no default-space note", !/names no space/.test(open.stdout), open.stdout);
-  const openDown = cli("down");
+  const openDown = cli("down", "--yes");
   ok("open down exits 0", openDown.status === 0, openDown.stdout + openDown.stderr);
   for (let i = 0; i < 24 && openStack.some(alive); i++) await sleep(500);
   ok("open down stops the broker and manager, names no delivery daemon, and leaves nothing running",
@@ -567,7 +567,7 @@ try {
           ? deliveryPid !== undefined && (delivery === undefined || (delivery.length === 1 && delivery[0] === deliveryPid))
           : deliveryPid === undefined && (delivery === undefined || delivery.length === 0),
         { deliveryPid, daemons: delivery ?? "not read" });
-      const stop = cli("down");
+      const stop = cli("down", "--yes");
       ok(`${cell}: down exits 0`, stop.status === 0, plain(stop.stdout + stop.stderr));
       for (let i = 0; i < 24 && stack.some(alive); i++) await sleep(500);
       const left = process.platform === "linux" ? [...deliveryDaemons(SPACE), ...daemonsOf("__daemon-manager", SPACE)] : [];
@@ -643,7 +643,7 @@ try {
     noManagerSpawn.status === 2 && /no manager is running for this space to launch an agent/.test(noManagerSpawnOut) && /Code:\s+TARGET_UNAVAILABLE/.test(noManagerSpawnOut)
       && /start the stack's manager with bare `cotal up`/.test(noManagerSpawnOut) && Date.now() - spawnStarted < 9_000,
     { status: noManagerSpawn.status, ms: Date.now() - spawnStarted, out: noManagerSpawnOut });
-  const brokerOnlyDown = cli("down");
+  const brokerOnlyDown = cli("down", "--yes");
   ok("broker-only down exits 0", brokerOnlyDown.status === 0, brokerOnlyDown.stdout + brokerOnlyDown.stderr);
   let boDead = false;
   for (let i = 0; i < 24 && !boDead; i++) {
@@ -837,7 +837,7 @@ try {
   } finally {
     if (fgUp && alive(fgUp.pid ?? 0)) { try { fgUp.kill("SIGKILL"); } catch { /* gone */ } }
     if (fgSeatPid !== undefined && alive(fgSeatPid)) { try { process.kill(fgSeatPid, "SIGKILL"); } catch { /* gone */ } }
-    cliIn(fgRoot, "down", "--with-agents");
+    cliIn(fgRoot, "down", "--with-agents", "--yes");
     rmSync(fgBin, { recursive: true, force: true });
     rmSync(fgOut, { recursive: true, force: true });
     rmSync(fgRoot, { recursive: true, force: true });
@@ -888,7 +888,7 @@ try {
       { manager: rgManagerPid, managerAlive: alive(rgManagerPid), upAlive: rgUp ? alive(rgUp.pid ?? 0) : false });
     ok("no spared report is printed on the refusal path", !/left \d+ managed agent/.test(plain(rgOutText)), rgOutText);
     // The operator's route ends the run: down --with-agents, then up exits via the broker-exit path.
-    cliInEnv(rgRoot, rgEnv, "down", "--with-agents");
+    cliInEnv(rgRoot, rgEnv, "down", "--with-agents", "--yes");
     const rgExited = await new Promise<boolean>((res) => {
       const timer = setTimeout(() => res(false), 45_000);
       rgUp?.once("exit", () => { clearTimeout(timer); res(true); });
@@ -898,7 +898,7 @@ try {
     ok("the refusal rig's manager is gone after down --with-agents", !alive(rgManagerPid), rgManagerPid);
   } finally {
     if (rgUp && alive(rgUp.pid ?? 0)) { try { rgUp.kill("SIGKILL"); } catch { /* gone */ } }
-    cliIn(rgRoot, "down", "--with-agents");
+    cliIn(rgRoot, "down", "--with-agents", "--yes");
     rmSync(rgBin, { recursive: true, force: true });
     rmSync(rgOut, { recursive: true, force: true });
     rmSync(rgRoot, { recursive: true, force: true });
@@ -906,11 +906,11 @@ try {
 
   console.log(`\nUP-STACK LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {
-  cliIn(root, "down");
-  cliIn(autoRoot, "down");
-  if (startedOccupant) cliIn(occupantRoot, "down");
-  cliIn(warningRoot, "down");
-  cliIn(openRoot, "down");
+  cliIn(root, "down", "--yes");
+  cliIn(autoRoot, "down", "--yes");
+  if (startedOccupant) cliIn(occupantRoot, "down", "--yes");
+  cliIn(warningRoot, "down", "--yes");
+  cliIn(openRoot, "down", "--yes");
   for (const p of pids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(home, { recursive: true, force: true });
   for (const d of [root, autoRoot, occupantRoot, warningRoot, openRoot, fakeBin]) rmSync(d, { recursive: true, force: true });

@@ -151,8 +151,8 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.equal(registration.space, space);
       assert.equal(registration.server, `nats://127.0.0.1:${port}`);
       assert.deepEqual(Object.keys(env).filter((key) => /^COTAL_/i.test(key)).sort(), ["COTAL_HOME", "COTAL_SKIP_CONNECTOR_SEED"]);
-      assertSmokeSandboxDown(sandbox, ["down", "--with-agents"], { cwd: mesh, env });
-      const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--with-agents"]);
+      assertSmokeSandboxDown(sandbox, ["down", "--with-agents", "--yes"], { cwd: mesh, env });
+      const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--with-agents", "--yes"]);
       writeFileSync(join(root, "down.json"), JSON.stringify(down), { mode: 0o600 });
       assert.equal(down.code, 0, "own-root public down --with-agents succeeds after resume and serving readiness"); passed++;
       await until(() => state.exited, 20_000, () => err.slice(-3000));

@@ -1771,24 +1771,28 @@ export class MeshHandler {
 
     const actx = await this.actionCtx();
     const watch: DeathWatch = {};
+    // Only re-enter the read, never the relay submission or its outcome processing. Each read
+    // gets the pause plane's bounded timeout/starvation policy and names itself in diagnostics.
+    const poll = <T>(what: string, read: () => Promise<T>): Promise<T> => servedDespiteStarvation(async () => {
+      if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+      return await read();
+    }, this.lag, `turn(${name}#${uid}) ${what}`, this.onStarved);
+    const result = () => poll("readGoalResult", () => readGoalResult(actx, ref));
+    const expired = () => poll("expired", () => this.expired(primary));
     const decided = async (): Promise<boolean> =>
-      ctx.signal.cancelled || (await readGoalResult(actx, ref)) !== undefined || (await this.expired(primary)) !== undefined;
+      ctx.signal.cancelled || (await result()) !== undefined || (await expired()) !== undefined;
     try {
-        for (;;) {
-        if (ctx.signal.cancelled) {
-          await this.cancelTimer(primary);
-          await this.withdrawCancelledRelay(goalId);
-          throw new Cancelled(ctx.signal.reason ?? "cancelled");
-        }
-        const fact = await readGoalResult(actx, ref);
+      for (;;) {
+        if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+        const fact = await result();
         if (fact !== undefined) {
           await this.cancelTimer(primary);
           return await this.turnOutcome(req, fact, ext, scope, name, uid);
         }
-        const ended = await this.expired(primary);
+        const ended = await expired();
         if (ended !== undefined)
           throw new EffectError("L4003", "turn-deadline", `turn(${name}#${uid}) deadline elapsed before a yield`);
-        const reason = await this.presenceDeath(name, uid, watch, decided);
+        const reason = await poll("presenceDeath", () => this.presenceDeath(name, uid, watch, decided));
         if (reason !== undefined) {
           await this.cancelTimer(primary);
           throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
@@ -1800,6 +1804,32 @@ export class MeshHandler {
       // seat's death, a refused handoff, a cancellation) is not a reply, whatever the relay
       // records later: `wait(replied)` reads the verdict this branch raised, never a stale yield.
       this.turnGoals.get(`${name}#${uid}`)?.delete(goalId);
+      // In particular a read that exhausted its retry budget must not leave a live relay that
+      // tells the seat its later yield continued a turn the run already abandoned. The ordinary
+      // turn verdicts already have an authority: death, the shared deadline, or a yielded handoff.
+      // Do not ask a dead manager to confirm the client's independent deadline or death verdict.
+      const terminal = e instanceof EffectError && ["L4002", "L4003", "L4004", "L4005"].includes(e.code);
+      if (!terminal) {
+        // Neither cleanup failure may prevent the other resource from being retired.
+        const cleanup = await Promise.allSettled([
+          this.cancelTimer(primary),
+          this.withdrawCancelledRelay(goalId, deadlineAt),
+        ]);
+        const failures = cleanup.flatMap((r, i) => r.status === "rejected"
+          ? [{ resource: i === 0 ? "primary timer claim" : "relay withdrawal", error: r.reason as unknown }]
+          : []);
+        if (failures.length > 0) {
+          const message = `${e instanceof Error ? e.message : String(e)}; turn cleanup failed: `
+            + failures.map((f) => `${f.resource}: ${f.error instanceof Error ? f.error.message : String(f.error)}`).join("; ");
+          const cause = new AggregateError([e, ...failures.map((f) => f.error)], message);
+          if (e instanceof EffectError) {
+            const error = new EffectError(e.code, e.kind, message, e.detail);
+            error.cause = cause;
+            throw error;
+          }
+          throw cause;
+        }
+      }
       throw e;
     }
   }
@@ -2163,8 +2193,7 @@ export class MeshHandler {
    * goal is read, and the relay may be served until then, so a failed read is tried again as well.
    * A goal record that can never yield a deadline is thrown.
    */
-  private async withdrawCancelledRelay(goalId: string): Promise<void> {
-    let deadlineAt: number | undefined;
+  private async withdrawCancelledRelay(goalId: string, deadlineAt?: number): Promise<void> {
     for (;;) {
       try {
         if (deadlineAt === undefined) {

@@ -175,7 +175,7 @@ try {
   // attempt on that address is not mistaken for a request to stop a shared broker.
   run(home, "space", "forget", "held");
   for (const root of active.reverse()) {
-    const stopped = run(root, "down", ...(existsSync(join(root, ".cotal", "stack-controller.json")) ? ["--yes"] : []));
+    const stopped = run(root, "down", "--yes");
     if (stopped.status !== 0) throw new Error(`cleanup did not confirm the owned stack stopped: ${JSON.stringify(shown(stopped))}`);
   }
   if (unconfirmed.size) throw new Error(`retained uncertain startup state at ${home}: ${[...unconfirmed].join(", ")}`);

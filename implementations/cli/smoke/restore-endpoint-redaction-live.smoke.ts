@@ -103,13 +103,13 @@ try {
   const listed = run("channel", "show", "preserved", "--space", space);
   must("restored registry is readable", listed);
   check("restored registry retains its channel", listed.stdout.includes("preserved"));
-  must("stop restored fixture", run("down"));
+  must("stop restored fixture", run("down", "--yes"));
   running = false;
   completed = true;
 } finally {
   // A failed cleanup keeps its records; do not hide a remaining owned stack by deleting them.
   if (running) {
-    const stopped = run("down");
+    const stopped = run("down", "--yes");
     check("failure cleanup stops owned stack", stopped.status === 0);
   }
   writeFileSync(join(scratch, "refusals.json"), `${JSON.stringify(refusals, null, 2)}\n`, { mode: 0o600 });

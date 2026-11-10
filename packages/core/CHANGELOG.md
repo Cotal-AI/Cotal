@@ -1,5 +1,21 @@
 # @cotal-ai/core
 
+## 0.156.0
+
+### Patch Changes
+
+- 24bf62a: Daemon service connections now identify credentials that are not yet valid by the machine's clock.
+  The refusal tells you to check the machine's and space authority's clocks instead of reporting an
+  unreachable space. Bearer verification still fails closed and retries preserve the saved request IDs.
+- 80b1c38: Daemon disconnect and graceful shutdown cancel pending service HTTP requests instead of waiting for network timeouts.
+  
+  Cancellation reaches startup metadata, registration, credential and ready requests, including sign-in proof acquisition. Explicit disconnect still forgets resume intent, while shutdown preserves it.
+- ccc9d7e: Daemon service connections now report locally expired credentials instead of an unreachable space or broker.
+  The renewal source preserves a fixed expiry classification, and the daemon reports `LIFECYCLE_BLOCKED`
+  with native code `CREDENTIAL_EXPIRED` and a clock-check remedy. A newly returned sign-in proof
+  already expired by the local clock uses the same diagnosis before any space request. Expiry checks
+  and request replay stay unchanged.
+
 ## 0.155.2
 
 No changes in this release.

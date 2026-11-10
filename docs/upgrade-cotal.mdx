@@ -95,6 +95,9 @@ If it refuses, follow the reported remedy instead of removing credentials or rei
 `cotal update --check` only reports registry availability and recorded extension versions.
 It installs and restarts nothing, so it does not replace this reconciliation step.
 `cotal update --self` selects the validated latest release; use the pinned install commands above when you need a specific target.
+Before replacing the global binary, it checks the release's first-party package archives through
+npm. If the release is still reaching the registry, it refuses with retry guidance without starting
+the global install or connector reconciliation.
 
 ## Restart the mesh
 

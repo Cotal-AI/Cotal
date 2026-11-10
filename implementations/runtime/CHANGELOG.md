@@ -1,5 +1,23 @@
 # @cotal-ai/runtime
 
+## 0.156.0
+
+### Patch Changes
+
+- 8b0bdf7: Run listing now names the missing auth-service grant and tells the space operator how to restore it. Managers from 0.149.0 require the space's auth service to be upgraded to 0.149.0 or later first, because it issues the batched records-read grant. A denial of that grant returns failed-precondition without falling back to per-run reads. After upgrading the auth service, retry the list to obtain a fresh per-call credential.
+- b814b95: Workflow turns survive a transient timeout while waiting for an agent's yield.
+  Result, deadline and presence reads use bounded timeout and host-starvation retries with
+  diagnostics naming the read. A turn that fails on a read withdraws its relay before returning, so
+  the agent cannot later receive a misleading successful yield acknowledgement.
+- Updated dependencies [24bf62a]
+- Updated dependencies [80b1c38]
+- Updated dependencies [f167bea]
+- Updated dependencies [ccc9d7e]
+- Updated dependencies [b814b95]
+  - @cotal-ai/core@0.156.0
+  - @cotal-ai/workspace@0.156.0
+  - @cotal-ai/lang@0.156.0
+
 ## 0.155.2
 
 ### Patch Changes

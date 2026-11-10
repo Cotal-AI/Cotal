@@ -610,6 +610,49 @@ function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok:
   }
 }
 
+/** Fetch the target's first-party install closure through npm, including integrity verification.
+ *  A private cache forces a registry read without changing the installed packages or running scripts. */
+function checkReleaseArchives(version: string, rt: UpdateRuntime): void {
+  const cache = mkdtempSync(join(tmpdir(), "cotal-release-check-"));
+  const options = ["--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000", "--prefer-online"];
+  const pending = new Set(["cotal-ai"]);
+  try {
+    for (const name of pending) {
+      const spec = `${name}@${version}`;
+      const manifest = rt.npm(["view", spec, "--json", ...options]);
+      if (manifest.status !== 0) throw new Error(`metadata for ${spec} is unavailable`);
+      let meta: Record<string, unknown>;
+      try {
+        const parsed: unknown = JSON.parse(manifest.stdout);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+        meta = parsed as Record<string, unknown>;
+        if (meta.name !== name || meta.version !== version) throw new Error();
+        const dist = meta.dist as { tarball?: unknown; integrity?: unknown } | undefined;
+        if (typeof dist?.tarball !== "string" || !dist.tarball || typeof dist.integrity !== "string" || !dist.integrity) throw new Error();
+      } catch {
+        throw new Error(`metadata for ${spec} is incomplete or invalid`);
+      }
+      for (const field of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
+        const deps = meta[field];
+        if (deps === undefined) continue;
+        if (!deps || typeof deps !== "object" || Array.isArray(deps)) throw new Error(`invalid ${field} for ${spec}`);
+        for (const [dependency, range] of Object.entries(deps)) {
+          if (!dependency.startsWith("@cotal-ai/")) continue;
+          if (!/^@cotal-ai\/[a-z0-9][a-z0-9._-]*$/.test(dependency) || typeof range !== "string" ||
+              (field !== "peerDependencies" && range !== version)) throw new Error(`invalid first-party dependency in ${spec}`);
+          pending.add(dependency);
+        }
+      }
+      // npm applies the configured registry, scoped authentication, proxy/TLS policy and SRI checks.
+      // cache add downloads only this archive, so enumerate the dependency closure above as well.
+      const archive = rt.npm(["cache", "add", spec, "--ignore-scripts", ...options]);
+      if (archive.status !== 0) throw new Error(`archive for ${spec} could not be downloaded and verified`);
+    }
+  } finally {
+    rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
 
 /** The nearest existing directory of the config folder. Seeding creates the folder itself, but a
  *  group-writable ancestor above it is outside the folders update repairs. */
@@ -634,6 +677,13 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     if (await rt.reportRunningManager(target) === "legacy") return 1;
   } catch (e) {
     rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
+    return 1;
+  }
+
+  try {
+    checkReleaseArchives(targetVersion, rt);
+  } catch (e) {
+    rt.err(c.red(`✗ cotal-ai@${targetVersion} release is not ready: ${message(e)}. The release is still reaching the registry or registry access failed; no global install was attempted. Check registry access and run \`cotal update --self\` again in a few minutes.`));
     return 1;
   }
 

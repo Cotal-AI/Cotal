@@ -165,7 +165,7 @@ async function daemonTail(from: number, ms = 25_000): Promise<string> {
  */
 async function settleThenDown(opts: { awaitManagerLease?: boolean } = {}): Promise<{ code: number | null; out: string }> {
   await wait(3000);
-  const r = cotal(["down", "--with-agents"]);
+  const r = cotal(["down", "--with-agents", "--yes"]);
   // The MANAGER has the same shape of problem on its own lease, and it bites the boot AFTER the one
   // that was stopped. Its instance id is persisted, so a restart re-acquires the SAME per-instance
   // key; a manager whose predecessor did not release it refuses to start ("already serves space … -

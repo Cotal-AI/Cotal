@@ -5,13 +5,14 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, AUTH_PIDFILE, NATS_PIDFILE, parsePid } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { clean, cotalPty } from "./_console-pty.js";
 
 const tree = resolve(import.meta.dirname, "../../..");
 const scratch = mkdtempSync(join(tmpdir(), "cotal-down-host-auth-"));
@@ -20,7 +21,7 @@ const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) 
 const wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 let checks = 0;
-const check = (message: string, condition: unknown) => { assert.ok(condition, message); checks++; console.log(`  ✓ ${message}`); };
+const check = (message: string, condition: unknown, detail?: string) => { assert.ok(condition, detail ? `${message}\n${detail}` : message); checks++; console.log(`  ✓ ${message}`); };
 const stacks: Array<{ root: string; space: string; pids: number[] }> = [];
 let requests = 0;
 const idp = createServer((_req, res) => {
@@ -83,12 +84,80 @@ async function cell(user: boolean): Promise<void> {
     } finally { renameSync(`${delivery}.held`, delivery); }
     check("user: local lease check does not contact the IdP", requests === before);
   }
+  const refused = await cli("down");
+  check(`${label}: noninteractive whole-stack stop requires --yes`, refused.code === 1 && refused.out.includes("requires --yes because there is no interactive terminal to ask in") && !refused.out.includes("Usage:"));
+  check(`${label}: confirmation refusal leaves every recorded process alive`, stack.pids.every(alive));
+  const preview = await cli("down", "--dry-run");
+  check(`${label}: preview needs no confirmation and stops nothing`, preview.code === 4 && stack.pids.every(alive));
+  if (!user) {
+    const terminal = async (answer: string | undefined, flags: string[] = [], extraEnv: Record<string, string> = {}, beforeAnswer?: () => Promise<void>) => {
+      assertSmokeSandboxDown(sandbox, ["down", ...flags], { cwd: root, env });
+      const pty = cotalPty(["down", ...flags], { cwd: root, env: { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? join(home, "run"), TMPDIR: tmpdir(), DO_NOT_TRACK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv } });
+      let out = "", code: number | undefined;
+      pty.onData((data) => { out += data; });
+      pty.onExit((event) => { code = event.exitCode; });
+      try {
+        if (answer !== undefined) {
+          for (let end = Date.now() + 30_000; !clean(out).includes("type y to confirm") && code === undefined && Date.now() < end; await wait(50));
+          check("terminal: the default-No confirmation shows its recorded components", clean(out).includes("type y to confirm") && clean(out).includes("nats-server") && clean(out).includes("delivery daemon"), clean(out));
+          check("terminal: every recorded process stays alive before an answer", stack.pids.every(alive));
+          if (beforeAnswer) await beforeAnswer();
+          pty.write(answer);
+        }
+        for (let end = Date.now() + 30_000; code === undefined && Date.now() < end; await wait(50));
+        assert.notEqual(code, undefined, `terminal down did not exit: ${clean(out)}`);
+        return { code, out: clean(out) };
+      } finally {
+        if (code === undefined) {
+          pty.kill();
+          for (let end = Date.now() + 10_000; code === undefined && Date.now() < end; await wait(50));
+          assert.notEqual(code, undefined, "owned terminal process did not exit after cleanup");
+        }
+      }
+    };
+    for (const answer of ["\r", "n\r", "\x03"]) {
+      const cancelled = await terminal(answer);
+      check("terminal: empty, No or cancelled input stops nothing", cancelled.out.includes("Cancelled; no process was stopped.") && stack.pids.every(alive));
+    }
+    const noInput = await terminal(undefined, ["--no-input"]);
+    check("terminal: --no-input refuses without a prompt", noInput.code === 1 && noInput.out.includes("--no-input forbids the prompt") && stack.pids.every(alive));
+    const noPrompt = await terminal(undefined, [], { COTAL_NO_PROMPT: "1" });
+    check("terminal: COTAL_NO_PROMPT refuses without a prompt", noPrompt.code === 1 && noPrompt.out.includes("COTAL_NO_PROMPT=1 forbids the prompt") && stack.pids.every(alive));
+    const alias = join(scratch, "alias");
+    mkdirSync(join(alias, ".cotal"), { recursive: true, mode: 0o700 });
+    const shared = await terminal("y\r", [], {}, async () => {
+      const added = await cli("space", "add", "down-host-alias", "--server", server, "--root", alias, "--force");
+      check("terminal race: a shipped command adds exact-address sharing while confirmation waits", added.code === 0, added.out);
+      const fresh = await cli("down", "--yes");
+      check("terminal race control: a fresh stop refuses the newly shared broker", fresh.code === 2 && fresh.out.includes("LIFECYCLE_BLOCKED") && stack.pids.every(alive), fresh.out);
+    });
+    check("terminal race: confirming an older prompt rechecks sharing and stops nothing", shared.code === 2 && shared.out.includes("LIFECYCLE_BLOCKED") && stack.pids.every(alive), shared.out);
+    const forgotten = await cli("space", "forget", "down-host-alias");
+    check("terminal race: the isolated alias registration is removed", forgotten.code === 0, forgotten.out);
+    const brokerRecord = canonicalLocalProcessPath(NATS_PIDFILE, stack);
+    const brokerBytes = readFileSync(brokerRecord, "utf8");
+    try {
+      const changed = await terminal("y\r", [], {}, async () => {
+        writeFileSync(brokerRecord, "not-the-reviewed-process", { mode: 0o600 });
+      });
+      check("terminal race: changed process record refuses the reviewed scope before any stop", changed.code === 2 && changed.out.includes("changed while confirmation waited") && stack.pids.every(alive), changed.out);
+    } finally { writeFileSync(brokerRecord, brokerBytes, { mode: 0o600 }); }
+    if (process.platform !== "win32") {
+      const authRecord = canonicalLocalProcessPath(AUTH_PIDFILE, stack);
+      try {
+        const linked = await terminal("y\r", [], {}, async () => { symlinkSync(brokerRecord, authRecord); });
+        check("terminal race: a newly linked process record refuses before any stop", linked.code === 2 && linked.out.includes("LIFECYCLE_BLOCKED") && stack.pids.every(alive), linked.out);
+      } finally { if (existsSync(authRecord)) unlinkSync(authRecord); }
+    }
+    const confirmed = await terminal("y\r");
+    check("terminal: explicit Yes stops the whole stack", confirmed.code === 0);
+  }
   const stopped = await cli("down", "--yes");
   check(`${label}: hosting-folder stop succeeds without a login`, stopped.code === 0);
   if (leaseRefusal) check("user: live delivery without a pidfile refuses for its renewed lease", leaseRefusal.code === 2 && leaseRefusal.out.includes("LIFECYCLE_BLOCKED") && leaseRefusal.out.includes("still renewing a lease"));
   for (let end = Date.now() + 10_000; stack.pids.some(alive) && Date.now() < end; await wait(100));
   check(`${label}: every recorded process exited`, stack.pids.every((pid) => !alive(pid)));
-  const again = await cli("down", "--yes");
+  const again = await cli("down");
   check(`${label}: repeated stop succeeds without a login`, again.code === 0);
 }
 

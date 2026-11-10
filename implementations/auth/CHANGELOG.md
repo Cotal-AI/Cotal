@@ -1,5 +1,26 @@
 # @cotal-ai/auth
 
+## 0.156.0
+
+### Patch Changes
+
+- 80b1c38: Daemon disconnect and graceful shutdown cancel pending service HTTP requests instead of waiting for network timeouts.
+  
+  Cancellation reaches startup metadata, registration, credential and ready requests, including sign-in proof acquisition. Explicit disconnect still forgets resume intent, while shutdown preserves it.
+- ccc9d7e: Daemon service connections now report locally expired credentials instead of an unreachable space or broker.
+  The renewal source preserves a fixed expiry classification, and the daemon reports `LIFECYCLE_BLOCKED`
+  with native code `CREDENTIAL_EXPIRED` and a clock-check remedy. A newly returned sign-in proof
+  already expired by the local clock uses the same diagnosis before any space request. Expiry checks
+  and request replay stay unchanged.
+- Updated dependencies [24bf62a]
+- Updated dependencies [80b1c38]
+- Updated dependencies [f167bea]
+- Updated dependencies [ccc9d7e]
+- Updated dependencies [b814b95]
+  - @cotal-ai/core@0.156.0
+  - @cotal-ai/workspace@0.156.0
+  - @cotal-ai/lang@0.156.0
+
 ## 0.155.2
 
 ### Patch Changes
