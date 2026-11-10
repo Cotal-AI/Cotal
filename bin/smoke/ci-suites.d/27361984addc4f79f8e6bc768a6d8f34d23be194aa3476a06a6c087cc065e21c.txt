@@ -1,0 +1,2 @@
+# Read-only run checks identify unchanged source, both hashes for edits, and terminal state through the built CLI.
+smoke:run-check-identity
