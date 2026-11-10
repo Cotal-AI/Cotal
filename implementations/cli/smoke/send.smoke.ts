@@ -55,7 +55,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 76;
+const EXPECTED = 106;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -443,6 +443,28 @@ try {
   const missing = await run(["send", "-t", "nobody-here", "x"]);
   check("`cotal send -t` to an absent agent is refused, exit 2", missing.code === 2, missing.code);
   check("`cotal send -t` to an absent agent says TARGET_NOT_FOUND and no matching participant", missing.stderr.includes("TARGET_NOT_FOUND") && missing.stderr.includes("no matching participant"), missing.stderr);
+
+  // Refused names must show their invisible characters, including those outside Bidi_Control.
+  // Both the usage line and a classified report's Name field pass through the shared renderer.
+  for (const [name, invisible, escaped] of [
+    ["zero-width space", "\u200b", "\\u200b"],
+    ["bidi override", "\u202e", "\\u202e"],
+    ["combining grapheme joiner", "\u034f", "\\u034f"],
+    ["astral tag", "\u{e0001}", "\\udb40\\udc01"],
+    ["astral musical format control", "\u{1d173}", "\\ud834\\udd73"],
+  ] as const) {
+    for (const format of [[], ["--plain"]]) {
+      for (const flag of ["-c", "-r", "-t"]) {
+        const result = await run(["send", flag, `a${invisible}b`, "x", ...format]);
+        const target = flag === "-t";
+        check(`${name} is escaped in ${flag} refusals (${format.length ? "plain" : "default"})`,
+          result.code === (target ? 2 : 1) && result.stdout === ""
+            && !result.stderr.includes(invisible) && result.stderr.includes(`a${escaped}b`)
+            && (target ? /Name: +a/.test(result.stderr) && result.stderr.includes("TARGET_NOT_FOUND")
+              : result.stderr.includes(flag === "-c" ? "invalid channel" : "invalid role")), result);
+      }
+    }
+  }
 
   // Two participants sharing a name used to be listed by id alone, with nothing saying which is which.
   // Names match without regard to case, so "twin" and "Twin" are one name and each label shows its own.
