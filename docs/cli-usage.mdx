@@ -35,6 +35,11 @@ with `hash -r` (or `rehash` in zsh). An alias or function must be corrected sepa
 connectors after an old executable rebuilt them, run the verified newer absolute executable with
 `ext seed`, without `--force`.
 
+When an installed CLI is off PATH, `status` and `ps` suggestions use the absolute Node runtime
+and installed entry, with paths quoted for a POSIX shell. They do not require a source checkout or
+pnpm. PATH invocations keep `cotal`, npx invocations keep `npx cotal-ai`, and checkout invocations
+keep `pnpm cotal`.
+
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
 the space this folder has registered, else the selected space, else, with nothing selected, the space
 this folder prepared, and lists common commands. It reads no
