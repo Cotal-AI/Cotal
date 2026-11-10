@@ -4,6 +4,8 @@ $out = Join-Path $env:RUNNER_TEMP 'desktop-presence'
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -12,6 +14,7 @@ public static class PresenceWindow {
   [DllImport("user32.dll", EntryPoint="GetWindowLongW")] public static extern int GetWindowLong(IntPtr h, int index);
   [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint command);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
 }
 '@
 function Screenshot($name) {
@@ -68,11 +71,17 @@ foreach ($kind in @('nsis', 'msi')) {
     $owned = Wait-Window $path
     $handle = $owned.MainWindowHandle
     if (![PresenceWindow]::IsWindowVisible($handle)) { throw 'Cotal window is hidden.' }
-    # A visible unowned top-level window without WS_EX_TOOLWINDOW or WS_EX_NOACTIVATE is taskbar eligible.
     $style = [PresenceWindow]::GetWindowLong($handle, -20)
-    if (($style -band 0x80) -ne 0 -or ($style -band 0x08000000) -ne 0 -or [PresenceWindow]::GetWindow($handle, 4) -ne [IntPtr]::Zero) { throw 'Cotal is not a normal taskbar window.' }
+    @{ handle = $handle.ToInt64(); style = $style; owner = [PresenceWindow]::GetWindow($handle, 4).ToInt64(); title = $owned.MainWindowTitle } | ConvertTo-Json | Set-Content (Join-Path $out "$kind-window.json")
     Start-Sleep 3
     Screenshot "$kind-taskbar.png"
+    $taskbarHandle = [PresenceWindow]::FindWindow('Shell_TrayWnd', $null)
+    if ($taskbarHandle -eq [IntPtr]::Zero) { throw 'Explorer taskbar is unavailable in this runner session.' }
+    $taskbar = [System.Windows.Automation.AutomationElement]::FromHandle($taskbarHandle)
+    $items = $taskbar.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    $names = @($items | ForEach-Object { $_.Current.Name })
+    $names | Set-Content (Join-Path $out "$kind-taskbar-elements.txt")
+    if (!($names | Where-Object { $_ -match '^Cotal(?:\b|$)' })) { throw 'Explorer has no Cotal taskbar button.' }
     Start-Process -FilePath $path | Out-Null
     Start-Sleep 3
     $instances = @(Get-Process 'cotal-desktop' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $path })
@@ -101,7 +110,7 @@ foreach ($kind in @('nsis', 'msi')) {
     foreach ($link in $links) { if (Test-Path $link) { throw "Shortcut remains: $link" } }
     if (Get-ItemProperty -Path $run -Name Cotal -ErrorAction SilentlyContinue) { throw 'App login entry remains after uninstall.' }
     $installed = $false
-    $results += @{ installer = $kind; result = 'passed'; checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'taskbar-eligible-style', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login') }
+    $results += @{ installer = $kind; result = 'passed'; checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'explorer-taskbar-button', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login') }
   } finally {
     if ($owned -and !(Get-Process -Id $owned.Id -ErrorAction SilentlyContinue).HasExited) { Stop-Process -Id $owned.Id -ErrorAction SilentlyContinue }
     if ($installed) { Write-Warning "$kind cleanup is incomplete. Disposable runner owns remaining installation." }

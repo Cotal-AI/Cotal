@@ -205,6 +205,7 @@ jobs:
       - name: Build desktop packages
         shell: pwsh
         env:
+          TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
           SIGNED_BUILD: ${{ steps.signing.outputs.signed }}
           APPLE_CERTIFICATE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}

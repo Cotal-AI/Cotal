@@ -24,11 +24,14 @@ on run argv
     open diskFolder
     set w to container window of diskFolder
     set current view of w to icon view
-    get {bounds of w, position of item "Cotal.app" of diskFolder, position of item "Applications" of diskFolder}
+    set appLocation to position of item "Cotal.app" of diskFolder
+    set applicationsLocation to position of item "Applications" of diskFolder
+    if item 1 of appLocation is greater than item 1 of applicationsLocation then error "DMG app is not left of Applications"
+    get {bounds of w, appLocation, applicationsLocation}
   end tell
 end run
 APPLESCRIPT
-/usr/bin/screencapture -x "$out/dmg-layout.png"
+/usr/sbin/screencapture -x "$out/dmg-layout.png"
 /usr/bin/ditto "$mount/Cotal.app" "$app"
 hdiutil detach "$mount" -quiet
 /usr/bin/open "$app"
@@ -49,7 +52,7 @@ print("regular activation policy and visible top-level window", apps[0].processI
 SWIFT
 sleep 4
 swift "$out/query.swift" | tee "$out/visible-before.txt"
-/usr/bin/screencapture -x "$out/dock-open.png"
+/usr/sbin/screencapture -x "$out/dock-open.png"
 # Accessibility is required, never silently skip a missing desktop permission.
 /usr/bin/osascript <<'APPLESCRIPT'
 tell application "System Events"
@@ -71,7 +74,7 @@ sleep 2
 /usr/bin/osascript -e 'tell application id "ai.cotal.desktop" to reopen'
 sleep 2
 swift "$out/query.swift" | tee "$out/visible-after-reopen.txt"
-/usr/bin/screencapture -x "$out/dock-reopened.png"
+/usr/sbin/screencapture -x "$out/dock-reopened.png"
 /usr/bin/osascript -e 'tell application id "ai.cotal.desktop" to quit'
 for i in $(seq 1 20); do if ! kill -0 "$pid" 2>/dev/null; then break; fi; sleep 1; done
 if kill -0 "$pid" 2>/dev/null; then echo 'Dock/application Quit did not terminate Cotal'; exit 1; fi
