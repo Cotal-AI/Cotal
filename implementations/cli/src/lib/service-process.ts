@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { spawnBroker } from "./broker-spawn.js";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
@@ -683,7 +684,8 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
           if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new Error("unprotected log target");
           logFrom = info.size;
         }
-        child = spawn(launch.program, [...launch.args], { cwd: launch.cwd, env, shell: false, detached: !options.foreground, stdio: options.foreground ? "inherit" : ["ignore", log!, log!] });
+        const launchChild = value.launch.type === "adapter" && value.launch.adapter === "nats-broker" ? spawnBroker : spawn;
+        child = launchChild(launch.program, [...launch.args], { cwd: launch.cwd, env, shell: false, detached: !options.foreground, stdio: options.foreground ? "inherit" : ["ignore", log!, log!] });
         if (!options.foreground) child.unref();
         child.once("exit", (code, signal) => { exited = true; exitCode = code; exitSignal = signal; done(); });
         await new Promise<void>((resolve, reject) => { child!.once("spawn", resolve); child!.once("error", reject); });
