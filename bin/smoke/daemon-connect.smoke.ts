@@ -94,7 +94,8 @@ const errorOf = (f: Frame) => (f.error ?? {}) as Record<string, unknown>;
 // ---------- a loopback fixture for the space's auth service ----------
 type Answer = { status: number; body?: unknown; headers?: Record<string, string> } | "hang";
 let answer: Answer = { status: 404 };
-let idpAnswer: Answer = { status: 200, body: { token: "fixture-jwt-not-cached" } };
+const fixtureJwt = () => [JSON.stringify({ alg: "EdDSA" }), JSON.stringify({ sub: "smoke-sub", exp: Date.now() / 1000 + 30 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".fixture";
+let idpAnswer: Answer | "accepted" = "accepted";
 let tokenRequests = 0;
 const hits: Array<{ method: string; path: string }> = [];
 const authority = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -103,6 +104,7 @@ const authority = createHttpServer(async (req: IncomingMessage, res: ServerRespo
     tokenRequests++;
     const a = idpAnswer;
     if (a === "hang") { req.socket.destroy(); return; }
+    if (a === "accepted") { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ token: fixtureJwt() })); return; }
     res.writeHead(a.status, { "content-type": "application/json", ...(a.headers ?? {}) });
     res.end(JSON.stringify(a.body ?? {}));
     return;
@@ -201,7 +203,7 @@ try {
         check(`C3b provider failure is ${outcome}, not a rejected sign-in`, resultOf(r).outcome === outcome, r);
         check("C3b provider failure sends no authority request and pins nothing", hits.length === 0 && identityFiles().length === 0);
       }
-      idpAnswer = { status: 200, body: { token: "fixture-jwt-not-cached" } };
+      idpAnswer = "accepted";
       // Local expiry is advisory. A provider-accepted session must still work in C4 and C5.
       saveIdpSession(home, IDP, { token: "accepted-fixture-session", expiresAt: 1, sub: "smoke-sub" });
     });

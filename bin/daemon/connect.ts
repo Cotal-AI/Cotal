@@ -17,6 +17,7 @@
  * holds no credential, owner, hostname or hardware id.
  */
 import { join } from "node:path";
+import { decodeJwt, decodeProtectedHeader } from "jose";
 import { assertLifecycleToken, isAccountNkey, mintLifecycleUid, resolveAuthProvider } from "@cotal-ai/core";
 import { claimIdentityRecord, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { fetchIdpJwt, IdpSessionRejectedError, IdpUnreachableError, loadIdpSession } from "@cotal-ai/auth";
@@ -81,7 +82,17 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
   if (!session) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"] };
   // The cached handle's presence and advisory expiry do not prove the IdP still accepts it.
   // Reuse the stock bounded JWT cache, so readiness and registration agree on revocation.
-  try { await fetchIdpJwt(ua.idp.url, session.token); }
+  try {
+    const jwt = await fetchIdpJwt(ua.idp.url, session.token);
+    const header = decodeProtectedHeader(jwt), claims = decodeJwt(jwt);
+    const now = Date.now() / 1000;
+    // This is a usability check only. The space still verifies the signature and pinned claims.
+    if (typeof header.alg !== "string" || !header.alg || header.alg === "none" || !/^[A-Za-z0-9_-]+$/.test(jwt.split(".")[2] ?? "")
+      || typeof claims.sub !== "string" || !claims.sub
+      || typeof claims.exp !== "number" || !Number.isFinite(claims.exp) || claims.exp <= now
+      || (claims.nbf !== undefined && (typeof claims.nbf !== "number" || !Number.isFinite(claims.nbf) || claims.nbf > now)))
+      return { outcome: "refused", space, message: "the space's sign-in provider gave an answer the daemon cannot use" };
+  }
   catch (e) {
     if (e instanceof IdpSessionRejectedError) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"] };
     if (e instanceof IdpUnreachableError) return { outcome: "unreachable", space, message: "the space's sign-in provider could not be reached" };

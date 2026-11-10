@@ -23,8 +23,8 @@ export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: "connect-check", space: opts.space }));
-    // The daemon's own network read is bounded by the stock client (30 s); allow a little more.
-    const reply = JSON.parse(await readLine(sock, 35_000)) as DaemonResponse;
+    // A cold readiness check exchanges the IdP token, then reads authority metadata (30 s each).
+    const reply = JSON.parse(await readLine(sock, 65_000)) as DaemonResponse;
     if (!reply.ok) return { ok: false, code: reply.error.code, message: reply.error.message };
     if ("event" in reply || !("outcome" in reply.result) || !("space" in reply.result)) return { ok: false, code: "BAD_REPLY", message: "the daemon answered the connect check with something else" };
     return { ok: true, result: reply.result as ConnectCheckResult };
@@ -39,8 +39,8 @@ export async function registerViaDaemon(opts: Pick<QueryOptions, "paths" | "peer
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: "register", space: opts.space }));
-    // Readiness read plus the stock register call, each bounded by the stock client (30 s).
-    const reply = JSON.parse(await readLine(sock, 65_000)) as DaemonResponse;
+    // Cold readiness has two reads, followed by the stock register call (30 s each).
+    const reply = JSON.parse(await readLine(sock, 95_000)) as DaemonResponse;
     if (!reply.ok) return { ok: false, code: reply.error.code, message: reply.error.message };
     if ("event" in reply || !("outcome" in reply.result) || !("space" in reply.result)) return { ok: false, code: "BAD_REPLY", message: "the daemon answered the registration with something else" };
     return { ok: true, result: reply.result as RegisterResult };
@@ -73,9 +73,9 @@ export async function serviceViaDaemon(opts: Pick<QueryOptions, "paths" | "peerU
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: opts.op, space: opts.space }));
-    // A connect runs the register replay, the first renewal, the broker connection and `ready`, each
-    // bounded by its stock client (30 s); allow for all of them.
-    const reply = JSON.parse(await readLine(sock, 130_000)) as DaemonResponse;
+    // A connect adds cold readiness's token exchange to the register replay, first renewal,
+    // broker connection and `ready` (30 s each); allow for all of them.
+    const reply = JSON.parse(await readLine(sock, 160_000)) as DaemonResponse;
     if (!reply.ok) return { ok: false, code: reply.error.code, message: reply.error.message };
     if ("event" in reply || !("state" in reply.result) || !("space" in reply.result)) return { ok: false, code: "BAD_REPLY", message: "the daemon answered the service request with something else" };
     return { ok: true, result: reply.result as ServiceConnectionResult };

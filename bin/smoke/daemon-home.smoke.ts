@@ -195,7 +195,8 @@ const authority = createHttpServer(async (req: IncomingMessage, res: ServerRespo
   for await (const _ of req) { /* drain */ }
   if (req.url === "/api/auth/token") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ token: "fixture-jwt-not-cached" }));
+    const token = [JSON.stringify({ alg: "EdDSA" }), JSON.stringify({ sub: "fixture", exp: Date.now() / 1000 + 30 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".fixture";
+    res.end(JSON.stringify({ token }));
     return;
   }
   hits.push({ method: req.method ?? "" });
