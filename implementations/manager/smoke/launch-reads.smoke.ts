@@ -1,8 +1,8 @@
 import * as core from "../../../packages/core/dist/index.js";
 import * as auth from "../../auth/dist/index.js";
 // A person's manager-caller view on their own Manager, minted by the real auth service and
-// enforced by the broker. The launch reads (status, models, resolve-cwd) answer for a spawn-scoped
-// view and are refused for a run-only or no-scope view, and no view gains ps or slots by them.
+// enforced by the broker. The spawn reads (status, models, resolve-cwd, ps) answer for a
+// spawn-scoped view and are refused for a run-only or no-scope view. No view gains slots by them.
 // Every cell runs and is counted, so a refused read shows as a FAIL line rather than an abort.
 const assert: typeof import("node:assert/strict") = (await import("node:assert/strict")).default;
 const { createServer } = await import("node:http");
@@ -25,7 +25,7 @@ const cell = (name: string, ok: boolean, seen?: unknown) => {
   if (ok) { passed++; console.log(`PASS ${name}`); return; }
   failed++; console.log(`FAIL ${name}${seen === undefined ? "" : ` - ${JSON.stringify(seen)}`}`);
 };
-const LAUNCH_READS = ["status", "models", "resolve-cwd"];
+const SPAWN_READS = ["status", "models", "resolve-cwd", "ps"];
 /** The manager command each publish row names, with its route and pinned instance. */
 const managerRows = (rows: string[]) => rows.flatMap((row) => {
   const m = /\.ep\.(one|all|inst)\.manager\.(.+)$/.exec(row);
@@ -94,18 +94,18 @@ try {
     return managerRows(perms.pub?.allow ?? []);
   };
   const spawnRows = minted("manager-caller", ["spawn"]);
-  const spawnLaunch = spawnRows.filter((r) => LAUNCH_READS.includes(r.command!));
-  cell("mint: a spawn view carries status, models and resolve-cwd",
-    LAUNCH_READS.every((c) => spawnLaunch.some((r) => r.command === c)), spawnLaunch);
-  cell("mint: each launch read row is on the pinned instance and no class or scatter route",
-    spawnLaunch.length > 0 && spawnLaunch.every((r) => r.route === "inst" && r.instanceId === iid), spawnLaunch);
-  cell("mint: a spawn view carries no ps or slots row",
-    !spawnRows.some((r) => r.command === "ps" || r.command === "slots"), spawnRows.map((r) => r.command));
+  const spawnReads = spawnRows.filter((r) => SPAWN_READS.includes(r.command!));
+  cell("mint: a spawn view carries status, models, resolve-cwd and ps",
+    SPAWN_READS.every((c) => spawnReads.some((r) => r.command === c)), spawnReads);
+  cell("mint: each spawn read row is on the pinned instance and no class or scatter route",
+    spawnReads.length > 0 && spawnReads.every((r) => r.route === "inst" && r.instanceId === iid), spawnReads);
+  cell("mint: a spawn view carries no slots row",
+    !spawnRows.some((r) => r.command === "slots"), spawnRows.map((r) => r.command));
   for (const scope of [["run"], [], ["supervise"]])
-    cell(`mint: a ${JSON.stringify(scope)} view carries no launch read`,
-      !minted("manager-caller", scope).some((r) => LAUNCH_READS.includes(r.command!) || r.command === "ps" || r.command === "slots"));
-  cell("mint: a standing spawn-capable agent credential gains no launch read",
-    !minted("agent", ["spawn", "run"]).some((r) => LAUNCH_READS.includes(r.command!)));
+    cell(`mint: a ${JSON.stringify(scope)} view carries no spawn read and no slots`,
+      !minted("manager-caller", scope).some((r) => SPAWN_READS.includes(r.command!) || r.command === "slots"));
+  cell("mint: a standing spawn-capable agent credential gains no spawn read",
+    !minted("agent", ["spawn", "run"]).some((r) => SPAWN_READS.includes(r.command!)));
 
   // The wire: each actor exchanges its own manager-caller view and calls its own Manager.
   const exchange = async (idpToken: string, actor: string, instanceId: string) => {
@@ -151,7 +151,8 @@ try {
     cell(`${actor}: models answers`, s.models.kind === "answered", s.models);
     cell(`${actor}: resolve-cwd answers`, s["resolve-cwd"].kind === "answered", s["resolve-cwd"]);
     cell(`${actor}: list-personas answers`, s["list-personas"].kind === "answered", s["list-personas"]);
-    cell(`${actor}: ps and slots stay broker-refused`, s.ps.kind === "broker-refused" && s.slots.kind === "broker-refused", [kind(s.ps), kind(s.slots)]);
+    cell(`${actor}: ps answers`, s.ps.kind === "answered", s.ps);
+    cell(`${actor}: slots stays broker-refused`, s.slots.kind === "broker-refused", kind(s.slots));
   }
   const l = seen.launcher!;
   cell("launcher: status names this Manager and its available connector",

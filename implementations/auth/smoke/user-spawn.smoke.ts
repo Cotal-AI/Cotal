@@ -832,9 +832,10 @@ try {
 
   // ---------- B1g. the shipped generic endpoint CLI under a USER bearer ----------
   // This uses the real composition-root binary and the same spawn-scoped login as B1e. The user
-  // holds `spawn`, not `manager.read` or `manager.admin`: describe and inspect must work over its
-  // bearer, while enumeration and admin maintenance remain broker-denied. The missing `--name`
-  // request proves the generic targeted resolver uses the authorized name-keyed inspect path, not
+  // holds `spawn`, not `manager.read` or `manager.admin`. The CLI reaches the manager through a
+  // pinned manager-caller view, which carries `ps` for a spawn holder, so describe, inspect and ps
+  // work while admin maintenance stays broker-denied. B1e's raw bearer is still refused `ps`. The
+  // missing `--name` request proves the generic targeted resolver uses the authorized name-keyed inspect path, not
   // manager-wide ps, without creating a session or changing a managed seat.
   console.log("B1g) the shipped generic endpoint CLI rides the user bearer without widening it");
   const cliResult = async (args: string[], timeoutMs?: number) => {
@@ -938,27 +939,27 @@ try {
     }
   }
   const missing = await cliResult(["invoke", "manager", "attach", "--name", "missing", "--space", SPACE]);
-  // The manager answers the attach target's inspection with not-found; a denied ps scan would be a
-  // PERMISSION_DENIED that no instance answered.
-  check("a nonexistent generic --name target is refused by its inspect resolution, not the denied manager ps scan",
+  // The manager answers the attach target's inspection with not-found.
+  check("a nonexistent generic --name target is refused by its inspect resolution, not a manager ps scan",
     !missing.timedOut && missing.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(missing.plain) && /Native command:\s+attach/.test(missing.plain) &&
       /Native code:\s+not-found/.test(missing.plain) && /Answering instance:/.test(missing.plain), missing);
   // The broker refuses the publish, so the call is not executed and no manager instance answers it.
   const brokerDenied = (r: { plain: string; status: number | null; timedOut: boolean }) =>
     !r.timedOut && r.status === 2 && /Code:\s+PERMISSION_DENIED/.test(r.plain) && /Native code:\s+permission-denied/.test(r.plain) &&
       /Native outcome:\s+not-executed/.test(r.plain) && !/Answering instance:/.test(r.plain);
-  const deniedRead = await cliResult(["invoke", "manager", "ps", "--space", SPACE]);
-  check("the shipped CLI leaves manager.read denied to a spawn-scoped user bearer", brokerDenied(deniedRead), deniedRead);
+  const ownPs = await cliResult(["invoke", "manager", "ps", "--space", SPACE]);
+  check("the shipped CLI's spawn-scoped manager view lists its own agents with ps",
+    !ownPs.timedOut && ownPs.status === 0 && /Answering instance:/.test(ownPs.plain) && /"name": "alpha"/.test(ownPs.plain), ownPs);
   const deniedAdmin = await cliResult(["invoke", "manager", "purge", "--args", "{}", "--space", SPACE]);
   check("the shipped CLI leaves manager.admin denied to a spawn-scoped user bearer", brokerDenied(deniedAdmin), deniedAdmin);
-  // `who` asks the same denied manager.read for the managed column. The roster is still this bearer's
-  // to read, so the denial labels that column rather than failing or partialling the run.
-  const deniedWho = await cliResult(["who", "--json", "--space", SPACE]);
-  const deniedWhoEnvelope = (() => { try { return JSON.parse(deniedWho.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { outcome: string; completeness: string; result: { managers: string; items: { name: string; managed: boolean | null }[] } | null; warnings: { code: string }[] }; } catch { return undefined; } })();
-  check("who labels the census this bearer may not ask as denied, with every agent's managed unknown",
-    deniedWhoEnvelope?.result?.managers === "denied" && deniedWhoEnvelope.warnings.some((w) => w.code === "MANAGERS_DENIED") && deniedWhoEnvelope.result.items.some((row) => row.name === "alpha") && deniedWhoEnvelope.result.items.every((row) => row.managed === null), deniedWho);
+  // `who` asks the same ps for the managed column. The manager answers for this owner's seats only,
+  // so the column is labelled partial while the run itself stays complete.
+  const ownWho = await cliResult(["who", "--json", "--space", SPACE]);
+  const ownWhoEnvelope = (() => { try { return JSON.parse(ownWho.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { outcome: string; completeness: string; result: { managers: string; items: { name: string; managed: boolean | null }[] } | null; warnings: { code: string }[] }; } catch { return undefined; } })();
+  check("who labels the manager's answer as covering this user's own seats, with alpha managed",
+    ownWhoEnvelope?.result?.managers === "partial" && ownWhoEnvelope.warnings.some((w) => w.code === "MANAGED_SCOPE") && ownWhoEnvelope.result.items.some((row) => row.name === "alpha" && row.managed === true), ownWho);
   check("that label is not a part left unread: who exits 0, ok and complete",
-    !deniedWho.timedOut && deniedWho.status === 0 && deniedWhoEnvelope?.outcome === "ok" && deniedWhoEnvelope.completeness === "complete", deniedWho);
+    !ownWho.timedOut && ownWho.status === 0 && ownWhoEnvelope?.outcome === "ok" && ownWhoEnvelope.completeness === "complete", ownWho);
 
   // The same narrow bearer has no admin grant and no human delivery ACL mirror. History must
   // use its real channel grant, include its own send and refuse a channel outside that grant.
@@ -1381,13 +1382,13 @@ try {
   const narrowedAttach = await epTargeted(auditor, "attach", "alpha");
   check("narrowing the auditor's scope bites its cross-owner reach on the next exchange", narrowedAttach.ok === false, narrowedAttach);
 
-  // ---------- D2. a spawn-scoped view reads status, counting only its own owner's seats ----------
+  // ---------- D2. a spawn-scoped view reads status and ps, seeing only its own owner's seats ----------
   // The auth service offers this co-located Manager to every owner, so OWNER_B's manager-caller view
-  // reaches the Manager that runs OWNER's seats. Its spawn scope lets it read the launch options, and
-  // the count it reads is OWNER_B's seats, as its `ps` would list them. Admin reach counts every seat.
-  console.log("D2) a spawn-scoped view of the shared Manager counts only its own owner's seats");
+  // reaches the Manager that runs OWNER's seats. This is the one place the Manager's owner filter is
+  // observable: the spawn view's status count and `ps` list are OWNER_B's seats. Admin reach sees every seat.
+  console.log("D2) a spawn-scoped view of the shared Manager sees only its own owner's seats");
   {
-    const viewStatus = async (actor: string, scope: string[]): Promise<number | string> => {
+    const viewReads = async (actor: string, scope: string[]): Promise<{ status: number | string; ps: string[] | string }> => {
       const g = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE, owner: OWNER_B, actor, scope, allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
       const info = loadAuthServiceInfo(dir)!;
       const res = await fetch(`${info.url}/exchange`, {
@@ -1395,25 +1396,37 @@ try {
         body: JSON.stringify({ owner: OWNER_B, actor, actorToken: g.actorToken, view: "manager-caller" }),
       });
       const ex = await res.json() as { token?: string; error?: string };
-      if (!res.ok || !ex.token) return `exchange HTTP ${res.status} ${ex.error ?? ""}`;
+      if (!res.ok || !ex.token) return { status: `exchange HTTP ${res.status} ${ex.error ?? ""}`, ps: "no view" };
       const { lifecycleUid: uid, managerInstanceId } = (decodeJwt(ex.token) as { act: { lifecycleUid: string; managerInstanceId: string } }).act;
       const nc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: ex.token, sentinelCreds: g.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
+      const read = async <T>(command: string, pick: (data: unknown) => T): Promise<T | string> => {
+        try {
+          const svc = await resolveService(nc, SPACE, "manager", { owner: OWNER_B, actor, uid }, { instanceId: managerInstanceId, deadlineMs: 10_000 });
+          const r = await invokeCommand(nc, SPACE, svc, command, undefined, { deadlineMs: 10_000 });
+          return r.reply.ok ? pick(r.reply.data) : `refused ${r.reply.error?.code}`;
+        } catch (e) {
+          return `refused ${(e as Error).message.slice(0, 200)}`;
+        }
+      };
       try {
-        const svc = await resolveService(nc, SPACE, "manager", { owner: OWNER_B, actor, uid }, { instanceId: managerInstanceId, deadlineMs: 10_000 });
-        const r = await invokeCommand(nc, SPACE, svc, "status", undefined, { deadlineMs: 10_000 });
-        return r.reply.ok ? (r.reply.data as { agentCount: number }).agentCount : `refused ${r.reply.error?.code}`;
-      } catch (e) {
-        return `refused ${(e as Error).message.slice(0, 200)}`;
+        return {
+          status: await read("status", (data) => (data as { agentCount: number }).agentCount),
+          ps: await read("ps", (data) => (data as { name: string }[]).map((row) => row.name).sort()),
+        };
       } finally {
         await nc.close();
       }
     };
-    const total = psList(manager!).length, own = psList(manager!, OWNER_B).length;
-    check("D2 fixture: the shared Manager runs a seat of another owner", total > own, { total, own });
-    const spawnCount = await viewStatus("launchview", ["spawn"]);
-    check("a spawn-scoped view of the shared Manager reads status and counts only its own owner's seats", spawnCount === own, { spawnCount, own, total });
-    const adminCount = await viewStatus("launchadmin", ["spawn", "admin"]);
-    check("...and an admin-scoped view of the same owner counts every seat", adminCount === total, { adminCount, total });
+    const names = (rows: PsRow[]) => rows.map((row) => row.name).sort();
+    const all = names(psList(manager!)), own = names(psList(manager!, OWNER_B));
+    check("D2 fixture: the shared Manager runs a seat of another owner", all.length > own.length && all.includes("alpha") && !own.includes("alpha"), { all, own });
+    const spawnView = await viewReads("launchview", ["spawn"]);
+    check("a spawn-scoped view of the shared Manager reads status and counts only its own owner's seats", spawnView.status === own.length, { spawnView, own, all });
+    check("...and its ps answers with only its own owner's seats", Array.isArray(spawnView.ps) && JSON.stringify(spawnView.ps) === JSON.stringify(own), { ps: spawnView.ps, own });
+    check("...so another owner's seat stays out of its ps", Array.isArray(spawnView.ps) && !spawnView.ps.includes("alpha"), spawnView.ps);
+    const adminView = await viewReads("launchadmin", ["spawn", "admin"]);
+    check("...and an admin-scoped view of the same owner counts every seat", adminView.status === all.length, { adminView, all });
+    check("...and lists every seat in its ps", Array.isArray(adminView.ps) && JSON.stringify(adminView.ps) === JSON.stringify(all), { ps: adminView.ps, all });
   }
 
   // ---------- E. the event plane, at the real door, under BOTH rules ----------
@@ -1954,7 +1967,8 @@ try {
   // 50/133 -> 57/140: seven owner-equal event-plane admission and grant cells.
   // Main adds three shared-Manager status cells; the redesign adds five focused CLI cells.
   // These combined expectations still require an actual integrated run.
-  const EXPECTED = endpointCliFocus ? 62 : 148;
+  // 148 -> 151: D2's spawn and admin views also read ps.
+  const EXPECTED = endpointCliFocus ? 62 : 151;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

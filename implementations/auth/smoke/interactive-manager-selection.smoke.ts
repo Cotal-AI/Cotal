@@ -178,7 +178,9 @@ try {
   check("local primary does not add admin to spawn/run scope", reader.status === 200 && JSON.stringify(readerClaims.act.scope) === JSON.stringify(["spawn", "run"]));
   const perms = permissionsFor("manager-caller", space, { owner, actor: "reader", connId: newIdentity().id, lifecycleUid: readerClaims.act.lifecycleUid },
     { capabilities: ["spawn", "run"], managerInstanceId: local.instanceId, lifecycleUid: readerClaims.act.lifecycleUid }) as { pub: { allow: string[] } };
-  check("shipped policy still grants no ps or slots to spawn/run", !perms.pub.allow.some(row => /\.(ps|slots)\./.test(row)));
+  const psRows = perms.pub.allow.filter(row => /\.ps\./.test(row));
+  check("shipped policy grants spawn/run ps only on the pinned instance and no slots",
+    psRows.length > 0 && psRows.every(row => row.includes(`.inst.manager.${local.instanceId}.ps.`)) && !perms.pub.allow.some(row => /\.slots\./.test(row)));
   stage = "local-refusal";
   const identityPath = join(root, ".cotal", spaceSegment(space), "manager-instance.json");
   renameSync(identityPath, identityPath + ".held");
