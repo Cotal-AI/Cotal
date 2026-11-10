@@ -741,6 +741,9 @@ nothing removed either way. On Linux, `start` and both forms of `uninstall` also
 receipt to name the selected daemon home, its derived unit name and that file in the user manager's
 unit directory. A copied receipt, changed unit name or redirected path refuses `CONFLICT` before
 service control or file removal, even when the file's bytes match the recorded digest.
+On Linux, an unrecorded file, directory or symlink at the unit path refuses `install`, including
+`--dry-run`, with `CONFLICT` before linger or service changes. A path that cannot be inspected
+refuses `TARGET_UNAVAILABLE`; only a missing path permits planning to continue.
 On macOS and Windows, a plist, task definition, loaded label or
 registered task that no install recorded refuses the install `CONFLICT` with nothing written, and a
 registered task that no longer runs the recorded command refuses `uninstall` `CONFLICT`.

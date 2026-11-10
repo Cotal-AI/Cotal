@@ -268,6 +268,10 @@ export function planInstall(paths: DaemonPaths, daemonHome: string | undefined):
   const user = invokingUser();
   const rendered = renderDaemonUnit(systemdUserUnitDirectory(), daemonHome);
   refuseInstalled(paths);
+  let present = false;
+  try { lstatSync(rendered.unitPath); present = true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${rendered.unitPath} could not be inspected; no absent unit was inferred`); }
+  if (present) throw new CommandFailure("refused", "CONFLICT", `${rendered.unitPath} already exists and no install of this daemon recorded it; it was not written over`);
   return { mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, sha256: rendered.sha256, user, lingerAlready: lingerEnabled(user),
     restart: directive(rendered.bytes, "Restart"), wantedBy: directive(rendered.bytes, "WantedBy"), ...(daemonHome !== undefined ? { daemonHome } : {}) };
 }
