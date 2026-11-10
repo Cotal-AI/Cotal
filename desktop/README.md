@@ -64,7 +64,9 @@ The bundled Node 24 requires macOS 13.5 or later and Windows 10 / Server 2016 or
 
 Native builds run on the target OS. AppImage is not a daemon distribution: its temporary mount is not a durable service executable path. Headless LaunchDaemon, Windows SCM and Linux system-service profiles are not provided by the desktop installer.
 
-Build artifacts are not signed production releases. macOS distribution needs Developer ID signing and notarization; Windows distribution needs the owner's signing configuration; Linux release channels need their package/repository signing setup. No unsigned automatic-update feed is configured. Bundled runtime versions are pinned together, and the app refuses daemon mutations when the running daemon reports another version.
+Validation builds are unsigned. Version-tag builds sign and notarize macOS packages when `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` and a complete Apple ID or App Store Connect notarization set exist. Windows uses `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD` and `WINDOWS_TIMESTAMP_URL`, importing the owner's PFX and passing Tauri its thumbprint, SHA-256 and timestamp configuration. Missing platform secrets keep validation packaging unsigned; partial secrets or a signing failure stop the build. Linux signing is not configured. Version-tag installers are attached to the GitHub release, creating a draft if needed. No automatic-update feed is configured.
+
+After replacing the app in the same installation directory, reopen it, choose a saved space and click Connect this computer. Read-only saved-space listing works across compatible daemon versions. Stock setup can restart the recorded owned service under its existing Manager seat fence to load the new bundled runtime. Other mismatched-version mutations remain refused. If the old service pins another installation directory or an incompatible protocol, setup refuses with its next step. That relocation needs the old installation's service removal before setup from the new app. Native installer replacement and active-seat acceptance still need testing on macOS and Windows.
 
 ## Local boundary
 

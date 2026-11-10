@@ -11,6 +11,8 @@ const el = <T extends HTMLElement>(id: string): T => {
 };
 const text = (id: string, value: string) => { el(id).textContent = value; };
 let ready = false;
+let appVersion: string | undefined;
+let upgradeNeeded = false;
 let busy = false;
 let loginActive = false;
 let approval: string | undefined;
@@ -24,7 +26,7 @@ const catalogIds = new Map<string, string>();
 const instances = new Map<string, string>();
 const applicationRefusals = new Set<string>();
 const selectedSpace = () => el<HTMLSelectElement>("space").value;
-const connected = () => connection?.space === selectedSpace() && connection?.state === "launch-ready";
+const connected = () => !upgradeNeeded && connection?.space === selectedSpace() && connection?.state === "launch-ready";
 
 function notice(message: string, error = false): void {
   text("notice", message); el("notice").hidden = false; el("notice").classList.toggle("error", error);
@@ -75,7 +77,13 @@ async function refresh(): Promise<void> {
     const status = await request({ op: "status" });
     if (!current()) return;
     ready = status.state === "ready";
+    upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
     el("install-panel").hidden = ready;
+    if (upgradeNeeded) {
+      state("ready", space);
+      notice("This app and the running background service have different versions. Choose a saved space, then Connect this computer to reconcile its owned service. Setup refuses while agents need that service.");
+      buttons(); return;
+    }
     if (space) {
       const manager = Array.isArray(status.managers) ? status.managers.find((item) => item.space === space) : undefined;
       if (launchReady(manager)) { instances.set(space, manager.instanceId); state("launch-ready", space); buttons(); return; }
@@ -102,7 +110,10 @@ async function spaces(refreshCatalog: boolean): Promise<void> {
     if (typeof item.catalogId === "string") catalogIds.set(item.space, item.catalogId);
   }
   const preferred = previous || requestedSpace;
-  if (preferred && [...select.options].some((option) => option.value === preferred)) select.value = preferred;
+  if (preferred) {
+    const option = [...select.options].find((option) => option.value === preferred || catalogIds.get(option.value) === preferred);
+    if (option) select.value = option.value;
+  }
   if (result.refresh === "not-signed-in") notice("Sign in to a provider before refreshing space catalogs. No catalog refresh was attempted.", true);
   if (result.refresh === "failed" || result.refresh === "partial") notice("Some space catalogs could not be refreshed. Saved entries may be out of date.", true);
   if (Number(result.collisions) > 0) notice("Some space names conflict with existing registrations. No conflicting registration was replaced.", true);
@@ -147,6 +158,7 @@ el("connect").addEventListener("click", () => void action(async () => {
     const result = await request({ op: "setup", space, idp });
     if (result.launchReady !== true || !launchReady(result.manager)) throw new Error("Setup did not confirm launch-readiness.");
     applicationRefusals.delete(space);
+    upgradeNeeded = false;
     instances.set(space, (result.manager as { instanceId: string }).instanceId);
     state("launch-ready", space); notice(`Ready to launch in ${space}. Agents can now be launched on this computer from the dashboard.`);
   } catch (error) {
@@ -204,6 +216,7 @@ async function start(): Promise<void> {
     const initialLinks = await getCurrent();
     if (initialLinks?.length) receiveLinks(initialLinks);
     const info = await request({ op: "about" });
+    appVersion = String(info.version);
     text("machine-name", String(info.machine)); text("version", `v${String(info.version)}`);
     text("machine-details", `${String(info.platform)} · ${String(info.arch)} · ${(Number(info.memoryBytes) / 1024 ** 3).toFixed(1)} GB memory`);
     el<HTMLInputElement>("autostart").checked = await isEnabled();

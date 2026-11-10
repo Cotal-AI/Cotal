@@ -440,7 +440,7 @@ try {
     const doc = format === "--json" ? JSON.parse(out) as Record<string, any> : undefined;
     return { status, doc, out, err };
   };
-  const desktop = async (request: Record<string, unknown>) => {
+  const desktop = async (request: Record<string, unknown>): Promise<Record<string, any> & { events: Record<string, any>[] }> => {
     const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "desktop"], {
       cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rtDir, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
       stdio: ["pipe", "pipe", "pipe"], timeout: 180_000, killSignal: "SIGKILL",

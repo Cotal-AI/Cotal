@@ -573,6 +573,9 @@ The app reads the account's login-shell PATH on Linux and macOS outside the rend
 it reads current machine and user PATH with the system PowerShell. The bundled Node directory is
 added after account directories. Absolute-path validation and the hosted-seat restart fence still apply.
 No renderer-supplied command, argument, path or credential is accepted.
+Read-only saved-space listing remains available across compatible daemon versions so the app can
+select a space for setup after replacement. Setup uses the stock owned-service reconciliation
+and seat fence. Other mismatched-version mutations remain refused.
 Its `about` request reads host metadata without resolving or contacting a daemon. Other requests
 resolve the selected daemon only after request validation. A path-resolution refusal returns a
 versioned `result` frame with `ok: false`, rather than ordinary CLI text. On Linux, a missing or

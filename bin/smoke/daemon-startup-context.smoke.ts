@@ -10,7 +10,7 @@ import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
 if (process.platform !== "linux") skipSuite("daemon-startup-context: owned Linux foreground daemons; native service acceptance is separate");
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const bin = join(repo, "bin", "dist", "cotal.js");
-const root = mkdtempSync(join(tmpdir(), "cotal-context-")); chmodSync(root, 0o700);
+const root = mkdtempSync(join(tmpdir(), "dc-")); chmodSync(root, 0o700);
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 let passed = 0, failed = 0;
 function check(name: string, ok: boolean, detail?: unknown): void {

@@ -29,6 +29,7 @@ function isolated(name: string) {
     XDG_CACHE_HOME: join(dir, "cache"), XDG_DATA_HOME: join(dir, "data"), XDG_STATE_HOME: join(dir, "state"),
     PATH: `${join(dir, "native")}:/usr/local/bin:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: context, DO_NOT_TRACK: "1",
   });
+  writeFileSync(join(dir, "home", ".bash_profile"), `export PATH=${JSON.stringify(env.PATH)}\n`, { mode: 0o600 });
   return { dir, env, calls, receipt: join(dir, "cotal", "daemon", "service-unit.json"), unit: join(dir, "config", "systemd", "user", "cotal-daemon.service") };
 }
 type Isolated = ReturnType<typeof isolated>;

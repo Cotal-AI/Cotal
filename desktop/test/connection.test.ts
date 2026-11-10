@@ -20,6 +20,8 @@ test("launch readiness, application retry and polling follow the selected space"
   const calls: Request[] = [];
   const states = new Map([["first", "approval-pending"], ["second", "disconnected"]]);
   let approved = false;
+  let daemonVersion = "test";
+  const browserUrls: string[] = [];
   const managers = new Map<string, Record<string, unknown>>();
   let tick: (() => Promise<void>) | undefined;
   const heldStatus: { release?: () => void } = {};
@@ -37,19 +39,20 @@ test("launch readiness, application retry and polling follow the selected space"
   win.__TAURI_INTERNALS__ = {
     transformCallback: () => ++callback,
     unregisterCallback() {},
-    async invoke(cmd: string, args: { request?: Request } = {}) {
+    async invoke(cmd: string, args: { request?: Request; url?: string } = {}) {
       if (cmd === "plugin:event|listen") return ++callback;
-      if (cmd === "plugin:deep-link|get_current") return [];
+      if (cmd === "plugin:deep-link|get_current") return ["cotal://connect?idp=https://example.com/auth&space=sp_first"];
       if (cmd === "plugin:autostart|is_enabled") return false;
       if (cmd === "set_connection_state") return;
+      if (cmd === "open_browser") { browserUrls.push(args.url!); return; }
       assert.equal(cmd, "daemon_request");
       const req = args.request!;
       calls.push(req);
       let result: Record<string, unknown>;
       switch (req.op) {
         case "about": result = { machine: "test", version: "test", platform: "linux", arch: "x64", memoryBytes: 0 }; break;
-        case "status": result = { state: "ready", managers: [...managers.values()] }; break;
-        case "spaces": result = { spaces: ["first", "second"].map((space) => ({ space, mode: "user", idp: "https://example.com/auth" })) }; break;
+        case "status": result = { state: "ready", version: daemonVersion, managers: [...managers.values()] }; break;
+        case "spaces": result = { spaces: ["first", "second"].map((space) => ({ space, catalogId: `sp_${space}`, mode: "user", idp: "https://example.com/auth" })) }; break;
         case "setup": {
           if (!approved) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "no available connector in the hosted Manager's environment", native: { code: "NO_AVAILABLE_CONNECTOR" }, remedy: "install Claude Code or Codex and choose Check again" } };
           const manager = { space: req.space, state: "answering", instanceId: "test-manager", connectors: [{ state: "available" }] };
@@ -94,6 +97,8 @@ test("launch readiness, application retry and polling follow the selected space"
     win.eval(bundle.code);
     await settle();
     assert.ok(tick, "renderer starts its visible idle status poll");
+    assert.equal((doc.getElementById("space") as HTMLSelectElement).value, "first", "canonical catalog ID selects its local space");
+    assert.ok(!calls.some(call => ["install", "login", "setup"].includes(call.op)), "deep links only prefill, never sign in or connect");
     await select("first");
     button("connect").click();
     await settle();
@@ -111,6 +116,8 @@ test("launch readiness, application retry and polling follow the selected space"
     button("connect").click();
     await settle();
     assert.equal(title(), "Ready to launch");
+    button("dashboard").click(); await settle();
+    assert.equal(browserUrls.at(-1), "https://example.com/machines?space=sp_first&machine=test-manager");
     assert.equal(button("connect").disabled, true);
     const registrations = calls.filter((call) => call.op === "setup").length;
     button("connect").click();
@@ -179,5 +186,9 @@ test("launch readiness, application retry and polling follow the selected space"
     await releaseBeforeReselect();
     assert.equal(title(), "Disconnected from this space", "returning to the same space does not revive an old refresh");
     assert.equal(button("connect").disabled, false);
+    daemonVersion = "older";
+    button("refresh").click(); await settle();
+    assert.equal(button("connect").disabled, false, "an app replacement keeps stock setup available");
+    assert.match(doc.getElementById("notice")!.textContent!, /different versions/);
   } finally { win.close(); }
 });

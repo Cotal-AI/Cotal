@@ -156,8 +156,18 @@ mod tests {
             r#"{"op":"exec","command":"sh"}"#,
             r#"{"op":"status","args":[]}"#,
             r#"{"op":"install","path":"/tmp/foreign"}"#,
+            r#"{"op":"setup","space":"team","idp":"https://example.com","PATH":"/foreign"}"#,
+            r#"{"op":"setup","space":"team","idp":"https://example.com","command":"sh"}"#,
         ] {
             assert!(serde_json::from_str::<DesktopRequest>(input).is_err());
+        }
+        for (space, idp, valid) in [
+            ("team", "https://example.com/api/auth", true),
+            ("a b", "https://example.com", false),
+            ("team", "file:///tmp/auth", false),
+            ("team", "https://example.com?token=x", false),
+        ] {
+            assert_eq!(DesktopRequest::Setup { space: space.into(), idp: idp.into() }.validate().is_ok(), valid);
         }
         assert!(DesktopRequest::Connect {
             space: "--help".into()

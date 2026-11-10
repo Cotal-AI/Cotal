@@ -126,6 +126,9 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const status = await queryDaemon(client);
     if (!status.ok) { emit({ ...status, event: "result" }); return; }
     if (req.op === "status") { emit({ ...status, event: "result" }); return; }
+    if (req.op === "spaces" && !req.refresh && status.result.protocol === DAEMON_PROTOCOL_VERSION) {
+      emit({ ...await exchangeDesktopRequest(client, req), event: "result" }); return;
+    }
     if (status.result.version !== opts.version) {
       emit({ v: 1, event: "result", ok: false, error: { code: "VERSION_MISMATCH", message: "The running daemon and this app have different versions. Update them together before making changes." } });
       return;

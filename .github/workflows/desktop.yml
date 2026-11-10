@@ -1,5 +1,8 @@
 name: Desktop apps
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       real_service:
@@ -112,11 +115,132 @@ jobs:
       - run: pnpm --filter cotal-ai seeded-connectors
       - run: pnpm --dir desktop prepare:runtime
       - run: pnpm --dir desktop check:runtime
-      - name: Build unsigned validation packages
-        run: pnpm --dir desktop exec tauri build --bundles ${{ matrix.bundles }}
+      - name: Prepare release signing
+        id: signing
+        shell: pwsh
+        env:
+          RELEASE_BUILD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          'signed=false' >> $env:GITHUB_OUTPUT
+          if ($env:RELEASE_BUILD -ne 'true') { exit 0 }
+          if ($env:RUNNER_OS -eq 'macOS') {
+            $cert = @($env:APPLE_CERTIFICATE, $env:APPLE_CERTIFICATE_PASSWORD, $env:APPLE_SIGNING_IDENTITY)
+            $appleId = @($env:APPLE_ID, $env:APPLE_PASSWORD, $env:APPLE_TEAM_ID)
+            $api = @($env:APPLE_API_ISSUER, $env:APPLE_API_KEY, $env:APPLE_API_KEY_CONTENT)
+            $present = @($cert + $appleId + $api | Where-Object { $_ })
+            if ($present.Count -eq 0) { Write-Output 'No macOS signing secrets: unsigned validation packages.'; exit 0 }
+            if (@($cert | Where-Object { $_ }).Count -ne 3) { throw 'Incomplete macOS signing certificate configuration.' }
+            $idCount = @($appleId | Where-Object { $_ }).Count
+            $apiCount = @($api | Where-Object { $_ }).Count
+            if (($idCount -ne 0 -and $idCount -ne 3) -or ($apiCount -ne 0 -and $apiCount -ne 3) -or ($idCount -eq 0 -and $apiCount -eq 0)) { throw 'Configure one complete notarization credential set.' }
+            if ($apiCount -eq 3) {
+              $keyPath = Join-Path $env:RUNNER_TEMP 'cotal-notary-key.p8'
+              [IO.File]::WriteAllText($keyPath, $env:APPLE_API_KEY_CONTENT)
+              & chmod 600 $keyPath
+              if ($LASTEXITCODE -ne 0) { throw 'Could not protect notarization key.' }
+              "APPLE_API_KEY_PATH=$keyPath" >> $env:GITHUB_ENV
+            }
+            'signed=true' >> $env:GITHUB_OUTPUT
+          } elseif ($env:RUNNER_OS -eq 'Windows') {
+            $values = @($env:WINDOWS_CERTIFICATE, $env:WINDOWS_CERTIFICATE_PASSWORD, $env:WINDOWS_TIMESTAMP_URL)
+            $count = @($values | Where-Object { $_ }).Count
+            if ($count -eq 0) { Write-Output 'No Windows signing secrets: unsigned validation packages.'; exit 0 }
+            if ($count -ne 3) { throw 'Incomplete Windows signing certificate configuration.' }
+            $pfx = Join-Path $env:RUNNER_TEMP 'cotal-signing.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+            try {
+              $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force)
+              if (-not $cert.HasPrivateKey) { throw 'The signing certificate has no private key.' }
+              "WINDOWS_SIGNING_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+              $config = @{ bundle = @{ windows = @{ certificateThumbprint = $cert.Thumbprint; digestAlgorithm = 'sha256'; timestampUrl = $env:WINDOWS_TIMESTAMP_URL } } }
+              $path = Join-Path $env:RUNNER_TEMP 'cotal-signing.json'
+              $config | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 $path
+              "WINDOWS_SIGNING_CONFIG=$path" >> $env:GITHUB_ENV
+            } finally { Remove-Item -LiteralPath $pfx }
+            'signed=true' >> $env:GITHUB_OUTPUT
+          }
+      - name: Build desktop packages
+        shell: pwsh
+        env:
+          SIGNED_BUILD: ${{ steps.signing.outputs.signed }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SIGNED_BUILD -ne 'true') {
+            Get-ChildItem Env:APPLE_* | Remove-Item
+            Write-Output 'Building unsigned validation packages.'
+          } else { Write-Output 'Building signed release packages.' }
+          $args = @('--dir', 'desktop', 'exec', 'tauri', 'build', '--bundles', '${{ matrix.bundles }}')
+          if ($env:WINDOWS_SIGNING_CONFIG) { $args += @('--config', $env:WINDOWS_SIGNING_CONFIG) }
+          & pnpm @args
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed.' }
+      - name: Remove temporary signing material
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:APPLE_API_KEY_PATH -and (Test-Path -LiteralPath $env:APPLE_API_KEY_PATH)) { Remove-Item -LiteralPath $env:APPLE_API_KEY_PATH }
+          if ($env:WINDOWS_SIGNING_CONFIG -and (Test-Path -LiteralPath $env:WINDOWS_SIGNING_CONFIG)) { Remove-Item -LiteralPath $env:WINDOWS_SIGNING_CONFIG }
+          if ($env:WINDOWS_SIGNING_THUMBPRINT) { Remove-Item -LiteralPath "Cert:\CurrentUser\My\$env:WINDOWS_SIGNING_THUMBPRINT" }
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-validation-${{ runner.os }}-${{ runner.arch }}
           path: desktop/src-tauri/target/release/bundle/
           if-no-files-found: error
           retention-days: 7
+      - name: Stage release installers
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            desktop/src-tauri/target/release/bundle/**/*.dmg
+            desktop/src-tauri/target/release/bundle/**/*.deb
+            desktop/src-tauri/target/release/bundle/**/*.rpm
+            desktop/src-tauri/target/release/bundle/**/*.msi
+            desktop/src-tauri/target/release/bundle/**/*.exe
+          if-no-files-found: error
+          retention-days: 7
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: native-build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-release-*
+          path: installers
+      - name: Attach installers to the version release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --draft --title "$TAG" --notes 'Desktop installer validation packages. Check each platform signature before distribution.'
+          fi
+          mapfile -d '' packages < <(find installers -type f -print0)
+          test "${#packages[@]}" -gt 0
+          gh release upload "$TAG" "${packages[@]}"
