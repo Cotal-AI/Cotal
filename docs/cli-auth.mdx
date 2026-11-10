@@ -18,6 +18,7 @@ cotal auth mint <name> --provision [--role <role>] [--space <space>] [--server <
 cotal auth mint <name> [--expires-in <seconds> | --expires-at <unix-seconds> | --no-expiry]
 cotal auth mint <name> --identity <private-creds> --out <private-file>
 cotal auth mint <name> --replace
+cotal auth mint <name> --no-persona [--allow-subscribe <a,b>] [--allow-publish <a,b>] [--role <role>]
 cotal auth mint <name> --endpoint <class> --out <private-file> [--channels <a,b>] [--expires-in <seconds>]
 ```
 
@@ -36,7 +37,11 @@ the characters allowed, and its Next names the value with each such character re
 
 `agent` is the default profile. Its channel ACLs and role come from the selected root's
 `<name>.md` persona file, when present. It does not fall back to `default.md` for a different name.
-Explicit `--allow-subscribe`, `--allow-publish` and `--role` override the file's grants. A persona
+Explicit `--allow-subscribe`, `--allow-publish` and `--role` override the file's grants. Use
+`--no-persona` to ignore the label's persona, including its boot subscriptions and role. With that
+flag, only explicit flags or a matching `--identity` supply grants; an omitted role grants no task
+queue, and empty ACL flags grant no channels. Generated replacement advice includes `--no-persona`
+so a preserved same-label persona cannot add grants the old credential did not hold. A persona
 file of that name that cannot be read as a persona refuses the mint `SCHEMA_INVALID`, exit 1, even
 when the flags name every grant. The mint refusal does not print file values or parser text.
 It names the file and `cotal persona show <name>` to inspect it. A role from the file that is not one word
@@ -48,11 +53,17 @@ carried from `--identity`; JSON has them under `result.grants`, with `fromIdenti
 carried ones. An empty ACL flag means no explicit entries. The native read-ACL resolver still enforces boot membership.
 Without a matching persona, `--identity` or grant flags, the agent credential has no channel grants
 or role. Its validity does not establish that it can perform a particular task.
-Observer and admin have fixed native scope and reject agent ACL, role and provisioning flags
+Observer and admin have fixed native scope and reject agent ACL, role, `--no-persona` and provisioning flags
 rather than implying those inputs narrowed anything.
 
 
 ### Private credential output
+
+After `reset space` and a new `up`, credentials the previous local identity issued no longer
+work on that space. A rejected `--creds` file for the registered static-auth space names the
+identity mismatch and an `auth mint` replacement with the file's channel grants and role, or its
+profile. The broker still decides whether to accept the credential. Without matching local trust,
+the refusal keeps the broker's generic credential guidance.
 
 The default credential is created through its canonical secret-store kind. An existing label is
 not overwritten. Use another label or an explicit private output. `--replace` replaces the label's
