@@ -29,13 +29,14 @@ import { CommandFailure, homeCotalDir, jsonFlag, plainFlag, presentationOf, reco
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
-import { connectCheckViaDaemon, loginViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
+import { loginFromCli } from "./cli-login.js";
+import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import { applyInstall, applyUninstall, daemonStartedByOwnedService, planInstall, planUninstall, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runSetup } from "./setup.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { watchDaemonGeneration } from "./generation.js";
-import type { ConnectCheckResult, DaemonStatus, LoginResult, RegisterResult, ServiceConnectionResult } from "./protocol.js";
+import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
   jsonFlag,
@@ -139,8 +140,8 @@ async function status(args: ParsedArgs): Promise<void> {
 }
 
 /** Sign in through the running daemon. The daemon talks to the IdP and keeps the session; this
- *  process only shows the approval prompt and the result, and never sees a token. Ctrl-C asks the
- *  daemon to cancel the attempt and waits for its answer. */
+ *  process only shows the approval prompt and the result, and never sees a token. Ctrl-C or SIGTERM
+ *  asks the daemon to cancel the attempt and waits for its answer. */
 async function login(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const values = args.values as { idp?: string; "client-id"?: string };
@@ -151,13 +152,10 @@ async function login(args: ParsedArgs): Promise<void> {
   recordOperationContext({ target: { idp } });
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
   const { paths } = resolveTarget(args);
-  const abort = new AbortController();
-  const onSignal = () => abort.abort();
-  process.once("SIGINT", onSignal);
   let reply;
   try {
-    reply = await loginViaDaemon({
-      paths, peerUid, peerPid, idp, signal: abort.signal,
+    reply = await loginFromCli({
+      paths, peerUid, peerPid, idp,
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: (p) => {
         process.stderr.write(`${renderReport({ sections: [{ title: "Approve sign-in", blocks: [
@@ -168,16 +166,12 @@ async function login(args: ParsedArgs): Promise<void> {
     });
   } catch (e) {
     throw asFailure(e);
-  } finally {
-    process.off("SIGINT", onSignal);
   }
   if (!reply.ok) {
     if (reply.code === "LOGIN_IN_PROGRESS") throw new CommandFailure("refused", "CONFLICT", reply.message, { native: { code: reply.code } });
-    if (reply.code === "ABANDONED") throw new CommandFailure("refused", "USAGE_INVALID", reply.message, { native: { code: reply.code } });
     throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the sign-in: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   }
-  const r: LoginResult = reply.result;
-  if (r.outcome === "cancelled") throw new CommandFailure("refused", "USAGE_INVALID", "the sign-in was cancelled on this machine; nothing was saved and nothing was revoked at the provider", { native: { code: "CANCELLED" } });
+  const r = reply.result;
   if (r.outcome === "failed") {
     const native = { native: { code: r.reason.toUpperCase() } };
     // Denied, expired and unreachable end before stock writes anything: refusals at the provider's
