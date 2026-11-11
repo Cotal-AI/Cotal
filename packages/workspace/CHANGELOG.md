@@ -1,5 +1,18 @@
 # @cotal-ai/workspace
 
+## 0.160.0
+
+### Minor Changes
+
+- 409fbe8: `cotal up --account-resolver full` starts the broker on nats-server's full account resolver, so a host can add and retire space accounts on the running broker with `pushAccountClaim` instead of rendering the configuration again and reloading. `up` renders the resolver on `<root>/.cotal/account-jwts`, created owner-private, with deletion off, and records the choice in `.cotal/broker-policy.json`, so a later `cotal up` on the root renders it again without the flag. `--account-resolver memory` on a stopped root takes the record back. A running broker refuses a different value, because nats-server switches resolvers only at start, and `--open`, `-f` and `--restore` refuse the flag. A renderer outside `up` passes `brokerAccountResolver(root, readBrokerPolicy(root)?.accountResolver)` from `@cotal-ai/workspace`, so its render names the same directory and limit. Before, `up` always rendered `resolver: MEMORY`, so a broker it started could never take a pushed account, and a host that rendered the full resolver had its next reload refused.
+
+### Patch Changes
+
+- 27135c6: The terminal app can keep which direct messages you read, so an unread one stays listed after a restart and a read one stays gone.
+  
+  `readMarks()` and `markRead()` from `@cotal-ai/workspace/chat` read and record message ids in a private `read.json` beside a space's remembered chat sessions, which keeps the newest 1000 and takes a lock for each write. `forgetChatSessions()`, and so `cotal space forget`, removes it with the sessions.
+- @cotal-ai/core@0.160.0
+
 ## 0.159.1
 
 ### Patch Changes
