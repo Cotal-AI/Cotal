@@ -46,7 +46,7 @@ import { fileURLToPath } from "node:url";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { mkSecretDir } from "@cotal-ai/core";
 import type { DaemonPaths } from "../daemon/endpoint.js";
-import { assertScheduledEntry, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
+import { assertScheduledEntry, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
 import { launchAgentLabel, launchAgentService, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
 
@@ -81,6 +81,18 @@ try {
   const argv = [node, "--max-semi-space-size=1", "/opt/cotal/1.2.3/lib/cotal.js", "daemon", "serve", "--daemon-home", "/Users/a b/&<home>"];
 
   console.log("N1 plist");
+  if (process.platform === "linux") {
+    const entry = process.argv[1];
+    const execArgv = process.execArgv;
+    const path = process.env.PATH;
+    process.env.PATH = "/usr/bin:/bin";
+    process.execArgv = [];
+    process.argv[1] = join(process.cwd(), "bin", "dist", "cotal.js");
+    try {
+      const unit = renderDaemonUnit(join(root, "units"), undefined);
+      check("systemd allows retirement and signals only daemon first", unit.bytes.includes("TimeoutStopSec=90\n") && unit.bytes.includes("KillMode=mixed\n"));
+    } finally { process.argv[1] = entry!; process.execArgv = execArgv; process.env.PATH = path; }
+  }
   {
     check("default label", launchAgentLabel(undefined) === "ai.cotal.daemon");
     check("home label is derived from the home", launchAgentLabel("/x") === `ai.cotal.daemon.${sha("/x").slice(0, 16)}`);
@@ -90,6 +102,7 @@ try {
     const alias = renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, "/usr/local/bin/cotal", "daemon", "serve"], searchPath: "/bin", workingDirectory: "/Users/a", logPath: "/log" });
     check("a CLI alias still pins this package's bootstrap", alias.text.includes(`<string>${xmlText(bootstrap)}</string>`) && !alias.text.includes("/usr/local/bin/daemon-cwd.js"));
     check("no unobservable WorkingDirectory property is emitted", !text.includes("<key>WorkingDirectory</key>"));
+    check("LaunchAgent allows bounded Manager retirement", text.includes("<key>ExitTimeOut</key><integer>90</integer>"));
     check("KeepAlive and RunAtLoad are true", text.includes("<key>KeepAlive</key><true/>") && text.includes("<key>RunAtLoad</key><true/>"));
     check("PATH is pinned", text.includes("<key>PATH</key><string>/usr/bin:/bin</string>") && text.includes("<key>COTAL_DAEMON_NATIVE_SERVICE</key><string>1</string>"));
     check("digest is of the exact bytes", sha256 === sha(text));

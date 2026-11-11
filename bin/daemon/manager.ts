@@ -42,6 +42,7 @@ interface Live {
   healthTimer?: ReturnType<typeof setTimeout>;
   healthTask?: Promise<void>;
   stopping: boolean;
+  stopTask?: Promise<void>;
   failures: number;
   healthFailures?: number;
 }
@@ -180,9 +181,21 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     }, 5000 + Math.floor(Math.random() * 1000));
     l.healthTimer.unref();
   };
-  async function stopChild(l: Live): Promise<void> {
+  function stopChild(l: Live): Promise<void> {
+    return l.stopTask ??= stopChildOnce(l).finally(() => { l.stopTask = undefined; });
+  }
+  async function stopChildOnce(l: Live): Promise<void> {
     const child = l.child;
     if (!child) return;
+    l.view = { ...l.view, state: "stopping", observedAt: new Date().toISOString() };
+    // Retirement and deregistration need broker round trips even with no seats. Observe over
+    // parent IPC before disconnecting, then allow five seconds per seat, capped at one minute.
+    let seats: number | undefined;
+    if (child.connected) {
+      try { seats = await generationCall(child, randomUUID(), "inspect"); }
+      catch { /* Unknown inventory receives the ceiling, never an assumed empty inventory. */ }
+    }
+    const graceMs = seats === undefined ? 60_000 : Math.min(60_000, 15_000 + seats * 5000);
     if (child.connected) child.disconnect();
     // Signal only this retained ChildProcess. Never rediscover a child from a recorded pid.
     const ended = async (ms: number) => {
@@ -190,7 +203,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       try { return await Promise.race([l.exited!.then(() => true), new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), ms); })]); }
       finally { if (timer) clearTimeout(timer); }
     };
-    if (await ended(3000)) l.view = { ...l.view, lastStop: "graceful" };
+    if (await ended(graceMs)) l.view = { ...l.view, lastStop: "graceful" };
     else {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
       if (await ended(2000)) l.view = { ...l.view, lastStop: "terminated" };

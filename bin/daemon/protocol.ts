@@ -75,7 +75,7 @@ export interface DaemonStatus {
 export interface HostedManager {
   readonly connectors?: readonly { readonly agent: string; readonly state: string; readonly reason?: string }[];
   readonly space: string;
-  readonly state: "starting" | "answering" | "restarting" | "refused" | "stopped";
+  readonly state: "starting" | "answering" | "restarting" | "refused" | "stopping" | "stopped";
   readonly instanceId?: string;
   readonly pid?: number;
   readonly restarts: number;

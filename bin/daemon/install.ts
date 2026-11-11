@@ -128,6 +128,8 @@ export function renderDaemonUnit(unitDirectory: string, daemonHome: string | und
     `ExecStart=${argv.map((part) => unitValue(part, true)).join(" ")}`,
     "Restart=always",
     "RestartSec=2",
+    "TimeoutStopSec=90",
+    "KillMode=mixed",
     "",
     "[Install]",
     "WantedBy=default.target",

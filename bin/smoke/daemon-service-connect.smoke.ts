@@ -227,6 +227,7 @@ let deviceFailure: "denied" | "expired" | "unreachable" | undefined;
 let catalogUnavailable = false;
 let catalogAuthorityDown = false;
 let standingRenewals = 0;
+let shutdownLatency = false;
 let catalogAuthorityRequests = 0;
 let tokenGate: ((res: ServerResponse) => Promise<void>) | undefined;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -274,6 +275,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
     if (process.argv.includes("--account-hosted") && req.url.endsWith("/service-endpoint-authority")) { res.writeHead(404); res.end("{}"); return; }
     catalogAuthorityRequests++;
+    if (shutdownLatency) await sleep(150);
     if (catalogAuthorityDown) { res.writeHead(503); res.end("{}"); return; }
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
@@ -414,7 +416,11 @@ try {
     const drop = () => { inbound.destroy(); outbound.destroy(); pathSockets.delete(inbound); pathSockets.delete(outbound); };
     inbound.on("error", drop); outbound.on("error", drop); inbound.on("close", drop); outbound.on("close", drop);
     inbound.pipe(outbound);
-    outbound.pipe(new Transform({ transform(chunk, _encoding, done) {
+    if (process.argv.includes("--hosted-latency")) {
+      outbound.on("data", chunk => {
+        setTimeout(() => { if (!inbound.destroyed) inbound.write(chunk); }, brokerReplyDelay);
+      });
+    } else outbound.pipe(new Transform({ transform(chunk, _encoding, done) {
       if (brokerReplyDelay) setTimeout(() => done(null, chunk), brokerReplyDelay);
       else done(null, chunk);
     } })).pipe(inbound);
@@ -1489,7 +1495,7 @@ try {
       const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
       const original = findMesh(ON)!;
       const published = await (await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as { server: string; tlsRequired?: boolean; userAuth: NonNullable<MeshEntry["userAuth"]> };
-      if (process.argv.includes("--cold-restart-repro") || process.argv.includes("--slow-status-repro")) published.server = brokerPathUrl;
+      if (process.argv.includes("--cold-restart-repro") || process.argv.includes("--slow-status-repro") || process.argv.includes("--hosted-latency")) published.server = brokerPathUrl;
       const deliveryStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${ON}` });
       const composition = { injected: true } as const;
       await deliveryStore.put(deliveryCredsKey(ON, composition), await mintCreds(ctx[0]!.auth, newIdentity(), "delivery"));
@@ -1810,7 +1816,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === (hostedShape ? "connected" : "approval-pending")));
           if (process.argv.includes("--stop-seat-only")) {
             const manager = (await observed()).managers.find((row: any) => row.space === ON);
-            const count = process.argv.includes("--three-seats") ? 3 : 1;
+            const countArg = process.argv.find(arg => arg.startsWith("--seats="));
+            const count = countArg ? Number(countArg.slice(8)) : process.argv.includes("--three-seats") ? 3 : 1;
             const observer = await connectNats({ servers, ...standaloneConnectOpts({ creds: await mintCreds(ctx[0]!.auth, newIdentity(), "provisioner"), tls: false }) });
             try {
               const lifecycle = await openLifecycleRegistry(observer, ON);
@@ -1823,16 +1830,20 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                 check("S0 real hosted running seat joined", code === 0 && JSON.parse(output).result?.readiness === "joined", { code, output, error });
                 if (code !== 0) throw new Error("running-seat prerequisite failed");
               }
+              shutdownLatency = process.argv.includes("--hosted-latency");
+              if (shutdownLatency) brokerReplyDelay = 150;
               const started = Date.now();
               accountDesired = false; accountRevision++;
+              const stopping = await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "stopping" && r.pid === manager.pid), "S7 Manager stays stopping while child is alive");
+              const stopStarted = Date.parse(stopping.managers.find((r: any) => r.space === ON).observedAt);
               const stopped = await waitAccount(s => !s.account?.spaces?.some((r: any) => r.space === ON) && s.managers?.every((r: any) => r.space !== ON || r.state === "stopped"), "S1 dashboard removal stops hosted Manager");
               const log = readFileSync(join(home, "daemon", spaceSegment(ON), "manager", "manager.log"), "utf8");
               const timestamps = log.split("\n").filter(line => /seat reaped: shutdown_seat_|deregistered manager instance/.test(line)).map(line => Date.parse(line.slice(0, 24)));
-              const shutdownMs = Math.max(...timestamps) - Math.min(...timestamps);
+              const shutdownMs = Math.max(...timestamps) - stopStarted;
               console.log("S shutdown observation", JSON.stringify({ count, elapsedMs: Date.now() - started, shutdownMs, managers: stopped.managers, log }));
               const row = stopped.managers.find((entry: any) => entry.space === ON);
               check("S4 clean stop has no last exit and names dashboard", row?.state === "stopped" && !row.lastExit && row.next?.includes("dashboard"), row);
-              check("S5 retirement completes before SIGKILL window", shutdownMs < 5000 && row.lastStop !== "killed", { shutdownMs, lastStop: row.lastStop });
+              check("S5 retirement completes within bounded graceful window", shutdownMs < Math.min(60_000, 15_000 + count * 5000) && row.lastStop === "graceful", { shutdownMs, lastStop: row.lastStop });
               const human = await plainCommand("status", "--space", ON);
               check("S6 human status has dashboard hint and no crash line", human.code === 0 && human.out.includes("dashboard") && !human.out.includes("Last exit:"), human);
               check("S2 running-seat shutdown has no IPC crash", !log.includes("ERR_IPC_CHANNEL_CLOSED"), stopped.managers);
