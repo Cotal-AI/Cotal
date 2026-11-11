@@ -255,6 +255,7 @@ jobs:
           node="$app/Contents/MacOS/cotal-node"
           runtime="$app/Contents/Resources/runtime"
           codesign -d --verbose=2 "$node" 2>&1 | grep '^CodeDirectory'
+          codesign -d --entitlements - "$node" 2>&1 | grep -q 'com.apple.security.cs.allow-jit'
           # The hardened runtime refuses V8's executable memory and the bundled native addons unless
           # the signature carries the entitlements for them. Node then dies before it runs a line.
           "$node" -e 'console.log(process.version)'
