@@ -340,6 +340,13 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
 
 /** Connect a headless machine with one command: install, sign in, register, connect. */
 async function setupCommand(args: ParsedArgs): Promise<void> {
+  const { claimUpdateClosureAccess } = await import("@cotal-ai/workspace");
+  const release = claimUpdateClosureAccess();
+  try { await setupUnderClosure(args); }
+  finally { release(); }
+}
+
+async function setupUnderClosure(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const values = args.values as { space?: string; idp?: string; "client-id"?: string; wait?: string; "no-manager"?: boolean };
   const space = values.space;
