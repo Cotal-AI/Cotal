@@ -1,5 +1,5 @@
 import assertions from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
@@ -10,7 +10,9 @@ import { countedAssert, emitSentinel } from "./sentinel.mjs";
 const counted = countedAssert(assertions);
 const assert: typeof assertions = counted.assert as typeof assertions;
 const cells = counted.cells;
-const root = mkdtempSync(join(tmpdir(), "update-snapshot-"));
+// The physical path: macOS keeps its temporary folder behind the /var symbolic link, which the
+// config protection check refuses.
+const root = realpathSync(mkdtempSync(join(tmpdir(), "update-snapshot-")));
 process.env.XDG_CONFIG_HOME = join(root, "config");
 process.env.COTAL_HOME = join(root, "home");
 const config = globalConfigDir();
