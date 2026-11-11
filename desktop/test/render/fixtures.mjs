@@ -65,6 +65,7 @@ const signIn = async page => { await page.click("#login"); await page.locator("#
 const connect = async page => { await signIn(page); await page.click("#connect"); };
 export const scenarios = [
   { name: "account-live-list", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {
+    assert.equal(await page.locator("#another-space").textContent(), "Add to another space");
     await page.evaluate(() => window.__renderState.account.spaces.push({ space: "research", desired: true, observed: "connecting" }));
     await page.locator('[data-space="research"]').waitFor({ timeout: 6000 });
     await page.evaluate(() => window.__renderState.account.spaces.pop());
@@ -75,6 +76,7 @@ export const scenarios = [
     assert.equal(await page.locator("#tray-label").textContent(), "Ready");
   } },
   { name: "account-ready", state: { installed: true, signedIn: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, expect: async page => {
+    assert.equal(await page.locator("#another-space").textContent(), "Add a space");
     assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected to your account");
     assert.equal(await page.locator("#tray-label").textContent(), "Ready");
     assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "check");

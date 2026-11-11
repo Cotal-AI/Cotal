@@ -224,6 +224,7 @@ function showStage(next: Stage, focus = false): void {
   el("dashboard").hidden = addingSpace || !(anyConnected || computerAccount?.hostSupport === "supported");
   if (finished && pending) { el("connection-icon").dataset.tone = "waiting"; setIcon(el("connection-icon"), "clock"); }
   el("another-space").hidden = addingSpace;
+  text("another-space", connections.size ? "Add to another space" : "Add a space");
   el("sign-in-again").hidden = addingSpace || computerAccount?.mode !== "sign-in-required";
   if (finished && computerAccount?.mode === "sign-in-required") {
     text("sign-in-again", "Sign in");

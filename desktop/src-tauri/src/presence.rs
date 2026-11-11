@@ -59,7 +59,7 @@ pub fn tray_status(frame: &serde_json::Value) -> String {
             return "Needs attention".into();
         }
         if count > 0 { return "Connected".into(); }
-        return if rows.is_some_and(|rows| rows.iter().any(|row| row["desired"] == true)) {
+        return if rows.is_some_and(|rows| rows.iter().any(|row| row["desired"] == true && row["observed"] != "removed on this computer")) {
             "Starting"
         } else { "Ready" }.into();
     }
@@ -103,7 +103,7 @@ mod tests {
         assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Starting");
         result["account"]["spaces"] = json!([{"desired":true,"observed":"connected"}]);
         assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Connected");
-        result["account"]["spaces"] = json!([{"desired":false,"observed":"removed on this computer"}]);
+        result["account"]["spaces"] = json!([{"desired":true,"observed":"removed on this computer"}]);
         assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Ready");
         result["account"]["mode"] = json!("sign-in-required");
         assert_eq!(has_connected_space(&result), Some(false));
