@@ -27,7 +27,7 @@ export function nativeStub(scenario) {
       if (request.op === "install") { state.installed = true; return ok({ installed: true }); }
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
       if (request.op === "status" && state.offline) return fail("NOT_ANSWERING", "The background service did not answer. Check the host connection before retrying.");
-      if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.connected ? [manager()] : [] });
+      if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.connected ? [manager()] : [], ...(state.account ? { account: state.account } : {}) });
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
       if (request.op === "spaces") return ok({ spaces: state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : [] });
       if (request.op === "service-status") return ok({ state: state.serviceState ?? "disconnected" });
@@ -62,6 +62,17 @@ const link = "cotal://connect?idp=https%3A%2F%2Fcloud.cotal.ai%2Fapi%2Fauth&spac
 const signIn = async page => { await page.click("#login"); await page.locator("#connect-panel:not([hidden]), #space-panel:not([hidden]), #recovery-panel:not([hidden])").first().waitFor(); };
 const connect = async page => { await signIn(page); await page.click("#connect"); };
 export const scenarios = [
+  { name: "account-live-list", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {
+    await page.evaluate(() => window.__renderState.account.spaces.push({ space: "research", desired: true, observed: "connecting" }));
+    await page.locator('[data-space="research"]').waitFor({ timeout: 6000 });
+    await page.evaluate(() => window.__renderState.account.spaces.pop());
+    await page.locator('[data-space="research"]').waitFor({ state: "detached", timeout: 6000 });
+  } },
+  ...["connected", "starting", "approval-pending", "removed on this computer", "refusal", "sign-in-required"].map(observed => ({
+    name: `account-${observed.replaceAll(" ", "-")}`,
+    state: { installed: true, signedIn: true, connected: observed === "connected", account: { mode: observed === "sign-in-required" ? observed : "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed, ...(observed === "refusal" ? { lastRefusal: "Ask the space owner to approve this computer." } : {}) }] } },
+    expect: async page => { assert.equal(await page.locator("#connected-panel").isVisible(), true); if (observed === "sign-in-required") assert.equal(await page.locator("#connection-title").textContent(), "Sign in again"); },
+  })),
   { name: "loading", state: { loading: true }, expect: async page => {
     assert.equal(await page.locator("#tray-label").textContent(), "Checking connection");
     assert.equal(await page.locator("#loading-icon .icon-spinner").count(), 1);

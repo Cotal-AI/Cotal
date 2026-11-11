@@ -33,7 +33,6 @@ import {
   unwritableStoredSessions,
 } from "./stored-sessions.js";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
-import { ERROR_RETRY_INITIAL_MS, nextRetryDelay, shouldRetry } from "./retry-policy.js";
 import {
   FALLBACK_INITIAL_MS,
   fallbackStillOwed,
@@ -76,7 +75,6 @@ import { createJcodeMapper, type JcodeMapper, type PositionedJcodeJournalRecord 
 import { initializeJcodeEventBoundary, JcodeJournalSource, jcodeJournalPath, positionedJcodeJournalSource } from "./agui-source.js";
 
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
-const RELAY_TIMEOUT_MS = 30_000;
 /** How often the relay checks that its socket path still exists. See the re-bind in `startRelay`. */
 const RELAY_REBIND_POLL_MS = 1_000;
 /** How long a run may hold the dispatch gate waiting for its own acknowledgement (#1233).

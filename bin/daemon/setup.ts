@@ -1,3 +1,4 @@
+import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
 /**
  * `cotal daemon setup`: connect a headless machine to a space with one command.
  *
@@ -183,7 +184,7 @@ async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<R
     // mapping without sending a registration request or claiming a successful sign-in.
     if (prerequisite && opts.noManager) registrationResult(opts, steps, prerequisite);
     // These outcomes occur only after connect-check has validated the daemon's provider session.
-    const signedIn = ["ready-to-register", "unsupported-by-space", "account-mismatch"].includes(check.result.outcome);
+    const signedIn = hostingPrerequisite(check.result.outcome);
     steps.push({ step: "sign-in", outcome: signedIn ? "already-signed-in" : "not-needed-here", detail: `the connection check answered ${check.result.outcome}` });
     opts.report(signedIn
       ? "sign-in: already signed in; no approval was needed"
@@ -316,10 +317,16 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     opts.report("discover: the requested space is registered on this machine", steps.at(-1));
   }
   const prerequisite = discoveredSignIn ? undefined : await ensureSignedIn(opts, steps);
+  opts.report("connect: checking this computer and turning on the space", { step: "connect", outcome: "running", detail: "Checking this computer and turning on the space." });
+  const intent = await exchangeDesktopRequest(opts, { op: "space-intent", space: opts.space, enabled: true });
+  if (!intent.ok) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", intent.error.message);
+  opts.report("connect: starting the agent host", { step: "connect", outcome: "running", detail: "Starting the agent host." });
   if (!opts.noManager) {
-    let manager = await managerViaDaemon(opts, { op: "manager-status", space: opts.space }) as HostedManager;
+    let manager = await ensureHostedManager(opts.space, {
+      refresh: async space => await managerViaDaemon(opts, { op: "manager-status", space }) as HostedManager,
+      start: async space => await managerViaDaemon(opts, { op: "manager-start", space }) as HostedManager,
+    });
     const inspectedExisting = manager.state === "answering";
-    if (!inspectedExisting) manager = await managerViaDaemon(opts, { op: "manager-start", space: opts.space }) as HostedManager;
     let refreshed = false;
     const newlyResolvable = manager.connectors?.some(connector => connector.state !== "available"
       && (/ harness needs (.+) on PATH/.exec(connector.reason ?? "")?.[1]?.split(", ") ?? [])

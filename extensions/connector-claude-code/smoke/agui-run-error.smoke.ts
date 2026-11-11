@@ -44,7 +44,6 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
-import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";

@@ -36,7 +36,7 @@
  * the connector tool over the manager's OWN reply rather than over the wire, so it grades the
  * relay, not the bearer exchange underneath it.
  */
-import { spawn as spawnProc, type ChildProcess } from "node:child_process";
+import { spawn as spawnProc } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -510,7 +510,7 @@ try {
   });
 
   await block("THE HOLDER STARTS NOTHING ON THE WAY OUT OF A TURN", async () => {
-    const { src, wal, source } = await fresh("holder-never-adopted");
+    const { wal, source } = await fresh("holder-never-adopted");
     const ep = new FakeEndpoint();
     let started = 0;
     const holder = new AguiEmitterHolder<Rec>(

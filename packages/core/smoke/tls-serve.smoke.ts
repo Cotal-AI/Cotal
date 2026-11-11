@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
-import tlsMod from "node:tls";
 import { createSpaceAuth, serverConfig, openServerConfig, mintCreds, newIdentity, isReachable, validateTlsMaterial, probeServedCert, dialerFor, probeConnect } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const counted = countedAssert(nodeAssert);

@@ -1,4 +1,4 @@
-import { boot, join, check, cotal, freshCfg, seedDir, writeJson, listNames, track, finishScenario } from "./harness.js";
+import { boot, join, check, freshCfg, seedDir, writeJson, listNames, track, finishScenario } from "./harness.js";
 
 try {
   // ── 3b. ambiguous (pending, dead-parent) child marker is fail-loud ───────────────────────────────

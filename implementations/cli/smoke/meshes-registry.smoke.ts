@@ -726,7 +726,7 @@ try {
   });
   const redirectorUrl = `http://127.0.0.1:${await onFreePort((port) => listenOn(redirector, port))}`;
 
-  const { verifyUserExchange, assertPinnedFetchUrl, pinnedFetchProbe } = await import("../src/commands/meshes-add.js");
+  const { verifyUserExchange, assertPinnedFetchUrl } = await import("../src/commands/meshes-add.js");
   // A non-loopback plain-http exchange base is refused outright: the pin cannot ride plaintext.
   check("a plain-http (non-loopback) exchange base is refused by the pinned-fetch policy",
     assertPinnedFetchUrl(new URL("http://exchange.example.com"), "x") !== undefined,
@@ -1397,7 +1397,7 @@ try {
   // The wizard's PROMPTS need a terminal, but its decisions do not: those live in `meshes-add.ts`
   // so the two front ends cannot drift, and they are what a wrong answer would corrupt. Assert the
   // rules directly, plus the one guarantee scripts depend on — no TTY means no prompt, ever.
-  const { checkServer, checkRoot, checkMode, checkEnforcement, probeEnforcement, spacesAtRoot } =
+  const { checkServer, checkRoot, checkEnforcement, probeEnforcement, spacesAtRoot } =
     await import("../src/commands/meshes-add.js");
   const { canPrompt } = await import("../src/commands/meshes-wizard.js");
 

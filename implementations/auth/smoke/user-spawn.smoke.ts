@@ -110,7 +110,7 @@ type AddressInfo = import("node:net").AddressInfo;
 
 const {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
-  setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid, eventChannel,
+  setupSpaceStreams, principalKey, registry, clearChannel, mintLifecycleUid, eventChannel,
   resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError, epAuthBucket,
   mintMembershipObserverCreds, observePlaneLivenessWithCreds, sessionsBucket, sessionLedgerKey, mintSessionId,
 } = await import("@cotal-ai/core");

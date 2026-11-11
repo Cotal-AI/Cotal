@@ -191,7 +191,9 @@ including in delegated work, reviews or checks that execute mutations indirectly
 does not need to add, update or re-pin them.
 - **Every package's `typecheck` also runs a `tsconfig.smoke.json` over its smoke tree.** A new
 package with smoke files adds the same pair, because a smoke file that is typechecked by nothing
-runs green over real type errors.
+runs green over real type errors. Configurations extending `tsconfig.base.json` also enable
+`noUnusedLocals`, so builds and typechecks reject unused imports, locals and private members.
+When removing an unused binding, preserve any initialization or validation the expression performs.
 - **Keep the code clean and minimal.** No bloat, no overcomplication.
 - **Do only what is asked**, not more, not less. Do not add features or abstractions that are
 not explicitly requested or clearly needed.

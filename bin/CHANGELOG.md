@@ -1,5 +1,45 @@
 # cotal-ai
 
+## 0.157.5
+
+### Patch Changes
+
+- 53c4fea: Account computer spaces can run agents when their space does not host machine-service endpoints.
+- a722365: Enable unused-local checks in the shared TypeScript configuration and remove unused imports and declarations from source and smoke tests. Preserve initialization, validation and build-time inbox compatibility checks.
+- 53c4fea: Keep this computer's space connections synchronized with account dashboard choices.
+- Updated dependencies [a722365]
+- Updated dependencies [53c4fea]
+  - @cotal-ai/core@0.157.5
+  - @cotal-ai/workspace@0.157.5
+  - @cotal-ai/seat@0.157.5
+  - @cotal-ai/runtime@0.157.5
+  - @cotal-ai/cli@0.157.5
+  - @cotal-ai/manager@0.157.5
+  - @cotal-ai/delivery@0.157.5
+  - @cotal-ai/connector-core@0.157.5
+  - @cotal-ai/auth@0.157.5
+  - @cotal-ai/registry@0.157.5
+
+## 0.157.4
+
+### Patch Changes
+
+- 4865117: Connect the desktop app through your account and manage the spaces using this computer from its Ready screen.
+- 560f0b3: Connect computers to signed-in accounts and reconcile dashboard space bindings through the machine daemon.
+- 45beca4: Windows background service installation avoids slow PowerShell command discovery on a new user profile. Task lookup imports ScheduledTasks directly, retaining the existing ownership checks and 30-second budget. Native failures also distinguish timeout, startup errors, output overflow and terminating signals with elapsed time and the native error code.
+- Updated dependencies [560f0b3]
+- Updated dependencies [db0aac7]
+  - @cotal-ai/auth@0.157.4
+  - @cotal-ai/cli@0.157.4
+  - @cotal-ai/connector-core@0.157.4
+  - @cotal-ai/manager@0.157.4
+  - @cotal-ai/delivery@0.157.4
+  - @cotal-ai/registry@0.157.4
+  - @cotal-ai/runtime@0.157.4
+  - @cotal-ai/core@0.157.4
+  - @cotal-ai/seat@0.157.4
+  - @cotal-ai/workspace@0.157.4
+
 ## 0.157.3
 
 ### Patch Changes

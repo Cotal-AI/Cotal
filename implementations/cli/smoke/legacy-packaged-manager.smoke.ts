@@ -1,5 +1,5 @@
 import nodeAssert from "node:assert/strict";
-import { countedAssert, emitSentinel, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { countedAssert, emitSentinel, freePort } from "@cotal-ai/smoke-kit";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";

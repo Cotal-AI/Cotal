@@ -1,5 +1,5 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-export type Request = { op: string; space?: string; idp?: string; refresh?: boolean };
+export type Request = { op: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean };
 export const COTAL_CLOUD_IDP = "https://cloud.cotal.ai/api/auth";
 export interface SetupProgress { step: "install" | "sign-in" | "discover" | "manager" | "applications" | "register" | "connect"; outcome: string; detail: string; applications?: readonly string[] }
 export interface Frame { v: 1; event: "result" | "login-prompt" | "setup-progress"; progress?: SetupProgress; line?: string; ok?: boolean; result?: Record<string, unknown>; prompt?: Record<string, unknown>; error?: { code: string; message: string; remedy?: string; native?: { code: string } }; code?: string; message?: string }
@@ -18,6 +18,18 @@ export function machinesUrl(provider: string, spaceId: string, instanceId: strin
   const url = new URL("/machines", approvalUrl(provider));
   url.searchParams.set("space", spaceId); url.searchParams.set("machine", instanceId);
   return url.href;
+}
+
+export interface ComputerSpace { space: string; desired: boolean; observed: string; lastRefusal?: string }
+export function computerSpaceState(row: ComputerSpace): string {
+  if (row.lastRefusal) return row.lastRefusal;
+  if (row.observed === "connected") return "Connected";
+  if (row.observed === "approval-pending") return "Waiting for owner approval";
+  if (row.observed === "removed on this computer") return "Removed on this computer";
+  return "Starting";
+}
+export function computerSpaces(account: { spaces: ComputerSpace[] }): ComputerSpace[] {
+  return account.spaces.filter(row => row.desired || row.observed === "connected" || row.observed === "removed on this computer");
 }
 
 export interface AccountSpace { space: string; label: string; catalogId?: string; kind?: string; role?: string }

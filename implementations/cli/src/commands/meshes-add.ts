@@ -6,7 +6,6 @@ import {
   assertPinnedFetchUrl,
   authDir,
   canonicalRoot,
-  checkUserBundle,
   classifyJoinTarget,
   findCotalRoot,
   findMesh,

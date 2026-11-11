@@ -9,6 +9,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "strict": true,
+    "noUnusedLocals": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "verbatimModuleSyntax": true,

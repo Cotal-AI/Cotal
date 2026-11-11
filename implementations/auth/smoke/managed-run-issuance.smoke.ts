@@ -35,7 +35,7 @@ import {
 } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import {
-  cotalAuthProvider, deriveOwnerForIdpSubject, ensurePinnedIdp, grantActor, loadOwnerSecret, startAuthService,
+  deriveOwnerForIdpSubject, ensurePinnedIdp, grantActor, loadOwnerSecret, startAuthService,
   findManagedActor, grantManagedActor, newActorToken, revokeManagedActor, ledgerActorSourceIsLive,
   loadCalloutAuth,
   VERIFY_ENROLLMENT_PATH,

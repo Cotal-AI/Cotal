@@ -94,7 +94,7 @@
  *
  * Run: pnpm smoke:agui-emitter
  */
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eventChannel, principalKey, type Part } from "@cotal-ai/core";

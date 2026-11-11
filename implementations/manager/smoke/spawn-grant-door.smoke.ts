@@ -24,7 +24,6 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import {
   createSpaceAuth,
-  grantOverreach,
   invokeCommand,
   mintAcceptedToken,
   mintCreds,

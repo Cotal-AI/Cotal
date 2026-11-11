@@ -772,7 +772,7 @@ try {
   await wait(100);
 
   // Re-attempting spawn re-drives deprovision under restored inventory:
-  const redriveSpawn = sib ? await manager.startAgent({ name: AGENT, identity: sib, agent: "e2e", owner: OWNER, events: false }) : undefined;
+  if (sib) await manager.startAgent({ name: AGENT, identity: sib, agent: "e2e", owner: OWNER, events: false });
   for (let i = 0; i < 100 && sib && (heldSibling.has(sib) || (await sibRow("unnamed"))); i++) await wait(100);
   check("RETRY: restored inventory allows re-driven teardown to purge the retained row (0 residue)", !!sib && !(await sibRow("unnamed")));
   check("RETRY: the sibling hold clears only after complete purge", !!sib && !heldSibling.has(sib));

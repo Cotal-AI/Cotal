@@ -30,6 +30,8 @@ import { homeCotalDir, isCommandFailure } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
+import { createAccountReconciler } from "./account-reconcile.js";
+import { createAccountComputer } from "./account.js";
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
 export const MAX_REQUESTS_PER_CONNECTION = 64;
@@ -139,6 +141,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
   const services = createServiceConnections(machineHome);
   const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir);
+  const reconciler = createAccountReconciler(machineHome, services, managers);
+  const account = createAccountComputer(machineHome, opts.version, reconciler);
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
@@ -149,6 +153,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     startedAt: startedAt.toISOString(),
     uptimeMs: Date.now() - startedAt.getTime(),
     managers: managers.all(),
+    account: account.status(),
     ...(generation ? { generation } : {}),
   });
 
@@ -252,6 +257,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         }));
         return;
       }
+      if (req.op === "space-intent") {
+        managerResult(async () => { await account.intent(req.space, req.enabled); return status(); });
+        return;
+      }
       if (req.op === "connect-check") {
         replyTask(connectCheck(req.space, machineHome).catch((): ConnectCheckResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the check" }))
           .then((result) => {
@@ -270,12 +279,18 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
         const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
-          : withIdpSessionDir(machineHome, async () => {
-            if (req.op === "service-connect") return services.connect(req.space);
+          : (async () => {
+            if (await account.intent(req.space, req.op === "service-connect")) return services.status(req.space);
+            return reconciler.serial(() => withIdpSessionDir(machineHome, async () => {
+            if (req.op === "service-connect") {
+              reconciler.localAddition(req.space);
+              return services.connect(req.space);
+            }
+            reconciler.localRemoval(req.space);
             await managers.disconnect(req.space);
             return services.disconnect(req.space);
-          })
-            .catch((): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: "the daemon could not complete the request; nothing is connected" }));
+            }));
+          })().catch((error: unknown): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: error instanceof Error ? error.message : "The connection could not be changed. Check daemon status and try again." }));
         managerResult(async () => {
           const result = await run;
           counters.serviceAnswered++;
@@ -296,6 +311,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         onPrompt: (attempt, prompt) => void write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "login-prompt", attempt, prompt }),
         onResult: async (attempt, result) => {
           owned.delete(attempt);
+          if (result.outcome === "signed-in") account.signedIn();
           await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "login-result", attempt, result });
         },
       });
@@ -382,11 +398,14 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     if (spaces.length) log(`daemon: resumed ${spaces.length} recorded service connection(s)`);
   }, () => {});
 
+  void Promise.all([managersResumed, resumed]).then(() => account.start());
+
   let closed: Promise<void> | undefined;
   const close = (): Promise<void> => {
     closed ??= (async () => {
-      // Cancel network work before waiting for startup resume to settle.
       const servicesClosed = services.close();
+      await account.close();
+      // In-flight account work observes service cancellation before shutdown waits for it.
       // An in-flight sign-in is cancelled through the stock fence before the listener goes away.
       await login.close();
       await managers.close();

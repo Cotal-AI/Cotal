@@ -22,7 +22,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
@@ -604,7 +604,7 @@ try {
   }
 
   console.log("3b) empty registry discovers the user-mode space, then ps/status resolve it");
-  const { findMesh, loadMeshes, removeMesh, removeMeshes, recordMesh, setCurrent, canonicalRoot, targetFromEntry, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+  const { findMesh, loadMeshes, removeMesh, removeMeshes, recordMesh, setCurrent, canonicalRoot, targetFromEntry, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const { loadCalloutAuth } = await import("../src/index.js");
   const original = findMesh(SPACE);
   if (!original?.userAuth) throw new Error("fixture has no user-auth registry entry to advertise");

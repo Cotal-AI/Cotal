@@ -559,6 +559,26 @@ After setup, use `cotal daemon service-status --space <s>` to read the machine c
 `cotal daemon service-disconnect --space <s>` to close it.
 Setup prints these commands with `--space=<s>` so names beginning with a hyphen also work.
 
+After sign-in, the daemon registers an account computer with hosts that support it. Each
+issuer and subject pair has its own protected, persisted computer UUID. It sends a metadata
+heartbeat every 60 seconds and polls the account's desired spaces every five seconds. Desired
+spaces start or inspect the Manager through the same hosting sequence as setup. Each space's
+connection check decides whether machine-service registration and owner approval are needed.
+Spaces without service endpoints still run their Manager and report its state. Removing a space
+stops its Manager and disconnects its machine service when one exists.
+
+`daemon status` and its JSON `account` section separate desired spaces from observed connection
+state, with computer identity, host support, last registration, desired revision and refusals.
+A host without the route reports account computers unsupported and keeps per-space behavior.
+Authentication refusal asks you to sign in again. Network failures retain existing connections.
+
+On hosts that support account computers, setup and local connect or disconnect write the
+computer's account intent with a fresh revision. A conflicting revision is read again and retried
+once. The daemon immediately reconciles the result, so dashboard and local changes use the same
+space list. A local removal caused by a missing registry entry still waits for renewed consent
+for that binding. Hosts that return 404 retain per-space behavior and report it in status.
+Existing local connections outside the account list keep running.
+
 Daemon commands use the machine home, not the invoking project's `.cotal` records. They run from
 a removed working directory or a folder with a `.cotal` file, and malformed preferences do not
 block them. Machine-home validation and the permissions required for each operation still apply.
@@ -595,6 +615,8 @@ Manager for each requested user-auth space. Its registered machine service expos
 It has local transport implementations for Linux, macOS and Windows. On macOS and Windows the endpoint needs the `@cotal-ai/seat` native helper built for that
 platform; where none is built or shipped, daemon endpoint operations refuse `UNSUPPORTED`
 (`UNSUPPORTED_PLATFORM`), and so do those operations on any other platform.
+
+The default daemon and CLI share the sign-in in the same Cotal home, so signing in through either one does not require a second approval in the other. An explicit `--daemon-home` keeps its own sign-in, separate from the CLI's Cotal home.
 
 `start` starts the recorded, unchanged service without restarting an instance that is already running.
 `spaces` lists the registry through the daemon; `--refresh` uses the daemon-held sign-in to refresh
@@ -814,6 +836,12 @@ replacing the previous launch's log and retaining at most 64 KiB of output. When
 not answer on Windows, `status` names that log and Task Scheduler's state and last result. If the
 entry cannot load at all, Task Scheduler's last result is the diagnostic and no new log exists.
 Install refuses before preparing a task if its launch entry is missing or is not a file.
+Task lookup imports the ScheduledTasks PowerShell module directly so a new profile does not need
+command discovery across installed modules before checking the task.
+Native service tools have a 30-second budget. A tool that cannot complete refuses
+`DEPENDENCY_UNAVAILABLE` and names a timeout, output overflow, startup error code or terminating
+signal with elapsed time. JSON output includes the native code, elapsed milliseconds and budget
+under `error.cause`. No further native step runs after that refusal.
 
 The unit is `cotal-daemon.service`, or `cotal-daemon-<16 hex>.service` for a daemon with its own
 `--daemon-home`, derived from that directory as its socket is. The LaunchAgent label is

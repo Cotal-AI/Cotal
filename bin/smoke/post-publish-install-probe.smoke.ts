@@ -8,7 +8,6 @@
  * Run: pnpm smoke:post-publish-install-probe
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/post-publish-install-probe.json
  */
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";

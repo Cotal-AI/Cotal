@@ -23,18 +23,15 @@ import {
   RuntimeFault,
   ScopeBranchMissing,
   UnwalkableScope,
-  messageOf,
   InterpreterDefect,
   isStackExhaustion,
 } from "./errors.js";
 export { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from "./errors.js";
-import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type PathKind, type ScopeKind, type StepKey } from "./keys.js";
-import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
-import { NotCrossable, Prng, assertCrossable, assertWritable, born, crossedWrite, deepFreeze, setOwn, type WritingFrame } from "./values.js";
-import { parseDuration } from "./duration.js";
+import { KeyScope, digest, programHashOf, type PathKind, type ScopeKind } from "./keys.js";
+import { Journal, JournalAppendRejected, RunClock } from "./journal.js";
+import { Prng, assertWritable, born, crossedWrite, deepFreeze, setOwn, type WritingFrame } from "./values.js";
 import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "./library.js";
-import { notifyFactViolation } from "./notify-fact.js";
 import { bindPins, resolvePins, WALKER_LANGUAGE_VERSION, type RunPins } from "./pins.js";
 import {
   agentHandles,
@@ -52,15 +49,10 @@ import {
   RunReleased,
   RunHeld,
   EffectError,
-  applyCheckpointPolicy,
   type CancelSignal,
   type RootCancellationSource,
-  type ChannelHandleValue,
-  type ConclaveRequest,
   type EffectContext,
   type EffectHandler,
-  type CheckpointRaw,
-  type EventDescriptor,
 } from "./effects.js";
 
 type AnyNode = Record<string, unknown> & { type: string };

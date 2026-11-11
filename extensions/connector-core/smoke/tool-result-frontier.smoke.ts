@@ -55,7 +55,7 @@ const PRINCIPAL = { owner: "local", actor: "aaa" };
 const PRINCIPAL_KEY = "local.aaa";
 const SPACE = "main";
 const THREAD = "thread-1";
-const CHANNEL = eventChannel(PRINCIPAL);
+eventChannel(PRINCIPAL);
 
 class FakeEndpoint {
   readonly principal = PRINCIPAL;

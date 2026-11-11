@@ -604,6 +604,39 @@ async function discoverAdvertisement(state: CatalogAccountState, session: IdpSes
   };
 }
 
+/** Account identities available to a machine client. Session proofs stay inside this module. */
+export function signedInMachineAccounts(dir: string): AuthSpaceCatalogAccount[] {
+  const { sessions, file } = readCatalogPreparationState(dir);
+  return Object.keys(sessions).sort().flatMap((idpUrl) => {
+    const session = loadIdpSession(dir, idpUrl);
+    if (!session?.sub) return [];
+    const key = ownerKey(idpUrl, session.sub);
+    return [accountView(file.accounts[key] ?? { idpUrl, issuer: new URL(idpUrl).origin, sub: session.sub, ownerKey: key, advertised: false })];
+  });
+}
+
+/** Call only the account-computer routes on the signed-in provider's origin. */
+export async function requestAccountMachine(opts: {
+  dir: string; idpUrl: string; machineId: string; method: "PUT" | "GET";
+  metadata?: { name: string; platform: "linux" | "darwin" | "win32"; daemonVersion: string };
+  etag?: string; signal?: AbortSignal;
+  intent?: { spaceId: string; enabled: boolean; expectedRevision: number };
+}): Promise<{ status: number; etag?: string; body?: unknown }> {
+  const idp = normalizeIdpUrl(opts.idpUrl);
+  if (!/^[0-9a-f-]{36}$/.test(opts.machineId)) throw new Error("invalid computer identity");
+  const session = requireIdpSession(opts.dir, idp);
+  if (opts.intent && (opts.method !== "PUT" || !/^[A-Za-z0-9_-]{1,128}$/.test(opts.intent.spaceId) || !Number.isSafeInteger(opts.intent.expectedRevision) || opts.intent.expectedRevision < 0)) throw new Error("invalid computer space intent");
+  const url = opts.intent
+    ? `${new URL(idp).origin}/api/machines/${opts.machineId}/spaces/${encodeURIComponent(opts.intent.spaceId)}`
+    : `${new URL(idp).origin}/api/cli/machines/${opts.machineId}${opts.method === "GET" ? "/spaces" : ""}`;
+  const headers: Record<string, string> = { authorization: `Bearer ${session.token}` };
+  if (opts.etag) headers["if-none-match"] = opts.etag;
+  if (opts.method === "PUT") headers["content-type"] = "application/json";
+  const response = await idpFetch(url, { method: opts.method, headers, redirect: "manual", ...(opts.method === "PUT" ? { body: JSON.stringify(opts.intent ? { enabled: opts.intent.enabled, expectedRevision: opts.intent.expectedRevision } : opts.metadata) } : {}) }, opts.signal);
+  const etag = response.headers.get("etag");
+  return { status: response.status, ...(etag ? { etag } : {}), ...(response.ok ? { body: await idpJson<unknown>(url, response, opts.signal) } : {}) };
+}
+
 interface PrepareCatalogOpts {
   dir: string;
   idpUrl?: string;

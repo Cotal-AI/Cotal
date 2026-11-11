@@ -29,7 +29,7 @@ import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TR
 import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { canonicalJson, contractDigest } from "./canonical.js";
 import { isCanonicalEd25519PublicCoordinate } from "./remote-service-authority.js";
-import type { ServiceAuthorityInfo, ServiceAuthorityResult, ServiceIssuerKey, ServiceRegistration, ServiceRegistrationWitness } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
+import type { ServiceAuthorityInfo, ServiceIssuerKey, ServiceRegistration, ServiceRegistrationWitness } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service

@@ -176,6 +176,17 @@ function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, prior?: M
   };
 }
 
+/** Import one desired account space without treating the desired set as the full catalog. */
+export function importAccountComputerSpace(account: AuthSpaceCatalogAccount, row: CatalogSpace): void {
+  validateCatalogSnapshot({ v: 1, account, spaces: [row] }, account);
+  const prior = readMesh(row.slug);
+  if (prior && (prior.origin !== "catalog" || prior.catalogOwner !== account.ownerKey))
+    throw new Error("a different local registration owns this space name");
+  const next = entryFor(account, row, prior, new Date().toISOString());
+  writeCatalogCredential(next, row);
+  recordMeshes([next]);
+}
+
 function writeCatalogCredential(entry: MeshEntry, row: CatalogSpace): void {
   const path = entry.userAuth?.sentinelCredsPath;
   if (!path) throw new Error(`catalog registration for "${entry.space}" has no sentinel credential path`);

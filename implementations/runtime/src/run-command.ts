@@ -80,7 +80,6 @@ import {
   recordOperationSpace,
   renderReport,
   writeEnvelope,
-  connectOrExit,
   controlCaller,
   endpointAuth,
   resolveControlTarget,
@@ -103,7 +102,7 @@ import { seatTurnCommand } from "./seat-turn-command.js";
 import { openRequestKeys, printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { migrateRun, type MigrateReport } from "./migrate.js";
-import { cotalLangRunHost as runHost, journalRows } from "./run-host.js";
+import { cotalLangRunHost as runHost } from "./run-host.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";

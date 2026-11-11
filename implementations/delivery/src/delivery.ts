@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   CotalEndpoint,

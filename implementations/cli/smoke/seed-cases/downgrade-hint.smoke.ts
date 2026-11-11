@@ -1,4 +1,4 @@
-import { delimiter, dirname, join, boot, check, cotal, fakeCotal, freshCfg, seedDir, writeJson, track, finishScenario } from "./harness.js";
+import { delimiter, dirname, join, boot, check, fakeCotal, freshCfg, seedDir, writeJson, track, finishScenario } from "./harness.js";
 
 try {
   // ── downgrade recovery names a concrete executable only after proving its version ───────────────

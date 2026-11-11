@@ -104,7 +104,7 @@ const { makeManagerEndpointHolderEvictor } = await import("../../implementations
 const { registerRemoteManagerAuthority } = await import("../../implementations/manager/src/remote-register.js");
 const { superviseTarget } = await import("../../implementations/manager/src/commands.js");
 const { runWorkflow } = await import("../../implementations/runtime/src/run-command.js");
-const { Manager } = await import("../../implementations/manager/src/manager.js");
+await import("../../implementations/manager/src/manager.js");
 const { loadOrCreateRemoteManagerIdentity } = await import("../../implementations/manager/src/remote-authority.js");
 
 const auth = await createSpaceAuth(space);

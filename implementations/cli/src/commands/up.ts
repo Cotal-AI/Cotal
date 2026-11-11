@@ -2,7 +2,7 @@ import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js"
 import { type ChildProcess } from "node:child_process";
 import { spawnBroker } from "../lib/broker-spawn.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { createConnection, createServer, isIP } from "node:net";
 import { homedir, hostname } from "node:os";
 import {
@@ -64,7 +64,6 @@ import {
   EpEnvelopeError,
   mkSecretDir,
   openPrivateAppend,
-  realDirNoSymlink,
   writeSecretFile,
   utf16Problem,
   type AuthPrepared,
@@ -162,7 +161,6 @@ import {
   readMaintenanceJournal,
   rootNamesNoSpace,
   readMaintenanceResumeDocument,
-  seatCheckpointDir,
   readStoreIdentity,
   recordOrdinaryResumeManagerCommit,
   releaseMaintenanceLock,
@@ -210,7 +208,7 @@ import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
 import { c, hang, stderrLine } from "../ui.js";
-import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../lib/seat-resume.js";
+import { admitAndRestoreSeatCheckpoints } from "../lib/seat-resume.js";
 import { natsServerLabel, resolveNatsServer, type NatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
 import { detachedNext, renderDetachedSummary } from "../lib/up-report.js";
@@ -359,8 +357,6 @@ interface PendingOrdinaryResume {
   adoptProof?: ListenerProof;
 }
 const pendingOrdinaryResumes = new Map<string, PendingOrdinaryResume>();
-
-interface BrokerLogOptions { logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number }
 
 /** `cotal up` flags — colocated with the command (like `spawnFlags`) so its completion can read them. */
 export const upFlags: FlagSpec[] = [

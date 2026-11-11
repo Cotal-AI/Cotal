@@ -103,7 +103,7 @@ try {
   const on = await startAuthService({ context: { accountPublicKey, lifecycleUid: "life-0" }, space, servers: fx.servers, store: a.store, storeIdentity: a.store.identity,
     stateDir, publicFace: { port: 0, trustedProxy: false }, serviceEndpoints: { startup: { kind: "normal" } } });
   handles.push(on);
-  const host = on.serviceEndpointHost!, pub = on.publicUrl!;
+  const host = on.serviceEndpointHost!;
   saveAuthServiceInfo(clientDir, { url: on.url, pid: process.pid, cap: on.cap });
   const clientStore: SecretStore = {
     get: async (k) => (k === authClientSentinelKey(space) ? a.sentinelCreds : undefined),

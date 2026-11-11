@@ -35,7 +35,7 @@ import {
   MANAGER_VITALS_SCOPE,
   resolveService, invokeCommand, registry, parseGoalResultFact, goalResultSubject, epfStreamName,
   parseEpSubject, deriveReplySubject, epCallerReplyFilter, epRequestSubject,
-  type Connector, type ControlReply, type EpCaller, type EpAttributedReply, type LaunchOpts, type LaunchSpec,
+  type Connector, type EpCaller, type EpAttributedReply, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";

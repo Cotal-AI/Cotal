@@ -1,5 +1,5 @@
 import { registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef, type SignedInSpace } from "@cotal-ai/core";
-import { assertRecordIdentity, extensionConnectors, installedExtensionVersion, loadExtensionsManifest, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, webBoundUrl, resolveOnPath, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
+import { assertRecordIdentity, extensionConnectors, installedExtensionVersion, loadExtensionsManifest, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, webBoundUrl, resolveOnPath, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { findNatsServer, natsServerProblem } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";

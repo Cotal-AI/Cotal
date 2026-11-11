@@ -86,9 +86,9 @@ try {
   const ownerOf = (sub: string) => deriveOwnerForIdpSubject(ownerSecret, origin, sub);
   const [ownerA, ownerB, ownerC] = ["user-a", "user-b", "user-c"].map(ownerOf);
   // Fixture rows: A signs in from the CLI, B from the web; C has no interactive row.
-  const actorA = grantActor(stateDir, { owner: ownerA, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
+  grantActor(stateDir, { owner: ownerA, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
   const webApp = grantActor(stateDir, { owner: ownerA, actor: "web_app", scope: [], allowSubscribe: [], allowPublish: [] });
-  const actorB = grantActor(stateDir, { owner: ownerB, actor: "web", scope: [], allowSubscribe: [], allowPublish: [] });
+  grantActor(stateDir, { owner: ownerB, actor: "web", scope: [], allowSubscribe: [], allowPublish: [] });
   process.env.COTAL_HOME = home;
   const signIn = (s: "a" | "b" | "c") => saveIdpSession(home, idpUrl, { token: `session-${s}`, expiresAt: Math.floor(Date.now() / 1000) + 600, sub: `user-${s}` });
   const inputs = { context: { accountPublicKey, lifecycleUid: "life-0" }, space, servers: fx.servers, store: a.store, storeIdentity: a.store.identity,

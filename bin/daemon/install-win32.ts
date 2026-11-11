@@ -123,6 +123,7 @@ interface RegisteredTask {
  *  rather than an empty answer. */
 const READ_TASK = [
   "$ErrorActionPreference = 'Stop'",
+  "Import-Module ScheduledTasks",
   "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
   "$task = @(Get-ScheduledTask | Where-Object { $_.TaskPath -ceq '\\' -and $_.TaskName -ceq $env:COTAL_DAEMON_TASK })",
   "if ($task.Count -eq 0) { '{\"present\":false}'; exit 0 }",

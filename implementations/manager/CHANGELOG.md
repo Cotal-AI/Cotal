@@ -1,5 +1,23 @@
 # @cotal-ai/manager
 
+## 0.157.5
+
+### Patch Changes
+
+- a722365: Enable unused-local checks in the shared TypeScript configuration and remove unused imports and declarations from source and smoke tests. Preserve initialization, validation and build-time inbox compatibility checks.
+- Updated dependencies [a722365]
+  - @cotal-ai/core@0.157.5
+  - @cotal-ai/workspace@0.157.5
+  - @cotal-ai/seat@0.157.5
+
+## 0.157.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.4
+  - @cotal-ai/seat@0.157.4
+  - @cotal-ai/workspace@0.157.4
+
 ## 0.157.3
 
 ### Patch Changes

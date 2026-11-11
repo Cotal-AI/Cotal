@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import {
-  isReachable, EpEnvelopeError,
+  isReachable,
   submissionFingerprint, decideAdmission, hasOutOfRangeNumber, epfDecisionSubject, epfQuarantineSubject, epfGoalBindSubject,
   epfEffectSubject, parseEffectFact,
   epjStreamName, epfStreamName, canonDurable,

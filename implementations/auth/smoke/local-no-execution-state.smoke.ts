@@ -71,7 +71,7 @@ try {
   const unsupported = new Manager(opts);
   await rejects("NONE refuses an open or missing-trust root before dial", () => unsupported.start(), /genuine hosting user-auth root/);
   check("invalid local root creates no identity capability files or connection", files === JSON.stringify(readdirSync(empty, { recursive: true })) && dials === 0 && runtimeCalls === 0);
-  await new Promise<void>((resolve, reject) => { const socket = tcpConnect({ host: "127.0.0.1", port: inertPort }).once("error", reject).once("close", () => resolve()); });
+  await new Promise<void>((resolve, reject) => { tcpConnect({ host: "127.0.0.1", port: inertPort }).once("error", reject).once("close", () => resolve()); });
   witness.available();
   check("inert network and Runtime witnesses have actual positive controls", dials === 1 && runtimeCalls === 1);
   runtimeCalls = 0;

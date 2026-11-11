@@ -162,7 +162,7 @@ try {
   console.log(`After killing hung child: status is dirty: ${hungStatus !== ""}`);
 
   // Recovery run
-  const recoverRun = execSync(`node ${PROOF_TOOL} --recover`, { cwd: fixtureDir, encoding: "utf8" });
+  execSync(`node ${PROOF_TOOL} --recover`, { cwd: fixtureDir, encoding: "utf8" });
   const finalGitStatus = execSync("git status --porcelain", { cwd: fixtureDir, encoding: "utf8" }).trim();
   const recoveredClean = finalGitStatus === "" && !readFileSync(join(fixtureDir, "src/impl.js"), "utf8").includes("if (false)");
 

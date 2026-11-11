@@ -543,8 +543,8 @@ try {
   const takeB1 = async () => { await until(() => heldB1.length > 0, 10_000); return heldB1.shift()!; };
   const b1A = b1Ep.publishPresence().catch(() => {});
   const b1PutA = await takeB1();
-  const b1B = b1Ep.publishPresence().catch(() => {});
-  const b1PutB = await takeB1();
+  b1Ep.publishPresence().catch(() => {});
+  await takeB1();
   b1PutA.reject(new Error("bucket refuses writes"));
   await b1A;
   const b1AfterOlderRejection = b1Ep.presenceWriteFailure();
@@ -580,8 +580,8 @@ try {
   const b2Refusal = b2Ep.presenceWriteFailure();
   const b2A = b2Ep.publishPresence().catch(() => {});
   const b2PutA = await takeB2();
-  const b2B = b2Ep.publishPresence().catch(() => {});
-  const b2PutB = await takeB2();
+  b2Ep.publishPresence().catch(() => {});
+  await takeB2();
   b2PutA.resolve();
   await b2A;
   const b2AfterOlderSuccess = b2Ep.presenceWriteFailure();
@@ -758,7 +758,7 @@ try {
   };
   await quietStraggler();
   // A write admitted BEFORE stop(): its put parks and is held open.
-  const stragglerAttention = orderingAgent!.setAttention("focus").catch(() => {});
+  orderingAgent!.setAttention("focus").catch(() => {});
   const attentionPut = await takeStraggler(); // setAttention's presence put — HELD
   const stragglerStop = orderingAgent!.stop().catch(() => {});
   // A write admitted AFTER stop() began: refused, synchronously-shaped, no put queued. The race

@@ -1,5 +1,25 @@
 # @cotal-ai/auth
 
+## 0.157.5
+
+### Patch Changes
+
+- a722365: Enable unused-local checks in the shared TypeScript configuration and remove unused imports and declarations from source and smoke tests. Preserve initialization, validation and build-time inbox compatibility checks.
+- 53c4fea: Keep this computer's space connections synchronized with account dashboard choices.
+- Updated dependencies [a722365]
+  - @cotal-ai/core@0.157.5
+  - @cotal-ai/workspace@0.157.5
+  - @cotal-ai/lang@0.157.5
+
+## 0.157.4
+
+### Patch Changes
+
+- 560f0b3: Connect computers to signed-in accounts and reconcile dashboard space bindings through the machine daemon.
+- @cotal-ai/core@0.157.4
+  - @cotal-ai/lang@0.157.4
+  - @cotal-ai/workspace@0.157.4
+
 ## 0.157.3
 
 ### Patch Changes

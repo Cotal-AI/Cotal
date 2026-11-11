@@ -25,7 +25,6 @@ import {
   inboxReaderConfig,
   inboxStream,
   mintLifecycleUid,
-  principalKey,
   recordsKvStreamName,
   restoreProfilePermissions,
   spaceBackupInventory,

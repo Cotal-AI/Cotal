@@ -97,7 +97,7 @@ try {
   // checkAPI:false — the scoped scatter grant carries NO account `$JS.API.INFO` (exactly how
   // scatterCommand constructs its JSM); the freeze rides only the `svc.*` records rows.
   const jsm = await jetstreamManager(nc, { checkAPI: false });
-  const recKv = await openRecordsBucket(nc, SPACE);
+  await openRecordsBucket(nc, SPACE);
   const frozen = await freezeExpectedSet(jsm, SPACE, MANAGER_ENDPOINT);
   const frozenIds = new Set(frozen.map((f) => f.instanceId));
   check("the caller instrument can FREEZE the class (scoped records-read grant) — both instances present",

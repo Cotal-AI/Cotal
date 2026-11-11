@@ -57,7 +57,10 @@ export const CHANNEL_GUIDANCE =
   "On a channel that replays history, agents who join later are shown it. Channel history defaults " +
   "to no age limit and 1000 posts per sender per channel; an operator can change those limits with " +
   "cotal history limit, so older posts may no longer be available. A post " +
-  "wakes an idle agent unless it set dnd or focus or made the channel quiet. @mention a peer only when " +
+  "wakes an idle agent unless it set dnd or focus or made the channel quiet. " +
+  "Leave a channel with cotal_leave when its task is finished or your part is done. " +
+  "Its posts then stop waking you, and the space shows only who is still working there. " +
+  "@mention a peer only when " +
   "that peer must act now, since a mention wakes it even in dnd, and a mention in an acknowledgement " +
   "or sign-off starts a wake-up loop. When you are " +
   "asked to tell a peer about shared work, such as a status or a result, post it on the channel you " +
