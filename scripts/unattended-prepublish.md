@@ -44,7 +44,10 @@ After the coordinator builds packages, run `node scripts/unattended-prepublish.m
 prepare <config.json>`. It reuses the cold packer and its prepublish guards, retains
 the original public closure and hashes, then extracts into private staging. Only
 copied manifests change: one higher stable version, closure dependency/optional/
-peer ranges, and private publishConfig registry. Built file hashes must match.
+peer ranges, private publishConfig registry and `provenance: false`. Local Verdaccio
+has no public OIDC attestation provider. This setting applies only to copied private
+test manifests, never public release policy. Source/native receipts and built file
+hashes must still match.
 Repacking disables lifecycle scripts. Source manifests and built artifacts stay
 unchanged. These candidates must never reach a public registry.
 

@@ -55,7 +55,7 @@ function prepare(c, root, env) {
     const file = join(directory, 'package/package.json');
     const info = JSON.parse(readFileSync(file)); info.version = c.candidate;
     // Tarball publishConfig can override npm's CLI registry. Pin only the private copy.
-    if (info.publishConfig) info.publishConfig.registry = privateRegistry(c.registry);
+    info.publishConfig = { ...info.publishConfig, registry: privateRegistry(c.registry), provenance: false };
     for (const [name, expected] of Object.entries(pkg.files)) if (name !== 'package.json') assert.equal(sha256(readFileSync(join(directory, 'package', name))), expected, `built bytes changed: ${pkg.name}/${name}`);
     for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) for (const name of Object.keys(info[field] ?? {})) if (names.has(name)) info[field][name] = c.candidate;
     writeFileSync(file, JSON.stringify(info, null, 2) + '\n');
