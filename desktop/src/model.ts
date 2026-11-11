@@ -32,10 +32,17 @@ export function computerSpaces(account: { spaces: ComputerSpace[] }): ComputerSp
   return account.spaces.filter(row => row.desired || row.observed === "connected" || row.observed === "removed on this computer");
 }
 
+export function canonicalProvider(value: string): string {
+  const url = new URL(approvalUrl(value));
+  if (url.search || url.hash) throw new Error("The provider URL must not contain a query or fragment.");
+  const path = url.pathname.replace(/\/+$/, "");
+  return url.origin + (path || "/api/auth");
+}
+
 export interface ComputerAccount { idpUrl?: string; mode: string; hostSupport: string; spaces: ComputerSpace[] }
 export function activeComputerAccount(account: ComputerAccount & { accounts?: ComputerAccount[] } | undefined, provider?: string): ComputerAccount | undefined {
   if (!account?.accounts) return account;
-  if (provider) return account.accounts.find(item => item.idpUrl === provider);
+  if (provider) return account.accounts.find(item => item.idpUrl !== undefined && canonicalProvider(item.idpUrl) === canonicalProvider(provider));
   const supported = account.accounts.filter(item => item.hostSupport === "supported");
   return supported.length === 1 ? supported[0] : undefined;
 }
@@ -45,7 +52,7 @@ export function catalogRefreshNotice(result: Record<string, unknown>, provider?:
   const failed = Array.isArray(result.failedProviders) && result.failedProviders.every(item => typeof item === "string") ? result.failedProviders as string[] : undefined;
   const partial = result.refresh === "failed" || result.refresh === "partial";
   if (partial && !failed) throw new Error("Some space catalogs could not be refreshed. Saved entries may be out of date.");
-  if (failed?.length && (!provider || failed.includes(provider))) {
+  if (failed?.length && (!provider || failed.some(item => canonicalProvider(item) === canonicalProvider(provider)))) {
     const host = provider ? new URL(provider).host : failed.map(url => new URL(url).host).join(", ");
     throw new Error(`Spaces from ${host} could not be refreshed. Saved entries from that host may be out of date.`);
   }

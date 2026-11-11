@@ -13,6 +13,10 @@ test("account follows active provider or the only supported account, not the las
   const good = { idpUrl: own, mode: "account", hostSupport: "supported", spaces: [] };
   const dead = { idpUrl: other, mode: "account", hostSupport: "unknown", spaces: [] };
   const status = { ...dead, accounts: [good, dead] };
+  for (const typed of ["https://cloud.cotal.ai", "https://cloud.cotal.ai/", `${own}/`]) {
+    assert.equal(activeComputerAccount(status, typed), good);
+    assert.throws(() => catalogRefreshNotice({ refresh: "partial", failedProviders: [own] }, typed), /cloud\.cotal\.ai/);
+  }
   assert.equal(activeComputerAccount(status), good);
   assert.equal(activeComputerAccount(status, own), good);
   assert.equal(activeComputerAccount(status, other), dead);
