@@ -167,7 +167,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
     if (value !== undefined) setUpdateSetting(key, value === "on");
     const settings = readUpdateSettings();
     rt.out(`${key === "auto" ? "Automatic updates" : "Update notices"}: ${settings[key] ? "on" : "off"}${rt.env.COTAL_NO_UPDATE_CHECK === "1" ? " (disabled by COTAL_NO_UPDATE_CHECK=1)" : ""}`);
-    if (key === "auto" && process.platform !== "linux") rt.out("Automatic installation is available on Linux in this release. Run cotal update --self here for a manual update.");
+    if (key === "auto" && process.platform !== "linux") rt.out("Automatic installation is available on Linux in this release. Run `cotal update --self` here for a manual update.");
     if (key === "auto" && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) rt.out("This runtime belongs to the desktop app. Automatic npm updates have no effect here; update the desktop app with its signed platform installer.");
     return;
   }
@@ -245,7 +245,7 @@ export function validateUpdateArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (args.values.auto || args.values.notify) {
     if (args.values.auto && args.values.notify || args.values.self || args.values.check || args.values.json || args.values.plain || args.values.space || args.values.server || args.values.creds || args.values.on || args.positionals.length > 1 || args.positionals.some(value => value !== "on" && value !== "off"))
-      throw new CommandFailure("refused", "USAGE_INVALID", "use cotal update --auto [off|on] or cotal update --notify [off|on] without other update flags");
+      throw new CommandFailure("refused", "USAGE_INVALID", "use `cotal update --auto [off|on]` or `cotal update --notify [off|on]` without other update flags");
     return;
   }
   if (args.positionals.length) throw new CommandFailure("refused", "USAGE_INVALID", "off or on requires --auto or --notify");
@@ -962,14 +962,14 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       snapshot.discard();
       clearUpdateRecovery();
       recordUpdateCompletion(targetVersion, `update failed; restored and reconciled ${current}`, false);
-      rt.err(`Update failed; cotal-ai@${current} was restored and reconciled. Run cotal update --self to try again.`);
+      rt.err(`Update failed; cotal-ai@${current} was restored and reconciled. Run \`cotal update --self\` to try again.`);
       return interrupted || failureStatus;
     } catch (error) {
       let installedVersion = "unknown";
       try { installedVersion = JSON.parse(readFileSync(join(root, "cotal-ai", "package.json"), "utf8")).version ?? "unknown"; } catch { /* Report an unknown install instead of claiming the previous tree survived. */ }
       const detail = `${reason}; repair failed: ${message(error)}`;
       writeUpdateRecovery({ ...readUpdateRecovery(), previous: current, target: targetVersion, installed: installedVersion, phase: "paused", reason: detail });
-      rt.err(c.red(`✗ Update stopped: installed cotal-ai ${installedVersion}; ${detail}. Automatic updates are paused. Run cotal update --self to repair this installation.`));
+      rt.err(c.red(`✗ Update stopped: installed cotal-ai ${installedVersion}; ${detail}. Automatic updates are paused. Run \`cotal update --self\` to repair this installation.`));
       return interrupted || failureStatus;
     }
   }

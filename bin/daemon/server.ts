@@ -255,7 +255,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           const cause = String(error instanceof Error ? error.message : error).replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
           log(`daemon: ${req.op} refused: ${cause}`);
           if (error instanceof HostedManagerRefusal) return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) } });
-          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "MANAGER_UNAVAILABLE", message: `the daemon could not complete ${req.op}: ${cause}`, remedy: "read cotal daemon status, restore the Manager connection if needed, then run the same command again" } });
+          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "MANAGER_UNAVAILABLE", message: `the daemon could not complete ${req.op}: ${cause}`, remedy: "read \`cotal daemon status\`, restore the Manager connection if needed, then run the same command again" } });
         }));
       };
       if (req.op === "manager-start" || req.op === "manager-status") {

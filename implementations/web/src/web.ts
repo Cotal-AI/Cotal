@@ -1115,9 +1115,9 @@ export type PostCapability =
  *  holds, and it has no seed to mint an operator from. */
 export const POST_OFF_CREDS = "This dashboard was started with --creds, which can only read.";
 /** Why posting is off on a per-user sign-in mesh. */
-export const POST_OFF_USER = "Posting from the dashboard isn't available on a sign-in mesh yet. Use cotal send.";
+export const POST_OFF_USER = "Posting from the dashboard isn't available on a sign-in mesh yet. Use `cotal send`.";
 /** Why posting is off on a dashboard run as a service: the service holds a read-only credential. */
-export const POST_OFF_SERVICE = "This dashboard runs as a read-only service. Use cotal send.";
+export const POST_OFF_SERVICE = "This dashboard runs as a read-only service. Use `cotal send`.";
 
 /** The operator credential's lifetime: 24 days. Core arms a reconnect fence with one `setTimeout`
  *  at the credential's expiry, and Node caps a timer at 2^31-1 ms (about 24.8 days), so a longer

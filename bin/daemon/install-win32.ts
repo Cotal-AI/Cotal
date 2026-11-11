@@ -172,7 +172,7 @@ export function scheduledTaskService(run: NativeRun): WindowsTaskService {
   };
   const step = (args: readonly string[]): void => {
     const result = run(system32("schtasks.exe"), args);
-    if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `schtasks ${args.join(" ")} did not confirm completion (${result.detail}); it was not retried`, { remedy: "inspect the task in Task Scheduler, then remove it with cotal daemon uninstall" });
+    if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `schtasks ${args.join(" ")} did not confirm completion (${result.detail}); it was not retried`, { remedy: "inspect the task in Task Scheduler, then remove it with \`cotal daemon uninstall\`" });
   };
   /** The registered task, refused unless it runs the recorded definition's exact command. */
   const owned = (receipt: UnitReceipt, requireInstances = false): RegisteredTask => {

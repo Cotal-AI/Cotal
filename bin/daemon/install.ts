@@ -175,7 +175,7 @@ export function assertScheduledEntry(entry: string): void {
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (!file) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE",
     `the scheduled task entry is missing or is not a file: ${entry}; no task was prepared`,
-    { remedy: "repair or reinstall this Cotal installation before running cotal daemon install again" });
+    { remedy: "repair or reinstall this Cotal installation before running \`cotal daemon install\` again" });
 }
 
 /** One native tool call's outcome. `detail` is a bounded single line of its output for a refusal. */
@@ -672,7 +672,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
         enable() { task.enable(receipt); },
       });
     } catch (recoveryError) { recovery += ` (${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)})`; }
-    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: "inspect cotal daemon status and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: "inspect \`cotal daemon status\` and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
   } finally { clearInterval(heartbeat); socket?.destroy(); exclusion?.release(); }
 }
 
@@ -684,7 +684,7 @@ export async function restartInstalled(paths: DaemonPaths, daemonHome?: string, 
   else {
     submitSystemdUnitControl("stop", plan.unit);
     const result = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "start", plan.unit]);
-    if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the native daemon start did not confirm completion (${result.detail}); it was not retried`, { target: { unit: plan.unit }, remedy: "correct the native service error, then run cotal daemon start" });
+    if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the native daemon start did not confirm completion (${result.detail}); it was not retried`, { target: { unit: plan.unit }, remedy: "correct the native service error, then run \`cotal daemon start\`" });
   }
   return plan;
 }
@@ -706,7 +706,7 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
   catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
   const owner = readLifetimeRecord(paths.lock);
   let exclusion: ReturnType<typeof excludeLifetime> | undefined;
-  const uncertain = (detail: string) => new CommandFailure("unknown", "OPERATION_UNKNOWN", `${detail}; the daemon source and receipt were retained`, { remedy: "inspect cotal daemon status and the native service, then retry cotal daemon uninstall" });
+  const uncertain = (detail: string) => new CommandFailure("unknown", "OPERATION_UNKNOWN", `${detail}; the daemon source and receipt were retained`, { remedy: "inspect \`cotal daemon status\` and the native service, then retry \`cotal daemon uninstall\`" });
   try {
     if (socket && (!owner?.start || before?.pid !== owner.pid || before.start !== owner.start))
       throw uncertain("the daemon lifetime changed while its endpoint was opened");
