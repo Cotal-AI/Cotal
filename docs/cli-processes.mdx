@@ -599,8 +599,12 @@ After setup, use `cotal daemon service-status --space <s>` to read the machine c
 `cotal daemon service-disconnect --space <s>` to close it.
 Setup prints these commands with `--space=<s>` so names beginning with a hyphen also work.
 
-After sign-in, the daemon registers an account computer with hosts that support it. Each
-issuer and subject pair has its own protected, persisted computer UUID. It sends a metadata
+After sign-in, the daemon registers an account computer with hosts that support it.
+With several accounts, the status summary prefers a supported provider and breaks ties by
+provider URL, then subject. The `accounts` list retains each account's state. Catalog refresh
+replies include an optional `failedProviders` list of provider URLs. The desktop app reports
+other providers' failures as a notice when the active provider refreshed successfully.
+Each issuer and subject pair has its own protected, persisted computer UUID. It sends a metadata
 heartbeat every 60 seconds and polls the account's desired spaces every five seconds. Desired
 spaces start or inspect the Manager through the same hosting sequence as setup. Each space's
 connection check decides whether machine-service registration and owner approval are needed.

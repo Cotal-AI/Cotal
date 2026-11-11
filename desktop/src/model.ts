@@ -32,6 +32,28 @@ export function computerSpaces(account: { spaces: ComputerSpace[] }): ComputerSp
   return account.spaces.filter(row => row.desired || row.observed === "connected" || row.observed === "removed on this computer");
 }
 
+export interface ComputerAccount { idpUrl?: string; mode: string; hostSupport: string; spaces: ComputerSpace[] }
+export function activeComputerAccount(account: ComputerAccount & { accounts?: ComputerAccount[] } | undefined, provider?: string): ComputerAccount | undefined {
+  if (!account?.accounts) return account;
+  if (provider) return account.accounts.find(item => item.idpUrl === provider);
+  const supported = account.accounts.filter(item => item.hostSupport === "supported");
+  return supported.length === 1 ? supported[0] : undefined;
+}
+
+/** Return a non-blocking notice only when the active provider refreshed successfully. */
+export function catalogRefreshNotice(result: Record<string, unknown>, provider?: string): string {
+  const failed = Array.isArray(result.failedProviders) && result.failedProviders.every(item => typeof item === "string") ? result.failedProviders as string[] : undefined;
+  const partial = result.refresh === "failed" || result.refresh === "partial";
+  if (partial && !failed) throw new Error("Some space catalogs could not be refreshed. Saved entries may be out of date.");
+  if (failed?.length && (!provider || failed.includes(provider))) {
+    const host = provider ? new URL(provider).host : failed.map(url => new URL(url).host).join(", ");
+    throw new Error(`Spaces from ${host} could not be refreshed. Saved entries from that host may be out of date.`);
+  }
+  if (Number(result.collisions) > 0) throw new Error("Some space names conflict with existing registrations. No conflicting registration was replaced.");
+  if (Number(result.unreadable) > 0) throw new Error("Some local space registrations could not be read. They were not changed.");
+  return failed?.length ? `Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.` : "";
+}
+
 export interface AccountSpace { space: string; label: string; catalogId?: string; kind?: string; role?: string }
 
 /** Discovery selects a target, but never grants consent to connect. */
