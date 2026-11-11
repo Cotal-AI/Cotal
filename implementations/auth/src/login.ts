@@ -51,6 +51,8 @@ export interface IdpSession {
    *  email's local part, else its name, the first that is a chat name. Display only. Absent when
    *  none is, and in caches written by older builds. */
   name?: string;
+  /** Account display label returned by the provider, never an authorization identity. */
+  label?: string;
 }
 
 const SPACE_CATALOG_REL = "https://cotal.ai/relations/space-catalog";
@@ -501,6 +503,7 @@ export async function establishIdpSession(
   const handle = [claims.preferred_username, local, claims.name].find(
     (c): c is string => typeof c === "string" && chatNameProblem(c) === undefined,
   );
+  if (label) session.label = label;
   if (handle) session.name = handle;
   // The persistence fence: a cancel that lands after approval, while the proof was in flight,
   // must leave no session and no catalog entry on disk.
@@ -899,6 +902,7 @@ export function loadIdpSession(dir: string, idpUrl: string): IdpSession | undefi
     token: s.token,
     expiresAt: s.expiresAt,
     ...(typeof s.sub === "string" && s.sub ? { sub: s.sub } : {}),
+    ...(typeof s.label === "string" && s.label ? { label: s.label } : {}),
     ...(typeof s.name === "string" && s.name ? { name: s.name } : {}),
   };
 }
@@ -916,6 +920,7 @@ export function saveIdpSession(dir: string, idpUrl: string, session: IdpSession)
     token: session.token,
     expiresAt: session.expiresAt,
     ...(session.sub ? { sub: session.sub } : {}),
+    ...(session.label ? { label: session.label } : {}),
     ...(session.name ? { name: session.name } : {}),
   };
   mkSecretDir(dir); // harden the dir BEFORE the secret lands (0700 POSIX, private ACL win32)

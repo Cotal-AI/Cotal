@@ -47,16 +47,21 @@ export interface SetupResult {
   readonly registration?: RegisterResult;
 }
 
-export interface SetupOptions {
+interface InstallOptions {
   readonly noManager?: boolean;
+  readonly space?: string;
   readonly version?: string;
   readonly paths: DaemonPaths;
   readonly daemonHome: string | undefined;
+  readonly peerUid?: PeerUid;
+  readonly peerPid?: PeerPid;
+  readonly report: (line: string, progress?: SetupStep) => void;
+}
+
+export interface SetupOptions extends InstallOptions {
   readonly space: string;
   readonly idp?: string;
   readonly clientId?: string;
-  readonly peerUid?: PeerUid;
-  readonly peerPid?: PeerPid;
   /** Seconds to wait for the space owner's approval. 0 reports what it reached and stops. */
   readonly waitSeconds: number;
   /** Progress for a terminal, one line per step. */
@@ -68,7 +73,7 @@ export interface SetupOptions {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Wait for the daemon to answer its endpoint after a start, so the steps below reach a live one. */
-async function waitForDaemon(opts: SetupOptions, seconds: number): Promise<void> {
+async function waitForDaemon(opts: InstallOptions, seconds: number): Promise<void> {
   const deadline = Date.now() + seconds * 1000;
   let last: unknown;
   for (;;) {
@@ -92,7 +97,7 @@ async function waitForDaemon(opts: SetupOptions, seconds: number): Promise<void>
 }
 
 /** Whether a daemon answers this endpoint right now. Any refusal means no. */
-async function daemonAnswers(opts: SetupOptions): Promise<boolean> {
+async function daemonAnswers(opts: InstallOptions): Promise<boolean> {
   try {
     const reply = await queryDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid });
     return reply.ok;
@@ -100,7 +105,7 @@ async function daemonAnswers(opts: SetupOptions): Promise<boolean> {
 }
 
 /** Install the user service unless it is already installed, then wait for the daemon to answer. */
-async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<string | undefined> {
+async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promise<string | undefined> {
   let unit: string | undefined;
   let outcome: string, detail: string;
   try {
@@ -117,7 +122,7 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
     // and do not quietly use the running daemon either, because it is not a persistent service.
     if (await daemonAnswers(opts)) {
       throw new CommandFailure("refused", "CONFLICT", `a daemon already answers ${opts.paths.socket} and no installed unit is recorded for it, so this would install a second one that its lifetime lock refuses; nothing was installed`, {
-        remedy: `stop that daemon and run this again, or keep it and run ${codeSpan(daemonCommandCopy("register", opts.daemonHome, [["--space", opts.space]]))} and ${codeSpan(daemonCommandCopy("service-connect", opts.daemonHome, [["--space", opts.space]]))} by hand`,
+        remedy: opts.space ? `stop that daemon and run this again, or keep it and run ${codeSpan(daemonCommandCopy("register", opts.daemonHome, [["--space", opts.space]]))} and ${codeSpan(daemonCommandCopy("service-connect", opts.daemonHome, [["--space", opts.space]]))} by hand` : "stop that daemon and run this again to install its persistent service",
         native: { code: "RUNNING_WITHOUT_UNIT" },
       });
     }
@@ -137,7 +142,7 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
       if (!installation.same) {
         const remedy = `run setup from ${installation.installed}, or run ${codeSpan(daemonCommandCopy("uninstall", opts.daemonHome))} then setup from ${installation.current}`;
         if (reply.result.protocol !== DAEMON_PROTOCOL_VERSION) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; its protocol is incompatible and it was not restarted`, { remedy });
-        if (!opts.noManager) {
+        if (!opts.noManager && opts.space) {
           try { await managerViaDaemon(opts, { op: "manager-status", space: opts.space }); }
           catch { throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} runs Cotal ${reply.result.version}, while this CLI is ${installation.current}; it does not answer the hosting operations and was not restarted`, { remedy }); }
         }
@@ -166,6 +171,71 @@ async function ensureInstalled(opts: SetupOptions, steps: SetupStep[]): Promise<
   await waitForDaemon(opts, 60);
   opts.report(`service: the daemon answers at ${opts.paths.socket}`, { step: "install", outcome: "ready", detail: `the daemon answers at ${opts.paths.socket}` });
   return unit;
+}
+
+function hasNewApplications(manager: HostedManager): boolean {
+  return manager.connectors?.some(connector => connector.state !== "available"
+    && (/ harness needs (.+) on PATH/.exec(connector.reason ?? "")?.[1]?.split(", ") ?? [])
+      .some(binary => resolveOnPath(binary) !== undefined)) ?? false;
+}
+
+async function refreshApplications(opts: InstallOptions, steps: SetupStep[]): Promise<boolean> {
+  const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
+  if (!installation.same) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} cannot refresh applications from this installation`, { remedy: `run setup from ${installation.installed}` });
+  const refresh = planInstalledPathRefresh(opts.paths, opts.daemonHome);
+  if (!refresh && process.platform !== "win32") return false;
+  opts.report("service: waiting for hosted Managers to confirm readiness and an idle restart fence; readiness observation waits up to 15s", { step: "manager", outcome: "running", detail: "waiting for hosted Managers to confirm readiness and an idle restart fence" });
+  try { await managerViaDaemon(opts, { op: "managers-prepare-restart" }); }
+  catch (error) {
+    if (error instanceof CommandFailure && error.native?.code === "SEATS_ACTIVE") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${error.message}. The new application will become available after the seats stop and setup runs again. No service was changed or restarted`, { native: error.native, remedy: error.remedy });
+    throw error;
+  }
+  try {
+    refresh?.();
+    restartInstalled(opts.paths, opts.daemonHome, true);
+  } catch (error) {
+    try { await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
+    catch { /* Preserve the installation or native service failure. */ }
+    throw error;
+  }
+  const detail = process.platform === "win32" ? "restarted the service to read the current user PATH" : "refreshed the pinned PATH from this invocation, keeping existing directories";
+  steps.push({ step: "install", outcome: "path-refreshed", detail });
+  opts.report(`service: ${detail}`, steps.at(-1));
+  await waitForDaemon(opts, 60);
+  return true;
+}
+
+/** Connect this computer to an account without changing any space intent. */
+export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSeconds"> & { idp: string }) {
+  const steps: SetupStep[] = [];
+  const unit = await ensureInstalled(opts, steps);
+  const beforeRefresh = await queryDaemon(opts);
+  if (!beforeRefresh.ok) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", beforeRefresh.error.message);
+  if (beforeRefresh.result.managers?.some(hasNewApplications)) await refreshApplications(opts, steps);
+  const discovery = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
+  const signedIn = discovery.ok && !("event" in discovery) && "signedInProviders" in discovery.result
+    && discovery.result.signedInProviders?.includes(opts.idp);
+  if (!signedIn) {
+    const signed = await loginFromCli(opts);
+    if (!signed.ok) throw new CommandFailure("refused", "AUTH_REQUIRED", signed.message, { native: { code: signed.code } });
+    if (signed.result.outcome === "failed") throw new CommandFailure("refused", "AUTH_REQUIRED", signed.result.message);
+    steps.push({ step: "sign-in", outcome: "signed-in", detail: `signed in as ${signed.result.label || signed.result.sub}` });
+  } else steps.push({ step: "sign-in", outcome: "already-signed-in", detail: "already signed in; no approval was needed" });
+  opts.report(`sign-in: ${steps.at(-1)!.detail}`, steps.at(-1));
+  const deadline = Date.now() + 60_000;
+  for (;;) {
+    const status = await queryDaemon(opts);
+    const registration = status.ok ? (status.result.account?.accounts ?? [status.result.account]).find(item => item?.idpUrl === opts.idp) : undefined;
+    if (registration?.hostSupport === "unsupported") throw new CommandFailure("refused", "UNSUPPORTED", "this provider does not support account computers; use setup --space <s>");
+    if (registration?.mode === "sign-in-required") throw new CommandFailure("refused", "AUTH_REQUIRED", "sign in again to register this computer");
+    if (registration?.lastRegistration && registration.hostSupport === "supported") {
+      steps.push({ step: "register", outcome: "registered", detail: "this computer is registered with the account" });
+      if (!registration.machineId || !registration.sub || !registration.computer) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the daemon did not return this computer's account identity");
+      return { account: registration.sub, label: registration.label, computer: registration.computer, machineId: registration.machineId, steps, ...(unit ? { unit } : {}) };
+    }
+    if (Date.now() >= deadline) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the account did not confirm this computer's registration within 60 seconds; run setup again");
+    await sleep(250);
+  }
 }
 
 /** Sign in when needed. Keep a failed prerequisite for the independent Manager's service report. */
@@ -328,36 +398,8 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     });
     const inspectedExisting = manager.state === "answering";
     let refreshed = false;
-    const newlyResolvable = manager.connectors?.some(connector => connector.state !== "available"
-      && (/ harness needs (.+) on PATH/.exec(connector.reason ?? "")?.[1]?.split(", ") ?? [])
-        .some(binary => resolveOnPath(binary) !== undefined));
-    if (newlyResolvable) {
-      const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
-      if (!installation.same) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} cannot refresh applications from this installation`, { remedy: `run cotal daemon setup --space ${opts.space} from ${installation.installed}` });
-      const refresh = planInstalledPathRefresh(opts.paths, opts.daemonHome);
-      if (refresh || process.platform === "win32") {
-        // The daemon fences every hosted Manager, including spaces other than this setup target.
-        opts.report("service: waiting for hosted Managers to confirm readiness and an idle restart fence; readiness observation waits up to 15s", { step: "manager", outcome: "running", detail: "waiting for hosted Managers to confirm readiness and an idle restart fence" });
-        try { await managerViaDaemon(opts, { op: "managers-prepare-restart" }); }
-        catch (error) {
-          if (error instanceof CommandFailure && error.native?.code === "SEATS_ACTIVE") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${error.message}. The new application will become available after the seats stop and setup runs again. No service was changed or restarted`, { native: error.native, remedy: error.remedy });
-          throw error;
-        }
-        try {
-          refresh?.();
-          restartInstalled(opts.paths, opts.daemonHome, true);
-        } catch (error) {
-          try { await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
-          catch { /* Preserve the installation or native service failure. */ }
-          throw error;
-        }
-        const detail = process.platform === "win32" ? "restarted the service to read the current user PATH" : "refreshed the pinned PATH from this invocation, keeping existing directories";
-        steps.push({ step: "install", outcome: "path-refreshed", detail });
-        opts.report(`service: ${detail}`, steps.at(-1));
-        await waitForDaemon(opts, 60);
-        refreshed = true;
-      }
-    }
+    const newlyResolvable = hasNewApplications(manager);
+    if (newlyResolvable) refreshed = await refreshApplications(opts, steps);
     if (inspectedExisting || refreshed) manager = await managerViaDaemon(opts, { op: "manager-start", space: opts.space }) as HostedManager;
     steps.push({ step: "manager", outcome: manager.state, detail: manager.reason ?? manager.instanceId ?? manager.state });
     opts.report(`manager: ${manager.state}${manager.instanceId ? `, instance ${manager.instanceId}` : ""}`, steps.at(-1));

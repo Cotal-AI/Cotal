@@ -1,6 +1,8 @@
 /** Account computer acceptance: real daemon HTTP, process crash, and real broker reconciliation. */
 import { spawn } from "node:child_process";
 for (const [file, ...args] of [
+  ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--account-only", "--account-setup-journey", "--setup-no-connectors-repro"],
+  ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--account-only", "--account-hosted", "--account-setup-journey", "--setup-no-connectors-repro"],
   ["bin/smoke/daemon-account.smoke.ts"],
   ["bin/smoke/daemon-account-crash.smoke.ts"],
   ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--account-only"],
