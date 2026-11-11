@@ -473,18 +473,24 @@ function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUni
   return { same: canonical(installed.executable) === canonical(current.executable!) && canonical(installed.entry) === canonical(current.entry), installed: `${installed.executable} ${installed.entry}`, current: `${current.executable} ${current.entry}` };
 }
 
+export interface DaemonOwnershipObservation {
+  readonly state: "owned" | "not-owned" | "unknown";
+  readonly reason: "verified" | "marker-absent" | "identity-differs" | "source-marker-absent" | "observation-failed" | "observation-timeout" | "observation-aborted" | "worker-failed";
+}
+
 /** A native launch marker is trusted only with this installation's verified recorded source. */
-export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string): boolean {
-  if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return false;
+export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string): DaemonOwnershipObservation {
+  if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return { state: "not-owned", reason: "marker-absent" };
   try {
     const recorded = recordedUnit(paths, daemonHome);
-    if (!recordedDaemonIdentity(recorded).same) return false;
+    if (!recordedDaemonIdentity(recorded).same) return { state: "not-owned", reason: "identity-differs" };
     const { receipt, plan } = recorded;
     const source = readFileSync(receipt.unitPath).toString(plan.mechanism === "scheduled-task" ? "utf16le" : "utf8");
-    return plan.mechanism === "systemd-user" ? source.includes("Environment=COTAL_DAEMON_NATIVE_SERVICE=1")
+    const marked = plan.mechanism === "systemd-user" ? source.includes("Environment=COTAL_DAEMON_NATIVE_SERVICE=1")
       : plan.mechanism === "launchd-agent" ? source.includes("<key>COTAL_DAEMON_NATIVE_SERVICE</key><string>1</string>")
       : source.includes("daemon-native.js") || (source.includes("cotal-desktop.exe</Command>") && source.includes("<Arguments>--daemon"));
-  } catch { return false; }
+    return marked ? { state: "owned", reason: "verified" } : { state: "not-owned", reason: "source-marker-absent" };
+  } catch { return { state: "unknown", reason: "observation-failed" }; }
 }
 
 /** A delayed Windows native child must not publish after uninstall removed its installation. */
@@ -502,8 +508,9 @@ export function admitWindowsNativeDaemon(paths: DaemonPaths, daemonHome?: string
 }
 
 /** Observe native provenance without running supervisor tools on the serving event loop. */
-export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: string, signal?: AbortSignal): Promise<boolean> {
-  if (signal?.aborted || process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return Promise.resolve(false);
+export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: string, signal?: AbortSignal): Promise<DaemonOwnershipObservation> {
+  if (signal?.aborted) return Promise.resolve({ state: "unknown", reason: "observation-aborted" });
+  if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return Promise.resolve({ state: "not-owned", reason: "marker-absent" });
   return new Promise(resolve => {
     // Reuse the installer's exact source, identity and native-job checks. The worker's
     // default argv names this helper, so explicitly preserve the daemon's launch vector.
@@ -511,24 +518,24 @@ export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: strin
       const { parentPort, workerData } = require('node:worker_threads');
       process.argv = workerData.argv;
       process.execArgv = workerData.execArgv;
-      import(workerData.module).then(m => parentPort.postMessage(m.daemonStartedByOwnedService(workerData.paths, workerData.home))).catch(() => parentPort.postMessage(false));
+      import(workerData.module).then(m => parentPort.postMessage(m.daemonStartedByOwnedService(workerData.paths, workerData.home))).catch(() => parentPort.postMessage({ state: 'unknown', reason: 'worker-failed' }));
     `, { eval: true, workerData: { module: import.meta.url, paths, home: daemonHome, argv: process.argv, execArgv: process.execArgv }, stdout: true, stderr: true });
     worker.stdout.resume(); worker.stderr.resume();
     let settled = false;
-    const finish = (verified: boolean) => {
+    const finish = (observation: DaemonOwnershipObservation) => {
       if (settled) return;
       settled = true; clearTimeout(timer);
       signal?.removeEventListener("abort", aborted);
-      resolve(verified);
+      resolve(observation);
       void worker.terminate();
     };
     // whoami and the task lookup each retain their existing 30-second native bound.
-    const timer = setTimeout(() => finish(false), 65_000);
-    const aborted = () => finish(false);
+    const timer = setTimeout(() => finish({ state: "unknown", reason: "observation-timeout" }), 65_000);
+    const aborted = () => finish({ state: "unknown", reason: "observation-aborted" });
     signal?.addEventListener("abort", aborted, { once: true });
-    worker.once("message", value => finish(value === true));
-    worker.once("error", () => finish(false));
-    worker.once("exit", () => finish(false));
+    worker.once("message", (value: DaemonOwnershipObservation) => finish(value));
+    worker.once("error", () => finish({ state: "unknown", reason: "worker-failed" }));
+    worker.once("exit", () => finish({ state: "unknown", reason: "worker-failed" }));
   });
 }
 
