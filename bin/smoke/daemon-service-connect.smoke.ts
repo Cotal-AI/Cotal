@@ -2917,7 +2917,28 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             }
             const updater = spawn(process.execPath, [cliEntry, "update", "--self", "--space", ON], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
             let output = ""; updater.stdout.on("data", (b) => { output += String(b); }); updater.stderr.on("data", (b) => { output += String(b); });
-            const code = await new Promise<number | null>((resolve) => updater.once("exit", resolve));
+            if (closureRollback && process.argv.includes("--closure-dead-owner-repro")) {
+              const deadline = Date.now() + 90_000;
+              for (;;) {
+                try {
+                  const pkg = JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8"));
+                  const journal = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"));
+                  if (pkg.version === "0.151.3" && journal?.phase === "replacing") break;
+                } catch { /* Replacement writes the package and journal independently. */ }
+                if (Date.now() > deadline) throw new Error("dead-owner fixture never reached replacement");
+                await sleep(5);
+              }
+              updater.kill("SIGKILL");
+            }
+            let code = await new Promise<number | null>((resolve) => updater.once("exit", resolve));
+            if (closureRollback && process.argv.includes("--closure-dead-owner-repro")) {
+              await sleep(3000);
+              const resumed = spawn(process.execPath, [cliEntry, "update", "--space", ON], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+              resumed.stdout.on("data", b => { output += String(b); }); resumed.stderr.on("data", b => { output += String(b); });
+              const resumedCode = await new Promise<number | null>(resolve => resumed.once("exit", resolve));
+              check("CL next real update resumes dead replacement owner", resumedCode === 0 && output.includes("after an interrupted update"), { resumedCode, output });
+              code = 1;
+            }
             console.log("  UPDATE REPRO", JSON.stringify({ code, output }));
             if (closureRollback) {
               if (process.argv.includes("--closure-preflight-repro")) {
@@ -2926,7 +2947,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                 check("CL preflight leaves original Manager lifetime answering", unchanged.doc.result?.version === "0.151.2" && unchanged.doc.result?.managers?.some((row: { instanceId: string; state: string }) => row.instanceId === manager.instanceId && row.state === "answering"), unchanged);
                 return;
               }
-              check("CL failed new dependency restores previous generation", code === 1 && output.includes("closure post-preflight fixture failure") && output.includes("was restored and reconciled"), { code, output });
+              check("CL failed update restores previous generation", process.argv.includes("--closure-dead-owner-repro") ? output.includes("after an interrupted update") : code === 1 && output.includes("closure post-preflight fixture failure") && output.includes("was restored and reconciled"), { code, output });
               const installed = JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8"));
               const entries = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
               check("CL global and seven seeded surfaces return to previous generation", installed.version === "0.151.2" && entries.filter((e: { source?: string; version?: string }) => e.source === "seeded" && e.version === "0.151.2").length === 7, entries);
