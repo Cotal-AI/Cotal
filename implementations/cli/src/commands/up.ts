@@ -1,4 +1,5 @@
 import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
+import { drainAndClose } from "@cotal-ai/core";
 import { type ChildProcess } from "node:child_process";
 import { spawnBroker } from "../lib/broker-spawn.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -2822,7 +2823,7 @@ async function proveBoundListener(
       throw new Error(`${label} authenticated to a foreign NATS server name/nonce`);
     if (!nc.info.jetstream) throw new Error(`${label} listener has no JetStream`);
   } finally {
-    await nc.drain().catch(() => {});
+    await drainAndClose(nc).catch(() => {});
   }
   return proof;
 }
@@ -4777,7 +4778,7 @@ async function brokerVersion(server: string, space: string, creds?: string): Pro
     }
     return { version, presenceFileBacked };
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }
 
@@ -5033,7 +5034,7 @@ async function recreateIssuedStoresBeforeSetup(server: string, space: string, au
       throw new CommandFailure("refused", error.reason === "nothing-to-recreate" ? "CONFLICT" : "USAGE_INVALID", error.message, { target: { space, backupDir }, remedy: error.reason === "nothing-to-recreate" ? "start the space without --recreate-issued-stores" : "name a directory that does not exist yet, inside one that does" });
     throw error;
   } finally {
-    await nc.drain().catch(() => nc.close());
+    await drainAndClose(nc);
   }
   for (const store of removed) console.log(`→ backed up ${store.stream} (${store.messages} messages) to ${store.backup}, then deleted it`);
   console.log(c.dim("• the issued-authority stores are created again in the current shape; every generation issued before the upgrade is refused from now on"));
@@ -5051,7 +5052,7 @@ async function recreateMemoryBuckets(server: string, space: string, setup?: { cr
     for (const [bucket, ttl, storage] of ttlBuckets(space))
       if (storage === StorageType.Memory) await kvm.create(bucket, { ttl, storage });
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }
 
@@ -5089,7 +5090,7 @@ async function recreateDeletedStreams(opts: { root: string; space: string; serve
       }
     }
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
   if (held) return false;
   await postStart(opts.server, opts.space, setup, opts.seed ?? loadChannelsFile(opts.channels));

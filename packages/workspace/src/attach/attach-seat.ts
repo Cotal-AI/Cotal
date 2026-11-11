@@ -1,4 +1,4 @@
-import { dialerFor, mintCreds, newIdentity, oneLine, openSessionRail, standaloneConnectOpts, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
+import { dialerFor, drainAndClose, mintCreds, newIdentity, oneLine, openSessionRail, standaloneConnectOpts, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { divergentCwdAnchor } from "../auth-paths.js";
 import { ConnectRefusal, userSessionAuth } from "../connect.js";
@@ -40,17 +40,8 @@ export const withDeadline = async (work: Promise<boolean>, ms: number): Promise<
 const flushed = (nc: NatsConnection): Promise<boolean> =>
   withDeadline(nc.flush().then(() => true, () => false), LINK_DEADLINE_MS);
 
-/** Give a connection back, bounded. Draining is another flush, so a link that has already missed
- *  its deadline is closed outright instead of being asked to drain through the same dead socket.
- *  A drain that REJECTS has closed nothing either: it gives up inside that same flush, before the
- *  close it would have done, so a rejection means close it here or leak the socket. */
-const closeLink = async (nc: NatsConnection): Promise<void> => {
-  const drained = await withDeadline(nc.drain().then(() => true, () => false), LINK_DEADLINE_MS);
-  // The close gets the same deadline as everything else on this path. Tearing a socket down is
-  // local work and should not be able to wait at all, but "should not" is what the drain above was
-  // supposed to be too, and a bound that covers every wait but one is a bound with a footnote.
-  if (!drained) await withDeadline(nc.close().then(() => true, () => true), LINK_DEADLINE_MS);
-};
+/** Give the link its existing grace period, ending early if the broker closes it. */
+const closeLink = (nc: NatsConnection): Promise<void> => drainAndClose(nc, LINK_DEADLINE_MS);
 
 /** A session that ran at least this long counts as one that WORKED, whether or not the seat spoke.
  *  Below it, a link that comes up for the control round trip and dies again is a flap, and resetting

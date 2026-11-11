@@ -1,3 +1,4 @@
+import { drainAndClose } from "@cotal-ai/core";
 /**
  * THE ONE KICK AUTHORITY OF A MULTI-SPACE DELIVERY HOST.
  *
@@ -68,10 +69,10 @@ export function hostKickAuthority(opts: { root: string; server: string }): KickA
         try {
           await kickConnection(evictor, target);
         } finally {
-          await evictor.drain().catch(() => {});
+          await drainAndClose(evictor).catch(() => {});
         }
       } finally {
-        await observer.drain().catch(() => {});
+        await drainAndClose(observer).catch(() => {});
       }
     },
   };

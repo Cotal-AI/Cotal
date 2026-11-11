@@ -1,3 +1,4 @@
+import { drainAndClose } from "./connection-cleanup.js";
 /**
  * Authoritative channel-membership feed — the broker-sourced "who is subscribed to each channel"
  * the graph view draws (incl. silent readers and `live` channels that keep no enumerable roster).
@@ -170,7 +171,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     return await startFeed(opts, opened);
   } catch (err) {
     // `allSettled`: a drain that itself fails must not replace the startup error the caller needs.
-    await Promise.allSettled(opened.map((c) => c.drain()));
+    await Promise.allSettled(opened.map((c) => drainAndClose(c)));
     throw err;
   }
 }
@@ -389,11 +390,11 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       // Assign first so a concurrent stop() drains THIS connection rather than the already-closed
       // predecessor. If stop already ran, drain the fresh dial here.
       if (rwStopped) {
-        await connB.drain().catch(() => {});
+        await drainAndClose(connB).catch(() => {});
         return;
       }
     } catch (e) {
-      await next.drain().catch(() => {});
+      await drainAndClose(next).catch(() => {});
       throw new Error(`reloadRwCreds: could not rebind the feed on the fresh rw connection: ${(e as Error).message}`);
     }
   };
@@ -464,7 +465,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     connA = next;
     connA.closed().then((err) => { if (err) log(`conn A (system) closed: ${err.message}`); });
     if (rwStopped) {
-      await connA.drain().catch(() => {});
+      await drainAndClose(connA).catch(() => {});
       return;
     }
     bindTriggers();
@@ -714,19 +715,15 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       // free: it reads as a leak to whoever greps the log next, and it has already cost one
       // investigation. A teardown must not invent evidence.
       //
-      // Unbounded on purpose, and stated rather than hidden: a `reconcile()` that never settles hangs
-      // `stop()`. The drain below is already unbounded in exactly the same way, so this adds no new class
-      // of risk, and a timeout here would silently resume tearing down underneath a live poll, which is
-      // the behaviour being removed. `inFlight` never rejects (the poll catches internally), so no
+      // A `reconcile()` that never settles still hangs `stop()`: a timeout here would tear down
+      // underneath a live poll. Connection draining below has a separate, bounded grace period.
+      // `inFlight` never rejects (the poll catches internally), so no
       // `.catch` is needed to keep `stop()` from throwing.
       await inFlight;
       // A refresh already past its stop fence may be opening a replacement conn A or conn B; wait it
       // out so the drain below sees the connection that is actually live. Both chains never reject.
       await Promise.allSettled([obsTxn, rwTxn]);
-      await Promise.allSettled([connA.drain(), connB.drain()]);
-      // A disconnected drain can reject without closing its reconnect loop. Stop owns both
-      // connections even when the broker is gone; neither may reappear after stop resolves.
-      await Promise.all([connA.close(), connB.close()]);
+      await Promise.all([drainAndClose(connA), drainAndClose(connB)]);
     },
   };
 }

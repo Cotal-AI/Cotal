@@ -1,3 +1,4 @@
+import { drainAndClose } from "@cotal-ai/core";
 /**
  * Which running mesh a CONTROL command addresses, and the auth material it carries to the manager's
  * endpoint rails. Shared by every command surface that talks to the manager (`cotal ps`, `cotal
@@ -249,7 +250,7 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
       throw new Error(`managed seat issuance resolves to ${ref.owner}.${ref.actor}/${ref.uid}, not ${DEV_OWNER}.${actor}/${uid}`);
     epCaller = { owner: ref.owner, actor: ref.actor, uid: ref.uid, generation: ref.generation } as IssuedCaller;
   } finally {
-    await nc.drain().catch(() => nc.close());
+    await drainAndClose(nc);
   }
   if (instanceId === undefined) return { ...at, auth: { creds, tls: mesh.tlsRequired, epCaller } };
   if (!mesh.auth)

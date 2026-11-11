@@ -8,6 +8,7 @@
  * here and oversize is **rejected at the write path** — never silently truncated.
  */
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
+import { drainAndClose } from "./connection-cleanup.js";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { dialerFor } from "./endpoint.js";
 import { channelBucket, CHANNEL_DEFAULTS_KEY } from "./subjects.js";
@@ -269,7 +270,7 @@ export async function seedChannelRegistry(opts: {
     }
     return wrote;
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }
 
@@ -296,7 +297,7 @@ export async function ensureDefaultDeliveryClass(opts: {
     await writeChannelDefaults(kv, channelDeliveryDefaultPatch(opts.deliveryClass));
     return true;
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }
 
@@ -326,7 +327,7 @@ export async function deleteChannels(opts: {
     }
     return removed;
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }
 
@@ -387,6 +388,6 @@ export async function readChannelRegistry(opts: {
     }
     return { defaults, channels, ...(undecodable.length ? { undecodable } : {}) };
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }

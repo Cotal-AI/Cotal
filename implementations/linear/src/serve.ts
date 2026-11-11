@@ -16,6 +16,7 @@
  * it never enters this static signer path.
  */
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { drainAndClose } from "@cotal-ai/core";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
   authorizeServeGrant,
@@ -100,7 +101,7 @@ export async function runLinearEndpoint(bundle: LinearServeBundle, upstream: Lin
   try {
     handle = serveEndpoint(nc, bundle.space, bundle.grant, linearCommandDefs(upstream), { public: true });
   } catch (e) {
-    await nc.drain().catch(() => nc.close());
+    await drainAndClose(nc);
     throw e;
   }
   return {
@@ -110,8 +111,7 @@ export async function runLinearEndpoint(bundle: LinearServeBundle, upstream: Lin
     closed: nc.closed().then((e) => e ?? undefined),
     async stop(graceMs = 10_000) {
       await within(handle.stop(), graceMs);
-      await within(nc.drain().catch(() => nc.close()), graceMs);
-      if (!nc.isClosed()) await nc.close().catch(() => {});
+      await drainAndClose(nc, graceMs);
       await upstream.close(graceMs);
     },
   };
@@ -158,7 +158,7 @@ export async function registerLinearEndpoint(opts: {
       const kvm = new Kvm(nc);
       return await fn({ recordsKv: await kvm.open(recordsBucket(space)), authKv: await kvm.open(epAuthBucket(space)), nc });
     } finally {
-      await nc.drain().catch(() => nc.close());
+      await drainAndClose(nc);
     }
   };
   const fenceOf = (authKv: KV) => serveIssuanceGateKv(authKv, space, { endpoint, instanceId });

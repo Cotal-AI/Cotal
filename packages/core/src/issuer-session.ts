@@ -1,3 +1,4 @@
+import { drainAndClose } from "./connection-cleanup.js";
 /**
  * The `issuer` connection (SPEC 13.15), over which a mint stages and releases its evidence and
  * writes the accepted row, a lifecycle terminal retires the issuances bound to its ledger family,
@@ -83,7 +84,7 @@ export async function withLifecycleExecutorSession<T>(
     const kvm = new Kvm(nc);
     return await fn(kvLifecycleTransport(await kvm.open(recordsBucket(args.space)), await kvm.open(epAuthBucket(args.space))));
   } finally {
-    await nc.drain().catch(() => nc.close());
+    await drainAndClose(nc);
   }
 }
 
@@ -93,7 +94,7 @@ export async function withIssuerSession<T>(args: IssuerSessionArgs, fn: (session
   try {
     return await fn(session);
   } finally {
-    await session.nc.drain().catch(() => session.nc.close());
+    await drainAndClose(session.nc);
   }
 }
 
@@ -128,7 +129,7 @@ export function holdIssuerSession(args: IssuerSessionArgs & { name: string; ttlS
     if (closed) throw new EpEnvelopeError("unavailable", `the issuer session for space "${args.space}" is closed`);
   };
   // Settles without rejecting: a teardown that fails leaves nothing this holder could do again.
-  const drain = (h: Held): Promise<void> => h.drained ??= h.session.nc.drain().catch(() => h.session.nc.close()).catch(() => {});
+  const drain = (h: Held): Promise<void> => h.drained ??= drainAndClose(h.session.nc).catch(() => {});
   const retire = (h: Held): void => {
     h.retired = true;
     h.cancel();
