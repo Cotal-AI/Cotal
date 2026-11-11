@@ -33,6 +33,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join, posix } from "node:path";
+import { Worker } from "node:worker_threads";
 import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
 import { codeSpan, CommandFailure } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
@@ -427,7 +428,10 @@ export function startInstalled(paths: DaemonPaths, daemonHome: string | undefine
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
 export function installedDaemonIdentity(paths: DaemonPaths, daemonHome?: string): { same: boolean; installed: string; current: string } {
-  const { receipt, plan } = recordedUnit(paths, daemonHome);
+  return recordedDaemonIdentity(recordedUnit(paths, daemonHome));
+}
+
+function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUnit>): { same: boolean; installed: string; current: string } {
   const bytes = readFileSync(receipt.unitPath);
   const decode = (value: string) => value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
   let argv: string[];
@@ -463,13 +467,45 @@ export function installedDaemonIdentity(paths: DaemonPaths, daemonHome?: string)
 export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string): boolean {
   if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return false;
   try {
-    if (!installedDaemonIdentity(paths, daemonHome).same) return false;
-    const { receipt, plan } = recordedUnit(paths, daemonHome);
+    const recorded = recordedUnit(paths, daemonHome);
+    if (!recordedDaemonIdentity(recorded).same) return false;
+    const { receipt, plan } = recorded;
     const source = readFileSync(receipt.unitPath).toString(plan.mechanism === "scheduled-task" ? "utf16le" : "utf8");
     return plan.mechanism === "systemd-user" ? source.includes("Environment=COTAL_DAEMON_NATIVE_SERVICE=1")
       : plan.mechanism === "launchd-agent" ? source.includes("<key>COTAL_DAEMON_NATIVE_SERVICE</key><string>1</string>")
       : source.includes("daemon-native.js");
   } catch { return false; }
+}
+
+/** Observe native provenance without running supervisor tools on the serving event loop. */
+export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: string, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted || process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return Promise.resolve(false);
+  return new Promise(resolve => {
+    // Reuse the installer's exact source, identity and native-job checks. The worker's
+    // default argv names this helper, so explicitly preserve the daemon's launch vector.
+    const worker = new Worker(`
+      const { parentPort, workerData } = require('node:worker_threads');
+      process.argv = workerData.argv;
+      process.execArgv = workerData.execArgv;
+      import(workerData.module).then(m => parentPort.postMessage(m.daemonStartedByOwnedService(workerData.paths, workerData.home))).catch(() => parentPort.postMessage(false));
+    `, { eval: true, workerData: { module: import.meta.url, paths, home: daemonHome, argv: process.argv, execArgv: process.execArgv }, stdout: true, stderr: true });
+    worker.stdout.resume(); worker.stderr.resume();
+    let settled = false;
+    const finish = (verified: boolean) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      signal?.removeEventListener("abort", aborted);
+      resolve(verified);
+      void worker.terminate();
+    };
+    // whoami and the task lookup each retain their existing 30-second native bound.
+    const timer = setTimeout(() => finish(false), 65_000);
+    const aborted = () => finish(false);
+    signal?.addEventListener("abort", aborted, { once: true });
+    worker.once("message", value => finish(value === true));
+    worker.once("error", () => finish(false));
+    worker.once("exit", () => finish(false));
+  });
 }
 
 /** Restart only the source and native job recorded for this daemon. */
