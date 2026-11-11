@@ -179,12 +179,12 @@ class MemoryStore implements SecretStore /* the auth services' stores; the daemo
 }
 
 // ---------- owned sandbox ----------
-const root = mkdtempSync(join(scratchParent, "cdr-"));
+const root = mkdtempSync(join(scratchParent, process.argv.includes("--account-only") || process.argv.includes("--signin-parity") ? "dacct-" : "cdr-"));
 chmodSync(root, 0o700);
 const home = join(root, "home"), participant = join(root, "participant"), rtDir = join(root, "rt"), jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}a2b2-js-`));
 for (const d of [home, participant, rtDir]) mkdirSync(d, { mode: 0o700 });
 process.env.COTAL_HOME = home;
-if (setupProgressOnly) {
+if (setupProgressOnly || process.argv.includes("--account-only")) {
   process.env.HOME = home;
   process.env.XDG_CONFIG_HOME = join(root, "config");
   process.env.XDG_RUNTIME_DIR = rtDir;
@@ -199,7 +199,15 @@ const key = await generateKeyPair("EdDSA");
 const jwk = { ...await exportJWK(key.publicKey), kid: "a2b2-idp" };
 const SESSION = "a2b2-session-handle-not-a-secret";
 let idpOrigin = "";
+const accountOnly = process.argv.includes("--account-only");
+let accountDesired = false;
+let accountRevision = 1;
+let accountBindingRevision = 1;
+let accountHttp = 200;
+let accountHang = false;
+let accountHangs = 0;
 let catalog: unknown;
+const accountTargets = new Map<string, string>();
 let catalogSpace: string | undefined;
 let catalogTarget: string | undefined;
 const jwtsIssued: string[] = [];
@@ -223,8 +231,26 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     if (recoverOnApproval) idpRevoked = false;
     return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
   }
+  if (accountOnly && req.url?.startsWith("/api/cli/machines/")) {
+    const machineId = req.url.split("/")[4];
+    if (req.method === "PUT") { res.end(JSON.stringify({ v: 1, machine: { id: machineId, lastSeenAt: new Date().toISOString() } })); return; }
+    if (accountHang && req.method === "GET") { accountHangs++; return; }
+    if (accountHttp !== 200) { res.writeHead(accountHttp); res.end(accountHttp === 304 ? undefined : "{}"); return; }
+    const snapshot = catalog as { account: unknown; spaces: { id: string }[] };
+    const spaces = accountDesired ? snapshot.spaces : [];
+    res.setHeader("etag", JSON.stringify(accountRevision));
+    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
+  }
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
   if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(catalog));
+  const accountTarget = [...accountTargets].find(([space]) => req.url?.startsWith(`/account-space/${space}/`));
+  if (accountOnly && accountTarget) {
+    const [space, target] = accountTarget;
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const answer = await fetch(`${target}${req.url!.slice(`/account-space/${space}`.length)}`, { method: req.method, headers: { "content-type": "application/json" }, ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) });
+    res.writeHead(answer.status); res.end(Buffer.from(await answer.arrayBuffer())); return;
+  }
   if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
     catalogAuthorityRequests++;
     if (catalogAuthorityDown) { res.writeHead(503); res.end("{}"); return; }
@@ -1660,6 +1686,103 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         writeFileSync(join(pathBin, "systemctl"), `#!${process.execPath}\nconst args=process.argv.slice(2);if(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}const op=args.includes('daemon-reload')?'daemon-reload':args.at(-2);if(!['stop','start','disable','daemon-reload'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
       }
       try {
+        if (process.argv.includes("--signin-parity")) {
+          const publicCli = async (...args: string[]) => {
+            const command = spawn(process.execPath, [cliEntry, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+            let out = "", err = "";
+            command.stdout.on("data", b => { out += String(b); });
+            command.stderr.on("data", b => { err += String(b); });
+            const code = await new Promise<number | null>(resolve => command.once("close", resolve));
+            return { code, out, err };
+          };
+          const before = deviceCodeRequests;
+          const signedIn = await cli("login", "--idp", idpUrl);
+          check("P1 daemon device login succeeds in fresh shared home", signedIn.code === 0 && deviceCodeRequests === before + 1, signedIn);
+          const refreshed = await cli("spaces", "--refresh");
+          check("P2a daemon refresh publishes the signed-in catalog", refreshed.code === 0, refreshed);
+          const spaces = await publicCli("space", "--json");
+          check("P2 ordinary CLI space listing discovers signed-in catalog", spaces.code === 0 && spaces.out.includes(ON), spaces);
+          const selected = await publicCli("use", ON, "--json");
+          check("P3 select catalog space through CLI", selected.code === 0, selected);
+          const identity = await publicCli("whoami", "--plain");
+          check("P4 plain CLI whoami uses daemon sign-in", identity.code === 0 && identity.out.includes("machine-owner"), identity);
+          const read = await publicCli("channel", "--json");
+          check("P5 authenticated CLI broker read uses shared sign-in without prompt", read.code === 0 && deviceCodeRequests === before + 1, read);
+          const logout = await publicCli("logout", "--idp", idpUrl, "--local", "--json");
+          check("P6 local CLI logout succeeds", logout.code === 0, logout);
+          const reverseBefore = deviceCodeRequests;
+          const login = await publicCli("login", "--idp", idpUrl, "--plain");
+          check("P7 ordinary CLI device login succeeds", login.code === 0 && deviceCodeRequests === reverseBefore + 1, login);
+          const daemonSpaces = await cli("spaces");
+          check("P8 running daemon observes CLI sign-in without another prompt", daemonSpaces.code === 0 && daemonSpaces.doc.result?.signedInProviders?.includes(idpUrl) && deviceCodeRequests === reverseBefore + 1, daemonSpaces);
+          await killAndAwaitExit(child, "SIGTERM");
+          const isolated = join(root, "isolated-daemon");
+          mkdirSync(isolated, { mode: 0o700 });
+          child = await startDaemon(isolated);
+          const isolatedSpaces = await publicCli("daemon", "spaces", "--daemon-home", isolated, "--json");
+          check("P9 explicit daemon home does not inherit CLI sign-in", isolatedSpaces.code === 0 && JSON.parse(isolatedSpaces.out).result.signedInProviders.length === 0, isolatedSpaces);
+          const isolatedLogin = await publicCli("daemon", "login", "--idp", idpUrl, "--daemon-home", isolated, "--json");
+          check("P10 explicit daemon home requires its own device sign-in", isolatedLogin.code === 0 && deviceCodeRequests === reverseBefore + 2, isolatedLogin);
+          check("P11 no public output exposes fixture session", !JSON.stringify([signedIn, spaces, identity, read, login, daemonSpaces, isolatedLogin]).includes(SESSION));
+          return;
+        }
+        if (accountOnly) {
+          saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+          const pendingPublished = await (await fetch(`${svc[2]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as Record<string, any>;
+          accountTargets.set(DENY, svc[2]!.publicUrl!.replace(/\/$/, ""));
+          removeMesh(DENY);
+          (catalog as { spaces: unknown[] }).spaces.unshift({ id: DENY, slug: DENY, name: "Pending space", kind: "team", role: "member", registration: { ...pendingPublished, space: DENY, tlsRequired: false, userAuth: { ...pendingPublished.userAuth, endpoints: { url: `${idpOrigin}/account-space/${DENY}` } } } });
+          accountDesired = true;
+          const observed = async () => resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+          const waitAccount = async (predicate: (s: Record<string, any>) => boolean, label: string) => {
+            let value: Record<string, any> = {};
+            for (let i = 0; i < 120; i++) { value = await observed(); if (predicate(value)) break; await sleep(500); }
+            check(label, predicate(value), value); return value;
+          };
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "approval-pending"), "A0 desired registration remains pending without owner approval");
+          await approve(host, ON, fixture.owner);
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A1 desired 200 connects real broker service");
+          await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === "approval-pending"));
+          accountHttp = 503; await sleep(5500);
+          check("A2c 503 never disconnects a connected space", (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
+          accountHttp = 304; await sleep(5500);
+          check("A2d 304 never disconnects a connected space", (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
+          accountHttp = 200;
+          accountHang = true;
+          for (let i = 0; i < 120 && !accountHangs; i++) await sleep(500);
+          await sleep(31_000);
+          check("A2e real request timeout never disconnects connected space", accountHangs > 0 && (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
+          accountHang = false;
+          const humanStatus = await plainCommand("status");
+          check("A2a CLI human status names account computer and desired revision", humanStatus.code === 0 && humanStatus.out.includes("Account computer") && humanStatus.out.includes("Desired revision") && humanStatus.out.includes(ON), humanStatus);
+          const jsonStatus = await cli("status");
+          check("A2b CLI status JSON includes account desired and observed fields", jsonStatus.doc.result?.account?.spaces?.some((r: any) => r.space === ON && r.desired && r.observed === "connected"), jsonStatus);
+          removeMesh(ON);
+          await sleep(6000);
+          let removedStatus: Record<string, any> = {};
+          for (let i = 0; i < 60; i++) {
+            removedStatus = resultOf(await ask(paths.socket, { op: "service-status", space: ON }, 25_000));
+            if (removedStatus.state !== "connected") break;
+            await sleep(500);
+          }
+          check("A2g local registry removal closes active service", removedStatus.state !== "connected", removedStatus);
+          accountBindingRevision = ++accountRevision;
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A2h dashboard rebind restores locally removed registration");
+          await ask(paths.socket, { op: "service-disconnect", space: ON }, 100_000);
+          accountRevision++;
+          await sleep(6000);
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "removed on this computer"), "A3 unrelated machine revision cannot clear local veto");
+          accountHttp = 304; await sleep(5500);
+          check("A4 304 keeps local veto", (await observed()).account?.spaces?.some((r: any) => r.observed === "removed on this computer"));
+          accountHttp = 503; await sleep(5500);
+          check("A5 503 keeps local veto", (await observed()).account?.spaces?.some((r: any) => r.observed === "removed on this computer"));
+          accountHttp = 200; accountBindingRevision = ++accountRevision;
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A6 same-binding revision releases local veto");
+          accountDesired = false; accountRevision++;
+          await waitAccount(s => !s.account?.spaces?.some((r: any) => r.space === ON) && s.managers?.every((r: any) => r.space !== ON || r.state === "stopped"), "A7 desired removal disconnects service and stops Manager");
+          return;
+        }
         if (explicitHome) {
           saveIdpSession(explicitHome, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
           recordMesh({ ...original, server: published.server, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString(), userAuth: { ...published.userAuth, remote: true, sentinelCredsPath: original.userAuth!.sentinelCredsPath } });

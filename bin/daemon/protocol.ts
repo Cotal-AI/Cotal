@@ -12,6 +12,7 @@
  * session, token, JWT or device code; the verification URL and user code are the only IdP values
  * the requester sees, because a person must type them.
  */
+import type { AccountComputerStatus } from "./account-state.js";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
@@ -57,6 +58,7 @@ export type ProtocolErrorCode =
   | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "DEPENDENCY_UNAVAILABLE" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "GENERATION_PENDING";
 
 export interface DaemonStatus {
+  readonly account?: AccountComputerStatus;
   readonly generation?: { readonly installed: string; readonly running: string; readonly waiting: string };
   readonly managers?: readonly HostedManager[];
   /** The local control listener is bound and verified. It does NOT mean connected to a mesh or Cloud. */

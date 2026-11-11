@@ -75,6 +75,8 @@ export {
   deleteIdpSpaceCatalog,
   hasIdpSpaceCatalog,
   prepareIdpSpaceCatalogs,
+  signedInMachineAccounts,
+  requestAccountMachine,
   requireIdpSession,
   normalizeIdpUrl,
   probeIdpJwks,
