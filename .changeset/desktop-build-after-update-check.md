@@ -1,4 +1,6 @@
 ---
+"@cotal-ai/cli": patch
+"cotal-ai": patch
 ---
 
-Keep the desktop build's runtime version check and the update snapshot suite working after the update notice was added.
+`cotal --version` prints an update line only when a newer version is known or an update needs repair. It no longer prints "update status unknown" or "up to date" under the version.

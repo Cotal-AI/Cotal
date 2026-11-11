@@ -51,7 +51,10 @@ export async function version(args: ParsedArgs): Promise<void> {
     return;
   }
   const exts = extensionVersions();
-  const lines = [`cotal-ai ${cliVersion()}`, `  ${cachedUpdateSummary(cliVersion())}`];
+  // The human form adds an update line only when there is something to act on. The JSON form
+  // always carries the state.
+  const update = cachedUpdateSummary(cliVersion());
+  const lines = [`cotal-ai ${cliVersion()}`, ...(update === "update status unknown" || update === "up to date" ? [] : [`  ${update}`])];
   if (exts.length) {
     const pad = Math.max(...exts.map((e) => e.label.length));
     for (const e of exts) lines.push(`  ${e.label.padEnd(pad)}  ${e.version}`);
