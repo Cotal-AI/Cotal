@@ -179,7 +179,8 @@ function showStage(next: Stage, focus = false): void {
   let title: string, description: string;
   if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
-  else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in again"; description = "Approve this computer in your browser to keep managing its spaces."; }
+  else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in to keep this computer connected"; description = "Approve this computer in your browser to keep managing its spaces."; }
+  else if (finished && computerAccount?.hostSupport === "supported") { title = anyConnected ? connectionView("launch-ready").title : computerSpaces(computerAccount).some(row => row.desired && row.observed !== "removed on this computer") ? "This computer is starting" : "No space is using this computer"; description = connectionView("launch-ready").description; }
   else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${accountSpaces.get(pending[0])?.label ?? pending[0]} needs to approve this computer. It connects by itself once they do.`; }
   else if (finished) { title = anyConnected ? connectionView("launch-ready").title : "Spaces using this computer"; description = connectionView("launch-ready").description; }
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
@@ -219,9 +220,9 @@ function showStage(next: Stage, focus = false): void {
   el("dashboard").hidden = addingSpace || !(anyConnected || computerAccount?.hostSupport === "supported");
   if (finished && pending) { el("connection-icon").dataset.tone = "waiting"; setIcon(el("connection-icon"), "clock"); }
   el("another-space").hidden = addingSpace;
-  el("sign-in-again").hidden = addingSpace;
+  el("sign-in-again").hidden = addingSpace || computerAccount?.mode !== "sign-in-required";
   if (finished && computerAccount?.mode === "sign-in-required") {
-    text("sign-in-again", "Sign in again");
+    text("sign-in-again", "Sign in");
     el("connected-spaces").hidden = true;
   } else el("connected-spaces").hidden = false;
   el("retry-login").hidden = addingSpace;
@@ -233,7 +234,9 @@ function showStage(next: Stage, focus = false): void {
   if (finished && computerAccount?.hostSupport === "supported") {
     const signInRequired = computerAccount.mode === "sign-in-required";
     el("spaces-heading").hidden = signInRequired || !anyConnected;
-    if (!anyConnected) { el("connection-icon").dataset.tone = "waiting"; setIcon(el("connection-icon"), signInRequired ? "browser" : "clock"); }
+    const starting = computerSpaces(computerAccount).some(row => row.desired && row.observed !== "removed on this computer");
+    text("tray-label", anyConnected ? "Connected" : starting && !signInRequired ? "Starting" : "Not connected");
+    if (!anyConnected) { el("connection-icon").dataset.tone = signInRequired || starting ? "waiting" : "neutral"; setIcon(el("connection-icon"), signInRequired ? "browser" : starting ? "clock" : "computer"); }
   } else el("spaces-heading").hidden = false;
   el("dashboard-spaces-note").hidden = !finished || addingSpace || computerAccount?.hostSupport !== "supported" || computerAccount.mode === "sign-in-required";
   el("connection-icon").hidden = addingSpace;
@@ -597,7 +600,7 @@ async function start(): Promise<void> {
   } catch (error) { refusal(error); }
   initialized = true;
   document.querySelector(".app")!.classList.remove("loading");
-  text("tray-label", [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");
+  if (computerAccount?.hostSupport !== "supported") text("tray-label", [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");
   const tick = async () => { if (!busy && !document.hidden) await refresh(); poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000); };
   poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000);
 }

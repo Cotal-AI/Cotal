@@ -4,7 +4,8 @@
 #space-panel .actions { margin-top: 0; }
 #sync { margin-left: 0; padding-left: 0; }
 #add-space-panel:not(:empty) { margin: 16px 0; }
-#applications-label { margin: 0 0 4px; font-size: 12px; }
+#sign-in-again.button { margin-left: 0; }
+#applications-label, #dashboard-spaces-note { margin: 0 0 4px; font-size: 12px; }
 .application-chips { margin-bottom: 8px; }
 #connected-spaces { list-style: none; padding: 0; margin: 8px 0 16px; }
 #connected-spaces li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 2px solid var(--rule); }
