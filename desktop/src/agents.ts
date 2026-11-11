@@ -19,6 +19,11 @@ export function agentInventory(status: Record<string, unknown>): AgentInventory 
 export function renderAgents(status: Record<string, unknown>, root: HTMLElement): void {
   const inventory = agentInventory(status);
   root.dataset.available = String(inventory.available);
+  root.closest(".connection-card")?.classList.toggle("has-running-agents", inventory.agents.length > 0);
+  const heading = root.querySelector("#agents-heading")!;
+  let count = heading.querySelector<HTMLElement>(".agent-count");
+  if (!count) { count = document.createElement("span"); count.className = "agent-count"; heading.replaceChildren(document.createTextNode("Running on this computer "), count); }
+  count.textContent = inventory.unreadable.length || !inventory.available ? "(could not read)" : `(${inventory.agents.length})`;
   const list = root.querySelector<HTMLElement>("#agent-list")!;
   const empty = root.querySelector<HTMLElement>("#agents-empty")!;
   const warning = root.querySelector<HTMLElement>("#agents-unavailable")!;
@@ -26,7 +31,7 @@ export function renderAgents(status: Record<string, unknown>, root: HTMLElement)
   warning.hidden = inventory.available && !inventory.unreadable.length;
   warning.textContent = inventory.available ? `Could not read agents in ${inventory.unreadable.join(", ")}.` : "Agent inventory is unavailable. Update the background service to read it.";
   const keys = new Set<string>();
-  if (inventory.agents.length > 3) list.tabIndex = 0;
+  if (inventory.agents.length > 6) list.tabIndex = 0;
   else list.removeAttribute("tabindex");
   for (const agent of inventory.agents) {
     const key = JSON.stringify([agent.space, agent.name, agent.startedAt]);
@@ -34,16 +39,18 @@ export function renderAgents(status: Record<string, unknown>, root: HTMLElement)
     let row = Array.from(list.children).find(node => (node as HTMLElement).dataset.key === key) as HTMLElement | undefined;
     if (!row) {
       row = document.createElement("li"); row.className = "agent-row"; row.dataset.key = key;
-      for (const name of ["agent-name", "agent-meta", "agent-folder", "agent-time"]) {
+      for (const name of ["agent-name", "agent-meta application-chip", "agent-folder", "agent-time"]) {
         const span = document.createElement("span"); span.className = name; row.append(span);
       }
       list.append(row);
     }
-    const values = [shortFolder(agent.name, 28), `${agent.application} · ${agent.space}${agent.model ? ` · ${agent.model}` : ""}`, shortFolder(agent.cwd), agent.state === "running" ? runningFor(agent.startedAt) : "Exited"];
+    const values = [shortFolder(agent.name, 28), agent.application, `${shortFolder(agent.cwd, 32)} · ${agent.space}`,  agent.state === "running" ? runningFor(agent.startedAt) : "Exited"];
     Array.from(row.children).forEach((node, i) => { if (node.textContent !== values[i]) node.textContent = values[i]!; });
     (row.children[0] as HTMLElement).title = agent.name;
     row.children[0]!.setAttribute("aria-label", agent.name);
-    (row.children[1] as HTMLElement).title = values[1]!;
+    row.title = `${agent.name} · ${agent.application}${agent.model ? ` · Model: ${agent.model}` : ""}`;
+    row.setAttribute("aria-label", `${row.title} · ${agent.cwd} · ${agent.space}`);
+    (row.children[1] as HTMLElement).title = row.title;
     const folder = row.children[2] as HTMLElement; folder.title = agent.cwd; folder.setAttribute("aria-label", agent.cwd);
     (row.children[3] as HTMLElement).title = `Started ${agent.startedAt}`;
   }

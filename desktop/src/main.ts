@@ -451,6 +451,7 @@ function showApplications(manager: unknown): void {
   const available = connectors.filter(c => c.state === "available" && typeof c.agent === "string").map(c => names[c.agent!] ?? c.agent!);
   const container = el("connected-applications");
   const value = available.join("\n");
+  text("applications-summary", available.length ? `Applications: ${available.join(", ")}` : "");
   if (container.dataset.applications === value) return;
   container.dataset.applications = value;
   container.replaceChildren(...available.map(name => { const chip = document.createElement("span"); chip.className = "application-chip"; chip.dataset.testid = "application-chip"; chip.textContent = name; return chip; }));
