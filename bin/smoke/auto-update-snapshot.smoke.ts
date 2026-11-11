@@ -7,7 +7,9 @@ import { writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery, claimUpda
 import { snapshotUpdateClosure } from "../../implementations/cli/src/lib/update-snapshot.js";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 
-const { assert, cells } = countedAssert(assertions) as { assert: typeof assertions; cells(): number };
+const counted = countedAssert(assertions);
+const assert: typeof assertions = counted.assert as typeof assertions;
+const cells = counted.cells;
 const root = mkdtempSync(join(tmpdir(), "update-snapshot-"));
 process.env.XDG_CONFIG_HOME = join(root, "config");
 process.env.COTAL_HOME = join(root, "home");
