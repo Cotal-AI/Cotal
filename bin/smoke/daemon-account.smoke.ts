@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { saveIdpSession } from "@cotal-ai/auth";
+import { saveIdpSession, requestAccountMachine } from "@cotal-ai/auth";
 import { remoteManagerClient } from "@cotal-ai/manager";
 import { daemonPathsFor } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
@@ -53,7 +53,7 @@ const fixture = createServer((req, res) => {
   if (req.method === "PUT") {
     let body = "";
     req.on("data", chunk => { body += String(chunk); });
-    req.on("end", () => { registration = JSON.parse(body) as Record<string, unknown>; });
+    req.on("end", () => { assert.ok(Buffer.byteLength(body) <= 4096); registration = JSON.parse(body) as Record<string, unknown>; });
     puts++;
     persistedBeforePut = readdirSync(join(machineHome, "daemon", "accounts"), { recursive: true }).some(path => String(path).endsWith("computer.json"));
     if (mode === 404) { res.writeHead(404); res.end("{}"); return; }
@@ -95,6 +95,9 @@ try {
   for (const fs of vitals.filesystems) { assert.ok(fs.freeBytes <= fs.totalBytes); assert.ok(Buffer.byteLength(fs.mount) <= 1024); }
   assert.deepEqual(Object.keys(vitals).sort(), ["cpu", "filesystems", "memory", "sampledAt", "uptimeSeconds"]);
   const identity = daemon.status().account!.machineId!;
+  const beforeOversize = puts;
+  await assert.rejects(() => requestAccountMachine({ dir: machineHome, idpUrl, machineId: identity, method: "PUT", metadata: { name: "x".repeat(4096), platform: "linux", daemonVersion: "test", vitals } }), /exceeds 4096 bytes/);
+  assert.equal(puts, beforeOversize, "oversized registration refuses before network");
   assert.equal(accountComputerId(machineHome, { issuer, sub: "owner" }), identity);
   assert.notEqual(accountComputerId(machineHome, { issuer, sub: "other" }), identity);
   const records = readdirSync(join(machineHome, "daemon", "accounts"));

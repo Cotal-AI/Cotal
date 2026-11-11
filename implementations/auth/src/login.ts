@@ -648,7 +648,9 @@ export async function requestAccountMachine(opts: {
   const headers: Record<string, string> = { authorization: `Bearer ${session.token}` };
   if (opts.etag) headers["if-none-match"] = opts.etag;
   if (opts.method === "PUT") headers["content-type"] = "application/json";
-  const response = await idpFetch(url, { method: opts.method, headers, redirect: "manual", ...(opts.method === "PUT" ? { body: JSON.stringify(opts.intent ? { enabled: opts.intent.enabled, expectedRevision: opts.intent.expectedRevision } : opts.metadata) } : {}) }, opts.signal);
+  const body = opts.method === "PUT" ? JSON.stringify(opts.intent ? { enabled: opts.intent.enabled, expectedRevision: opts.intent.expectedRevision } : opts.metadata) : undefined;
+  if (body !== undefined && Buffer.byteLength(body, "utf8") > 4096) throw new Error("invalid computer registration exceeds 4096 bytes");
+  const response = await idpFetch(url, { method: opts.method, headers, redirect: "manual", ...(opts.method === "PUT" ? { body } : {}) }, opts.signal);
   const etag = response.headers.get("etag");
   return { status: response.status, ...(etag ? { etag } : {}), ...(response.ok ? { body: await idpJson<unknown>(url, response, opts.signal) } : {}) };
 }
