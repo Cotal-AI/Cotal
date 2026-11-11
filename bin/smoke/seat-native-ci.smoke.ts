@@ -156,7 +156,12 @@ console.log("\nC. Standard packed publication");
 check("release packing needs both native build jobs", ["native", "workspace-native"].every((name) => needsList(releasePack).includes(name)));
 check("release native matrix builds x64 and arm64 on native Linux", /arch: x64\s+runner: ubuntu-latest/.test(releaseNative) && /arch: arm64\s+runner: ubuntu-24.04-arm/.test(releaseNative));
 check("release packing assembles both native families before packing", ["seat-assemble-natives.mjs", "workspace-assemble-natives.mjs"].every((name) => releasePack.indexOf(name) >= 0 && releasePack.indexOf(name) < releasePack.indexOf("changesets/action/pack@")));
-check("release packing downloads the same run's native artifacts", /pattern: '\*-native-\*'/.test(releasePack) && !/run-id:/.test(releasePack));
+const nativeRun = "run-id: ${{ needs.version-pr.outputs.native-run || github.run_id }}";
+const verifyNative = 'node scripts/native-artifact-source.mjs verify "$NATIVE_SOURCE" HEAD';
+check("release packing downloads current or selected native artifacts", /pattern: '\*-native-\*'/.test(releasePack) && releasePack.includes(nativeRun));
+check("release packing verifies the selected native source before downloading it",
+  releasePack.includes("NATIVE_SOURCE: ${{ needs.version-pr.outputs.native-source }}")
+    && releasePack.indexOf(verifyNative) >= 0 && releasePack.indexOf(verifyNative) < releasePack.indexOf(nativeRun));
 check("release packing builds and assembles both macOS bindings", /^\s+darwin: true\s*$/m.test(csJobs.get("workspace-native") ?? "")
   && ["WORKSPACE_NATIVE_DARWIN_X64", "WORKSPACE_NATIVE_DARWIN_ARM64"].every((name) => releasePack.includes(name)));
 check("publication uses the maintained Changesets publisher", /uses: changesets\/action\/publish@/.test(publish) && ciPublish === "pnpm changeset publish");
