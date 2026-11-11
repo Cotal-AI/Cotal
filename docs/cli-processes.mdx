@@ -864,9 +864,9 @@ commits shutdown after native removal succeeds. A dropped connection or failed n
 not commit shutdown. A foreground daemon refuses this request. Uninstall never signals a process
 by name or an unverified PID. If shutdown cannot be confirmed within 130 seconds, it reports an
 unknown outcome and retains the source and receipt for inspection and retry.
-On Windows, uninstall also refuses before native changes when no verified daemon answers. A
-launcher can still be starting Node before the lifetime record exists, so an absent endpoint alone
-does not prove shutdown. Start the recorded task, wait for daemon status to answer, then retry.
+When the daemon is not running, uninstall takes its lifetime exclusion before native removal and
+confirms endpoint absence under that exclusion before deleting the source and receipt. A live
+recorded process without a verified answering endpoint remains an uncertain outcome.
 The updated Windows native runtime checks its recorded source under the lifetime lock before
 publishing. Uninstall holds that same lock through its final endpoint check and removal of both
 the source and receipt, so a delayed updated native child cannot publish after removal.

@@ -563,10 +563,8 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
   try {
     if (socket && (!owner?.start || before?.pid !== owner.pid || before.start !== owner.start))
       throw uncertain("the daemon lifetime changed while its endpoint was opened");
-    if (owner && (!owner.start || processBirth(owner.pid) === owner.start) && !socket)
+    if (owner?.start && processBirth(owner.pid) === owner.start && !socket)
       throw uncertain("the recorded daemon has no verified answering endpoint");
-    if (process.platform === "win32" && !socket)
-      throw uncertain("no verified running daemon can account for a pending Windows launcher child");
     if (!socket) exclusion = excludeLifetime(paths.lock);
     // The supervisor can close this connection during the synchronous native step.
     socket?.on("error", () => {});
@@ -597,11 +595,12 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
     }
     socket?.destroy();
     const deadline = Date.now() + 130_000;
+    const observeUntil = Date.now() + (exclusion ? 250 : 0);
     for (;;) {
       let absent = false;
       try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); }
       catch (error) { if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true; else throw error; }
-      if (absent && (!owner || (owner.start && processBirth(owner.pid) !== owner.start))) break;
+      if (absent && (!socket || !owner || (owner.start && processBirth(owner.pid) !== owner.start)) && Date.now() >= observeUntil) break;
       if (Date.now() >= deadline) throw uncertain("daemon shutdown was not confirmed within 130s");
       await delay(50);
     }

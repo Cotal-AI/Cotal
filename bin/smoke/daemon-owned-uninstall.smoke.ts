@@ -30,8 +30,8 @@ try {
 } finally { exclusion.release(); }
 console.log("PASS native lifetime exclusion blocks starters and preserves records");
 
-type Mode = "owned" | "foreground" | "changed-source" | "foreign-receipt" | "native-refusal";
-for (const mode of ["owned", "foreground", "changed-source", "foreign-receipt", "native-refusal"] as const satisfies readonly Mode[]) {
+type Mode = "owned" | "stopped" | "foreground" | "changed-source" | "foreign-receipt" | "native-refusal";
+for (const mode of ["owned", "stopped", "foreground", "changed-source", "foreign-receipt", "native-refusal"] as const satisfies readonly Mode[]) {
   const root = mkdtempSync(join(tmpdir(), "dou-"));
   const home = join(root, "home"), config = join(root, "config"), rt = join(root, "rt"), native = join(root, "native");
   for (const path of [home, config, rt, native]) mkdirSync(path, { mode: 0o700 });
@@ -59,6 +59,7 @@ for (const mode of ["owned", "foreground", "changed-source", "foreign-receipt", 
       await delay(25);
     }
     assert.equal(pid, daemon.pid, "the actual launched process owns the endpoint");
+    if (mode === "stopped") await killAndAwaitExit(daemon, "SIGTERM");
     if (mode === "changed-source") writeFileSync(unitPath, `${source}# changed\n`);
     if (mode === "foreign-receipt") writeFileSync(receiptFile, JSON.stringify({ ...receipt, unit: "foreign.service" }));
     const command = spawn(process.execPath, [entry, "daemon", "uninstall", "--yes", "--json"], { env, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
@@ -66,7 +67,7 @@ for (const mode of ["owned", "foreground", "changed-source", "foreign-receipt", 
     command.stdout.on("data", b => output += b);
     command.stderr.on("data", b => output += b);
     const code = await new Promise<number | null>(resolve => command.once("exit", resolve));
-    if (mode === "owned") {
+    if (mode === "owned" || mode === "stopped") {
       assert.equal(code, 0, output);
       let answering = false;
       try { answering = (await queryDaemon({ paths })).ok; }
@@ -74,7 +75,7 @@ for (const mode of ["owned", "foreground", "changed-source", "foreign-receipt", 
       assert.equal(answering, false, "owned uninstall must not report removed while the original shipped daemon still answers");
       assert.ok(daemon.exitCode !== null || daemon.signalCode !== null, "the exact owned process exited before removed was reported");
       assert.ok(!existsSync(unitPath) && !existsSync(receiptFile), "source and receipt removed after shutdown");
-      console.log("PASS shipped native-entry uninstall confirms endpoint and exact process absence despite supervisor child-lifetime gap");
+      console.log(mode === "stopped" ? "PASS installed stopped daemon uninstalls under lifetime exclusion" : "PASS shipped native-entry uninstall confirms endpoint and exact process absence despite supervisor child-lifetime gap");
     } else {
       assert.notEqual(code, 0, output);
       assert.ok(existsSync(unitPath) && existsSync(receiptFile), `${mode}: uncertain or unowned removal retains source and receipt`);
