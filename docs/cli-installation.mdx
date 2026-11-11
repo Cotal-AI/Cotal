@@ -159,6 +159,8 @@ is followed by another reconcile attempt, then a verified reinstall
 and reconcile of the previous version. A private same-filesystem snapshot restores the previous seed
 stamp, connectors and operator extensions before Managers start. Interrupted restoration resumes on
 the next update or daemon start. The snapshot is removed after successful update or restoration.
+If reconciliation still fails after retry, the command preserves the original child's exit status
+through restoration. An interrupt takes precedence over that status.
 If restoration also fails, the error names the installed version
 and asks for `cotal update --self`; unattended updates remain paused until manual repair succeeds.
 
