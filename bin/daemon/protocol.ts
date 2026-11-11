@@ -62,6 +62,7 @@ export type ProtocolErrorCode =
   | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "DEPENDENCY_UNAVAILABLE" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "GENERATION_PENDING";
 
 export interface DaemonUpdateStatus {
+  readonly channel?: "desktop" | "npm";
   readonly current: string;
   readonly latest?: string;
   readonly lastCheck?: string;

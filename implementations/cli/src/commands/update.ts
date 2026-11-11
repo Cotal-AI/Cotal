@@ -164,6 +164,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
     if (value !== undefined) setUpdateSetting(key, value === "on");
     const settings = readUpdateSettings();
     rt.out(`${key === "auto" ? "Automatic updates" : "Update notices"}: ${settings[key] ? "on" : "off"}${rt.env.COTAL_NO_UPDATE_CHECK === "1" ? " (disabled by COTAL_NO_UPDATE_CHECK=1)" : ""}`);
+    if (key === "auto" && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) rt.out("This runtime belongs to the desktop app. Automatic npm updates have no effect here; update the desktop app with its signed platform installer.");
     return;
   }
   if (args.values.check === true) return checkUpdate(args, rt);

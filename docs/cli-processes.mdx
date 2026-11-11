@@ -545,7 +545,10 @@ automatic updates.
 
 `cotal daemon status` includes an Updates section in human output and an optional `update`
 object in JSON and desktop status replies. Its fields are `current`, `latest`, `lastCheck`,
-`lastResult`, `nextAttempt`, `automatic` and `failures`. Older daemons may omit the object.
+`lastResult`, `nextAttempt`, `automatic`, `failures` and `channel`. The channel is `npm` for
+standalone installations and `desktop` for the app's bundled runtime. Desktop runtimes keep registry
+checks but report automatic installation off and direct updates to the signed app installer.
+Older daemons may omit the object or channel.
 A failed attempt waits one hour before retry. Two failures of one version stop installation
 attempts for that version until a newer release appears or a person repairs it manually.
 If the updater cannot reconcile or restore a complete generation, automatic updates pause

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFileSync, closeSync, ftruncateSync } from "node:fs";
+import { readFileSync, existsSync, closeSync, ftruncateSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { openPrivateAppend, writeSecretFileAtomic } from "@cotal-ai/core";
@@ -17,6 +17,7 @@ interface UpdateHost {
 
 /** Schedule only the existing updater. Manager preparation holds its native empty-seat admission fence. */
 export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStatus; close(): Promise<void> } {
+  const desktop = existsSync(fileURLToPath(new URL("../../desktop-runtime.json", import.meta.url)));
   const file = join(homeCotalDir(), "update-attempt.json");
   let state: Attempt = { failures: 0, result: "not checked", next: Date.now() + Math.random() * UPDATE_HOUR_MS };
   try {
@@ -39,14 +40,22 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     const cached = readUpdateCheck();
     let automatic = false, reason = state.result;
     try {
-      automatic = readUpdateSettings().auto && process.env.COTAL_NO_UPDATE_CHECK !== "1" && host.eligible();
+      automatic = !desktop && readUpdateSettings().auto && process.env.COTAL_NO_UPDATE_CHECK !== "1" && host.eligible();
       const recovery = readUpdateRecovery();
       if (recovery) { automatic = false; reason = `automatic updates paused: installed ${recovery.installed}; ${recovery.reason}; run cotal update --self`; }
     } catch (error) { automatic = false; reason = `automatic updates paused: ${String(error)}`; }
-    return { current: host.version, latest: cached?.latest, lastCheck: cached?.checkedAt ? new Date(cached.checkedAt).toISOString() : undefined, automatic, failures: state.failures, lastResult: reason, ...(state.next < Number.MAX_SAFE_INTEGER ? { nextAttempt: new Date(state.next).toISOString() } : {}) };
+    if (desktop) reason = "update the desktop app with its signed platform installer";
+    return { channel: desktop ? "desktop" : "npm", current: host.version, latest: cached?.latest, lastCheck: cached?.checkedAt ? new Date(cached.checkedAt).toISOString() : undefined, automatic, failures: state.failures, lastResult: reason, ...(state.next < Number.MAX_SAFE_INTEGER ? { nextAttempt: new Date(state.next).toISOString() } : {}) };
   };
   const tick = async (): Promise<void> => {
-    if (closed || !status().automatic || Date.now() < state.next) return;
+    if (closed || Date.now() < state.next) return;
+    if (desktop) {
+      if (process.env.COTAL_NO_UPDATE_CHECK !== "1") await checkForUpdate();
+      state = { ...state, next: Date.now() + UPDATE_DAY_MS + Math.random() * UPDATE_HOUR_MS };
+      persist();
+      return;
+    }
+    if (!status().automatic) return;
     const cached = await checkForUpdate();
     if (closed) return;
     if (!cached?.latest || cached.error) { state = { ...state, result: cached?.error ?? "registry check unavailable", next: Date.now() + UPDATE_HOUR_MS }; persist(); return; }

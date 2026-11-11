@@ -138,6 +138,10 @@ installation and `cotal update --auto on` enables it. Bare `cotal update --auto`
 `cotal update --notify off` silences notices independently, and `--notify on` enables them.
 `COTAL_NO_UPDATE_CHECK=1` disables both checks and automatic installation for that process.
 
+The desktop app's bundled runtime checks for newer versions but never runs npm updates. Its notices
+point to the signed desktop installer. `cotal update --auto on` has no effect on that runtime;
+update the desktop app instead.
+
 Interactive commands print a one-line update notice on stderr from a daily cached registry check.
 The check runs in the background. JSON, plain, CI and redirected output receive no notice.
 Version output reports the cached update state without waiting for the registry.
@@ -146,7 +150,10 @@ Before replacing the global package, the updater verifies both the target and pr
 archives and fetches the installed first-party extensions with their dependency closures in a
 disposable prefix. An unavailable dependency stops the update before replacement. A failed replacement
 is followed by another reconcile attempt, then a verified reinstall
-and reconcile of the previous version. If repair also fails, the error names the installed version
+and reconcile of the previous version. A private same-filesystem snapshot restores the previous seed
+stamp, connectors and operator extensions before Managers start. Interrupted restoration resumes on
+the next update or daemon start. The snapshot is removed after successful update or restoration.
+If restoration also fails, the error names the installed version
 and asks for `cotal update --self`; unattended updates remain paused until manual repair succeeds.
 
 A runtime bundled with the desktop app refuses `update --self` before changing its installation.

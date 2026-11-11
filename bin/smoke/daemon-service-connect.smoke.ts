@@ -1686,6 +1686,10 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       if (upgrading) {
         await npmRun(["install", "-g", "--prefix", globalPrefix, "--ignore-scripts", join(upgradeFixture!, "cotal-ai-0.151.2.tgz")]);
         cliEntry = join(globalPrefix, "lib/node_modules/cotal-ai/dist/cotal.js");
+        if (process.argv.includes("--desktop-update-repro")) {
+          writeFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/desktop-runtime.json"), "{}\n");
+          writeFileSync(join(home, "update-attempt.log"), "desktop fixture retained log\n");
+        }
         seedUnitReceipt(cliEntry, true);
       }
       const connectorUpgrade = process.argv.includes("--upgrade-connectors-repro");
@@ -2814,6 +2818,28 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             activeTarget = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
             const launched = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "start", { name: "npm_upgrade_custody", agent: "daemon-smoke", events: false, persona: { prompt: "Owned direct upgrade custody smoke.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, activeTarget.auth, "owner", 40_000, { instanceId: manager.instanceId });
             check("U1 direct upgrade starts with a real legacy seat", launched.ok, launched.error);
+          }
+          if (process.argv.includes("--desktop-update-repro")) {
+            writeFileSync(join(home, "update-settings.json"), JSON.stringify({ v: 1, auto: true, notify: true }));
+            writeFileSync(join(home, "update-attempt.json"), JSON.stringify({ version: "0.151.3", failures: 0, result: "fixture due", next: 0 }));
+            await sleep(35_000);
+            const status = await cli("status");
+            check("DU desktop runtime reports newer release without automatic attempt", status.doc.result?.update?.channel === "desktop" && status.doc.result.update.latest === "0.151.3" && status.doc.result.update.automatic === false && status.doc.result.update.failures === 0 && status.doc.result.update.lastResult.includes("desktop app"), status);
+            check("DU desktop runtime never truncates updater log", readFileSync(join(home, "update-attempt.log"), "utf8") === "desktop fixture retained log\n");
+            const preference = spawn(process.execPath, [cliEntry, "update", "--auto", "on"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+            let preferenceOutput = "";
+            preference.stdout.on("data", chunk => preferenceOutput += chunk);
+            preference.stderr.on("data", chunk => preferenceOutput += chunk);
+            const preferenceCode = await new Promise(resolve => preference.once("exit", resolve));
+            check("DU desktop auto on explains app installer and exits successfully", preferenceCode === 0 && preferenceOutput.includes("have no effect here") && preferenceOutput.includes("signed platform installer"), preferenceOutput);
+            const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+            const terminal = spawn("script", ["-qec", `${quote(process.execPath)} ${quote(cliEntry)} --version`, "/dev/null"], { cwd: root, env: { ...env, CI: "", CONTINUOUS_INTEGRATION: "", BUILD_NUMBER: "", COTAL_NO_UPDATE_CHECK: "" }, stdio: ["ignore", "pipe", "pipe"] });
+            let terminalOutput = "";
+            terminal.stdout.on("data", chunk => terminalOutput += chunk);
+            terminal.stderr.on("data", chunk => terminalOutput += chunk);
+            const terminalCode = await new Promise(resolve => terminal.once("exit", resolve));
+            check("DU real terminal notice directs desktop app installer", terminalCode === 0 && terminalOutput.includes("update available") && terminalOutput.includes("signed platform installer") && !terminalOutput.includes("Run cotal update --self"), terminalOutput);
+            return;
           }
           if (process.argv.includes("--auto-update-repro")) {
             check("AU off preserves installed generation", JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8")).version === "0.151.2");

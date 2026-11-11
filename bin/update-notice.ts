@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { checkForUpdate, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
@@ -20,7 +21,8 @@ export function installUpdateNotice(argv: readonly string[], current: string): v
       child.unref();
     }
     const recovery = readUpdateRecovery();
-    const message = recovery ? `Cotal update needs repair (installed ${recovery.installed}, previous ${recovery.previous}); automatic updates paused. Run cotal update --self.` : cached?.latest && newerUpdate(cached.latest, current) ? `Cotal update available: ${current} -> ${cached.latest}. Run cotal update --self.` : undefined;
+    const remedy = existsSync(fileURLToPath(new URL("../desktop-runtime.json", import.meta.url))) ? "Update the desktop app with its signed platform installer." : "Run cotal update --self.";
+    const message = recovery ? `Cotal update needs repair (installed ${recovery.installed}, previous ${recovery.previous}); automatic updates paused. ${remedy}` : cached?.latest && newerUpdate(cached.latest, current) ? `Cotal update available: ${current} -> ${cached.latest}. ${remedy}` : undefined;
     if (message) process.once("exit", () => process.stderr.write(`${message}\n`));
   } catch { /* Optional notice state cannot make a working command fail. */ }
 }
