@@ -25,7 +25,7 @@ function run(args: string[], terminal = false, extra: Record<string, string> = {
 }
 assert.match(run(["update", "--auto", "off"]), /Automatic updates: off/);
 assert.match(run(["update", "--auto"]), /Automatic updates: off/);
-if (process.platform !== "linux") assert.match(run(["update", "--auto"]), /Automatic installation is available on Linux in this release\. Run cotal update --self here/);
+if (process.platform !== "linux") assert.match(run(["update", "--auto"]), /Automatic installation is available on Linux in this release\. Run `cotal update --self` here/);
 assert.match(run(["--version"], true), /Cotal update available: .* -> 99\.0\.0/);
 assert.doesNotMatch(run(["--version"]), /Cotal update available:/);
 assert.doesNotMatch(run(["version", "--json"], true), /Cotal update available:/);
