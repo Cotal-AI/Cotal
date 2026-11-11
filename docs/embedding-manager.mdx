@@ -202,6 +202,12 @@ the returned UID, and launches `agent-bearer --exchange-url <base>`. When the ho
 signerless manager refuses the user-mode spawn rather than authoring a local grant the host knows
 nothing about.
 
+The hook also receives a stable `requestId` for an unlaunched enrollment. Forward it to
+`remoteManagedAgentEnrollmentRequest` after the optional `spawn` argument. The manager retains the
+request input and token in its secret store until bearer preflight succeeds. A later spawn with
+the same caller and persona authority replays them. It does not substitute the new spawn's served
+request or regenerate the token after a timeout. Host registration proof and serve epoch still
+come from the current manager registration.
 
 ### Managed-agent authority transport
 

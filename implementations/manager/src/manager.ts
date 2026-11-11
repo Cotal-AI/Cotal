@@ -120,6 +120,7 @@ import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { RunHosting, servedRequestSubject } from "./run-hosting.js";
 import { enrolledAcl } from "./remote-authority.js";
+import { pendingEnrollment } from "./pending-enrollment.js";
 import { rejectionText, attemptCleanup, describeCleanupFailures, type CleanupFailure } from "@cotal-ai/core";
 import { controlSession } from "./control-session.js";
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readReleasedSeatReference, readSeatRecord, removeReleasedSeatReference, removeSeatRecord, supervisePolicy, writeReleasedSeatReference, writeSeatRecord, type SeatRecord } from "./resume.js";
@@ -642,6 +643,8 @@ export interface ManagerOptions {
      * composition with no hosted storage: a signerless manager then refuses a user-mode spawn rather
      * than authoring a local grant the host knows nothing about. */
     enrollManagedAgent?: (args: {
+      /** Stable across retries of an unlaunched enrollment, including a later spawn. */
+      requestId?: string;
       target: {
         actor: string;
         tokenHash: string;
@@ -1201,6 +1204,8 @@ interface ProvisionUserAgentOpts {
   delegatedIntent?: StartAgentOpts["delegatedIntent"];
   /** The served spawn this enrollment answers, which the hosted arm forwards. */
   spawnRequest?: { served: string; runId?: string };
+  /** Authenticated caller identity, so another caller cannot adopt an unanswered enrollment. */
+  enrollmentCaller?: { owner: string; actor: string };
   /** Called once the host's enrollment answer passed the owner, actor and uid checks, before any
    *  later step, so a caller that must hold the enrolled uid holds it whatever fails after. */
   onEnrolled?: (enrolled: Pick<ProvisionedUserAgent, "owner" | "lifecycleUid" | "files">) => void;
@@ -5261,7 +5266,7 @@ export class Manager {
    */
   private async enrollUserAgent(
     name: string,
-    opts: Omit<ProvisionUserAgentOpts, "delegatedIntent">,
+    opts: ProvisionUserAgentOpts,
     enroll: NonNullable<NonNullable<ManagerOptions["remoteAuthority"]>["enrollManagedAgent"]>,
   ): Promise<ProvisionedUserAgent | UserAgentRefusal> {
     let provider;
@@ -5271,33 +5276,51 @@ export class Manager {
       return { error: rejectionText(e) };
     }
     const secrets = this.secrets;
-    // The token the agent will present to `POST /exchange` for the rest of its life. Generated
-    // here, hashed here, and never sent: the request carries `tokenHash` alone.
-    const actorToken = randomBytes(32).toString("base64url");
+    const input = {
+      target: {
+        actor: name,
+        ...(opts.role !== undefined ? { role: opts.role } : {}),
+        label: opts.label,
+        ...(opts.capabilities !== undefined ? { capabilities: opts.capabilities } : {}),
+        ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
+        allowSubscribe: opts.allowSubscribe,
+        ...(opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
+      },
+      ...(opts.spawnRequest !== undefined ? { spawn: opts.spawnRequest } : {}),
+    };
+    // An unanswered enrollment may already hold the host's alias. Keep its request and standing
+    // token together until preflight succeeds, rather than minting a conflicting successor.
+    let pending: Awaited<ReturnType<typeof pendingEnrollment<typeof input>>> | undefined;
+    if (!opts.delegatedIntent) {
+      try {
+        pending = await pendingEnrollment({ store: secrets, space: this.space,
+          instanceId: this.managerInstanceId, actor: name, input,
+          authority: { target: input.target, owner: this.remoteAuthority!.owner,
+            managerLifecycleUid: this.remoteAuthority!.lifecycleUid, specOwner: opts.specOwner, spawner: opts.spawner,
+            caller: opts.enrollmentCaller, runId: opts.spawnRequest?.runId } });
+      } catch (e) {
+        return { error: `agent auth preflight failed for "${name}": ${rejectionText(e)}` };
+      }
+    }
+    const actorToken = pending?.record.actorToken ?? randomBytes(32).toString("base64url");
     const tokenHash = createHash("sha256").update(actorToken, "utf8").digest("hex");
     // Provisional paths under the participant's OWN uid: the token has to be on disk before the
     // request (a host that granted against a digest whose plaintext was lost would leave an agent
     // that can never exchange), and the host's uid is not known until the request answers. The
     // family is re-keyed to the host's uid below.
-    const staged = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, opts.lifecycleUid);
+    const staged = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, pending?.record.lifecycleUid ?? opts.lifecycleUid);
     let files = staged;
     let material: Awaited<ReturnType<typeof enroll>> | undefined;
+    let sent = false;
     try {
       await secrets.put(agentSecretKeyForFile(staged.actorToken, this.space), actorToken);
       await materializeSecretToFile(secrets, agentSecretKeyForFile(staged.actorToken, this.space), staged.actorToken);
-      material = await enroll({
-        target: {
-          actor: name,
-          tokenHash,
-          ...(opts.role !== undefined ? { role: opts.role } : {}),
-          label: opts.label,
-          ...(opts.capabilities !== undefined ? { capabilities: opts.capabilities } : {}),
-          ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
-          allowSubscribe: opts.allowSubscribe,
-          ...(opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
-        },
-        ...(opts.spawnRequest !== undefined ? { spawn: opts.spawnRequest } : {}),
-      });
+      const saved = pending?.record.input ?? input;
+      if (canonicalJson(saved.target) !== canonicalJson(input.target))
+        throw new Error(`pending enrollment for "${name}" names different target authority`);
+      sent = true;
+      material = await enroll({ ...saved, target: { ...saved.target, tokenHash },
+        ...(pending ? { requestId: pending.record.requestId } : {}) });
       if (material.actor !== name)
         throw new Error(`the host enrolled actor "${material.actor}", not the requested "${name}"`);
       const specOwner = opts.specOwner ?? (opts.spawner ? parsePrincipalKey(opts.spawner)?.owner : undefined);
@@ -5330,6 +5353,7 @@ export class Manager {
         "--health-file", files.health,
       ];
       await runAgentBearer(bearerCmd);
+      if (pending) await secrets.delete(pending.key);
       return {
         owner: material.owner,
         lifecycleUid: material.lifecycleUid,
@@ -5338,21 +5362,27 @@ export class Manager {
         enrolled: { material, actorToken },
       };
     } catch (e) {
-      // Shred every local secret this attempt materialized. The HOST's rows are the host's to
-      // reconcile: a participant holds no writer, so it must not pretend to roll back a grant or a
-      // durable it never authored. A retry with the same requestId re-enters the same enrollment.
+      // Remove launch-file materializations, but retain the pending token and request when the
+      // host may have committed. The next same-authority spawn replays that enrollment.
       // A failed removal joins the refusal instead of throwing, so every removal is attempted and
       // the refusal still reaches the caller.
       const unshredded: CleanupFailure[] = [];
       for (const family of files.actorToken === staged.actorToken ? [staged] : [staged, files])
         await this.shredUserSecrets(unshredded, family);
+      const rejected = material === undefined ? caughtEnvelope(e) : undefined;
+      // Only a first, definitively refused request proves there was no earlier commit. A refusal
+      // during replay cannot prove that an earlier unanswered attempt enrolled nothing.
+      const discard = pending?.created && (!sent || rejected?.outcome === "not-executed");
+      if (discard && pending) {
+        const key = pending.key;
+        await attemptCleanup(unshredded, "pending enrollment", () => secrets.delete(key));
+      }
+      const retained = pending && !discard;
       const leftover = unshredded.length ? `; cleanup failed: ${describeCleanupFailures(unshredded)}` : "";
-      // A host that refused the enrollment enrolled nothing, so once every staged secret is gone
-      // this attempt left nothing behind. A failure after the host answered, or a host that did not
-      // answer, may have left a grant there.
-      const refusal = material === undefined && !unshredded.length ? caughtEnvelope(e) : undefined;
+      const remedy = retained ? `; the name "${name}" is held by this manager's earlier enrollment. Retry this persona with the same caller to replay it. Once it launches, stop it before changing its authority` : "";
+      const refusal = !retained && material === undefined && !unshredded.length ? rejected : undefined;
       return {
-        error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}`,
+        error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}${remedy}`,
         ...(refusal?.outcome === "not-executed" ? { refused: refusal.code, ...(refusal.details ? { details: refusal.details } : {}) } : {}),
       };
     }
@@ -7704,6 +7734,7 @@ export class Manager {
           capabilities,
           label: ref,
           lifecycleUid,
+          enrollmentCaller: authenticatedCaller ? { owner: authenticatedCaller.owner, actor: authenticatedCaller.actor } : undefined,
           delegatedIntent: opts.delegatedIntent,
           ...(opts.served !== undefined ? { spawnRequest: this.servedSpawnRequest(opts.served, authenticatedCaller) } : {}),
           // Hold the name at the UID the host enrolled for the intent's user before any later local

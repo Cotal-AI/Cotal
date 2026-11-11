@@ -233,7 +233,20 @@ execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyo
 process.env.NODE_EXTRA_CA_CERTS = cert;
 const { createServer: createHttpsServer } = await import("node:https");
 const { request: httpRequest } = await import("node:http");
+let failNextBearerFor: string | undefined;
 const exchangeProxy = createHttpsServer({ cert: readFileSync(cert), key: readFileSync(key) }, (req, res) => {
+  if (failNextBearerFor && req.url === "/exchange") {
+    let body = "";
+    req.on("data", (data: Buffer) => { body += data.toString(); });
+    req.on("end", () => {
+      const actor = (JSON.parse(body) as { actor?: string }).actor;
+      if (actor !== failNextBearerFor) throw new Error("unexpected exchange during enrollment retry cell");
+      failNextBearerFor = undefined;
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "fixture temporary exchange outage" }));
+    });
+    return;
+  }
   const upstream = httpRequest({ host: "127.0.0.1", port: publicPort, path: req.url, method: req.method, headers: req.headers }, (reply) => {
     res.writeHead(reply.statusCode ?? 502, reply.headers); reply.pipe(res);
   });
@@ -1852,7 +1865,7 @@ try {
   };
   const participantRoot = join(root, "participant");
   mkdirSync(join(participantRoot, ".cotal", "agents"), { recursive: true });
-  for (const n of ["omega", "omicron", "foreign", "adminprobe", "downgrade"])
+  for (const n of ["omega", "omicron", "foreign", "adminprobe", "downgrade", "retryenroll", "retrybearer"])
     writeFileSync(join(participantRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
   const state = remote.loadOrCreateRemoteManagerIdentity(participantRoot, SPACE);
   const actors = remoteManagerActors(state.instanceId);
@@ -1867,6 +1880,9 @@ try {
   const activated = await authorityCall<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>(remote.remoteManagerAuthorityRequest(state, "cli", "activate", {
     registrationProof: remoteManagerRegistrationProof(OWNER, state, contractArtifacts), contractArtifacts }));
   const proof = remote.currentRegistrationProof(activated);
+  let lostEnrollmentReply = true;
+  const enrollmentRequests: import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest[] = [];
+  let refuseEnrollmentReplay = true;
   participant = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: participantRoot, eventsRequired: true,
     remoteAuthority: { owner: OWNER, actors, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, identities: state.identities,
       supervisorCreds, executorCreds, serveGrant: registered.serveGrant,
@@ -1877,8 +1893,20 @@ try {
       renewExecutor: async () => remote.materialCredential(await authorityCall(remote.remoteManagerAuthorityRequest(state, "cli", "renew", { registrationProof: proof })), "executor", state.identities.executor),
       authorizeAdmin: async (caller) => { const r = remote.remoteManagerAdminAuthorizationRequest(state, "cli", proof, registered.processEpoch, caller);
         return remote.remoteManagerAdminAuthorized(await authorityCall(r), r, OWNER); },
-      enrollManagedAgent: async ({ target }) => { const r = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target);
-        return remote.remoteManagedAgentEnrollmentMaterial(await authorityCall(r), r); },
+      enrollManagedAgent: async ({ target, spawn, requestId }) => {
+        const r = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target, spawn, requestId);
+        enrollmentRequests.push(r);
+        if (target.actor === "retryenroll" && !lostEnrollmentReply && refuseEnrollmentReplay) {
+          refuseEnrollmentReplay = false;
+          throw new EpEnvelopeError("permission-denied", "fixture replay temporarily refused", undefined, "not-executed");
+        }
+        const result = await authorityCall<import("@cotal-ai/core").RemoteManagedAgentEnrollmentResult>(r);
+        if (target.actor === "retryenroll" && lostEnrollmentReply) {
+          lostEnrollmentReply = false;
+          throw new Error("fixture lost committed enrollment reply");
+        }
+        return remote.remoteManagedAgentEnrollmentMaterial(result, r);
+      },
       scanGoalIndex: async () => { const r = remote.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch);
         return remote.remoteManagerGoalIndexEntries(await authorityCall(r), r, OWNER); },
       mintSessionServing: async () => { throw new Error("unused fixture session serving"); },
@@ -1900,6 +1928,39 @@ try {
   ownerCaller.on("error", () => {});
   await ownerCaller.start();
   ctlEps.push(ownerCaller);
+  // Both failure boundaries leave a real host grant, but no child. A later typed spawn must
+  // re-enter the same enrollment instead of replacing the token and conflicting with itself.
+  for (const name of ["retryenroll", "retrybearer"]) {
+    if (name === "retrybearer") failNextBearerFor = name;
+    const launch = () => ownerCaller.invokeService("manager", "spawn", { name, agent: "e2e" },
+      { deadlineMs: 20_000, follow: true }).catch((e: Error) => ({ reply: { ok: false, error: { message: e.message } } }));
+    const failed = await launch();
+    const rowBefore = JSON.parse(readFileSync(rowFile("managed", OWNER, name), "utf8")) as { lifecycleUid: string; tokenHash: string };
+    check(`${name}: a failed preflight reports its own retained enrollment and retry remedy`,
+      failed.reply.ok === false && /held by this manager's earlier enrollment/.test(failed.reply.error?.message ?? "")
+      && !psList(participant).some((a) => a.name === name), failed.reply.error?.message);
+    if (name === "retryenroll") {
+      const before = enrollmentRequests.length;
+      const changed = await ownerCaller.invokeService("manager", "spawn", { name, agent: "e2e", allowPublish: [] },
+        { deadlineMs: 20_000, follow: true }).catch((e: Error) => ({ reply: { ok: false, error: { message: e.message } } }));
+      check("pending enrollment refuses changed persona authority without reaching the host",
+        changed.reply.ok === false && /earlier enrollment with different launch authority/.test(changed.reply.error?.message ?? "")
+        && enrollmentRequests.length === before, changed.reply.error?.message);
+      const refusedReplay = await launch();
+      check("a refused replay preserves the earlier unknown enrollment and its recovery message",
+        refusedReplay.reply.ok === false && /held by this manager's earlier enrollment/.test(refusedReplay.reply.error?.message ?? ""),
+        refusedReplay.reply.error?.message);
+    }
+    const retried = await launch();
+    const requests = enrollmentRequests.filter((r) => r.target.actor === name);
+    const rowAfter = JSON.parse(readFileSync(rowFile("managed", OWNER, name), "utf8")) as { lifecycleUid: string; tokenHash: string };
+    check(`${name}: the retry launches with the same host lifecycle, digest, request and served spawn`,
+      retried.reply.ok === true && requests.length === (name === "retryenroll" ? 3 : 2) && requests.every((r) => r.requestId === requests[0]!.requestId)
+      && requests.every((r) => JSON.stringify(r.target) === JSON.stringify(requests[0]!.target))
+      && requests.every((r) => JSON.stringify(r.spawn) === JSON.stringify(requests[0]!.spawn))
+      && rowAfter.lifecycleUid === rowBefore.lifecycleUid && rowAfter.tokenHash === rowBefore.tokenHash,
+      { ok: retried.reply.ok, error: retried.reply.error?.message });
+  }
   for (const [name, explicit] of [["omega", false], ["omicron", true]] as const) {
     const result = await ownerCaller.invokeService("manager", "spawn", { name, agent: "e2e", ...(explicit ? { events: true } : {}) },
       { deadlineMs: 20_000, follow: true }).catch((e: Error) => ({ reply: { ok: false, error: { message: e.message } } }));
@@ -1954,7 +2015,7 @@ try {
   const downgraded = await participantAccept(foreignCaller, { name: "downgrade", agent: "e2e" });
   check("cell 5: non-owner silent caller keeps disarmed options and downgrade notice before enrollment's owner refusal",
     downgradeOptions?.events === false && /event plane not armed/.test(downgradeOptions.eventsNotice ?? "")
-    && downgraded.ok === false && /not the spawning owner/.test(downgraded.error ?? ""), downgraded);
+    && downgraded.ok === false && /a helper is enrolled only for a spawn asked for by a caller of the manager's own owner/.test(downgraded.error ?? ""), downgraded);
   await participant.stop({ withAgents: true });
   participant = undefined;
   // A count, because several cells above only run when the spawn before them succeeded: a regression
@@ -1973,7 +2034,8 @@ try {
   // These combined expectations still require an actual integrated run.
   // 148 -> 151: D2's spawn and admin views also read ps.
   // One CLI attach denial after the operator loses spawn scope.
-  const EXPECTED = endpointCliFocus ? 63 : 152;
+  // Six hosted-enrollment checks include changed authority and refusal during replay.
+  const EXPECTED = endpointCliFocus ? 69 : 158;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
