@@ -390,13 +390,13 @@
       "note": "SPEC §4: a mention on a live channel keeps a durable copy for a mentioned target allowed to read it."
     },
     {
-      "name": "N34 the cotal_spawn description offers once on every harness",
+      "name": "N34 the cotal_spawn description lists the harnesses once works on again",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "For a single job on a Claude Code, jcode, OpenCode or pi helper, pass once: true",
-      "replace": "For a single job, pass once: true",
-      "expectRed": "the cotal_spawn description names the harnesses once works on",
-      "cell": "the cotal_spawn description names the harnesses once works on",
-      "note": "The manager refuses once for a connector without supportsTurnRelay, such as Hermes or Codex."
+      "find": "For a single job, pass once: true",
+      "replace": "For a single job on a Claude Code, jcode, OpenCode or pi helper, pass once: true",
+      "expectRed": "the cotal_spawn description offers once for a single job and lists no harnesses",
+      "cell": "the cotal_spawn description offers once for a single job and lists no harnesses",
+      "note": "A harness list goes stale each time a harness gains once support; the manager's refusal names the connector (#6346)."
     }
   ]
 }

@@ -605,12 +605,24 @@ const proto = MeshAgent.prototype as unknown as {
       !send.description.includes("Every agent on the channel receives the post"),
     send.description,
   );
-  // The manager refuses once for a connector without supportsTurnRelay.
+  // The manager refuses once for a connector without supportsTurnRelay, and the refusal names the
+  // connector, so the description lists no harnesses that would go stale (#6346).
   const spawn = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_spawn")!;
   check(
-    "the cotal_spawn description names the harnesses once works on",
-    spawn.description.includes("For a single job on a Claude Code, jcode, OpenCode or pi helper, pass once: true"),
+    "the cotal_spawn description offers once for a single job and lists no harnesses",
+    spawn.description.includes("For a single job, pass once: true with the prompt, and the helper is stopped when it ends that turn")
+      && !spawn.description.includes("Claude Code, jcode, OpenCode or pi"),
     spawn.description,
+  );
+  // #6346: no capability is named, since the set grows, and the persona fields say wildcards work.
+  const persona = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_persona")!;
+  check(
+    "the spawn and persona descriptions name no capability and say a wildcard works in the channel fields",
+    spawn.description.includes("Give a helper only the channels its job needs. On a mesh that checks grants, a spawn that asks for more than you hold is refused. It gets one of your capabilities only if its persona lists it in capabilities.")
+      && persona.description.includes("A wildcard works in all three. For example, review.> covers every channel under review, including ones opened later, and review.* covers one level.")
+      && persona.description.includes("To give its agent one of your capabilities, list it in capabilities. cotal_orientation shows the ones you hold.")
+      && !/spawn or run/.test(spawn.description + persona.description),
+    { spawn: spawn.description, persona: persona.description },
   );
 }
 
