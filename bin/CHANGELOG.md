@@ -1,5 +1,25 @@
 # cotal-ai
 
+## 0.157.8
+
+### Patch Changes
+
+- 3515b97: Update the native CI smoke to recognize verified artifact reuse and require source verification before downloading the selected native artifacts.
+- 7092c62: Confirm the daemon has stopped before reporting a successful uninstall.
+  
+  Uninstall keeps a kernel-authenticated connection to the recorded daemon across native service removal, asks a verified native launch to close its own resources, and waits for both its process and endpoint to disappear. Uncertain shutdown retains the source and receipt for inspection instead of leaving an answering orphan behind a successful removal result.
+- a21d285: Run daemon setup without arguments to refresh applications for its signed-in account and see the spaces using this computer.
+- @cotal-ai/connector-core@0.157.8
+  - @cotal-ai/auth@0.157.8
+  - @cotal-ai/cli@0.157.8
+  - @cotal-ai/delivery@0.157.8
+  - @cotal-ai/manager@0.157.8
+  - @cotal-ai/registry@0.157.8
+  - @cotal-ai/runtime@0.157.8
+  - @cotal-ai/core@0.157.8
+  - @cotal-ai/seat@0.157.8
+  - @cotal-ai/workspace@0.157.8
+
 ## 0.157.7
 
 ### Patch Changes
