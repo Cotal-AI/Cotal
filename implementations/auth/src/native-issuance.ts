@@ -172,15 +172,23 @@ export class CorruptNativeIssuanceEvidence extends Error {}
  * the rows as they were, because a purge is pinned to the sequence read. The purge marker carries
  * the bucket's own marker TTL, so it expires too. Expired service evidence is
  * retained: elapsed JWT time alone is not topology-qualified absence or terminal retirement.
+ * A bounded pass counts markers too and returns `nextSeq` for its continuation. Cancellation
+ * stops between store operations, never abandoning an in-flight purge.
  */
-export async function pruneNativeIssuance(registry: LifecycleRegistry, nowSec: number): Promise<{ live: number; pruned: number; retainedService: number }> {
+export async function pruneNativeIssuance(registry: LifecycleRegistry, nowSec: number,
+  opts: { seq?: number; maxRows?: number; signal?: AbortSignal } = {},
+): Promise<{ live: number; pruned: number; retainedService: number; nextSeq?: number }> {
   const { authKv, jsm, space } = registryStores(registry);
   const bucket = epAuthBucket(space);
   const prefix = `$KV.${bucket}.`;
-  let seq = 1, live = 0, pruned = 0, retainedService = 0;
-  for (;;) {
+  let seq = opts.seq ?? 1, live = 0, pruned = 0, retainedService = 0;
+  const maxRows = opts.maxRows ?? Number.MAX_SAFE_INTEGER;
+  if (!Number.isSafeInteger(seq) || seq < 1 || !Number.isSafeInteger(maxRows) || maxRows < 1)
+    throw new Error("natkey: cleanup sequence and row limit must be positive safe integers");
+  for (let visited = 0; visited < maxRows; visited++) {
+    opts.signal?.throwIfAborted();
     const m = await jsm.streams.getMessage(`KV_${bucket}`, { seq, next_by_subj: `${prefix}natkey.>` } as unknown as MsgRequest);
-    if (!m) break;
+    if (!m) return { live, pruned, retainedService };
     seq = m.seq + 1;
     const op = m.header?.get("KV-Operation");
     if (op === "DEL" || op === "PURGE") continue;
@@ -194,6 +202,9 @@ export async function pruneNativeIssuance(registry: LifecycleRegistry, nowSec: n
     } catch (e) {
       throw new CorruptNativeIssuanceEvidence(e instanceof Error ? e.message : String(e), { cause: e });
     }
+    // Validate a read already in flight even during close: corrupt evidence must still trip a
+    // draining service-host operation. Cancellation may stop new IO, never hide that evidence.
+    opts.signal?.throwIfAborted();
     if (record.exp + CLOCK_TOLERANCE_SEC < nowSec && record.service) {
       retainedService++;
     } else if (record.exp + CLOCK_TOLERANCE_SEC < nowSec) {
@@ -201,5 +212,5 @@ export async function pruneNativeIssuance(registry: LifecycleRegistry, nowSec: n
       pruned++;
     } else live++;
   }
-  return { live, pruned, retainedService };
+  return { live, pruned, retainedService, nextSeq: seq };
 }

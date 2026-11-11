@@ -2234,11 +2234,12 @@ the write the responder re-reads the lifecycle and credential authority in the s
 then may the JWT leave. Any failure is a signed deny. A row is evidence of an issuance, not proof
 that a client received the JWT or that the broker accepted the connection: a write that landed
 before a refusal stays. `natkey.` is not a ledger family and authorizes nothing. The issuing
-service removes a row only after its `exp` plus the clock tolerance, at boot and then on its own
-timer, walking the family with the leader-served `STREAM.MSG.GET` `next_by_subj` read (never a
-consumer) and purging each row pinned to the sequence it read, with the bucket's marker TTL on the
-purge marker so it expires too. A row
-that does not parse fails the boot open or fences the running service. Connections admitted
+service removes a row only after its `exp` plus the clock tolerance. Startup performs a bounded
+cleanup check, then the service continues the walk in bounded background batches and repeats it
+on its own timer. The walk uses the leader-served `STREAM.MSG.GET` `next_by_subj` read (never a
+consumer) and purges each row pinned to the sequence it read, with the bucket's marker TTL on the
+purge marker so it expires too. A row that does not parse fails the boot open if encountered in
+the startup check, or fences the running service when a background batch reaches it. Connections admitted
 before this row existed, responders that do not write it, and static (non-callout) JWTs have no
 row. This evidence names keys; it does not by itself stop a still-authorized bearer from
 connecting again under a fresh key.
