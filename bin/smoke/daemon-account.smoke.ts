@@ -96,7 +96,7 @@ try {
   assert.deepEqual(Object.keys(vitals).sort(), ["cpu", "filesystems", "memory", "sampledAt", "uptimeSeconds"]);
   const identity = daemon.status().account!.machineId!;
   const beforeOversize = puts;
-  await assert.rejects(() => requestAccountMachine({ dir: machineHome, idpUrl, machineId: identity, method: "PUT", metadata: { name: "x".repeat(4096), platform: "linux", daemonVersion: "test", vitals } }), /exceeds 4096 bytes/);
+  await assert.rejects(() => requestAccountMachine({ dir: machineHome, idpUrl, machineId: identity, method: "PUT", metadata: { name: "x".repeat(4096), platform: "linux", daemonVersion: "test", managers: [], vitals } }), /exceeds 4096 bytes/);
   assert.equal(puts, beforeOversize, "oversized registration refuses before network");
   assert.equal(accountComputerId(machineHome, { issuer, sub: "owner" }), identity);
   assert.notEqual(accountComputerId(machineHome, { issuer, sub: "other" }), identity);
