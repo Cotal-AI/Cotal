@@ -1,8 +1,9 @@
+import "../../implementations/cli/smoke/update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { automaticUpdates } from "../daemon/auto-update.js";
@@ -31,4 +32,4 @@ try {
   }
  } finally { Object.defineProperty(process, "platform", platform); }
  emitSentinel({ passed: counted.cells(), failed: 0 });
-} finally { await updater.close(); }
+} finally { await updater.close(); rmSync(home, { recursive: true, force: true }); }

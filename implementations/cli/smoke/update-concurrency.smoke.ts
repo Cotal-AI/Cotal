@@ -1,4 +1,5 @@
 /** Crash/concurrency smoke for update-owned extension mutations (no NATS). */
+import "./update-isolation.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
