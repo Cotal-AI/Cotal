@@ -870,7 +870,10 @@ for that space before retrying.
 If a native restart stops the daemon but cannot start it, the failure retains the native cause
 and names `cotal daemon start` after correcting that cause. A failed preservation rollback does
 not replace the restart failure.
-`--no-manager` keeps the machine-service-only setup path and waits for owner approval.
+On a per-space host, `--no-manager` keeps the machine-service-only setup path and waits for owner approval.
+When an account manages this computer, setup with `--no-manager` refuses `UNSUPPORTED` before
+registration or connection. Manage the computer's spaces from the account dashboard instead.
+The refusal writes no space intent and starts no agent host.
 `--wait` without `--no-manager` refuses `USAGE_INVALID` before setup starts.
 On the connection-only path `--wait <seconds>` bounds the wait, 900 by default; `--wait 0`
 reports what it reached and stops. A wait that runs out is `partial` (`OPERATION_PARTIAL`) with
