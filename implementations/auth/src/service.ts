@@ -1,4 +1,5 @@
 import { registryStores } from "./lifecycle-registry.js";
+import { closeConnection } from "@cotal-ai/core";
 import { createToolResultConsentSigner, makeToolResultConsentRecorder, type ToolResultConsentRecorder, type ToolResultConsentSignerOptions } from "./tool-result-consent.js";
 /**
  * The AUTH SERVICE daemon — the one server-side process a user-auth space runs alongside its broker
@@ -1669,7 +1670,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           log,
         });
       } finally {
-        await maintenanceNc.drain().catch(() => maintenanceNc.close());
+        await closeConnection(maintenanceNc);
       }
       return completeRemoteManagerMaintenance(authorized, owner, { reconciliation: report });
     },
@@ -1940,7 +1941,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           }), maxReconnectAttempts: 0 });
           onConnection?.(nc, `cotal:keyed-admitter:${space}`);
           try { return await work(await new Kvm(nc).open(admissionBucket(space)), await jetstreamManager(nc)); }
-          finally { await nc.drain().catch(() => nc.close()); }
+          finally { await closeConnection(nc); }
         },
       }));
     },
@@ -1972,7 +1973,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             admissions: await new Kvm(admitterNc).open(admissionBucket(space)),
           });
         } finally {
-          await admitterNc.drain().catch(() => admitterNc.close());
+          await closeConnection(admitterNc);
         }
       });
     },
@@ -2005,7 +2006,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           }), maxReconnectAttempts: 0 });
           onConnection?.(nc, `cotal:run-cancel:${space}`);
           try { return await work(await new Kvm(nc).open(admissionBucket(space))); }
-          finally { await nc.drain().catch(() => nc.close()); }
+          finally { await closeConnection(nc); }
         },
       }));
     },
@@ -2031,7 +2032,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           admissions: await new Kvm(admitterNc).open(admissionBucket(space)),
         });
       } finally {
-        await admitterNc.drain().catch(() => admitterNc.close());
+        await closeConnection(admitterNc);
       }
     },
     issueManagerRunAttempt: async ({ request, ...holder }) => {
@@ -2078,7 +2079,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             const replay = await replayRunJournal(jetstream(readerNc), await jetstreamManager(readerNc), space, runId, takeoverId);
             return replay.records.flatMap((stored) => stored.record.kind === "step" ? [stored.record.entry as JournalEntry] : []);
           } finally {
-            await readerNc.drain().catch(() => readerNc.close());
+            await closeConnection(readerNc);
           }
         },
         checkpointWaiting: async (token) => (await readCheckpointStatus(recordsKv, { endpoint: "manager", token }))?.value.state === "waiting",

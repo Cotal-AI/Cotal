@@ -2,6 +2,7 @@ import { accessSync, constants, existsSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  closeConnection,
   CotalEndpoint,
   agentFilePath,
   dialerFor,
@@ -2454,7 +2455,7 @@ async function managerServiceHealth(
       throw new EpEnvelopeError(response.reply.error.code === "unavailable" ? "unavailable" : "failed-precondition", response.reply.error.message);
     return response.reply.data as ManagerServiceStatus;
   } finally {
-    await nc.drain().catch(() => nc.close());
+    await closeConnection(nc);
   }
 }
 

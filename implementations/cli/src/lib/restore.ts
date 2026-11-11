@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { closeConnection } from "@cotal-ai/core";
 import {
   constants,
   fsyncSync,
@@ -508,7 +509,7 @@ async function restoreStream(
       RESTORE_TIMEOUT_MS,
     );
   } finally {
-    await init.drain().catch(() => {});
+    await closeConnection(init).catch(() => {});
   }
   const uploadLogin = await broker.addLogin({
     profile: "restore",
@@ -530,7 +531,7 @@ async function restoreStream(
     assertRestoredState(stream.stream, stream.state as unknown as Readonly<Record<string, unknown>>, restored.state as unknown as Readonly<Record<string, unknown>>);
   } finally {
     closeSync(fd);
-    await upload.drain().catch(() => {});
+    await closeConnection(upload).catch(() => {});
   }
 }
 
@@ -573,7 +574,7 @@ async function sanitizeStreamSnapshot(
     fsyncSync(fd);
   } finally {
     closeSync(fd);
-    await nc.drain().catch(() => {});
+    await closeConnection(nc).catch(() => {});
   }
 }
 
@@ -602,7 +603,7 @@ async function validateRestoredStream(
     if (info.state.consumer_count !== expectedConsumers)
       throw new Error(`${record.stream} has ${info.state.consumer_count} consumers after restore; expected ${expectedConsumers}`);
   } finally {
-    await nc.drain().catch(() => {});
+    await closeConnection(nc).catch(() => {});
   }
 }
 
@@ -620,7 +621,7 @@ async function applyRecordedAge(broker: IsolatedBroker, space: string, record: B
   try {
     await setHistoryLimit(await jetstreamManager(nc), space, recorded.kind, recorded.limit, historyLimitRestoreStaging(recorded.kind, recorded.limit));
   } finally {
-    await nc.drain().catch(() => {});
+    await closeConnection(nc).catch(() => {});
   }
 }
 
@@ -648,7 +649,7 @@ async function recreateCheckpoint(
         info.delivered?.consumer_seq !== 0 || info.num_ack_pending !== 0)
       throw new Error(`${checkpoint.stream}/${checkpoint.name} was not recreated as an unused checkpoint with stream ACK floor 0 or ${bornFloor}`);
   } finally {
-    await nc.drain().catch(() => {});
+    await closeConnection(nc).catch(() => {});
   }
 }
 
@@ -714,7 +715,7 @@ async function createOmittedInfrastructure(
     }
     validateSpaceBackupInventory(space, names);
   } finally {
-    await nc.drain().catch(() => {});
+    await closeConnection(nc).catch(() => {});
   }
 }
 

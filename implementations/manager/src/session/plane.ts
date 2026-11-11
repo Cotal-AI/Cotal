@@ -27,6 +27,7 @@ import { Kvm } from "@nats-io/kv";
 import type { KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
+  closeConnection,
   assertSessionStateTransition,
   EpEnvelopeError,
   principalKey,
@@ -276,7 +277,7 @@ export class ManagerSessionPlane {
     this.#live.delete(sessionId);
     this.#registry.remove(sessionId);
     if (live) {
-      try { await live.nc.drain(); } catch { try { live.nc.close(); } catch { /* already gone */ } }
+      try { await closeConnection(live.nc); } catch { /* already gone */ }
     }
     await this.#collect(sessionId, state);
   }

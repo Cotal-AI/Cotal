@@ -5,6 +5,7 @@ import { accessSync, constants, lstatSync, realpathSync } from "node:fs";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
+  closeConnection,
   downloadStreamSnapshot,
   spaceBackupInventory,
   validateCanonicalBackupStreamConfig,
@@ -420,7 +421,7 @@ async function snapshotStream(
     await write.catch(() => {});
     throw error;
   } finally {
-    await nc.drain().catch(() => {});
+    await closeConnection(nc).catch(() => {});
   }
 }
 
@@ -684,7 +685,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     try {
       ({ checkpoints } = await collectInventory(inspect, ready.space, selected, held));
     } finally {
-      await inspect.drain().catch(() => {});
+      await closeConnection(inspect).catch(() => {});
     }
     if (process.env.COTAL_SMOKE_FAIL_BACKUP_STAGE === "initiation")
       throw new Error("smoke-injected failure at snapshot initiation");

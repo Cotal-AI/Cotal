@@ -2,6 +2,7 @@ import { existsSync, lstatSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, relative, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
+import { closeConnection } from "@cotal-ai/core";
 import {
   CommandFailure,
   ConfirmationRequired,
@@ -1259,7 +1260,7 @@ export async function assertControlPlaneQuiesced(space: string, server: string):
       await sleep(500);
     }
   } finally {
-    await nc.drain().catch(() => {});
+    await closeConnection(nc).catch(() => {});
   }
 }
 
@@ -1325,7 +1326,7 @@ async function readPresenceAndLease(space: string, server: string): Promise<{ ro
     if (!lease?.holder) return { roster };
     return { roster, managerId: parsePrincipalKey(lease.holder) ? lease.holder : principalKey(DEV_OWNER, lease.holder).key };
   } finally {
-    await nc.drain().catch(() => {});
+    await closeConnection(nc).catch(() => {});
   }
 }
 

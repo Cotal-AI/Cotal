@@ -64,6 +64,7 @@ export * from "./process-runtime.js";
 export * from "./presence-text.js";
 export * from "./one-line.js";
 export * from "./cleanup.js";
+export * from "./close-connection.js";
 export * from "./text-encoding.js";
 export * from "./link.js";
 export * from "./identity.js";

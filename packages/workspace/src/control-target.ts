@@ -9,6 +9,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import {
+  closeConnection,
   assertLifecycleToken,
   DEFAULT_SPACE,
   DEV_OWNER,
@@ -249,7 +250,7 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
       throw new Error(`managed seat issuance resolves to ${ref.owner}.${ref.actor}/${ref.uid}, not ${DEV_OWNER}.${actor}/${uid}`);
     epCaller = { owner: ref.owner, actor: ref.actor, uid: ref.uid, generation: ref.generation } as IssuedCaller;
   } finally {
-    await nc.drain().catch(() => nc.close());
+    await closeConnection(nc);
   }
   if (instanceId === undefined) return { ...at, auth: { creds, tls: mesh.tlsRequired, epCaller } };
   if (!mesh.auth)

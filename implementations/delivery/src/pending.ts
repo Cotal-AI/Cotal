@@ -6,6 +6,7 @@
  * a consumer that already exists.
  */
 import {
+  closeConnection,
   CotalEndpoint,
   dialerFor,
   dmDurable,
@@ -190,6 +191,6 @@ export async function runPending(args: ParsedArgs): Promise<void> {
       }
     }
   } finally {
-    await nc.drain();
+    await closeConnection(nc);
   }
 }

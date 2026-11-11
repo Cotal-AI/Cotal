@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+  closeConnection,
   CotalEndpoint,
   DEFAULT_SERVER,
   LEASE_TTL_MS,
@@ -918,7 +919,7 @@ async function runStartedDelivery(
       } finally {
         try { await membership?.stop(); } catch { /* broker may be gone */ }
         try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
-        try { await Promise.race([timerWriter?.nc.drain(), new Promise((r) => setTimeout(r, 1000))]); } catch { /* broker may be gone */ }
+        try { if (timerWriter) await closeConnection(timerWriter.nc, 1000); } catch { /* broker may be gone */ }
         wakeTimerWriterBackoff?.();
         try { await timerWriterAttempt; } catch { /* startup or broker fault */ }
         try { await ep.stop(); } catch { /* broker may be gone */ }
@@ -1112,7 +1113,7 @@ async function runStartedDelivery(
         log.err(
           `! timer writer: down (${(e as Error).message}) — retrying in ${Math.round(backoffMs / 1000)}s; pauses on this space do not expire until it is back`,
         );
-        try { await nc?.drain(); } catch { /* connection already gone */ }
+        try { if (nc) await closeConnection(nc); } catch { /* connection already gone */ }
         timerWriter = undefined;
         // A close() during this sleep wakes it, and the loop's next check on `stopping` returns.
         await new Promise<void>((r) => {
@@ -1192,7 +1193,7 @@ async function runStartedDelivery(
       try { await releaseOwnLease(); } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
       try { await membership?.stop(); } catch { /* broker may be gone */ }
       try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
-      try { await timerWriter?.nc.drain(); } catch { /* broker may be gone */ }
+      try { if (timerWriter) await closeConnection(timerWriter.nc); } catch { /* broker may be gone */ }
       try { await ep.stop(); } catch { /* broker may be gone */ }
       process.exit(code);
     })();

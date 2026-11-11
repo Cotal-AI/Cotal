@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { closeConnection } from "./close-connection.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { createConnection, isIP } from "node:net";
@@ -2145,7 +2146,7 @@ export class CotalEndpoint extends EventEmitter {
     } catch { /* fall through to the layered fallback */ }
     if (!failedNc.isClosed?.()) {
       try {
-        await failedNc.drain();
+        await closeConnection(failedNc);
         return;
       } catch { /* both graceful paths refused, drop to the transport */ }
     }

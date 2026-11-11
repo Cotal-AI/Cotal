@@ -10,6 +10,7 @@ import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { dialerFor } from "./endpoint.js";
+import { closeConnection } from "./close-connection.js";
 import { epAuthBucket } from "./endpoint-binding.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { issuanceGateKey, parseIssuanceGate } from "./lifecycle-state.js";
@@ -83,7 +84,7 @@ export async function withLifecycleExecutorSession<T>(
     const kvm = new Kvm(nc);
     return await fn(kvLifecycleTransport(await kvm.open(recordsBucket(args.space)), await kvm.open(epAuthBucket(args.space))));
   } finally {
-    await nc.drain().catch(() => nc.close());
+    await closeConnection(nc);
   }
 }
 
@@ -93,7 +94,7 @@ export async function withIssuerSession<T>(args: IssuerSessionArgs, fn: (session
   try {
     return await fn(session);
   } finally {
-    await session.nc.drain().catch(() => session.nc.close());
+    await closeConnection(session.nc);
   }
 }
 
@@ -128,7 +129,7 @@ export function holdIssuerSession(args: IssuerSessionArgs & { name: string; ttlS
     if (closed) throw new EpEnvelopeError("unavailable", `the issuer session for space "${args.space}" is closed`);
   };
   // Settles without rejecting: a teardown that fails leaves nothing this holder could do again.
-  const drain = (h: Held): Promise<void> => h.drained ??= h.session.nc.drain().catch(() => h.session.nc.close()).catch(() => {});
+  const drain = (h: Held): Promise<void> => h.drained ??= closeConnection(h.session.nc).catch(() => {});
   const retire = (h: Held): void => {
     h.retired = true;
     h.cancel();

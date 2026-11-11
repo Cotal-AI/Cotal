@@ -9,6 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
+    "smoke:connection-close:live": "tsx bin/smoke/connection-close-live.smoke.ts",
     "smoke:atomic-write-cleanup": "node bin/smoke/atomic-write-cleanup.smoke.mjs",
     "smoke:local-write-quota": "node bin/smoke/local-write-quota.smoke.mjs",
     "smoke:server-intent:live": "tsx implementations/cli/smoke/server-intent-live.smoke.ts",

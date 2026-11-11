@@ -1,4 +1,5 @@
 import {
+  closeConnection,
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
   dialerFor,
@@ -90,7 +91,7 @@ export async function withUserManagerListing<T>(
     // A remembered legacy verdict may be stale: with no listing binding, check the issued read once.
     return await ask(nc, listing ?? (skipped ? await issued() : undefined));
   } finally {
-    await nc.drain().catch(() => nc.close());
+    await closeConnection(nc);
   }
 }
 
@@ -210,17 +211,6 @@ export async function invokeUserManager(
   } finally {
     opts.signal?.removeEventListener("abort", onAbort);
     const control = nc;
-    if (control) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          control.drain().catch(() => control.close()),
-          new Promise<void>((resolve) => { timer = setTimeout(resolve, 2_000); timer.unref(); }),
-        ]);
-      } finally {
-        if (timer !== undefined) clearTimeout(timer);
-        await control.close();
-      }
-    }
+    if (control) await closeConnection(control);
   }
 }

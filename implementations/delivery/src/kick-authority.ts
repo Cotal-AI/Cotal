@@ -18,6 +18,7 @@
  * the next eviction with no restart.
  */
 import { credsAuthenticator } from "@nats-io/transport-node";
+import { closeConnection } from "@cotal-ai/core";
 import { MEMBERSHIP_INBOX_PREFIX, accountHoldsConnection, credsClaims, dialerFor, kickConnection, mintConnectionEvictorCreds, newIdentity, type KickTarget } from "@cotal-ai/core";
 import { connzAccountOf, retainedBrokerSeed } from "./sys-creds.js";
 
@@ -68,10 +69,10 @@ export function hostKickAuthority(opts: { root: string; server: string }): KickA
         try {
           await kickConnection(evictor, target);
         } finally {
-          await evictor.drain().catch(() => {});
+          await closeConnection(evictor).catch(() => {});
         }
       } finally {
-        await observer.drain().catch(() => {});
+        await closeConnection(observer).catch(() => {});
       }
     },
   };

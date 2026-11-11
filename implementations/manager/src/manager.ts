@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { closeConnection } from "@cotal-ai/core";
 import { hostname } from "node:os";
 import { credsAuthenticator, RequestError } from "@nats-io/transport-node";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
@@ -2346,7 +2347,7 @@ export class Manager {
           const entries = await listGoalIndex(await kvm.open(recordsBucket(this.space)), MANAGER_ENDPOINT);
           if (entries.some((entry) => entry.iid === localInstanceId && (entry.allocated !== undefined || entry.note !== undefined)))
             throw new Error("execution: none refuses retained seat or turn inventory before recovery; keep the execution-owning Manager");
-        } finally { await nc.drain().catch(() => nc.close()); }
+        } finally { await closeConnection(nc); }
         this.admittedLocalIdentity = local;
       } else {
         local ??= createManagerInstanceIdentity(this.workspaceRoot, this.space, () => ({ instanceId: mintLifecycleUid(), serveIdentity: newIdentity() }));
@@ -4093,7 +4094,7 @@ export class Manager {
       return;
     }
     if (flush) try { await flush(); } catch { /* best effort */ }
-    try { await nc.drain(); } catch { try { await nc.close(); } catch { /* best effort */ } }
+    try { await closeConnection(nc); } catch { /* best effort */ }
   }
 
   /** Track a dedicated connection's transport into {@link transportDown} from the first moment:
@@ -9319,7 +9320,7 @@ export class Manager {
       const authKv = await kvm.open(epAuthBucket(this.space));
       return await fn(staticLifecycleTransport(recordsKv, authKv));
     } finally {
-      await nc.drain().catch(() => nc.close());
+      await closeConnection(nc);
     }
   }
 
@@ -9335,7 +9336,7 @@ export class Manager {
       const kvm = new Kvm(nc);
       return await fn(await bindIssuedStores(kvm, await jetstreamManager(nc), this.space));
     } finally {
-      await nc.drain().catch(() => nc.close());
+      await closeConnection(nc);
     }
   }
 
@@ -9386,7 +9387,7 @@ export class Manager {
       const kvm = new Kvm(nc);
       return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
     } finally {
-      await nc.drain().catch(() => nc.close());
+      await closeConnection(nc);
     }
   }
 
@@ -9407,7 +9408,7 @@ export class Manager {
       await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
       return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
     } finally {
-      await nc.drain().catch(() => nc.close());
+      await closeConnection(nc);
     }
   }
 
@@ -9579,7 +9580,7 @@ export class Manager {
         ...(this.omitClassCommands() ? { omitClassCommands: this.omitClassCommands() } : {}),
       });
     } catch (e) {
-      await nc.drain().catch(() => nc.close());
+      await closeConnection(nc);
       throw e;
     }
     // Wired only once the connection serves: a connection this method drains itself after a
@@ -9692,7 +9693,7 @@ export class Manager {
         // ensureContractStore + ensureAuthorityStores, fail-loud on drift. Auth + open both run this.
         await createEndpointStreams(await jetstreamManager(provNc), new Kvm(provNc), this.space);
       } finally {
-        await provNc.drain().catch(() => provNc.close());
+        await closeConnection(provNc);
       }
     }
     const iid = this.managerInstanceId;
@@ -10307,7 +10308,7 @@ export class Manager {
           await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
           entries = await listGoalIndex(await kvm.open(recordsBucket(this.space)), MANAGER_ENDPOINT);
         } finally {
-          await nc.drain().catch(() => nc.close());
+          await closeConnection(nc);
         }
       }
       // Single-manager: EVERY inherited entry belongs to a DEAD predecessor (only one manager
@@ -12392,7 +12393,7 @@ export class Manager {
       const recordsKv = await new Kvm(nc).open(recordsBucket(this.space));
       return (await readStaticSlot(staticLifecycleTransport(recordsKv, recordsKv), DEV_OWNER, alias))?.row;
     } finally {
-      await nc.drain().catch(() => nc.close());
+      await closeConnection(nc);
     }
   }
 
@@ -12621,7 +12622,7 @@ export class Manager {
           const recordsKv = await kvm.open(recordsBucket(this.space));
           for (const slot of await walkStaticSlots(recordsKv, DEV_OWNER)) slotRows.push(slot.row);
         } finally {
-          await nc.drain().catch(() => nc.close());
+          await closeConnection(nc);
         }
       } catch (error) {
         sweep.completedAt = new Date().toISOString();
@@ -12832,7 +12833,7 @@ export class Manager {
     try {
       return await fn(nc);
     } finally {
-      await nc.drain().catch(() => nc.close());
+      await closeConnection(nc);
     }
   }
 

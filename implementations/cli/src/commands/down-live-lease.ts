@@ -5,6 +5,7 @@
  *  TTL. A bucket that does not exist, or a broker that does not answer, is not a
  *  live daemon. */
 import { existsSync } from "node:fs";
+import { closeConnection } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 
@@ -135,6 +136,6 @@ async function liveUnrecordedDaemonNames(
     const order = ["manager", "delivery daemon"];
     return order.filter((label) => found.includes(label)).concat(found.filter((label) => !order.includes(label)));
   } finally {
-    await nc.drain().catch(() => {});
+    await closeConnection(nc).catch(() => {});
   }
 }

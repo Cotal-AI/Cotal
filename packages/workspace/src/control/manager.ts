@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  closeConnection,
   BASELINE_LIFECYCLE_ENDPOINT,
   DEV_OWNER,
   EP_UNANSWERED,
@@ -255,17 +256,7 @@ async function askManagerEp(
     const managerVersion = refusing !== undefined && caller !== undefined ? await reportedManagerVersion(nc, space, caller, refusing, instanceId !== undefined) : undefined;
     return { ...epRailFailure(client, e, instanceId === undefined ? pin : { instanceId }, managerVersion), ...(refusing !== undefined ? { managerInstanceId: refusing } : {}), ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request, managerInstanceId: request.managerInstanceId, managerEpoch: request.managerEpoch } : {}), ...(e instanceof EpEnvelopeError && e.outcome ? { nativeOutcome: e.outcome } : {}) };
   } finally {
-    // Drain waits for in-flight NATS work. A dead broker never finishes that, and
-    // attach-auth-root hung here after spawn once nats-server exited.
-    await Promise.race([
-      nc.drain().catch(() => nc.close()),
-      new Promise<void>((resolve) => setTimeout(resolve, 2_000).unref()),
-    ]);
-    try {
-      nc.close();
-    } catch {
-      /* already closed */
-    }
+    await closeConnection(nc);
   }
 }
 
@@ -482,7 +473,7 @@ export async function withControlConnection<T>(server: string, auth: ControlAuth
   try {
     return await fn(nc);
   } finally {
-    await nc.drain().catch(() => nc.close());
+    await closeConnection(nc);
   }
 }
 

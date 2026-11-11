@@ -14,6 +14,7 @@
 import { Kvm, type KV } from "@nats-io/kv";
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { dialerFor } from "./endpoint.js";
+import { closeConnection } from "./close-connection.js";
 import { deliveryBucket, leaseKey, principalKey, DEV_OWNER } from "./subjects.js";
 import { idFromCreds } from "./identity.js";
 import { standaloneConnectOpts } from "./streams.js";
@@ -139,7 +140,7 @@ export async function waitForDeliveryLease(opts: {
     /* daemon not up yet / bucket race — treat as not-ready */
   } finally {
     try {
-      await nc?.drain();
+      if (nc) await closeConnection(nc);
     } catch {
       /* ignore */
     }
@@ -232,6 +233,6 @@ export async function awaitDeadDeliveryLease(opts: {
       ttlMs: opts.ttlMs,
     });
   } finally {
-    await nc.drain().catch(() => {});
+    await closeConnection(nc).catch(() => {});
   }
 }
