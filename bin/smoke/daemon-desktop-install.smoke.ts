@@ -133,7 +133,7 @@ for (const target of [isolated("timeout"), control]) {
     ? ["directory-read", "directory-read", "start"] : ["directory-read", "linger-read", "daemon-reload", "enable", "start"]);
   assert.equal(timedOut.ok, false);
   assert.equal(timedOut.error?.code, "DEPENDENCY_UNAVAILABLE");
-  assert.equal(timedOut.error?.message, "The background service was installed and a start was requested, but the daemon did not answer within 15 seconds. Use cotal daemon status for diagnostics.");
+  assert.equal(timedOut.error?.message, "The background service was installed and a start was requested, but the daemon did not answer within 15 seconds. Use `cotal daemon status` for diagnostics.");
   assert.ok(!JSON.stringify(timedOut).includes(target.dir), "fixed app guidance contains no private path");
   console.log(`${target === control ? "recorded start" : "fresh install"}: readiness timeout passed`);
 }
