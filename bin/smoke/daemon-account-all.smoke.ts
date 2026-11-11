@@ -5,6 +5,8 @@ for (const [file, ...args] of [
   ["bin/smoke/daemon-account-crash.smoke.ts"],
   ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--account-only"],
   ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--account-only", "--account-hosted"],
+  ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--account-only", "--stop-seat-only"],
+  ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--account-only", "--account-hosted", "--stop-seat-only", "--three-seats"],
   ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--signin-parity"],
 ]) {
   const child = spawn(process.execPath, ["--import", "tsx", file!, ...args], { stdio: "inherit", env: process.env });

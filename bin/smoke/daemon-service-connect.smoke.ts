@@ -58,6 +58,8 @@
  *      not an unreachable space; synchronized clocks recover with the same renewal request ids.
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
+ * Running-seat shutdown: --hosting-only --account-only --stop-seat-only, optionally --three-seats
+ * and --account-hosted (without service endpoints).
  * Account pin regression only: add --account-mismatch-only (C1, C2, C7b and C10).
  * Offline status regression only: add --status-only (C0, C1, C2, C3, C5, C6, C10 and C15).
  * Add --setup-hints-only to run approval and setup follow-up checks with a leading-hyphen space.
@@ -91,6 +93,7 @@ import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey
 import { askManager } from "@cotal-ai/workspace/control";
 import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
+import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../../implementations/auth/src/lifecycle-registry.js";
 import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
 import { daemonConnectIntentFile } from "../daemon/service.js";
 import { runSetup } from "../daemon/setup.js";
@@ -224,6 +227,7 @@ let deviceFailure: "denied" | "expired" | "unreachable" | undefined;
 let catalogUnavailable = false;
 let catalogAuthorityDown = false;
 let standingRenewals = 0;
+let shutdownLatency = false;
 let catalogAuthorityRequests = 0;
 let tokenGate: ((res: ServerResponse) => Promise<void>) | undefined;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -271,6 +275,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
     if (process.argv.includes("--account-hosted") && req.url.endsWith("/service-endpoint-authority")) { res.writeHead(404); res.end("{}"); return; }
     catalogAuthorityRequests++;
+    if (shutdownLatency) await sleep(150);
     if (catalogAuthorityDown) { res.writeHead(503); res.end("{}"); return; }
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
@@ -411,7 +416,11 @@ try {
     const drop = () => { inbound.destroy(); outbound.destroy(); pathSockets.delete(inbound); pathSockets.delete(outbound); };
     inbound.on("error", drop); outbound.on("error", drop); inbound.on("close", drop); outbound.on("close", drop);
     inbound.pipe(outbound);
-    outbound.pipe(new Transform({ transform(chunk, _encoding, done) {
+    if (process.argv.includes("--hosted-latency")) {
+      outbound.on("data", chunk => {
+        setTimeout(() => { if (!inbound.destroyed) inbound.write(chunk); }, brokerReplyDelay);
+      });
+    } else outbound.pipe(new Transform({ transform(chunk, _encoding, done) {
       if (brokerReplyDelay) setTimeout(() => done(null, chunk), brokerReplyDelay);
       else done(null, chunk);
     } })).pipe(inbound);
@@ -1486,7 +1495,7 @@ try {
       const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
       const original = findMesh(ON)!;
       const published = await (await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as { server: string; tlsRequired?: boolean; userAuth: NonNullable<MeshEntry["userAuth"]> };
-      if (process.argv.includes("--cold-restart-repro") || process.argv.includes("--slow-status-repro")) published.server = brokerPathUrl;
+      if (process.argv.includes("--cold-restart-repro") || process.argv.includes("--slow-status-repro") || process.argv.includes("--hosted-latency")) published.server = brokerPathUrl;
       const deliveryStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${ON}` });
       const composition = { injected: true } as const;
       await deliveryStore.put(deliveryCredsKey(ON, composition), await mintCreds(ctx[0]!.auth, newIdentity(), "delivery"));
@@ -1805,6 +1814,46 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A1 desired 200 connects real broker service");
           await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
           check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === (hostedShape ? "connected" : "approval-pending")));
+          if (process.argv.includes("--stop-seat-only")) {
+            const manager = (await observed()).managers.find((row: any) => row.space === ON);
+            const countArg = process.argv.find(arg => arg.startsWith("--seats="));
+            const count = countArg ? Number(countArg.slice(8)) : process.argv.includes("--three-seats") ? 3 : 1;
+            const observer = await connectNats({ servers, ...standaloneConnectOpts({ creds: await mintCreds(ctx[0]!.auth, newIdentity(), "provisioner"), tls: false }) });
+            try {
+              const lifecycle = await openLifecycleRegistry(observer, ON);
+              for (let index = 0; index < count; index++) {
+                const seat = spawn(process.execPath, [cliEntry, "spawn", "--on", manager.instanceId, "--space", ON, "--harness", "daemon-smoke", "--name", `shutdown_seat_${index}`, "--no-events", "--detach", "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+                let output = "", error = "";
+                seat.stdout.on("data", chunk => { output += String(chunk); });
+                seat.stderr.on("data", chunk => { error += String(chunk); });
+                const code = await new Promise<number | null>(resolve => seat.once("exit", resolve));
+                check("S0 real hosted running seat joined", code === 0 && JSON.parse(output).result?.readiness === "joined", { code, output, error });
+                if (code !== 0) throw new Error("running-seat prerequisite failed");
+              }
+              shutdownLatency = process.argv.includes("--hosted-latency");
+              if (shutdownLatency) brokerReplyDelay = 150;
+              const started = Date.now();
+              accountDesired = false; accountRevision++;
+              const stopping = await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "stopping" && r.pid === manager.pid), "S7 Manager stays stopping while child is alive");
+              const stopStarted = Date.parse(stopping.managers.find((r: any) => r.space === ON).observedAt);
+              const stopped = await waitAccount(s => !s.account?.spaces?.some((r: any) => r.space === ON) && s.managers?.every((r: any) => r.space !== ON || r.state === "stopped"), "S1 dashboard removal stops hosted Manager");
+              const log = readFileSync(join(home, "daemon", spaceSegment(ON), "manager", "manager.log"), "utf8");
+              const timestamps = log.split("\n").filter(line => /seat reaped: shutdown_seat_|deregistered manager instance/.test(line)).map(line => Date.parse(line.slice(0, 24)));
+              const shutdownMs = Math.max(...timestamps) - stopStarted;
+              console.log("S shutdown observation", JSON.stringify({ count, elapsedMs: Date.now() - started, shutdownMs, managers: stopped.managers, log }));
+              const row = stopped.managers.find((entry: any) => entry.space === ON);
+              check("S4 clean stop has no last exit and names dashboard", row?.state === "stopped" && !row.lastExit && row.next?.includes("dashboard"), row);
+              check("S5 retirement completes within bounded graceful window", shutdownMs < Math.min(60_000, 15_000 + count * 5000) && row.lastStop === "graceful", { shutdownMs, lastStop: row.lastStop });
+              const human = await plainCommand("status", "--space", ON);
+              check("S6 human status has dashboard hint and no crash line", human.code === 0 && human.out.includes("dashboard") && !human.out.includes("Last exit:"), human);
+              check("S2 running-seat shutdown has no IPC crash", !log.includes("ERR_IPC_CHANNEL_CLOSED"), stopped.managers);
+              for (let index = 0; index < count; index++) {
+                const head = await readLifecycleHeadForOperation(lifecycle, fixture.owner, `shutdown_seat_${index}`);
+                check(`S3 seat ${index} lifecycle retired before Manager exit`, head?.mapping.state === "retired", head?.mapping);
+              }
+            } finally { await observer.close(); }
+            return;
+          }
           accountHttp = 503; await sleep(5500);
           check("A2c 503 never disconnects a connected space", (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
           accountHttp = 304; await sleep(5500);

@@ -42,6 +42,7 @@ interface Live {
   healthTimer?: ReturnType<typeof setTimeout>;
   healthTask?: Promise<void>;
   stopping: boolean;
+  stopTask?: Promise<void>;
   failures: number;
   healthFailures?: number;
 }
@@ -180,9 +181,21 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     }, 5000 + Math.floor(Math.random() * 1000));
     l.healthTimer.unref();
   };
-  async function stopChild(l: Live): Promise<void> {
+  function stopChild(l: Live): Promise<void> {
+    return l.stopTask ??= stopChildOnce(l).finally(() => { l.stopTask = undefined; });
+  }
+  async function stopChildOnce(l: Live): Promise<void> {
     const child = l.child;
     if (!child) return;
+    l.view = { ...l.view, state: "stopping", observedAt: new Date().toISOString() };
+    // Retirement and deregistration need broker round trips even with no seats. Observe over
+    // parent IPC before disconnecting, then allow five seconds per seat, capped at one minute.
+    let seats: number | undefined;
+    if (child.connected) {
+      try { seats = await generationCall(child, randomUUID(), "inspect"); }
+      catch { /* Unknown inventory receives the ceiling, never an assumed empty inventory. */ }
+    }
+    const graceMs = seats === undefined ? 60_000 : Math.min(60_000, 15_000 + seats * 5000);
     if (child.connected) child.disconnect();
     // Signal only this retained ChildProcess. Never rediscover a child from a recorded pid.
     const ended = async (ms: number) => {
@@ -190,7 +203,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       try { return await Promise.race([l.exited!.then(() => true), new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), ms); })]); }
       finally { if (timer) clearTimeout(timer); }
     };
-    if (await ended(3000)) l.view = { ...l.view, lastStop: "graceful" };
+    if (await ended(graceMs)) l.view = { ...l.view, lastStop: "graceful" };
     else {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
       if (await ended(2000)) l.view = { ...l.view, lastStop: "terminated" };
@@ -332,7 +345,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         resolve();
         const lastLine = stderr.trim().split("\n").pop()?.slice(-500);
         const exitReason = `Manager exited (${signal ?? `code ${code}`})${lastLine ? `: ${lastLine}` : ""}`;
-        l.view = { ...l.view, pid: undefined, lastExit: exitReason };
+        l.view = { ...l.view, pid: undefined, lastExit: l.stopping && code === 0 && signal === null ? undefined : exitReason };
         if (!nativeReason) nativeReason = exitReason;
         if (!l.stopping && !closed && (l.view.state === "answering" || (l.view.state === "starting" && !l.starting))) {
           l.view = { ...l.view, reason: exitReason };
@@ -549,7 +562,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       return held;
     },
     all: () => [...new Set([...spaces(true), ...live.keys()])].map(status),
-    async disconnect(space: string) {
+    async disconnect(space: string, options?: { account?: boolean }) {
       const l = live.get(space);
       if (l) {
         l.stopping = true;
@@ -558,7 +571,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         await stopChild(l);
         await l.healthTask;
         await l.starting;
-        l.view = { ...l.view, state: "stopped", pid: undefined, reason: undefined, next: `run cotal daemon setup --space ${space} to host its Manager again` };
+        l.view = { ...l.view, state: "stopped", pid: undefined, reason: undefined, next: options?.account ? "enable this space for this computer in the dashboard to host its Manager again" : `run cotal daemon setup --space ${space} to host its Manager again` };
       }
       rmSync(daemonManagerIntentFile(space, home), { force: true });
       rmSync(refusalFile(space), { force: true });

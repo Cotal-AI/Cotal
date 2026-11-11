@@ -81,6 +81,7 @@ export function renderLaunchAgent(input: LaunchAgentInput): { text: string; sha2
     entry("StandardOutPath", input.logPath),
     entry("StandardErrorPath", input.logPath),
     "<key>RunAtLoad</key><true/>",
+    "<key>ExitTimeOut</key><integer>90</integer>",
     "<key>KeepAlive</key><true/>",
     "</dict></plist>",
     "",

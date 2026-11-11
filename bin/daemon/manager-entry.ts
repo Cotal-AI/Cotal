@@ -4,6 +4,12 @@ import { IdpSessionRejectedError, withIdpSessionDir } from "@cotal-ai/auth";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { checkDir } from "./endpoint.js";
 
+// Reports are observational. Teardown still obtains authority directly after its parent leaves.
+function report(frame: object): void {
+  if (!process.connected) return;
+  process.send?.(frame, () => { /* A disconnect racing this report cannot fail shutdown. */ });
+}
+
 let parentGone = false;
 process.once("disconnect", () => {
   parentGone = true;
@@ -26,12 +32,12 @@ const command: Command = {
     const authority = provider.managerServiceAuthority;
     if (!authority) throw new CommandFailure("refused", "UNSUPPORTED", "the auth provider does not support hosted Manager authority");
     provider.managerServiceAuthority = async (request) => {
-      process.send?.({ kind: "manager-instance", instanceId: request.request.instanceId });
+      report({ kind: "manager-instance", instanceId: request.request.instanceId });
       try { return await authority.call(provider, request); }
       catch (error) {
         const status = (error as { status?: unknown }).status;
         const message = error instanceof Error ? error.message : "Manager authority preparation failed";
-        process.send?.({ kind: "manager-refusal", reason: message, terminal: error instanceof IdpSessionRejectedError || status === 400 || status === 401 || status === 403 || status === 404, status });
+        report({ kind: "manager-refusal", reason: message, terminal: error instanceof IdpSessionRejectedError || status === 400 || status === 401 || status === 403 || status === 404, status });
         throw error;
       }
     };

@@ -404,11 +404,12 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const close = (): Promise<void> => {
     closed ??= (async () => {
       const servicesClosed = services.close();
+      const managersClosed = managers.close();
       await account.close();
       // In-flight account work observes service cancellation before shutdown waits for it.
       // An in-flight sign-in is cancelled through the stock fence before the listener goes away.
       await login.close();
-      await managers.close();
+      await managersClosed;
       await managersResumed;
       // Every service connection, its endpoint and its renewal source close before the socket does.
       await servicesClosed;
