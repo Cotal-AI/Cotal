@@ -669,4 +669,4 @@ document.addEventListener("keydown", event => {
 });
 window.addEventListener("beforeunload", () => { if (poll) clearTimeout(poll); if (countdown) clearInterval(countdown); });
 void start();
-if (isTauri()) void reportFirstPaint(document.querySelector<HTMLImageElement>(".brand-mark")!, () => invoke("first_paint")).catch(error => notice(String(error), true));
+if (isTauri()) void reportFirstPaint(document.querySelector<HTMLImageElement>(".brand-mark")!, document.querySelector<HTMLElement>(".sidebar")!, () => invoke("first_paint")).catch(error => notice(String(error), true));

@@ -2,22 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { reportFirstPaint } from "../src/first-paint";
 
-test("first paint waits for the mark and a frame, then reports once", async () => {
+test("first paint reports once after decode and layout without any frame callback", async () => {
   const original = globalThis.requestAnimationFrame;
-  const frames: FrameRequestCallback[] = [];
   let decoded!: () => void;
-  let reports = 0;
-  globalThis.requestAnimationFrame = callback => { frames.push(callback); return frames.length; };
+  const events: string[] = [];
+  globalThis.requestAnimationFrame = () => { throw new Error("Hidden pages have no frame clock"); };
   try {
-    const pending = reportFirstPaint({ decode: () => new Promise<void>(resolve => { decoded = resolve; }) } as HTMLImageElement, async () => { reports++; });
-    assert.equal(frames.length, 0);
-    assert.equal(reports, 0);
-    decoded(); await Promise.resolve();
-    assert.equal(frames.length, 1);
-    frames.shift()!(0); await Promise.resolve();
-    assert.equal(reports, 0, "the first callback runs before the frame is painted");
-    frames.shift()!(16); await pending;
-    assert.equal(reports, 1);
-    assert.equal(frames.length, 0);
+    const header = { get offsetHeight() { events.push("layout"); return 100; } } as HTMLElement;
+    const pending = reportFirstPaint({ decode: () => new Promise<void>(resolve => { decoded = resolve; }) } as HTMLImageElement, header, async () => { events.push("report"); });
+    assert.deepEqual(events, []);
+    decoded(); await pending;
+    assert.deepEqual(events, ["layout", "report"]);
   } finally { globalThis.requestAnimationFrame = original; }
 });

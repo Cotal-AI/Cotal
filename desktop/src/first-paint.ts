@@ -1,7 +1,7 @@
-// Two frame callbacks leave a rendering opportunity between layout and the report.
-// Only the mark is needed for that frame, not daemon status or document.fonts.ready.
-export async function reportFirstPaint(mark: HTMLImageElement, report: () => Promise<unknown>): Promise<void> {
+// A hidden native window may have no frame clock. Prepare layout and let
+// visibility trigger painting, without waiting for daemon status or fonts.
+export async function reportFirstPaint(mark: HTMLImageElement, header: HTMLElement, report: () => Promise<unknown>): Promise<void> {
   await mark.decode();
-  await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  void header.offsetHeight;
   await report();
 }
