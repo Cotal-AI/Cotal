@@ -240,7 +240,7 @@ jobs:
           [ -n "$app" ] || { echo 'no built app bundle'; exit 1; }
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign -dv --verbose=2 "$app" 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
-          grep -q '^Sealed Resources=version' "$RUNNER_TEMP/codesign.txt"
+          grep -q '^Sealed Resources version=' "$RUNNER_TEMP/codesign.txt"
           grep -q '^Info.plist entries=' "$RUNNER_TEMP/codesign.txt"
           # The same check on a copy carrying the download quarantine mark, as a browser leaves it.
           copy="$RUNNER_TEMP/quarantined/$(basename "$app")"
