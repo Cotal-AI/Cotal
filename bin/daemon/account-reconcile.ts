@@ -131,6 +131,13 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
     }
   });
   return { apply, localRemoval, localAddition, serial,
+    /** The answering Managers this computer hosts for the given account spaces, by catalog space id. */
+    hostedManagers(rows: readonly { id: string; slug: string }[]) {
+      return rows.flatMap((row) => {
+        const manager = managers.status(row.slug);
+        return manager.state === "answering" && manager.instanceId ? [{ spaceId: row.id, instanceId: manager.instanceId }] : [];
+      }).sort((a, b) => a.spaceId.localeCompare(b.spaceId));
+    },
     retainAccounts(owners: string[]) { for (const key of desiredByOwner.keys()) if (!owners.includes(key)) desiredByOwner.delete(key); },
     view: () => [...new Set([...desiredAll(), ...Object.keys(saved.spaces), ...readMeshRegistry().entries.filter(entry => connectedHere(entry.space)).map(entry => entry.space)])].map(space => ({ space, desired: desiredAll().has(space), observed: observedState(space), ...(machineService(space) ? { machineService: machineService(space)! } : {}), ...(refusals.has(space) ? { lastRefusal: refusals.get(space)! } : {}) })),
     settled: () => queue,
