@@ -75,6 +75,9 @@ export async function registerRemoteManagerAuthority(args: {
       continue;
     }
     let nc: NatsConnection | undefined;
+    // Host maintenance runs on a separate authority connection. Its refusal must survive even
+    // when the prepare connection expires before core can save a partial eviction verdict.
+    let maintenanceFailure: { error: unknown } | undefined;
     try {
       // Follow the recorded URL, including ws/wss edges, without widening the executor's grants.
       nc = await dialerFor(args.server)({
@@ -109,7 +112,18 @@ export async function registerRemoteManagerAuthority(args: {
         endpoint: MANAGER_ENDPOINT,
         instanceId: args.instanceId,
         opId: args.instanceId,
-        evict: args.evict,
+        evict: async holders => {
+          try {
+            const gone = await args.evict(holders);
+            if (gone.length !== holders.length || holders.some((_, i) => gone[i] !== true))
+              maintenanceFailure = { error: new Error("host eviction did not verify every requested holder") };
+            // Core still records successful verdicts before reporting any unverified holders.
+            return gone;
+          } catch (error) {
+            maintenanceFailure = { error };
+            throw error;
+          }
+        },
       });
       const register = () => registerServingInstance(recordsKv, {
         space: args.space,
@@ -130,12 +144,18 @@ export async function registerRemoteManagerAuthority(args: {
         // Only a holder still at the slot stamp needs guarded host reconciliation.
         const held = foreignSlotHeldFrom(error);
         if (held?.condition !== "in-flight" || !args.reconcileForeignRegistration) throw error;
-        await args.reconcileForeignRegistration(held.holderInstanceId);
+        try {
+          await args.reconcileForeignRegistration(held.holderInstanceId);
+        } catch (error) {
+          maintenanceFailure = { error };
+          throw error;
+        }
         registered = await register();
       }
       const { registrationRevision, processEpoch, grant } = registered;
       return { registrationRevision, processEpoch, serveGrant: grant };
     } catch (error) {
+      if (maintenanceFailure) throw maintenanceFailure.error;
       // Retry only an authentication-expiry error or an elapsed credential on a closed connection.
       // Completed row CASes and verified-holder progress belong to the same freeze.
       // Some transports close without retaining the broker's expiry error. In that case require

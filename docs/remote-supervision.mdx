@@ -165,8 +165,10 @@ Registration reports revoked and total row counts at five-second intervals while
 and at completion. If the broker expires the prepare executor, the participant requests fresh
 prepare authority for the same identities and resumes the same frozen operation in that process.
 Already-revoked rows and saved verified-holder progress are retained. A refused authority request
-or a non-expiry failure still stops startup. Historical rows remain retained, so large families
-can require several executor windows.
+or a non-expiry failure still stops startup. Host eviction and reconciliation refusals stop startup
+even if the prepare connection expires at the same time. An incomplete eviction verdict also refuses;
+expiry recovery cannot replace it with another host request. Historical rows remain retained, so large
+families can require several executor windows.
 
 ### Keep lifecycle changes on the host
 
