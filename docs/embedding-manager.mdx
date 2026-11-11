@@ -402,7 +402,13 @@ deregistration and exact instance registration operations. It carries no records
 lifecycle authority. The manager's boot `goalidx` sweep uses the authenticated host operation, which
 returns parsed `goalidx.manager.<owner>.>` entries for that owner only. The host keeps the sealed
 consumer connection and its create/delete rights. The five-minute executor already renews through
-`remoteAuthority.renewExecutor`. `remoteManagerClient.remoteStandingBundleRenewal` builds standing-bundle renewal requests, with adoption bound to the current serve epoch. `remoteRunHosting` supplies `renewRun` through the `renewRunDriver` authority operation. The host validates and adopts the driver and mediator pair before reconnecting, using the current holder and fencing coordinates. The
+`remoteAuthority.renewExecutor`. During participant registration,
+`registerRemoteManagerAuthority` accepts `refreshPrepareCreds` to request another prepare executor
+after broker-confirmed expiry. It must keep the same account and executor nkey and advance expiry.
+The stock supervise command supplies it through the authenticated host route; an embedding that
+omits it still refuses an expired registration. The frozen operation and durable progress survive
+each replacement connection.
+`remoteManagerClient.remoteStandingBundleRenewal` builds standing-bundle renewal requests, with adoption bound to the current serve epoch. `remoteRunHosting` supplies `renewRun` through the `renewRunDriver` authority operation. The host validates and adopts the driver and mediator pair before reconnecting, using the current holder and fencing coordinates. The
 [hosted runtime contract](design/hosted-runtime-contracts.md) records the bounded additions and
 their ownership; it is not a shipped pooled service.
 

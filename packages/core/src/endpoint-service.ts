@@ -605,10 +605,14 @@ export async function registerServiceInstance(
     // apiece. Drain the whole bounded batch, including synchronous throws, before any refusal
     // or eviction. A failed batch leaves completed revocations durable and the gate frozen.
     const active = family.filter((row) => row.state === "active");
+    let revoked = family.length - active.length;
+    args.barrier.onRevocationProgress?.({ revoked, total: family.length });
     const revokeConcurrency = 16;
     for (let i = 0; i < active.length; i += revokeConcurrency) {
       const results = await Promise.allSettled(active.slice(i, i + revokeConcurrency).map(async (row) => args.barrier.revoke(row)));
       for (const result of results) if (result.status === "rejected") throw result.reason;
+      revoked += results.length;
+      args.barrier.onRevocationProgress?.({ revoked, total: family.length });
     }
     const holders = [...new Set(family.map((row) => row.holderPrincipal))].sort();
     const opId = args.barrier.operationId ?? obs.op?.opId;
@@ -2092,6 +2096,9 @@ export interface EpIssuanceBarrier {
   enumerate: () => Promise<EpServeLedgerRow[]> | EpServeLedgerRow[];
   /** Flip one enumerated row `active`→`revoked` (§13.1: enforce revocation on the ledger). */
   revoke: (row: EpServeLedgerRow) => Promise<void> | void;
+  /** Report retained rows already revoked and each fully settled successful revocation batch.
+   *  This observation does not replace durable rows or verified-holder progress. */
+  onRevocationProgress?: (progress: { revoked: number; total: number }) => void;
   /** VERIFIED cluster-wide eviction of revoked holder principals (§13.1): enforce the revocation
    *  on every server, evict the principals' live connections, and RE-SCAN — answering, per holder
    *  in input order, `true` only when that principal is verified GONE. FAIL-CLOSED: a `false` (or a

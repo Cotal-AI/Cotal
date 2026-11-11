@@ -349,6 +349,7 @@ try {
     await barrier.revoke(alreadyRevoked);
     let inFlight = 0, peak = 0, started = 0, evictions = 0;
     let evictionAfterRevocation = false;
+    const reported: Array<{ revoked: number; total: number; inFlight: number }> = [];
     const revoke = (row: EpServeLedgerRow) => {
       const index = started++;
       if (fault === "sync" && index === 1) throw new Error("synchronous revoke refusal");
@@ -366,6 +367,7 @@ try {
     try {
       await registerServingInstance(recordsKv, { ...registerArgs, barrier: {
         ...barrier, revoke,
+        onRevocationProgress: ({ revoked, total }) => { reported.push({ revoked, total, inFlight }); },
         evict: async (holders) => {
           evictions++;
           evictionAfterRevocation = inFlight === 0
@@ -380,6 +382,9 @@ try {
     const spec = await recordsKv.get(recordSpecKey(RECORD_KINDS.svc, [endpoint, instanceId]));
     c(`${fault}: no started revoke remains in flight when registration settles`, inFlight === 0, { inFlight, peak, started });
     c(`${fault}: independent revocations overlap within the 16-row bound`, peak > 1 && peak <= 16, { peak });
+    c(`${fault}: progress counts retained revocations and only fully settled successful batches`,
+      reported.every(row => row.total === 36 && row.inFlight === 0)
+        && reported.map(row => row.revoked).join(",") === (fault === "none" ? "1,17,33,36" : "1"), reported);
     if (fault === "none") {
       c("success: all active rows were revoked, already-revoked rows skipped, then every holder evicted",
         error === undefined && started === 35 && evictions === 1 && evictionAfterRevocation,

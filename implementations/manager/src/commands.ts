@@ -382,7 +382,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
         throw new Error(`registered space "${space}" has no pinned public exchange URL for retained managed agents`);
       console.error(`manager startup: requesting remote authority for ${state.instanceId}`);
-      const material = await provider.managerServiceAuthority({ ...providerCall, request });
+      let material = await provider.managerServiceAuthority({ ...providerCall, request });
       const actors = remoteManagerActors(state.instanceId);
       if (material.owner.length === 0 || material.instanceId !== state.instanceId || material.lifecycleUid !== state.lifecycleUid ||
           JSON.stringify(material.actors) !== JSON.stringify(actors))
@@ -399,6 +399,17 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         instanceId: state.instanceId,
         serveActor: actors.serve,
         prepareCreds: materialCredential(material, "executor", state.identities.executor),
+        refreshPrepareCreds: async () => {
+          const refreshed = await provider.managerServiceAuthority!({
+            ...providerCall, request: remoteManagerAuthorityRequest(state, "cli", "prepare"),
+          });
+          if (refreshed.owner !== material.owner || refreshed.instanceId !== state.instanceId ||
+              refreshed.lifecycleUid !== state.lifecycleUid || JSON.stringify(refreshed.actors) !== JSON.stringify(actors))
+            throw new Error("the host returned manager-service material for different lifecycle coordinates");
+          const creds = materialCredential(refreshed, "executor", state.identities.executor);
+          material = refreshed;
+          return creds;
+        },
         tlsRequired: target.tlsRequired,
         evict: async (principals) => (await maintain("evict-family-principal", state.instanceId, [...principals])).evictions!.map((e) => e.verifiedGone),
         reconcileForeignRegistration: async (instanceId) => { await maintain("reconcile-registration", instanceId); },
