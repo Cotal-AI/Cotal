@@ -626,11 +626,10 @@ async function run(s: Space, width: number, height: number, tag: string) {
   const before = (await general()).length
   const unknown = await enter("/foo", (f) => says(f, "unknown command /foo"))
   save("unknown-slash")
-  await clear()
   const who = await enter("/who", (f) => says(f, "is not in the app"))
   save("cli-only-slash")
   await clear()
-  check(`${at}: an unknown slash command refuses and keeps the line`, says(unknown, "unknown command /foo; try") && inBox(unknown, "/foo"), unknown)
+  check(`${at}: an unknown slash command refuses and clears the line`, says(unknown, "unknown command /foo; try") && !inBox(unknown, "/foo"), unknown)
   check(`${at}: /who is not in the app and is not sent`, says(who, "/who is not in the app; the tree lists who is here") && (await general()).length === before, who)
 
   const aside = `between agents (${tag})`
@@ -665,7 +664,7 @@ async function run(s: Space, width: number, height: number, tag: string) {
   save("offline-recipient")
   check(
     `${at}: a direct message to an offline agent is stored at its principal and says so`,
-    says(offline, "ghost is offline. The message is stored and delivered when ghost reconnects") && toGhost.some((m) => textOf(m) === late && m.to === ghost.id),
+    says(offline, "ghost is offline. The message is stored, but delivery is not confirmed.") && toGhost.some((m) => textOf(m) === late && m.to === ghost.id),
     offline,
   )
 
@@ -733,7 +732,7 @@ async function run(s: Space, width: number, height: number, tag: string) {
     )
     await esc()
   }
-  const quit = await enter("/quit", (f) => says(f, "session ended"))
+  const quit = await enter("/quit", (f) => says(f, "you ended it"))
   const gone = await until(() => s.reader.getRoster().find((p) => p.card.id === principal), (p) => p === undefined || p.status === "offline")
   const left = await until(async () => (await s.connections?.()) ?? 0, (c) => c === 0)
   save("quit")
@@ -905,7 +904,7 @@ async function rename(s: Space, tag: string) {
   await see((f) => !f.includes("Your name is"), 4000)
   type("/quit")
   keys("Enter")
-  await see((f) => middle(f, 209).includes("session ended"))
+  await see((f) => middle(f, 209).includes("you ended it"))
   const walked: string[] = []
   for (let i = 0; i < 8; i++) {
     keys("Up")
