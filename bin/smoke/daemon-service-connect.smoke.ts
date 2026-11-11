@@ -58,6 +58,8 @@
  *      not an unreachable space; synchronized clocks recover with the same renewal request ids.
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
+ * Running-seat shutdown: --hosting-only --account-only --stop-seat-only, optionally --three-seats
+ * and --account-hosted (without service endpoints).
  * Account pin regression only: add --account-mismatch-only (C1, C2, C7b and C10).
  * Offline status regression only: add --status-only (C0, C1, C2, C3, C5, C6, C10 and C15).
  * Add --setup-hints-only to run approval and setup follow-up checks with a leading-hyphen space.
@@ -1811,33 +1813,33 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             const count = process.argv.includes("--three-seats") ? 3 : 1;
             const observer = await connectNats({ servers, ...standaloneConnectOpts({ creds: await mintCreds(ctx[0]!.auth, newIdentity(), "provisioner"), tls: false }) });
             try {
-            const lifecycle = await openLifecycleRegistry(observer, ON);
-            for (let index = 0; index < count; index++) {
-            const seat = spawn(process.execPath, [cliEntry, "spawn", "--on", manager.instanceId, "--space", ON, "--harness", "daemon-smoke", "--name", `shutdown_seat_${index}`,  "--no-events", "--detach", "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
-            let output = "", error = "";
-            seat.stdout.on("data", chunk => { output += String(chunk); });
-            seat.stderr.on("data", chunk => { error += String(chunk); });
-            const code = await new Promise<number | null>(resolve => seat.once("exit", resolve));
-            check("S0 real hosted running seat joined", code === 0 && JSON.parse(output).result?.readiness === "joined", { code, output, error });
-            if (code !== 0) throw new Error("running-seat prerequisite failed");
-            }
-            const started = Date.now();
-            accountDesired = false; accountRevision++;
-            const stopped = await waitAccount(s => !s.account?.spaces?.some((r: any) => r.space === ON) && s.managers?.every((r: any) => r.space !== ON || r.state === "stopped"), "S1 dashboard removal stops hosted Manager");
-            const log = readFileSync(join(home, "daemon", spaceSegment(ON), "manager", "manager.log"), "utf8");
-            const timestamps = log.split("\n").filter(line => /seat reaped: shutdown_seat_|deregistered manager instance/.test(line)).map(line => Date.parse(line.slice(0, 24)));
-            const shutdownMs = Math.max(...timestamps) - Math.min(...timestamps);
-            console.log("S shutdown observation", JSON.stringify({ count, elapsedMs: Date.now() - started, shutdownMs, managers: stopped.managers, log }));
-            const row = stopped.managers.find((entry: any) => entry.space === ON);
-            check("S4 clean stop has no last exit and names dashboard", row?.state === "stopped" && !row.lastExit && row.next?.includes("dashboard"), row);
-            check("S5 retirement completes before SIGKILL window", shutdownMs < 5000 && row.lastStop !== "killed", { shutdownMs, lastStop: row.lastStop });
-            const human = await plainCommand("status", "--space", ON);
-            check("S6 human status has dashboard hint and no crash line", human.code === 0 && human.out.includes("dashboard") && !human.out.includes("Last exit:"), human);
-            check("S2 running-seat shutdown has no IPC crash", !log.includes("ERR_IPC_CHANNEL_CLOSED"), stopped.managers);
-            for (let index = 0; index < count; index++) {
-              const head = await readLifecycleHeadForOperation(lifecycle, fixture.owner, `shutdown_seat_${index}`);
-              check(`S3 seat ${index} lifecycle retired before Manager exit`, head?.mapping.state === "retired", head?.mapping);
-            }
+              const lifecycle = await openLifecycleRegistry(observer, ON);
+              for (let index = 0; index < count; index++) {
+                const seat = spawn(process.execPath, [cliEntry, "spawn", "--on", manager.instanceId, "--space", ON, "--harness", "daemon-smoke", "--name", `shutdown_seat_${index}`, "--no-events", "--detach", "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+                let output = "", error = "";
+                seat.stdout.on("data", chunk => { output += String(chunk); });
+                seat.stderr.on("data", chunk => { error += String(chunk); });
+                const code = await new Promise<number | null>(resolve => seat.once("exit", resolve));
+                check("S0 real hosted running seat joined", code === 0 && JSON.parse(output).result?.readiness === "joined", { code, output, error });
+                if (code !== 0) throw new Error("running-seat prerequisite failed");
+              }
+              const started = Date.now();
+              accountDesired = false; accountRevision++;
+              const stopped = await waitAccount(s => !s.account?.spaces?.some((r: any) => r.space === ON) && s.managers?.every((r: any) => r.space !== ON || r.state === "stopped"), "S1 dashboard removal stops hosted Manager");
+              const log = readFileSync(join(home, "daemon", spaceSegment(ON), "manager", "manager.log"), "utf8");
+              const timestamps = log.split("\n").filter(line => /seat reaped: shutdown_seat_|deregistered manager instance/.test(line)).map(line => Date.parse(line.slice(0, 24)));
+              const shutdownMs = Math.max(...timestamps) - Math.min(...timestamps);
+              console.log("S shutdown observation", JSON.stringify({ count, elapsedMs: Date.now() - started, shutdownMs, managers: stopped.managers, log }));
+              const row = stopped.managers.find((entry: any) => entry.space === ON);
+              check("S4 clean stop has no last exit and names dashboard", row?.state === "stopped" && !row.lastExit && row.next?.includes("dashboard"), row);
+              check("S5 retirement completes before SIGKILL window", shutdownMs < 5000 && row.lastStop !== "killed", { shutdownMs, lastStop: row.lastStop });
+              const human = await plainCommand("status", "--space", ON);
+              check("S6 human status has dashboard hint and no crash line", human.code === 0 && human.out.includes("dashboard") && !human.out.includes("Last exit:"), human);
+              check("S2 running-seat shutdown has no IPC crash", !log.includes("ERR_IPC_CHANNEL_CLOSED"), stopped.managers);
+              for (let index = 0; index < count; index++) {
+                const head = await readLifecycleHeadForOperation(lifecycle, fixture.owner, `shutdown_seat_${index}`);
+                check(`S3 seat ${index} lifecycle retired before Manager exit`, head?.mapping.state === "retired", head?.mapping);
+              }
             } finally { await observer.close(); }
             return;
           }
