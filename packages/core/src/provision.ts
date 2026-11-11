@@ -1838,13 +1838,13 @@ export function permissionsFor(
   return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...takeReplies, ...livenessReplies, ...subChat, ...epSub] } };
 }
 
-/** The reads a spawn-scoped manager-caller view carries on its one pinned instance. Three are what
- * a launch there needs: `status` (its execution mode and which connectors it can launch), `models`
- * (their catalogs) and `resolve-cwd` (a directory's canonical form on its host). The fourth, `ps`,
+/** The reads a spawn-scoped manager-caller view carries on its one pinned instance. A launch uses
+ * `status` (execution mode and connectors), `models` (their catalogs), `resolve-cwd` (canonical
+ * directory) and `list-dir` (directory navigation). The remaining read, `ps`,
  * lists the caller's own agents: the Manager bounds it to the caller's owner unless the caller
  * holds admin. The standing spawn set carries none of them, because it reaches every manager in
  * the space through the class rail. */
-const SPAWN_VIEW_READS = Object.freeze(["status", "models", "resolve-cwd", "ps"] as const);
+const SPAWN_VIEW_READS = Object.freeze(["status", "models", "resolve-cwd", "list-dir", "ps"] as const);
 
 /** One seat's manager control view. It carries no agent messaging or delivery surface, and every
  * manager request, including describe, is pinned to one exact registered instance. */

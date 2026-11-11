@@ -412,6 +412,7 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
     // it. The standing agent `spawn` set still does not: it reaches every manager in the space
     // through the class rail, and this instrument is pinned and one-shot.
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "resolve-cwd" },
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "list-dir" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "remove-persona" },
     ...CHAT_SESSION_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),

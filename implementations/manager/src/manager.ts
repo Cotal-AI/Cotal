@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { drainAndClose } from "@cotal-ai/core";
-import { hostname } from "node:os";
+import { hostname, homedir } from "node:os";
+import { listDirectory } from "./list-dir.js";
 import { credsAuthenticator, RequestError } from "@nats-io/transport-node";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve, sep } from "node:path";
@@ -4755,6 +4756,7 @@ export class Manager {
         const result = await readGoalResult(gw.ctx, goalRefOf(ctx.subject, goalId));
         return { goalId, ...(result === undefined ? {} : { result }) };
       }),
+      listDir: (ctx) => this.serveGated(ctx, () => this.listSpawnDirectory(args(ctx))),
       resolveCwd: (ctx) => this.serveGated(ctx, () => this.resolveSpawnCwd(args(ctx).cwd)),
       resolveAgent: (ctx) => this.serveGated(ctx, async () => {
         if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
@@ -6565,12 +6567,26 @@ export class Manager {
     return { cwd, host: hostname() };
   }
 
-  /** Resolve a placed spawn directory on this manager's host. Delegated execution refuses before
-   * filesystem lookup, since its seats cannot use host cwd. Creates nothing and never substitutes the workspace root. */
-  private resolveSpawnCwd(value: unknown): { cwd: string; host: string } {
+  /** Refuse host directory reads before lookup when seats cannot use this host. */
+  private assertHostDirectoryExecution(): void {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     if (this.execution === "runtime" && this.requiredRuntime.spawnDelegated)
       throw new EpEnvelopeError("failed-precondition", `runtime "${this.requiredRuntime.kind}" starts seats outside this host, so it cannot resolve a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory`);
+  }
+
+  private async listSpawnDirectory(args: Record<string, unknown>) {
+    this.assertHostDirectoryExecution();
+    const { cwd } = this.resolveSpawnCwd(args.path ?? homedir());
+    try {
+      return await listDirectory(cwd, args.includeHidden === true, typeof args.limit === "number" ? args.limit : 200);
+    } catch (error) {
+      throw new EpEnvelopeError("failed-precondition", `directory cannot be listed on this host: ${JSON.stringify(cwd)} (${rejectionText(error)})`);
+    }
+  }
+
+  /** Resolve a placed spawn directory without creating or substituting a workspace. */
+  private resolveSpawnCwd(value: unknown): { cwd: string; host: string } {
+    this.assertHostDirectoryExecution();
     const asked = typeof value === "string" ? value : String(value ?? "");
     const refuse = (reason: string): never => {
       throw new EpEnvelopeError("failed-precondition", `cwd does not resolve on this host: ${JSON.stringify(asked)} (${reason})`);

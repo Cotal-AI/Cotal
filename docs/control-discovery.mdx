@@ -95,6 +95,27 @@ A runtime that delegates seats outside the manager's host cannot use a host cwd.
 refuses `resolve-cwd` with `failed-precondition` before any filesystem lookup, with the same
 execution-mode refusal for every path. It returns no host name or canonical path.
 
+## Host directory listing
+
+The manager's `list-dir` command uses `manager.spawn` and the same operator instruments and
+spawn-scoped, instance-pinned manager-caller views as `resolve-cwd`. It is not granted to standing
+agent spawn credentials or workflow placement credentials. A team member cannot obtain a view of
+another member's remote Manager merely by joining the space.
+
+Call `cotal invoke manager list-dir --on <instance> --args '{}'` to start at the Manager user's
+home. Input accepts an absolute `path`, `includeHidden` (default false) and `limit` (default 200,
+maximum 1000). The response contains canonical `path`, nullable `parent`, sorted child
+`directories` with `name` and `symlink`, `truncated`, and platform `roots`. A root has null parent.
+Windows roots list existing drives. macOS roots include `/` and `/Volumes`; other hosts return `/`.
+No file names, contents, sizes or timestamps are returned. Hidden means a dot-prefixed name.
+
+A directory symlink is marked without returning its target. Explicitly navigating it returns the
+canonical target path, which the client must display. Broken and non-directory symlinks are omitted.
+A truncated listing contains the first names in locale-independent string order. The caller may
+still type an absolute path that was not listed. The command creates nothing. Missing, relative,
+non-directory and inaccessible paths refuse with `failed-precondition`. Delegated execution refuses
+before any host filesystem lookup, using the same execution-mode refusal as `resolve-cwd`.
+
 ## Spawn input resolution [#agent-selection-and-spawn-inputs]
 
 The manager's `resolve-agent` command is minted beside `spawn` in the spawn capability and the
