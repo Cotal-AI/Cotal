@@ -100,7 +100,7 @@ function plistFlag(text: string, key: string): string {
 function uid(): number {
   const id = process.getuid?.();
   if (id === undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this platform has no user id for a launchd GUI domain");
-  if (id === 0) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "a LaunchAgent runs in the signed-in user's GUI domain, and this is root; nothing was written", { remedy: "run cotal daemon install as the desktop user who will run the daemon, without sudo" });
+  if (id === 0) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "a LaunchAgent runs in the signed-in user's GUI domain, and this is root; nothing was written", { remedy: "run \`cotal daemon install\` as the desktop user who will run the daemon, without sudo" });
   return id;
 }
 
@@ -127,7 +127,7 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
   };
   const step = (args: readonly string[]): void => {
     const result = run(LAUNCHCTL, args);
-    if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `launchctl ${args.join(" ")} did not confirm completion (${result.detail}); it was not retried`, { remedy: "inspect it with launchctl print, then remove the recorded plist with cotal daemon uninstall" });
+    if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `launchctl ${args.join(" ")} did not confirm completion (${result.detail}); it was not retried`, { remedy: "inspect it with launchctl print, then remove the recorded plist with \`cotal daemon uninstall\`" });
   };
   /** Whether the recorded job is loaded, refused unless it is this daemon's label and unchanged plist. */
   const owned = (receipt: UnitReceipt): boolean => {

@@ -123,6 +123,6 @@ export async function lostRecordsStackDown(root: string, values: ParsedArgs["val
       save("applying", { ...row, state: verdict.kind === "match" ? "stopped" : "already-stopped" });
     }
     save("completed");
-    writeResult(presentation, { command: "down", target, result: { kind: "missing-records-stack-stop", members: snapshot.journal.members, recordsRestored: false } }, () => ({ sections: [{ title: "Stack stopped from its journal pins", blocks: [{ kind: "lines", lines: ["Every recorded member exited. Missing home records were not recreated. Prepare this space again with space create before starting it."] }] }, { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal space create ${target.space}`, description: "Prepare the space again here, then run cotal up" }] }] }] }));
+    writeResult(presentation, { command: "down", target, result: { kind: "missing-records-stack-stop", members: snapshot.journal.members, recordsRestored: false } }, () => ({ sections: [{ title: "Stack stopped from its journal pins", blocks: [{ kind: "lines", lines: ["Every recorded member exited. Missing home records were not recreated. Prepare this space again with space create before starting it."] }] }, { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal space create ${target.space}`, description: "Prepare the space again here, then run `cotal up`" }] }] }] }));
   } finally { releaseMaintenanceLock(lock); }
 }

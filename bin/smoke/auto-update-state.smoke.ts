@@ -27,7 +27,7 @@ try {
   for (const value of ["darwin", "win32", "freebsd"]) {
    Object.defineProperty(process, "platform", { value });
    assert.equal(updater.status().automatic, false, `${value} must not install automatically`);
-   assert.match(updater.status().lastResult, /Automatic installation is available on Linux in this release\. Run cotal update --self here/);
+   assert.match(updater.status().lastResult, /Automatic installation is available on Linux in this release\. Run `cotal update --self` here/);
   }
  } finally { Object.defineProperty(process, "platform", platform); }
  emitSentinel({ passed: counted.cells(), failed: 0 });

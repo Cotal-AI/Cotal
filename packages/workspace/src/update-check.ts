@@ -71,7 +71,7 @@ export function newerUpdate(latest: string, current: string): boolean {
 export function cachedUpdateSummary(current: string): string {
   try {
     const recovery = readUpdateRecovery();
-    if (recovery) return `update needs repair: installed ${recovery.installed}; automatic updates paused; run cotal update --self`;
+    if (recovery) return `update needs repair: installed ${recovery.installed}; automatic updates paused; run \`cotal update --self\``;
   } catch { return "update state unreadable; automatic updates paused"; }
   const cached = readUpdateCheck();
   return !cached?.latest ? "update status unknown" : newerUpdate(cached.latest, current) ? `newer version ${cached.latest} available` : "up to date";

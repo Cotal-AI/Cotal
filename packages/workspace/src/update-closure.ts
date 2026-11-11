@@ -20,7 +20,7 @@ export function waitForUpdateClosure(): boolean {
     const current = inspectLock(lockPath());
     const record = readUpdateRecovery();
     if (current.state !== "active") {
-      if (record && record.phase !== "verified-ready") throw new Error("an interrupted update needs restoration; run cotal update --self");
+      if (record && record.phase !== "verified-ready") throw new Error("an interrupted update needs restoration; run `cotal update --self`");
       return waitedForUpdate;
     }
     if (String(current.owner.pid) === process.env[OWNER] && current.owner.nonce === process.env[NONCE]) return false;

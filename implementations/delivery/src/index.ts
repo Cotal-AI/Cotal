@@ -48,7 +48,7 @@ const deliveryCommands: Command[] = [
       { name: "dev-mint", type: "boolean", description: "standalone dev: mint a scoped delivery cred from the local signer" },
       { name: "limit", type: "string", value: "<n>", description: "pending: max recent candidate ids to print (default 20)" },
       { name: "durable", type: "string", value: "<name>", description: "pending: read this exact DM durable (a live read's printed name) instead of resolving <name>" },
-      { ...jsonFlag, description: "pending: use the cotal pending JSON receipt, including candidates and refusals" },
+      { ...jsonFlag, description: "pending: use the `cotal pending` JSON receipt, including candidates and refusals" },
     ],
     prepareMeshTarget: false,
     run: (args) => {
