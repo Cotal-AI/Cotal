@@ -27,13 +27,14 @@ const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 /** Each package whose bundles load into a long-running process, with how many bundles it emits. */
 const PACKAGES: ReadonlyArray<readonly [string, number]> = [
   ["extensions/connector-claude-code", 5],
-  ["extensions/connector-codex", 2],
+  // index, host and the personal-session entry.
+  ["extensions/connector-codex", 3],
   ["extensions/connector-hermes", 3],
   ["extensions/connector-jcode", 3],
   ["extensions/connector-opencode", 4],
   ["extensions/pi", 2],
 ];
-const EXPECTED_BUNDLES = 19;
+const EXPECTED_BUNDLES = 20;
 
 /** A step that copies one of connector-core's prebuilt docs data files beside the bundles. It emits
  *  no JavaScript, so it is neither a bundle nor a way for another bundler to slip in. */
