@@ -46,7 +46,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     return { current: host.version, latest: cached?.latest, lastCheck: cached?.checkedAt ? new Date(cached.checkedAt).toISOString() : undefined, automatic, failures: state.failures, lastResult: reason, ...(state.next < Number.MAX_SAFE_INTEGER ? { nextAttempt: new Date(state.next).toISOString() } : {}) };
   };
   const tick = async (): Promise<void> => {
-    if (closed || Date.now() < state.next || !status().automatic) return;
+    if (closed || !status().automatic || Date.now() < state.next) return;
     const cached = await checkForUpdate();
     if (closed) return;
     if (!cached?.latest || cached.error) { state = { ...state, result: cached?.error ?? "registry check unavailable", next: Date.now() + UPDATE_HOUR_MS }; persist(); return; }

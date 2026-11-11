@@ -1571,7 +1571,10 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         npmRegistry = createHttpServer((request, response) => {
           response.setHeader("content-type", "application/json");
           const requestedVersion = request.url?.includes("0.151.2") ? "0.151.2" : "0.151.3";
-          if (request.url?.includes(".tgz")) { response.setHeader("content-type", "application/octet-stream"); response.end(readFileSync(join(upgradeFixture!, `cotal-ai-${requestedVersion}.tgz`))); return; }
+          if (request.url?.includes(".tgz")) {
+            if (process.argv.includes("--auto-failure-repro") && requestedVersion === "0.151.3") { response.writeHead(503).end("fixture archive unavailable"); return; }
+            response.setHeader("content-type", "application/octet-stream"); response.end(readFileSync(join(upgradeFixture!, `cotal-ai-${requestedVersion}.tgz`))); return;
+          }
           const versions = Object.fromEntries(["0.151.2", "0.151.3"].map(version => {
             const name = decodeURIComponent((request.url ?? "/cotal-ai").slice(1).split("?")[0]!);
             const packageName = name.startsWith("@cotal-ai/") ? name : "cotal-ai";
@@ -2742,6 +2745,26 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             if (!activeTarget) throw new Error("automatic acceptance requires active seat");
             await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "stop", { name: "npm_upgrade_custody" }, activeTarget.auth, "owner", 10_000, { instanceId: manager.instanceId });
             activeTarget = undefined;
+            if (process.argv.includes("--auto-failure-repro")) {
+              let failedStatus;
+              for (let i = 0; i < 100; i++) {
+                failedStatus = await cli("status", "--space", ON);
+                if (failedStatus.doc.result?.update?.lastResult?.startsWith("update failed")) break;
+                await sleep(1000);
+              }
+              check("AF failed preflight keeps old daemon and records backoff", failedStatus?.doc.result?.version === "0.151.2" && failedStatus.doc.result.update.failures === 1 && Date.parse(failedStatus.doc.result.update.nextAttempt) > Date.now() + 3500_000, failedStatus);
+              const attemptFile = join(home, "update-attempt.json");
+              const attempt = JSON.parse(readFileSync(attemptFile, "utf8"));
+              writeFileSync(attemptFile, JSON.stringify({ ...attempt, next: 0 }));
+              await sleep(35_000);
+              failedStatus = await cli("status", "--space", ON);
+              check("AF second failed attempt is recorded", failedStatus.doc.result?.update?.failures === 2, failedStatus);
+              writeFileSync(attemptFile, JSON.stringify({ ...JSON.parse(readFileSync(attemptFile, "utf8")), next: 0 }));
+              await sleep(35_000);
+              const suppressed = await cli("status", "--space", ON);
+              check("AF same version is suppressed after two failures", suppressed.doc.result?.update?.failures === 2 && suppressed.doc.result.update.lastResult.includes("failed twice"), suppressed);
+              return;
+            }
             let upgraded;
             for (let i = 0; i < 180; i++) {
               try {
