@@ -1,5 +1,5 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-export type Request = { op: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string };
+export type Request = { op: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string };
 export const COTAL_CLOUD_IDP = "https://cloud.cotal.ai/api/auth";
 export interface SetupProgress { step: "install" | "sign-in" | "discover" | "manager" | "applications" | "register" | "connect"; outcome: string; detail: string; applications?: readonly string[] }
 export interface Frame { v: 1; event: "result" | "login-prompt" | "setup-progress"; progress?: SetupProgress; line?: string; ok?: boolean; result?: Record<string, unknown>; prompt?: Record<string, unknown>; error?: { code: string; message: string; remedy?: string; native?: { code: string } }; code?: string; message?: string }
@@ -39,7 +39,7 @@ export function canonicalProvider(value: string): string {
   return url.origin + (path || "/api/auth");
 }
 
-export interface ComputerAccount { idpUrl?: string; mode: string; hostSupport: string; spaces: ComputerSpace[] }
+export interface ComputerAccount { idpUrl?: string; sub?: string; label?: string; mode: string; hostSupport: string; spaces: ComputerSpace[] }
 export function activeComputerAccount(account: ComputerAccount & { accounts?: ComputerAccount[] } | undefined, provider?: string): ComputerAccount | undefined {
   if (!account?.accounts) return account;
   if (provider) return account.accounts.find(item => item.idpUrl !== undefined && canonicalProvider(item.idpUrl) === canonicalProvider(provider));

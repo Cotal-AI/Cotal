@@ -26,7 +26,7 @@ import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, typ
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
-import { homeCotalDir, isCommandFailure } from "@cotal-ai/workspace";
+import { homeCotalDir, isCommandFailure, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
@@ -82,6 +82,7 @@ export interface ServeOptions {
    *  machine-home Cotal directory, where `cotal login` keeps the session. An explicit `--daemon-home`
    *  passes its directory here together with {@link DaemonPaths.lock}. */
   readonly sessionDir?: string;
+  readonly updateCheck?: () => Promise<NonNullable<DaemonStatus["update"]>>;
   readonly updateStatus?: () => NonNullable<DaemonStatus["update"]>;
   /** Test hook: the stock sign-in to drive. */
   readonly login?: LoginCoordinator;
@@ -285,6 +286,20 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           let restartEvidence: Awaited<ReturnType<typeof managers.preparedGenerationEvidence>> | undefined;
           try { restartEvidence = await managers.preparedGenerationEvidence(); } catch { restartEvidence = undefined; }
           return { ...result, update: { ...result.update, ...(restartEvidence ? { restartEvidence } : {}) } };
+        });
+        return;
+      }
+      if (req.op === "update-settings" || req.op === "update-check") {
+        managerResult(async () => {
+          if (req.op === "update-check") {
+            if (!opts.updateCheck) throw new Error("Update checks are unavailable in this daemon.");
+            await opts.updateCheck();
+          } else {
+            readUpdateSettings();
+            if (req.auto !== undefined) setUpdateSetting("auto", req.auto);
+            if (req.notify !== undefined) setUpdateSetting("notify", req.notify);
+          }
+          return status();
         });
         return;
       }

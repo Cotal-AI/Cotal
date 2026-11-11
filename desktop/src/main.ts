@@ -1,4 +1,5 @@
 import { computerName } from "./computer-name";
+import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
@@ -62,6 +63,71 @@ let countdown: ReturnType<typeof setInterval> | undefined;
 let stage: Stage = "welcome";
 let ready = false;
 let appVersion: string | undefined;
+let settingsOpen = false;
+let updateStatus: UpdateStatus | undefined;
+let daemonVersion = "Unavailable";
+let appPlatform = "";
+let appArch = "";
+let releaseAssets: { name: string; url: string }[] = [];
+let releaseVersion: string | undefined;
+let releaseLoading: string | undefined;
+let releaseFailed: string | undefined;
+async function loadRelease(version: string): Promise<void> {
+  if (releaseVersion === version || releaseLoading === version) return;
+  releaseLoading = version;
+  try { const result = await request({ op: "update-release", version }); releaseAssets = result.assets as { name: string; url: string }[]; releaseVersion = version; }
+  catch (error) { releaseFailed = version; text("settings-message", error instanceof Error ? error.message : String(error)); }
+  finally { releaseLoading = undefined; renderSettings(); }
+}
+async function openInstaller(): Promise<void> {
+  const version = updateStatus?.latest;
+  if (!version) return;
+  try {
+    if (releaseVersion !== version) {
+      const result = await request({ op: "update-release", version });
+      releaseAssets = result.assets as { name: string; url: string }[];
+      releaseVersion = version;
+    }
+    const link = installerLink(version, appPlatform, appArch, releaseAssets);
+    text("settings-message", link.available ? "Install the downloaded version, then reopen Cotal." : "No installer for this platform is on this release. Opening its release page.");
+    await invoke("open_browser", { url: link.url });
+  } catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); notice("The release could not be checked. Try again.", true); }
+}
+let dismissedUpdate = localStorage.getItem("dismissed-update") ?? undefined;
+let trayUpdate: string | undefined;
+const preferencesHome = el("preferences").parentElement!;
+preferencesHome.insertBefore(el("update-banner"), el("connection-icon"));
+function renderSettings(): void {
+  const configured = stage === "finished" && !setupActive;
+  el("open-settings").hidden = !configured;
+  text("open-settings", settingsOpen ? "Back" : "Settings");
+  el("settings-panel").hidden = !settingsOpen;
+  document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen;
+  document.querySelector(".app")!.classList.toggle("settings-open", settingsOpen);
+  const latest = appVersion ? updateNotice(updateStatus, appVersion, dismissedUpdate) : undefined;
+  const nextTray = configured ? latest : undefined;
+  if (isTauri() && nextTray !== trayUpdate) { trayUpdate = nextTray; void invoke("set_update_notice", { version: nextTray ?? null }).catch(error => notice(String(error), true)); }
+  el("update-banner").hidden = !configured || settingsOpen || !latest;
+  text("update-banner-copy", latest ? `Cotal ${latest} is available.` : "");
+  text("settings-computer", savedComputerName);
+  text("settings-versions", `App ${appVersion ?? "Unavailable"} · Service ${daemonVersion}`);
+  text("settings-update-summary", updateSummary(updateStatus, appVersion ?? ""));
+  text("settings-last-check", lastChecked(updateStatus?.lastCheck));
+  text("settings-spaces", computerAccount?.spaces.length ? computerAccount.spaces.map(row => row.space).join(", ") : [...connections.keys()].join(", ") || "No spaces connected");
+  const policy = updatePolicy(updateStatus?.channel, appPlatform);
+  text("update-preference-label", policy.label); text("update-policy", policy.description);
+  el<HTMLInputElement>("update-preference").checked = policy.label === "Install updates automatically" ? updateStatus?.automatic === true : updateStatus?.notify !== false;
+  const available = appVersion && newerVersion(updateStatus?.latest, appVersion);
+  if (available && updateStatus?.latest && releaseVersion !== updateStatus.latest && releaseLoading !== updateStatus.latest && releaseFailed !== updateStatus.latest) void loadRelease(updateStatus.latest);
+  const download = updateStatus?.latest && releaseVersion === updateStatus.latest ? installerLink(updateStatus.latest, appPlatform, appArch, releaseAssets) : undefined;
+  for (const id of ["update-download", "settings-download"]) { text(id, download?.label ?? "Checking release…"); el<HTMLButtonElement>(id).disabled = !download; }
+  el("settings-download-row").hidden = !available;
+  text("settings-download-copy", available ? `Version ${updateStatus?.latest}. Installer availability is checked when opened.` : "");
+  text("settings-account", [accountHost(signedInProvider ?? computerAccount?.idpUrl ?? providers.get(selectedSpace())), computerAccount?.label ?? computerAccount?.sub].filter(Boolean).join(" · "));
+  el("preferences").hidden = !settingsOpen;
+  if (settingsOpen) { el("settings-startup").append(el("preferences")); el("preferences").hidden = false; }
+  else if (el("preferences").parentElement !== preferencesHome) preferencesHome.append(el("preferences"));
+}
 let upgradeNeeded = false;
 let busy = false;
 let loginActive = false;
@@ -185,6 +251,7 @@ function resizeCard(previous: number): void {
 function showStage(next: Stage, focus = false): void {
   const previousHeight = document.querySelector(".connection-card")!.getBoundingClientRect().height;
   stage = next;
+  renderSettings();
   el("edit-computer-name").hidden = nameEditing || !(next === "connect" || next === "finished");
   const finished = next === "finished";
   const anyConnected = [...connections.values()].includes("launch-ready");
@@ -194,7 +261,7 @@ function showStage(next: Stage, focus = false): void {
   el("space-panel").hidden = !((next === "connect" || finished && addingSpace) && choosingSpace) || setupActive;
   el("connect-panel").hidden = !(next === "connect" || finished && addingSpace) || setupActive;
   el("connected-panel").hidden = !finished;
-  el("preferences").hidden = !finished || addingSpace;
+  el("preferences").hidden = !settingsOpen;
   el("setup-progress").hidden = (!setupActive && !progress.some(value => value !== "waiting")) || finished && !setupActive;
   document.querySelector(".app")!.classList.toggle("later-open", finished && !completedSetup);
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", el("notice").classList.contains("error"));
@@ -434,6 +501,9 @@ async function refresh(): Promise<void> {
     const status = await request({ op: "status" });
     if (!current()) return;
     ready = status.state === "ready";
+    daemonVersion = String(status.version);
+    updateStatus = status.update as UpdateStatus | undefined;
+    renderSettings();
     if (typeof status.computer === "string") renderComputerName(status.computer);
     observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
       computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
@@ -621,9 +691,36 @@ function openSettings(): void {
   if (!connections.has(select.value)) select.value = connections.keys().next().value ?? select.value;
   if (connections.size || completedSetup || listOpened || computerAccount?.hostSupport === "supported") {
     listOpened = true; showStage("finished");
+    settingsOpen = true; renderSettings(); el("settings-title").focus();
   }
   void refresh();
 }
+async function settingsAction(body: Request): Promise<void> {
+  if (busy) return;
+  busy = true; refreshGeneration++;
+  el<HTMLButtonElement>("check-updates").disabled = true;
+  el<HTMLInputElement>("update-preference").disabled = true;
+  try {
+    const result = await request(body);
+    updateStatus = result.update as UpdateStatus | undefined;
+    announce(body.op === "update-check" ? "Update check complete. The background service uses its registry cache." : "Update preference saved.");
+    text("settings-message", "");
+  } catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); }
+  finally { busy = false; refreshGeneration++; renderSettings(); el<HTMLButtonElement>("check-updates").disabled = false; el<HTMLInputElement>("update-preference").disabled = false; }
+}
+el("check-updates").addEventListener("click", () => void settingsAction({ op: "update-check" }));
+el("update-preference").addEventListener("change", () => {
+  const enabled = el<HTMLInputElement>("update-preference").checked;
+  const automatic = updatePolicy(updateStatus?.channel, appPlatform).label === "Install updates automatically";
+  void settingsAction({ op: "update-settings", ...(automatic ? { auto: enabled } : { notify: enabled }) });
+});
+el("update-download").addEventListener("click", () => void openInstaller());
+el("settings-download").addEventListener("click", () => void openInstaller());
+el("open-settings").addEventListener("click", () => { if (settingsOpen) { settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
+el("settings-back").addEventListener("click", () => { settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
+el("settings-name").addEventListener("click", () => el("edit-computer-name").click());
+el("update-later").addEventListener("click", () => { dismissedUpdate = updateStatus?.latest; if (dismissedUpdate) localStorage.setItem("dismissed-update", dismissedUpdate); renderSettings(); });
+el("release-notes").addEventListener("click", () => { if (appVersion) void invoke("open_browser", { url: releaseUrl(appVersion) }).catch(refusal); });
 el("autostart").addEventListener("change", () => void action(async () => {
   const checkbox = el<HTMLInputElement>("autostart");
   await setLoginPreference(checkbox.checked);
@@ -649,6 +746,7 @@ async function start(): Promise<void> {
     await startPresence(notice, { settings: openSettings, dashboard: openDashboard });
     await onOpenUrl(receiveLinks); const initialLinks = await getCurrent(); if (initialLinks?.length) receiveLinks(initialLinks);
     const info = await request({ op: "about" }); appVersion = String(info.version);
+    appPlatform = String(info.platform); appArch = String(info.arch);
     renderComputerName(String(info.machine)); text("version", `v${String(info.version)}`);
     const os = ({ darwin: "macOS", win32: "Windows", linux: "Linux" } as Record<string, string>)[String(info.platform)] ?? String(info.platform);
     const arch = info.platform === "darwin" && info.arch === "arm64" ? "Apple silicon" : ({ x64: "64-bit Intel / AMD", arm64: "ARM64", ia32: "32-bit Intel" } as Record<string, string>)[String(info.arch)] ?? String(info.arch);
@@ -699,5 +797,7 @@ document.addEventListener("keydown", event => {
   if (primary) { event.preventDefault(); primary.click(); }
 });
 window.addEventListener("beforeunload", () => { if (poll) clearTimeout(poll); if (countdown) clearInterval(countdown); });
-void start();
-if (isTauri()) void reportFirstPaint(document.querySelector<HTMLImageElement>(".brand-mark")!, document.querySelector<HTMLElement>(".sidebar")!, () => invoke("first_paint")).catch(error => notice(String(error), true));
+if (isTauri()) {
+  void reportFirstPaint(document.querySelector<HTMLImageElement>(".brand-mark")!, document.querySelector<HTMLElement>(".sidebar")!, () => invoke("first_paint"))
+    .then(start, error => { notice(String(error), true); return start(); });
+} else void start();

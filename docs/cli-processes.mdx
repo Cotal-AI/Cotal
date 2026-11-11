@@ -545,10 +545,15 @@ automatic updates.
 
 `cotal daemon status` includes an Updates section in human output and an optional `update`
 object in JSON and desktop status replies. Its fields are `current`, `latest`, `lastCheck`,
-`lastResult`, `nextAttempt`, `automatic`, `failures` and `channel`. The channel is `npm` for
+`lastResult`, `nextAttempt`, `automatic`, `notify`, `failures` and `channel`. The channel is `npm` for
 standalone installations and `desktop` for the app's bundled runtime. Desktop runtimes keep registry
 checks but report automatic installation off and direct updates to the signed app installer.
-Older daemons may omit the object or channel.
+Older daemons may omit the object, channel or notification preference.
+The closed local request `update-settings` reads the shared preferences and accepts optional
+Boolean `auto` and `notify` fields. It uses the same preferences as the update CLI.
+`update-check` takes no fields and returns daemon status after the existing registry check,
+including its daily success cache and hourly attempt limit. Neither request installs a version,
+stops agents or restarts a service.
 Refusals before replacement do not count as failed installations. A busy computer retries after
 60 seconds. Registry or extension-closure unavailability retries after one hour.
 An attempt that begins replacement and does not reach the target version counts as a failure
