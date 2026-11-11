@@ -225,8 +225,8 @@ removes the per-space preferences saved under that name, so a later space with t
 without them, and the receipt lists each removed key and value so you can set them again. If that
 removal fails after the record is gone, the run is `partial` and names the `config unset` to finish it,
 after the `chmod` when the preferences folder is one another account could write. Forget also removes
-the chat sessions the terminal app remembered for the space, and the receipt counts them as
-`removedChatSessions`. If that removal fails, the run is `partial` too.
+the chat sessions the terminal app remembered for the space, with the direct messages it recorded
+as read there, and the receipt counts the sessions as `removedChatSessions`. If that removal fails, the run is `partial` too.
 Forget also removes the stack definitions `cotal up` saved for the space at its root, with their
 stopped instance records, so another folder can start a stack under the same name. The result lists
 them. The root's stack journal stays, keeping the stack's mode, address and store, and no longer
