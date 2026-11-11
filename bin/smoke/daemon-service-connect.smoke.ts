@@ -221,6 +221,8 @@ let catalog: unknown;
 const accountTargets = new Map<string, string>();
 let catalogSpace: string | undefined;
 let catalogTarget: string | undefined;
+let deregisterMode: "unsupported" | "unknown" | undefined;
+let deregisterRequests = 0;
 const jwtsIssued: string[] = [];
 /** R11: the IdP rejects the session handle, as for an expired or revoked session. */
 let idpRevoked = false;
@@ -291,13 +293,18 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     res.writeHead(answer.status); res.end(Buffer.from(await answer.arrayBuffer())); return;
   }
   if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
+    if (req.url.endsWith("/endpoint-deregister")) {
+      deregisterRequests++;
+      if (deregisterMode === "unsupported") { res.writeHead(404); res.end("{}"); return; }
+      if (deregisterMode === "unknown") { req.socket.destroy(); return; }
+    }
     if (process.argv.includes("--account-hosted") && req.url.endsWith("/service-endpoint-authority")) { res.writeHead(404); res.end("{}"); return; }
     catalogAuthorityRequests++;
-    if (req.method === "POST" && req.url.endsWith("/manager-service-authority")) catalogManagerStarts++;
     if (shutdownLatency) await sleep(150);
     if (catalogAuthorityDown) { res.writeHead(503); res.end("{}"); return; }
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
+    if (req.method === "POST" && req.url.endsWith("/manager-service-authority") && JSON.parse(Buffer.concat(chunks).toString()).request?.operation === "prepare") catalogManagerStarts++;
     if (req.url === `/space/${catalogSpace}/exchange`) {
       const request = JSON.parse(Buffer.concat(chunks).toString()) as { view?: unknown; managerInstanceId?: unknown };
       exchangeReads.push({ view: request.view, managerInstanceId: request.managerInstanceId });
@@ -1937,18 +1944,34 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             assert.ok(started.ok && resultOf(started).state === "answering", "legacy Manager starts outside account custody");
             const powerCut = async () => {
               const pids = (await observed()).managers.map((row: any) => row.pid).filter((pid: unknown): pid is number => typeof pid === "number");
+              // Freeze the children first: killing the parent alone lets their disconnect
+              // handlers deregister before SIGKILL, hiding the abandoned registration.
+              for (const pid of pids) process.kill(pid, "SIGSTOP");
+              child.kill("SIGSTOP");
               await killAndAwaitExit(child, "SIGKILL");
               for (const pid of pids) process.kill(pid, "SIGKILL");
             };
-            const participantPs = async () => {
+            const participantPs = async (expectedCode = 0) => {
               const command = spawn(process.execPath, [cliEntry, "ps", "--space", ON, "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
               let out = "", err = "";
               command.stdout.on("data", chunk => { out += String(chunk); });
               command.stderr.on("data", chunk => { err += String(chunk); });
               const code = await new Promise<number | null>((resolve, reject) => { command.once("error", reject); command.once("close", resolve); });
-              assert.equal(code, 0, err);
+              assert.equal(code, expectedCode, err);
               return JSON.parse(out).result;
             };
+            const otherManager = spawn(process.execPath, [cliEntry, "manager", "start", "--foreground", "--space", ON], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+            otherManager.stdout.resume(); otherManager.stderr.resume();
+            try {
+            let initialCensus: Record<string, any> = {};
+            for (let i = 0; i < 120; i++) {
+              initialCensus = await participantPs();
+              if (initialCensus.managers.length === 2) break;
+              await sleep(250);
+            }
+            assert.equal(initialCensus.managers.length, 2, "two independent Manager roots answer before the power cut");
+            const initialManager = (await observed()).managers.find((row: any) => row.space === ON);
+            check("A8 positive control has a complete answering census", (await participantPs()).managers.some((row: any) => row.instanceId === initialManager.instanceId && row.state === "answered"));
             await powerCut();
             accountDesired = false; accountRevision++;
             const before = catalogManagerStarts;
@@ -1962,12 +1985,13 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               assert.ok(requested, "restarted daemon reached desired-space GET");
               const during = await observed();
               check("A8 removed space never starts before initial account reply", during.managers.every((row: any) => row.space !== ON || row.state === "stopped") && catalogManagerStarts === before, during);
-              const ps = await participantPs();
-              check("A8 participant sees no answering Manager while initial account reply is pending", ps.managers.length === 0, ps);
+              const ps = await participantPs(4);
+              check("A8 power cut leaves its recorded Manager registered but silent", ps.managers.some((row: any) => row.instanceId === initialManager.instanceId && row.state === "silent"), ps);
             } finally { accountGetGate = undefined; release(); }
             await waitAccount(s => s.account?.desiredRevision === accountRevision && !s.account.spaces.some((row: any) => row.space === ON), "A8 current removal applies before saved resume");
             check("A8 removed space makes no Manager registration calls after initial account reply", catalogManagerStarts === before);
-            check("A8 participant sees no removed Manager after reconciliation", (await participantPs()).managers.length === 0);
+            check("A8 participant sees only the other Manager after reconciliation", (await participantPs()).managers.length === 1);
+            check("A8 daemon used the guarded registration removal door", deregisterRequests === 1);
             await waitAccount(s => s.managers.some((row: any) => row.space === OFF && row.state === "answering"), "A8 legacy per-space Manager resumes outside account desired set");
 
             accountDesired = true; accountBindingRevision = ++accountRevision;
@@ -1976,6 +2000,40 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             child = await startDaemon();
             await waitAccount(s => s.account?.desiredRevision === accountRevision && s.managers.some((row: any) => row.space === ON && row.state === "answering"), "A9 still-desired space answers after power cut");
             check("A9 participant sees still-desired Manager", (await participantPs()).kind === "seats");
+            check("A9 still-desired recovery does not deregister its Manager", deregisterRequests === 1);
+
+            // Old authorities must leave an actionable, durable refusal without rehosting.
+            await powerCut();
+            accountDesired = false; accountRevision++;
+            deregisterMode = "unsupported";
+            child = await startDaemon();
+            await waitAccount(s => s.managers.some((row: any) => row.space === ON && row.state === "refused" && row.next?.includes(`endpoint deregister manager ${initialManager.instanceId}`)), "A9 unsupported removal names the recorded instance and recovery command");
+            const unsupported = await plainCommand("status");
+            check("A9 human status reports the registration left behind", unsupported.out.includes("registration is left behind") && unsupported.out.includes(`endpoint deregister manager ${initialManager.instanceId}`), unsupported);
+            check("A9 unsupported cleanup keeps the registration visible", (await participantPs(4)).managers.some((row: any) => row.instanceId === initialManager.instanceId && row.state === "silent"));
+            deregisterMode = undefined;
+            await killAndAwaitExit(child, "SIGTERM");
+            child = await startDaemon();
+            await waitAccount(s => !s.account?.spaces?.some((row: any) => row.space === ON), "A9 a confirmed refusal can recover on restart");
+            check("A9 supported cleanup restores a complete census", (await participantPs()).managers.length === 1);
+
+            accountDesired = true; accountBindingRevision = ++accountRevision;
+            await waitAccount(s => s.managers.some((row: any) => row.space === ON && row.state === "answering"), "A9 re-enable restores the recorded Manager");
+            await powerCut();
+            accountDesired = false; accountRevision++;
+            deregisterMode = "unknown";
+            child = await startDaemon();
+            await waitAccount(s => s.managers.some((row: any) => row.space === ON && row.registrationCleanup === "unknown" && row.reason?.includes("did not confirm")), "A9 an unconfirmed removal is visible");
+            const unknownRequests = deregisterRequests;
+            await killAndAwaitExit(child, "SIGTERM");
+            deregisterMode = undefined;
+            child = await startDaemon();
+            await waitAccount(s => s.managers.some((row: any) => row.space === ON && row.registrationCleanup === "unknown" && row.next?.includes("endpoint deregister")), "A9 unconfirmed removal stays actionable across restart");
+            check("A9 unknown removal is not automatically repeated", deregisterRequests === unknownRequests);
+            check("A9 unknown removal does not hide the abandoned registration", (await participantPs(4)).managers.some((row: any) => row.instanceId === initialManager.instanceId && row.state === "silent"));
+
+            accountDesired = true; accountBindingRevision = ++accountRevision;
+            await waitAccount(s => s.managers.some((row: any) => row.space === ON && row.state === "answering"), "A10 renewed consent can resume after unconfirmed cleanup");
 
             await powerCut();
             accountHttp = 503;
@@ -1983,6 +2041,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             await waitAccount(s => s.account?.message === "account computer request failed; existing connections are unchanged" && s.managers.some((row: any) => row.space === ON && row.state === "answering"), "A10 unavailable account preserves saved-intent recovery");
             check("A10 participant sees saved Manager during account outage", (await participantPs()).kind === "seats");
             return;
+            } finally { await killAndAwaitExit(otherManager, "SIGTERM"); }
           }
           if (process.argv.includes("--stop-seat-only")) {
             const manager = (await observed()).managers.find((row: any) => row.space === ON);
