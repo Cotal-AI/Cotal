@@ -674,6 +674,8 @@ when a successor Manager answers or registration removal is confirmed.
 An explicit `service-disconnect` closes the machine service and forgets its connection intent
 even when Manager registration cleanup refuses. The cleanup refusal remains visible in status.
 
+Daemon status includes `agents`, a per-space local inventory read from each hosted Manager over its parent IPC channel. A `read` observation contains agent name, application, optional pinned model, folder, start time and running or exited state. An `unreadable` observation means the Manager did not answer, changed during the read or exceeded the response bound. It never means no agents. Text and JSON show the same observation. The read changes no seat or admission state and carries no prompts, credentials or console links.
+
 Daemon commands use the machine home, not the invoking project's `.cotal` records. They run from
 a removed working directory or a folder with a `.cotal` file, and malformed preferences do not
 block them. Machine-home validation and the permissions required for each operation still apply.

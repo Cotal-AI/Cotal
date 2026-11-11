@@ -1,3 +1,4 @@
+import { renderAgents } from "./agents";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
@@ -316,6 +317,7 @@ function showStage(next: Stage, focus = false): void {
     if (addingSpace) formParent.append(el("space-panel"), el("connect-panel"));
     else el("setup-progress").before(el("space-panel"), el("connect-panel"));
   }
+  el("running-agents").hidden = addingSpace;
   el("applications-label").hidden = addingSpace || !anyConnected || !el("connected-applications").children.length;
   el("connected-applications").hidden = addingSpace || !anyConnected;
   el("dashboard").hidden = addingSpace || !(anyConnected || computerAccount?.hostSupport === "supported");
@@ -448,6 +450,7 @@ function showApplications(manager: unknown): void {
   const available = connectors.filter(c => c.state === "available" && typeof c.agent === "string").map(c => names[c.agent!] ?? c.agent!);
   const container = el("connected-applications");
   const value = available.join("\n");
+  text("applications-summary", available.length ? `Applications: ${available.join(", ")}` : "");
   if (container.dataset.applications === value) return;
   container.dataset.applications = value;
   container.replaceChildren(...available.map(name => { const chip = document.createElement("span"); chip.className = "application-chip"; chip.dataset.testid = "application-chip"; chip.textContent = name; return chip; }));
@@ -501,6 +504,7 @@ async function refresh(): Promise<void> {
     const status = await request({ op: "status" });
     if (!current()) return;
     ready = status.state === "ready";
+    renderAgents(status, el("running-agents"));
     daemonVersion = String(status.version);
     updateStatus = status.update as UpdateStatus | undefined;
     renderSettings();

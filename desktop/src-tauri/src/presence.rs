@@ -43,6 +43,18 @@ fn account_connected(result: &serde_json::Value) -> Option<bool> {
 
 /// Describe verified Manager inventory without treating service-only connectivity as ready.
 pub fn tray_status(frame: &serde_json::Value) -> String {
+    let base = connection_tray_status(frame);
+    if frame["ok"] != true { return base; }
+    let Some(rows) = frame["result"]["agents"].as_array() else { return base; };
+    if rows.iter().any(|row| row["state"] != "read" || !row["agents"].is_array()) {
+        return format!("{base} · Agents unavailable");
+    }
+    let count = rows.iter().filter_map(|row| row["agents"].as_array())
+        .flatten().filter(|agent| agent["state"] == "running").count();
+    format!("{base} · {count} {} running", if count == 1 { "agent" } else { "agents" })
+}
+
+fn connection_tray_status(frame: &serde_json::Value) -> String {
     if frame["ok"].as_bool() != Some(true) {
         return if frame["error"]["code"] == "NOT_RUNNING" { "Sign in required" } else { "Needs attention" }.into();
     }
@@ -81,6 +93,14 @@ pub fn tray_status(frame: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tray_counts_only_observed_running_agents() {
+        use serde_json::json;
+        let frame = |agents| json!({"ok": true, "result": {"managers": [{"state": "answering", "instanceId": "i", "connectors": [{"state": "available"}]}], "agents": agents}});
+        assert_eq!(tray_status(&frame(json!([]))), "Connected · 1 space · 0 agents running");
+        assert_eq!(tray_status(&frame(json!([{"state":"read","agents":[{"state":"running"},{"state":"exited"}]}]))), "Connected · 1 space · 1 agent running");
+        assert_eq!(tray_status(&frame(json!([{"state":"unreadable"}]))), "Connected · 1 space · Agents unavailable");
+    }
     #[test]
     fn tray_reports_verified_spaces_and_attention_without_claiming_service_readiness() {
         use serde_json::json;

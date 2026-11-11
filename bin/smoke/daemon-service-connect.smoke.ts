@@ -2297,7 +2297,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             try {
               const lifecycle = await openLifecycleRegistry(observer, ON);
               for (let index = 0; index < count; index++) {
-                const seat = spawn(process.execPath, [cliEntry, "spawn", "--on", manager.instanceId, "--space", ON, "--harness", "daemon-smoke", "--name", `shutdown_seat_${index}`, "--no-events", "--detach", "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+                const seat = spawn(process.execPath, [cliEntry, "spawn", "--on", manager.instanceId, "--space", ON, "--harness", "daemon-smoke", "--name", `shutdown_seat_${index}`, "--cwd", participant, "--no-events", "--detach", "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
                 let output = "", error = "";
                 seat.stdout.on("data", chunk => { output += String(chunk); });
                 seat.stderr.on("data", chunk => { error += String(chunk); });
@@ -2305,6 +2305,13 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                 check("S0 real hosted running seat joined", code === 0 && JSON.parse(output).result?.readiness === "joined", { code, output, error });
                 if (code !== 0) throw new Error("running-seat prerequisite failed");
               }
+              const inventoryStatus = await observed();
+              const inventory = inventoryStatus.agents?.find((row: any) => row.space === ON);
+              check("S0a parent IPC inventory reads real hosted seats", inventory?.state === "read" && inventory.agents.length === count && inventory.agents.every((a: any) => a.name.startsWith("shutdown_seat_") && a.application === "daemon-smoke" && a.cwd === participant && a.state === "running" && Number.isFinite(Date.parse(a.startedAt))), inventory);
+              const inventoryJson = await cli("status");
+              check("S0b CLI JSON exposes the same real inventory", inventoryJson.doc.result?.agents?.some((row: any) => row.space === ON && row.state === "read" && row.agents.length === count), inventoryJson);
+              const inventoryText = await plainCommand("status");
+              check("S0c CLI text names real seat and folder", inventoryText.code === 0 && inventoryText.out.includes("shutdown_seat_0") && inventoryText.out.includes(participant), inventoryText);
               shutdownLatency = process.argv.includes("--hosted-latency");
               if (shutdownLatency) brokerReplyDelay = 150;
               const started = Date.now();
