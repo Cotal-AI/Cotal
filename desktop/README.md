@@ -44,6 +44,16 @@ Registration requires the space owner's approval and the space operator's bindin
 
 The cotal.ai site design system is the visual source: cream paper, navy ink, hard offset shadows and the three-ring mark. The app uses one paper theme in either OS appearance. Bricolage Grotesque, Geist and Geist Mono are bundled as latin WOFF2 files with their SIL Open Font License texts in `dist/licenses/`. No font host is contacted. The existing same-origin CSP covers fonts through `default-src 'self'`.
 
+## Settings
+
+Open **Settings** in the window or **Settings…** from the tray or menu bar after setup. It uses the same window and shows this computer's name, update preferences, Open at login, the selected account and its spaces, and app and background service versions. **Edit name** uses the existing computer-name editor. Account information is read-only.
+
+## Updates
+
+A newer desktop version appears in a gold notice and in the tray menu after setup. **Later** hides that version until another version is available. Opening the installer checks that version's GitHub release assets for this platform and architecture. If no matching installer exists, Cotal opens the release page and explains why. Install the downloaded version and reopen Cotal. The app does not replace itself, and no automatic-update feed is configured.
+
+**Check now** runs the background service's existing update check. Its registry cache lasts a day after success and an hour after an attempt, so this does not promise a fresh network request. Desktop installations offer **Notify me about updates**, because their app and bundled service update through the platform installer. Linux npm installations can offer **Install updates automatically** for the background service. These preferences are the same ones used by `cotal update --auto` and `cotal update --notify`.
+
 ## Develop
 
 Install the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS and use Node 24 with the repository's pnpm version.
