@@ -1,5 +1,25 @@
 # cotal-ai
 
+## 0.157.5
+
+### Patch Changes
+
+- 53c4fea: Account computer spaces can run agents when their space does not host machine-service endpoints.
+- a722365: Enable unused-local checks in the shared TypeScript configuration and remove unused imports and declarations from source and smoke tests. Preserve initialization, validation and build-time inbox compatibility checks.
+- 53c4fea: Keep this computer's space connections synchronized with account dashboard choices.
+- Updated dependencies [a722365]
+- Updated dependencies [53c4fea]
+  - @cotal-ai/core@0.157.5
+  - @cotal-ai/workspace@0.157.5
+  - @cotal-ai/seat@0.157.5
+  - @cotal-ai/runtime@0.157.5
+  - @cotal-ai/cli@0.157.5
+  - @cotal-ai/manager@0.157.5
+  - @cotal-ai/delivery@0.157.5
+  - @cotal-ai/connector-core@0.157.5
+  - @cotal-ai/auth@0.157.5
+  - @cotal-ai/registry@0.157.5
+
 ## 0.157.4
 
 ### Patch Changes
