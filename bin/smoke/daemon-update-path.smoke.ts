@@ -143,7 +143,7 @@ try {
   const code = await new Promise(resolve => child.once("exit", resolve));
   await transition;
   if (generationTimeout) {
-    if (code !== 1 || calls.length || output.includes("Built-in connectors") || !output.includes("did not become ready within 120s") || !output.includes("then run cotal update again")) throw new Error(`generation timeout did not refuse before writes with recovery: ${output}`);
+    if (code !== 1 || calls.length || output.includes("Built-in connectors") || !output.includes("did not become ready within 120s") || !output.replaceAll("`", "").includes("then run cotal update again")) throw new Error(`generation timeout did not refuse before writes with recovery: ${output}`);
     console.log("PASS bounded generation wait refuses before connector writes and names recovery");
   } else if (generationRace) {
     const after = await status();
