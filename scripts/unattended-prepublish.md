@@ -80,7 +80,9 @@ Arrange that failure in the disposable environment, without product mutations or
 archive corruption. Passing requires the restored parent and recorded rollback,
 not merely an old daemon that never attempted replacement.
 
-A `finally` block restores fixture npmrc and policy bytes. If SSH is interrupted,
+A `finally` block restores fixture npmrc bytes. On success it restores policy bytes.
+On failure it leaves automatic updates off and retains the original policy backup.
+If SSH is interrupted,
 the coordinator restores from the private backup after inspecting live ownership.
 Versions and scheduler clocks remain for diagnosis, not silently reverted.
 Logs retain status, unit identity, attempts, updater output and journal with hashes.

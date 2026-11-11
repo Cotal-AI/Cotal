@@ -64,6 +64,7 @@ try {
       console.log(JSON.stringify({ event: 'poll', sample: current, attempt }));
       const expected = c.mode === 'success' ? c.candidate : c.parent;
       const recovery = existsSync(join(state, 'update-recovery.json')) ? read('update-recovery.json') : undefined;
+      assert(typeof attempt.result === 'string', 'attempt result must be a string');
       const completed = attempt.version === c.candidate && attempt.next > Date.now() && JSON.stringify(attempt) !== JSON.stringify(before) && !attempt.deferred && !attempt.result.startsWith('updating to ');
       const outcome = c.mode === 'success' ? attempt.failures === 0 : attempt.failures > 0 && /restor|roll.?back/i.test(attempt.result);
       const clean = recovery == null && !existsSync(join(prefix, 'lib/node_modules/.cotal-update-child'));
@@ -77,11 +78,20 @@ try {
 } finally {
   // Restore only fixture policy and npm config bytes, never unit configuration.
   if (npmBackup) writeFileSync(npmrc, npmBackup, { mode: 0o600 }); else if (existsSync(npmrc)) unlinkSync(npmrc);
-  if (backup) writeFileSync(settings, backup, { mode: 0o600 }); else if (existsSync(settings)) unlinkSync(settings);
+  if (passed) {
+    if (backup) writeFileSync(settings, backup, { mode: 0o600 }); else if (existsSync(settings)) unlinkSync(settings);
+  } else {
+    // Preserve the original bytes for coordinator restoration, but never resume a failed suite.
+    const policy = backup ? JSON.parse(backup) : { v: 1, notify: true };
+    save('update-settings.json', { ...policy, auto: false });
+  }
+  try { console.log(JSON.stringify({ event: 'final-unit', text: run('systemctl', ['--user', 'show', c.unit, '-p', 'MainPID', '-p', 'ActiveState', '-p', 'SubState', '-p', 'ControlGroup', '-p', 'NRestarts', '-p', 'Result']) })); } catch (error) { console.log(JSON.stringify({ event: 'final-unit-error', error: error.message })); }
+  const marker = join(prefix, 'lib/node_modules/.cotal-update-child');
+  if (existsSync(marker)) { const bytes = readFileSync(marker); assert(bytes.length < 65536, 'oversized child marker'); console.log(JSON.stringify({ event: 'child-marker', sha256: hash(bytes), text: bytes.toString() })); }
   for (const name of ['update-attempt.json', 'update-check.json', 'update-recovery.json', 'update-attempt.log']) {
     const file = join(state, name);
     if (existsSync(file)) { const bytes = readFileSync(file); console.log(JSON.stringify({ event: 'evidence', name, sha256: hash(bytes), text: bytes.toString() })); }
   }
   try { const journal = run('journalctl', ['--user', '-u', c.unit, '--since', since, '--no-pager']); console.log(JSON.stringify({ event: 'journal', sha256: hash(journal), text: journal })); } catch (error) { console.log(JSON.stringify({ event: 'journal-error', error: error.message })); }
-  console.log(JSON.stringify({ event: 'result', passed, policyRestored: true, npmConfigRestored: true }));
+  console.log(JSON.stringify({ event: 'result', passed, policyRestored: passed, automaticDisabledOnFailure: !passed, npmConfigRestored: true }));
 }
