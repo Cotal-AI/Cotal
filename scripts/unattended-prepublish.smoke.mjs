@@ -1,4 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { verifyParentIntegrity } from './unattended-parent-mirror.mjs';
+const archiveBytes = Buffer.from('integrity fixture');
+const integrity = 'sha512-' + createHash('sha512').update(archiveBytes).digest('base64');
+verifyParentIntegrity(archiveBytes, integrity);
+assert.throws(() => verifyParentIntegrity(Buffer.from('different'), integrity));
+assert.throws(() => verifyParentIntegrity(archiveBytes, 'sha1-unsupported'));
+assert.throws(() => verifyParentIntegrity(archiveBytes, undefined));
 import { isolatedEnv, privateRegistry, validateConfig } from './unattended-prepublish.mjs';
 const config = { optIn: 'unattended-prepublish-6385', registry: 'http://10.227.13.1:14873', candidate: '0.160.5', allowHosts: ['10.0.0.2'], key: '/private/id', knownHosts: '/private/known_hosts', machines: [{ host: '10.0.0.2', user: 'ubuntu', root: '/home/ubuntu/proof', prefix: '/home/ubuntu/.local/share/cotal', cli: '/home/ubuntu/.local/bin/cotal', node: '/home/ubuntu/.local/share/cotal/nodebin/node', hostname: 'cotal-test', existingMachine: 'authorized-disposable-6385', unit: 'cotal-daemon.service', parent: '0.160.3', mode: 'success' }] };
 assert.equal(validateConfig(config), config);

@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { dirname, join, resolve } from 'node:path';
 import { list as listTar } from 'tar';
 import { isMainEntry } from './main-entry.mjs';
+import { mirrorParents } from './unattended-parent-mirror.mjs';
 import { packColdCandidate } from './pack-cold-candidate.mjs';
 
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -77,7 +78,7 @@ function prepare(c, root, env) {
   }
   writeFileSync(join(output, 'manifest.json'), JSON.stringify({ source: manifest.source, packages: staged }, null, 2) + '\n', { flag: 'wx' });
 }
-export function main(action, configFile) {
+export async function main(action, configFile) {
   const c = validateConfig(JSON.parse(readFileSync(configFile)));
   const root = resolve(c.evidence);
   assert(root.startsWith('/home/david/f26/tmp/') && realpathSync(dirname(root)).startsWith('/home/david/f26/tmp/'), 'evidence must be on physical f26 TMP');
@@ -86,6 +87,7 @@ export function main(action, configFile) {
   const env = isolatedEnv(root);
   for (const path of Object.values(env).filter(v => v?.startsWith(root) && !v.endsWith('npmrc'))) mkdirSync(path, { recursive: true, mode: 0o700 });
   for (const file of [env.npm_config_userconfig, env.npm_config_globalconfig]) if (!existsSync(file)) writeFileSync(file, '', { mode: 0o600, flag: 'wx' });
+  if (action === 'mirror-parents') return mirrorParents(c, root, env);
   if (action === 'prepare') return prepare(c, root, env);
   if (action === 'config') {
     const rules = "    access: $all\n    publish: $authenticated\n    unpublish: []\n";
@@ -126,4 +128,4 @@ export function main(action, configFile) {
   writeFileSync(join(root, 'results.json'), JSON.stringify({ finishedAt: new Date().toISOString(), results }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   assert(results.every(r => r.passed), 'machine acceptance failed, inspect retained logs');
 }
-if (isMainEntry(import.meta.url)) main(process.argv[2], process.argv[3]);
+if (isMainEntry(import.meta.url)) main(process.argv[2], process.argv[3]).catch(error => { console.error(error.message); process.exitCode = 1; });

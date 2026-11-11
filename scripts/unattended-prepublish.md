@@ -61,6 +61,21 @@ provisions htpasswd separately. With the registry ready, the coordinator runs
 the explicit private registry, using its npmrc. `cotal-ai` is last. Inspect registry
 state before retrying a partial publish. Retain the registry log and its hash.
 
+## Parent archives
+
+Before machine acceptance add `parentVersions`, for example `["0.160.3", "0.160.4"]`,
+and run `mirror-parents <config.json>` in a fresh evidence root. The updater checks
+parent rollback archives before replacement. Missing parents are a setup failure,
+not proof of an updater defect. The mirror downloads the full public package census
+and its first-party closure from HTTPS registry.npmjs.org, verifies upstream SRI,
+checks archive identities and dependency policy, and retains metadata, origins and
+SHA-256 hashes. No tarball is modified. Embedded registry overrides are refused.
+Only private writes use the opaque publisher npmrc, disabled provenance and
+`parent-<version>` tags. Candidate latest is checked before and after publication.
+On partial failure use a fresh evidence root. Existing versions are skipped only
+when upstream integrity and parent tag match. Any mismatch or ambiguous lookup
+refuses rather than republishing. Do not enable upstream proxying for Cotal.
+
 ## Real machines
 
 Only the coordinator's explicitly authorized disposable ubuntu fixtures qualify.
