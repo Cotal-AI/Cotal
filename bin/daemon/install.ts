@@ -565,7 +565,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
     if (startOnly) return plan;
     version ??= initial.version;
     await request("daemon-stop");
-    phase = "native-pause";
+    progress("pausing the owned scheduled task and confirming native instances stopped");
     pauseAttempted = true;
     await task.pause(receipt);
     phase = "stop-commit";
@@ -594,7 +594,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       throw new Error("the recorded live daemon has no verified listener");
     }
     exclusion = excludeLifetime(paths.lock);
-    phase = "installation-revalidation";
+    progress("verifying the recorded installation and owned task before startup");
     try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); throw new Error("a daemon endpoint still answers under lifetime exclusion"); }
     catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
     const current = recordedUnit(paths, daemonHome).receipt;
@@ -603,7 +603,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
     if (!native.present || native.instances !== 0) throw new Error("the owned task is absent or still has native instances");
     // The replacement must acquire the lock itself. Never Run while holding exclusion.
     exclusion.release(); exclusion = undefined;
-    phase = "native-resume";
+    progress("enabling and starting the verified owned scheduled task");
     task.start(receipt);
     progress("waiting for a fresh daemon to answer (up to 60s)");
     const readyUntil = Date.now() + 60_000;
