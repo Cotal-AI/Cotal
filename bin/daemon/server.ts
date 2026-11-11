@@ -317,8 +317,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
               return services.connect(req.space);
             }
             reconciler.localRemoval(req.space);
-            await managers.disconnect(req.space);
-            return services.disconnect(req.space);
+            let disconnected: ServiceConnectionResult;
+            try { await managers.disconnect(req.space); }
+            finally { disconnected = await services.disconnect(req.space); }
+            return disconnected;
             }));
           })().catch((error: unknown): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: error instanceof Error ? error.message : "The connection could not be changed. Check daemon status and try again." }));
         managerResult(async () => {

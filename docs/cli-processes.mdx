@@ -610,6 +610,18 @@ hosting and service connections. A space removed while this computer was off doe
 again. If the account request fails, saved connection intents still resume. The local daemon
 endpoint remains available while this startup check runs.
 
+When a space is removed, the daemon also asks its governing authority to remove the recorded
+Manager registration after its child has exited. The authority checks ownership, requires the
+broker to affirm that instance gone, and deletes only the inspected registration revision.
+If removal is unsupported or refused, `cotal daemon status` names the registration left behind
+and its `cotal endpoint deregister manager <instance-id> --space <space> --yes` recovery command.
+An unconfirmed removal stays visible across restarts and is not automatically repeated. Inspect
+that registration before another request. Cleanup never starts a Manager for the removed space.
+A failed attempt to re-enable hosting keeps that unconfirmed-removal state. It is cleared only
+when a successor Manager answers or registration removal is confirmed.
+An explicit `service-disconnect` closes the machine service and forgets its connection intent
+even when Manager registration cleanup refuses. The cleanup refusal remains visible in status.
+
 Daemon commands use the machine home, not the invoking project's `.cotal` records. They run from
 a removed working directory or a folder with a `.cotal` file, and malformed preferences do not
 block them. Machine-home validation and the permissions required for each operation still apply.

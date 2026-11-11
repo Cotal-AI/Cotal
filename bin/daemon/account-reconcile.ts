@@ -35,8 +35,8 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
   const connectedHere = (space: string) => services.status(space).state === "connected" || managers.status(space).state === "answering";
   const disconnect = async (space: string) => {
     await managers.refresh(space);
-    await managers.disconnect(space, { account: true });
-    if (services.status(space).state !== "not-requested") await services.disconnect(space);
+    try { await managers.disconnect(space, { account: true }); }
+    finally { if (services.status(space).state !== "not-requested") await services.disconnect(space); }
   };
   const observedState = (space: string) => {
     if (saved.spaces[space]?.removedAt !== undefined) return "removed on this computer";

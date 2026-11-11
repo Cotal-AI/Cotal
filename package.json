@@ -997,7 +997,7 @@
     "smoke:capability-census:live": "tsx bin/smoke/capability-census-live.smoke.ts",
     "smoke:launch-matrix:live": "tsx bin/smoke/launch-matrix-live.smoke.ts",
     "smoke:deprecated-daemon-entries": "tsx bin/smoke/deprecated-daemon-entries.smoke.ts",
-    "smoke:daemon-account-restart": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-account.smoke.ts && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-restart-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-hosted --account-restart-repro",
+    "smoke:daemon-account-restart": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-account.smoke.ts && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-restart-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-hosted --account-restart-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-unsupported --direct-disconnect-repro",
     "smoke:daemon-login-signals": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-login-signals.smoke.ts",
     "smoke:daemon-login": "pnpm --filter @cotal-ai/auth... --filter @cotal-ai/seat build && tsx bin/smoke/daemon-login.smoke.ts",
     "smoke:daemon-idp-timeout": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-idp-timeout.smoke.ts",

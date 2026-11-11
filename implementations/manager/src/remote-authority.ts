@@ -1,5 +1,7 @@
 import { join } from "node:path";
+import { lstatSync, readFileSync } from "node:fs";
 import {
+  assertLifecycleToken,
   credsFromJwt,
   admissionSnapshot,
   revocationSnapshot,
@@ -322,6 +324,23 @@ function remoteManagerStateOf(space: string) {
     if (!supervisor || !executor || !serve || !goalWriter || !sessionLedger) return undefined;
     return { v: 1, space, instanceId: o.instanceId, lifecycleUid: o.lifecycleUid, identities: { supervisor, executor, serve, goalWriter, sessionLedger } };
   };
+}
+
+/** Read the recorded instance without creating an identity or returning private key material. */
+export function loadRemoteManagerInstanceId(root: string, space: string): string | undefined {
+  const file = stateFile(root, space);
+  let stat;
+  try { stat = lstatSync(file); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  if (!stat.isFile()) throw new Error("the remote Manager identity is not a regular file");
+  let state: RemoteManagerIdentityState | undefined;
+  try {
+    state = remoteManagerStateOf(space)(JSON.parse(readFileSync(file, "utf8")));
+    if (state) assertLifecycleToken(state.instanceId, "instanceId");
+  }
+  catch { throw new Error("the recorded remote Manager identity could not be read"); }
+  if (!state) throw new Error("invalid recorded remote Manager identity");
+  return state.instanceId;
 }
 
 /** Load or create one participant-owned manager lifecycle identity. Private seeds never leave it. */
