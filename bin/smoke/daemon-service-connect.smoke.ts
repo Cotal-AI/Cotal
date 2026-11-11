@@ -242,10 +242,12 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     if (recoverOnApproval) idpRevoked = false;
     return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
   }
-  // This exchange fixture serves per-space hosting, not the account-computer API.
-  if (process.argv.includes("--exchange-retry-repro") && req.url?.startsWith("/api/cli/machines/")) {
-    if (req.headers.authorization !== `Bearer ${SESSION}`) { res.writeHead(401); res.end("{}"); return; }
-    unsupportedComputerReads++;
+  // Per-space fixtures do not implement account-computer routes.
+  if (!accountOnly && (req.url?.startsWith("/api/cli/machines/") || req.url?.startsWith("/api/machines/"))) {
+    if (process.argv.includes("--exchange-retry-repro")) {
+      if (req.headers.authorization !== `Bearer ${SESSION}`) { res.writeHead(401); res.end("{}"); return; }
+      unsupportedComputerReads++;
+    }
     res.writeHead(404); res.end("{}"); return;
   }
   if (accountOnly && req.url?.startsWith("/api/machines/")) {
@@ -1549,7 +1551,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: fixtureVersion }));
       }
       const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
-      if (desktopSetupOnly || process.argv.includes("--account-setup-gaps") || process.argv.includes("--account-setup-journey")) env.PATH = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
+      env.PATH = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
       if (process.argv.includes("--daemon-seed-repro")) env.COTAL_ALLOW_CHECKOUT_SEED = "1";
       if (process.argv.includes("--hosted-seed-repro")) {
         delete env.COTAL_SKIP_CONNECTOR_SEED;
