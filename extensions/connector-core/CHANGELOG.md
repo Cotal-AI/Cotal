@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.157.6
+
+### Patch Changes
+
+- 041941a: Tell agents to leave a channel when its task is finished or their part is done. The shared briefing gives this guidance to every connector and the generated briefing reference.
+
 ## 0.157.5
 
 ### Patch Changes

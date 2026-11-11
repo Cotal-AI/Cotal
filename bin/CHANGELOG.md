@@ -1,5 +1,28 @@
 # cotal-ai
 
+## 0.157.6
+
+### Patch Changes
+
+- cff5c31: Exercise account reconciliation with service endpoints disabled and wait for Manager shutdown before grading local removal in the account smoke suite.
+- 4b072d8: Hosted Managers retire running agents without crashing when the machine daemon stops them, with a bounded shutdown window that grows with the seat count and account removal guidance that points back to the dashboard.
+- a580039: Keep the Windows daemon responsive while its native service ownership is verified.
+  
+  Run the exact recorded-service checks off the serving event loop once and reuse their result for generation activation. Pending or failed verification does not grant activation authority.
+- Updated dependencies [041941a]
+- Updated dependencies [4ad09f7]
+- Updated dependencies [ca6f40b]
+  - @cotal-ai/connector-core@0.157.6
+  - @cotal-ai/core@0.157.6
+  - @cotal-ai/manager@0.157.6
+  - @cotal-ai/auth@0.157.6
+  - @cotal-ai/cli@0.157.6
+  - @cotal-ai/delivery@0.157.6
+  - @cotal-ai/registry@0.157.6
+  - @cotal-ai/runtime@0.157.6
+  - @cotal-ai/workspace@0.157.6
+  - @cotal-ai/seat@0.157.6
+
 ## 0.157.5
 
 ### Patch Changes

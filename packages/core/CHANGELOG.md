@@ -1,5 +1,13 @@
 # @cotal-ai/core
 
+## 0.157.6
+
+### Patch Changes
+
+- 4ad09f7: Managers restart faster over slow broker links after many credential renewals.
+  Registration revokes independent credential rows in bounded concurrent batches, waits for every started write, and still requires complete revocation and verified eviction before publishing successor authority.
+- ca6f40b: Update the service-registration smoke to assert the current unavailable error for an ambiguous reopen, so its native recovery and cursor-race checks run to completion.
+
 ## 0.157.5
 
 ### Patch Changes
