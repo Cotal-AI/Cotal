@@ -1,5 +1,19 @@
 # @cotal-ai/auth
 
+## 0.157.7
+
+### Patch Changes
+
+- 43a8973: Cotal update waits through short hosting outages before checking running Manager continuity.
+  Remote credential exchanges retry timeouts and HTTP 5xx responses within a shared two-minute budget, while HTTP 4xx denials still fail without retry. An exhausted wait names the host and asks you to run the update again without re-registering the space.
+- f93e549: Retrying a managed launch after an enrollment or bearer preflight failure no longer loses the agent name.
+  
+  Participant managers retain the unlaunched enrollment's token and request identity in their secret store and replay them for the same caller and persona authority. Each retry carries fresh observed-spawn authorization so an uncommitted attempt can recover after the earlier observation expires. Changed authority is refused with a recovery message instead of replacing the pending token.
+- 4246cca: Connect a headless computer to your account with one setup command, refresh its agent applications on rerun, and show recovery guidance when none are available.
+- @cotal-ai/core@0.157.7
+  - @cotal-ai/lang@0.157.7
+  - @cotal-ai/workspace@0.157.7
+
 ## 0.157.6
 
 ### Patch Changes

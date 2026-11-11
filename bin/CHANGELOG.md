@@ -1,5 +1,26 @@
 # cotal-ai
 
+## 0.157.7
+
+### Patch Changes
+
+- 43a8973: Cotal update waits through short hosting outages before checking running Manager continuity.
+  Remote credential exchanges retry timeouts and HTTP 5xx responses within a shared two-minute budget, while HTTP 4xx denials still fail without retry. An exhausted wait names the host and asks you to run the update again without re-registering the space.
+- 4246cca: Connect a headless computer to your account with one setup command, refresh its agent applications on rerun, and show recovery guidance when none are available.
+- Updated dependencies [43a8973]
+- Updated dependencies [f93e549]
+- Updated dependencies [4246cca]
+  - @cotal-ai/auth@0.157.7
+  - @cotal-ai/manager@0.157.7
+  - @cotal-ai/connector-core@0.157.7
+  - @cotal-ai/cli@0.157.7
+  - @cotal-ai/delivery@0.157.7
+  - @cotal-ai/registry@0.157.7
+  - @cotal-ai/runtime@0.157.7
+  - @cotal-ai/core@0.157.7
+  - @cotal-ai/seat@0.157.7
+  - @cotal-ai/workspace@0.157.7
+
 ## 0.157.6
 
 ### Patch Changes
