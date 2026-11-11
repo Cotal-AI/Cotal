@@ -166,7 +166,9 @@ A second enrollment of the same name is refused while its grant remains, until r
 If enrollment or its bearer preflight fails with an unknown outcome, the participant keeps the
 unlaunched enrollment's token and request identity in its secret store. Retry the same persona
 with the same caller and channel permissions to replay that enrollment, including after a manager
-restart. A changed caller, run or persona authority is refused while the earlier attempt is held.
+restart. Each retry carries its freshly served spawn authorization, so it can enroll even when
+the earlier request never reached the host and its observation has expired. A changed caller,
+run or persona authority is refused while the earlier attempt is held.
 The refusal names the hold and the retry remedy. Once the original launch succeeds, stop that
 agent before changing its authority. If the original authority can no longer be restored, ask the
 host operator to reconcile the held enrollment. Do not delete the participant's pending

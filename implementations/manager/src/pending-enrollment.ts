@@ -12,7 +12,7 @@ export interface PendingEnrollment<T> {
 }
 
 /** A manager's pending actor is replayed only for the same owner, spawner and launch authority.
- * The current served request may differ, but the saved input carries the original host request. */
+ * A retry supplies fresh served-spawn authorization without replacing this enrollment's token. */
 export async function pendingEnrollment<T>(args: {
   store: SecretStore;
   space: string;

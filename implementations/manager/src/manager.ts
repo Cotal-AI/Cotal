@@ -5319,7 +5319,9 @@ export class Manager {
       if (canonicalJson(saved.target) !== canonicalJson(input.target))
         throw new Error(`pending enrollment for "${name}" names different target authority`);
       sent = true;
-      material = await enroll({ ...saved, target: { ...saved.target, tokenHash },
+      // The original observation may have expired, or vanished on a host restart before commit.
+      // Same-authority retries keep the enrollment identity but carry this freshly served spawn.
+      material = await enroll({ ...input, target: { ...saved.target, tokenHash },
         ...(pending ? { requestId: pending.record.requestId } : {}) });
       if (material.actor !== name)
         throw new Error(`the host enrolled actor "${material.actor}", not the requested "${name}"`);

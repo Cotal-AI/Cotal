@@ -1865,7 +1865,7 @@ try {
   };
   const participantRoot = join(root, "participant");
   mkdirSync(join(participantRoot, ".cotal", "agents"), { recursive: true });
-  for (const n of ["omega", "omicron", "foreign", "adminprobe", "downgrade", "retryenroll", "retrybearer"])
+  for (const n of ["omega", "omicron", "foreign", "adminprobe", "downgrade", "retryenroll", "retrybearer", "retryunsent"])
     writeFileSync(join(participantRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
   const state = remote.loadOrCreateRemoteManagerIdentity(participantRoot, SPACE);
   const actors = remoteManagerActors(state.instanceId);
@@ -1883,6 +1883,7 @@ try {
   let lostEnrollmentReply = true;
   const enrollmentRequests: import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest[] = [];
   let refuseEnrollmentReplay = true;
+  let unsentEnrollment = true;
   participant = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: participantRoot, eventsRequired: true,
     remoteAuthority: { owner: OWNER, actors, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, identities: state.identities,
       supervisorCreds, executorCreds, serveGrant: registered.serveGrant,
@@ -1896,6 +1897,10 @@ try {
       enrollManagedAgent: async ({ target, spawn, requestId }) => {
         const r = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target, spawn, requestId);
         enrollmentRequests.push(r);
+        if (target.actor === "retryunsent" && unsentEnrollment) {
+          unsentEnrollment = false;
+          throw new Error("fixture enrollment failed before host dispatch");
+        }
         if (target.actor === "retryenroll" && !lostEnrollmentReply && refuseEnrollmentReplay) {
           refuseEnrollmentReplay = false;
           throw new EpEnvelopeError("permission-denied", "fixture replay temporarily refused", undefined, "not-executed");
@@ -1928,17 +1933,20 @@ try {
   ownerCaller.on("error", () => {});
   await ownerCaller.start();
   ctlEps.push(ownerCaller);
-  // Both failure boundaries leave a real host grant, but no child. A later typed spawn must
-  // re-enter the same enrollment instead of replacing the token and conflicting with itself.
-  for (const name of ["retryenroll", "retrybearer"]) {
+  // An unknown outcome can precede host dispatch as well as follow a committed grant. A later
+  // typed spawn keeps the enrollment identity but supplies its current observed authorization.
+  for (const name of ["retryunsent", "retryenroll", "retrybearer"]) {
     if (name === "retrybearer") failNextBearerFor = name;
     const launch = () => ownerCaller.invokeService("manager", "spawn", { name, agent: "e2e" },
       { deadlineMs: 20_000, follow: true }).catch((e: Error) => ({ reply: { ok: false, error: { message: e.message } } }));
     const failed = await launch();
-    const rowBefore = JSON.parse(readFileSync(rowFile("managed", OWNER, name), "utf8")) as { lifecycleUid: string; tokenHash: string };
+    const rowBefore = existsSync(rowFile("managed", OWNER, name))
+      ? JSON.parse(readFileSync(rowFile("managed", OWNER, name), "utf8")) as { lifecycleUid: string; tokenHash: string }
+      : undefined;
     check(`${name}: a failed preflight reports its own retained enrollment and retry remedy`,
       failed.reply.ok === false && /held by this manager's earlier enrollment/.test(failed.reply.error?.message ?? "")
-      && !psList(participant).some((a) => a.name === name), failed.reply.error?.message);
+      && !psList(participant).some((a) => a.name === name) && (name === "retryunsent" ? rowBefore === undefined : rowBefore !== undefined),
+      failed.reply.error?.message);
     if (name === "retryenroll") {
       const before = enrollmentRequests.length;
       const changed = await ownerCaller.invokeService("manager", "spawn", { name, agent: "e2e", allowPublish: [] },
@@ -1954,11 +1962,13 @@ try {
     const retried = await launch();
     const requests = enrollmentRequests.filter((r) => r.target.actor === name);
     const rowAfter = JSON.parse(readFileSync(rowFile("managed", OWNER, name), "utf8")) as { lifecycleUid: string; tokenHash: string };
-    check(`${name}: the retry launches with the same host lifecycle, digest, request and served spawn`,
+    check(`${name}: the retry keeps the enrollment identity with fresh served-spawn authorization`,
       retried.reply.ok === true && requests.length === (name === "retryenroll" ? 3 : 2) && requests.every((r) => r.requestId === requests[0]!.requestId)
       && requests.every((r) => JSON.stringify(r.target) === JSON.stringify(requests[0]!.target))
-      && requests.every((r) => JSON.stringify(r.spawn) === JSON.stringify(requests[0]!.spawn))
-      && rowAfter.lifecycleUid === rowBefore.lifecycleUid && rowAfter.tokenHash === rowBefore.tokenHash,
+      && requests.every((r) => typeof r.spawn?.served === "string" && r.spawn.runId === requests[0]!.spawn?.runId)
+      && new Set(requests.map((r) => r.spawn!.served)).size === requests.length
+      && rowAfter.tokenHash === requests[0]!.target.tokenHash
+      && (rowBefore === undefined || rowAfter.lifecycleUid === rowBefore.lifecycleUid),
       { ok: retried.reply.ok, error: retried.reply.error?.message });
   }
   for (const [name, explicit] of [["omega", false], ["omicron", true]] as const) {
@@ -2034,8 +2044,8 @@ try {
   // These combined expectations still require an actual integrated run.
   // 148 -> 151: D2's spawn and admin views also read ps.
   // One CLI attach denial after the operator loses spawn scope.
-  // Six hosted-enrollment checks include changed authority and refusal during replay.
-  const EXPECTED = endpointCliFocus ? 69 : 158;
+  // Eight hosted-enrollment checks include uncommitted attempts, changed authority and refused replay.
+  const EXPECTED = endpointCliFocus ? 71 : 160;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
