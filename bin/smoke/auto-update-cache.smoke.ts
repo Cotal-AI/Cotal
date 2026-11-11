@@ -15,7 +15,7 @@ const registry = createServer((_req, res) => { requests++; if (failed) res.write
 await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
 const address = registry.address();
 if (!address || typeof address === "string") throw new Error("fixture address missing");
-const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(root, "home"), COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), npm_config_prefix: join(root, "prefix"), npm_config_cache: join(root, "cache"), npm_config_registry: `http://127.0.0.1:${address.port}` };
+const env: NodeJS.ProcessEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: join(root, "home"), COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), npm_config_prefix: join(root, "prefix"), npm_config_cache: join(root, "cache"), npm_config_registry: `http://127.0.0.1:${address.port}` };
 delete env.COTAL_NO_UPDATE_CHECK;
 async function check(extra: NodeJS.ProcessEnv = {}) {
  const child = spawn(process.execPath, [fileURLToPath(new URL("../dist/cotal.js", import.meta.url)), "__update-check"], { env: { ...env, ...extra }, cwd: root, stdio: ["ignore", "pipe", "pipe"] });

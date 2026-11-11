@@ -24,6 +24,7 @@ const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).fi
 Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "config"), XDG_STATE_HOME: join(home, "state"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1", NO_COLOR: "1" });
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_") || key.startsWith("NATS_")) delete process.env[key];
 Object.assign(process.env, env);
+process.env.COTAL_HOME = join(home, "cotal");
 const { createSpaceAuth } = await import("@cotal-ai/core");
 const { assertUserAuthInfo, authDir, hasUserAuthState, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { cotalAuthProvider } = await import("@cotal-ai/auth");

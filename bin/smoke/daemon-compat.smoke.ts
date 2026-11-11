@@ -63,7 +63,7 @@ if (process.argv[2] === "--old-endpoint") {
   const paths = defaultHome ? daemonPaths(process.env, cotal) : daemonPathsFor(home);
   const wireLog = join(root, "wire.log"), nativeLog = join(root, "native.log");
   const shutdownSupport = join(root, "shutdown-supported");
-  const env = { ...process.env, HOME: root, COTAL_HOME: cotal, XDG_CONFIG_HOME: join(root, "config"), PATH: recorder, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1" };
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: root, COTAL_HOME: cotal, XDG_CONFIG_HOME: join(root, "config"), PATH: recorder, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1" };
   let child: ChildProcess | undefined;
   const control = httpServer(async (_request, response) => {
     try {

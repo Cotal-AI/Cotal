@@ -44,7 +44,8 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const refusalCode = async (p: Promise<unknown>): Promise<string> => {
   try { await p; return "no-refusal"; } catch (e) { return e instanceof EndpointRefusal ? e.code : `other:${(e as Error).message}`; }
 };
-const savedEnvironment = { ...process.env };
+// Restoration-only entries, never a child environment.
+const savedEnvironment = Object.entries(process.env);
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_") && key !== "COTAL_DAEMON_SMOKE_TMP") delete process.env[key];
 const root = mkdtempSync(join(process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir(), "cotal-transport-"));
 mkSecretDir(root);
@@ -211,8 +212,8 @@ try {
   const cleanup = await Promise.allSettled([...ownedDaemons].map((daemon) => daemon.close()).concat([...ownedChildren].map(stop)));
   if (cleanup.every((result) => result.status === "fulfilled")) rmSync(root, { recursive: true, force: true });
   else { fail++; console.log(`  ✗ owned cleanup could not be verified; retained ${root}`); }
-  for (const key of Object.keys(process.env)) if (!(key in savedEnvironment)) delete process.env[key];
-  Object.assign(process.env, savedEnvironment);
+  for (const key of Object.keys(process.env)) if (!savedEnvironment.some(([name]) => name === key)) delete process.env[key];
+  for (const [key, value] of savedEnvironment) process.env[key] = value;
 }
 
 if (notRun.length) console.log(`  ○ NOT RUN on ${process.platform}: ${notRun.join(", ")}`);

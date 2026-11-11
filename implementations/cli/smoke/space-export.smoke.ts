@@ -9,9 +9,10 @@ import { dirname, join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "space-export-"));
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
-Object.assign(process.env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: join(home, "xdg"), DO_NOT_TRACK: "1", NO_COLOR: "1", CI: "1" });
+Object.assign(process.env, { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, "xdg"), DO_NOT_TRACK: "1", NO_COLOR: "1", CI: "1" });
 const { createSpaceAuth } = await import("@cotal-ai/core");
 const { composeUserBundle, createCalloutAuth, finalizeUserBundleEndpoint } = await import("@cotal-ai/auth");
+process.env.COTAL_HOME = join(home, ".cotal");
 const { checkBundleDocument, findMesh, recordMesh } = await import("@cotal-ai/workspace");
 const { remoteUserEntry } = await import("../src/commands/meshes-add.js");
 const bin = process.env.SPACE_EXPORT_CLI ?? join(import.meta.dirname, "../../../bin/dist/cotal.js");

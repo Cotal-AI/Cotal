@@ -40,7 +40,7 @@ function sandbox(label: string) {
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-chl-${label}-home-`)));
   const configDir = join(home, "xdg");
   const anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
-  const env = { ...process.env, HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
   const runWith = (extra: Record<string, string>, ...args: string[]): SpawnSyncReturns<string> => {
     const options = { cwd: root, env: { ...env, ...extra }, encoding: "utf8" as const, timeout: 240_000 };
     assertSmokeSandboxDown(anchor, args, options);

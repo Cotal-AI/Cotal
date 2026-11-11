@@ -225,7 +225,7 @@ function launch(width: number, height: number, err: string) {
   try {
     tmux("kill-session", "-t", "t")
   } catch {}
-  const line = `cd ${project} && env -u COTAL_HOME HOME=${home} node ${launcher} 2>${err}; echo EXIT=$?; sleep 3600`
+  const line = `cd ${project} && env HOME=${home} COTAL_HOME=${join(home, ".cotal")} node ${launcher} 2>${err}; echo EXIT=$?; sleep 3600`
   tmux("new-session", "-d", "-s", "t", "-x", String(width), "-y", String(height), line)
   tmux("set-option", "-s", "escape-time", "10")
 }
@@ -259,7 +259,7 @@ try {
   await startBroker()
   for (const s of [space, strict, bare]) await setupSpaceStreams({ servers: server, space: s })
   process.env.HOME = home
-  delete process.env.COTAL_HOME
+  process.env.COTAL_HOME = join(home, ".cotal")
   const w = await import("@cotal-ai/workspace")
   const ts = new Date().toISOString()
   w.recordMesh({ space, server, root: project, mode: "open", origin: "up", ts })

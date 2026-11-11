@@ -9,7 +9,7 @@ import { saveIdpSession } from "@cotal-ai/auth";
 const root = mkdtempSync(join(tmpdir(), "dacct-"));
 const home = join(root, "home"), machine = join(root, "machine"), runtime = join(root, "rt");
 for (const path of [home, runtime]) mkdirSync(path, { mode: 0o700 });
-const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: runtime, COTAL_HOME: join(root, "cotal") };
+const env: NodeJS.ProcessEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: runtime, COTAL_HOME: join(root, "cotal") };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_") && !["COTAL_HOME", "COTAL_SKIP_CONNECTOR_SEED", "COTAL_TELEMETRY"].includes(key)) delete env[key];
 const ids: string[] = [];
 let first = true;

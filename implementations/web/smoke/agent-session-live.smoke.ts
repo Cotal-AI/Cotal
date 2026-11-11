@@ -108,7 +108,7 @@ try {
   const runWeb = fileURLToPath(new URL("./run-web.mts", import.meta.url));
   const bootWeb = (env: Record<string, string> = {}): Promise<{ cookie: string; base: string }> => onFreePort(async (port) => {
     const ch = spawn(process.execPath, ["--import", "tsx", runWeb, "--space", SPACE, "--server", SERVER,
-      "--port", String(port), "--no-open"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+      "--port", String(port), "--no-open"], { stdio: ["ignore", "pipe", "pipe"], env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), ...env } });
     webs.push(ch);
     let log = "";
     ch.stdout?.on("data", (d: Buffer) => { log += d.toString(); });

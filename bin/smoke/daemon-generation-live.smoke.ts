@@ -19,5 +19,5 @@ async function run(args: string[], env = process.env): Promise<void> {
 }
 await run([join(repo, "bin/smoke/build-daemon-upgrade-fixture.mjs"), fixture, "--workspace-source"]);
 const args = process.argv.slice(2);
-await run([join(repo, "node_modules/tsx/dist/cli.mjs"), join(repo, "bin/smoke/daemon-service-connect.smoke.ts"), "--hosting-only", "--upgrade-repro", ...(args.length ? args : ["--upgrade-active-repro", "--watcher-seat-repro"])], { ...process.env, COTAL_DAEMON_UPGRADE_FIXTURE: fixture });
+await run([join(repo, "node_modules/tsx/dist/cli.mjs"), join(repo, "bin/smoke/daemon-service-connect.smoke.ts"), "--hosting-only", "--upgrade-repro", ...(args.length ? args : ["--upgrade-active-repro", "--watcher-seat-repro"])], { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_DAEMON_UPGRADE_FIXTURE: fixture });
 console.log("daemon-generation-live: copied-install generation acceptance passed");

@@ -66,7 +66,7 @@ async function startWeb(args: string[]): Promise<Web> {
     child = spawn(process.execPath, [
       "--import", import.meta.resolve("tsx"), fileURLToPath(new URL("./run-web.mts", import.meta.url)),
       ...args, "--port", String(p), "--no-open",
-    ], { cwd: work, env: { ...process.env, NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    ], { cwd: work, env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"] });
     kids.push(child);
     child.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
     child.stderr?.on("data", (d: Buffer) => { log += d.toString(); });

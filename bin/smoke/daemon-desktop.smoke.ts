@@ -28,10 +28,12 @@ check("one framed request is decoded", (await readDesktopRequest(Readable.from([
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const root = mkdtempSync(join(tmpdir(), "cotal-desktop-")); chmodSync(root, 0o700);
-const saved = { ...process.env };
+// Restoration-only entries, never a child environment.
+const saved = Object.entries(process.env);
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 for (const name of ["home", "runtime", "config", "data", "cache"]) mkdirSync(join(root, name), { mode: 0o700 });
 Object.assign(process.env, { HOME: join(root, "home"), XDG_RUNTIME_DIR: join(root, "runtime"), XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), DO_NOT_TRACK: "1" });
+process.env.COTAL_HOME = join(root, "home", ".cotal");
 const paths = daemonPaths();
 const version = (JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")) as { version: string }).version;
 let daemon: RunningDaemon | undefined;
@@ -148,7 +150,7 @@ try {
   console.log(`daemon-desktop: ${checks} passed, 0 failed (native Linux IPC; no service install, login or broker)`);
 } finally {
   await daemon?.close();
-  for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
-  Object.assign(process.env, saved);
+  for (const key of Object.keys(process.env)) if (!saved.some(([name]) => name === key)) delete process.env[key];
+  for (const [key, value] of saved) process.env[key] = value;
   rmSync(root, { recursive: true, force: true });
 }
