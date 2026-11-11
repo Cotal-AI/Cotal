@@ -35,7 +35,7 @@ import {
   signArtifact, signatureInput,
   verifyTraitDefinition, isVerifiedTraitDefinition, traitDefinitionDigest,
   verifyTraitAttachment, isVerifiedTraitAttachment,
-  verifyGovernedSurface, assertGovernedSurfaceFor, assertGovernedPreEffect,
+  verifyGovernedSurface, assertGovernedPreEffect,
   TRAIT_GUARDED, TRAIT_PRICED,
   type SignerAnchor, type AnchorResolver, type TraitDefinition,
   type GuardCallSeam, type EpTraitEnforcement, type EpGovernedSurface,

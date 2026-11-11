@@ -37,8 +37,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
@@ -52,7 +51,6 @@ import { MANAGER_ENDPOINT, managerShippedSurface } from "../src/manager-service-
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const shipped = managerShippedSurface();
 
-const here = dirname(fileURLToPath(import.meta.url));
 
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;

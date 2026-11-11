@@ -24,7 +24,7 @@
  *
  * Run: tsx bin/smoke/daemon-transport.smoke.ts
  */
-import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

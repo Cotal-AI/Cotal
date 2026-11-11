@@ -22,7 +22,7 @@
  * Needs `nats-server` on PATH. Run: pnpm smoke:presence-ttl-refresh-cli
  */
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { connect, nanos } from "@nats-io/transport-node";
 import { jetstreamManager, StorageType } from "@nats-io/jetstream";

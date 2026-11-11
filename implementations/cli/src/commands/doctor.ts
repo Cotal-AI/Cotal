@@ -40,7 +40,6 @@ import {
   REMINTABLE_DAEMON_CREDS,
   type Report,
   resolveMeshTarget,
-  spaceAccountPath,
   staleSystemCreds,
   STORE_CONTENTS,
   storeContentsText,

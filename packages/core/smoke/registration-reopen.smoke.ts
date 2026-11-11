@@ -37,7 +37,6 @@ const check = (name: string, ok: boolean, actual: unknown): void => {
   if (ok) { passed++; console.log(`  ✓ ${name}`); }
   else { failed++; console.error(`  FAIL ${name}: ${JSON.stringify(actual)}`); }
 };
-type Fault = "clean" | "lost-ack" | "lost-cas" | "before-write";
 try {
   for (let i = 0; i < 100 && !(await isReachable(servers)); i++) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.ok(await isReachable(servers), "owned broker started");

@@ -23,7 +23,6 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
 import type { Connector, LaunchOpts, LaunchSpec, EpCaller } from "@cotal-ai/core";
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
@@ -39,7 +38,7 @@ Object.assign(process.env, hostileIdentity);
 const {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER,
-  openRecordsBucket, freezeExpectedSet, resolveService, scatterCommand, registry,
+  resolveService, scatterCommand, registry,
 } = await import("@cotal-ai/core");
 const { authDir, saveSpaceAuth, recordMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { Manager } = await import("../src/manager.js");

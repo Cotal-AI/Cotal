@@ -31,20 +31,17 @@ if (process.argv[2] === "agent-bearer") {
 }
 
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { jetstreamManager } from "@nats-io/jetstream";
 import { decodeJwt, exportJWK, generateKeyPair, SignJWT } from "jose";
 import {
-  issuedUserCaller, mintCreds, mintLifecycleUid, newIdentity,
-  setupSpaceStreams, standaloneConnectOpts, withIssuerSession, CotalEndpoint, epRequestSubject, readRunAdmission,
-  createRunSpec, credsClaims, newTakeoverId, openRecordsBucket, writeRunStatus, type RunAdmission,
+  mintCreds, mintLifecycleUid, newIdentity,
+  setupSpaceStreams, standaloneConnectOpts, CotalEndpoint,
   registry, type Connector, type LaunchOpts, type RuntimeProvider, type AgentHandle,
-  type IssuedCaller, type RemoteManagerAuthorityMaterial, type RemoteRunAdmissionResult,
+  type RemoteManagerAuthorityMaterial,
 } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { epAuthBucket, mintConnectionEvictorCreds, mintMembershipObserverCreds } from "@cotal-ai/core";
@@ -55,7 +52,7 @@ import { readNativeIssuance } from "../src/native-issuance.js";
 import { INTERACTIVE_RETIRE_PATH } from "../src/service.js";
 import {
   deriveOwnerForIdpSubject, ensurePinnedIdp, grantActor, loadOwnerSecret, startAuthService,
-  findManagedActor, ledgerActorSourceIsLive, type AuthServiceHandle,
+  findManagedActor, type AuthServiceHandle,
 } from "../src/index.js";
 import { remoteManagerRegistrationProof } from "../src/authority-client.js";
 import { Manager, managerClusterArtifacts, registerRemoteManagerAuthority } from "../../manager/src/index.js";
@@ -66,22 +63,8 @@ import { agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 
 let pass = 0, fail = 0;
 
-async function cell(name: string, fn: (obs: Record<string, unknown>) => Promise<void>) {
-  const obs: Record<string, unknown> = {};
-  try {
-    await fn(obs);
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } catch (error) {
-    fail++;
-    console.error(`  ✗ FAIL: ${name}`);
-    console.error(`    ${error instanceof Error ? error.message : String(error)}`);
-    console.error(`    observed: ${JSON.stringify(obs)}`);
-  }
-}
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const mintRunId = () => `run-${randomBytes(16).toString("hex")}`;
 
 const fx = await startHostedAuthFixture("natcomp", 1);
 const a = fx.accounts[0]!;

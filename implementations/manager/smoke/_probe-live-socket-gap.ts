@@ -56,12 +56,6 @@ const SEAT_STUB = join(here, "attach-stdin-seat.mjs");
 const DETACH = "\x1d";
 const SEAT = "stdinseat";
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra !== undefined ? String(JSON.stringify(extra)).slice(0, 600) : ""); }
-};
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // --- live-space guard: this suite only ever runs against its own ephemeral loopback broker ------
@@ -107,56 +101,6 @@ let proxy: Server | undefined;
 const knocks: number[] = [];
 let onKnock: (() => void) | undefined;
 const fireKnock = () => { knocks.push(Date.now()); const h = onKnock; onKnock = undefined; h?.(); };
-const heal = (): Promise<void> =>
-  new Promise((res, rej) => {
-    const s = createServer((client) => {
-      const up = netConnect(BROKER_PORT, "127.0.0.1");
-      liveSockets.add(client); liveSockets.add(up);
-      const drop = () => { liveSockets.delete(client); liveSockets.delete(up); client.destroy(); up.destroy(); };
-      for (const ev of ["error", "close"] as const) { client.on(ev, drop); up.on(ev, drop); }
-      client.pipe(up); up.pipe(client);
-    });
-    s.on("error", rej);
-    s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
-  });
-/** Severed but LOUD: every dial lands here, is timestamped, and is reset. A failed attempt to the
- *  client either way, and the only way to know WHEN it is attempting. */
-const severLoud = (): Promise<void> =>
-  new Promise((res, rej) => {
-    knocks.length = 0;
-    const s = createServer((sock) => { fireKnock(); sock.destroy(); });
-    s.on("error", rej);
-    s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
-  });
-/** SLOW: up and correct, but every frame arrives late. Nothing here is a fault; it is the round trip
- *  a real operator has and a loopback does not, and it is the only way to make the window between
- *  "the reconnect is announced" and "the session is ready" wide enough to type into on purpose.
- *  Equal delays preserve order, so this changes the clock and nothing else. */
-const healSlow = (delayMs: number): Promise<void> =>
-  new Promise((res, rej) => {
-    knocks.length = 0;
-    const s = createServer((client) => {
-      const up = netConnect(BROKER_PORT, "127.0.0.1");
-      liveSockets.add(client); liveSockets.add(up);
-      fireKnock();
-      const drop = () => { liveSockets.delete(client); liveSockets.delete(up); client.destroy(); up.destroy(); };
-      for (const ev of ["error", "close"] as const) { client.on(ev, drop); up.on(ev, drop); }
-      const relay = (from: Socket, to: Socket) =>
-        from.on("data", (b) => { setTimeout(() => { if (!to.destroyed) to.write(b); }, delayMs); });
-      relay(client, up); relay(up, client);
-    });
-    s.on("error", rej);
-    s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
-  });
-/** HELD: the dial connects and then nothing ever comes back. This is what holds an establishment
- *  open long enough for a key pressed in the middle of one to be pressed in the middle of one. */
-const holdOpen = (): Promise<void> =>
-  new Promise((res, rej) => {
-    knocks.length = 0;
-    const s = createServer((sock) => { liveSockets.add(sock); fireKnock(); });
-    s.on("error", rej);
-    s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
-  });
 const closeLink = (): Promise<void> =>
   new Promise((res) => {
     const s = proxy; proxy = undefined;
@@ -221,37 +165,9 @@ function attachUnderPty(root: string): Attached {
  *  uses it. */
 type Piped = { seen: () => string; write: (s: string) => void; exit: () => number | undefined; waitExit: (ms: number) => Promise<boolean>; kill: () => void };
 const pipedChildren: Piped[] = [];
-function attachPiped(root: string): Piped {
-  const child = spawn(TSX, [BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY], {
-    cwd: root,
-    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  let buf = "";
-  let code: number | undefined;
-  child.stdout.on("data", (d) => { buf += String(d); });
-  child.stderr.on("data", (d) => { buf += String(d); });
-  child.on("close", (c) => { code = c ?? 0; });
-  const p: Piped = {
-    seen: () => buf,
-    write: (str) => { child.stdin.write(str); },
-    exit: () => code,
-    kill: () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } },
-    waitExit: async (ms) => {
-      const deadline = Date.now() + ms;
-      while (Date.now() < deadline) { if (code !== undefined) return true; await wait(100); }
-      return code !== undefined;
-    },
-  };
-  pipedChildren.push(p);
-  return p;
-}
 
-const sink = (): Buffer => readFileSync(SINK);
 const seatPid = (): number => Number(readFileSync(PIDSINK, "utf8"));
 const seatAlive = (): boolean => { try { process.kill(seatPid(), 0); return true; } catch { return false; } };
-const saidReconnected = (a: Attached): number => (a.seen().match(/\[cotal: reconnected\]/g) ?? []).length;
-const nonce = (): string => `N${randomUUID().slice(0, 8).toUpperCase()}`;
 
 let manager: InstanceType<typeof Manager> | undefined;
 // --- the same slow link, able to LOSE a frame without losing the connection ----------------------

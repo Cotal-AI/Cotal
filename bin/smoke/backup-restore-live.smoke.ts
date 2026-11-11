@@ -826,7 +826,7 @@ async function preservationStopCrashRecoveryScenario(): Promise<void> {
     const mgrPid = Number(readFileSync(canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space }), "utf8").trim());
     const crashOptions = { cwd: root, env: { ...env, [hook]: "1" }, encoding: "utf8" as const, timeout: 240_000 };
     assertSmokeSandboxDown(sandbox, ["down", "--preserve-state"], crashOptions);
-    const crashed = spawnSync(tsx, [cliPath, "down", "--preserve-state"], crashOptions);
+    spawnSync(tsx, [cliPath, "down", "--preserve-state"], crashOptions);
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "cut-intent", `${suffix} parked at cut-intent`);
     if (alive(mgrPid)) process.kill(mgrPid, "SIGKILL");
     await waitUntil(() => !alive(mgrPid), `${suffix} manager dead`);

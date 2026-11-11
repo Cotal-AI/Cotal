@@ -18,7 +18,6 @@
  * a child process mints the dir under its own pid, spawns the broker, and is SIGKILLed, which is the
  * exact case the teardown helper cannot cover and the only case the reaper may act on.
  */
-import { strict as assert } from "node:assert";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

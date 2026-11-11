@@ -1128,7 +1128,6 @@ async function runSharedSpaces(): Promise<void> {
     const oracle = DOCS_ORACLE ? JSON.parse(readFileSync(DOCS_ORACLE, "utf8")) as { version: string; workloads: Record<DocsWorkload, { sha256: string; bytes: number }> } : undefined;
     if (oracle) verify(typeof oracle.version === "string" && /^[0-9a-f]{64}$/.test(oracle.workloads?.[DOCS_WORKLOAD!]?.sha256 ?? "") && Number.isSafeInteger(oracle.workloads[DOCS_WORKLOAD!].bytes), "docs oracle is malformed");
     let have = 0;
-    let lastObserved: Awaited<ReturnType<typeof observe>> | undefined;
     /** One settle-and-hold window over the common cohort, reported as a labeled MSL_WINDOW and MSL_RESULT. */
     const window = async (step: number, phase: string | undefined, settleSeconds: number) => {
       await guard(wait(settleSeconds * 1000));
@@ -1141,7 +1140,6 @@ async function runSharedSpaces(): Promise<void> {
       const seconds = (performance.now() - started) / 1000;
       const afterCpu = [broker!.pid, ...groups.map((g) => g.manager.pid!), process.pid].map(procCpuMs);
       const after = await guard(observe());
-      lastObserved = after;
       verify(before.spaces.every((group, i) => group.seats.every((seat, j) => seat.pid === after.spaces[i]?.seats[j]?.pid)), "connector process changed during the common window");
       console.log(`MSL_RESULT ${JSON.stringify({ source: SHA, sourceDirty: SOURCE_DIRTY, runtime: process.version, runtimeHashes,
         topology: "shared-broker", ...(phase ? { phase, seatTopology: "initialized-mcp-sdk-client-in-manager" } : {}), spaceCount: SPACES, requested: step * SPACES, requestedPerSpace: step, requestedTotal: step * SPACES,

@@ -32,10 +32,8 @@ import {
   timerWriterContext,
   timerWriterConsumerConfig,
   timerWriterDurable,
-  armCheckpointTimer,
   eptReqStreamName,
   presenceBucket,
-  readCheckpointSettle,
   compileContract,
   TURN_INPUT_SCHEMA,
   SPAWN_INPUT_SCHEMA,
@@ -113,16 +111,10 @@ const kv = await openRecordsBucket(nc, SPACE);
 // Rows live until deleted — a seat stays alive for the whole suite unless a cell kills it.
 const presenceKv = await new Kvm(nc).create(presenceBucket(SPACE));
 
-// The timer pump for the wait's own mediated timeout. Drain WIDE before a block that needs an arm.
+// Initialize the timer writer's consumer and context for mediated timeouts.
 await jsm.consumers.add(eptReqStreamName(SPACE), timerWriterConsumerConfig(SPACE, { ackWaitMs: 5_000 }));
-const writerC = await js.consumers.get(eptReqStreamName(SPACE), timerWriterDurable(SPACE));
-const wctx = await timerWriterContext(nc, SPACE);
-const armPending = async (expect = 4): Promise<void> => {
-  for await (const m of await writerC.fetch({ max_messages: expect, expires: 1_200 })) {
-    await armCheckpointTimer(wctx, { subject: m.subject, headers: m.headers, data: m.data });
-    m.ack();
-  }
-};
+await js.consumers.get(eptReqStreamName(SPACE), timerWriterDurable(SPACE));
+await timerWriterContext(nc, SPACE);
 
 const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
 const COMPILED = {
@@ -356,13 +348,6 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
     .filter((r) => r.kind === "step")
     .map((r) => (r as { entry: unknown }).entry as JournalEntry)
     .filter((e) => e.kind === kind);
-};
-/** Spawn one seat through the handler under test, so the roster registration is the real path. */
-const spawnSeat = async (handler: MeshHandler, tag: string, persona = "builder"): Promise<{ agent: string; persona: string } | undefined> => {
-  const got = await withDeadline(safe(handler.spawn({ persona }, stepCtx(token(tag)).ctx)), 20_000, `the ${persona} spawn`);
-  if (got !== undefined && typeof (got as { agent?: unknown }).agent === "string") return got as { agent: string; persona: string };
-  console.log("  ! spawn did not yield a handle:", JSON.stringify(got));
-  return undefined;
 };
 /** Spawn one seat with a worktree through the handler under test. */
 const spawnInto = async (handler: MeshHandler, tag: string, worktree: string, persona = "builder"): Promise<unknown> =>

@@ -26,7 +26,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { runFiles, emitSentinel } from "@cotal-ai/smoke-kit";
-import { existsSync, mkdirSync, writeFileSync, dirname, posix, win32, defaultAgentType, isPathSpec, seedGeneration, seedStorePath, stageSeedPayload, check, cotal, freshCfg, writeJson, track, counts, cleanupScenario } from "./seed-cases/harness.js";
+import { existsSync, mkdirSync, writeFileSync, dirname, posix, win32, defaultAgentType, isPathSpec, seedGeneration, seedStorePath, stageSeedPayload, check, freshCfg, writeJson, track, counts, cleanupScenario } from "./seed-cases/harness.js";
 
 try {
   // ── defaultAgentType (unit) ──────────────────────────────────────────────────────────────────────

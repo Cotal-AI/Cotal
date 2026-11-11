@@ -68,8 +68,6 @@ import {
   listRunMigrations,
   markRunNoticeConsumed,
   listRunNoticesForRun,
-  readRunRecord,
-  writeRunStatus,
   EpEnvelopeError,
   replyTargetUnmapped,
   unansweredRequest,
@@ -89,7 +87,6 @@ import {
   type RunAdmissionView,
   assertAdmittedPublish,
   assertAdmittedSubscribe,
-  assertNotRevoked,
   isStreamNotFound,
 } from "@cotal-ai/core";
 import { renderRunContext } from "./run-context.js";
@@ -102,7 +99,6 @@ import {
   Cancelled,
   EffectError,
   Journal,
-  EffectRefused,
   askSchemaShape,
   conformsToAskSchema,
   type AskFieldKind,

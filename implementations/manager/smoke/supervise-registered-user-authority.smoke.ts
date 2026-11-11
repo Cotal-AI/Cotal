@@ -47,7 +47,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { Kvm } from "@nats-io/kv";
 const betterAuthRoot = new URL("../../auth/node_modules/better-auth/", import.meta.url);
 const { betterAuth } = await import(new URL("dist/index.mjs", betterAuthRoot).href);
 const { memoryAdapter } = await import(new URL("dist/adapters/memory-adapter/index.mjs", betterAuthRoot).href);

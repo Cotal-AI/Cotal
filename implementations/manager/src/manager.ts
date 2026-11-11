@@ -1,8 +1,8 @@
-import { createHash, randomUUID, randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { credsAuthenticator, RequestError } from "@nats-io/transport-node";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
-import { isAbsolute, join, dirname, resolve, sep } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import Headless from "@xterm/headless";
 import {
@@ -65,7 +65,6 @@ import {
   type IssuedStore,
   mintLifecycleUid,
   managedRetirementOpId,
-  mkSecretDir,
   newIdentity,
   oneLine,
   actionContext,
@@ -80,10 +79,8 @@ import {
   runAgentBearer,
   runDriverCaller,
   saveAgentFile,
-  subjectMatches,
   AUTH_ENDPOINT,
   EP_CMD_RETIRE_LIFECYCLE,
-  controlServiceSubject,
   eventChannel,
   eventChannelPrincipal,
   resolveService,
@@ -135,7 +132,6 @@ import {
   recordsBucket,
   epAuthBucket,
   ensureAuthorityStores,
-  ensureContractStore,
   createEndpointStreams,
   contractStoreContext,
   publishContractArtifact,
@@ -153,7 +149,6 @@ import {
   REMOTE_MANAGER_IDENTITY_NAMES,
   type LifecycleStateTransport,
   type StaticManagedSlotRow,
-  type SignerAnchor,
 } from "@cotal-ai/core";
 // The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
@@ -3173,7 +3168,7 @@ export class Manager {
         ? Object.values(candidate).flatMap((cred) => { try { return typeof cred === "string" && credsClaims(cred).sub ? [credsClaims(cred).sub!] : []; } catch { return []; } })
         : [];
       this.remoteRenewalDebt = { at: Date.now(), processEpoch, reason: rejectionText(e), unadoptedSubjects };
-      console.error(`! remote manager all-duty renewal: ${rejectionText(e)} - no unsigned or local replacement is available`);
+      console.error(`! remote manager all-duty renewal: ${this.remoteRenewalDebt.reason} - no unsigned or local replacement is available`);
       if (force) throw e;
     }
   }
@@ -9177,6 +9172,7 @@ export class Manager {
     );
   }
 
+  // @ts-expect-error TS6133: retained fixtures call this private adapter through structural views.
   private async opStop(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {
     const name = String(args.name ?? "").trim();
     const a = this.agents.get(name);
@@ -10086,7 +10082,6 @@ export class Manager {
         }),
       };
     }, Date.now());
-    const keyId = rotating.current().keyId;
     this.sessionPlane = new ManagerSessionPlane({
       space: this.space,
       // The session's serving identity is the persisted REGISTRATION instanceId, not the

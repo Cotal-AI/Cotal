@@ -141,13 +141,11 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
 // The launch each connector renders is captured, so the ARMING half of the record can be read on the
 // way back out of a resume without a real child process.
 let lastLaunchEvents: boolean | undefined;
-let lastLaunchAllowPublish: string[] | undefined;
 const base = {
   kind: "connector" as const,
   requires: ["node"],
   buildLaunch: (o: { events?: boolean; allowPublish?: string[] }): LaunchSpec => {
     lastLaunchEvents = o.events;
-    lastLaunchAllowPublish = o.allowPublish;
     return { command: "true", args: [], env: {} };
   },
 };

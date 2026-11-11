@@ -1144,15 +1144,12 @@ await sleep("3h", { name: "after-the-catch" });
     return { channel: req.channel ?? "c-1" };
   };
   const journal = new Journal({ run: "r-bind-s" });
-  let caught: unknown;
   try {
     await run(
       'const a = await spawn("a");\nconst b = await spawn("b");\nawait conclave([a, b], () => turn(a, { name: "huddle" }), { name: "triage" });',
       { runId: "r-bind-s", journal, handler: binder },
     );
-  } catch (e) {
-    caught = e;
-  }
+  } catch { /* asserted on the journal below */ }
   // ASSERTED ON THE RECORD, NOT ON THE CAUGHT ERROR, and that is a finding rather than a style
   // choice: `performScope` records a coded EntryError and RETHROWS THE RAW REASON, so a program
   // catching a scope fault sees an error with no language code where the effect path hands it one.

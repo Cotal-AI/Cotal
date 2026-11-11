@@ -26,7 +26,6 @@ import { jetstreamManager, JetStreamApiError, JetStreamApiCodes } from "@nats-io
 import {
   isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams,
   openAclRegistry, readAcl, dmStream, dlvStream, dmDurable, dlvDurable, DEV_OWNER, principalKey,
-  mintLifecycleUid,
 } from "@cotal-ai/core";
 import type { Connector, LaunchOpts, LaunchSpec, RuntimeProvider } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";

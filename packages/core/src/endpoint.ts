@@ -53,7 +53,7 @@ import { importNativeSubjectPermissions, issuedPermitsSubject, readAcceptedRow, 
 import { REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsInput, type RegistryEndpointsOutput } from "./registry-contract.js";
 import { listRegistryEndpoints, registryListingCaller } from "./registry-client.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
-import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
+import { lastKvEntries } from "./kv-scan.js";
 import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
 import { isRestoredConsumer } from "./backup.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
@@ -113,7 +113,6 @@ import type {
 } from "./types.js";
 import {
   openMembersRegistry,
-  commitMember,
   commitMemberRevision,
   tombstoneMember,
   activateMember,
@@ -122,7 +121,6 @@ import {
   listMembers,
   listLifecycleMemberChannels,
   durableEligible,
-  StaleMembershipWrite,
 } from "./members.js";
 import { openAclRegistry, readAcl, readAclForAlias, aclRetired, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
 import { openDeliveryRegistry, type DeliveryLeaseInfo, type ManagerLeaseInfo } from "./lease.js";
@@ -180,7 +178,6 @@ import {
   MANAGER_LEASE_KEY,
   MANAGER_RENEWAL_LEASE_KEY,
   managerLeaseKey,
-  chatWildcard,
   assertValidChannel,
   channelInAllow,
   membershipInAllow,

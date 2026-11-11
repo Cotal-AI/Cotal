@@ -13,7 +13,7 @@ import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LEN
 import { afterRecallMark, type MeshAgent, type InboxItem, type InboxScope } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
-import { attributionSafe, fmtDeliveryItem, fmtItem, fmtFrom } from "./framing.js";
+import { attributionSafe, fmtDeliveryItem, fmtFrom } from "./framing.js";
 import { isAuthed, type AgentConfig } from "./config.js";
 import { submitFeedback, type FeedbackInput } from "./feedback.js";
 import { buildOrientation, presenceLiveness, renderOrientation, type OrientationTool } from "./orientation.js";

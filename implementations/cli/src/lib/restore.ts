@@ -33,7 +33,6 @@ import {
   membershipStoreDefinition,
   PRESENCE_STORAGE,
   presenceBucket,
-  recordsBucket,
   recreateConsumerCheckpoint,
   spaceBackupInventory,
   uploadStreamRestoreChunk,

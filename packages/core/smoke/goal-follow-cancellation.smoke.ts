@@ -32,7 +32,6 @@ import {
   standaloneConnectOpts,
   epGoalProgressGrantRow,
   EpEnvelopeError,
-  type EpAttributedReply,
   type EpCaller,
 } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, emitSentinel, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";

@@ -21,7 +21,6 @@ import {
   unansweredRequest,
   resolveAuthProvider,
   personaDir,
-  presenceText,
   type FlagValues,
   type ParsedArgs,
   type SpaceAuth,
@@ -30,7 +29,6 @@ import {
 import {
   stoppedLoopbackListener,
   accountInventory,
-  assessMaintenanceClaim,
   authDir,
   isCommandFailure,
   readMaintenanceJournal,
@@ -90,7 +88,6 @@ import {
   spaceFlag,
   userAuthStateDir,
   WEB_PIDFILE,
-  WEB_READINESS_HEADER,
   workspaceSecretStore,
   displayWidth,
   terminalWidth,
@@ -102,9 +99,7 @@ import {
   cotalDirLink,
   type Cell,
   type BrokerCheck,
-  type LocalProcess,
   type LocalProcessContext,
-  type MaintenanceClaim,
   type MeshEntry,
   type MeshTarget,
   type OutputWarning,
@@ -142,8 +137,7 @@ import { instanceProjection, serviceInstances } from "../lib/service-instances.j
 import { readinessAddressSurvivors } from "../lib/service-process.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
-import { maintenanceNextStep, preservedSourceState, restoreNextStep, rolledBackNotes } from "../lib/restore.js";
-import { attemptProcessesGone } from "../lib/isolated-broker.js";
+import { maintenanceNextStep, rolledBackNotes } from "../lib/restore.js";
 import {
   journalRecordedElsewhere,
   readStackJournal,

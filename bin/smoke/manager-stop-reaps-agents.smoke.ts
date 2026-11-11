@@ -188,22 +188,6 @@ const spawnSeat = async (name: string): Promise<void> => {
   }
 };
 const kids: ChildProcess[] = [];
-/** The deliberate despawn control runs the REAL binary as a subprocess: the in-process `stop`
- *  command exits the whole process on failure, which would kill the suite. */
-const cliStop = (name: string): Promise<{ code: number | null; out: string }> =>
-  new Promise((resolve, reject) => {
-    const p = spawnProc(TSX, [BIN, "stop", "--name", name, "--space", SPACE], {
-      cwd: root,
-      env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    kids.push(p);
-    let out = "";
-    p.stdout?.on("data", (b: Buffer) => void (out += b.toString()));
-    p.stderr?.on("data", (b: Buffer) => void (out += b.toString()));
-    p.on("error", reject);
-    p.on("exit", (code) => resolve({ code, out }));
-  });
 
 let releaseBroker: (() => void) | undefined;
 let brokerProc: ChildProcess | undefined;

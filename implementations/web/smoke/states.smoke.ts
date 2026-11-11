@@ -21,7 +21,7 @@ import type { StaleMark } from "../client/src/lib/snapshot.js";
 import type { RouteHost } from "../client/src/routeWatch.js";
 import { Shell } from "../client/src/Shell.tsx";
 import { RETRY_MAX_MS, RETRY_MS, startDashboard, type RetryTimer } from "../client/src/state/boot.js";
-import { createController, type Api, type Controller } from "../client/src/state/controller.js";
+import { createController, type Api } from "../client/src/state/controller.js";
 import { createStore, type Store } from "../client/src/state/store.js";
 import { initialState, type DashboardState } from "../client/src/state/types.js";
 import { RightPanel, type Panel } from "../client/src/ui/panel/RightPanel.tsx";

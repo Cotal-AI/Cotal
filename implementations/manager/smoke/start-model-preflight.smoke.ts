@@ -42,7 +42,7 @@
  */
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, delimiter } from "node:path";
+import { join } from "node:path";
 import { Manager } from "../src/manager.js";
 import { principalKey, registry, DEV_OWNER, type Connector, type LaunchOpts, type LaunchSpec, type AgentHandle } from "@cotal-ai/core";
 // Import the real connectors so they self-register (and expose their objects for the buildLaunch matrix).

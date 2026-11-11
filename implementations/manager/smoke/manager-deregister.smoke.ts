@@ -68,7 +68,7 @@ const {
 const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
 const { Manager } = await import("../src/manager.js");
 const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
-const { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe } = await import("../src/deregister-instance.js");
+const { deregisterEndpointInstance, makeInstanceProbe } = await import("../src/deregister-instance.js");
 
 const EXPECTED_CELLS = 30;
 

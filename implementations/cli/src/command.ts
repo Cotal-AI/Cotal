@@ -1,5 +1,4 @@
 import { writeSync } from "node:fs";
-import { parseArgs } from "node:util";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
@@ -43,7 +42,6 @@ import {
   terminalWidth,
   userCotalDir,
   type OperationScope,
-  type OutputWarning,
   staleStoreHint,
 } from "@cotal-ai/workspace";
 import { c, stderrLine } from "./ui.js";

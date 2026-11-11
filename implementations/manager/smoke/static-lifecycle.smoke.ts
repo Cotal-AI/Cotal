@@ -105,7 +105,6 @@ function check(label: string, cond: boolean, extra?: unknown): void {
   ran++;
   if (!cond) failures++;
 }
-const enc = new TextEncoder();
 const retireOpId = (uid: string): string => createHash("sha256").update(`retire:${uid}`).digest("hex").slice(0, 26);
 async function until(cond: () => Promise<boolean> | boolean, ms: number, what: string): Promise<boolean> {
   const deadline = Date.now() + ms;

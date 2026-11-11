@@ -44,7 +44,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
-import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { AGGREGATION_DEADLINE_MS, MAX_HISTORY_LIMIT } from "../src/web.js";
 import type { CotalMessage } from "../client/src/api/types.js";
 import { bootWeb } from "./boot-web.js";

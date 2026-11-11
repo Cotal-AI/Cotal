@@ -1,4 +1,3 @@
-import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   contractArtifactCanonicalBytes,
@@ -18,7 +17,6 @@ import {
   serveIssuanceGateKv,
   standaloneConnectOpts,
   type EpServeGrant,
-  type RemoteManagerAuthorityMaterial,
 } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, managerAuthorityContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
 

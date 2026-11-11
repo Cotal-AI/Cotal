@@ -26,10 +26,9 @@
  * Run: pnpm smoke:manager-restart-fence   (needs nats-server + node on PATH; boots its own broker)
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, type NatsConnection } from "@nats-io/transport-node";
 import type { ActionContext, EpAttributedReply, EpCaller, EpEnvelopeError as EpEnvelopeErrorType, ParsedEpRequest, Connector, LaunchSpec } from "@cotal-ai/core";
 import type { CotalEndpoint as SourceCotalEndpoint } from "../../../packages/core/src/index.js";
 // `CotalEndpoint` comes from SOURCE while everything else above comes from the built package, and
@@ -44,7 +43,7 @@ import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-
 const home = mkdtempSync(join(tmpdir(), "cotal-mrf-home-"));
 process.env.COTAL_HOME = home;
 const {
-  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, EpEnvelopeError,
+  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER,
   bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf, registry, MANAGER_LEASE_TTL_MS,
 } = await import("@cotal-ai/core");
 const { CotalEndpoint } = await import("../../../packages/core/src/index.js");

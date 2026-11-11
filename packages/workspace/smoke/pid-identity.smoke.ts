@@ -33,7 +33,6 @@ import { spawn } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   assertRecordIdentity, darwinProcessStartToken, defaultStartToken, formatRecord, identityPinPath, identityStartToken, identityUncertaintyRefusal, parsePid, parseRecord,
   parseWin32CreationToken, removePidPair, startTokenReaderFor, verifyIdentityPin, win32ProcessCreationToken, writeIdentityPin, writePidPair, type PinVerdict, type RecordReplaceIo,
@@ -45,7 +44,6 @@ const prevCwd = process.cwd();
 const root = mkdtempSync(join(tmpdir(), "pid-identity-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
 process.chdir(root);
-const here = fileURLToPath(new URL(".", import.meta.url));
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
