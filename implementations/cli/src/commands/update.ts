@@ -637,6 +637,19 @@ function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok:
   }
 }
 
+/** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies. */
+function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
+  const names = [...new Set(rt.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/")).map(entry => entry.pkg))];
+  if (!names.length) return;
+  const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
+  try {
+    const result = rt.npm(["install", "--prefix", staging, "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=0", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
+    if (result.status !== 0) throw new Error(`installed extension dependency closure is unavailable: ${failure(result)}`);
+  } finally {
+    rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
 /** Fetch the target's first-party install closure through npm, including integrity verification.
  *  A private cache forces a registry read without changing the installed packages or running scripts. */
 function checkReleaseArchives(version: string, rt: UpdateRuntime): void {
@@ -709,6 +722,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
 
   try {
     checkReleaseArchives(targetVersion, rt);
+    checkInstalledClosure(targetVersion, rt);
     // A previous generation must remain downloadable and verified before replacement begins.
     checkReleaseArchives(current, rt);
   } catch (e) {

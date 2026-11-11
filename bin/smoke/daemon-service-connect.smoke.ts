@@ -2862,6 +2862,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             const code = await new Promise<number | null>((resolve) => updater.once("exit", resolve));
             console.log("  UPDATE REPRO", JSON.stringify({ code, output }));
             if (closureRollback) {
+              if (process.argv.includes("--closure-preflight-repro")) {
+                check("CL dependency preflight refuses before global replacement", code === 1 && output.includes("unavailable-closure-fixture") && output.includes("no global install was attempted") && !output.includes("installing cotal-ai@"), { code, output });
+                const unchanged = await cli("status");
+                check("CL preflight leaves original Manager lifetime answering", unchanged.doc.result?.version === "0.151.2" && unchanged.doc.result?.managers?.some((row: { instanceId: string; state: string }) => row.instanceId === manager.instanceId && row.state === "answering"), unchanged);
+                return;
+              }
               check("CL failed new dependency restores previous generation", code === 1 && output.includes("unavailable-closure-fixture") && output.includes("was restored and reconciled"), { code, output });
               const installed = JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8"));
               const entries = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;

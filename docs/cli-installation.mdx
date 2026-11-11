@@ -143,7 +143,9 @@ The check runs in the background. JSON, plain, CI and redirected output receive 
 Version output reports the cached update state without waiting for the registry.
 
 Before replacing the global package, the updater verifies both the target and previous release
-archives. A failed replacement is followed by another reconcile attempt, then a verified reinstall
+archives and fetches the installed first-party extensions with their dependency closures in a
+disposable prefix. An unavailable dependency stops the update before replacement. A failed replacement
+is followed by another reconcile attempt, then a verified reinstall
 and reconcile of the previous version. If repair also fails, the error names the installed version
 and asks for `cotal update --self`; unattended updates remain paused until manual repair succeeds.
 
