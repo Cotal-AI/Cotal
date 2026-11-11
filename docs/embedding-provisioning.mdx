@@ -91,11 +91,17 @@ const retired = await retireAccountClaim(broker, space.account.jwt, Math.floor(D
 await pushAccountClaim(system, { accountJwt: retired, expectedServerIds: [system.info!.server_id], maxWaitMs: 5000 });
 ```
 
+- **A stock root records the choice.** `cotal up --account-resolver full` starts the broker on the
+  full resolver at `<root>/.cotal/account-jwts` and records it in `.cotal/broker-policy.json`. A host
+  that renders the same broker passes `brokerAccountResolver(root, readBrokerPolicy(root)?.accountResolver)`
+  from `@cotal-ai/workspace`, so both renders name the same directory and limit. nats-server switches
+  resolvers only at start, so a reload that changes the resolver is refused.
 - **The directory is broker state.** It sits beside `store_dir`: give it the same ownership and
   backup coverage. A pushed claim survives a restart there even when the config does not list it.
 - **Keep rendering the config.** List every active space in the preloads as before, so a fresh
   directory boots complete. nats-server keeps a newer pushed claim over an older preload.
-- **Removal is a retired claim.** Native deletion stays off. The retired claim keeps the account's
+- **Removal is a retired claim.** Dropping a space from the preloads does not remove it: its last
+  pushed claim stays in the directory and loads again at the next start. Native deletion stays off. The retired claim keeps the account's
   JetStream data in place; deleting the space's streams is a separate step.
 - **One writer per account.** The host orders the pushes for one account and owns the set of
   servers it expects to answer. `pushAccountClaim` refuses an answer other than "jwt updated", an

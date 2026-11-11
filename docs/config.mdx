@@ -432,7 +432,8 @@ It is gitignored because it holds secrets and local process state.
 | `auth/creds/space.<key>/<name>.creds` | Standing per-agent NATS credentials in the owning space's segment. Managed lifecycles use `<name>.<lifecycleUid>.creds` in the same directory |
 | `auth/seat-generation.<key>.<n>.json` | Seat writer generation `<n>`, claimed by exclusive create when `cotal up` resumes from a checkpoint. See [Backups](cli-backups.mdx#backups) |
 | `auth/server.conf` | Generated nats-server config for the broker. See the file's generation rules below |
-| `broker-policy.json` | Durable broker launch policy with TLS cert and key path references or plaintext mode, plus configured `--auth-timeout` seconds and `--max-payload` bytes. Survives `cotal down` |
+| `account-jwts/` | Account claims a broker on the full account resolver (`cotal up --account-resolver full`) stores, one `<account>.jwt` each, owner-only. Broker state: back it up with the store |
+| `broker-policy.json` | Durable broker launch policy with TLS cert and key path references or plaintext mode, plus configured `--auth-timeout` seconds, `--max-payload` bytes and `--account-resolver full`. Survives `cotal down` |
 | `agents/<name>.md` | [Persona files](agent-files.mdx) |
 | `manifests/<runId>.json` | Legacy additive manifest-deploy ledger keyed by run ID, including retained `spawn -f` deployment records. Manifest hashes index records but do not name these files |
 | `config.json` | Space-local connector config |
@@ -461,8 +462,9 @@ A live refresh does not rewrite this file. The renderer includes every persisted
 the broker and the callout accounts for spaces with user auth enabled.
 
 `broker-policy.json` also lives under the project root. `COTAL_HOME` does not move it. Its retained
-policy prevents a later `up` from dropping TLS, the auth timeout, or payload limits after `cotal down`.
-Other renderers read those limits through `readBrokerPolicy`, not from generated server configuration.
+policy prevents a later `up` from dropping TLS, the auth timeout, payload limits or the full account
+resolver after `cotal down`. Other renderers read those limits through `readBrokerPolicy`, not from
+generated server configuration, and take the resolver from `brokerAccountResolver`.
 
 #### Runtime process records
 
