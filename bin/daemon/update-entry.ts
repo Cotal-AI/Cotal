@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
 import { update, updateRuntime } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
-import { CommandFailure, homeCotalDir, resolveControlTarget, shellPath } from "@cotal-ai/workspace";
+import { CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, resolveControlTarget, shellPath } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
@@ -28,6 +28,13 @@ const composed: Command = { ...command, async run(args) {
       }
     };
   }, waitForInstalledGeneration: waitForInstalledDaemonGeneration, reportRunningManager: (flags) => withRemoteExchangeRetry(async () => {
+    const recovery = readUpdateRecovery();
+    if (process.env.COTAL_AUTO_UPDATE === "1" && process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version() && recovery?.owner?.pid === process.ppid && recovery.owner.nonce === process.env.COTAL_UPDATE_CLOSURE_NONCE && recovery.owner.start === process.env.COTAL_UPDATE_CLOSURE_START) {
+      const release = claimUpdateClosureAccess();
+      release();
+      console.log("hosted Manager continuity: parent verified empty seats; update admission remains fenced");
+      return "none";
+    }
     let managers;
     try {
       const reply = await queryDaemon({ paths: daemonPaths() });
