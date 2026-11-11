@@ -1,5 +1,13 @@
 # @cotal-ai/connector-claude-code
 
+## 0.160.3
+
+### Patch Changes
+
+- 94313d0: Keep recovery commands copyable in narrow terminals and command help examples concise.
+  
+  Mark embedded commands as code spans in daemon diagnostics, update notices, and operator guidance so the terminal renderer keeps each command together.
+
 ## 0.160.2
 
 No changes in this release.
