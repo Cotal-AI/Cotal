@@ -1,3 +1,4 @@
+import { drainAndClose } from "@cotal-ai/core";
 /**
  * The manager as a WORKFLOW-RUN HOST (SPEC 14.3): where a run's driver lives when nobody's
  * terminal is holding it.
@@ -482,7 +483,7 @@ export class RunHosting {
     try {
       return await fn(await new Kvm(nc).open(admissionBucket(this.ctx.space)), await jetstreamManager(nc));
     } finally {
-      await nc.drain().catch(() => nc.close());
+      await drainAndClose(nc);
     }
   }
 
@@ -1012,7 +1013,7 @@ export class RunHosting {
     for (const run of live) run.drive.release("the hosting manager is stopping");
     await Promise.all(live.map(async (run) => {
       const reached = await Promise.race([run.drive.done.then(() => true), new Promise<false>((r) => setTimeout(() => r(false), 2_000))]);
-      if (reached) await run.nc.drain().catch(() => run.nc.close());
+      if (reached) await drainAndClose(run.nc);
       else await run.nc.close();
       await run.mediatorNc?.close();
     }));
@@ -1160,7 +1161,7 @@ export class RunHosting {
       this.assertNoCancel(req.runId);
     } catch (e) {
       await mediatorNc?.close();
-      await nc.drain().catch(() => nc.close());
+      await drainAndClose(nc);
       throw e;
     }
     const max = nc.info?.max_payload;
@@ -1204,8 +1205,8 @@ export class RunHosting {
       this.free(holder);
       // The activation wait reads the record over this connection; it finishes before the drain.
       await activation.catch(() => undefined);
-      await nc.drain().catch(() => nc.close());
-      await mediatorNc?.drain().catch(() => mediatorNc?.close());
+      await drainAndClose(nc);
+      if (mediatorNc) await drainAndClose(mediatorNc);
     });
     try {
       await activation;
@@ -1286,7 +1287,7 @@ export class RunHosting {
       const kv = await openRecordsBucket(nc, this.ctx.space);
       return await fn({ nc, js: jetstream(nc), jsm: await jetstreamManager(nc), kv, space: this.ctx.space }, kv, takeoverId);
     } finally {
-      await nc.drain().catch(() => nc.close());
+      await drainAndClose(nc);
     }
   }
 }

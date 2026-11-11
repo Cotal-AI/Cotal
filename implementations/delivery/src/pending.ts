@@ -1,3 +1,4 @@
+import { drainAndClose } from "@cotal-ai/core";
 /**
  * `cotal deliver pending <name>` — an operator inspection read over one recipient's DM durable.
  * Never starts the daemon. Answers exactly the question issue #417 asks after a suspected drop:
@@ -190,6 +191,6 @@ export async function runPending(args: ParsedArgs): Promise<void> {
       }
     }
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }

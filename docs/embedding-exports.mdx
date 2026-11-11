@@ -327,6 +327,18 @@ that event affects the service. The option validation and NATS mapping are in
 
 `transportConnectTimeoutMs` is a positive integer bounding the first connection attempt. Omission keeps the transport's 20-second default. Transport liveness does not prove endpoint readiness, presence health, or a send outcome.
 
+## Connection teardown
+
+`drainAndClose(nc, graceMs = 1000)` from `@cotal-ai/core` waits for the NATS drain,
+terminal connection closure, or the grace period, whichever finishes first. It then
+calls and awaits `close()`, including after a drain rejection. A close error propagates.
+The grace timer keeps the process alive and is cleared when the wait ends.
+
+Use it for connection teardown rather than awaiting `nc.drain()` alone. A broker
+disconnect can leave the NATS drain promise pending after the socket has closed.
+The helper does not confirm delivery or replace an operation's acknowledgement.
+Request/reply-only connections with no pending work can call `close()` directly.
+
 ## Finite KV scans
 
 `liveKvEntries(kv, options?)` and `liveKvEntries(kv, filter, options?)` read one finite scan of live entries.

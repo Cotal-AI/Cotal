@@ -1,3 +1,4 @@
+import { drainAndClose } from "@cotal-ai/core";
 /** A manager or delivery daemon whose pidfile is gone while its lease is still live.
  *  A daemon that is running keeps renewing, and `down` must not stop the broker under it. A daemon
  *  that exited without releasing, such as one whose broker stalled past its broker-gone window,
@@ -135,6 +136,6 @@ async function liveUnrecordedDaemonNames(
     const order = ["manager", "delivery daemon"];
     return order.filter((label) => found.includes(label)).concat(found.filter((label) => !order.includes(label)));
   } finally {
-    await nc.drain().catch(() => {});
+    await drainAndClose(nc).catch(() => {});
   }
 }

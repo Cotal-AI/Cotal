@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { drainAndClose } from "@cotal-ai/core";
 import { existsSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
@@ -999,7 +1000,7 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
     // The guard's own sentence names the freeze-holder and the next step for this condition.
     if (beforeEffects) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the native gate-repair guard refused (${error.condition}); the repair did not pass its pre-effect guard`, { target: { ...target, condition: error.condition }, native: { code: error.condition, detail: error.message }, remedy: "inspect the selected gate and the delivery liveness oracle; a timeout is not proof that its holder is gone" });
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native gate repair did not confirm completion; revocation, eviction or reopen work may have occurred. No mutation was retried", { target: { ...target, ...(error instanceof GateReconcileRefused ? { condition: error.condition } : {}) }, remedy: "re-observe this gate and its operation-bound native repair cursor before another explicit repair" });
-  } finally { await nc.drain().catch(() => nc.close()); }
+  } finally { await drainAndClose(nc); }
 }
 
 /** List local custodian records; drain only through the native creation-identity guards. */

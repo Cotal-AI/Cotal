@@ -1,3 +1,4 @@
+import { drainAndClose } from "@cotal-ai/core";
 import {
   assertLifecycleToken, BASELINE_LIFECYCLE_ENDPOINT, dialerFor, invokeRepairingSplit,
   resolveService, standaloneConnectOpts,
@@ -45,7 +46,7 @@ export async function seatTurnCommand(mode: "turns" | "yield", goalId: string | 
       throw new CommandFailure(mode === "yield" ? "unknown" : "failed", mode === "yield" ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", "the native workflow-turn request did not return a confirmed outcome; it was not retried", { target, native: { code: native } });
     }
     data = response.reply.data;
-  } finally { await nc.drain().catch(() => nc.close()); }
+  } finally { await drainAndClose(nc); }
   if (mode === "yield") {
     writeResult(presentationOf(values), { command: "run", target, result: { kind: "turn-yield", goalId, status: values.status, result: data } }, () => ({ sections: [
       { title: "Turn yield accepted", blocks: [{ kind: "fields", rows: [["Turn", goalId!], ["Status", values.status!]] }, { kind: "lines", lines: [{ text: "This settles the assigned turn, not the entire workflow.", tone: "hint" }] }] },

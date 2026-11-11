@@ -1,3 +1,4 @@
+import { drainAndClose } from "./connection-cleanup.js";
 /**
  * BROKER-BACKED LIVE CONNECTION EVICTION.
  *
@@ -693,7 +694,7 @@ export async function observeAccountLivenessWithCreds(opts: {
   try {
     return await livenessSweep(observer, opts.accountId, opts.options ?? {});
   } finally {
-    await observer.drain().catch(() => observer.close());
+    await drainAndClose(observer);
   }
 }
 
@@ -759,7 +760,7 @@ export async function observeAccountCensusWithCreds(opts: {
     }
     return { ...base, state: "complete", connections };
   } finally {
-    await observer.drain().catch(() => observer.close());
+    await drainAndClose(observer);
   }
 }
 
@@ -782,7 +783,7 @@ export async function observePlaneLivenessWithCreds(opts: {
   try {
     return await observePlaneLiveness(observer, opts.accountId, opts.query, opts.options ?? {});
   } finally {
-    await observer.drain().catch(() => {});
+    await drainAndClose(observer).catch(() => {});
   }
 }
 
@@ -885,7 +886,7 @@ export async function observePrincipalLivenessWithCreds(opts: {
   try {
     return await observePrincipalLiveness(observer, opts.accountId, opts.principal, opts.options ?? {});
   } finally {
-    await observer.drain().catch(() => {});
+    await drainAndClose(observer).catch(() => {});
   }
 }
 
@@ -947,7 +948,7 @@ export async function evictDeniedPrincipalsWithCreds(opts: {
       return evictor;
     }, opts.accountId, opts.principals, opts.options ?? {});
   } finally {
-    if (evictor) await evictor.drain().catch(() => {});
-    await observer.drain().catch(() => {});
+    if (evictor) await drainAndClose(evictor).catch(() => {});
+    await drainAndClose(observer).catch(() => {});
   }
 }

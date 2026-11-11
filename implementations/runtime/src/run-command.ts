@@ -1,3 +1,4 @@
+import { drainAndClose } from "@cotal-ai/core";
 /**
  * `cotal run` — the workflow-run operator surface.
  *
@@ -187,7 +188,7 @@ async function openPlanes(values: RunValues, role: "run-driver" | "run-operator"
     // settling append (L5006) instead of dying at the store.
     ...(typeof max === "number" && max > 4096 ? { resultBytes: max - 4096 } : {}),
     close: async () => {
-      await nc.drain().catch(() => {});
+      await drainAndClose(nc).catch(() => {});
     },
   };
 }
@@ -341,7 +342,7 @@ async function admitLocal(values: RunValues, planes: Planes, a: { endpoint: stri
   try {
     await createRunAdmission(await new Kvm(nc).open(admissionBucket(conn.space)), admission);
   } finally {
-    await nc.drain().catch(() => nc.close());
+    await drainAndClose(nc);
   }
   return { admission, revoked: undefined };
 }
@@ -380,7 +381,7 @@ async function revoke(values: RunValues, runId: string | undefined): Promise<voi
     // The marker is read only at a channel effect, so a run that makes none keeps computing.
     console.log("a revoke does not cancel the run: work that touches no channel, such as sleep or log, keeps running until the host driving it stops");
   } finally {
-    await nc.drain().catch(() => nc.close());
+    await drainAndClose(nc);
   }
 }
 
@@ -473,7 +474,7 @@ async function drive(
     }
     reportOutcome(runId, out);
   } finally {
-    await mediator.nc.drain().catch(() => mediator.nc.close());
+    await drainAndClose(mediator.nc);
   }
 }
 
@@ -841,7 +842,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     }
     throw e;
   } finally {
-    await nc.drain().catch(() => nc.close());
+    await drainAndClose(nc);
   }
 }
 

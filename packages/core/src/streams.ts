@@ -1,3 +1,4 @@
+import { drainAndClose } from "./connection-cleanup.js";
 import {
   jetstream,
   jetstreamManager,
@@ -723,7 +724,7 @@ export async function reconcileSpaceTtls(opts: {
     );
     return reconciled.filter((done): done is TtlReconciled => done !== undefined);
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }
 
@@ -904,7 +905,7 @@ export async function setupSpaceStreams(opts: {
     // Create-or-VERIFY, drift fails loud - see ensureArtifactStore for why create alone is not enough.
     await ensureArtifactStore(nc, opts.space);
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }
 
@@ -927,7 +928,7 @@ export async function clearSpaceHistory(opts: {
     const dm = (await jsm.streams.purge(dmStream(opts.space))).purged;
     return { chat, dm };
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }
 
@@ -983,7 +984,7 @@ export async function clearChannel(opts: {
     }
     return { channel: opts.channel, purged, removed };
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }
 
@@ -1075,7 +1076,7 @@ export async function fenceLifecycleAcl(opts: {
     const kv = await new Kvm(nc).open(aclBucket(opts.space), { allow_direct: true });
     return await fenceAcl(kv, principalKey(t.owner, t.actor).key, t.lifecycleUid);
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }
 
@@ -1247,7 +1248,7 @@ export async function deprovisionAgent(opts: {
 
     return accounting;
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }
 

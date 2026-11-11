@@ -1,3 +1,4 @@
+import { drainAndClose } from "./connection-cleanup.js";
 /**
  * Delivery-daemon single-flight lease — a CAS-guarded key in the per-space `cotal_delivery_<space>` KV
  * bucket. One key per shard ({@link leaseKey}); the holder is the live delivery daemon for that shard.
@@ -139,7 +140,7 @@ export async function waitForDeliveryLease(opts: {
     /* daemon not up yet / bucket race — treat as not-ready */
   } finally {
     try {
-      await nc?.drain();
+      if (nc) await drainAndClose(nc);
     } catch {
       /* ignore */
     }
@@ -232,6 +233,6 @@ export async function awaitDeadDeliveryLease(opts: {
       ttlMs: opts.ttlMs,
     });
   } finally {
-    await nc.drain().catch(() => {});
+    await drainAndClose(nc).catch(() => {});
   }
 }
