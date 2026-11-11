@@ -1,5 +1,29 @@
 # cotal-ai
 
+## 0.160.7
+
+### Patch Changes
+
+- 7551eb9: The daemon's account computer registration now lists the Managers the computer hosts, so the account host can show a Manager under the name you gave the computer.
+- 8e68a95: `cotal daemon status` no longer keeps saying "account computer request failed" after the account host answers again with nothing changed.
+- c0f7b08: Keep authenticated automatic updater processes outside the Linux daemon service during replacement.
+  
+  The reconcile child moves itself and its waiting parent into a systemd user scope before reconciliation. This requires cgroup v2, systemctl, busctl, and user-manager permission to adopt existing PIDs. Migration denial fails visibly after package replacement, leaving existing parent retry and restoration behavior unchanged. Restart and startup verification behavior are unchanged.
+  
+  The custody inspector accepts group-writable owned paths when bounded local account records prove the caller's primary group has no other member or account. Unknown account sources fail closed. This inspector does not examine extended ACLs.
+- Updated dependencies [7551eb9]
+- Updated dependencies [c0f7b08]
+  - @cotal-ai/auth@0.160.7
+  - @cotal-ai/cli@0.160.7
+  - @cotal-ai/workspace@0.160.7
+  - @cotal-ai/connector-core@0.160.7
+  - @cotal-ai/manager@0.160.7
+  - @cotal-ai/delivery@0.160.7
+  - @cotal-ai/runtime@0.160.7
+  - @cotal-ai/registry@0.160.7
+  - @cotal-ai/core@0.160.7
+  - @cotal-ai/seat@0.160.7
+
 ## 0.160.6
 
 ### Patch Changes
