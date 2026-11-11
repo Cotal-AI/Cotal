@@ -1446,6 +1446,16 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     assert.ok(journaled.events.indexOf("report-running-manager") < journaled.events.indexOf("reconcile"), "journaled child observes continuity before connector writes");
     assert.ok(journaled.events.indexOf("reconcile") < journaled.events.indexOf("generation-ready"), "journaled parent reconciles before releasing the installed generation");
     clearUpdateRecovery();
+
+    // The daemon's own update shares the daemon's service control group, so it must end before
+    // the restart it causes: it reconciles, leaves the journal unverified and never waits.
+    writeUpdateRecovery({ previous: "0.13.0", target: "0.13.1", installed: "0.13.0", phase: "replacing", reason: "journaled parent" });
+    const unattended = updateRuntime({ env: { COTAL_UPDATE_TARGET_VERSION: "0.13.1", COTAL_UPDATE_PARENT: "99", COTAL_AUTO_UPDATE: "1" } });
+    unattended.rt.waitForInstalledGeneration = async () => { assert.fail("an unattended update child must not wait for the restart that would stop it"); };
+    assert.equal(await executeUpdate(false, unattended.rt), 0);
+    assert.ok(unattended.events.includes("reconcile"), "unattended child still reconciles the installed generation");
+    assert.equal(readUpdateRecovery()?.phase, "replacing", "unattended child leaves activation to its parent's cleared journal");
+    clearUpdateRecovery();
   } finally {
     if (priorJournalHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = priorJournalHome;
     rmSync(journalHome, { recursive: true, force: true });

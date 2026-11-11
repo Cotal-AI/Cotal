@@ -16,7 +16,7 @@ interface UpdateHost {
 }
 
 /** Schedule only the existing updater. Manager preparation holds its native empty-seat admission fence. */
-export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStatus; close(): Promise<void> } {
+export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStatus; updating(): boolean; close(): Promise<void> } {
   const desktop = existsSync(fileURLToPath(new URL("../../desktop-runtime.json", import.meta.url)));
   const file = join(homeCotalDir(), "update-attempt.json");
   let state: Attempt = { failures: 0, result: "not checked", next: Date.now() + Math.random() * UPDATE_HOUR_MS };
@@ -92,7 +92,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     busy = tick().catch(error => { host.report(`automatic update: ${String(error)}`); }).finally(() => { busy = undefined; });
   }, 30_000);
   timer.unref();
-  return { status, async close() {
+  return { status, updating: () => child !== undefined, async close() {
     closed = true; clearInterval(timer);
     if (child) {
       child.stdout?.destroy(); child.stderr?.destroy(); child.unref();

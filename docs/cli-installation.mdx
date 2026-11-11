@@ -163,6 +163,14 @@ If reconciliation still fails after retry, the command preserves the original ch
 through restoration. An interrupt takes precedence over that status.
 If restoration also fails, the error names the installed version
 and asks for `cotal update --self`; unattended updates remain paused until manual repair succeeds.
+A daemon that starts while an update is paused keeps running. `cotal daemon status` names the pause
+and the repair command, and the daemon loads no new version until the repair succeeds.
+
+An update the daemon installs on its own runs inside the daemon's service. It reconciles the new
+version, records the result and exits, and only then does the daemon restart into the new version.
+It does not wait for that restart, so it cannot restore the previous version if the restarted
+daemon fails. Read `cotal daemon status` after an unattended update, or run `cotal update --self`
+yourself to get the verified wait.
 
 A runtime bundled with the desktop app refuses `update --self` before changing its installation.
 Update that app with its signed platform installer so the app, CLI and runtime stay together.
