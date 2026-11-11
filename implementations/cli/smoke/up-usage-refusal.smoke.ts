@@ -4,7 +4,9 @@
  * "Outcome unconfirmed", which tells a script the run may have had an effect. `--dry-run` without
  * `-f` used to start a real stack. A non-positive `--max-file-store` is refused the same way, as is a `--max-payload` that is
  * not a byte count nats-server starts on, one below the manager start floor, one below the caller floor beside `--service-endpoints`,
- * and one passed to the open broker configuration, which renders no payload limit.
+ * and one passed to the open broker configuration, which renders no payload limit. An
+ * `--account-resolver` other than memory or full refuses too, and so does one passed to the open
+ * broker configuration, which has no accounts to resolve.
  *
  * The same holds where `up` would otherwise start something it cannot stand behind. A prepared root
  * given an option the controller stack has no route for refuses UNSUPPORTED instead of starting the
@@ -96,6 +98,8 @@ const cases: { args: string[]; message: RegExp }[] = [
   { args: ["--max-payload", "263167"], message: /--max-payload 263167 is below 263168 bytes, the least the space's manager starts on/ },
   { args: ["--max-payload", "1048576", "--user-auth", "--service-endpoints"], message: /--max-payload 1048576 is below 2098176 bytes, the least a space with --service-endpoints starts on/ },
   { args: ["--max-payload", "2098176", "--open"], message: /--max-payload sets the broker's message size limit, which the open broker configuration does not render/ },
+  { args: ["--account-resolver", "cache"], message: /--account-resolver takes memory or full \(got "cache"\)/ },
+  { args: ["--account-resolver", "full", "--open"], message: /--account-resolver sets how the broker resolves space accounts, and the open broker configuration has none/ },
   { args: ["--restore", join(folder, "nonexistent"), "--restore-only", "full"], message: /--restore-only takes registry/ },
   { args: ["--restore-only", "registry"], message: /require --restore/ },
   // Without -f there is no plan to print, and the launch used to start a real stack.

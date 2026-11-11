@@ -3,11 +3,12 @@ import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { assertLifecycleToken, mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
+import { assertLifecycleToken, mkSecretDir, parseRemoteEndpointDeregisterResult, registry, writeSecretFileAtomic, type AuthProvider } from "@cotal-ai/core";
+import { remoteManagerClient } from "@cotal-ai/manager";
 import { daemonArgv } from "@cotal-ai/cli/self-exec";
 import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
 import { loadIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
-import { findMesh, homeCotalDir, resolveControlTarget, spaceFromSegment, spaceSegment } from "@cotal-ai/workspace";
+import { findMesh, homeCotalDir, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
@@ -376,7 +377,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
             const path = daemonManagerIntentFile(space, home);
             writeSecretFileAtomic(path, JSON.stringify({ v: 1, space }));
             rmSync(refusalFile(space), { force: true });
-            l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+            l.view = { ...l.view, state: "answering", registrationCleanup: undefined, connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
             l.failures = 0;
             observe(l);
             return { ...l.view };
@@ -406,7 +407,16 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   const startRaw = async (space: string): Promise<HostedManager> => {
     if (closed || generationPending) throw new HostedManagerRefusal("GENERATION_PENDING", "the daemon is stopping or preparing an installed generation transition", command(`wait for the installed generation transition, then run cotal daemon setup --space ${space}`));
     let l = live.get(space);
-    if (!l) { const previous = status(space); l = { view: { space, state: "starting", restarts: 0, ...(previous.lastRefusal ? { lastRefusal: previous.lastRefusal } : {}) }, stopping: false, failures: 0 }; live.set(space, l); }
+    if (!l) {
+      const previous = status(space);
+      // A start attempt does not supersede an unconfirmed deletion. Failed launches
+      // must persist the same fence until a successor actually answers.
+      l = { view: { space, state: "starting", restarts: 0,
+        ...(previous.lastRefusal ? { lastRefusal: previous.lastRefusal } : {}),
+        ...(previous.registrationCleanup === "unknown" ? { registrationCleanup: previous.registrationCleanup, instanceId: previous.instanceId } : {}),
+      }, stopping: false, failures: 0 };
+      live.set(space, l);
+    }
     if (l.starting) return l.starting;
     if (l.child && l.view.instanceId) {
       try {
@@ -470,6 +480,15 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   };
   return {
     start, status, refresh,
+    async preparedGenerationEvidence(): Promise<{ prepared: boolean; managers: { space: string; seats: number; fenced: boolean }[] }> {
+      const rows = await Promise.all([...live.values()].filter(l => l.child).map(async l => {
+        const child = l.child!;
+        const seats = await generationCall(child, randomUUID(), "inspect");
+        if (seats === undefined || l.child !== child) throw new Error(`hosted Manager for ${l.view.space} changed during prepared observation`);
+        return { space: l.view.space, seats, fenced: generationPrepared && generationAttempts.has(child) };
+      }));
+      return { prepared: generationPrepared, managers: rows };
+    },
     async generationSeats(): Promise<{ space: string; seats: number }[]> {
       return Promise.all([...live.values()].filter((l) => l.child).map(async (l) => {
         const child = l.child!;
@@ -563,7 +582,9 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     },
     all: () => [...new Set([...spaces(true), ...live.keys()])].map(status),
     async disconnect(space: string, options?: { account?: boolean }) {
-      const l = live.get(space);
+      // A crash during child shutdown must not restore a withdrawn hosting intent.
+      rmSync(daemonManagerIntentFile(space, home), { force: true });
+      let l = live.get(space);
       if (l) {
         l.stopping = true;
         if (l.timer) clearTimeout(l.timer);
@@ -571,9 +592,45 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         await stopChild(l);
         await l.healthTask;
         await l.starting;
-        l.view = { ...l.view, state: "stopped", pid: undefined, reason: undefined, next: options?.account ? "enable this space for this computer in the dashboard to host its Manager again" : `run cotal daemon setup --space ${space} to host its Manager again` };
       }
-      rmSync(daemonManagerIntentFile(space, home), { force: true });
+      if (!l) { l = { view: status(space), stopping: true, failures: 0 }; live.set(space, l); }
+      const held = l;
+      let instanceId = held.view.instanceId;
+      const remedy = () => instanceId
+        ? `inspect the registration, then run cotal endpoint deregister manager ${instanceId} --space ${space} --yes`
+        : `inspect the recorded Manager identity for ${space}, then remove its registration with cotal endpoint deregister manager <instance-id> --space ${space} --yes`;
+      const incomplete = (reason: string): never => {
+        refuse(held, reason, remedy());
+        throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", reason, command(remedy()));
+      };
+      if (held.view.registrationCleanup === "unknown") incomplete("Manager registration removal is unconfirmed; no automatic request was repeated");
+      try { instanceId = remoteManagerClient.loadRemoteManagerInstanceId(daemonManagerRoot(space, home), space) ?? instanceId; }
+      catch { incomplete("the recorded Manager identity could not be read; its registration may be left behind"); }
+      if (instanceId) {
+        held.view = { ...held.view, instanceId };
+        const entry = findMesh(space);
+        const provider = entry?.mode === "user" && entry.userAuth && registry.has("auth-provider", entry.userAuth.provider)
+          ? registry.resolve<AuthProvider>("auth-provider", entry.userAuth.provider) : undefined;
+        if (!entry || !provider?.deregisterEndpoint) return incomplete("Manager registration is left behind; guarded removal is unsupported for this space");
+        const deregister = provider.deregisterEndpoint.bind(provider);
+        const request = { v: 1, kind: "endpoint-deregister", space, endpoint: "manager", instanceId } as const;
+        // A process death or lost response after this write is an unknown outcome on restart.
+        held.view = { ...held.view, registrationCleanup: "unknown" };
+        refuse(held, "Manager registration removal is unconfirmed", remedy());
+        let result;
+        try {
+          result = parseRemoteEndpointDeregisterResult(await withIdpSessionDir(home, () => deregister({
+            store: workspaceSecretStore(entry.root), dir: userAuthStateDir(entry.root, space, { readOnly: true }), request,
+          })), request);
+        } catch (error) {
+          if ((error as { outcome?: unknown }).outcome === "refused") held.view = { ...held.view, registrationCleanup: undefined };
+          return incomplete("Manager registration is left behind; guarded removal did not confirm its deletion");
+        }
+        if (result.state === "unknown") return incomplete(`Manager registration removal is unconfirmed: ${result.condition}; no automatic request will be repeated`);
+        held.view = { ...held.view, registrationCleanup: undefined };
+        if (result.state !== "removed" && result.condition !== "not-registered") incomplete(`Manager registration is left behind; guarded removal refused: ${result.condition}`);
+      }
+      held.view = { ...held.view, state: "stopped", pid: undefined, reason: undefined, lastRefusal: undefined, next: options?.account ? "enable this space for this computer in the dashboard to host its Manager again" : `run cotal daemon setup --space ${space} to host its Manager again` };
       rmSync(refusalFile(space), { force: true });
     },
     async resume() {

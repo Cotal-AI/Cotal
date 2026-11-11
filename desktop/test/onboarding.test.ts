@@ -13,7 +13,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { personal?: boolean; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean } = {}) {
+async function app(options: { personal?: boolean; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -55,7 +55,7 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
         return ok({ state: "ready", version: options.mismatch ? "old" : "test", managers: connected ? [manager] : [] });
       }
-      if (r.op === "spaces") return ok({ spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : "My team", kind: options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: COTAL_CLOUD_IDP })) });
+      if (r.op === "spaces") return ok({ ...((options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon) && r.refresh ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: [options.ownProviderFailed ? COTAL_CLOUD_IDP : "https://hack.cotal.ai/api/auth"] }) } : {}), spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : "My team", kind: options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: COTAL_CLOUD_IDP })) });
       if (r.op === "service-status") return ok({ state: options.serviceState ?? "disconnected" });
       if (r.op === "service-disconnect") { connected = false; return ok({ state: "disconnected" }); }
       if (r.op === "login") {
@@ -82,6 +82,24 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };
   return { dom, doc, node, click, calls, urls, options, emit: async (event: string) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload: null }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
 }
+
+test("another provider failure does not block successful sign-in", async () => {
+  const a = await app({ installed: true, otherProviderFailed: true });
+  try {
+    await a.click("login"); await a.login();
+    assert.notEqual(a.node("connection-title").textContent, "This operation could not finish");
+    assert.match(a.node("notice").textContent ?? "", /hack\.cotal\.ai/);
+  } finally { a.dom.window.close(); }
+});
+
+for (const option of ["ownProviderFailed", "oldDaemon"] as const) test(`${option} keeps sign-in refresh blocking`, async () => {
+  const a = await app({ installed: true, [option]: true });
+  try {
+    await a.click("login"); await a.login();
+    assert.equal(a.node("connection-title").textContent, "This operation could not finish");
+    assert.match(a.node("refusal-detail").textContent ?? "", option === "ownProviderFailed" ? /cloud\.cotal\.ai/ : /Some space catalogs/);
+  } finally { a.dom.window.close(); }
+});
 
 test("tray Settings returns to Ready and dashboard retains the verified target while hidden polling continues", async () => {
   const a = await app({ installed: true, connected: true });

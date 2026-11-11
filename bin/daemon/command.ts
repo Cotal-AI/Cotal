@@ -36,6 +36,7 @@ import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
+import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
 import { SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
@@ -124,6 +125,7 @@ function asFailure(e: unknown): unknown {
 
 function statusView(s: DaemonStatus): Report {
   return { sections: [{ title: "Daemon", blocks: [{ kind: "fields", rows: [["State", s.state], ["Version", s.version], ["Protocol", String(s.protocol)], ["PID", String(s.pid)], ["Started", s.startedAt], ["Uptime", `${Math.round(s.uptimeMs / 1000)}s`]] }, ...(s.generation ? [{ kind: "lines" as const, lines: [`Installed ${s.generation.installed}, running ${s.generation.running}, ${s.generation.waiting}`] }] : [])] },
+    ...(s.update ? [{ title: "Updates", blocks: [{ kind: "fields" as const, rows: [["Current", s.update.current], ["Latest seen", s.update.latest ?? "unknown"], ["Last check", s.update.lastCheck ?? "not checked"], ["Automatic updates", s.update.automatic ? "on" : "off"], ["Last result", s.update.lastResult], ["Failures", String(s.update.failures)], ["Next attempt", s.update.nextAttempt ?? "none"]] as [string, string][] }] }] : []),
     ...(s.account ? (s.account.accounts?.length ? s.account.accounts : [s.account]).map(account => ({ title: `Account computer${account.machineId ? `: ${account.machineId}` : ""}`, blocks: [{ kind: "fields" as const, rows: [["Computer", account.machineId ?? "not registered"], ["Mode", account.mode], ["Host support", account.hostSupport], ["Last registration", account.lastRegistration ?? "none"], ["Desired revision", String(account.desiredRevision ?? "unknown")], ...(account.message ? [["Next", account.message]] : []), ...(account.spaces.some(space => space.lastRefusal === "no available application") ? [["Next", `Install an agent application, then run cotal daemon setup${(s.account?.accounts?.length ?? 0) > 1 && account.idpUrl ? ` --idp ${account.idpUrl}` : ""} again in a terminal that finds it.`]] : []), ...account.spaces.map((space) => [space.space, `${space.desired ? "desired" : "connected here, not in the account's list"}: ${space.observed}${space.lastRefusal ? ` (${space.lastRefusal})` : ""}`])] as [string, string][] }] })) : []),
     ...(s.managers ?? []).map((manager) => ({ title: `Manager: ${manager.space}`, blocks: [{ kind: "fields" as const, rows: [["Last observed state", manager.state], ["Observed at", manager.observedAt ?? "not yet probed"], ["Instance", manager.instanceId ?? "not registered"], ["PID", String(manager.pid ?? "none")], ["Restarts", String(manager.restarts)], ...(manager.lastStop ? [["Last stop", manager.lastStop]] : []), ...(manager.lastExit ? [["Last exit", manager.lastExit]] : []), ...(manager.logError ? [["Log error", manager.logError]] : []), ...(manager.lastRefusal || manager.reason ? [["Last refusal", manager.lastRefusal ?? manager.reason!]] : []), ...(manager.next ? [["Next", manager.next]] : [])] as [string, string][] }] })),
   ] };
@@ -339,6 +341,13 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
 
 /** Connect a headless machine with one command: install, sign in, register, connect. */
 async function setupCommand(args: ParsedArgs): Promise<void> {
+  const { claimUpdateClosureAccess } = await import("@cotal-ai/workspace");
+  const release = claimUpdateClosureAccess();
+  try { await setupUnderClosure(args); }
+  finally { release(); }
+}
+
+async function setupUnderClosure(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const values = args.values as { space?: string; idp?: string; "client-id"?: string; wait?: string; "no-manager"?: boolean };
   const space = values.space;
@@ -409,8 +418,11 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
 }
 
 async function serve(args: ParsedArgs): Promise<void> {
+  const { recoverInterruptedUpdate } = await import("@cotal-ai/cli/update");
+  if (await recoverInterruptedUpdate()) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
   const { paths, home } = resolveTarget(args);
   let running;
+  let updates: ReturnType<typeof automaticUpdates> | undefined;
   let owned = false;
   let provenance = new AbortController();
   const loggedReasons = new Set<string>();
@@ -435,13 +447,14 @@ async function serve(args: ParsedArgs): Promise<void> {
     return stopObservation;
   };
   try {
-    running = await serveDaemon({ paths, version: binVersion(), peerUid, stopAllowed,
+    running = await serveDaemon({ paths, updateStatus: () => updates?.status() ?? { current: binVersion(), automatic: false, failures: 0, lastResult: "starting" }, version: binVersion(), peerUid, stopAllowed,
       ...(process.platform === "win32" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" ? { admit: () => admitWindowsNativeDaemon(paths, home) } : {}),
       log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
   } catch (e) {
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
     throw asFailure(e);
   }
+  updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && owned, prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
   const ownership = observe();
   await new Promise<void>((resolve, reject) => {
@@ -461,11 +474,12 @@ async function serve(args: ParsedArgs): Promise<void> {
         // mutates the shared connector store or reopens admission over a partial replacement.
         process.stderr.write(`daemon: installed CLI ${version} validated; stopping owned children for native service restart\n`);
         stopWatching();
+        await updates?.close();
         await running.close();
         resolve();
       }, (line) => process.stderr.write(`${line}\n`), (version, reason) => running.generationPending(version, reason), verified);
     });
-    const stop = () => { closed = true; provenance.abort(); stopWatching(); void running.close().then(resolve, reject); };
+    const stop = () => { closed = true; provenance.abort(); stopWatching(); void updates!.close().then(() => running.close()).then(resolve, reject); };
     void running.stopped.then(stop, reject);
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);

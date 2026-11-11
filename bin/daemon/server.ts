@@ -82,6 +82,7 @@ export interface ServeOptions {
    *  machine-home Cotal directory, where `cotal login` keeps the session. An explicit `--daemon-home`
    *  passes its directory here together with {@link DaemonPaths.lock}. */
   readonly sessionDir?: string;
+  readonly updateStatus?: () => NonNullable<DaemonStatus["update"]>;
   /** Test hook: the stock sign-in to drive. */
   readonly login?: LoginCoordinator;
   /** Shipped serve entry's receipt-verified native launch provenance. Foreground servers refuse stop. */
@@ -162,6 +163,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     uptimeMs: Date.now() - startedAt.getTime(),
     managers: managers.all(),
     account: account.status(),
+    ...(opts.updateStatus ? { update: opts.updateStatus() } : {}),
     ...(generation ? { generation } : {}),
   });
 
@@ -272,7 +274,11 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "status") {
         counters.statusAnswered++;
-        managerResult(async () => { await Promise.all(managers.all().map((manager) => managers.refresh(manager.space))); return status(); });
+        managerResult(async () => {
+          await Promise.all(managers.all().map((manager) => managers.refresh(manager.space)));
+          const result = status();
+          return result.update ? { ...result, update: { ...result.update, restartEvidence: await managers.preparedGenerationEvidence() } } : result;
+        });
         return;
       }
       if (req.op === "spaces") {
@@ -317,8 +323,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
               return services.connect(req.space);
             }
             reconciler.localRemoval(req.space);
-            await managers.disconnect(req.space);
-            return services.disconnect(req.space);
+            let disconnected: ServiceConnectionResult;
+            try { await managers.disconnect(req.space); }
+            finally { disconnected = await services.disconnect(req.space); }
+            return disconnected;
             }));
           })().catch((error: unknown): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: error instanceof Error ? error.message : "The connection could not be changed. Check daemon status and try again." }));
         managerResult(async () => {

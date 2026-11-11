@@ -1,0 +1,4 @@
+# `cotal up --account-resolver full` starts the broker on the full account resolver, a running broker
+# refuses a different one, a plain later `up` renders the recorded resolver again, and
+# `--account-resolver memory` takes the root back.
+smoke:up-account-resolver:live

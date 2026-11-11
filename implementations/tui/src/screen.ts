@@ -86,13 +86,16 @@ export function conversationRecipient(open: Open, mesh: Mesh): Recipient | undef
  *  remembers, or one under their chat name in any letter case. */
 export const isYou = (you: You, who: FeedEntry["from"]) => you.principals.has(who.id) || who.name.toLowerCase() === you.name
 
+/** Whether a row is a direct message to a session the app opened. */
+const toYou = (you: You, e: FeedEntry) => e.delivery === "unicast" && !!e.toIds?.some((id) => you.principals.has(id))
+
 /** What the human did with a card in this app run: opened it, or dismissed it without replying. */
 export type Mark = "seen" | "dismissed"
 
-/** A message that still needs the human's answer, for the inspector: a reply to one they sent, or one
- *  that mentions them. `open` is the conversation it opens: its channel, its sender's conversation or
- *  its role's. */
-export type Card = { kind: "reply" | "mention"; entry: FeedEntry; open: Open }
+/** A message the inspector lists: a reply to one the human sent or one that mentions them, which
+ *  needs their answer, or another direct message to them, which needs reading. `open` is the
+ *  conversation it opens: its channel, its sender's conversation or its role's. */
+export type Card = { kind: "reply" | "mention" | "dm"; entry: FeedEntry; open: Open }
 
 /** The conversation a card opens. A channel post with no channel or a role task with no role has
  *  none, since it would open all traffic or an empty role. */
@@ -105,8 +108,8 @@ const cardOpen = (e: FeedEntry): Open | undefined => {
 /** The cards in `feed`, oldest first, the ids of the messages the human's own messages in it reply
  *  to, and the ids of those own messages. A reply card answers one of the human's messages in `feed`
  *  or in `sentBefore`, the ids an earlier call returned as `sent`. A message that both replies and
- *  mentions is one reply card. The human's own messages and a message with no conversation to open
- *  make none. */
+ *  mentions is one reply card, and a direct message that does either is no `dm` card. The human's
+ *  own messages and a message with no conversation to open make none. */
 export function cardsFor(feed: readonly FeedEntry[], you: You, mentionsYou: (e: FeedEntry) => boolean, sentBefore: ReadonlySet<string>): { cards: Card[]; answered: string[]; sent: string[] } {
   const own = feed.filter((e) => isYou(you, e.from))
   const sent = own.map((e) => e.id)
@@ -114,11 +117,28 @@ export function cardsFor(feed: readonly FeedEntry[], you: You, mentionsYou: (e: 
   const cards: Card[] = []
   for (const e of feed) {
     if (e.events || isYou(you, e.from)) continue
-    const kind = e.replyTo !== undefined && yours.has(e.replyTo) ? "reply" : mentionsYou(e) ? "mention" : undefined
+    const kind = e.replyTo !== undefined && yours.has(e.replyTo) ? "reply" : mentionsYou(e) ? "mention" : toYou(you, e) ? "dm" : undefined
     const open = kind ? cardOpen(e) : undefined
     if (kind && open) cards.push({ kind, entry: e, open })
   }
   return { cards, answered: own.flatMap((e) => (e.replyTo === undefined ? [] : [e.replyTo])), sent }
+}
+
+/** One sender's direct messages to the human that the human has not read, newest first. */
+export type Unread = { open: Open; messages: FeedEntry[] }
+
+/** The unread direct messages among `cards`, which are newest first, by sender, the sender with the
+ *  newest first. */
+export function unreadBySender(cards: readonly Card[], read: ReadonlySet<string>): Unread[] {
+  const by = new Map<string, Unread>()
+  for (const c of cards) {
+    if (c.kind !== "dm" || read.has(c.entry.id)) continue
+    const key = conversationKey(c.open)
+    const u = by.get(key)
+    if (u) u.messages.push(c.entry)
+    else by.set(key, { open: c.open, messages: [c.entry] })
+  }
+  return [...by.values()]
 }
 
 export const peerOf = (mesh: Mesh, id: string) => [...mesh.agents, ...mesh.endpoints].find((p) => p.card.id === id)

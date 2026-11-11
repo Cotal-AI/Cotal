@@ -1,7 +1,7 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
+import { activeComputerAccount, catalogRefreshNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -50,7 +50,8 @@ let poll: ReturnType<typeof setTimeout> | undefined;
 let connection: { space: string; state: string } | undefined;
 let refreshGeneration = 0;
 const accountSpaces = new Map<string, AccountSpace>();
-let computerAccount: { mode: string; hostSupport: string; spaces: ComputerSpace[] } | undefined;
+let signedInProvider: string | undefined;
+let computerAccount: ComputerAccount | undefined;
 const computerRows = new Map<string, ComputerSpace>();
 const connections = new Map<string, string>();
 let choosingSpace = false;
@@ -406,7 +407,7 @@ async function refresh(): Promise<void> {
     if (!current()) return;
     ready = status.state === "ready";
     observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
-      computerAccount = status.account as typeof computerAccount;
+      computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
       if (computerAccount?.hostSupport === "supported") {
         computerRows.clear(); connections.clear();
         for (const row of computerSpaces(computerAccount)) {
@@ -452,6 +453,7 @@ async function refresh(): Promise<void> {
   buttons();
 }
 async function spaces(refreshCatalog: boolean): Promise<void> {
+  const activeProvider = signedInProvider ?? providers.get(selectedSpace()) ?? computerAccount?.idpUrl;
   const result = await request({ op: "spaces", refresh: refreshCatalog });
   const select = el<HTMLSelectElement>("space"); const previous = select.value;
   select.replaceChildren(new Option("Choose a space", "")); providers.clear(); catalogIds.clear(); accountSpaces.clear();
@@ -466,9 +468,8 @@ async function spaces(refreshCatalog: boolean): Promise<void> {
   const preferred = initialSpace([...accountSpaces.values()], requestedSpace) ?? (accountSpaces.has(previous) ? previous : undefined) ?? observedReadySpaces.find(space => accountSpaces.has(space));
   if (preferred) select.value = preferred;
   choosingSpace = !preferred;
-  if (result.refresh === "failed" || result.refresh === "partial") throw new Error("Some space catalogs could not be refreshed. Saved entries may be out of date.");
-  if (Number(result.collisions) > 0) throw new Error("Some space names conflict with existing registrations. No conflicting registration was replaced.");
-  if (Number(result.unreadable) > 0) throw new Error("Some local space registrations could not be read. They were not changed.");
+  const message = catalogRefreshNotice(result, activeProvider ?? providers.get(select.value));
+  if (message) notice(message);
   buttons();
 }
 async function action(fn: () => Promise<void>): Promise<void> {
@@ -501,6 +502,7 @@ el("login-form").addEventListener("submit", (event) => {
       const result = await request({ op: "login", idp: provider });
       problem = undefined;
       if (result.outcome !== "signed-in") throw new DaemonRefusal(String(result.reason ?? "refused").toUpperCase().replaceAll("-", "_"), String(result.message ?? "Sign-in was not completed."));
+      signedInProvider = provider;
       notice(""); await spaces(true); await refresh();
       if (computerAccount?.hostSupport === "supported" && computerAccount.mode === "account") {
         editing = false; completedSetup = true; listOpened = true; showStage("finished");
@@ -573,7 +575,7 @@ el("disconnect").addEventListener("click", () => void action(async () => {
 }));
 el("sync").addEventListener("click", () => void action(async () => { notice(""); await spaces(true); }));
 el("refresh").addEventListener("click", () => void action(refresh));
-el("space").addEventListener("change", () => { connection = undefined; progress = progressNames.map(() => "waiting"); clearDetails(); notice(""); showStage(stage); void refresh(); });
+el("space").addEventListener("change", () => { signedInProvider = undefined; connection = undefined; progress = progressNames.map(() => "waiting"); clearDetails(); notice(""); showStage(stage); void refresh(); });
 function openDashboard(): void {
   const space = selectedSpace(); const provider = providers.get(space) ?? el<HTMLInputElement>("provider").value.trim();
   const spaceId = catalogIds.get(space), instanceId = instances.get(space);

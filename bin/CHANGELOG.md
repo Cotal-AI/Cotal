@@ -1,5 +1,57 @@
 # cotal-ai
 
+## 0.159.1
+
+### Patch Changes
+
+- d2f4b32: Signing in to a working host no longer fails because another saved host is unavailable.
+- c43b597: Cotal checks for updates on every platform and can keep a Linux machine daemon current through the guarded updater, with independent controls for automatic installation and notices. Automatic installation is available only on Linux in this release. Manual updates remain available on every platform.
+- 0494fec: Remove abandoned Manager registrations when a computer returns after its space was removed.
+  The daemon uses the governing authority's ownership and broker-liveness guard after stopping
+  its child. Unsupported, refused or unconfirmed cleanup remains visible in daemon status with
+  the recorded instance and a recovery command, without hosting the removed space again.
+  Explicit disconnection still closes the machine service and forgets its connection intent when
+  Manager registration cleanup cannot complete.
+  Failed attempts to re-enable hosting retain an unconfirmed cleanup fence across restarts, so they
+  cannot cause another registration removal request before a successor Manager answers.
+- Updated dependencies [c43b597]
+- Updated dependencies [0494fec]
+  - @cotal-ai/workspace@0.159.1
+  - @cotal-ai/cli@0.159.1
+  - @cotal-ai/manager@0.159.1
+  - @cotal-ai/auth@0.159.1
+  - @cotal-ai/delivery@0.159.1
+  - @cotal-ai/runtime@0.159.1
+  - @cotal-ai/connector-core@0.159.1
+  - @cotal-ai/registry@0.159.1
+  - @cotal-ai/core@0.159.1
+  - @cotal-ai/seat@0.159.1
+
+## 0.159.0
+
+### Patch Changes
+
+- 61f6f77: Windows daemon restart failures now include the daemon's refusal code and message.
+  The restart handshake validates the response version, request ID and response shape before retaining the refusal in the command's native cause.
+- 61f6f77: Retry native daemon ownership checks before restart and uninstall when startup could not verify ownership. Distinguish missing provenance from an unknown observation, keep checks bounded and cache only verified ownership.
+- 61f6f77: Confirm Windows daemon restarts replace the running process before setup or update reports success.
+  
+  Pause the recorded scheduled task around a pinned two-phase daemon shutdown, then verify a fresh daemon lifetime and the expected version. Application refresh and version updates share this restart path. Preserve restart fences and installation evidence when a native operation has an uncertain outcome.
+- 61f6f77: Recover owned disabled Windows daemon tasks during setup and show progress while restarting.
+  
+  Failed restarts restore autostart only after verifying the pinned old listener or unchanged installation with no running daemon. Unresolved native End operations retain the disabled task and restart fence for inspection.
+- Updated dependencies [b6abf6c]
+  - @cotal-ai/core@0.159.0
+  - @cotal-ai/connector-core@0.159.0
+  - @cotal-ai/auth@0.159.0
+  - @cotal-ai/cli@0.159.0
+  - @cotal-ai/delivery@0.159.0
+  - @cotal-ai/manager@0.159.0
+  - @cotal-ai/registry@0.159.0
+  - @cotal-ai/runtime@0.159.0
+  - @cotal-ai/workspace@0.159.0
+  - @cotal-ai/seat@0.159.0
+
 ## 0.158.1
 
 ### Patch Changes

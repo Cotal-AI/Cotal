@@ -141,11 +141,11 @@ function copyPackage(src, dst, version, isRoot = false, nested = []) {
   }
   if (isRoot || local) meta.version = version;
   for (const key of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
-    for (const name of Object.keys(meta[key] ?? {})) meta[key][name] = '*';
+    for (const name of Object.keys(meta[key] ?? {})) meta[key][name] = name.startsWith('@cotal-ai/') ? version : '*';
   }
   if (isRoot) {
     meta.private = true;
-    meta.dependencies = Object.fromEntries([...closure.keys()].sort().map((name) => [name, '*']));
+    meta.dependencies = Object.fromEntries([...closure.keys()].sort().map((name) => [name, name.startsWith('@cotal-ai/') ? version : '*']));
     meta.bundledDependencies = [...closure.keys()].sort();
     delete meta.bundleDependencies;
   }

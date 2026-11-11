@@ -36,9 +36,17 @@ Three columns. The left one lists the spaces, then the open space's channels, ag
 with your name at the bottom. A chat session is listed while it is open, and yours only as that
 name. The middle shows the open conversation, with the input box under it:
 all traffic, one channel, or one agent with its question pinned when it waits. A space opens on
-`#general`. The inspector on the right lists the agents waiting for an answer, then the replies to
-your messages and the messages that mention you, newest first, and the selected agent's status,
-model, harness and uptime. The list scrolls when it is longer than the screen. A reply or mention
+`#general`. The inspector on the right lists the agents waiting for an answer, then the direct
+messages to you that you have not read, one card per sender, then the replies to your messages and
+the messages that mention you, newest first, and the selected agent's status, model, harness and
+uptime. The list scrolls when it is longer than the screen. An unread card shows the sender, how many
+messages are new when there is more than one, and the start of the newest. It opens the sender's
+conversation, and their messages are read once it is open, also the ones that arrive while it stays
+open. A direct message that replies to you or mentions you is a reply or mention card instead, so no
+message is listed twice. Which messages you read is saved (see
+[Remembered sessions](#remembered-sessions)), so an unread card is still listed after a restart and a
+read one stays gone. When the app could not read your earlier direct messages, the unread group says
+why instead of listing none. A reply or mention
 card opens its channel, or its sender's conversation for a direct message, scrolls to the message and
 quotes it in the input box, so the next `enter` sends a reply to it. When the reply rules refuse the
 message, the box says why and quotes nothing. A card stays listed until you reply to it or dismiss
@@ -55,7 +63,8 @@ dimmer than one you have not, and a reply or mention that arrives in the convers
 is listed already dimmed.
 When the conversation
 would get fewer than 40 columns, as at 80x24, the inspector shrinks to a count such as
-`1 needs you · 2 replies · 1 mention` above the input box, counting the cards you opened too, and the agent overview shows in the
+`1 needs you · 3 unread · 2 replies · 1 mention` above the input box, counting the cards you opened
+too, with `DMs missing` when your earlier direct messages could not be read, and the agent overview shows in the
 conversation while the tree has the keys. Each agent's name keeps one color in
 the tree, the feed and the waiting list, and yours is gold.
 
@@ -63,9 +72,10 @@ The cursor starts in the input box. `tab` moves it to the tree, then to the insp
 the box. At 80x24, with no inspector on screen, `tab` in the tree returns to the box. In the tree and
 the inspector the arrows or `j` and `k` move the highlight, `enter` opens the item and returns to the
 box, and `esc` returns without opening. `enter` on a card quotes its message, and on a waiting agent
-opens its conversation with no quote. A click on an item does what `enter` does. `x` in the
-inspector dismisses the highlighted card without replying. A waiting agent cannot be dismissed. Opened
-and dismissed cards are remembered until the app quits. The highlight stays on its item as new ones
+opens its conversation with no quote, as it does on an unread card. A click on an item does what
+`enter` does. `x` in the inspector dismisses the highlighted card without replying, and marks an
+unread card's messages read without opening them. A waiting agent cannot be dismissed. Opened and
+dismissed reply and mention cards are remembered until the app quits. The highlight stays on its item as new ones
 arrive, and when a card goes, the item that takes its place is highlighted. The letter keys work only
 in the tree and the inspector: `w` opens the next item the inspector lists, waiting agents first, and
 `1`-`9` a specific one, quoting a card's message as `enter` does while the keys stay where they are. `S` spawns an agent, `D` stops one, `?` lists the keys and `q` quits. While a space opens, the box keeps the keys
@@ -197,8 +207,12 @@ shows them in their conversations with their cards, so `↑` quotes them. Your a
 new session, under the same name. On a static-auth space, a direct message an agent sends to an
 earlier session while the app runs shows at the next start; on an open space it shows when it
 arrives. When the broker refuses that read, or a remembered session cannot be read, a warning says
-why and the agent's conversation keeps saying it. `cotal space forget` removes a space's remembered
-sessions. Sessions opened with `cotal chat` are not remembered.
+why and the agent's conversation keeps saying it. The direct messages you read are saved by id in the
+same folder, in a private `read.json` that keeps the newest 1000, so they stay read after a restart.
+When it cannot be read, a warning says so and every direct message to you shows as unread; when it
+cannot be written, a warning says the messages you just read will show as unread after a restart.
+`cotal space forget` removes a space's remembered sessions and its read messages. Sessions opened
+with `cotal chat` are not remembered.
 
 ## Vendored OpenCode code
 
@@ -286,7 +300,10 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   write to the first session, which shows as it arrives on the open space and at the next start on
   the static one. On the open space it runs two copies of the app at once and reads both sessions'
   records back, then restarts the broker with a default user that may not read direct messages and
-  checks the agent's conversation says so.
+  checks the agent's conversation says so, and that the unread group says so too. Before that, on the
+  open space, the agent writes to the human unprompted: the message is listed under unread direct
+  messages above the replies and still after a restart, `w` opens it and the card goes, `read.json`
+  records its id in a 0600 file, and it stays gone at the next start.
   They need Node 26.4, tmux and nats-server, and the control, spawn, composer and continuity smokes
   need the manager built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space
