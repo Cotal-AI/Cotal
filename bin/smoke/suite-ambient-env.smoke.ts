@@ -939,8 +939,8 @@ assert.ok(
 );
 assert.equal(
   realProcessEnvScrubSpreads,
-  14,
-  "the measured module-scope process.env scrub population changed from 10 files / 14 spreads",
+  13,
+  "the measured module-scope process.env scrub population changed from 10 files / 13 spreads",
 );
 assert.equal(
   [...REAL_PROCESS_ENV_SCRUB_FILES].filter((file) => stripped.includes(file)).length,

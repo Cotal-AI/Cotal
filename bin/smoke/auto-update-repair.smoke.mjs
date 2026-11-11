@@ -30,7 +30,7 @@ for (const scenario of ['retry','rollback','paused','preflight']) {
  });
  await new Promise(r=>server.listen(0,'127.0.0.1',r));origin='http://127.0.0.1:'+server.address().port;
  try {
-  const env={...process.env,HOME:home,XDG_CONFIG_HOME:join(root,'config'),COTAL_HOME:home,npm_config_prefix:prefix,npm_config_cache:join(root,'cache'),npm_config_registry:origin,npm_config_update_notifier:'false',npm_config_audit:'false',npm_config_fund:'false',COTAL_SKIP_CONNECTOR_SEED:'1'};
+  const env={...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),HOME:home,XDG_CONFIG_HOME:join(root,'config'),COTAL_HOME:home,npm_config_prefix:prefix,npm_config_cache:join(root,'cache'),npm_config_registry:origin,npm_config_update_notifier:'false',npm_config_audit:'false',npm_config_fund:'false',COTAL_SKIP_CONNECTOR_SEED:'1'};
   const child=spawn(process.execPath,[join(repo,'bin/dist/cotal.js'),'update','--self'],{cwd:root,env,stdio:['ignore','pipe','pipe']});
   let output='';child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
   const code=await new Promise((r,j)=>{child.once('error',j);child.once('exit',r)});

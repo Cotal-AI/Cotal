@@ -19,7 +19,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const root = mkdtempSync(join(tmpdir(), "dor-"));
 const home = join(root, "home"), config = join(root, "config"), runtime = join(root, "rt"), native = join(root, "native");
 for (const directory of [home, config, runtime, native]) mkdirSync(directory, { mode: 0o700 });
-const env = { ...process.env, HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: join(root, "data"), XDG_STATE_HOME: join(root, "state"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: runtime, PATH: `${native}:${process.env.PATH}`, COTAL_DAEMON_NATIVE_SERVICE: "1", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: join(root, "data"), XDG_STATE_HOME: join(root, "state"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: runtime, PATH: `${native}:${process.env.PATH}`, COTAL_DAEMON_NATIVE_SERVICE: "1", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
 const paths = daemonPaths(env, home);
 mkdirSync(paths.state, { recursive: true, mode: 0o700 });
 const entry = join(repo, "bin/dist/cotal.js");
@@ -92,7 +92,8 @@ if (retry) process.exit(0);
 // Exercise the compiled observer too: a responsive daemon with authority always false
 // would pass the request check but break native generation activation.
 const { observeDaemonOwnedService } = await import(pathToFileURL(join(repo, "bin/dist/daemon/install.js")).href);
-const priorEnv = { ...process.env }, argv = process.argv, execArgv = process.execArgv;
+// Restoration-only entries, never a child environment.
+const priorEnv = Object.entries(process.env), argv = process.argv, execArgv = process.execArgv;
 try {
   Object.assign(process.env, env);
   process.argv = [process.execPath, entry]; process.execArgv = [];
@@ -113,6 +114,6 @@ try {
   console.log("PASS foreground, changed source, foreign installation and cancellation refuse authority");
 } finally {
   process.argv = argv; process.execArgv = execArgv;
-  for (const key of Object.keys(process.env)) if (!(key in priorEnv)) delete process.env[key];
-  Object.assign(process.env, priorEnv);
+  for (const key of Object.keys(process.env)) if (!priorEnv.some(([name]) => name === key)) delete process.env[key];
+  for (const [key, value] of priorEnv) process.env[key] = value;
 }

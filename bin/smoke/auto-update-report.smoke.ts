@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { serveDaemon } from "../daemon/server.js";
 import { daemonPaths } from "../daemon/endpoint.js";
 const root=mkdtempSync(join(tmpdir(),"autoupd-report-"));const home=join(root,"home"),runtime=join(root,"run");mkdirSync(home);mkdirSync(runtime,{mode:0o700});mkdirSync(join(root,".cotal"));
-const env:NodeJS.ProcessEnv={...process.env,HOME:home,COTAL_HOME:home,XDG_CONFIG_HOME:join(root,"config"),XDG_RUNTIME_DIR:runtime,npm_config_prefix:join(root,"prefix"),npm_config_cache:join(root,"cache"),COTAL_SKIP_CONNECTOR_SEED:"1",COTAL_NO_UPDATE_CHECK:"1"};
+const env:NodeJS.ProcessEnv={...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),HOME:home,COTAL_HOME:home,XDG_CONFIG_HOME:join(root,"config"),XDG_RUNTIME_DIR:runtime,npm_config_prefix:join(root,"prefix"),npm_config_cache:join(root,"cache"),COTAL_SKIP_CONNECTOR_SEED:"1",COTAL_NO_UPDATE_CHECK:"1"};
 const paths=daemonPaths(env,home);
 const update={current:"1.0.0",latest:"2.0.0",lastCheck:new Date().toISOString(),lastResult:"waiting for idle Managers",nextAttempt:new Date(Date.now()+60000).toISOString(),automatic:true,failures:1};
 const daemon=await serveDaemon({paths,version:"1.0.0",sessionDir:home,updateStatus:()=>update});

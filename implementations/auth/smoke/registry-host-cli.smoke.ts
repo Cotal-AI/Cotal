@@ -31,6 +31,7 @@ const privateEnv: Record<string, string> = { HOME: home, USERPROFILE: home,
 for (const p of Object.values(privateEnv)) mkdirSync(p, { recursive: true, mode: 0o700 });
 // Both fixture helpers and the child resolve only this private workspace registry.
 Object.assign(process.env, privateEnv);
+process.env.COTAL_HOME = privateEnv.COTAL_HOME;
 const env = { ...privateEnv, PATH: `${dirname(process.execPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`,
   COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", LANG: "C.UTF-8" };
 const space = `registry-cli-${process.pid}`, servers = `nats://127.0.0.1:${await freePort()}`;

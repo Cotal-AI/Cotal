@@ -36,7 +36,7 @@ for (const mode of ["owned", "native-stop", "stopped", "foreground", "changed-so
   const home = join(root, "home"), config = join(root, "config"), rt = join(root, "rt"), native = join(root, "native");
   for (const path of [home, config, rt, native]) mkdirSync(path, { mode: 0o700 });
   const effects = join(root, "effects");
-  const env = { ...process.env, HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: join(root, "data"), XDG_STATE_HOME: join(root, "state"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rt, PATH: `${native}:${process.env.PATH}`, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: join(root, "data"), XDG_STATE_HOME: join(root, "state"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rt, PATH: `${native}:${process.env.PATH}`, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
   const paths = daemonPaths(env, home);
   mkdirSync(paths.state, { recursive: true, mode: 0o700 });
   const unitPath = join(config, "systemd/user/cotal-daemon.service");

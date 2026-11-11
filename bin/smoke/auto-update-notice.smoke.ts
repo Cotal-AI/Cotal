@@ -13,7 +13,7 @@ const root = mkdtempSync(join(tmpdir(), "autoupd-notice-"));
 const home = join(root, "home");
 mkdirSync(home, { mode: 0o700 });
 mkdirSync(join(root, ".cotal"));
-const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: join(root, "config"), npm_config_prefix: join(root, "prefix"), npm_config_cache: join(root, "cache"), npm_config_registry: "http://127.0.0.1:1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1", CI: "" };
+const env: NodeJS.ProcessEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: join(root, "config"), npm_config_prefix: join(root, "prefix"), npm_config_cache: join(root, "cache"), npm_config_registry: "http://127.0.0.1:1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1", CI: "" };
 delete env.COTAL_NO_UPDATE_CHECK;
 writeFileSync(join(home, "update-check.json"), JSON.stringify({ v: 1, latest: "99.0.0", checkedAt: Date.now(), attemptedAt: Date.now(), firstSeenAt: Date.now() }));
 const entry = join(repo, "bin/dist/cotal.js");

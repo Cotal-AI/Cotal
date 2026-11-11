@@ -59,7 +59,7 @@ try {
 
   // A service unit's supervisor passes no `--space`; its environment names the space it serves.
   other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", "supervise"],
-    { stdio: "ignore", env: { ...process.env, COTAL_SPACE: `${space}-other` } });
+    { stdio: "ignore", env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_SPACE: `${space}-other` } });
   await once(other, "spawn");
   assert.equal(supervisorMayServe(space), baseline, "a space-less supervisor whose environment names another space is not a manager of this one");
   assert.equal(supervisorMayServe(`${space}-other`), true, "it is seen as a supervisor of the space its environment names");

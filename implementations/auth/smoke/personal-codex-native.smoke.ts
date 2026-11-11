@@ -131,7 +131,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   const children: import("node:child_process").ChildProcess[] = [];
   const endpoints: InstanceType<typeof CotalEndpoint>[] = [];
   const authority = await startApprovalAuthority({ home, human });
-  const childEnv = { ...process.env, COTAL_HOME: home, NODE_EXTRA_CA_CERTS: authority.caFile };
+  const childEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_HOME: home, NODE_EXTRA_CA_CERTS: authority.caFile };
   const codexEnv: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(COTAL_|CLAUDE|ANTHROPIC_|OPENAI_|CODEX_)/.test(k)));
   Object.assign(codexEnv, { HOME: userHome, CODEX_HOME: codexHome, NO_PROXY: "127.0.0.1,localhost" });
   const stopped = (child: import("node:child_process").ChildProcess | undefined) => new Promise<void>((resolve) => {

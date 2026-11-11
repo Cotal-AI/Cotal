@@ -58,7 +58,8 @@ for (const dir of Object.values(roots)) mkdirSync(join(dir, ".cotal"), { recursi
 mkdirSync(home, { recursive: true, mode: 0o700 })
 const anchor = recordSmokeSandbox({ root: roots.static, cotalHome, xdgConfigHome: xdg })
 const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_"))), HOME: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1" }
-Object.assign(process.env, { HOME: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: xdg })
+Object.assign(process.env, { HOME: home, XDG_CONFIG_HOME: xdg })
+process.env.COTAL_HOME = cotalHome
 
 let pass = 0
 let fail = 0

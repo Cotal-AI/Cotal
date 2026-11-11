@@ -315,7 +315,7 @@ try {
     check("built task entry passes preflight", code(() => assertScheduledEntry(nativeEntry)) === "none");
     const refused = spawnSync(process.execPath, [nativeEntry, "daemon", "serve", "--daemon-home", nativeHome, "--json"], {
       cwd: root, encoding: "utf8", timeout: 20_000,
-      env: { ...process.env, XDG_RUNTIME_DIR: root, COTAL_HOME: join(root, "cotal-home"), COTAL_IDP_TIMEOUT_MS: "0", COTAL_SKIP_CONNECTOR_SEED: "1" },
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), XDG_RUNTIME_DIR: root, COTAL_HOME: join(root, "cotal-home"), COTAL_IDP_TIMEOUT_MS: "0", COTAL_SKIP_CONNECTOR_SEED: "1" },
     });
     const log = join(nativeHome, "daemon.log");
     const refusalLog = existsSync(log) ? readFileSync(log, "utf8") : "";

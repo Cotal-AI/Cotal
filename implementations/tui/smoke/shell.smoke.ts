@@ -47,7 +47,7 @@ const silentPort = (silent.address() as { port: number }).port
 
 async function seed(home: string) {
   process.env.HOME = home
-  delete process.env.COTAL_HOME
+  process.env.COTAL_HOME = join(home, ".cotal")
   const w = await import("@cotal-ai/workspace")
   const ts = new Date(0).toISOString()
   w.recordMesh({ space: "team-alpha", server: `nats://127.0.0.1:${brokerPort}`, root: "/srv/alpha", mode: "auth", origin: "up", ts })
@@ -84,7 +84,7 @@ function launch(home: string, width: number, height: number, err: string, cwd = 
   try {
     tmux("kill-session", "-t", "t")
   } catch {}
-  const line = `cd ${cwd} && env -u COTAL_HOME -u NODE_COMPILE_CACHE -u NODE_DISABLE_COMPILE_CACHE HOME=${home} node ${launcher} 2>${err}; echo EXIT=$?; sleep 3600`
+  const line = `cd ${cwd} && env -u NODE_COMPILE_CACHE -u NODE_DISABLE_COMPILE_CACHE HOME=${home} COTAL_HOME=${join(home, ".cotal")} node ${launcher} 2>${err}; echo EXIT=$?; sleep 3600`
   tmux("new-session", "-d", "-s", "t", "-x", String(width), "-y", String(height), line)
   tmux("set-option", "-s", "escape-time", "10")
 }
@@ -177,6 +177,7 @@ try {
   await waitFor(has("EXIT=0"), "ctrl+c to quit")
   check("empty home: ctrl+c quits with status 0", true)
   process.env.HOME = empty
+  process.env.COTAL_HOME = join(empty, ".cotal")
   const { userCotalDir } = await import("@cotal-ai/workspace")
   const cache = join(userCotalDir(), "compile-cache")
   const wrote = readdirSync(empty, { recursive: true, encoding: "utf8" }).filter((f) => !f.startsWith(join(".cotal", "compile-cache") + sep)).sort()
@@ -191,6 +192,7 @@ try {
   mkdirSync(slow, { mode: 0o700 })
   mkdirSync(slowRoot)
   process.env.HOME = slow
+  process.env.COTAL_HOME = join(slow, ".cotal")
   const w = await import("@cotal-ai/workspace")
   w.recordMesh({ space: "slow", server: `nats://127.0.0.1:${silentPort}`, root: slowRoot, mode: "open", origin: "manual", ts: new Date(0).toISOString() })
   w.setCurrent("slow")

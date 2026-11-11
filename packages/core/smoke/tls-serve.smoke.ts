@@ -333,7 +333,7 @@ await sleep(300);
   const broker = await startBroker("wss", conf);
   await waitForBroker("127.0.0.1", tcpPort, broker.log);
   for (const [host, trust, accepted] of [["localhost", true, true], ["localhost", false, false], ["127.0.0.1", true, false]] as const) {
-    const env = { ...process.env };
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))) };
     delete env.NODE_EXTRA_CA_CERTS;
     if (trust) env.NODE_EXTRA_CA_CERTS = leaf.certFile;
     const code = `import { dialerFor } from ${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)};
