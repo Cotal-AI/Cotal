@@ -293,7 +293,7 @@ export async function admitVirtualWork(
   // a decision gate): a caller cannot pass a wider capacity than the endpoint registered.
   const specKey = recordSpecKey(RECORD_KINDS.svc, [args.endpoint, args.instanceId]);
   const readPolicy = () => readRegisteredActivation(() => readRecordLeader(ctx.jsm, ctx.space, specKey), args.endpoint, args.instanceId);
-  const { policy, revision: policyRevision } = await readPolicy();
+  const { revision: policyRevision } = await readPolicy();
 
   // (1) The serial pin is proved LIVE at every admission, not assumed from creation.
   const admissionDurable = canonDurable(args.endpoint);

@@ -20,7 +20,7 @@ import {
 import { grantActor, revokeActor } from "../src/ledger.js";
 import { registryStores } from "../src/lifecycle-registry.js";
 import {
-  cancelServiceCustody, openServiceCustodyHost, runServiceBootstrap, sealServiceBootstrapIntent, sealServiceCancelIntent, serviceCustodyKeys,
+  openServiceCustodyHost, runServiceBootstrap, sealServiceBootstrapIntent, serviceCustodyKeys,
 } from "../src/service-custody.js";
 import { compileServiceRegistration, serviceAuthorityEngineRequestId } from "../src/service-endpoint-authority.js";
 import { parseServiceHostResult, type ServiceApprovalResult } from "../src/service-host-contract.js";

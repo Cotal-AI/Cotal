@@ -19,7 +19,6 @@ import { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
 import {
   decode,
   encodeOperator,
@@ -37,7 +36,6 @@ import {
   assertValidChannel,
   resolveReadAcl,
   principalKey,
-  parsePrincipalKey,
   deprovisionTargetPrincipal,
   principalTags,
   assertInboxConnId,
@@ -79,7 +77,6 @@ import {
   accountConnectSubject,
   accountDisconnectSubject,
   MEMBERSHIP_INBOX_PREFIX,
-  FANOUT_DURABLE,
   INBOX_READER_DURABLE,
   livenessSubject,
   livenessServeFilter,
@@ -100,7 +97,7 @@ import {
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { parseServiceConnectionBinding, type ServiceConnectionBinding } from "./service-gate.js";
 import { SERVICE_ACCESS_TTL_SECONDS } from "./service-authority-limits.js";
-import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
+import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, assertGeneration, isIssuedCaller, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
 import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedHorizon, issuedPermitsPattern, issuedStoreStreamNames, prepareListing, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef, type ListingBinding, type ListingSeam, type PreparedListing } from "./issued-authority.js";
 import { REGISTRY_ENDPOINTS_GRANT } from "./registry-contract.js";
@@ -1475,9 +1472,8 @@ export function permissionsFor(
   const CHKV = `KV_${channelBucket(space)}`; // channel registry (read-only for everyone)
   const MEMKV = `KV_${membershipBucket(space)}`; // derived graph membership feed (read-only — dashboard)
   const DLVKV = `KV_${deliveryBucket(space)}`; // delivery lease/readiness (read-only — Component 6 health)
-  // Wire identity: owner+actor for subjects/durables/presence (dot-form `pk.key`, name-form `pk.name`);
-  // the reply inbox keys on the CONNECTION nkey, not the principal (see MintPrincipal).
-  const pk = principalKey(pr.owner, pr.actor);
+  // Validate both principal tokens; the reply inbox keys on the connection nkey (see MintPrincipal).
+  principalKey(pr.owner, pr.actor);
   const inbox = `_INBOX_${pr.connId}.>`;
 
   if (profile === "observer" || profile === "admin") {

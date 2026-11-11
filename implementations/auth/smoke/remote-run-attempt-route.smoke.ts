@@ -22,9 +22,9 @@ import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   admissionBucket, contractArtifactCanonicalBytes, contractStoreContext, createEndpointStreams, createRunAdmission, createRunSpec, createSpaceAuth,
-  credsFromJwt, ensureAdmissionStore, ensureAuthorityStores, ensureIssuedStores, epAuthBucket, epRequestSubject,
+  ensureAdmissionStore, ensureAuthorityStores, ensureIssuedStores, epAuthBucket, epRequestSubject,
   epgateKey, mintCheckpoint, mintGeneration, mintLifecycleUid, newIdentity, openRecordsBucket,
-  publishContractArtifact, readRunAdmission, recordSpecKey, RECORD_KINDS, remoteManagerActors, revokeRunAdmission, standaloneConnectOpts, wfjSubject, writeRunStatus,
+  publishContractArtifact, recordSpecKey, RECORD_KINDS, remoteManagerActors, revokeRunAdmission, standaloneConnectOpts, wfjSubject, writeRunStatus,
   type IssuedCaller, type RemoteRunAttemptResult, type RemoteRunAttemptRequest,
 } from "@cotal-ai/core";
 import { remoteRunAttemptCredentials } from "../../manager/src/remote-authority.js";

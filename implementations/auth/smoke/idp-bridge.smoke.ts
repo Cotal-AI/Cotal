@@ -17,8 +17,8 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mintLifecycleUid } from "@cotal-ai/core";
-import { SignJWT, decodeJwt, decodeProtectedHeader, exportJWK, generateKeyPair } from "jose";
-import type { CryptoKey, JWK } from "jose";
+import { SignJWT, decodeJwt, decodeProtectedHeader, generateKeyPair } from "jose";
+import type { CryptoKey } from "jose";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { jwt } from "better-auth/plugins/jwt";

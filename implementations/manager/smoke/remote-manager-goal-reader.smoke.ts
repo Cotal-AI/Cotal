@@ -137,7 +137,6 @@ import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
 import { approveDevice } from "../../auth/smoke/_device-approval.js";
 import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { loadOrCreateRemoteManagerIdentity } from "../src/remote-authority.js";
-import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 const cli = join(repoRoot, "bin", "cotal.ts");

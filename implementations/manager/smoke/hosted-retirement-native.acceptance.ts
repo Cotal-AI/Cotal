@@ -136,8 +136,6 @@ import { createServer as createHttpsServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
-import { Kvm } from "@nats-io/kv";
 const betterAuthRoot = new URL("../../auth/node_modules/better-auth/", import.meta.url);
 const { betterAuth } = await import(new URL("dist/index.mjs", betterAuthRoot).href);
 const { memoryAdapter } = await import(new URL("dist/adapters/memory-adapter/index.mjs", betterAuthRoot).href);
@@ -154,12 +152,9 @@ import {
   mintLifecycleUid,
   mintMembershipObserverCreds,
   newIdentity,
-  principalKey,
   provisionAgentDurables,
   rawDigest,
-  recordsBucket,
   remoteManagerActors,
-  type RemoteManagerMaintenanceResult,
   serverConfig,
   setupSpaceStreams,
   standaloneConnectOpts,
@@ -272,7 +267,6 @@ class ChildHandle implements AgentHandle {
   readonly kind = "native-acceptance";
   private exited = false;
   private code: number | null = null;
-  private signal: NodeJS.Signals | null = null;
   private diagnostics: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   private readonly exits = new Set<() => void>();
   private readonly closed: Promise<void>;
@@ -287,8 +281,8 @@ class ChildHandle implements AgentHandle {
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
     child.once("error", (error) => append(`[spawn error] ${error.message}\n`));
-    this.closed = new Promise((resolve) => child.once("close", (code, signal) => {
-      this.exited = true; this.code = code; this.signal = signal;
+    this.closed = new Promise((resolve) => child.once("close", (code) => {
+      this.exited = true; this.code = code;
       for (const listener of this.exits) listener();
       resolve();
     }));

@@ -61,7 +61,6 @@ import {
   serveIssuanceGateKv,
   type EpServeContext,
   type EpServeGrant,
-  type EpServeHandle,
 } from "@cotal-ai/core";
 import { authCommandDefs, type AuthServiceHandlers } from "./auth-service-contract.js";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";

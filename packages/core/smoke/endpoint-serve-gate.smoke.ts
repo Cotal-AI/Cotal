@@ -74,7 +74,6 @@ const rejects = async (n: string, fn: () => Promise<unknown>, code?: string) => 
   }
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const dec = new TextDecoder();
 
 const SPACE = "epservegate";
 const ENDPOINT = "throwaway";

@@ -55,7 +55,6 @@ import {
   settleGoalUncertain,
   goalRefOf,
   submissionFingerprint,
-  readGoalResult,
   resolveService,
   replayRunJournal,
   readRunRecord,

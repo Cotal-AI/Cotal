@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import React from "react";
 import { render } from "ink";
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { App } from "../src/console/app.js";

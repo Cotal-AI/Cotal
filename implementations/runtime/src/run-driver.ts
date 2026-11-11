@@ -25,7 +25,6 @@
  * as an outcome would be writing down a conclusion about work it can no longer see.
  */
 import {
-  wfjStreamName,
   wfjSubject,
   EpEnvelopeError,
   activateRun,
@@ -34,7 +33,6 @@ import {
   recordRunProgram,
   writeRunStatus,
   assertJournalTailIntact,
-  RunJournalTailTruncated,
   type RunStatusValue,
   type RunFailure,
   runFailureOf,
@@ -62,7 +60,6 @@ import {
   RuntimeFault,
   ENGINE_LANGUAGE_VERSION,
   WALKER_LANGUAGE_VERSION,
-  PIN_DEFAULTS,
   journalEntryKeyString,
   type EffectHandler,
   type JournalEntry,

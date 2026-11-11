@@ -38,8 +38,7 @@
  *
  * Run: pnpm smoke:event-order
  */
-import assert from "node:assert/strict";
-import { KIND, FIRST_SEQ, chainKey, createEventOrder, frameOf, type EventOrder, type FeedEntryLike, type OrderNote } from "../client/src/lib/eventOrder.js";
+import { KIND, FIRST_SEQ, chainKey, createEventOrder, frameOf, type FeedEntryLike, type OrderNote } from "../client/src/lib/eventOrder.js";
 import { orderNotice } from "../client/src/lib/shellText.js";
 import { paragraph, renderShell } from "./render-shell.js";
 import type { FeedMessage } from "../client/src/api/types.js";
@@ -59,7 +58,6 @@ const ok = (name: string, cond: boolean, detail?: unknown) => {
 };
 
 type Note = OrderNote;
-type Order = EventOrder;
 
 /** A feed entry as the controller's `onMessage` takes it. The fixtures carry what ordering reads. */
 const feed = (e: unknown): FeedMessage => e as FeedMessage;

@@ -7,7 +7,7 @@ import { UnusableFile } from "../lib/unusable-file.js";
 import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manifest/ledger.js";
 import { findFreshTeamAttempt, findFreshTeamSummary, freshTeamAttemptSettled, freshTeamSummaryRecordedElsewhere, listFreshTeamAttempts, listFreshTeamSummaries, type FreshTeamSummary } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, findAdditiveTeamAttempt, listAdditiveTeamAttempts, removedAdditiveDeploymentIds, stoppedAttemptEffects, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
-import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
+import { completedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { cardsWithoutLiveDelivery, inspectTeamDeployment, LIVE_DELIVERY_REMEDY, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
 import { managerRecordState } from "../lib/manager-proc.js";
 import { authModeText, teamText } from "../lib/team-text.js";
@@ -31,7 +31,6 @@ export type TeamValues = FlagValues<typeof teamFlags>;
 /** Completion reads the local space selection and its ledger directory, never the broker.
  *  An unreadable record cannot become a suggested target or trigger a provider. */
 export function teamComplete(argv: string[]): CompletionResult {
-  const flag = completingFlagValue(argv, teamFlags);
   if (argv.at(-1)?.startsWith("-")) return { items: teamFlags.map((item) => ({ value: `--${item.name}`, description: item.description })), directive: "nofiles" };
   const positionals = positionalsForCompletion(argv, teamFlags);
   if (positionals.length <= 1) return { items: ["show", "check", "boot", "deploy", "remove"].map((value) => ({ value })), directive: "nofiles" };

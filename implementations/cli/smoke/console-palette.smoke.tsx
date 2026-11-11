@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { PassThrough, Writable } from "node:stream";
-import React, { useState } from "react";
+import { useState } from "react";
 import { render } from "ink";
 import type { MeshSnapshot } from "@cotal-ai/workspace/view";
 import { runCommand, type CommandCtx } from "../src/console/commands.js";

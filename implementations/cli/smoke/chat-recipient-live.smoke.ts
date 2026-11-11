@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, connect, type Socket } from "node:net";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { clean, COTAL, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
+import { clean, COTAL, cotalPty, wait, type Pty } from "./_console-pty.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-chat-recipient-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-chat-recipient-root-"));

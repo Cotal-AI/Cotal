@@ -2,7 +2,6 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   createSpaceAuth, mintCreds, mintMembershipObserverCreds, newIdentity,
   serverConfig, startMembershipFeed,
@@ -10,7 +9,6 @@ import {
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
-const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async (cond: () => boolean | Promise<boolean>, budgetMs: number, stepMs: number): Promise<boolean> => {
   const deadline = Date.now() + budgetMs;

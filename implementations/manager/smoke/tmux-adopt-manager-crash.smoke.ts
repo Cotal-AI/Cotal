@@ -145,7 +145,7 @@ try {
   check("the first manager spawns two tmux seats and records both",
     spawned.every((r) => (r as { ok?: boolean }).ok === true) && !!seats.keeper && !!seats.lost && readSeatRecord(root, space, "keeper")?.supervise === undefined,
     { spawned, seats, stderr: first.stderr().slice(-2000) });
-  const keeper = seats.keeper!; const lost = seats.lost!;
+  const keeper = seats.keeper!;
 
   const goalId = "adopt-turn".padEnd(43, "a");
   const accepted = await call("turn", { payload: JSON.stringify({ run: "r1", step: "turn:keeper", context: "do the thing" }), deadlineMs: 600_000 }, { id: goalId, target: { actor: keeper.actor, lifecycleUid: keeper.uid } });

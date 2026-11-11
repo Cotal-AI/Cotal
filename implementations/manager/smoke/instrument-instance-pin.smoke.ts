@@ -735,11 +735,10 @@ try {
       check("the manager record is cached again (the seed below copies it)", mgrRecord !== undefined);
       if (mgrRecord) cache.set(third, { ...mgrRecord, responder: { ...mgrRecord.responder, instanceId: ghost } });
       let thirdThrew: unknown;
-      let thirdReturned: unknown;
       const thirdDescribes = reqs(third, "describe");
       const thirdPsBefore = totalRuns("ps");
       try {
-        thirdReturned = await ep.invokeService(third, "ps");
+        await ep.invokeService(third, "ps");
       } catch (e) { thirdThrew = e; }
       // RE-CUT, AND THE CONDITION THAT MOVED IT IS WHICH LAYER READS THE ENDPOINT KEY. This asserted
       // the responder-answered marker, because the ALLOWLIST was what stood between "surface" and

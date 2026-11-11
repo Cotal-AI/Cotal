@@ -16,7 +16,6 @@ import {
   standaloneConnectOpts,
   DEFAULT_SERVER,
   DEFAULT_SPACE,
-  DEV_OWNER,
   isAuthRejection,
   registry,
   parseCommandArgs,

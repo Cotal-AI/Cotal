@@ -42,7 +42,6 @@ const { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify } = await impor
 const { pickFreePort } = await import("./_free-port.js");
 
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
-type Delivery = import("@cotal-ai/core").Delivery;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // Readiness budget for the fixture's own auth-service child. #1534 measured a contended CI runner

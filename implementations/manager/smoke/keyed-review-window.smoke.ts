@@ -76,7 +76,6 @@ try {
   nc = await connect({ servers, ...core.standaloneConnectOpts({ creds: pinnedCreds, tls: false }), maxReconnectAttempts: 0 });
   const service = await core.resolveService(nc, space, "manager", caller, { deadlineMs: 10_000, instanceId: any.responder.instanceId });
   const args = { source: 'log("keyed submission native");', file: "submission.cotal.js" };
-  const prepare = (id = core.mintLifecycleUid()) => core.prepareKeyedRunSubmission(space, service, id, args);
   // K4 entry: epCall bounds a budget to the timer range, but an issued caller may publish its own
   // envelope, so the receiver alone bounds deadlineMs. Each leg reads the exact submission after.
   const rawKeyed = async (conn: NonNullable<typeof nc>, svc: typeof service, who: import("@cotal-ai/core").EpCaller, deadlineMs: number) => {

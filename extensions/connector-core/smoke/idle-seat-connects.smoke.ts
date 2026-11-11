@@ -14,12 +14,11 @@
  * the seats at another built `connector-core/dist/agent.js`.
  * Run: pnpm smoke:idle-seat-connects   (needs nats-server and openssl on PATH)
  */
-import assert from "node:assert/strict";
-import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { connect as netConnect, createServer as createNetServer, type Socket } from "node:net";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -56,13 +55,10 @@ if (SUBCOMMAND === "auth-service" || SUBCOMMAND === "agent-bearer") {
 }
 
 const {
-  CotalEndpoint,
-  authorizeServeGrant,
   contractArtifactCanonicalBytes,
   contractStoreContext,
   createEndpointStreams,
   createSpaceAuth,
-  deriveReplySubject,
   dlvDurableConfig,
   dlvStream,
   dmDurableConfig,
@@ -73,16 +69,13 @@ const {
   mintCreds,
   mintLifecycleUid,
   newIdentity,
-  parseEpSubject,
   publishContractArtifact,
   recordsBucket,
   recordSpecKey,
   recordStatusKey,
   RECORD_KINDS,
   registry,
-  remoteManagerActors,
   serverConfig,
-  serveIssuanceGateKv,
   setupSpaceStreams,
   standaloneConnectOpts,
   taskDurableConfig,
@@ -102,7 +95,7 @@ const authRequire = createRequire(join(repoRoot, "implementations/auth/package.j
 
 const { Kvm } = await import(pathToFileURL(coreRequire.resolve("@nats-io/kv")).href);
 type NatsConnection = import("@nats-io/transport-node").NatsConnection;
-const { connect, AuthorizationError, NoRespondersError, PermissionViolationError } = await import(pathToFileURL(coreRequire.resolve("@nats-io/transport-node")).href);
+const { connect } = await import(pathToFileURL(coreRequire.resolve("@nats-io/transport-node")).href);
 const { jetstreamManager } = await import(pathToFileURL(coreRequire.resolve("@nats-io/jetstream")).href);
 const { authDir, recordMesh, assertUserAuthInfo, createManagerInstanceIdentity, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import(workspaceIndex);
 const { cotalAuthProvider, grantActor, grantManagedActor, loadCalloutAuth, newActorToken } = await import(authIndex);
@@ -179,7 +172,6 @@ const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = `umt-${Math.floor(Math.random() * 1e6)}`;
 const OWNER_A = `u_${"a".repeat(26)}`;
-const OWNER_B = `u_${"b".repeat(26)}`;
 const AGENT_ACTOR = "worker";
 const SELF = fileURLToPath(import.meta.url);
 
@@ -600,13 +592,6 @@ try {
     ...args,
   ];
 
-  const execBearer = (argv: string[]): Promise<{ code: number; stdout: string; stderr: string }> => {
-    return new Promise((resolve) => {
-      execFile(argv[0], argv.slice(1), { env: cleanEnv }, (err, stdout, stderr) => {
-        resolve({ code: err ? 1 : 0, stdout: stdout.toString(), stderr: stderr.toString() });
-      });
-    });
-  };
 
   // ---------- Idle seats ----------
   recordMesh({

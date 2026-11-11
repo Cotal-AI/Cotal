@@ -389,8 +389,7 @@ try {
 
   // ── DELETION FAILURE AND TTL BACKSTOP PRESERVATION ──
   {
-    const jsm = await jetstreamManager(nc);
-    const stream = `KV_del_fail`;
+    await jetstreamManager(nc);
     const k = await kvm.create("del_fail", { history: 1 });
     await k.put("key", enc("v"));
 

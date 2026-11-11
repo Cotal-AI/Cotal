@@ -73,18 +73,16 @@ import {
   readRunNotice,
   createRunSpec,
   writeRunStatus,
-  readRunRecord,
   replayRunJournal,
   newTakeoverId,
   EpEnvelopeError,
   type EpCommandDef,
   type EpServeContext,
   type EpCaller,
-  type GoalRef,
   type Presence,
   type ActionContext,
 } from "@cotal-ai/core";
-import { Cancelled, EffectError, type JournalEntry } from "@cotal-ai/lang";
+import { EffectError, type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
