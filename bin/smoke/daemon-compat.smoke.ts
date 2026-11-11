@@ -1,10 +1,10 @@
-/** Old daemon operations must fail usefully without preventing native-service uninstall. */
+/** Old manager operations fail usefully; uninstall requires an acknowledged, pinned shutdown. */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as httpServer } from "node:http";
-import { createServer } from "node:net";
+import { createServer, type Socket } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,26 +21,39 @@ const self = fileURLToPath(import.meta.url);
 const repo = join(dirname(self), "..", "..");
 
 // This is an owned process with a real kernel-held lifetime lock and socket credentials.
-// It models only the old protocol refusal, not an old implementation or baseline proof.
+// It models manager-operation refusal and optional shutdown acknowledgement,
+// not an old implementation or historical baseline proof.
 if (process.argv[2] === "--old-endpoint") {
   const home = process.argv[3]!;
   const log = process.argv[4]!;
+  const shutdownSupport = process.argv[5]!;
   const paths = home === "default" ? daemonPaths() : daemonPathsFor(home);
   mkdirSync(paths.state, { recursive: true, mode: 0o700 });
   mkdirSync(paths.dir!, { recursive: true, mode: 0o700 });
   const lock = holdLifetime(paths.lock);
+  const sockets = new Set<Socket>();
   const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
     let text = "";
     socket.on("data", (chunk) => {
       text += String(chunk);
       if (!text.includes("\n")) return;
       const request = JSON.parse(text.split("\n")[0]!) as { id: string; op: string };
       writeFileSync(log, `${request.op}\n`, { flag: "a", mode: 0o600 });
-      socket.end(`${JSON.stringify({ v: 1, id: request.id, ok: false, error: { code: "UNKNOWN_OP", message: "unknown operation" } })}\n`);
+      const reply = request.op === "daemon-stop" && existsSync(shutdownSupport)
+        ? { v: 1, id: request.id, ok: true, result: { version: "0.0.0" } }
+        : { v: 1, id: request.id, ok: false, error: { code: "UNKNOWN_OP", message: "unknown operation" } };
+      // Keep the acknowledged shutdown connection pinned until the native stop.
+      if (reply.ok) socket.write(`${JSON.stringify(reply)}\n`);
+      else socket.end(`${JSON.stringify(reply)}\n`);
     });
   });
   server.listen(paths.socket, () => { chmodSync(paths.socket, 0o600); process.stdout.write("ready\n"); });
-  process.once("SIGTERM", () => server.close(() => { lock.release(); process.exit(0); }));
+  process.once("SIGTERM", () => {
+    server.close(() => { lock.release(); process.exit(0); });
+    for (const socket of sockets) socket.destroy();
+  });
 } else {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "dc-")));
   const home = join(root, "home"), cotal = join(root, "cotal"), recorder = join(root, "native");
@@ -49,6 +62,7 @@ if (process.argv[2] === "--old-endpoint") {
   const stateHome = defaultHome ? cotal : home;
   const paths = defaultHome ? daemonPaths(process.env, cotal) : daemonPathsFor(home);
   const wireLog = join(root, "wire.log"), nativeLog = join(root, "native.log");
+  const shutdownSupport = join(root, "shutdown-supported");
   const env = { ...process.env, HOME: root, COTAL_HOME: cotal, XDG_CONFIG_HOME: join(root, "config"), PATH: recorder, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1" };
   let child: ChildProcess | undefined;
   const control = httpServer(async (_request, response) => {
@@ -59,7 +73,7 @@ if (process.argv[2] === "--old-endpoint") {
     } catch (error) { response.writeHead(500).end(String(error)); }
   });
   try {
-    child = spawn(process.execPath, ["--import", "tsx", self, "--old-endpoint", defaultHome ? "default" : home, wireLog], { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] });
+    child = spawn(process.execPath, ["--import", "tsx", self, "--old-endpoint", defaultHome ? "default" : home, wireLog, shutdownSupport], { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     child.stderr!.on("data", (chunk) => { stderr += String(chunk); });
     await new Promise<void>((resolve, reject) => {
@@ -98,7 +112,7 @@ if (process.argv[2] === "--old-endpoint") {
     const port = (control.address() as AddressInfo).port;
     writeFileSync(join(recorder, "systemctl"), `#!${process.execPath}\nconst fs=require('node:fs');(async()=>{const args=process.argv.slice(2).join(' ');if(args==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}fs.appendFileSync(${JSON.stringify(nativeLog)},args+'\\n');if(args==='--user --no-ask-password --no-pager stop ${unit}'){const r=await fetch('http://127.0.0.1:${port}/stop');if(!r.ok)process.exit(99);}else if(!['--user --no-ask-password --no-pager disable ${unit}','--user --no-ask-password --no-pager daemon-reload'].includes(args))process.exit(99);})().catch(()=>process.exit(99));\n`, { mode: 0o700 });
     // PATH contains only the recorder. Neither real systemctl nor loginctl can be reached.
-    const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
+    const uninstall = () => new Promise<{ code: number | null; output: string }>((resolve, reject) => {
       const cli = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "uninstall", ...(defaultHome ? [] : ["--daemon-home", home]), "--yes", "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
       let output = "";
       cli.stdout.on("data", (chunk) => { output += String(chunk); });
@@ -107,9 +121,22 @@ if (process.argv[2] === "--old-endpoint") {
       cli.once("error", reject);
       cli.once("exit", (code) => { clearTimeout(timer); resolve({ code, output }); });
     });
+    const refused = await uninstall();
+    assert.equal(refused.code, 3, refused.output);
+    assert.equal(JSON.parse(refused.output).error?.code, "OPERATION_UNKNOWN");
+    assert.match(JSON.parse(refused.output).error?.message, /did not acknowledge shutdown/);
+    for (const file of [intent, receipt, unitPath]) assert.ok(existsSync(file), `${file} retained`);
+    assert.equal(existsSync(nativeLog), false, "unacknowledged shutdown cannot remove native supervision");
+    assert.equal(child.exitCode, null, "unacknowledged endpoint remains alive");
+    assert.equal(readFileSync(wireLog, "utf8"), `${before}daemon-stop\n`);
+    console.log("  ✓ unsupported shutdown retains source, receipt and intent without native calls");
+    // This endpoint still refuses manager operations, but now implements the shutdown
+    // acknowledgement needed before the native service can be safely removed.
+    writeFileSync(shutdownSupport, "supported", { mode: 0o600 });
+    const result = await uninstall();
     assert.equal(result.code, 0, result.output);
     assert.deepEqual(readFileSync(nativeLog, "utf8").trim().split("\n"), [`--user --no-ask-password --no-pager stop ${unit}`, `--user --no-ask-password --no-pager disable ${unit}`, "--user --no-ask-password --no-pager daemon-reload"]);
-    assert.equal(readFileSync(wireLog, "utf8"), before, "uninstall must not send managers-stop or any old-daemon request");
+    assert.equal(readFileSync(wireLog, "utf8"), `${before}daemon-stop\ndaemon-stop\n`, "uninstall requests only pinned shutdown, never managers-stop");
     assert.ok(child.exitCode !== null || child.signalCode !== null, "native stop reaped owned endpoint");
     for (const file of [intent, receipt, unitPath]) assert.equal(existsSync(file), false, `${file} removed`);
     assert.equal(JSON.parse(result.output).result?.state, "removed", "uninstall reports Removed");
