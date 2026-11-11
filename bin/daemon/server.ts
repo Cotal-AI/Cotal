@@ -414,18 +414,21 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     });
   }
 
-  // Resume what this daemon home was connected to before it stopped. This runs after the endpoint
-  // is published, so a space that is slow or unreachable never delays readiness; `service-status`
-  // reports each one's real state. A space with no recorded intent is not connected.
-  const managersResumed = managers.resume().catch(() => { log("daemon: hosted Manager records could not be resumed; inspect daemon status and the hosting records"); });
-  const resumed = withIdpSessionDir(machineHome, () => services.resume()).then((spaces) => {
-    counters.connectionsResumed = spaces.length;
-    if (spaces.length) log(`daemon: resumed ${spaces.length} recorded service connection(s)`);
-  }, () => {});
-
-  void Promise.all([managersResumed, resumed]).then(() => account.start());
-
   let closed: Promise<void> | undefined;
+  // Read current account intent before resuming saved hosting. A successful reconciliation
+  // removes withdrawn intents; an unavailable account leaves them intact for offline recovery.
+  // The endpoint is already published, so account or space latency never delays local readiness.
+  const resumed = account.start().then(() => reconciler.serial(async () => {
+    if (closed) return;
+    await Promise.all([
+      managers.resume().catch(() => { log("daemon: hosted Manager records could not be resumed; inspect daemon status and the hosting records"); }),
+      withIdpSessionDir(machineHome, () => services.resume()).then((spaces) => {
+        counters.connectionsResumed = spaces.length;
+        if (spaces.length) log(`daemon: resumed ${spaces.length} recorded service connection(s)`);
+      }, () => {}),
+    ]);
+  }));
+
   const close = (): Promise<void> => {
     closed ??= (async () => {
       const servicesClosed = services.close();
@@ -435,7 +438,6 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       // An in-flight sign-in is cancelled through the stock fence before the listener goes away.
       await login.close();
       await managersClosed;
-      await managersResumed;
       // Every service connection, its endpoint and its renewal source close before the socket does.
       await servicesClosed;
       await resumed;
@@ -453,7 +455,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   return { paths, counters, dirOutcome, status, close, stopped,
     generationSeats: () => managers.generationSeats(),
     generationPending(installed, waiting = "preparing activation") { generation = installed ? { installed, running: opts.version, waiting } : undefined; },
-    async prepareGenerationRestart() { await managersResumed; await managers.prepareGenerationRestart(); }, abortGenerationRestart: () => managers.abortGenerationRestart() };
+    async prepareGenerationRestart() { await resumed; await managers.prepareGenerationRestart(); }, abortGenerationRestart: () => managers.abortGenerationRestart() };
 }
 
 /** Linux and macOS: publish the unix socket, and on close remove it only if it is still ours. */

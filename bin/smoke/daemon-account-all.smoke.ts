@@ -5,6 +5,8 @@ for (const [file, ...args] of [
   ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--account-only", "--account-hosted", "--account-setup-journey", "--setup-no-connectors-repro"],
   ["bin/smoke/daemon-account.smoke.ts"],
   ["bin/smoke/daemon-account-crash.smoke.ts"],
+  ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--account-only", "--account-restart-repro"],
+  ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--account-only", "--account-hosted", "--account-restart-repro"],
   ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--account-only"],
   ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--account-only", "--account-hosted"],
   ["bin/smoke/daemon-service-connect.smoke.ts", "--hosting-only", "--account-only", "--stop-seat-only"],

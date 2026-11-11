@@ -1,6 +1,6 @@
 /** Real daemon endpoint against account-computer HTTP routes, in a private machine home. */
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -25,6 +25,7 @@ let revision = 1;
 let etag = '"one"';
 let conditional: string | undefined;
 let persistedBeforePut = false;
+let holdGet = false;
 const fixture = createServer((req, res) => {
   res.setHeader("content-type", "application/json");
   assert.equal(req.headers.authorization, "Bearer fixture-session");
@@ -37,6 +38,7 @@ const fixture = createServer((req, res) => {
     res.end(JSON.stringify({ v: 1, machine: { id: machine[1], lastSeenAt: new Date().toISOString(), revision } })); return;
   }
   gets++; conditional = req.headers["if-none-match"] as string | undefined;
+  if (holdGet) return;
   if (mode !== 200) { res.writeHead(mode); res.end(mode === 304 ? undefined : "{}"); return; }
   res.setHeader("etag", etag);
   res.end(JSON.stringify({ v: 1, machineId: machine[1], revision, ...(malformed ? {} : { bindingRevisions: {} }), account: { idpUrl, issuer, sub: "owner" }, spaces: [] }));
@@ -81,5 +83,17 @@ try {
   await until(() => daemon.status().account?.mode === "per-space", "404 explicitly reports unsupported per-space mode");
   assert.equal(daemon.status().account!.machineId, identity);
   const unsupported = puts; await sleep(5500); assert.equal(puts, unsupported);
+  await daemon.close(); mode = 200; holdGet = true;
+  const pending = gets;
+  daemon = await serveDaemon({ paths, version: "0.157.2", sessionDir: machineHome });
+  await until(() => gets > pending, "initial account request can remain pending after local readiness");
+  const ready = await queryDaemon({ paths }); assert.ok(ready.ok);
+  const closing = daemon.close();
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([closing, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("shutdown waited for pending account reply")), 5000); })]);
+  } finally { if (deadline) clearTimeout(deadline); }
+  assert.equal(existsSync(paths.socket), false, "shutdown cancels initial account poll before releasing endpoint");
+  console.log("ok shutdown cancels pending initial account check");
   console.log(`account computers smoke passed; retained private fixture ${root}`);
 } finally { await daemon.close(); fixture.closeAllConnections(); await new Promise<void>(resolve => fixture.close(() => resolve())); }
