@@ -94,6 +94,14 @@ fn connection_tray_status(frame: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn tray_counts_only_observed_running_agents() {
+        use serde_json::json;
+        let frame = |agents| json!({"ok": true, "result": {"managers": [{"state": "answering", "instanceId": "i", "connectors": [{"state": "available"}]}], "agents": agents}});
+        assert_eq!(tray_status(&frame(json!([]))), "Connected · 1 space · 0 agents running");
+        assert_eq!(tray_status(&frame(json!([{"state":"read","agents":[{"state":"running"},{"state":"exited"}]}]))), "Connected · 1 space · 1 agent running");
+        assert_eq!(tray_status(&frame(json!([{"state":"unreadable"}]))), "Connected · 1 space · Agents unavailable");
+    }
+    #[test]
     fn tray_reports_verified_spaces_and_attention_without_claiming_service_readiness() {
         use serde_json::json;
         let ready = json!({"state":"answering", "instanceId":"instance", "connectors":[{"state":"available"}]});
