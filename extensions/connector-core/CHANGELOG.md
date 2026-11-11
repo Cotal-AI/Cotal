@@ -1,5 +1,12 @@
 # @cotal-ai/connector-core
 
+## 0.160.0
+
+### Patch Changes
+
+- 98f6f43: Clarify helper spawning and persona channel permissions in the tool descriptions.
+  Shorten the grants guidance, describe delegated capabilities without a fixed list, remove the harness list from the single-job guidance, and explain channel wildcards in saved personas.
+
 ## 0.159.1
 
 No changes in this release.

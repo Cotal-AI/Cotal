@@ -1,5 +1,20 @@
 # @cotal-ai/cli
 
+## 0.160.0
+
+### Minor Changes
+
+- 409fbe8: `cotal up --account-resolver full` starts the broker on nats-server's full account resolver, so a host can add and retire space accounts on the running broker with `pushAccountClaim` instead of rendering the configuration again and reloading. `up` renders the resolver on `<root>/.cotal/account-jwts`, created owner-private, with deletion off, and records the choice in `.cotal/broker-policy.json`, so a later `cotal up` on the root renders it again without the flag. `--account-resolver memory` on a stopped root takes the record back. A running broker refuses a different value, because nats-server switches resolvers only at start, and `--open`, `-f` and `--restore` refuse the flag. A renderer outside `up` passes `brokerAccountResolver(root, readBrokerPolicy(root)?.accountResolver)` from `@cotal-ai/workspace`, so its render names the same directory and limit. Before, `up` always rendered `resolver: MEMORY`, so a broker it started could never take a pushed account, and a host that rendered the full resolver had its next reload refused.
+
+### Patch Changes
+
+- 7986d0e: `cotal --version` prints an update line only when a newer version is known or an update needs repair. It no longer prints "update status unknown" or "up to date" under the version.
+- d347fa7: Updating from a version before 0.159.1 on a computer that hosts a Manager no longer fails its first run at the continuity check. The update waits for the restarted daemon before it checks, as it did before 0.159.1.
+- Updated dependencies [27135c6]
+- Updated dependencies [409fbe8]
+  - @cotal-ai/workspace@0.160.0
+  - @cotal-ai/core@0.160.0
+
 ## 0.159.1
 
 ### Patch Changes

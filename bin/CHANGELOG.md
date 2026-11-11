@@ -1,5 +1,27 @@
 # cotal-ai
 
+## 0.160.0
+
+### Patch Changes
+
+- 7986d0e: `cotal --version` prints an update line only when a newer version is known or an update needs repair. It no longer prints "update status unknown" or "up to date" under the version.
+- d347fa7: Updating from a version before 0.159.1 on a computer that hosts a Manager no longer fails its first run at the continuity check. The update waits for the restarted daemon before it checks, as it did before 0.159.1.
+- Updated dependencies [98f6f43]
+- Updated dependencies [7986d0e]
+- Updated dependencies [d347fa7]
+- Updated dependencies [27135c6]
+- Updated dependencies [409fbe8]
+  - @cotal-ai/connector-core@0.160.0
+  - @cotal-ai/cli@0.160.0
+  - @cotal-ai/workspace@0.160.0
+  - @cotal-ai/manager@0.160.0
+  - @cotal-ai/auth@0.160.0
+  - @cotal-ai/delivery@0.160.0
+  - @cotal-ai/runtime@0.160.0
+  - @cotal-ai/registry@0.160.0
+  - @cotal-ai/core@0.160.0
+  - @cotal-ai/seat@0.160.0
+
 ## 0.159.1
 
 ### Patch Changes
