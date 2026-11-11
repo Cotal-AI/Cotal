@@ -537,7 +537,7 @@ without treating an option's value as another command word.
 ## daemon [#daemon]
 
 ```bash
-cotal daemon setup --idp <url> [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
+cotal daemon setup [--idp <url>] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon setup --space <s> [--idp <auth base URL>] [--client-id <id>] [--no-manager] [--wait <seconds>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]
 cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]
@@ -559,8 +559,13 @@ recorded daemon service, asks for one device approval when needed, and registers
 with your account without turning on a space. The result names your account and computer.
 Turn on the spaces that can use it in the provider's dashboard.
 
-Run the same command again from a terminal that finds newly installed agent applications to
-refresh the service's PATH. Hosted Managers pick them up after the guarded service restart.
+Run `cotal daemon setup` from a terminal that finds newly installed agent applications to
+refresh the service's PATH when the daemon is signed in to one provider. The provider comes
+from the daemon's reply; the CLI does not open the sign-in. With no installed daemon, no
+sign-in or several signed-in providers, pass `--idp <url>`; the several-provider refusal lists
+the choices. An explicit `--idp` keeps the installation and sign-in flow. The result lists
+spaces already turned on for this computer, or asks you to turn them on in the dashboard.
+Hosted Managers pick up newly installed applications after the guarded service restart.
 Active seats block that restart until they stop. When a desired space has no available
 application, `daemon status` shows this recovery under Next.
 
