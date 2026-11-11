@@ -1,4 +1,4 @@
-import { readComputerName, saveComputerName } from "./computer-name.js";
+import { defaultComputerName, readComputerName, saveComputerName } from "./computer-name.js";
 import { findMesh } from "@cotal-ai/workspace";
 import { loadIdpSession, requestAccountMachine, signedInMachineAccounts, withIdpSessionDir } from "@cotal-ai/auth";
 import { validateCatalogSnapshot, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
@@ -8,7 +8,13 @@ import type { createAccountReconciler } from "./account-reconcile.js";
 
 /** Poll account intent without interpreting transport failure as an empty desired set. */
 export function createAccountComputer(home: string, version: string, reconciler: ReturnType<typeof createAccountReconciler>) {
-  let name = readComputerName(home);
+  let name: string;
+  let nameWarning: string | undefined;
+  try { name = readComputerName(home); }
+  catch {
+    name = defaultComputerName();
+    nameWarning = 'Computer name record is unreadable. Replace it with cotal daemon name "<name>".';
+  }
   const pendingNames = new Set<string>();
   let state: AccountComputerStatus = { mode: "signed-out", hostSupport: "unknown", spaces: [] };
   const contexts = new Map<string, { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void> }>();
@@ -126,8 +132,10 @@ export function createAccountComputer(home: string, version: string, reconciler:
     /** Start polling and settle every account's initial attempt before saved hosting resumes. */
     async start() { run(); await work; await Promise.all([...tasks]); }, intent,
     name: () => name,
+    nameWarning: () => nameWarning,
     rename(value: string) {
       name = saveComputerName(home, value);
+      nameWarning = undefined;
       for (const [owner, context] of contexts) {
         if (context.work) pendingNames.add(owner);
         context.lastHeartbeat = 0; context.state.computer = name;

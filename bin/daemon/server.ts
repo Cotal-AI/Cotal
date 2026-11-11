@@ -156,6 +156,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
     computer: account.name(),
+    ...(account.nameWarning() ? { computerNameWarning: account.nameWarning() } : {}),
     state: "ready",
     protocol: DAEMON_PROTOCOL_VERSION,
     version: opts.version,

@@ -78,6 +78,7 @@ export interface DaemonUpdateStatus {
 
 export interface DaemonStatus {
   readonly computer?: string;
+  readonly computerNameWarning?: string;
   /** Optional for older daemon clients. Shared with desktop status readers. */
   readonly update?: DaemonUpdateStatus;
   readonly account?: AccountComputerStatus;

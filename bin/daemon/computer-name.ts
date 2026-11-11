@@ -27,7 +27,6 @@ export function readComputerName(home: string): string {
 }
 export function saveComputerName(home: string, value: unknown): string {
   const name = computerName(value);
-  readComputerName(home);
   writeSecretFileAtomic(pathFor(home), JSON.stringify({ v: 1, name }));
   return name;
 }
