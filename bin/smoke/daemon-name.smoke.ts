@@ -71,7 +71,8 @@ try {
   await cli(["CLI computer", "--json"]);
   await daemon.close();
   daemon = await serveDaemon({ paths, version: "test", sessionDir: machineHome });
-  await new Promise(resolve => setTimeout(resolve, 100));
+  const restartDeadline = Date.now() + 12_000;
+  while (registeredName !== "CLI computer" && Date.now() < restartDeadline) await new Promise(resolve => setTimeout(resolve, 100));
   check(daemon.status().computer === "CLI computer" && registeredName === "CLI computer", "restart retains name and registers it");
   await daemon.close();
   writeFileSync(join(machineHome, "daemon", "computer-name.json"), "{broken", { mode: 0o600 });

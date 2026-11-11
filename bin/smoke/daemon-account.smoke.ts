@@ -37,6 +37,7 @@ renameSync(`${identityFile}.original`, identityFile);
 console.log("ok recorded Manager selection is read-only and refuses corrupt or linked records");
 const machineHome = process.env.COTAL_HOME;
 const runtime = join(root, "rt"); mkdirSync(runtime, { mode: 0o700 });
+let registration: Record<string, unknown> | undefined;
 let malformed = false;
 let mode = 200, puts = 0, gets = 0;
 let revision = 1;
@@ -50,6 +51,9 @@ const fixture = createServer((req, res) => {
   const machine = req.url?.match(/^\/api\/cli\/machines\/([0-9a-f-]+)(\/spaces)?$/);
   if (!machine) { res.writeHead(404); res.end("{}"); return; }
   if (req.method === "PUT") {
+    let body = "";
+    req.on("data", chunk => { body += String(chunk); });
+    req.on("end", () => { registration = JSON.parse(body) as Record<string, unknown>; });
     puts++;
     persistedBeforePut = readdirSync(join(machineHome, "daemon", "accounts"), { recursive: true }).some(path => String(path).endsWith("computer.json"));
     if (mode === 404) { res.writeHead(404); res.end("{}"); return; }
@@ -77,6 +81,19 @@ async function until(test: () => boolean, label: string) {
 try {
   await until(() => gets > 0 && daemon.status().account?.desiredRevision === 1, "registered and applied complete desired set");
   assert.ok(persistedBeforePut);
+  assert.ok(registration?.vitals, "registration carries a measured sample");
+  assert.deepEqual(registration.vitals, daemon.status().vitals, "status exposes the sent sample");
+  const vitals = daemon.status().vitals!;
+  assert.ok(Number.isFinite(Date.parse(vitals.sampledAt)));
+  assert.ok(vitals.cpu.logicalCount > 0 && Number.isSafeInteger(vitals.cpu.logicalCount));
+  assert.ok(vitals.cpu.utilisationPercent >= 0 && vitals.cpu.utilisationPercent <= 100);
+  assert.ok(vitals.cpu.intervalMs > 0);
+  assert.ok(Number.isSafeInteger(vitals.uptimeSeconds) && vitals.uptimeSeconds >= 0);
+  for (const value of [vitals.memory.totalBytes, vitals.memory.availableBytes, ...vitals.filesystems.flatMap(fs => [fs.totalBytes, fs.freeBytes])]) assert.ok(Number.isSafeInteger(value) && value >= 0);
+  assert.ok(vitals.memory.availableBytes <= vitals.memory.totalBytes);
+  assert.ok(vitals.filesystems.length > 0 && vitals.filesystems.length <= 128);
+  for (const fs of vitals.filesystems) { assert.ok(fs.freeBytes <= fs.totalBytes); assert.ok(Buffer.byteLength(fs.mount) <= 1024); }
+  assert.deepEqual(Object.keys(vitals).sort(), ["cpu", "filesystems", "memory", "sampledAt", "uptimeSeconds"]);
   const identity = daemon.status().account!.machineId!;
   assert.equal(accountComputerId(machineHome, { issuer, sub: "owner" }), identity);
   assert.notEqual(accountComputerId(machineHome, { issuer, sub: "other" }), identity);

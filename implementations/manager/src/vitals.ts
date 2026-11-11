@@ -1,4 +1,7 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { dirname, parse } from "node:path";
+import { homedir, uptime } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import { cpus, freemem, loadavg, platform, totalmem } from "node:os";
 import { statfs } from "node:fs/promises";
 import { EpEnvelopeError } from "@cotal-ai/core";
@@ -99,6 +102,10 @@ export async function measureManagerVitals(deps: ManagerVitalsDeps = systemDeps)
   if (!(["linux", "darwin", "win32"] as NodeJS.Platform[]).includes(os)) refusal(`manager vitals is unsupported on ${os}`);
   if (os === "win32") refusal("manager vitals cannot report CPU load on Windows because Node returns unsupported zero load averages");
 
+  return measureResources(deps, os);
+}
+
+async function measureResources(deps: ManagerVitalsDeps, os: NodeJS.Platform): Promise<ManagerVitals> {
   const logicalCount = integer(deps.logicalCount(), "CPU count");
   if (logicalCount < 1) refusal("manager vitals found no logical CPUs");
   const [load1, load5, load15] = deps.load().map((value, i) => finite(value, `CPU load${[1, 5, 15][i]}`)) as [number, number, number];
@@ -123,4 +130,73 @@ export async function measureManagerVitals(deps: ManagerVitalsDeps = systemDeps)
     filesystems.push({ mount, totalBytes: total, freeBytes: free });
   }
   return { sampledAt: deps.now().toISOString(), cpu: { logicalCount, load1, load5, load15 }, memory: { totalBytes, availableBytes }, filesystems };
+}
+
+export interface ComputerVitals extends Omit<ManagerVitals, "cpu"> {
+  cpu: { logicalCount: number; utilisationPercent: number; intervalMs: number; load1?: number; load5?: number; load15?: number };
+  uptimeSeconds: number;
+}
+
+export interface ComputerVitalsDeps {
+  resources: ManagerVitalsDeps;
+  cpuTimes(): Array<{ user: number; nice: number; sys: number; idle: number; irq: number }>;
+  wait(): Promise<void>;
+  clock(): number;
+  uptime(): number;
+}
+
+async function homeMount(): Promise<string[]> {
+  const home = await realpath(homedir());
+  if (process.platform === "win32") {
+    if (!process.env.SystemRoot) refusal("computer vitals cannot locate the Windows system volume");
+    const roots = [safeMount(parse(home).root), safeMount(parse(process.env.SystemRoot).root)];
+    return [...new Set(roots)];
+  }
+  let mount = home;
+  const device = (await stat(home)).dev;
+  while (dirname(mount) !== mount && (await stat(dirname(mount))).dev === device) mount = dirname(mount);
+  if (mount === home || mount.startsWith("/home/") || mount.startsWith("/Users/")) refusal("computer vitals cannot disclose a personal mount point");
+  if (process.platform === "linux") {
+    const rows = (await readFile("/proc/self/mountinfo", "utf8")).trim().split("\n");
+    const row = rows.map(line => line.split(" ")).find(fields => unescapeMount(fields[4] ?? "") === mount);
+    const separator = row?.indexOf("-") ?? -1;
+    const fsType = row?.[separator + 1];
+    const source = row?.[separator + 2];
+    if (!row || separator < 6 || !fsType || !source || (!LOCAL_LINUX_FILESYSTEMS.has(fsType) && fsType !== "overlay") || source.startsWith("/dev/loop") || mount.startsWith("/run/user/")) refusal("computer vitals excludes remote or transient home volumes");
+  }
+  return [...new Set(["/", safeMount(mount)])];
+}
+
+const computerDeps: ComputerVitalsDeps = {
+  resources: { ...systemDeps, mounts: homeMount },
+  cpuTimes: () => cpus().map(cpu => cpu.times),
+  wait: async () => { await delay(250); },
+  clock: () => performance.now(),
+  uptime,
+};
+
+/** Sample the computer using the same memory and filesystem measurements as Manager vitals. */
+export async function measureComputerVitals(deps: ComputerVitalsDeps = computerDeps): Promise<ComputerVitals> {
+  const os = deps.resources.platform();
+  if (!(["linux", "darwin", "win32"] as NodeJS.Platform[]).includes(os)) refusal(`computer vitals is unsupported on ${os}`);
+  const before = deps.cpuTimes();
+  const start = deps.clock();
+  await deps.wait();
+  const after = deps.cpuTimes();
+  const intervalMs = integer(Math.round(deps.clock() - start), "CPU interval");
+  if (!intervalMs || !before.length || before.length > 4096 || before.length !== after.length) refusal("computer vitals CPU observation changed topology or has no interval");
+  let total = 0, idle = 0;
+  for (let i = 0; i < before.length; i++) {
+    for (const key of ["user", "nice", "sys", "idle", "irq"] as const) {
+      const delta = integer(after[i]![key], "CPU counter") - integer(before[i]![key], "CPU counter");
+      if (delta < 0) refusal("computer vitals CPU counters reset");
+      total += delta;
+      if (key === "idle") idle += delta;
+    }
+  }
+  if (!Number.isSafeInteger(total) || total <= 0) refusal("computer vitals CPU counters did not advance");
+  const resources = await measureResources({ ...deps.resources, logicalCount: () => after.length, ...(os === "win32" ? { load: (): [number, number, number] => [0, 0, 0] } : {}) }, os);
+  const cpu: ComputerVitals["cpu"] = { logicalCount: after.length, utilisationPercent: 100 * (total - idle) / total, intervalMs };
+  if (os !== "win32") Object.assign(cpu, resources.cpu);
+  return { ...resources, cpu, uptimeSeconds: integer(Math.floor(deps.uptime()), "system uptime") };
 }

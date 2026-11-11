@@ -635,8 +635,19 @@ Each issuer and subject pair has its own protected, persisted computer UUID. It 
 heartbeat every 60 seconds and polls the account's desired spaces every five seconds. The
 heartbeat lists the answering Managers this computer hosts for the account's spaces, each as the
 catalog space ID and the Manager's instance ID, so the host can show a Manager under this
-computer's name. A change in that list is sent with the next poll. Desired
-spaces start or inspect the Manager through the same hosting sequence as setup. Each space's
+computer's name. A change in that list is sent with the next poll.
+The heartbeat includes `vitals`: its sampling time, logical CPU count, CPU utilisation over a
+short observation interval, memory bytes, home-volume capacity and free bytes, and system uptime.
+Linux and macOS also include 1, 5 and 15 minute load averages. Windows omits load averages.
+CPU utilisation uses the same busy-time percentage on all three platforms. Linux available
+memory includes reclaimable memory through MemAvailable; macOS and Windows report free memory.
+The home volume and the root or system volume are reported, without personal directory paths,
+network mounts, loop devices or per-user runtime mounts. The sample contains no process list or CPU model.
+`cotal daemon status` prints the cached sample. JSON includes `vitals` with `sampledAt`,
+`cpu`, `memory`, `filesystems` and `uptimeSeconds`. This uptime is the computer's uptime,
+separate from the daemon's `uptimeMs`. A measurement failure adds `vitalsError`; any retained
+sample keeps its original timestamp and no stale sample is sent as a fresh measurement.
+Desired spaces start or inspect the Manager through the same hosting sequence as setup. Each space's
 connection check decides whether machine-service registration and owner approval are needed.
 Spaces without service endpoints still run their Manager and report its state. Removing a space
 stops its Manager and disconnects its machine service when one exists. The Manager stops and
