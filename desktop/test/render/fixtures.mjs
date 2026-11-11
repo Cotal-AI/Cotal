@@ -79,6 +79,8 @@ export const scenarios = [
     assert.equal(await page.locator("#tray-label").textContent(), "Ready");
     assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "check");
     assert.equal(await page.locator("#dashboard").isVisible(), true);
+    assert.equal(await page.locator("#dashboard-spaces-note").isVisible(), false);
+    assert.equal(await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(95, 168, 102)");
   } },
   ...["connected", "starting", "approval-pending", "removed on this computer", "refusal", "sign-in-required"].map(observed => ({
     name: `account-${observed.replaceAll(" ", "-")}`,
@@ -89,7 +91,7 @@ export const scenarios = [
       const pill = observed === "connected" ? "Connected" : observed === "sign-in-required" ? "Sign in required" : observed === "removed on this computer" ? "Ready" : "Starting";
       assert.equal(await page.locator("#tray-label").textContent(), pill);
       const dot = await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor);
-      assert.equal(dot, ["sign-in-required", "refusal"].includes(observed) ? "rgb(224, 98, 90)" : observed === "connected" ? "rgb(95, 168, 102)" : "rgb(229, 185, 78)");
+      assert.equal(dot, ["sign-in-required", "refusal"].includes(observed) ? "rgb(224, 98, 90)" : observed === "connected" || observed === "removed on this computer" ? "rgb(95, 168, 102)" : "rgb(229, 185, 78)");
       if (observed === "sign-in-required") {
         assert.equal(await page.locator("#connection-title").textContent(), "Sign in to keep this computer connected");
         assert.equal(await page.locator("#sign-in-again").textContent(), "Sign in");

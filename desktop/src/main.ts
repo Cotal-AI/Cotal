@@ -241,7 +241,7 @@ function showStage(next: Stage, focus = false): void {
     const starting = computerSpaces(computerAccount).some(row => row.desired && row.observed !== "removed on this computer");
     const refused = computerSpaces(computerAccount).some(row => row.observed === "refusal");
     text("tray-label", signInRequired ? "Sign in required" : anyConnected ? "Connected" : starting ? "Starting" : "Ready");
-    el("tray-indicator").classList.toggle("connected", anyConnected);
+    el("tray-indicator").classList.toggle("connected", anyConnected || !starting && !signInRequired);
     el("tray-indicator").classList.toggle("error", signInRequired || refused);
     if (!anyConnected) {
       const empty = computerSpaces(computerAccount).length === 0;
@@ -249,7 +249,7 @@ function showStage(next: Stage, focus = false): void {
       setIcon(el("connection-icon"), signInRequired ? "browser" : starting ? "clock" : empty ? "check" : "computer");
     }
   } else el("spaces-heading").hidden = false;
-  el("dashboard-spaces-note").hidden = !finished || addingSpace || computerAccount?.hostSupport !== "supported" || computerAccount.mode === "sign-in-required";
+  el("dashboard-spaces-note").hidden = !finished || addingSpace || computerAccount?.hostSupport !== "supported" || computerAccount.mode === "sign-in-required" || computerSpaces(computerAccount).length === 0;
   el("connection-icon").hidden = addingSpace;
   document.querySelector(".connection-card")!.classList.toggle("adding-space", addingSpace);
   renderConnections();
