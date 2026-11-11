@@ -178,7 +178,8 @@ An acknowledgement, negative acknowledgement, or in-progress signal from a handl
 
 Owned NATS connection teardown uses `closeConnection` from `@cotal-ai/core`.
 It waits for drain, connection closure, or a 2-second grace period, then calls `close()`.
-An optional `graceMs` sets the drain bound. An already draining connection is not drained again.
+An optional `graceMs` sets the drain bound and must be an integer from 0 through 2147483647.
+Other values are refused before the connection is touched. An already draining connection is not drained again.
 A closed broker connection cannot leave teardown waiting on a drain pong.
 Forced closure does not confirm buffered message delivery. A close failure still rejects.
 

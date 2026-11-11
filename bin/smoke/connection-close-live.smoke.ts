@@ -1,5 +1,5 @@
 /** Real broker teardown through the published helper, channel CLI and Manager registration. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, type Socket } from "node:net";
@@ -14,9 +14,11 @@ import {
 } from "@cotal-ai/core";
 import { registerRemoteManagerAuthority } from "@cotal-ai/manager";
 import {
-  SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal, withDeadline,
+  SMOKE_BROKER_TOKEN, awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal, withDeadline,
 } from "@cotal-ai/smoke-kit";
 
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 const root = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const space = "closeconnection";
 const port = await freePort();
@@ -212,8 +214,20 @@ try {
     await conn.close();
     await held.stop();
   }
-  for (const grace of [-1, NaN, Infinity, 0.5]) {
-    await assert.rejects(closeConnection(nc, grace), /nonnegative safe integer/);
+  const boundary = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), reconnect: false });
+  try {
+    boundary.subscribe(`_INBOX_${identity.id}.boundary`);
+    await boundary.flush();
+    for (const grace of [-1, NaN, Infinity, 0.5, 2_147_483_648, Number.MAX_SAFE_INTEGER]) {
+      await assert.rejects(closeConnection(boundary, grace), /nonnegative safe integer no greater than 2147483647/);
+      assert.equal(boundary.isClosed(), false, "invalid grace must leave the connection open");
+      assert.equal(boundary.isDraining(), false, "invalid grace must not start a drain");
+    }
+    await bounded(boundary.flush(), "connection remains usable after invalid grace");
+    await bounded(closeConnection(boundary, 2_147_483_647), "maximum timer grace on a healthy connection");
+    assert.equal(boundary.isClosed(), true);
+  } finally {
+    await boundary.close();
   }
   console.log("connection close: healthy delivery, already closed, concurrent grace and invalid grace passed");
 } finally {
@@ -221,3 +235,4 @@ try {
   release();
   // Retain the private fixture for failure diagnosis. All children and sockets have stopped.
 }
+emitSentinel({ passed: counted.cells(), failed: 0 });

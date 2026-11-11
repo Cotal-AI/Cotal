@@ -2,10 +2,11 @@ import type { NatsConnection } from "@nats-io/transport-node";
 
 /** Drain for at most `graceMs` (2 seconds by default), then close the connection. A broker close
  *  ends the wait even when the client's drain promise never settles. Drain failure or expiry does
- *  not confirm delivery of buffered messages. Close failures propagate to the caller. */
+ *  not confirm delivery of buffered messages. `graceMs` must be an integer from 0 through
+ *  2147483647, the largest supported timer delay. Close failures propagate to the caller. */
 export async function closeConnection(nc: NatsConnection, graceMs = 2_000): Promise<void> {
-  if (!Number.isSafeInteger(graceMs) || graceMs < 0)
-    throw new Error("connection drain grace must be a nonnegative safe integer");
+  if (!Number.isSafeInteger(graceMs) || graceMs < 0 || graceMs > 2_147_483_647)
+    throw new Error("connection drain grace must be a nonnegative safe integer no greater than 2147483647");
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     if (!nc.isClosed()) {
