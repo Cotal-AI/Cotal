@@ -31,7 +31,7 @@ import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths,
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, planInstall, planUninstall, startInstalled } from "./install.js";
+import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy } from "./guidance.js";
@@ -411,9 +411,31 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
 async function serve(args: ParsedArgs): Promise<void> {
   const { paths, home } = resolveTarget(args);
   let running;
-  let ownership: Promise<boolean> = Promise.resolve(false);
+  let owned = false;
+  let provenance = new AbortController();
+  const loggedReasons = new Set<string>();
+  const observe = async (): Promise<DaemonOwnershipObservation> => {
+    const result = await observeDaemonOwnedService(paths, home, provenance.signal).catch(() => ({ state: "unknown", reason: "worker-failed" } as const));
+    if (result.state === "owned") owned = true;
+    if (!loggedReasons.has(result.reason)) {
+      loggedReasons.add(result.reason);
+      process.stderr.write(`daemon: native ownership ${result.state}: ${result.reason}\n`);
+    }
+    return result;
+  };
+  let stopObservation: Promise<DaemonOwnershipObservation> | undefined;
+  const stopAllowed = (): Promise<DaemonOwnershipObservation> => {
+    if (owned) return Promise.resolve({ state: "owned", reason: "verified" });
+    // Replace any unfinished startup check, rather than stacking two 65-second waits.
+    if (!stopObservation) {
+      provenance.abort();
+      provenance = new AbortController();
+      stopObservation = observe().finally(() => { stopObservation = undefined; });
+    }
+    return stopObservation;
+  };
   try {
-    running = await serveDaemon({ paths, version: binVersion(), peerUid, stopAllowed: () => ownership,
+    running = await serveDaemon({ paths, version: binVersion(), peerUid, stopAllowed,
       ...(process.platform === "win32" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" ? { admit: () => admitWindowsNativeDaemon(paths, home) } : {}),
       log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
   } catch (e) {
@@ -421,13 +443,13 @@ async function serve(args: ParsedArgs): Promise<void> {
     throw asFailure(e);
   }
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
-  const provenance = new AbortController();
-  ownership = observeDaemonOwnedService(paths, home, provenance.signal).catch(() => false);
+  const ownership = observe();
   await new Promise<void>((resolve, reject) => {
     let closed = false;
     let stopWatching = () => {};
-    void ownership.then(verified => {
+    void ownership.then(observation => {
       if (closed) return;
+      const verified = observation.state === "owned";
       stopWatching = watchDaemonGeneration(binVersion(), async (version) => {
         if (!verified) throw new Error("no verified native launch marker; automatic activation is unavailable; use the installed CLI to restart this daemon");
         planUninstall(paths, home);
@@ -488,7 +510,7 @@ async function run(args: ParsedArgs): Promise<void> {
   }
   if (mode === "start") {
     const { paths, home } = resolveTarget(args);
-    const result = startInstalled(paths, home);
+    const result = await startInstalled(paths, home);
     writeResult(presentationOf(args.values), { command: "daemon start", target: { unit: result.unit }, result }, () => ({ sections: [
       { title: "Start requested", blocks: [{ kind: "lines", lines: [{ text: "The owned service received the start request. Check `cotal daemon status` for readiness; no connection is assumed.", tone: "hint" }] }] },
     ] }));

@@ -85,7 +85,7 @@ export interface ServeOptions {
   /** Test hook: the stock sign-in to drive. */
   readonly login?: LoginCoordinator;
   /** Shipped serve entry's receipt-verified native launch provenance. Foreground servers refuse stop. */
-  readonly stopAllowed?: () => Promise<boolean>;
+  readonly stopAllowed?: () => Promise<boolean | { state: "owned" | "not-owned" | "unknown" }>;
   /** Native startup admission, checked under the lifetime lock before publishing an endpoint. */
   readonly admit?: () => void;
 }
@@ -228,8 +228,13 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         // The reply acknowledges the request, not completed shutdown. The uninstaller
         // independently waits for this process and endpoint to disappear.
         void (async () => {
-          if (req.commit ? !stopPrepared : !await opts.stopAllowed?.()) {
-            await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "the daemon has no verified native launch provenance; it was not stopped" } });
+          const observation = req.commit ? stopPrepared : await opts.stopAllowed?.();
+          const allowed = typeof observation === "object" ? observation.state === "owned" : observation === true;
+          if (!allowed) {
+            const unknown = typeof observation === "object" && observation.state === "unknown";
+            await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: unknown
+              ? "the daemon native launch provenance is still unknown; it was not stopped"
+              : "the daemon has no verified native launch provenance; it was not stopped" } });
             return;
           }
           // Only an explicit commit on this prepared connection follows native removal.

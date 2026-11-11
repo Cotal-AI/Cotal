@@ -104,13 +104,13 @@ if (process.argv.includes("--provenance")) {
     process.argv = [process.execPath, join(repo, "bin/dist/cotal.js")];
     process.execArgv = [];
     delete process.env.COTAL_DAEMON_NATIVE_SERVICE;
-    if (daemonStartedByOwnedService(paths)) throw new Error("foreground accepted as native");
+    if ((daemonStartedByOwnedService(paths).state === "owned")) throw new Error("foreground accepted as native");
     process.env.COTAL_DAEMON_NATIVE_SERVICE = "1";
-    if (daemonStartedByOwnedService(paths)) throw new Error("unmarked source accepted as native");
+    if ((daemonStartedByOwnedService(paths).state === "owned")) throw new Error("unmarked source accepted as native");
     const marked = bytes.replace("[Service]", "[Service]\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1");
     writeFileSync(unitPath, marked, { mode: 0o600 });
     if (!process.argv.includes("--unrecorded")) writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(marked).digest("hex"), installedAt: new Date().toISOString() }));
-    if (!daemonStartedByOwnedService(paths)) throw new Error("verified native source refused");
+    if (!(daemonStartedByOwnedService(paths).state === "owned")) throw new Error("verified native source refused");
     console.log("PASS native marker requires verified same-install source");
   } finally {
     process.argv = argv; process.execArgv = execArgv;

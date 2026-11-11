@@ -104,6 +104,10 @@ async function daemonAnswers(opts: InstallOptions): Promise<boolean> {
   } catch { return false; }
 }
 
+function restartProgress(opts: InstallOptions): (detail: string) => void {
+  return detail => opts.report(`service: ${detail}`, { step: "install", outcome: "running", detail });
+}
+
 /** Install the user service unless it is already installed, then wait for the daemon to answer. */
 async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promise<string | undefined> {
   let unit: string | undefined;
@@ -133,7 +137,7 @@ async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promis
   }
   if (outcome === "already-installed" && !(await daemonAnswers(opts))) {
     // A start failure is not evidence that no installation was recorded.
-    startInstalled(opts.paths, opts.daemonHome);
+    await startInstalled(opts.paths, opts.daemonHome, opts.version, restartProgress(opts));
     detail = `${unit} is already installed; its owned service received a start request`;
   } else if (outcome === "already-installed" && opts.version) {
     const reply = await queryDaemon(opts);
@@ -154,9 +158,9 @@ async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promis
       if (reply.result.version !== opts.version || reply.result.protocol !== DAEMON_PROTOCOL_VERSION) {
         const hosted = (reply.result.managers ?? []).some((manager) => manager.state !== "stopped");
         if (hosted) await managerViaDaemon(opts, { op: "managers-prepare-restart" });
-        try { restartInstalled(opts.paths, opts.daemonHome); }
+        try { await restartInstalled(opts.paths, opts.daemonHome, false, opts.version, restartProgress(opts)); }
         catch (error) {
-          if (hosted) {
+          if (hosted && process.platform !== "win32") {
             try { await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
             catch { /* The native restart failure remains the primary outcome. */ }
           }
@@ -192,9 +196,9 @@ async function refreshApplications(opts: InstallOptions, steps: SetupStep[]): Pr
   }
   try {
     refresh?.();
-    restartInstalled(opts.paths, opts.daemonHome, true);
+    await restartInstalled(opts.paths, opts.daemonHome, true, opts.version, restartProgress(opts));
   } catch (error) {
-    try { await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
+    try { if (process.platform !== "win32") await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
     catch { /* Preserve the installation or native service failure. */ }
     throw error;
   }

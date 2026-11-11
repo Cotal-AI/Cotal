@@ -708,6 +708,21 @@ If any seat is active, nothing is changed or restarted. Stop the seats and run t
 named in the refusal from the same terminal. Windows scheduled tasks do not pin PATH. The native
 entry reads the current machine and user PATH on each start. If setup finds an application that
 the running task cannot resolve, it restarts that recorded service under the same hosted-seat fence.
+Windows restarts during setup and update use the same verified shutdown sequence. Each restart
+first prepares shutdown on the verified old daemon connection, disables the owned
+task and confirms its native instances have stopped. It then commits daemon shutdown and waits for
+the old process, endpoint and lifetime lock to be released before enabling and starting the task.
+Setup reports a refreshed PATH only after a different verified daemon lifetime answers with the
+expected version and protocol. An ambiguous stop or start reports an unconfirmed outcome with its
+phase and recovery guidance, retaining the installation records and restart fence. A validated daemon
+refusal retains its code and message in the failure detail and JSON native cause. Inspect daemon
+status and the recorded task before recovery. Setup does not clear a fence through a new connection.
+After a failed pause, autostart is re-enabled without running a replacement when the pinned old daemon
+still answers on the same connection, or when no daemon or native task instance remains and the
+installation receipt is unchanged. An unresolved native End or ownership check leaves the task
+untouched and reports why. Setup and Check again recover an owned disabled task with zero instances
+by enabling and starting it, then requiring a fresh kernel lifetime to answer. Restart progress names
+the old-process wait (up to 130 seconds) and replacement wait (up to 60 seconds), with periodic updates.
 When no new application is found, setup keeps the service running. A Manager with no available
 connector still refreshes its inventory by restarting its idle child.
 The separate `ai.cotal.machine` registration and connection are reported even while owner approval
@@ -781,9 +796,14 @@ from five seconds to five minutes, and status shows the installed and running ve
 seat count and space. Only changed waiting causes are logged. A foreground daemon reports the
 pending version and stays running. A daemon started by its recorded native service can activate
 once every Manager is empty.
-Native service ownership is verified once off the serving event loop. Status and sign-in requests
-remain available while native supervisor tools run. Automatic activation waits for that result;
-a failed or unfinished check never grants native-service authority.
+Native service ownership is observed off the serving event loop as owned, not owned or unknown.
+Status and sign-in requests remain available while native supervisor tools run. Only owned results
+are cached. Restart and uninstall preparation re-observe unless ownership was verified, replacing
+an unfinished startup check with one bounded to 65 seconds inside the installer's 70-second wait.
+A refusal distinguishes a missing native provenance from an observation that remains unknown.
+The daemon logs safe reason codes without native error text or file paths.
+Automatic activation requires the initial observation to be owned; a failed or unfinished check
+never grants native-service authority.
 Generation activation prepares idle Managers, then restarts the daemon. The new daemon reconciles
 before admitting a hosted Manager. The old generation never reopens admission after changing the
 shared connector store.

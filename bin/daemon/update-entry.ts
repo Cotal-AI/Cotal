@@ -75,9 +75,9 @@ const composed: Command = { ...command, async run(args) {
   if (current.result.version !== updateRuntime.version()) {
     const hosted = (current.result.managers ?? []).some((manager) => manager.pid !== undefined);
     if (hosted) await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
-    try { restartInstalled(paths); }
+    try { await restartInstalled(paths, undefined, false, updateRuntime.version(), detail => console.log(`machine daemon: ${detail}`)); }
     catch (error) {
-      if (hosted) {
+      if (hosted && process.platform !== "win32") {
         try { await managerViaDaemon({ paths }, { op: "managers-abort-restart" }); }
         catch { /* The native restart failure remains the primary outcome. */ }
       }

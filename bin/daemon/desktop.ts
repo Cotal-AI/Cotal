@@ -111,7 +111,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         emit({ v: 1, event: "result", ok: true, result: { installed: true, status: answering.result } });
         return;
       }
-      if (existing) startInstalled(paths, home);
+      if (existing) await startInstalled(paths, home, opts.version, detail => emit({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } }));
       else applyInstall(paths, home);
       const deadline = Date.now() + 15_000;
       for (;;) {
