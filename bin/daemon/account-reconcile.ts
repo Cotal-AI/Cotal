@@ -42,8 +42,13 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
     if (saved.spaces[space]?.removedAt !== undefined) return "removed on this computer";
     const service = services.status(space).state;
     const manager = managers.status(space).state;
-    if (managerOnly.has(space) || manager === "answering" && service === "not-requested") return manager === "answering" ? "connected" : manager;
-    return service;
+    // An answering Manager is what lets the account launch here. The machine service is separate.
+    if (manager === "answering") return "connected";
+    return managerOnly.has(space) ? manager : service;
+  };
+  const machineService = (space: string) => {
+    const service = services.status(space).state;
+    return managerOnly.has(space) || service === "connected" || service === "not-requested" ? undefined : service;
   };
   let queue = Promise.resolve();
   const serial = <T>(run: () => Promise<T>): Promise<T> => {
@@ -108,6 +113,11 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
         const observed = services.status(row.slug);
         if (observed.state !== "connected") {
           const registered = await services.register(row.slug);
+          if (registered.outcome === "approval-required" || registered.outcome === "pending") {
+            // The owner's approval is not this computer's to give. Ask again later, refuse nothing.
+            refusals.delete(row.slug); retryAt.set(row.slug, Date.now() + 30_000);
+            continue;
+          }
           if (registered.outcome !== "registered") throw new Error(registered.outcome);
           const connected = await services.connect(row.slug);
           if (connected.state !== "connected") throw new Error(connected.state);
@@ -122,7 +132,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
   });
   return { apply, localRemoval, localAddition, serial,
     retainAccounts(owners: string[]) { for (const key of desiredByOwner.keys()) if (!owners.includes(key)) desiredByOwner.delete(key); },
-    view: () => [...new Set([...desiredAll(), ...Object.keys(saved.spaces), ...readMeshRegistry().entries.filter(entry => connectedHere(entry.space)).map(entry => entry.space)])].map(space => ({ space, desired: desiredAll().has(space), observed: observedState(space), ...(refusals.has(space) ? { lastRefusal: refusals.get(space)! } : {}) })),
+    view: () => [...new Set([...desiredAll(), ...Object.keys(saved.spaces), ...readMeshRegistry().entries.filter(entry => connectedHere(entry.space)).map(entry => entry.space)])].map(space => ({ space, desired: desiredAll().has(space), observed: observedState(space), ...(machineService(space) ? { machineService: machineService(space)! } : {}), ...(refusals.has(space) ? { lastRefusal: refusals.get(space)! } : {}) })),
     settled: () => queue,
   };
 }

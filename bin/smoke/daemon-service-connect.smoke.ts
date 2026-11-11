@@ -2163,11 +2163,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             check(label, predicate(value), value); return value;
           };
           const hostedShape = process.argv.includes("--account-hosted");
-          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === (hostedShape ? "connected" : "approval-pending")), "A0 desired space reconciles its endpoint shape");
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.lastRefusal === undefined && r.machineService === (hostedShape ? undefined : "approval-pending")), "A0 desired space is launch-ready and reports an unapproved machine service apart");
           if (!hostedShape) await approve(host, ON, fixture.owner);
-          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A1 desired 200 connects real broker service");
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.machineService === undefined), "A1 desired 200 connects real broker service");
           await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
-          if (!process.argv.includes("--account-restart-repro")) check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === (hostedShape ? "connected" : "approval-pending")));
+          if (!process.argv.includes("--account-restart-repro")) check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === "connected" && r.lastRefusal === undefined && r.machineService === (hostedShape ? undefined : "approval-pending")));
           if (process.argv.includes("--account-restart-repro")) {
             const legacyStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${OFF}` });
             await legacyStore.put(deliveryCredsKey(OFF, composition), await mintCreds(ctx[1]!.auth, newIdentity(), "delivery"));

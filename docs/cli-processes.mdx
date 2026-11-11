@@ -634,6 +634,11 @@ the initial signal only to the daemon so it can coordinate its children.
 
 `daemon status` and its JSON `account` section separate desired spaces from observed connection
 state, with computer identity, host support, last registration, desired revision and refusals.
+A desired space reads `connected` once its hosted Manager answers, because that is what lets the
+account launch agent applications on this computer. On a space that also hosts service endpoints,
+the daemon's machine status service needs the space owner's approval. Until then the row carries
+`machineService: approval-pending` and status adds that it waits for the owner. The wait refuses
+nothing and the daemon asks again every 30 seconds.
 A host without the route reports account computers unsupported and keeps per-space behavior.
 Authentication refusal asks you to sign in again. Network failures retain existing connections.
 
