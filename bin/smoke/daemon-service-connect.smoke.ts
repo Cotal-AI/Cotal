@@ -1588,7 +1588,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         if (packed.status !== 0) throw new Error("could not assemble installed SDK fixture archive");
       }
       if (process.argv.includes("--update-repro")) {
-        npmRegistry = createHttpServer((request, response) => {
+        npmRegistry = createHttpServer(async (request, response) => {
           if (closureRollback && request.url === "/jcode-sdk.tgz") { response.end(readFileSync(sdkArchive)); return; }
           if (closureRollback && decodeURIComponent(request.url ?? "").includes("@1jehuang/jcode-sdk")) {
             const metadata = JSON.parse(readFileSync(join(sdkRoot, "package.json"), "utf8"));
@@ -1652,6 +1652,17 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           const requestedVersion = request.url?.includes("0.151.2") ? "0.151.2" : "0.151.3";
           if (request.url?.includes(".tgz")) {
             if (process.argv.includes("--auto-failure-repro") && requestedVersion === "0.151.3") { response.writeHead(503).end("fixture archive unavailable"); return; }
+            if (process.argv.includes("--auto-seat-race-repro") && requestedVersion === "0.151.3") {
+              let prepared = false;
+              try { prepared = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"))?.preparedRestart === true; } catch { /* Preflight is not a prepared transaction. */ }
+              if (prepared && !existsSync(join(root, "race-seat-ready"))) {
+                const deadline = Date.now() + 60_000;
+                while (!existsSync(join(root, "race-seat-ready"))) {
+                  if (Date.now() > deadline) { response.writeHead(503).end("race synchronization timed out"); return; }
+                  await sleep(10);
+                }
+              }
+            }
             response.setHeader("content-type", "application/octet-stream"); response.end(readFileSync(join(upgradeFixture!, `cotal-ai-${requestedVersion}.tgz`))); return;
           }
           const versions = Object.fromEntries(["0.151.2", "0.151.3"].map(version => {
@@ -2859,6 +2870,39 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             if (!activeTarget) throw new Error("automatic acceptance requires active seat");
             await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "stop", { name: "npm_upgrade_custody" }, activeTarget.auth, "owner", 10_000, { instanceId: manager.instanceId });
             activeTarget = undefined;
+            if (process.argv.includes("--auto-seat-race-repro")) {
+              const deadline = Date.now() + 90_000;
+              for (;;) {
+                try { if (JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"))?.preparedRestart) break; } catch { /* Parent has not fenced yet. */ }
+                if (Date.now() > deadline) throw new Error("automatic parent never recorded prepared restart");
+                await sleep(5);
+              }
+              await ask(paths.socket, { op: "managers-abort-restart" });
+              const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+              const raced = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "start", { name: "admission_race", agent: "daemon-smoke", events: false, persona: { prompt: "Owned admission race seat.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, target.auth, "owner", 40_000, { instanceId: manager.instanceId });
+              check("AR operator abort admits actual race seat", raced.ok, raced);
+              writeFileSync(join(root, "race-seat-ready"), "ready\n");
+              try {
+                const until = Date.now() + 90_000;
+                for (;;) {
+                  const log = existsSync(join(home, "update-attempt.log")) ? readFileSync(join(home, "update-attempt.log"), "utf8") : "";
+                  if (log.includes("prepared update admission is no longer fenced and empty")) break;
+                  if (Date.now() > until) throw new Error("bound child never refused changed admission");
+                  await sleep(20);
+                }
+                check("AR bound child refuses changed real custody", true);
+              } finally {
+                await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "stop", { name: "admission_race" }, target.auth, "owner", 10_000, { instanceId: manager.instanceId });
+              }
+              let restored;
+              for (let i = 0; i < 100; i++) {
+                restored = await cli("status");
+                if (restored.doc.result?.version === "0.151.2" && restored.doc.result.update?.failures === 1 && restored.doc.result.managers?.[0]?.state === "answering" && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null) break;
+                await sleep(4000);
+              }
+              check("AR refused changed custody restores previous answering generation", restored?.doc.result?.version === "0.151.2" && restored.doc.result.managers?.[0]?.state === "answering" && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null, restored);
+              return;
+            }
             if (process.argv.includes("--auto-failure-repro")) {
               let failedStatus;
               for (let i = 0; i < 100; i++) {
