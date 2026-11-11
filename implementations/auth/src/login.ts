@@ -621,7 +621,7 @@ export function signedInMachineAccounts(dir: string): AuthSpaceCatalogAccount[] 
 /** Call only the account-computer routes on the signed-in provider's origin. */
 export async function requestAccountMachine(opts: {
   dir: string; idpUrl: string; machineId: string; method: "PUT" | "GET";
-  metadata?: { name: string; platform: "linux" | "darwin" | "win32"; daemonVersion: string };
+  metadata?: { name: string; platform: "linux" | "darwin" | "win32"; daemonVersion: string; managers: readonly { spaceId: string; instanceId: string }[] };
   etag?: string; signal?: AbortSignal;
   intent?: { spaceId: string; enabled: boolean; expectedRevision: number };
 }): Promise<{ status: number; etag?: string; body?: unknown }> {

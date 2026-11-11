@@ -17,7 +17,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
   }
   const pendingNames = new Set<string>();
   let state: AccountComputerStatus = { mode: "signed-out", hostSupport: "unknown", spaces: [] };
-  const contexts = new Map<string, { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void> }>();
+  const contexts = new Map<string, { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; sentManagers?: string; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void> }>();
   const tasks = new Set<Promise<void>>();
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -40,9 +40,12 @@ export function createAccountComputer(home: string, version: string, reconciler:
       tasks.add(context.work);
       async function poll() {
     const state = context.state;
+    // The host can name a Manager after this computer only when the computer says which ones it hosts.
+    const hosted = reconciler.hostedManagers(context.snapshot?.spaces ?? []);
+    const hostedKey = JSON.stringify(hosted);
     const call = (method: "PUT" | "GET") => requestAccountMachine({ dir: home, idpUrl: account.idpUrl, machineId, method, signal: AbortSignal.any([abort.signal, context.abort.signal]),
-      ...(method === "GET" ? { etag: context.etag } : { metadata: { name, platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version } }) });
-    if (Date.now() - context.lastHeartbeat >= 60_000) {
+      ...(method === "GET" ? { etag: context.etag } : { metadata: { name, platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version, managers: hosted } }) });
+    if (Date.now() - context.lastHeartbeat >= 60_000 || hostedKey !== (context.sentManagers ?? "[]")) {
       const sentName = name;
       const result = await call("PUT");
       if (result.status === 404) { state.mode = "per-space"; state.hostSupport = "unsupported"; state.message = "account computers unsupported; existing per-space connections remain local"; return; }
@@ -50,7 +53,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
       if (result.status !== 200 && result.status !== 201) throw new Error("computer registration unavailable");
       const body = result.body as { v?: unknown; machine?: { id?: unknown; lastSeenAt?: unknown } } | undefined;
       if (body?.v !== 1 || body.machine?.id !== machineId || typeof body.machine.lastSeenAt !== "string" || !Number.isFinite(Date.parse(body.machine.lastSeenAt))) throw new Error("invalid computer registration response");
-      context.lastHeartbeat = sentName === name ? Date.now() : 0; state.lastRegistration = body.machine.lastSeenAt; state.hostSupport = "supported";
+      context.lastHeartbeat = sentName === name ? Date.now() : 0; context.sentManagers = hostedKey; state.lastRegistration = body.machine.lastSeenAt; state.hostSupport = "supported";
     }
     context.abort.signal.throwIfAborted();
     const result = await call("GET");

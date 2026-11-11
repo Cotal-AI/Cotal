@@ -213,6 +213,7 @@ let idpOrigin = "";
 const accountOnly = process.argv.includes("--account-only");
 let accountDesired = false;
 let accountRevision = 1;
+let accountRegistration: { managers?: { spaceId: string; instanceId: string }[] } | undefined;
 let accountBindingRevision = 1;
 let accountHttp = 200;
 let intentConflicts = 0;
@@ -276,7 +277,12 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (accountOnly && req.url?.startsWith("/api/cli/machines/")) {
     const machineId = req.url.split("/")[4];
     if (req.method === "PUT" && process.argv.includes("--account-unsupported")) { res.writeHead(404); res.end("{}"); return; }
-    if (req.method === "PUT") { res.end(JSON.stringify({ v: 1, machine: { id: machineId, lastSeenAt: new Date().toISOString() } })); return; }
+    if (req.method === "PUT") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      accountRegistration = JSON.parse(Buffer.concat(chunks).toString()) as typeof accountRegistration;
+      res.end(JSON.stringify({ v: 1, machine: { id: machineId, lastSeenAt: new Date().toISOString() } })); return;
+    }
     await accountGetGate?.();
     if (accountHang && req.method === "GET") { accountHangs++; return; }
     if (accountHttp !== 200) { res.writeHead(accountHttp); res.end(accountHttp === 304 ? undefined : "{}"); return; }
@@ -2167,6 +2173,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           if (!hostedShape) await approve(host, ON, fixture.owner);
           await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.machineService === undefined), "A1 desired 200 connects real broker service");
           await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          const onCatalogId = (catalog as { spaces: { id: string; slug: string }[] }).spaces.find(row => row.slug === ON)!.id;
+          await waitAccount(s => { const instanceId = s.managers?.find((r: any) => r.space === ON && r.state === "answering")?.instanceId; return typeof instanceId === "string" && accountRegistration?.managers?.some(row => row.spaceId === onCatalogId && row.instanceId === instanceId) === true; }, "A2r registration names the answering Manager by catalog space and instance");
           if (!process.argv.includes("--account-restart-repro")) check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === "connected" && r.lastRefusal === undefined && r.machineService === (hostedShape ? undefined : "approval-pending")));
           if (process.argv.includes("--account-restart-repro")) {
             const legacyStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${OFF}` });
