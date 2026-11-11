@@ -58,14 +58,20 @@
  *      not an unreachable space; synchronized clocks recover with the same renewal request ids.
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
+ * Running-seat shutdown: --hosting-only --account-only --stop-seat-only, optionally --three-seats
+ * and --account-hosted (without service endpoints).
+ * Account startup intent: --hosting-only --account-only --account-restart-repro, optionally
+ * --account-hosted. Uses power cuts, a held initial account reply, and offline/legacy controls.
  * Account pin regression only: add --account-mismatch-only (C1, C2, C7b and C10).
  * Offline status regression only: add --status-only (C0, C1, C2, C3, C5, C6, C10 and C15).
  * Add --setup-hints-only to run approval and setup follow-up checks with a leading-hyphen space.
  * Setup progress regression only: add --setup-progress-only (uses the shipped foreground daemon).
  * Clock-behind regression only: add --clock-behind-only (C1, C2, C15, C18 and C10).
  * Add --cancel-only for C1, C2, C15, C6c and C10; --keep-fixture retains the sandbox after shutdown.
+ * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Credential expiry regression only: add --credential-expiry-only (C1, C2, C7, C10, C15 and C18).
  */
+import assert from "node:assert/strict";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
 import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -75,6 +81,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
+import { Transform } from "node:stream";
 import { peerCredentials } from "@cotal-ai/seat";
 import { connect as connectNats } from "@nats-io/transport-node";
 import {
@@ -90,6 +97,7 @@ import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey
 import { askManager } from "@cotal-ai/workspace/control";
 import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
+import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../../implementations/auth/src/lifecycle-registry.js";
 import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
 import { daemonConnectIntentFile } from "../daemon/service.js";
 import { runSetup } from "../daemon/setup.js";
@@ -103,6 +111,8 @@ const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"]
 const setupHintsOnly = process.argv.includes("--setup-hints-only");
 const cancelOnly = process.argv.includes("--cancel-only");
 const keepFixture = process.argv.includes("--keep-fixture");
+const desktopGapOnly = process.argv.includes("--desktop-gap-only");
+const desktopSetupOnly = process.argv.includes("--desktop-setup-only");
 const originalPath = process.env.PATH;
 const setupProgressOnly = process.argv.includes("--setup-progress-only");
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
@@ -132,6 +142,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--clock-behind-only") && !/^(C1 |C2 |C15 |C18 |C10 )/.test(title)) return;
+  if (desktopGapOnly && !/^(C1 |C2 |D0 |C10 )/.test(title)) return;
   if (setupProgressOnly && !/^(C1 |C1b |C2 |C4 |C17 |C17b |C10 )/.test(title)) return;
   if (process.argv.includes("--hosting-only") && !title.startsWith("H1")) return;
   if (process.argv.includes("--account-mismatch-only") && !/^(C1 |C2 |C7b |C10 )/.test(title)) return;
@@ -175,12 +186,12 @@ class MemoryStore implements SecretStore /* the auth services' stores; the daemo
 }
 
 // ---------- owned sandbox ----------
-const root = mkdtempSync(join(scratchParent, "cdr-"));
+const root = mkdtempSync(join(scratchParent, process.argv.includes("--account-intent") ? "dcomp-" : process.argv.includes("--account-only") || process.argv.includes("--signin-parity") ? "dacct-" : "cdr-"));
 chmodSync(root, 0o700);
 const home = join(root, "home"), participant = join(root, "participant"), rtDir = join(root, "rt"), jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}a2b2-js-`));
 for (const d of [home, participant, rtDir]) mkdirSync(d, { mode: 0o700 });
 process.env.COTAL_HOME = home;
-if (setupProgressOnly) {
+if (setupProgressOnly || process.argv.includes("--account-only")) {
   process.env.HOME = home;
   process.env.XDG_CONFIG_HOME = join(root, "config");
   process.env.XDG_RUNTIME_DIR = rtDir;
@@ -195,7 +206,19 @@ const key = await generateKeyPair("EdDSA");
 const jwk = { ...await exportJWK(key.publicKey), kid: "a2b2-idp" };
 const SESSION = "a2b2-session-handle-not-a-secret";
 let idpOrigin = "";
+const accountOnly = process.argv.includes("--account-only");
+let accountDesired = false;
+let accountRevision = 1;
+let accountBindingRevision = 1;
+let accountHttp = 200;
+let intentConflicts = 0;
+let intentWrites = 0;
+let intentHttp = 200;
+let accountHang = false;
+let accountHangs = 0;
+let accountGetGate: (() => Promise<void>) | undefined;
 let catalog: unknown;
+const accountTargets = new Map<string, string>();
 let catalogSpace: string | undefined;
 let catalogTarget: string | undefined;
 const jwtsIssued: string[] = [];
@@ -209,8 +232,13 @@ let deviceFailure: "denied" | "expired" | "unreachable" | undefined;
 let catalogUnavailable = false;
 let catalogAuthorityDown = false;
 let standingRenewals = 0;
+let shutdownLatency = false;
 let catalogAuthorityRequests = 0;
+let catalogManagerStarts = 0;
 let tokenGate: ((res: ServerResponse) => Promise<void>) | undefined;
+let exchangeGate: ((view: unknown, res: ServerResponse) => Promise<boolean>) | undefined;
+const exchangeReads: Array<{ view: unknown; managerInstanceId: unknown }> = [];
+let unsupportedComputerReads = 0;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/device/code") { deviceCodeRequests++; if (deviceFailure === "unreachable") { req.socket.destroy(); return; } return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 })); }
@@ -219,13 +247,62 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     if (recoverOnApproval) idpRevoked = false;
     return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
   }
+  // Per-space fixtures do not implement account-computer routes.
+  if (!accountOnly && (req.url?.startsWith("/api/cli/machines/") || req.url?.startsWith("/api/machines/"))) {
+    if (process.argv.includes("--exchange-retry-repro")) {
+      if (req.headers.authorization !== `Bearer ${SESSION}`) { res.writeHead(401); res.end("{}"); return; }
+      unsupportedComputerReads++;
+    }
+    res.writeHead(404); res.end("{}"); return;
+  }
+  if (accountOnly && req.url?.startsWith("/api/machines/")) {
+    if (req.headers.authorization !== `Bearer ${SESSION}`) { res.writeHead(401); res.end("{}"); return; }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    const intent = JSON.parse(Buffer.concat(chunks).toString()) as { enabled: boolean; expectedRevision: number };
+    intentWrites++;
+    if (intentHttp !== 200) { res.writeHead(intentHttp); res.end("{}"); return; }
+    if (intentConflicts > 0) { intentConflicts--; accountRevision++; res.writeHead(409); res.end(JSON.stringify({ revision: accountRevision })); return; }
+    if (intent.expectedRevision !== accountRevision) { res.writeHead(409); res.end(JSON.stringify({ revision: accountRevision })); return; }
+    if (accountDesired !== intent.enabled) { accountDesired = intent.enabled; accountBindingRevision = ++accountRevision; }
+    res.end(JSON.stringify({ v: 1, machineId: req.url.split("/")[3], revision: accountRevision })); return;
+  }
+  if (accountOnly && req.url?.startsWith("/api/cli/machines/")) {
+    const machineId = req.url.split("/")[4];
+    if (req.method === "PUT" && process.argv.includes("--account-unsupported")) { res.writeHead(404); res.end("{}"); return; }
+    if (req.method === "PUT") { res.end(JSON.stringify({ v: 1, machine: { id: machineId, lastSeenAt: new Date().toISOString() } })); return; }
+    await accountGetGate?.();
+    if (accountHang && req.method === "GET") { accountHangs++; return; }
+    if (accountHttp !== 200) { res.writeHead(accountHttp); res.end(accountHttp === 304 ? undefined : "{}"); return; }
+    const snapshot = catalog as { account: unknown; spaces: { id: string }[] };
+    const spaces = accountDesired ? snapshot.spaces : [];
+    res.setHeader("etag", JSON.stringify(accountRevision));
+    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
+  }
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
   if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(catalog));
+  const accountTarget = [...accountTargets].find(([space]) => req.url?.startsWith(`/account-space/${space}/`));
+  if (accountOnly && accountTarget) {
+    const [space, target] = accountTarget;
+    if (process.argv.includes("--account-hosted") && req.url?.endsWith("/service-endpoint-authority")) { res.writeHead(404); res.end("{}"); return; }
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const answer = await fetch(`${target}${req.url!.slice(`/account-space/${space}`.length)}`, { method: req.method, headers: { "content-type": "application/json" }, ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) });
+    res.writeHead(answer.status); res.end(Buffer.from(await answer.arrayBuffer())); return;
+  }
   if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
+    if (process.argv.includes("--account-hosted") && req.url.endsWith("/service-endpoint-authority")) { res.writeHead(404); res.end("{}"); return; }
     catalogAuthorityRequests++;
+    if (req.method === "POST" && req.url.endsWith("/manager-service-authority")) catalogManagerStarts++;
+    if (shutdownLatency) await sleep(150);
     if (catalogAuthorityDown) { res.writeHead(503); res.end("{}"); return; }
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
+    if (req.url === `/space/${catalogSpace}/exchange`) {
+      const request = JSON.parse(Buffer.concat(chunks).toString()) as { view?: unknown; managerInstanceId?: unknown };
+      exchangeReads.push({ view: request.view, managerInstanceId: request.managerInstanceId });
+      if (await exchangeGate?.(request.view, res)) return;
+    }
     if (Buffer.concat(chunks).toString().includes('"renewStandingBundle"')) standingRenewals++;
     const answer = await fetch(`${catalogTarget}${req.url.slice(`/space/${catalogSpace}`.length)}`, { method: req.method, headers: { "content-type": "application/json" }, ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) });
     res.writeHead(answer.status);
@@ -240,7 +317,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     if (res.destroyed) return;
     if (catalog) res.setHeader("link", `<${idpOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`);
     const now = Math.floor(Date.now() / 1000);
-    const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + idpJwtTtl).sign(key.privateKey);
+    const token = await new SignJWT({ email: "operator@example.test" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + idpJwtTtl).sign(key.privateKey);
     jwtsIssued.push(token);
     return void res.end(JSON.stringify({ token }));
   }
@@ -346,7 +423,7 @@ try {
   const svc = await Promise.all(ctx.map((c, i) => startAuthService({ context: { accountPublicKey: c.auth.account.pub, lifecycleUid: mintLifecycleUid() }, space: c.space, servers,
     store: c.store, storeIdentity: c.store.identity, stateDir: c.stateDir, publicFace: { port: 0, trustedProxy: false },
     ...(process.argv.includes("--renewal-abort-repro") ? { standingRenewableTtlSeconds: 40 } : {}),
-    ...(i === 1 ? {} : { serviceEndpoints: { startup: { kind: "normal" as const },
+    ...(i === 1 || (process.argv.includes("--account-hosted") && (i === 0 || i === 2)) ? {} : { serviceEndpoints: { startup: { kind: "normal" as const },
       callerPayload: { observerCreds: () => mintServiceCallerPayloadObserverCreds({ pub: c.auth.sys.pub, signingSeed: c.auth.sys.signingSeed! }) } } }) })));
   handles.push(...svc);
 
@@ -354,6 +431,7 @@ try {
   // C13: the BRK space's participant reaches the broker through a TCP pass-through the suite can cut,
   // so a broker loss is the daemon's alone; the auth services keep their own broker connections.
   let brokerPathUp = true;
+  let brokerReplyDelay = process.argv.includes("--cold-restart-repro") ? 100 : 0;
   const pathSockets = new Set<Socket>();
   const brokerPath: NetServer = createNetServer((inbound) => {
     if (!brokerPathUp) { inbound.destroy(); return; }
@@ -361,7 +439,15 @@ try {
     pathSockets.add(inbound); pathSockets.add(outbound);
     const drop = () => { inbound.destroy(); outbound.destroy(); pathSockets.delete(inbound); pathSockets.delete(outbound); };
     inbound.on("error", drop); outbound.on("error", drop); inbound.on("close", drop); outbound.on("close", drop);
-    inbound.pipe(outbound); outbound.pipe(inbound);
+    inbound.pipe(outbound);
+    if (process.argv.includes("--hosted-latency")) {
+      outbound.on("data", chunk => {
+        setTimeout(() => { if (!inbound.destroyed) inbound.write(chunk); }, brokerReplyDelay);
+      });
+    } else outbound.pipe(new Transform({ transform(chunk, _encoding, done) {
+      if (brokerReplyDelay) setTimeout(() => done(null, chunk), brokerReplyDelay);
+      else done(null, chunk);
+    } })).pipe(inbound);
   });
   await new Promise<void>((r) => brokerPath.listen(0, "127.0.0.1", () => r()));
   const brokerPathUrl = `nats://127.0.0.1:${(brokerPath.address() as AddressInfo).port}`;
@@ -436,6 +522,23 @@ try {
     frames.push(out, err);
     const doc = format === "--json" ? JSON.parse(out) as Record<string, any> : undefined;
     return { status, doc, out, err };
+  };
+  const desktop = async (request: Record<string, unknown>): Promise<Record<string, any> & { events: Record<string, any>[] }> => {
+    const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "desktop"], {
+      cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rtDir, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
+      stdio: ["pipe", "pipe", "pipe"], timeout: 180_000, killSignal: "SIGKILL",
+    });
+    let out = "", err = "";
+    child.stdout.on("data", (b) => { out += String(b); });
+    child.stderr.on("data", (b) => { err += String(b); });
+    child.stdin.end(`${JSON.stringify(request)}\n`);
+    const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+    if (code !== 0) throw new Error(`desktop adapter exited ${code}: ${err}`);
+    frames.push(out, err);
+    const events = out.trim().split("\n").map((line) => JSON.parse(line) as Record<string, any>);
+    const result = events.at(-1)!;
+    if (result.event !== "result") throw new Error("desktop adapter returned no final result");
+    return { ...result, events };
   };
   const stateOf = (f: Frame) => resultOf(f).state as string | undefined;
   const waitState = async (space: string, want: (s: string | undefined) => boolean, ms = 60_000) => {
@@ -609,6 +712,23 @@ try {
       check("C2 the private renewal record exists, mode 0600 in a 0700 directory",
         filesUnder(daemonDir).filter((p) => p.includes("service-renewal") && p.endsWith(".json")).every((p) => (statSync(join(daemonDir, p)).mode & 0o777) === 0o600)
         && filesUnder(daemonDir).some((p) => p.includes("service-renewal")));
+    });
+
+    await cell("D0 current desktop connection has no hosted launch target", async () => {
+      const registered = await desktop({ op: "register", space: ON });
+      const connected = await desktop({ op: "service-connect", space: ON });
+      const status = await desktop({ op: "status" });
+      const manager = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+      check("D0 current app register and service-connect really reach connected", registered.ok === true && registered.result.outcome === "registered" && connected.ok === true && connected.result.state === "connected", connected);
+      check("D0 independently verified machine service is ready", await instanceStatus(ON) === "ready");
+      console.log("  D0 BASELINE GAP", JSON.stringify({ connected: connected.result.state, managers: status.result.managers, managerState: manager.state }));
+      check("D0 connected app has zero hosted Managers and no launch-ready instance", status.ok === true && status.result.managers.length === 0 && manager.state === "stopped" && !manager.instanceId, manager);
+      let refusal = "";
+      try { await resolveControlTarget({ space: ON }, "control-caller-privileged", undefined, { onRefusal: "throw", readOnly: true }); }
+      catch (error) { refusal = String(error); }
+      check("D0 real launch caller cannot resolve a Manager target", refusal.length > 0, refusal);
+      const rejected = await desktop({ op: "setup", space: ON, idp: idpUrl, PATH: "/foreign" });
+      check("D0 desktop setup rejects renderer-supplied PATH", rejected.ok === false && rejected.error.code === "BAD_REQUEST", rejected);
     });
 
     await cell("C15 an explicitly granted native caller reaches the daemon's registered command", async () => {
@@ -1399,6 +1519,7 @@ try {
       const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
       const original = findMesh(ON)!;
       const published = await (await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as { server: string; tlsRequired?: boolean; userAuth: NonNullable<MeshEntry["userAuth"]> };
+      if (process.argv.includes("--cold-restart-repro") || process.argv.includes("--slow-status-repro") || process.argv.includes("--hosted-latency")) published.server = brokerPathUrl;
       const deliveryStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${ON}` });
       const composition = { injected: true } as const;
       await deliveryStore.put(deliveryCredsKey(ON, composition), await mintCreds(ctx[0]!.auth, newIdentity(), "delivery"));
@@ -1437,6 +1558,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: fixtureVersion }));
       }
       const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+      env.PATH = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
       if (process.argv.includes("--daemon-seed-repro")) env.COTAL_ALLOW_CHECKOUT_SEED = "1";
       if (process.argv.includes("--hosted-seed-repro")) {
         delete env.COTAL_SKIP_CONNECTOR_SEED;
@@ -1495,6 +1617,34 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         }
       }
       const cli = async (...args: string[]) => {
+        if (desktopSetupOnly && args[0] === "setup") {
+          const shellPath = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
+          writeFileSync(join(home, ".bash_profile"), `export PATH=${JSON.stringify(shellPath)}\n`, { mode: 0o600 });
+          const child = spawn(process.execPath, [cliEntry, "daemon", "desktop"], { cwd: root, env: { ...env, PATH: "/usr/bin:/bin" }, stdio: ["pipe", "pipe", "pipe"], timeout: 180_000, killSignal: "SIGKILL" });
+          let out = "", err = "";
+          const progress: string[] = [];
+          let buffer = "";
+          child.stdout.on("data", (b) => {
+            out += String(b); buffer += String(b);
+            let newline: number;
+            while ((newline = buffer.indexOf("\n")) >= 0) {
+              const frame = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1);
+              if (frame.event === "setup-progress") progress.push(frame.line);
+            }
+          });
+          child.stderr.on("data", (b) => { err += String(b); });
+          child.stdin.end(`${JSON.stringify({ op: "setup", space: ON, idp: idpUrl })}\n`);
+          const exit = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+          if (exit !== 0) throw new Error(`desktop setup exited ${exit}: ${err}`);
+          const frames = out.trim().split("\n").map(line => JSON.parse(line));
+          const frame = frames.at(-1);
+          check("D1 setup streams reached steps before its final result", progress.length > 0 && frames[0].event === "setup-progress" && frame.event === "result");
+          const reports = frames.filter(frame => frame.event === "setup-progress");
+          check("D1 every report carries structured step metadata", reports.every(frame => typeof frame.progress?.step === "string" && typeof frame.progress?.outcome === "string" && typeof frame.progress?.detail === "string"));
+          check("D1 progress preserves service diagnostics and application inventory", reports.some(frame => frame.progress.step === "install" && frame.line.startsWith("service:")) && (!reports.some(frame => frame.progress.step === "applications") || reports.filter(frame => frame.progress.step === "applications").every(frame => Array.isArray(frame.progress.applications))));
+          check("D1 setup frames contain no session or JWT", !out.includes(SESSION) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(out));
+          return { code: frame.ok ? 0 : 2, doc: { result: frame.result, error: frame.error ? { ...frame.error, cause: frame.error.native } : undefined } as Record<string, any>, err: progress.join("\n") };
+        }
         const child = spawn(process.execPath, [cliEntry, "daemon", ...args, ...(explicitHome ? ["--daemon-home", explicitHome] : []), "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let out = "", err = "";
         child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
@@ -1512,7 +1662,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       };
       const startDaemon = async (managedHome = explicitHome) => {
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
-        const servicePath = process.argv.includes("--setup-path-repro") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
+        const servicePath = process.argv.includes("--setup-path-repro") || process.argv.includes("--account-setup-journey") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
         const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading && (!process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro")) ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] });
         child.stdout.resume(); child.stderr.on("data", (chunk) => { if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) console.log("  owned daemon", String(chunk).trim()); });
         for (let i = 0; i < 100; i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
@@ -1587,6 +1737,333 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         writeFileSync(join(pathBin, "systemctl"), `#!${process.execPath}\nconst args=process.argv.slice(2);if(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}const op=args.includes('daemon-reload')?'daemon-reload':args.at(-2);if(!['stop','start','disable','daemon-reload'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
       }
       try {
+        if (process.argv.includes("--signin-parity")) {
+          const publicCli = async (...args: string[]) => {
+            const command = spawn(process.execPath, [cliEntry, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+            let out = "", err = "";
+            command.stdout.on("data", b => { out += String(b); });
+            command.stderr.on("data", b => { err += String(b); });
+            const code = await new Promise<number | null>(resolve => command.once("close", resolve));
+            return { code, out, err };
+          };
+          const before = deviceCodeRequests;
+          const signedIn = await cli("login", "--idp", idpUrl);
+          check("P1 daemon device login succeeds in fresh shared home", signedIn.code === 0 && deviceCodeRequests === before + 1, signedIn);
+          const refreshed = await cli("spaces", "--refresh");
+          check("P2a daemon refresh publishes the signed-in catalog", refreshed.code === 0, refreshed);
+          const spaces = await publicCli("space", "--json");
+          check("P2 ordinary CLI space listing discovers signed-in catalog", spaces.code === 0 && spaces.out.includes(ON), spaces);
+          const selected = await publicCli("use", ON, "--json");
+          check("P3 select catalog space through CLI", selected.code === 0, selected);
+          const identity = await publicCli("whoami", "--plain");
+          check("P4 plain CLI whoami uses daemon sign-in", identity.code === 0 && identity.out.includes("machine-owner"), identity);
+          const read = await publicCli("channel", "--json");
+          check("P5 authenticated CLI broker read uses shared sign-in without prompt", read.code === 0 && deviceCodeRequests === before + 1, read);
+          const logout = await publicCli("logout", "--idp", idpUrl, "--local", "--json");
+          check("P6 local CLI logout succeeds", logout.code === 0, logout);
+          const reverseBefore = deviceCodeRequests;
+          const login = await publicCli("login", "--idp", idpUrl, "--plain");
+          check("P7 ordinary CLI device login succeeds", login.code === 0 && deviceCodeRequests === reverseBefore + 1, login);
+          const daemonSpaces = await cli("spaces");
+          check("P8 running daemon observes CLI sign-in without another prompt", daemonSpaces.code === 0 && daemonSpaces.doc.result?.signedInProviders?.includes(idpUrl) && deviceCodeRequests === reverseBefore + 1, daemonSpaces);
+          await killAndAwaitExit(child, "SIGTERM");
+          const isolated = join(root, "isolated-daemon");
+          mkdirSync(isolated, { mode: 0o700 });
+          child = await startDaemon(isolated);
+          const isolatedSpaces = await publicCli("daemon", "spaces", "--daemon-home", isolated, "--json");
+          check("P9 explicit daemon home does not inherit CLI sign-in", isolatedSpaces.code === 0 && JSON.parse(isolatedSpaces.out).result.signedInProviders.length === 0, isolatedSpaces);
+          const isolatedLogin = await publicCli("daemon", "login", "--idp", idpUrl, "--daemon-home", isolated, "--json");
+          check("P10 explicit daemon home requires its own device sign-in", isolatedLogin.code === 0 && deviceCodeRequests === reverseBefore + 2, isolatedLogin);
+          check("P11 no public output exposes fixture session", !JSON.stringify([signedIn, spaces, identity, read, login, daemonSpaces, isolatedLogin]).includes(SESSION));
+          return;
+        }
+        if (accountOnly) {
+          if (process.argv.includes("--account-setup-journey")) {
+            await killAndAwaitExit(child, "SIGTERM");
+            rmSync(pathUnit);
+            rmSync(pathReceipt);
+            writeFileSync(join(pathBin, "loginctl"), `#!${process.execPath}\nconsole.log('Linger=yes');\n`, { mode: 0o700 });
+            writeFileSync(join(pathBin, "systemctl"), `#!${process.execPath}\nconst args=process.argv.slice(2);if(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}const op=args.includes('daemon-reload')?'daemon-reload':args.includes('enable')?'daemon-reload':args.at(-2);if(!['stop','start','disable','daemon-reload'].includes(op))process.exit(99);fetch('http://127.0.0.1:${(pathControl!.address() as AddressInfo).port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
+            check("J0 clean setup starts with no installed service", !existsSync(pathUnit) && !existsSync(pathReceipt));
+            const absent = await cli("setup");
+            check("J0a no installed daemon names provider flag", absent.code !== 0 && absent.doc.error?.message.includes("--idp <url>"), absent);
+            const before = deviceCodeRequests;
+            const fresh = await cli("setup", "--idp", idpUrl);
+            check("J1 account setup registers with one device approval", fresh.code === 0 && deviceCodeRequests === before + 1 && typeof fresh.doc.result?.machineId === "string", fresh);
+            const initial = (await cli("status")).doc.result;
+            check("J2 account setup turns on no space", initial?.account?.hostSupport === "supported" && initial.account.spaces.length === 0 && !accountDesired, initial);
+            const again = await cli("setup", "--idp", idpUrl);
+            check("J3 account setup reuses approval and computer identity", again.code === 0 && deviceCodeRequests === before + 1 && again.doc.result?.machineId === fresh.doc.result?.machineId, again);
+            const human = await plainCommand("setup", "--idp", idpUrl);
+            check("J4 human output names account computer and dashboard", human.code === 0 && human.out.includes("Connected to your account") && human.out.includes("operator@example.test") && !human.out.includes("machine-owner") && human.out.includes("in the dashboard"), human);
+            for (const flags of [["--no-manager"], ["--wait", "0"]]) {
+              const invalid = await cli("setup", "--idp", idpUrl, ...flags);
+              check("J5 space-only flag refuses without space", invalid.code !== 0 && invalid.doc.error?.message.includes("require --space"), invalid);
+            }
+            const enabled = await ask(paths.socket, { op: "space-intent", space: ON, enabled: true }, 100_000);
+            check("J5a account intent enables the space", enabled.ok === true && accountDesired, enabled);
+            let unavailable: Record<string, any> = {};
+            for (let i = 0; i < 120; i++) {
+              unavailable = (await cli("status")).doc.result ?? {};
+              if (unavailable.account?.spaces?.some((row: any) => row.lastRefusal === "no available application")) break;
+              await sleep(500);
+            }
+            const missing = await plainCommand("status");
+            check("J6 no-application status provides install and setup Next", /Next:[\s\S]*Install an agent application/.test(missing.out) && missing.out.includes("cotal daemon setup"), missing);
+            const hinted = await cli("setup");
+            check("J6a status setup hint works without arguments", hinted.code === 0 && deviceCodeRequests === before + 1, hinted);
+            const newApplicationBin = join(root, "new-application-bin");
+            mkdirSync(newApplicationBin, { mode: 0o700 });
+            writeFileSync(join(newApplicationBin, "cotal-owned-missing-harness"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+            env.PATH = `${newApplicationBin}:${env.PATH}`;
+            const refreshed = await cli("setup");
+            check("J7 account rerun refreshes without approval", refreshed.code === 0 && deviceCodeRequests === before + 1, refreshed);
+            let ready: Record<string, any> = {};
+            for (let i = 0; i < 120; i++) {
+              ready = (await cli("status")).doc.result ?? {};
+              if (ready.managers?.some((row: any) => row.space === ON && row.connectors?.some((c: any) => c.state === "available"))) break;
+              await sleep(500);
+            }
+            check("J8 turned-on hosted Manager sees added application automatically", ready.managers?.some((row: any) => row.space === ON && row.state === "answering" && row.connectors?.some((c: any) => c.state === "available")), ready);
+            if (!process.argv.includes("--account-hosted")) await approve(host, ON, fixture.owner);
+            for (let i = 0; i < 120; i++) {
+              ready = (await cli("status")).doc.result ?? {};
+              if (ready.account?.spaces?.some((row: any) => row.space === ON && row.observed === "connected")) break;
+              await sleep(500);
+            }
+            check("J9 enabled account space connects", ready.account?.spaces?.some((row: any) => row.space === ON && row.observed === "connected"), ready);
+            const used = await plainCommand("setup");
+            check("J10 rerun names enabled spaces", used.code === 0 && used.out.includes(`Spaces using this computer: ${ON}`) && !used.out.includes("Turn on the spaces"), used);
+            const otherProvider = `${idpUrl}/other`;
+            saveIdpSession(home, otherProvider, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+            const multiple = await cli("setup");
+            check("J11 several providers require an explicit choice", multiple.code !== 0 && multiple.doc.error?.message.includes("--idp <url>") && multiple.doc.error.message.includes(idpUrl) && multiple.doc.error.message.includes(otherProvider) && deviceCodeRequests === before + 1, multiple);
+            deleteIdpSession(home, otherProvider);
+            deleteIdpSession(home, idpUrl);
+            const unsigned = await cli("setup");
+            check("J12 no sign-in names provider flag without approval", unsigned.code !== 0 && unsigned.doc.error?.message.includes("not signed in") && unsigned.doc.error.message.includes("--idp <url>") && deviceCodeRequests === before + 1, unsigned);
+            return;
+          }
+          if (process.argv.includes("--account-setup-gaps")) {
+            const fresh = await cli("setup", "--idp", idpUrl);
+            check("G1 real CLI rejects account-only setup before approval", fresh.code !== 0 && fresh.doc.error?.message?.includes("needs --space"), fresh);
+            const signed = await cli("login", "--idp", idpUrl);
+            check("G1 existing account login works independently", signed.code === 0, signed);
+            accountDesired = true;
+            let status: Record<string, any> = {};
+            for (let i = 0; i < 120; i++) {
+              status = (await cli("status")).doc.result ?? {};
+              if (status.account?.spaces?.some((row: any) => row.space === ON && row.lastRefusal === "no available application")) break;
+              await sleep(500);
+            }
+            const human = await plainCommand("status");
+            check("G2 status names unavailable application but has no setup next step", human.out.includes("no available application") && !/Next[\s\S]*install an agent application/i.test(human.out), { status, human });
+            const repeated = await cli("setup", "--idp", idpUrl);
+            const installed = await cli("install");
+            check("G3 account refresh is unavailable and install refuses existing unit", repeated.code !== 0 && repeated.doc.error?.message?.includes("needs --space") && installed.code !== 0 && JSON.stringify(installed).includes("already has an installed unit"), { repeated, installed });
+            return;
+          }
+          saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+          const pendingPublished = await (await fetch(`${svc[2]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as Record<string, any>;
+          accountTargets.set(DENY, svc[2]!.publicUrl!.replace(/\/$/, ""));
+          grantActor(ctx[2]!.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(ctx[2]!.store, DENY))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] });
+          removeMesh(DENY);
+          if (!process.argv.includes("--account-restart-repro")) (catalog as { spaces: unknown[] }).spaces.unshift({ id: DENY, slug: DENY, name: "Pending space", kind: "team", role: "member", registration: { ...pendingPublished, space: DENY, tlsRequired: false, userAuth: { ...pendingPublished.userAuth, endpoints: { url: `${idpOrigin}/account-space/${DENY}` } } } });
+          if (process.argv.includes("--account-unsupported")) {
+            const setup = await cli("setup", "--space", ON, "--idp", idpUrl);
+            const status = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+            check("I7 explicit unsupported host keeps local setup and makes no intent writes", setup.code === 0 && intentWrites === 0 && status.account?.mode === "per-space", { setup, status, intentWrites });
+            return;
+          }
+          if (process.argv.includes("--account-intent")) {
+            intentConflicts = 1;
+            const local = await cli("setup", "--space", ON, "--idp", idpUrl);
+            check("I0 setup enables the consented space in the account desired set", accountDesired, local);
+            check("I1 conflict retries once using a fresh revision", intentWrites >= 2 && intentConflicts === 0);
+            if (!process.argv.includes("--account-hosted")) await approve(host, ON, fixture.owner);
+            const waitIntent = async (connected: boolean) => {
+              let status: Record<string, any> = {};
+              for (let i = 0; i < 120; i++) {
+                status = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+                if (Boolean(status.account?.spaces?.some((row: any) => row.space === ON && row.observed === "connected")) === connected) return status;
+                await sleep(500);
+              }
+              throw new Error(`account connection did not become ${connected}`);
+            };
+            await waitIntent(true);
+            check("I1a enabled account intent connects approved real broker service", true);
+            const removed = resultOf(await ask(paths.socket, { op: "space-intent", space: ON, enabled: false }, 100_000));
+            check("I2 native removal updates account desired set", !accountDesired && removed.account?.spaces?.every((row: any) => row.space !== ON || !row.desired), removed);
+            await waitIntent(false);
+            accountDesired = true; accountBindingRevision = ++accountRevision;
+            await waitIntent(true);
+            check("I3 dashboard enable connects without a local action", true);
+            accountDesired = false; accountRevision++;
+            await waitIntent(false);
+            check("I4 dashboard removal disconnects without a local action", true);
+            intentConflicts = 2;
+            const beforeConflict = intentWrites;
+            const conflict = await ask(paths.socket, { op: "space-intent", space: ON, enabled: true }, 100_000);
+            check("I5 a second conflict refuses without a third write", !conflict.ok && intentWrites === beforeConflict + 2 && !accountDesired, conflict);
+            intentHttp = 401;
+            const refused = await ask(paths.socket, { op: "space-intent", space: ON, enabled: true }, 100_000);
+            check("I6 intent authentication refusal preserves desired set and asks for sign-in", !refused.ok && JSON.stringify(refused).includes("Sign in again") && !accountDesired, refused);
+            return;
+          }
+          accountDesired = true;
+          const observed = async () => resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+          const waitAccount = async (predicate: (s: Record<string, any>) => boolean, label: string) => {
+            let value: Record<string, any> = {};
+            for (let i = 0; i < 120; i++) { value = await observed(); if (predicate(value)) break; await sleep(500); }
+            check(label, predicate(value), value); return value;
+          };
+          const hostedShape = process.argv.includes("--account-hosted");
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === (hostedShape ? "connected" : "approval-pending")), "A0 desired space reconciles its endpoint shape");
+          if (!hostedShape) await approve(host, ON, fixture.owner);
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A1 desired 200 connects real broker service");
+          await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          if (!process.argv.includes("--account-restart-repro")) check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === (hostedShape ? "connected" : "approval-pending")));
+          if (process.argv.includes("--account-restart-repro")) {
+            const legacyStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${OFF}` });
+            await legacyStore.put(deliveryCredsKey(OFF, composition), await mintCreds(ctx[1]!.auth, newIdentity(), "delivery"));
+            await legacyStore.put(membershipRwCredsKey(OFF, composition), await mintCreds(ctx[1]!.auth, newIdentity(), "membership-rw"));
+            await legacyStore.put(membershipObserverCredsKey(OFF, composition), await mintMembershipObserverCreds(ctx[1]!.auth, newIdentity()));
+            await legacyStore.put(connectionEvictorCredsKey(OFF, composition), await mintConnectionEvictorCreds(ctx[1]!.auth, newIdentity()));
+            secondDelivery = await startDeliveryService({ context: { accountPublicKey: ctx[1]!.auth.account.pub, lifecycleUid: mintLifecycleUid() }, space: OFF, servers, store: legacyStore, storeIdentity: legacyStore.identity, stateDir: join(root, "legacy-delivery") });
+            grantActor(ctx[1]!.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(ctx[1]!.store, OFF))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
+            const legacy = findMesh(OFF)!;
+            recordMesh({ ...legacy, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString() });
+            const started = await ask(paths.socket, { op: "manager-start", space: OFF }, 100_000);
+            assert.ok(started.ok && resultOf(started).state === "answering", "legacy Manager starts outside account custody");
+            const powerCut = async () => {
+              const pids = (await observed()).managers.map((row: any) => row.pid).filter((pid: unknown): pid is number => typeof pid === "number");
+              await killAndAwaitExit(child, "SIGKILL");
+              for (const pid of pids) process.kill(pid, "SIGKILL");
+            };
+            const participantPs = async () => {
+              const command = spawn(process.execPath, [cliEntry, "ps", "--space", ON, "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+              let out = "", err = "";
+              command.stdout.on("data", chunk => { out += String(chunk); });
+              command.stderr.on("data", chunk => { err += String(chunk); });
+              const code = await new Promise<number | null>((resolve, reject) => { command.once("error", reject); command.once("close", resolve); });
+              assert.equal(code, 0, err);
+              return JSON.parse(out).result;
+            };
+            await powerCut();
+            accountDesired = false; accountRevision++;
+            const before = catalogManagerStarts;
+            let requested = false;
+            let release!: () => void;
+            const held = new Promise<void>(resolve => { release = resolve; });
+            accountGetGate = async () => { requested = true; await held; };
+            try {
+              child = await startDaemon();
+              for (let i = 0; i < 120 && !requested; i++) await sleep(100);
+              assert.ok(requested, "restarted daemon reached desired-space GET");
+              const during = await observed();
+              check("A8 removed space never starts before initial account reply", during.managers.every((row: any) => row.space !== ON || row.state === "stopped") && catalogManagerStarts === before, during);
+              const ps = await participantPs();
+              check("A8 participant sees no answering Manager while initial account reply is pending", ps.managers.length === 0, ps);
+            } finally { accountGetGate = undefined; release(); }
+            await waitAccount(s => s.account?.desiredRevision === accountRevision && !s.account.spaces.some((row: any) => row.space === ON), "A8 current removal applies before saved resume");
+            check("A8 removed space makes no Manager registration calls after initial account reply", catalogManagerStarts === before);
+            check("A8 participant sees no removed Manager after reconciliation", (await participantPs()).managers.length === 0);
+            await waitAccount(s => s.managers.some((row: any) => row.space === OFF && row.state === "answering"), "A8 legacy per-space Manager resumes outside account desired set");
+
+            accountDesired = true; accountBindingRevision = ++accountRevision;
+            await waitAccount(s => s.managers.some((row: any) => row.space === ON && row.state === "answering"), "A9 dashboard re-enable starts Manager");
+            await powerCut();
+            child = await startDaemon();
+            await waitAccount(s => s.account?.desiredRevision === accountRevision && s.managers.some((row: any) => row.space === ON && row.state === "answering"), "A9 still-desired space answers after power cut");
+            check("A9 participant sees still-desired Manager", (await participantPs()).kind === "seats");
+
+            await powerCut();
+            accountHttp = 503;
+            child = await startDaemon();
+            await waitAccount(s => s.account?.message === "account computer request failed; existing connections are unchanged" && s.managers.some((row: any) => row.space === ON && row.state === "answering"), "A10 unavailable account preserves saved-intent recovery");
+            check("A10 participant sees saved Manager during account outage", (await participantPs()).kind === "seats");
+            return;
+          }
+          if (process.argv.includes("--stop-seat-only")) {
+            const manager = (await observed()).managers.find((row: any) => row.space === ON);
+            const countArg = process.argv.find(arg => arg.startsWith("--seats="));
+            const count = countArg ? Number(countArg.slice(8)) : process.argv.includes("--three-seats") ? 3 : 1;
+            const observer = await connectNats({ servers, ...standaloneConnectOpts({ creds: await mintCreds(ctx[0]!.auth, newIdentity(), "provisioner"), tls: false }) });
+            try {
+              const lifecycle = await openLifecycleRegistry(observer, ON);
+              for (let index = 0; index < count; index++) {
+                const seat = spawn(process.execPath, [cliEntry, "spawn", "--on", manager.instanceId, "--space", ON, "--harness", "daemon-smoke", "--name", `shutdown_seat_${index}`, "--no-events", "--detach", "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+                let output = "", error = "";
+                seat.stdout.on("data", chunk => { output += String(chunk); });
+                seat.stderr.on("data", chunk => { error += String(chunk); });
+                const code = await new Promise<number | null>(resolve => seat.once("exit", resolve));
+                check("S0 real hosted running seat joined", code === 0 && JSON.parse(output).result?.readiness === "joined", { code, output, error });
+                if (code !== 0) throw new Error("running-seat prerequisite failed");
+              }
+              shutdownLatency = process.argv.includes("--hosted-latency");
+              if (shutdownLatency) brokerReplyDelay = 150;
+              const started = Date.now();
+              accountDesired = false; accountRevision++;
+              const stopping = await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "stopping" && r.pid === manager.pid), "S7 Manager stays stopping while child is alive");
+              const stopStarted = Date.parse(stopping.managers.find((r: any) => r.space === ON).observedAt);
+              const stopped = await waitAccount(s => !s.account?.spaces?.some((r: any) => r.space === ON) && s.managers?.every((r: any) => r.space !== ON || r.state === "stopped"), "S1 dashboard removal stops hosted Manager");
+              const log = readFileSync(join(home, "daemon", spaceSegment(ON), "manager", "manager.log"), "utf8");
+              const timestamps = log.split("\n").filter(line => /seat reaped: shutdown_seat_|deregistered manager instance/.test(line)).map(line => Date.parse(line.slice(0, 24)));
+              const shutdownMs = Math.max(...timestamps) - stopStarted;
+              console.log("S shutdown observation", JSON.stringify({ count, elapsedMs: Date.now() - started, shutdownMs, managers: stopped.managers, log }));
+              const row = stopped.managers.find((entry: any) => entry.space === ON);
+              check("S4 clean stop has no last exit and names dashboard", row?.state === "stopped" && !row.lastExit && row.next?.includes("dashboard"), row);
+              check("S5 retirement completes within bounded graceful window", shutdownMs < Math.min(60_000, 15_000 + count * 5000) && row.lastStop === "graceful", { shutdownMs, lastStop: row.lastStop });
+              const human = await plainCommand("status", "--space", ON);
+              check("S6 human status has dashboard hint and no crash line", human.code === 0 && human.out.includes("dashboard") && !human.out.includes("Last exit:"), human);
+              check("S2 running-seat shutdown has no IPC crash", !log.includes("ERR_IPC_CHANNEL_CLOSED"), stopped.managers);
+              for (let index = 0; index < count; index++) {
+                const head = await readLifecycleHeadForOperation(lifecycle, fixture.owner, `shutdown_seat_${index}`);
+                check(`S3 seat ${index} lifecycle retired before Manager exit`, head?.mapping.state === "retired", head?.mapping);
+              }
+            } finally { await observer.close(); }
+            return;
+          }
+          accountHttp = 503; await sleep(5500);
+          check("A2c 503 never disconnects a connected space", (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
+          accountHttp = 304; await sleep(5500);
+          check("A2d 304 never disconnects a connected space", (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
+          accountHttp = 200;
+          accountHang = true;
+          for (let i = 0; i < 120 && !accountHangs; i++) await sleep(500);
+          await sleep(31_000);
+          check("A2e real request timeout never disconnects connected space", accountHangs > 0 && (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
+          accountHang = false;
+          const humanStatus = await plainCommand("status");
+          check("A2a CLI human status names account computer and desired revision", humanStatus.code === 0 && humanStatus.out.includes("Account computer") && humanStatus.out.includes("Desired revision") && humanStatus.out.includes(ON), humanStatus);
+          const jsonStatus = await cli("status");
+          check("A2b CLI status JSON includes account desired and observed fields", jsonStatus.doc.result?.account?.spaces?.some((r: any) => r.space === ON && r.desired && r.observed === "connected"), jsonStatus);
+          removeMesh(ON);
+          await sleep(6000);
+          let removedStatus: Record<string, any> = {};
+          for (let i = 0; i < 60; i++) {
+            removedStatus = await observed();
+            if (removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer") && removedStatus.managers?.every((row: any) => row.space !== ON || row.state === "stopped")) break;
+            await sleep(500);
+          }
+          check("A2g local registry removal stops the Manager and marks local veto", removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer") && removedStatus.managers?.every((row: any) => row.space !== ON || row.state === "stopped"), removedStatus);
+          accountBindingRevision = ++accountRevision;
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A2h dashboard rebind restores locally removed registration");
+          removeMesh(ON);
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "removed on this computer"), "A3 missing registry records local removal veto");
+          accountRevision++;
+          await sleep(6000);
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "removed on this computer"), "A3 unrelated machine revision cannot clear local veto");
+          accountHttp = 304; await sleep(5500);
+          check("A4 304 keeps local veto", (await observed()).account?.spaces?.some((r: any) => r.observed === "removed on this computer"));
+          accountHttp = 503; await sleep(5500);
+          check("A5 503 keeps local veto", (await observed()).account?.spaces?.some((r: any) => r.observed === "removed on this computer"));
+          accountHttp = 200; accountBindingRevision = ++accountRevision;
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A6 same-binding revision releases local veto");
+          accountDesired = false; accountRevision++;
+          await waitAccount(s => !s.account?.spaces?.some((r: any) => r.space === ON) && s.managers?.every((r: any) => r.space !== ON || r.state === "stopped"), "A7 desired removal disconnects service and stops Manager");
+          return;
+        }
         if (explicitHome) {
           saveIdpSession(explicitHome, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
           recordMesh({ ...original, server: published.server, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString(), userAuth: { ...published.userAuth, remote: true, sentinelCredsPath: original.userAuth!.sentinelCredsPath } });
@@ -1634,6 +2111,17 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           const idlePid = child.pid, idleCalls = pathCalls.length;
           const repeated = await cli("setup", "--space", ON);
           check("P6 no new application leaves service running unchanged", repeated.code === 0 && child.pid === idlePid && pathCalls.length === idleCalls, repeated);
+          if (desktopSetupOnly) {
+            const before = child.pid;
+            await killAndAwaitExit(child, "SIGTERM"); child = await startDaemon();
+            const relaunched = await cli("setup", "--space", ON);
+            check("D2 reopening the app after daemon restart restores launch-readiness", child.pid !== before && relaunched.code === 0 && relaunched.doc.result?.manager?.state === "answering", relaunched);
+            const instanceId = relaunched.doc.result?.manager?.instanceId;
+            const resumedTarget = await resolveControlTarget({ space: ON }, "control-caller-privileged", instanceId, { onRefusal: "throw", readOnly: true });
+            const launch = await askManager(client, ON, servers, "start", { name: "desktop_relaunch", agent: "daemon-smoke", events: false, persona: { prompt: "Owned desktop relaunch", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, resumedTarget.auth, "owner", 40_000, { instanceId });
+            check("D2 dashboard-shaped caller launches on the restarted desktop Manager", launch.ok, launch.error);
+            if (launch.ok) await askManager(client, ON, servers, "stop", { name: "desktop_relaunch" }, resumedTarget.auth, "owner", 10_000, { instanceId });
+          }
           const removed = await cli("uninstall", "--yes");
           check("P5 uninstall accepts refreshed receipt and removes unit and daemon", removed.code === 0 && !existsSync(pathUnit) && !existsSync(pathReceipt) && !existsSync(paths.socket), removed);
           return;
@@ -1655,6 +2143,119 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         }
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--exchange-retry-repro")) {
+          const initial = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+          check("Exchange fixture explicitly admits per-space hosting on an unsupported account host", unsupportedComputerReads > 0 && initial.account?.mode === "per-space" && initial.account?.hostSupport === "unsupported", initial.account);
+          const metadata = createHttpServer((_req, res) => res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: fixtureVersion }, versions: { [fixtureVersion]: { name: "cotal-ai", version: fixtureVersion } } })));
+          await new Promise<void>(resolve => metadata.listen(0, "127.0.0.1", resolve));
+          const runUpdate = async (label: string, expected: number) => {
+            exchangeReads.length = 0;
+            const started = Date.now();
+            const updating = spawn(process.execPath, [cliEntry, "update", "--space", ON], { cwd: root, env: { ...env, COTAL_ALLOW_CHECKOUT_SEED: "1", npm_config_registry: `http://127.0.0.1:${(metadata.address() as AddressInfo).port}` }, stdio: ["ignore", "pipe", "pipe"] });
+            let text = "";
+            updating.stdout.on("data", chunk => { text += String(chunk); });
+            updating.stderr.on("data", chunk => { text += String(chunk); });
+            try {
+              const code = await new Promise<number | null>((resolve, reject) => { updating.once("error", reject); updating.once("close", resolve); });
+              const elapsed = Date.now() - started;
+              console.log("exchange retry", JSON.stringify({ label, code, elapsed, requests: exchangeReads.length, text }));
+              check(`${label}: expected exit and reconciliation admission`, code === expected && text.includes("Built-in connectors") === (expected === 0), text);
+              check(`${label}: every Manager view stays instance-pinned`, exchangeReads.filter(row => row.view === "manager-caller").every(row => row.managerInstanceId === manager.instanceId), exchangeReads);
+              if (expected === 0) check(`${label}: fresh custody answer before reconciliation`, text.indexOf(`instance ${manager.instanceId} answered; 0 seat(s)`) >= 0 && text.indexOf("answered; 0 seat(s)") < text.indexOf("Built-in connectors"), text);
+              return { text, elapsed, requests: exchangeReads.length };
+            } finally { if (updating.exitCode === null && updating.signalCode === null) await killAndAwaitExit(updating, "SIGTERM"); }
+          };
+          try {
+            for (const mode of ["timeout", "502", "view-503"] as const) {
+              let outageStarted = 0;
+              let failures = 0;
+              exchangeGate = async (view, res) => {
+                // The view-only case proves recovery after the base bearer has already succeeded.
+                if (mode === "view-503" && view !== "manager-caller") return false;
+                outageStarted ||= Date.now();
+                if (Date.now() - outageStarted >= 20_000) return false;
+                failures++;
+                if (mode === "timeout") await sleep(16_500);
+                if (!res.destroyed) res.writeHead(mode === "view-503" ? 503 : 502).end("<html>host restarting</html>");
+                return true;
+              };
+              const result = await runUpdate(`20s ${mode} outage`, 0);
+              check(`${mode}: retried unavailable host visibly`, failures >= 2 && result.text.includes("is not answering the continuity exchange; retrying"), result);
+            }
+            for (const status of [400, 401, 403, 404, 429]) {
+              exchangeGate = async (_view, res) => { res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ error: "fixture credential refused" })); return true; };
+              const result = await runUpdate(`HTTP ${status} denial`, 1);
+              check(`HTTP ${status}: no retry or installation repair`, result.requests === 2 && result.elapsed < 15_000 && !result.text.includes("retrying"), result);
+            }
+            exchangeGate = async (_view, res) => { res.writeHead(502).end("host unavailable"); return true; };
+            const exhausted = await runUpdate("persistent HTTP 502", 1);
+            check("persistent outage: one bounded budget and host recovery guidance", exhausted.elapsed >= 119_000 && exhausted.elapsed < 140_000 && exhausted.text.includes("within 120 seconds") && exhausted.text.includes("run `cotal update` again") && !exhausted.text.includes("re-register"), exhausted);
+            exchangeGate = undefined;
+            await runUpdate("healthy exchange after refusal without re-registration", 0);
+          } finally {
+            exchangeGate = undefined;
+            await new Promise<void>(resolve => metadata.close(() => resolve()));
+          }
+          return;
+        }
+        if (process.argv.includes("--slow-status-repro")) {
+          brokerReplyDelay = 350;
+          try {
+            const begin = Date.now();
+            const raw = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+            console.log("6270 delayed status", JSON.stringify({ elapsedMs: Date.now() - begin, managers: raw.managers }));
+            check("6270 raw daemon status remains answering on a delayed broker", raw.managers?.some((row: any) => row.instanceId === manager.instanceId && row.state === "answering"), raw.managers);
+            const desktop = spawn(process.execPath, [cliEntry, "daemon", "desktop"], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
+            desktop.stdin.end(`${JSON.stringify({ op: "status" })}\n`);
+            let output = "";
+            desktop.stdout.on("data", chunk => { output += String(chunk); });
+            desktop.stderr.resume();
+            await new Promise<void>(resolve => desktop.once("exit", () => resolve()));
+            const frame = JSON.parse(output);
+            console.log("6270 desktop status", JSON.stringify(frame));
+            check("6270 desktop stdio status preserves connected Manager on a delayed broker", frame.ok && frame.result?.managers?.some((row: any) => row.instanceId === manager.instanceId && row.state === "answering"), frame);
+            const metadata = createHttpServer((_req, res) => res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: fixtureVersion }, versions: { [fixtureVersion]: { name: "cotal-ai", version: fixtureVersion } } })));
+            await new Promise<void>(resolve => metadata.listen(0, "127.0.0.1", resolve));
+            try {
+              const updating = spawn(process.execPath, [cliEntry, "update", "--space", ON], { cwd: root, env: { ...env, npm_config_registry: `http://127.0.0.1:${(metadata.address() as AddressInfo).port}` }, stdio: ["ignore", "pipe", "pipe"] });
+              let text = "";
+              updating.stdout.on("data", chunk => { text += String(chunk); });
+              updating.stderr.on("data", chunk => { text += String(chunk); });
+              await new Promise<void>(resolve => updating.once("exit", () => resolve()));
+              console.log("6270 update continuity", text.slice(0, 2000));
+              check("6270 updater reaches reconciliation after fresh pinned custody on delayed broker", text.includes("answered; 0 seat(s)") && text.includes("Built-in connectors") && !text.includes("running manager continuity check:"), text);
+            } finally { await new Promise<void>(resolve => metadata.close(() => resolve())); }
+          } finally { brokerReplyDelay = 0; }
+          return;
+        }
+        if (process.argv.includes("--cold-restart-repro")) {
+          const client = { versionSkew: (text: string) => text, roster: async () => [] };
+          for (let run = 1; run <= 3; run++) {
+            const started = Date.now();
+            await killAndAwaitExit(child, "SIGTERM");
+            child = await startDaemon();
+            const daemonReadyMs = Date.now() - started;
+            let replacement: Record<string, any> = {};
+            while (Date.now() - started < 100_000) {
+              replacement = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+              if (replacement.state === "answering" || replacement.state === "refused") break;
+              await sleep(100);
+            }
+            const answeringMs = Date.now() - started;
+            check(`6267 restart ${run} answers within 30s without setup`, replacement.state === "answering" && answeringMs < 30_000, { answeringMs, replacement });
+            const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", replacement.instanceId, { onRefusal: "throw", readOnly: true });
+            const resolves: number[] = [];
+            for (const temperature of ["cold", "warm"]) {
+              const begin = Date.now();
+              const resolved = await askManager(client, ON, target.server, "resolveAgent", { name: "default", agent: "daemon-smoke" }, target.auth, "owner", 10_000, { instanceId: replacement.instanceId });
+              resolves.push(Date.now() - begin);
+              check(`6267 restart ${run} ${temperature} resolve succeeds within 10s`, resolved.ok && resolves.at(-1)! < 10_000, resolved);
+            }
+            console.log("6267 timing", JSON.stringify({ run, startedAt: new Date(started).toISOString(), daemonReadyMs, answeringMs, coldResolveMs: resolves[0], warmResolveMs: resolves[1] }));
+          }
+          console.log("6267 manager log", readFileSync(join(home, "daemon", spaceSegment(ON), "manager", "manager.log"), "utf8").replace(/http:\/\/127\.0\.0\.1:\d+\/#t=\S+/g, "<private-console>"));
+          return;
+        }
         if (process.argv.includes("--generation-process-skew-repro")) {
           if (!upgrading) throw new Error("generation process skew requires a private installed fixture");
           const metadataFile = join(globalPrefix, "lib/node_modules/cotal-ai/package.json");

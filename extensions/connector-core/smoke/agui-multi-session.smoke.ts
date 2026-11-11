@@ -368,7 +368,7 @@ try {
   // self-consistent still halts.
   {
     const mActor = `A${randomUUID().replace(/-/g, "").toUpperCase().slice(0, 40)}`;
-    const mPrincipal = principalKey(OWNER, mActor).key;
+    principalKey(OWNER, mActor);
     const subjectPath = locFor("ses_midack", mActor).subjectPath;
 
     const first = await session("ses_midack", { actor: mActor });

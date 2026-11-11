@@ -16,7 +16,6 @@ import {
   standaloneConnectOpts,
   DEFAULT_SERVER,
   DEFAULT_SPACE,
-  DEV_OWNER,
   isAuthRejection,
   registry,
   parseCommandArgs,
@@ -382,7 +381,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       const agentBearerExchangeUrl = target.agentBearerExchangeUrl;
       if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
         throw new Error(`registered space "${space}" has no pinned public exchange URL for retained managed agents`);
-      const material = await provider.managerServiceAuthority({ ...providerCall, request });
+      console.error(`manager startup: requesting remote authority for ${state.instanceId}`);
+      let material = await provider.managerServiceAuthority({ ...providerCall, request });
       const actors = remoteManagerActors(state.instanceId);
       if (material.owner.length === 0 || material.instanceId !== state.instanceId || material.lifecycleUid !== state.lifecycleUid ||
           JSON.stringify(material.actors) !== JSON.stringify(actors))
@@ -399,6 +399,17 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         instanceId: state.instanceId,
         serveActor: actors.serve,
         prepareCreds: materialCredential(material, "executor", state.identities.executor),
+        refreshPrepareCreds: async () => {
+          const refreshed = await provider.managerServiceAuthority!({
+            ...providerCall, request: remoteManagerAuthorityRequest(state, "cli", "prepare"),
+          });
+          if (refreshed.owner !== material.owner || refreshed.instanceId !== state.instanceId ||
+              refreshed.lifecycleUid !== state.lifecycleUid || JSON.stringify(refreshed.actors) !== JSON.stringify(actors))
+            throw new Error("the host returned manager-service material for different lifecycle coordinates");
+          const creds = materialCredential(refreshed, "executor", state.identities.executor);
+          material = refreshed;
+          return creds;
+        },
         tlsRequired: target.tlsRequired,
         evict: async (principals) => (await maintain("evict-family-principal", state.instanceId, [...principals])).evictions!.map((e) => e.verifiedGone),
         reconcileForeignRegistration: async (instanceId) => { await maintain("reconcile-registration", instanceId); },
@@ -410,6 +421,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       // schema closure here exceeded the typed protocol's 64-artifact cap as the command set grew.
       const contractArtifacts = [artifacts.document, artifacts.manifest];
       const registrationProof = remoteManagerRegistrationProof(material.owner, state, contractArtifacts);
+      console.error(`manager startup: activating registered instance ${state.instanceId}`);
       const activate = await provider.managerServiceAuthority({
         ...providerCall,
         request: remoteManagerAuthorityRequest(state, "cli", "activate", { registrationProof, contractArtifacts }),
@@ -515,7 +527,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         // the host knows nothing about.
         ...(provider.enrollRemoteManagedAgent
           ? {
-              enrollManagedAgent: async ({ target, spawn }) => {
+              enrollManagedAgent: async ({ target, spawn, requestId }) => {
                 const request = remoteManagedAgentEnrollmentRequest(
                   state,
                   "cli",
@@ -523,6 +535,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
                   registered.processEpoch,
                   target,
                   spawn,
+                  requestId,
                 );
                 const result = await provider.enrollRemoteManagedAgent!({ ...providerCall, request });
                 return remoteManagedAgentEnrollmentMaterial(result, request);
@@ -822,6 +835,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   // managed child already owns its exact starting PID slot; it settles that same process here.
   releaseSettledRecord = recordManagerPid(managerRoot, space);
   publishManagerSpareCapability(managerContext, mgr.spareSeats);
+  if (args.values["machine-parent"] === true && remoteAuthority) process.send?.({ kind: "manager-ready", instanceId: remoteAuthority.instanceId });
   if (v.name !== undefined && name !== undefined) {
     try { if (readManagerName(managerContext) !== name) recordManagerName(managerContext, name); }
     catch (e) { console.error(c.yellow(`! the manager name was not recorded, so the next start does not keep it: ${(e as Error).message}`)); }
@@ -1157,7 +1171,7 @@ const managerCommands: Command[] = [
       { name: "endpoint", type: "string", value: "<e>", description: `endpoint the instance serves (default: ${MANAGER_ENDPOINT})` },
       { name: "instance", type: "string", value: "<id>", description: "instance id to deregister, the whole id as `cotal ps` prints it (default: this folder's persisted manager instance)" },
     ],
-    validate: () => { throw new CommandFailure("refused", "USAGE_INVALID", "the legacy deregistration spelling no longer executes", { remedy: "use cotal endpoint deregister <class> <full-instance-id> [--space <space>] [--yes|--dry-run], which needs a static space's signing authority; an open or user-auth space has no command that removes a registration", selfContained: true }); },
+    validate: () => { throw new CommandFailure("refused", "USAGE_INVALID", "the legacy deregistration spelling no longer executes", { remedy: "use cotal endpoint deregister <class> <full-instance-id> [--space <space>] [--yes|--dry-run], which needs a static space's signing authority or the user-auth space's governing removal authority; an open space has no native registration authority", selfContained: true }); },
     run: async () => { throw new CommandFailure("refused", "USAGE_INVALID", "use `cotal endpoint deregister <class> <full-instance-id>` instead"); },
   },
   {

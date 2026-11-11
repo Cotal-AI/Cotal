@@ -19,7 +19,6 @@
  *
  * Run: pnpm smoke:delivery-boot-honesty
  */
-import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";

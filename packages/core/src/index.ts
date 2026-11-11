@@ -32,6 +32,8 @@ export * from "./space-initialization-diff.js";
 export * from "./stream-schema-diff.js";
 export * from "./space-schema-diff.js";
 export * from "./endpoint-service.js";
+export * from "./endpoint-deregister.js";
+export * from "./remote-endpoint-deregister.js";
 export * from "./endpoint-serve.js";
 export * from "./endpoint-describe-observation.js";
 export * from "./endpoint-verbs.js";

@@ -1,5 +1,131 @@
 # @cotal-ai/cli
 
+## 0.158.1
+
+### Patch Changes
+
+- Updated dependencies [884b619]
+  - @cotal-ai/core@0.158.1
+  - @cotal-ai/workspace@0.158.1
+
+## 0.158.0
+
+### Minor Changes
+
+- f7f5cc6: Remove departed Manager registrations in user-auth spaces through the governing auth service.
+  
+  The command verifies the account that registered the Manager and reuses the static path's broker-absence and revision guards. The embedded authority also provides a trusted space-operator door for hosted computer removal. Census hints name the command, and hosts without the operation refuse without borrowing a local signer.
+
+### Patch Changes
+
+- Updated dependencies [8962134]
+- Updated dependencies [f7f5cc6]
+  - @cotal-ai/workspace@0.158.0
+  - @cotal-ai/core@0.158.0
+
+## 0.157.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.9
+  - @cotal-ai/workspace@0.157.9
+
+## 0.157.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.8
+  - @cotal-ai/workspace@0.157.8
+
+## 0.157.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.7
+  - @cotal-ai/workspace@0.157.7
+
+## 0.157.6
+
+### Patch Changes
+
+- Updated dependencies [4ad09f7]
+- Updated dependencies [ca6f40b]
+  - @cotal-ai/core@0.157.6
+  - @cotal-ai/workspace@0.157.6
+
+## 0.157.5
+
+### Patch Changes
+
+- a722365: Enable unused-local checks in the shared TypeScript configuration and remove unused imports and declarations from source and smoke tests. Preserve initialization, validation and build-time inbox compatibility checks.
+- Updated dependencies [a722365]
+  - @cotal-ai/core@0.157.5
+  - @cotal-ai/workspace@0.157.5
+
+## 0.157.4
+
+### Patch Changes
+
+- 560f0b3: Connect computers to signed-in accounts and reconcile dashboard space bindings through the machine daemon.
+- db0aac7: Fit component-health facts to the terminal width. Rows that are too wide stack their facts below the name and verdict, using the existing word wrapping. Piped output, health verdicts and exit codes stay unchanged.
+- @cotal-ai/core@0.157.4
+  - @cotal-ai/workspace@0.157.4
+
+## 0.157.3
+
+### Patch Changes
+
+- 2772665: Avoid a misleading startup warning when a foreground start is interrupted. The startup observer no longer reports the control plane as degraded while the guarded stop is in progress; genuine startup failures still produce their warning.
+- @cotal-ai/core@0.157.3
+  - @cotal-ai/workspace@0.157.3
+
+## 0.157.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.2
+  - @cotal-ai/workspace@0.157.2
+
+## 0.157.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.1
+  - @cotal-ai/workspace@0.157.1
+
+## 0.157.0
+
+### Patch Changes
+
+- 5494fa8: Self-update checks first-party release archives before replacing the global installation.
+  Unavailable archives now produce registry propagation and retry guidance without starting installation or connector reconciliation. The check uses npm's configured registry and integrity verification with bounded requests.
+- 9989f22: Explain a denied optional agent inventory during stack shutdown without printing broker subjects or lifecycle details. Keep shutdown safety checks and actor grants unchanged.
+- 196314c: Keep broker logs owner-private after rotation on POSIX systems. Broker launches narrow the child umask without changing the caller's mask or unrelated services, so native log rotation cannot create group-readable files.
+- df601ae: Core can read the direct messages to and from named principals, and tells a refused read apart from a space with none.
+  
+  `CotalEndpoint.dmHistoryOf(principals)` filters on the broker and answers `{ state: "denied" }` when the credential may not read direct messages, while `dmHistory` keeps its empty list. The workspace keeps one private record per chat session the terminal app opens, the newest 20 per space and no credential, so the app can count those sessions as yours and show their direct messages after a restart. `cotal space forget` removes a space's records and counts them in its receipt as `removedChatSessions`.
+- Updated dependencies [df601ae]
+- Updated dependencies [3bd9391]
+  - @cotal-ai/core@0.157.0
+  - @cotal-ai/workspace@0.157.0
+
+## 0.156.0
+
+### Patch Changes
+
+- 33f22ee: Require confirmation before stopping a stack started with plain `cotal up`.
+  Noninteractive stops now need `--yes`, as prepared stacks already do. Interactive
+  stops show the retained components and default to No. Previews and already-stopped
+  stacks still need no confirmation.
+  The stop rechecks its safety guards after interactive confirmation and refuses if the
+  reviewed target or process records changed while the prompt waited.
+- Updated dependencies [24bf62a]
+- Updated dependencies [80b1c38]
+- Updated dependencies [f167bea]
+- Updated dependencies [ccc9d7e]
+  - @cotal-ai/core@0.156.0
+  - @cotal-ai/workspace@0.156.0
+
 ## 0.155.2
 
 ### Patch Changes

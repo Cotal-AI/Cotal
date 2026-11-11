@@ -49,6 +49,7 @@ import {
   type Report,
   type UserBundle,
 } from "@cotal-ai/workspace";
+import { forgetChatSessions } from "@cotal-ai/workspace/chat";
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
@@ -141,6 +142,8 @@ interface SpaceForgotten {
   readonly selectionCleared: boolean;
   /** The per-space preferences saved under its name that the forget removed, by key. */
   readonly removedPreferences: Readonly<Partial<Record<string, string>>>;
+  /** How many chat sessions the terminal app remembered for the space, which the forget removed. */
+  readonly removedChatSessions: number;
 }
 
 const usage = (message: string, remedy?: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message, remedy ? { remedy } : {});
@@ -648,9 +651,10 @@ function keptWarnings(name: string, kept: ReturnType<typeof releaseStackDefiniti
   return kept ? [{ code: "STACK_DEFINITIONS_KEPT", target: { space: name, definitions: kept.names }, message: `${kept.names.length ? `the stack definitions ${kept.names.join(", ")} were` : "its saved stack definitions were"} kept, so another folder cannot start "${name}" until they are removed: ${kept.why}` }] : [];
 }
 
-/** The space's per-space preferences go with it, so a later space of the same name starts without
- *  them. The registration is already gone when their removal fails, which leaves the run partial. */
-function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | "selectionCleared" | "removedPreferences">, preferencesRevision: number, warnings: OutputWarning[] = []): void {
+/** The space's per-space preferences and the chat sessions the terminal app remembered for it go with
+ *  it, so a later space of the same name starts without them. The registration is already gone when
+ *  either removal fails, which leaves the run partial. */
+function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | "selectionCleared" | "removedPreferences" | "removedChatSessions">, preferencesRevision: number, warnings: OutputWarning[] = []): void {
   const selectionCleared = getCurrent() === r.space;
   if (selectionCleared) clearCurrent();
   let removedPreferences: Partial<Record<string, string>> = {};
@@ -662,7 +666,16 @@ function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | 
     const first = isCommandFailure(e) && e.remedy ? `${e.remedy}; then ` : "";
     partial = { message: `forgot ${r.space}, but its per-space preferences were not removed: ${(e as Error).message}`, remedy: `${first}see them with \`cotal config --space ${r.space}\` and remove each with \`cotal config unset <key> --space ${r.space}\`` };
   }
-  const result: SpaceForgotten = { kind: "space-forgotten", ...r, selectionCleared, removedPreferences };
+  let removedChatSessions = 0;
+  try {
+    removedChatSessions = forgetChatSessions(r.space);
+  } catch (e) {
+    const sessions = { message: `the chat sessions the terminal app remembered for it were not removed: ${(e as Error).message}`, remedy: isCommandFailure(e) && e.remedy ? e.remedy : "remove the folder the message names" };
+    partial = partial
+      ? { message: `${partial.message}; ${sessions.message}`, remedy: `${partial.remedy}; ${sessions.remedy}` }
+      : { message: `forgot ${r.space}, but ${sessions.message}`, remedy: sessions.remedy };
+  }
+  const result: SpaceForgotten = { kind: "space-forgotten", ...r, selectionCleared, removedPreferences, removedChatSessions };
   writeResult(presentation, { command: "space", target: { space: r.space }, result, warnings, ...(partial ? { completeness: "partial" as const, partial } : {}) }, forgottenView);
 }
 
@@ -673,6 +686,7 @@ function forgottenView(r: SpaceForgotten): Report {
   ];
   const removed = Object.entries(r.removedPreferences).filter(([, value]) => value !== undefined);
   if (removed.length) lines.push({ text: `  removed its per-space preferences: ${removed.map(([key, value]) => `${key}=${value}`).join(", ")} - \`cotal config set <key> <value> --space ${r.space}\` sets one again`, tone: "hint" });
+  if (r.removedChatSessions) lines.push({ text: `  removed the ${r.removedChatSessions} chat session(s) the terminal app remembered for it`, tone: "hint" });
   if (r.releasedDefinitions.length) lines.push({ text: `  removed its stopped stack definitions (${r.releasedDefinitions.join(", ")}), so another folder can start ${r.space}`, tone: "hint" });
   if (r.keptServices.length) lines.push({ text: `  kept its saved services (${r.keptServices.join(", ")}): a later space named ${r.space} inherits them, and \`cotal service remove <name> --space ${r.space} --yes\` in that space forgets one`, tone: "hint" });
   if (r.selectionCleared) lines.push({ text: "no space is selected now - select one with `cotal use <name>`", tone: "hint" });

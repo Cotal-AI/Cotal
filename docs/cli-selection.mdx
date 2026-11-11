@@ -224,7 +224,9 @@ its space removes only that file, and the result's `root` is null. Forgetting th
 removes the per-space preferences saved under that name, so a later space with the same name starts
 without them, and the receipt lists each removed key and value so you can set them again. If that
 removal fails after the record is gone, the run is `partial` and names the `config unset` to finish it,
-after the `chmod` when the preferences folder is one another account could write.
+after the `chmod` when the preferences folder is one another account could write. Forget also removes
+the chat sessions the terminal app remembered for the space, and the receipt counts them as
+`removedChatSessions`. If that removal fails, the run is `partial` too.
 Forget also removes the stack definitions `cotal up` saved for the space at its root, with their
 stopped instance records, so another folder can start a stack under the same name. The result lists
 them. The root's stack journal stays, keeping the stack's mode, address and store, and no longer
@@ -1046,9 +1048,9 @@ instance answers, the row is refused and is not reported as this process serving
 An answer names the instance that gave it. A probe refused before any answer
 says so, and does not invent an instance. When this machine has no manager process,
 an unpinned answer is reported as serving and the row names that instance. A spawn holder
-carries `status` on the pinned instance. `ps` and `slots` are not part of this probe
-and stay with `admin`. When the login or that view cannot supply a credential, the
-manager row says why instead of printing the broker's refusal of an unauthenticated probe.
+carries `status` on the pinned instance. `ps` and `slots` are not part of this probe.
+When the login or that view cannot supply a credential, the manager row says why instead of
+printing the broker's refusal of an unauthenticated probe.
 
 Persona rows name the catalog they describe. If this folder and the selected mesh use different
 catalogs, status names both and marks which one spawn launches from. A green `default` means the file
@@ -1104,8 +1106,10 @@ while the pass runs reads as `absent`.
 The auth-service start, status and stop paths share the same PID-file resolution rules.
 An unreadable record directory refuses the start; it is not treated as an absent pre-upgrade record.
 
-Each component prints on one line. A control character inside a reported reason, such as a newline
-in a stored row's field name, prints as its `\uXXXX` escape.
+Each component keeps one line when piped or when its row fits the terminal. On a narrower terminal,
+its facts stack below the name and verdict, wrapping at spaces. A single identity, path or command
+wider than the terminal stays whole. Verdicts and exit codes do not change. A control character
+inside a reported reason, such as a newline in a stored row's field name, prints as its `\uXXXX` escape.
 
 
 ### Registration [#registration]

@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSpaceAuth, isReachable, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
 let pass = 0, fail = 0;
 const check = (name: string, condition: boolean, extra?: unknown) => {
@@ -51,10 +51,22 @@ if (process.env.COTAL_ORPHAN_SEAT_THROW_CONTROL !== "1") {
 }
 const port = await freePort(); const servers = `nats://127.0.0.1:${port}`; const space = `orphan817-${randomUUID().slice(0, 8)}`; const auth = await createSpaceAuth(space); const observerCreds = await mintMembershipObserverCreds(auth, newIdentity()); const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws"); mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth); writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n"); writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
-const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir); let daemon: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined; const managers: ChildProcess[] = []; const seats: number[] = [];
+// The watchdog owns detached descendants even when a signal prevents this suite's finally block.
+recordSmokeSandbox({ root, cotalHome: join(root, "home"), xdgConfigHome: join(root, "config") });
+const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir); let daemon: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined; const managers: ChildProcess[] = []; const seats = new Set<number>();
 async function startManager(tag: string, returnAtManager = false): Promise<{ child: ChildProcess; manager?: { managerPid: number; managerInstanceId: string }; ready?: { managerPid: number; managerInstanceId: string; seatPid: number; actor: string; lifecycleUid: string }; spawn?: { managerPid: number; managerInstanceId: string; reply: { ok: boolean; error?: string; data?: unknown }; managedNames: string[] }; stdout: () => string; stderr: () => string }> {
-  const child = spawn(tsx, [host], { cwd: repo, env: { ...ambientEnv, REPRO_ROOT: root, REPRO_SPACE: space, REPRO_SERVERS: servers, REPRO_OBSERVER_CREDS: observerCreds, REPRO_EVICTOR_CREDS: evictorCreds, REPRO_ACCOUNT_ID: auth.account.pub, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" }, detached: true, stdio: ["ignore", "pipe", "pipe"] }); managers.push(child); let out = "", err = ""; child.stdout?.on("data", (b) => out += String(b)); child.stderr?.on("data", (b) => err += String(b)); const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline) { const readyLine = out.split("\n").find((x) => x.startsWith("REPRO_READY ")); if (readyLine) { const ready = JSON.parse(readyLine.slice("REPRO_READY ".length)); seats.push(ready.seatPid); return { child, ready, stdout: () => out, stderr: () => err }; } const spawnLine = out.split("\n").find((x) => x.startsWith("REPRO_SPAWN ")); if (spawnLine) return { child, spawn: JSON.parse(spawnLine.slice("REPRO_SPAWN ".length)), stdout: () => out, stderr: () => err }; const managerLine = out.split("\n").find((x) => x.startsWith("REPRO_MANAGER ")); if (managerLine && returnAtManager) return { child, manager: JSON.parse(managerLine.slice("REPRO_MANAGER ".length)), stdout: () => out, stderr: () => err }; if (child.exitCode !== null) throw new Error(`${tag} manager exited ${child.exitCode}: ${err}`); await wait(100); }
+  const child = spawn(tsx, [host], { cwd: root, env: { ...ambientEnv, REPRO_ROOT: root, REPRO_SPACE: space, REPRO_SERVERS: servers, REPRO_OBSERVER_CREDS: observerCreds, REPRO_EVICTOR_CREDS: evictorCreds, REPRO_ACCOUNT_ID: auth.account.pub, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" }, detached: true, stdio: ["ignore", "pipe", "pipe"] }); managers.push(child);
+  let out = "", err = "", pending = "";
+  child.stdout?.on("data", (b) => {
+    out += String(b); pending += String(b);
+    const lines = pending.split("\n"); pending = lines.pop()!;
+    for (const line of lines) if (line.startsWith("REPRO_SEAT ")) {
+      const pid = Number(line.slice("REPRO_SEAT ".length));
+      if (Number.isSafeInteger(pid) && pid > 0) seats.add(pid);
+    }
+  });
+  child.stderr?.on("data", (b) => err += String(b)); const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) { const readyLine = out.split("\n").find((x) => x.startsWith("REPRO_READY ")); if (readyLine) { const ready = JSON.parse(readyLine.slice("REPRO_READY ".length)); seats.add(ready.seatPid); return { child, ready, stdout: () => out, stderr: () => err }; } const spawnLine = out.split("\n").find((x) => x.startsWith("REPRO_SPAWN ")); if (spawnLine) return { child, spawn: JSON.parse(spawnLine.slice("REPRO_SPAWN ".length)), stdout: () => out, stderr: () => err }; const managerLine = out.split("\n").find((x) => x.startsWith("REPRO_MANAGER ")); if (managerLine && returnAtManager) return { child, manager: JSON.parse(managerLine.slice("REPRO_MANAGER ".length)), stdout: () => out, stderr: () => err }; if (child.exitCode !== null) throw new Error(`${tag} manager exited ${child.exitCode}: ${err}`); await wait(100); }
   throw new Error(`${tag} manager readiness timeout: ${err}`);
 }
 try {
@@ -83,7 +95,9 @@ try {
   // verify would be the wrong-process kill #1100 forbids. The custodied pty runtime's reap is proved
   // by smoke:orphan-seat-reap with real custodians.
   check("broker succession leaves a process the runtime cannot address by reference alive", alive(first.ready.seatPid), first.ready);
-  const EXPECTED = 5;
+  const successorReady = await until(() => second.stdout().split("\n").some((line) => line.startsWith("REPRO_READY ")), 90_000);
+  check("successor launches a new independently-owned seat before teardown", successorReady && seats.size >= 2, { stdout: second.stdout(), stderr: second.stderr() });
+  const EXPECTED = 6;
   if (pass + fail !== EXPECTED)
     throw new Error(`expected ${EXPECTED} cells, ran ${pass + fail}; a cell was added or silently skipped`);
   console.log(`\nORPHAN-SEAT SUCCESSION SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"} (${pass} passed, ${fail} failed)`);

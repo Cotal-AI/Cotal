@@ -548,14 +548,14 @@ registry.register(
   // A refused component stops the sweep before the broker, and keeps its artifacts and the registration.
   const reservationOwner = daemon();
   writeFileSync(join(sandbox, ".cotal", "fixture.pid"), `removing:${reservationOwner}`);
-  const reservedDown = cotal(["down"]);
+  const reservedDown = cotal(["down", "--yes"]);
   ok("bare down never signals a removal reservation or deletes its artifacts",
     reservedDown.status === 1 && /removal is in progress/.test(reservedDown.stderr) && alive(reservationOwner) && existsSync(join(sandbox, ".cotal", "fixture.secret")),
     reservedDown.stdout + reservedDown.stderr);
   try { process.kill(reservationOwner, "SIGTERM"); } catch { /* gone */ }
 
   writeFileSync(join(sandbox, ".cotal", "fixture.pid"), String(fixturePid));
-  const whole = cotal(["down"]);
+  const whole = cotal(["down", "--yes"]);
   ok("bare down stops an installed extension's process with the stack and clears its artifacts",
     whole.status === 0 && !alive(fixturePid) && !existsSync(join(sandbox, ".cotal", "fixture.pid")) && !existsSync(join(sandbox, ".cotal", "fixture.secret")),
     whole.stdout + whole.stderr);

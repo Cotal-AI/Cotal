@@ -208,10 +208,10 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import {
   CotalEndpoint, createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, serverConfig, setupSpaceStreams,
   standaloneConnectOpts, isReachable, remoteManagerActors, remoteManagerRegistrationProof,
-  eventChannel, loadAgentFile, readRunAdmission, runDriverCaller, readGoalResult,
+  eventChannel, loadAgentFile, readRunAdmission, runDriverCaller,
   openRecordsBucket, createRunSpec, writeRunStatus, newTakeoverId, type RunListPage,
   RUN_HOST_KIND, COTAL_LANG_RUN_HOST, type RunHost, type RunHostDrive,
-  epCall, issuedUserCaller, resolveService, invokeCommand, type EpCaller, type Connector, type EpAttributedReply, registry,
+  issuedUserCaller, resolveService, invokeCommand, type EpCaller, type Connector, type EpAttributedReply, registry,
 } from "@cotal-ai/core";
 import { authDir, userAuthStateDir, workspaceSecretStore, saveSpaceAuth, recordMesh, assertUserAuthInfo } from "@cotal-ai/workspace";
 import {
@@ -219,7 +219,7 @@ import {
   deriveOwnerForIdpSubject, findActorUnified, revokeActor,
 } from "@cotal-ai/auth";
 import { Manager, type ManagerOptions } from "../src/manager.js";
-import { managerClusterArtifacts, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
+import { managerClusterArtifacts } from "../src/manager-service-contract.js";
 import { registerRemoteManagerAuthority } from "../src/remote-register.js";
 import * as remote from "../src/remote-authority.js";
 import { RunHosting } from "../src/run-hosting.js";

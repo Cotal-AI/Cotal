@@ -23,7 +23,7 @@ import { spawn as spawnProc } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect } from "@nats-io/transport-node";
+import { connect, TimeoutError } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
@@ -73,20 +73,20 @@ import {
   readRunNotice,
   createRunSpec,
   writeRunStatus,
-  readRunRecord,
   replayRunJournal,
   newTakeoverId,
   EpEnvelopeError,
   type EpCommandDef,
   type EpServeContext,
   type EpCaller,
-  type GoalRef,
   type Presence,
+  type ActionContext,
 } from "@cotal-ai/core";
-import { Cancelled, EffectError, type JournalEntry } from "@cotal-ai/lang";
+import { EffectError, type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { POLL_ATTEMPTS, loopLag, type LoopLagObserver } from "../src/host-starvation.js";
 
 const SPACE = "meshturn";
 const EP = "manager";
@@ -379,6 +379,11 @@ const mk = (runId: string): MeshHandler => new MeshHandler(
   { space: SPACE, endpoint: EP, runId, caller: CALLER, instanceId: "i".repeat(26), epoch: 1, holder: HOLDER, defaultCheckpointTimeout: "1h" },
   new EpfSettleWatcher(jsm, SPACE, 3_000),
   () => Date.now(),
+);
+const pollingHandler = (runId: string, notices: string[], lag: LoopLagObserver = loopLag()): MeshHandler => new MeshHandler(
+  nc, kv, js, jsm,
+  { space: SPACE, endpoint: EP, runId, caller: CALLER, instanceId: "i".repeat(26), epoch: 1, holder: HOLDER, defaultCheckpointTimeout: "1h" },
+  new EpfSettleWatcher(jsm, SPACE, 3_000), () => Date.now(), undefined, lag, (note) => notices.push(note),
 );
 const stepCtx = (requestId: string, opts: { resume?: Record<string, unknown>; key?: Record<string, unknown> } = {}) => {
   const listeners: ((reason: string) => void)[] = [];
@@ -963,6 +968,185 @@ if (!placedHostOnly) {
     JSON.stringify({ well, accepts: spawnAccepts.size, before }));
 }
 
+// Each seam delegates to the real plane unless the selected poll is being faulted. The hosted
+// CLI/proxy reproduction covers the actual client timeout separately from these boundary cells.
+{
+  console.log("• 20: turn poll reads recover, fail bounded by name, and retire abandoned relays");
+  type PollSeam = {
+    actionCtx(): Promise<ActionContext>;
+    expired(...args: unknown[]): Promise<unknown>;
+    presenceDeath(...args: unknown[]): Promise<unknown>;
+  };
+  const inject = async (handler: MeshHandler, read: string, goalId: string, fault: () => void): Promise<() => void> => {
+    const seam = handler as unknown as PollSeam;
+    if (read === "readGoalResult") {
+      const streams = (await seam.actionCtx()).jsm.streams;
+      const original = streams.getMessage;
+      streams.getMessage = function(stream, query) {
+        if ("last_by_subj" in query && query.last_by_subj?.endsWith(`.${goalId}.result`)) fault();
+        return original.call(this, stream, query);
+      };
+      return () => { streams.getMessage = original; };
+    }
+    const key = read as "expired" | "presenceDeath";
+    const original = seam[key];
+    seam[key] = async (...args) => { fault(); return original.apply(handler, args); };
+    return () => { seam[key] = original; };
+  };
+  for (const read of ["readGoalResult", "expired", "presenceDeath"]) {
+    const notices: string[] = [];
+    const handler = pollingHandler(`tn-poll-${read}`, notices);
+    const a = await spawnSeat(handler, `poll-spawn-${read}`);
+    if (a === undefined) throw new Error(`no seat for ${read} polling regression`);
+    const goalId = token(`poll-once-${read}`);
+    let faults = 0;
+    const restore = await inject(handler, read, goalId, () => {
+      if (faults++ === 0) throw new TimeoutError();
+    });
+    try {
+      turnEndings.push({ state: "succeeded", status: "done", delayMs: 1_500 });
+      const before = turnInvokes.length;
+      const got = await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(goalId).ctx)), 20_000, `the ${read} retry`);
+      c(`${read}: a transient timeout does not settle the turn`, isTurnResult(got) && got.status === "done", got);
+      c(`${read}: retry is observable and never resubmits the turn`,
+        notices.some((n) => n.includes(read) && n.includes("retrying")) && turnInvokes.length === before + 1, notices);
+    } finally { restore(); }
+
+    const persistentId = token(`poll-always-${read}`);
+    let attempts = 0;
+    const restorePersistent = await inject(handler, read, persistentId, () => {
+      if (attempts++ < POLL_ATTEMPTS) throw new TimeoutError();
+    });
+    try {
+      const got = await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(persistentId).ctx)), 30_000, `the ${read} retry budget`);
+      c(`${read}: repeated timeouts fail bounded and name the read`,
+        attempts === POLL_ATTEMPTS && (got as { code?: string })?.code === "L4026"
+        && String((got as { message?: string })?.message).includes(read), got);
+      const fact = await import("@cotal-ai/core").then(({ readGoalResult }) => readGoalResult(goalCtx, { endpoint: EP, caller: CALLER, goalId: persistentId }));
+      c(`${read}: an abandoned turn's relay is cancelled before the handler returns`, fact?.state === "cancelled", fact);
+      const timer = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: persistentId });
+      c(`${read}: an abandoned turn's primary timer is claimed before the handler returns`, timer?.settle === "resumed", timer);
+    } finally { restorePersistent(); }
+  }
+
+  const notices: string[] = [];
+  const handler = pollingHandler("tn-poll-cancel", notices);
+  const a = await spawnSeat(handler, "poll-cancel-spawn");
+  if (a === undefined) throw new Error("no seat for cancellation polling regression");
+  const goalId = token("poll-cancel");
+  const step = stepCtx(goalId);
+  let attempts = 0;
+  const restore = await inject(handler, "readGoalResult", goalId, () => {
+    attempts++;
+    step.cancel("cancel during a timed-out read");
+    throw new TimeoutError();
+  });
+  try {
+    const got = await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, step.ctx)), 20_000, "cancellation during retry");
+    c("cancellation interrupts a retry rather than exhausting its budget", (got as { name?: string })?.name === "Cancelled" && attempts === 1, got);
+    const settled = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: goalId });
+    c("cancellation during retry still claims the armed timer", settled !== undefined, settled);
+  } finally { restore(); }
+
+  const faultId = token("poll-genuine-fault");
+  let faults = 0;
+  const restoreFault = await inject(handler, "presenceDeath", faultId, () => { faults++; throw new Error("presence read refused"); });
+  try {
+    const got = await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(faultId).ctx)), 20_000, "a non-timeout poll fault");
+    c("a genuine poll fault is raised on its first attempt unchanged", faults === 1 && (got as { message?: string })?.message === "presence read refused", got);
+    const timer = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: faultId });
+    c("a genuine poll fault also claims the abandoned primary timer", timer?.settle === "resumed", timer);
+  } finally { restoreFault(); }
+
+  const starvedNotices: string[] = [];
+  const starved = pollingHandler("tn-poll-starved", starvedNotices, {
+    mark: () => ({ at: 0, wallAt: 0, lagMs: 0, ticks: 0 }),
+    since: () => ({ elapsedMs: 9_000, lagMs: 8_500, ticksExpected: 36, ticksObserved: 1, wallSkewMs: 0 }),
+  });
+  const starvedSeat = await spawnSeat(starved, "poll-starved-spawn");
+  if (starvedSeat === undefined) throw new Error("no seat for starvation polling regression");
+  const starvedId = token("poll-starved");
+  let starvations = 0;
+  const restoreStarved = await inject(starved, "readGoalResult", starvedId, () => { if (starvations++ === 0) throw new TimeoutError(); });
+  try {
+    turnEndings.push({ state: "succeeded", status: "done", delayMs: 1_500 });
+    const got = await withDeadline(safe(starved.turn({ agent: starvedSeat, deadline: "5m" }, stepCtx(starvedId).ctx)), 20_000, "the starved turn poll");
+    c("measured starvation re-enters the turn read and accepts the eventual yield",
+      isTurnResult(got) && got.status === "done" && starvedNotices.some((n) => n.includes("readGoalResult") && n.includes("was not scheduling")), got);
+  } finally { restoreStarved(); }
+
+  const cleanup = handler as unknown as { withdrawCancelledRelay(...args: unknown[]): Promise<void> };
+  const originalWithdraw = cleanup.withdrawCancelledRelay;
+  cleanup.withdrawCancelledRelay = async () => { throw new Error("manager unavailable"); };
+  const refusedId = token("poll-withdrawal-refused");
+  const restoreRefused = await inject(handler, "presenceDeath", refusedId, () => { throw new Error("presence unavailable"); });
+  try {
+    const got = await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(refusedId).ctx)), 20_000, "failed turn withdrawal");
+    c("a failed withdrawal retains the poll failure and the cleanup failure",
+      String((got as { message?: string })?.message).includes("presence unavailable")
+      && String((got as { message?: string })?.message).includes("manager unavailable"), got);
+  } finally { restoreRefused(); }
+
+  // A dead manager must not be needed to authorize the run's own deadline verdict.
+  const deadlineId = token("poll-independent-deadline");
+  const deadlineSeam = handler as unknown as PollSeam;
+  const originalExpired = deadlineSeam.expired;
+  deadlineSeam.expired = async () => ({ settle: "expired" });
+  try {
+    const got = await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(deadlineId).ctx)), 20_000, "independent turn deadline");
+    c("the client's deadline remains L4003 without a manager withdrawal", (got as { code?: string })?.code === "L4003", got);
+  } finally {
+    deadlineSeam.expired = originalExpired;
+    cleanup.withdrawCancelledRelay = originalWithdraw;
+  }
+
+  for (const [code, kind] of [["L4026", "pause-unanswered"], ["L4025", "host-starved"]] as const) {
+    for (const failedCleanup of ["relay withdrawal", "primary timer claim"]) {
+      const runId = `tn-cleanup-${code}-${failedCleanup.split(" ")[0]}`;
+      const handler = pollingHandler(runId, []);
+      const seam = handler as unknown as PollSeam & {
+        withdrawCancelledRelay(...args: unknown[]): Promise<void>;
+        cancelTimer(...args: unknown[]): Promise<void>;
+      };
+      const originalDeath = seam.presenceDeath;
+      const originalWithdraw = seam.withdrawCancelledRelay;
+      const originalTimer = seam.cancelTimer;
+      let timerAttempted = false, withdrawalAttempted = false;
+      const primary = new EffectError(code, kind, `${code} presenceDeath failed`, { attempts: 6 });
+      seam.presenceDeath = async () => { throw primary; };
+      seam.withdrawCancelledRelay = async (...args) => {
+        withdrawalAttempted = true;
+        if (failedCleanup === "relay withdrawal") throw new Error(`${failedCleanup} refused`);
+        return originalWithdraw.apply(handler, args);
+      };
+      seam.cancelTimer = async (...args) => {
+        timerAttempted = true;
+        if (failedCleanup === "primary timer claim") throw new Error(`${failedCleanup} refused`);
+        return originalTimer.apply(handler, args);
+      };
+      try {
+        const out = await withDeadline(driven({
+          space: SPACE, endpoint: EP, kv, runId, lease: lease(),
+          source: `const worker = await spawn("builder"); await turn(worker, { name: "cleanup", deadline: "5m" });`,
+          handler,
+        }), 30_000, `journaled ${code} with failed ${failedCleanup}`);
+        const entry = (await journalEntries(runId, "turn")).findLast((e) => e.state === "settled");
+        c(`${code}: a failed ${failedCleanup} preserves the classified failure in the real run journal`,
+          entry?.error?.code === code && entry.error.kind === kind
+          && entry.error.message.includes("presenceDeath failed") && entry.error.message.includes(`${failedCleanup} refused`),
+          { out, error: entry?.error });
+        c(`${code}/${failedCleanup}: cleanup preserves the primary detail and attempts both resources`,
+          entry?.error?.detail?.attempts === 6 && timerAttempted && withdrawalAttempted,
+          { error: entry?.error, timerAttempted, withdrawalAttempted });
+      } finally {
+        seam.presenceDeath = originalDeath;
+        seam.withdrawCancelledRelay = originalWithdraw;
+        seam.cancelTimer = originalTimer;
+      }
+    }
+  }
+}
+
 }
 
 // ── 19) a placed seat's turn reaches its placed host, whatever the class rail reaches ─────────
@@ -1135,7 +1319,7 @@ async function readGoalResultData(goalId: string): Promise<Record<string, unknow
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = placedHostOnly ? 18 : 74;
+const EXPECTED_CELLS = placedHostOnly ? 18 : 104;
 const ran = ok + fail;
 console.log(`mesh-turn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

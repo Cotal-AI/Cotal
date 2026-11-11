@@ -21,6 +21,7 @@ export const httpSidebarTitles = {
     'auth-exchange': 'Exchange token',
     'auth-manager-service-authority': 'Manager authority',
     'auth-manager-instances': 'Manager instances',
+    'auth-endpoint-deregister': 'Remove Manager registration',
     'auth-service-endpoint-authority-info': 'Authority metadata',
     'auth-service-endpoint-authority': 'Service authority',
     'auth-service-endpoint-host': 'Host operation',

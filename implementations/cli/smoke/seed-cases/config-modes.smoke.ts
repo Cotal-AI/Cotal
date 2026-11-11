@@ -37,7 +37,7 @@ try {
   }
 
   {
-    const { cfg, tree } = seededUnder0002();
+    const { cfg } = seededUnder0002();
     // XDG_CONFIG_HOME itself is a folder the operator chose, not one Cotal manages.
     chmodSync(cfg, 0o775);
     const run = cotal(cfg, ["update"], env);

@@ -75,6 +75,8 @@ export {
   deleteIdpSpaceCatalog,
   hasIdpSpaceCatalog,
   prepareIdpSpaceCatalogs,
+  signedInMachineAccounts,
+  requestAccountMachine,
   requireIdpSession,
   normalizeIdpUrl,
   probeIdpJwks,
@@ -189,6 +191,7 @@ export {
   type DelegatedUserIntentRecord,
   type ObservePlatformControlAssignment,
 } from "./delegated-user-intent.js";
+export type { EndpointDeregisterGranter } from "./endpoint-deregister.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./service-adapter.js"; // self-registers the native auth service preset and child
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
@@ -229,4 +232,4 @@ export { createToolResultRevocationCustody, recordToolResultRevocation, snapshot
 export * from "./service-host-contract.js";
 
 export { SERVICE_RENEWAL_TYP, validateServiceRenewalProof, type ServiceRenewalClaims, type ValidatedServiceRenewal } from "./service-renewal.js";
-export { withIdpSessionDir } from "./session-context.js";
+export { withIdpSessionDir, withRemoteExchangeRetry } from "./session-context.js";

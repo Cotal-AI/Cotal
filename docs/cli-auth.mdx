@@ -226,7 +226,12 @@ spaces as its remedy, because only that space's operator can grant you. On the r
 space's grant ledger, the refusal names the operator's `cotal actor grant` command instead. After a
 login, every command on that mesh works under your identity: each connect takes a fresh IdP
 proof, exchanges it locally for a short-lived bearer, and is authorized against the actor
-ledger at connect time. A provider that cannot be reached, or that stops answering, refuses with
+ledger at connect time. A rate-limited `/token` read retries once when the IdP supplies a valid
+`Retry-After` or `X-Retry-After` hint that fits within `COTAL_IDP_TIMEOUT_MS` (30 seconds by default).
+When both hints are valid, the later minimum wins. Both reads and the wait share that deadline;
+cancellation stops the wait. Missing hints, a second refusal and other HTTP errors are not retried.
+The exchange or Manager operation that consumes the proof is never replayed by this retry.
+A provider that cannot be reached, or that stops answering, refuses with
 `DEPENDENCY_UNAVAILABLE` (exit 2) and caches no session. `logout` revokes the IdP session, clears
 its cache, and removes only that
 account's discovered registry entries. See

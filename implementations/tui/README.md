@@ -6,9 +6,9 @@ built on OpenCode's terminal UI components (Solid on OpenTUI) and runs on Node.
 This package is private. The app lists the spaces registered on this machine and opens one: the
 space every command in the launch folder would pick, or the one you open with enter. It shows the
 roster, the channels, the message feed, the agents waiting for an answer and the state of the
-connection. You can write to a channel or an agent from it, and stop an agent through the manager
-that runs it. Its observer is invisible to peers, and opening a space writes nothing to the registry
-and starts no service.
+connection. You can write to a channel or an agent from it, spawn an agent from a persona through
+the space's manager, and stop an agent through the manager that runs it. Its observer is invisible
+to peers, and opening a space writes nothing to the registry and starts no service.
 
 ## Running it
 
@@ -48,7 +48,9 @@ leaves it listed. A card whose message has left its conversation still opens it 
 message, and the next `enter` sends the reply. Each space keeps its cards while the app runs, also
 while another space is open. After a restart the list starts again from the history the app
 loads, the newest 50 messages of each channel and 300 in all. A channel card comes back when its
-message is in that history, and stays gone when your reply is there too. A card you opened is drawn
+message is in that history, and stays gone when your reply is there too. A direct message's card
+comes back from your earlier sessions' direct messages (see [Remembered sessions](#remembered-sessions)),
+and stays gone when your answer is among them. A card you opened is drawn
 dimmer than one you have not, and a reply or mention that arrives in the conversation you have open
 is listed already dimmed.
 When the conversation
@@ -66,7 +68,7 @@ inspector dismisses the highlighted card without replying. A waiting agent canno
 and dismissed cards are remembered until the app quits. The highlight stays on its item as new ones
 arrive, and when a card goes, the item that takes its place is highlighted. The letter keys work only
 in the tree and the inspector: `w` opens the next item the inspector lists, waiting agents first, and
-`1`-`9` a specific one, quoting a card's message as `enter` does while the keys stay where they are. `D` stops an agent, `?` lists the keys and `q` quits. While a space opens, the box keeps the keys
+`1`-`9` a specific one, quoting a card's message as `enter` does while the keys stay where they are. `S` spawns an agent, `D` stops one, `?` lists the keys and `q` quits. While a space opens, the box keeps the keys
 before it is on screen, so a letter typed for it runs no tree key; `tab` moves them to the tree.
 `ctrl+p` opens the commands and `ctrl+c` quits from anywhere.
 
@@ -84,6 +86,52 @@ nothing is stopped and the app reads its managers again. The manager finds the a
 or for a name two managed agents share. The line above the status bar shows `stopping <name>…`
 or `force-killing <name>…` until the manager answers, then `stopped <name>`, `force-killed <name>` or
 `stop: <error>`, cut to one line.
+
+`S` in the tree, or `ctrl+p` and Spawn agent, opens the persona list: the personas in the space's
+catalog, the ones `cotal spawn <persona>` completes from, with each one's description and the
+application it runs in. The personas spawned from this app since it started come first, under
+Recent. The persona a launch uses when none is named is marked `●` and highlighted. Typing searches
+the list.
+
+`enter` opens the settings for the persona picked, titled `Spawn <persona>` over its description.
+Each row shows its value on the right, and a value you changed turns gold:
+
+- Prompt: an optional first message the agent gets once it joins, typed in the row. It wraps and
+  grows to four lines, and `alt+enter`, `shift+enter` or `ctrl+j` types a newline where the terminal
+  sends it.
+- Application: the persona's own, else your default from `COTAL_DEFAULT_AGENT` or your saved
+  `harness` preference. `←` `→` pick another one that the space's manager can run.
+- Model: the persona's, else the application's default. `←` `→` pick one of the models the manager
+  lists for the application.
+- Effort: the model's variant, such as Codex's reasoning effort. The persona's `variant:`, else the
+  application's default. `←` `→` pick one of the efforts the manager lists for the model. The row is
+  disabled, with the reason, until a model that offers efforts is picked: `choose a model first`,
+  `not offered for <model>`, or `not offered by <application>`. Changing the application or the
+  model puts it back to its default.
+- Name: the persona's name, edited in the row. Clearing it uses the persona's name. A name the mesh
+  cannot carry is refused as you type it, under the row.
+
+The rows open on Prompt. `↑` `↓` move between them and skip a disabled Effort, and in a prompt of
+several lines they move its cursor first. `enter` spawns from any row, and `esc` returns to the
+persona list. When a value is refused, `enter` highlights its row and launches nothing.
+
+The applications are the ones the space's manager reports available. An application with
+no activity feed (event plane), such as Hermes, shows `no activity feed` and launches without one.
+On a space whose policy requires an activity feed it is refused with `this space requires an
+activity feed`. When the manager cannot be asked, `S` says why and opens nothing.
+
+The line above the status bar shows `spawning <persona>…`, then
+`the manager started <name>; waiting for it on the roster…` until the agent is on the roster, then
+`<name> joined`, followed by what the manager said when it launched the agent without its activity
+feed. The new agent's conversation opens when you are still on the conversation you
+spawned from. A refusal shows `spawn: <error>`, cut to one line, with the reason when the agent
+exited inside the manager's join window. An agent whose process still runs when that window ends
+shows `<name> is running but has not joined yet; following it`, with the time since the launch, and
+the app asks the manager for its seats every two seconds until the agent joins or the manager no
+longer lists it. Then it shows `<name> joined`, or
+``<name> exited before it joined; `cotal manager logs` shows why``, since the manager reports an
+exit after its join window only in its log. A failed spawn stays on the line until the next one
+starts, and several spawns can run at once, one line each.
 
 The status bar shows `reconnecting` while the broker is away (the last model stays on screen) and
 `not connected` when the space did not open, with the reason in the middle. While the space is
@@ -108,9 +156,9 @@ login. The name at the bottom of the left column is dim until then and gold afte
 - `↑` and `↓` pass over what a reply cannot answer, and a click on it says why: your own direct
   messages, and direct messages between two others. In an agent's conversation only direct
   messages are quoted, so a reply there never posts to a channel. A message is yours when it comes
-  from a session the app opened, or from any session under your name in any letter case. A direct
-  message is to you only when it went to a session the app opened, so one sent to your session from
-  an earlier run of the app cannot be quoted.
+  from a session the app opened, in this run or an earlier one it remembers, or from any session
+  under your name in any letter case. A direct message is to you only when it went to one of those
+  sessions the app opened.
 - `@name` in a channel post mentions that peer, as `cotal send` does. A message that mentions you
   is marked `@you`.
 - A line that starts with `/` is a command: `/reply` quotes the newest direct message you received
@@ -138,6 +186,19 @@ session without a warning. While a switch waits, the conversation reads `Leaving
 message still sending in one space never holds up `enter` in another. After it ends, `enter` opens
 a new session under a new identity and sends nothing; the next `enter` sends. Quitting with unsent
 drafts asks first. Quitting closes the session and prints how it closed.
+
+### Remembered sessions
+
+The app remembers each session it opens, so a later run counts that session as yours. A space keeps
+its 20 newest, each in a private file under `~/.cotal/chat-sessions/` with the session's principal,
+name, broker and opening time, and no credential. When a space opens, the app reads the newest 200
+direct messages to and from those sessions with the credential its observer already holds, and
+shows them in their conversations with their cards, so `↑` quotes them. Your answer goes from the
+new session, under the same name. On a static-auth space, a direct message an agent sends to an
+earlier session while the app runs shows at the next start; on an open space it shows when it
+arrives. When the broker refuses that read, or a remembered session cannot be read, a warning says
+why and the agent's conversation keeps saying it. `cotal space forget` removes a space's remembered
+sessions. Sessions opened with `cotal chat` are not remembered.
 
 ## Vendored OpenCode code
 
@@ -170,6 +231,17 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   and both kinds of stop, a stop refused for an unmanaged agent, for a run replaced under the same
   name after `D`, and for a name two managers hold, a space with no manager, and a broker that turns
   auth on while the app reads its managers, after which the space is still registered.
+  `smoke/spawn.smoke.ts` first checks what a launch sends for the activity feed on each kind of
+  application and space, and the form's defaults. It then runs a real manager at 209x52 and 80x24
+  and spawns from `S` and the palette, reading each agent off the broker's roster and each launch
+  where the manager hands it to the connector. It checks the persona list and Recent, the form's
+  defaults with no Events row and no key hints, enter twice with every default, a cycled model and
+  effort, a prompt of two lines and an edited name sent from the model row, the effort a launch
+  sends only when it changed and why the row is disabled, a refused name that stops enter, an
+  application with no activity feed, one the manager does not have, `esc` back to the list and `?`. A second
+  manager serves a space that requires the activity feed, where such an application is refused and
+  another launches. It also covers a space with no manager and a seat that outlives its join window
+  and then exits, which the notice line follows until it says the seat exited.
   `smoke/composer.smoke.ts` writes from the input box at 209x52 and 80x24 on an open space and on a
   static-auth space that a real `cotal up --detach` stack serves. It reads each send off the broker:
   a post with its mention, a direct message to one of two agents that share a name, an answer to a
@@ -206,7 +278,16 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   message has left the loaded rows, is still listed after a switch to another space and back, then
   quotes it and sends a reply a peer receives with its id. It then checks that a reply to a post
   you sent before 250 more posts in another channel still makes a card.
-  They need Node 26.4, tmux and nats-server, and the control and composer smokes need the manager
-  built, so they are not in `smoke:ci`.
+  `smoke/continuity.smoke.ts` writes to an agent on an open space and on a static-auth space that a
+  real `cotal up --detach` stack serves, then quits and starts the app again. It checks that the
+  session's record is one private file with no credential, that the reply card, the conversation and
+  the `↑` quote come back, that the answer reaches the agent with the reply's id from a new session
+  under the same name, and that the answered card stays gone at the next start. It then has the agent
+  write to the first session, which shows as it arrives on the open space and at the next start on
+  the static one. On the open space it runs two copies of the app at once and reads both sessions'
+  records back, then restarts the broker with a default user that may not read direct messages and
+  checks the agent's conversation says so.
+  They need Node 26.4, tmux and nats-server, and the control, spawn, composer and continuity smokes
+  need the manager built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space
   list under tmux.

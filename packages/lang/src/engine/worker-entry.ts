@@ -25,7 +25,7 @@
 
 import { parentPort, workerData, type MessagePort } from "node:worker_threads";
 import "ses";
-import { EffectResultTooLarge, Journal, JournalAppendRejected, type JournalStore } from "../journal.js";
+import { EffectResultTooLarge, Journal, JournalAppendRejected } from "../journal.js";
 import { EngineUnavailable, messageOf, nameOf } from "../errors.js";
 import { assertCrossable } from "../values.js";
 import { Cancelled, EffectError, RootCancellation, RunHeld, RunReleased, type EffectHandler } from "../effects.js";

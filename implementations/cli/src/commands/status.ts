@@ -21,7 +21,6 @@ import {
   unansweredRequest,
   resolveAuthProvider,
   personaDir,
-  presenceText,
   type FlagValues,
   type ParsedArgs,
   type SpaceAuth,
@@ -30,7 +29,6 @@ import {
 import {
   stoppedLoopbackListener,
   accountInventory,
-  assessMaintenanceClaim,
   authDir,
   isCommandFailure,
   readMaintenanceJournal,
@@ -90,8 +88,10 @@ import {
   spaceFlag,
   userAuthStateDir,
   WEB_PIDFILE,
-  WEB_READINESS_HEADER,
   workspaceSecretStore,
+  displayWidth,
+  terminalWidth,
+  wrapWords,
   writeResult,
   workspaceErrorParts,
   preferencesPath,
@@ -99,9 +99,7 @@ import {
   cotalDirLink,
   type Cell,
   type BrokerCheck,
-  type LocalProcess,
   type LocalProcessContext,
-  type MaintenanceClaim,
   type MeshEntry,
   type MeshTarget,
   type OutputWarning,
@@ -139,8 +137,7 @@ import { instanceProjection, serviceInstances } from "../lib/service-instances.j
 import { readinessAddressSurvivors } from "../lib/service-process.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
-import { maintenanceNextStep, preservedSourceState, restoreNextStep, rolledBackNotes } from "../lib/restore.js";
-import { attemptProcessesGone } from "../lib/isolated-broker.js";
+import { maintenanceNextStep, rolledBackNotes } from "../lib/restore.js";
 import {
   journalRecordedElsewhere,
   readStackJournal,
@@ -2242,11 +2239,20 @@ const COMPONENT_EXIT: Record<ComponentVerdict, number> = {
   refused: 3,
 };
 
-/** Machine-readable, uncoloured component records — one line per component.  Human text follows
- * after the state token, but the token/exit contract deliberately stays simple for cron.  A fact can
- * quote a reason another process or a stored row wrote; a newline in it would split the record. */
+/** Piped records keep one line per component. Terminal rows that do not fit put their facts below
+ * the verdict, wrapping at word boundaries. Escape control characters before layout so a stored
+ * reason cannot inject a new component record. */
 function printComponent(component: ComponentHealth): void {
-  console.log(`  ${component.name.padEnd(16)} ${component.verdict}${component.facts.length ? ` · ${component.facts.map(oneLine).join(" · ")}` : ""}`);
+  const heading = `  ${component.name.padEnd(16)} ${component.verdict}`;
+  const facts = component.facts.map(oneLine);
+  const line = `${heading}${facts.length ? ` · ${facts.join(" · ")}` : ""}`;
+  const width = terminalWidth(process.stdout);
+  if (displayWidth(line) <= width) console.log(line);
+  else {
+    console.log(heading);
+    for (const fact of facts)
+      for (const part of wrapWords(fact, width - 4)) console.log(`    ${part}`);
+  }
 }
 
 function componentExit(components: readonly ComponentHealth[]): number {

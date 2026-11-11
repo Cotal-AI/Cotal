@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
+    "test:render": "pnpm build && node test/render/run.mjs",
     "tauri": "tauri",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",
     "check:runtime": "node scripts/check-runtime.mjs",
@@ -20,9 +21,14 @@
     "@tauri-apps/plugin-deep-link": "2.6.3"
   },
   "devDependencies": {
+    "@fontsource-variable/bricolage-grotesque": "^5.2.8",
+    "@fontsource-variable/geist": "^5.2.8",
+    "@fontsource-variable/geist-mono": "^5.2.8",
     "@tauri-apps/cli": "2.12.4",
     "@types/node": "^22.20.0",
+    "axe-core": "^4.14.0",
     "jsdom": "^29.1.1",
+    "playwright-core": "1.64.1",
     "tsx": "^4.23.0",
     "typescript": "^5.9.3",
     "vite": "8.3.5"

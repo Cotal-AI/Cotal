@@ -51,6 +51,8 @@ export interface IdpSession {
    *  email's local part, else its name, the first that is a chat name. Display only. Absent when
    *  none is, and in caches written by older builds. */
   name?: string;
+  /** Account display label returned by the provider, never an authorization identity. */
+  label?: string;
 }
 
 const SPACE_CATALOG_REL = "https://cotal.ai/relations/space-catalog";
@@ -204,8 +206,7 @@ async function sleepUnlessCancelled(ms: number, signal: AbortSignal | undefined)
 /** `fetch` with a hard per-request timeout, so a hung IdP connection can never stall the client
  *  (Node's global fetch has no default timeout). A timeout or transport failure surfaces as a
  *  legible sentence rather than a raw DOMException/TypeError. */
-async function idpFetch(url: string, init?: RequestInit, cancel?: AbortSignal): Promise<Response> {
-  const ms = idpTimeoutMs();
+async function idpFetch(url: string, init?: RequestInit, cancel?: AbortSignal, ms = idpTimeoutMs()): Promise<Response> {
   throwIfCancelled(cancel);
   try {
     const timeout = AbortSignal.timeout(ms);
@@ -398,7 +399,7 @@ function jwtCacheUntil(jwt: string, now: number): number {
  *  means the session was revoked or expired at the IdP: the error says exactly how to recover.
  *  The JWT is held in memory within the bounds above and never written anywhere; a failure is
  *  never held, so a rate-limited or unreachable IdP is retried on the next call. Concurrent
- *  callers without a cancel signal share one request; a cancellable call makes its own request,
+ *  callers without a cancel signal share one proof fetch; a cancellable call makes its own fetch,
  *  so one caller's abort rejects nobody else. */
 async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?: AbortSignal): Promise<IdpJwtResult> {
   const base = normalizeIdpUrl(idpUrl);
@@ -429,16 +430,37 @@ async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?
   return inflight;
 }
 
+/** Retry only an explicitly rate-limited proof read, never the operation that consumes its JWT.
+ * Both attempts, their bodies and the server's wait share the original IdP timeout. */
 async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: AbortSignal): Promise<IdpJwtResult> {
-  const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } }, cancel);
-  if (res.status === 401)
-    throw new IdpSessionRejectedError(
-      `idp session: ${base} rejected the cached session (expired or revoked) - run \`cotal login --idp ${base}\` to sign in again`,
-    );
-  if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
-  const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
-  if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
-  return { jwt: body.token, response: res };
+  const deadline = Date.now() + idpTimeoutMs();
+  for (let attempt = 0; ; attempt++) {
+    const remaining = deadline - Date.now();
+    throwIfCancelled(cancel);
+    if (remaining <= 0) throw new IdpUnreachableError(`idp request to ${base}/token timed out before the retry`);
+    const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } }, cancel, remaining);
+    if (res.status === 429 && attempt === 0) {
+      const delays = ["retry-after", "x-retry-after"].map((name) => {
+        const value = res.headers.get(name)?.trim();
+        return value && /^\d+$/.test(value) ? Number(value) * 1000
+          : value && name === "retry-after" ? Date.parse(value) - Date.now() : NaN;
+      }).filter(Number.isFinite);
+      const wait = Math.max(1000, ...delays);
+      if (delays.length && wait < deadline - Date.now()) {
+        await res.body?.cancel();
+        await sleepUnlessCancelled(wait, cancel);
+        continue;
+      }
+    }
+    if (res.status === 401)
+      throw new IdpSessionRejectedError(
+        `idp session: ${base} rejected the cached session (expired or revoked) - run \`cotal login --idp ${base}\` to sign in again`,
+      );
+    if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
+    const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
+    if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
+    return { jwt: body.token, response: res };
+  }
 }
 
 export async function fetchIdpJwt(idpUrl: string, sessionToken: string, signal?: AbortSignal): Promise<string> {
@@ -481,6 +503,7 @@ export async function establishIdpSession(
   const handle = [claims.preferred_username, local, claims.name].find(
     (c): c is string => typeof c === "string" && chatNameProblem(c) === undefined,
   );
+  if (label) session.label = label;
   if (handle) session.name = handle;
   // The persistence fence: a cancel that lands after approval, while the proof was in flight,
   // must leave no session and no catalog entry on disk.
@@ -582,6 +605,39 @@ async function discoverAdvertisement(state: CatalogAccountState, session: IdpSes
     advertisementCheckedAt: new Date().toISOString(),
     ...(catalogUrl ? { catalogUrl } : { catalogUrl: undefined }),
   };
+}
+
+/** Account identities available to a machine client. Session proofs stay inside this module. */
+export function signedInMachineAccounts(dir: string): AuthSpaceCatalogAccount[] {
+  const { sessions, file } = readCatalogPreparationState(dir);
+  return Object.keys(sessions).sort().flatMap((idpUrl) => {
+    const session = loadIdpSession(dir, idpUrl);
+    if (!session?.sub) return [];
+    const key = ownerKey(idpUrl, session.sub);
+    return [accountView(file.accounts[key] ?? { idpUrl, issuer: new URL(idpUrl).origin, sub: session.sub, ownerKey: key, advertised: false })];
+  });
+}
+
+/** Call only the account-computer routes on the signed-in provider's origin. */
+export async function requestAccountMachine(opts: {
+  dir: string; idpUrl: string; machineId: string; method: "PUT" | "GET";
+  metadata?: { name: string; platform: "linux" | "darwin" | "win32"; daemonVersion: string };
+  etag?: string; signal?: AbortSignal;
+  intent?: { spaceId: string; enabled: boolean; expectedRevision: number };
+}): Promise<{ status: number; etag?: string; body?: unknown }> {
+  const idp = normalizeIdpUrl(opts.idpUrl);
+  if (!/^[0-9a-f-]{36}$/.test(opts.machineId)) throw new Error("invalid computer identity");
+  const session = requireIdpSession(opts.dir, idp);
+  if (opts.intent && (opts.method !== "PUT" || !/^[A-Za-z0-9_-]{1,128}$/.test(opts.intent.spaceId) || !Number.isSafeInteger(opts.intent.expectedRevision) || opts.intent.expectedRevision < 0)) throw new Error("invalid computer space intent");
+  const url = opts.intent
+    ? `${new URL(idp).origin}/api/machines/${opts.machineId}/spaces/${encodeURIComponent(opts.intent.spaceId)}`
+    : `${new URL(idp).origin}/api/cli/machines/${opts.machineId}${opts.method === "GET" ? "/spaces" : ""}`;
+  const headers: Record<string, string> = { authorization: `Bearer ${session.token}` };
+  if (opts.etag) headers["if-none-match"] = opts.etag;
+  if (opts.method === "PUT") headers["content-type"] = "application/json";
+  const response = await idpFetch(url, { method: opts.method, headers, redirect: "manual", ...(opts.method === "PUT" ? { body: JSON.stringify(opts.intent ? { enabled: opts.intent.enabled, expectedRevision: opts.intent.expectedRevision } : opts.metadata) } : {}) }, opts.signal);
+  const etag = response.headers.get("etag");
+  return { status: response.status, ...(etag ? { etag } : {}), ...(response.ok ? { body: await idpJson<unknown>(url, response, opts.signal) } : {}) };
 }
 
 interface PrepareCatalogOpts {
@@ -846,6 +902,7 @@ export function loadIdpSession(dir: string, idpUrl: string): IdpSession | undefi
     token: s.token,
     expiresAt: s.expiresAt,
     ...(typeof s.sub === "string" && s.sub ? { sub: s.sub } : {}),
+    ...(typeof s.label === "string" && s.label ? { label: s.label } : {}),
     ...(typeof s.name === "string" && s.name ? { name: s.name } : {}),
   };
 }
@@ -863,6 +920,7 @@ export function saveIdpSession(dir: string, idpUrl: string, session: IdpSession)
     token: session.token,
     expiresAt: session.expiresAt,
     ...(session.sub ? { sub: session.sub } : {}),
+    ...(session.label ? { label: session.label } : {}),
     ...(session.name ? { name: session.name } : {}),
   };
   mkSecretDir(dir); // harden the dir BEFORE the secret lands (0700 POSIX, private ACL win32)

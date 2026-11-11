@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
 import { update, updateRuntime } from "@cotal-ai/cli/update";
-import { withIdpSessionDir } from "@cotal-ai/auth";
+import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { CommandFailure, homeCotalDir, resolveControlTarget, shellPath } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
@@ -15,7 +15,7 @@ registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
   let hostedSpaces: string[] = [];
   let daemonObserved = false;
-  await update(args, { ...updateRuntime, waitForInstalledGeneration: waitForInstalledDaemonGeneration, async reportRunningManager(flags) {
+  await update(args, { ...updateRuntime, waitForInstalledGeneration: waitForInstalledDaemonGeneration, reportRunningManager: (flags) => withRemoteExchangeRetry(async () => {
     let managers;
     try {
       const reply = await queryDaemon({ paths: daemonPaths() });
@@ -34,7 +34,9 @@ const composed: Command = { ...command, async run(args) {
     hostedSpaces = active.map((manager) => manager.space);
     if (!active.length) return updateRuntime.reportRunningManager(flags);
     for (const manager of active) {
-      if (!manager.instanceId || manager.state !== "answering") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager for ${manager.space} is ${manager.state}; its custody must answer before update`, { remedy: `run cotal daemon service-disconnect --space ${manager.space}, correct its sign-in or connection, then run cotal update again` });
+      // A failed earlier observation is not proof that a retained child's endpoint cannot answer.
+      // Keep the fresh, instance-pinned custody check below as the authority for update admission.
+      if (!manager.instanceId) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager for ${manager.space} is ${manager.state}; its custody must answer before update`, { remedy: `run cotal daemon service-disconnect --space ${manager.space}, correct its sign-in or connection, then run cotal update again` });
       const reply = await withIdpSessionDir(homeCotalDir(), async () => {
         const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
         return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
@@ -56,7 +58,7 @@ const composed: Command = { ...command, async run(args) {
       }
     }
     return "none";
-  } });
+  }) });
   if (args.values.check === true || process.exitCode || !daemonObserved) return;
   const paths = daemonPaths();
   const current = await queryDaemon({ paths });
@@ -73,9 +75,9 @@ const composed: Command = { ...command, async run(args) {
   if (current.result.version !== updateRuntime.version()) {
     const hosted = (current.result.managers ?? []).some((manager) => manager.pid !== undefined);
     if (hosted) await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
-    try { restartInstalled(paths); }
+    try { await restartInstalled(paths, undefined, false, updateRuntime.version(), detail => console.log(`machine daemon: ${detail}`)); }
     catch (error) {
-      if (hosted) {
+      if (hosted && process.platform !== "win32") {
         try { await managerViaDaemon({ paths }, { op: "managers-abort-restart" }); }
         catch { /* The native restart failure remains the primary outcome. */ }
       }

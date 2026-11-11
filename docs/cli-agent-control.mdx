@@ -485,8 +485,8 @@ answer deadline. They then refuse `TARGET_UNAVAILABLE` too, since nothing was se
 **This one is operator-only, and more narrowly than `stop` or `attach`.** Those two are granted to
 anything holding `spawn`, so an agent can stop and attach to seats under its own owner. `input` is
 not: it is granted only to operator credentials, which on a user-auth mesh means your ledger row
-needs the `admin` scope, the same scope [`ps`](#managed-seats) already needs there. The reason is
-that a write into a terminal is control of whatever is running in it, and on a user-auth mesh the
+needs the `admin` scope. The reason is that a write into a terminal is control of whatever is
+running in it, and on a user-auth mesh the
 own-owner rule covers every seat under you, not only the ones you launched: a `spawn`-scoped agent
 could otherwise type into a sibling it never started. Seat locality is still resolved for you.
 

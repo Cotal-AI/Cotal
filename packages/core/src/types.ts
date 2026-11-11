@@ -461,6 +461,12 @@ export type CotalMessage =
  *  rows are dropped). */
 export type HistoryMessage = CotalMessage;
 
+/** The answer of `CotalEndpoint.dmHistoryOf`. `denied` is the broker refusing this credential the DM
+ *  backlog, which only an `admin` credential may read, so it is never shown as an empty history. */
+export type DmHistoryRead =
+  | { readonly state: "read"; readonly items: HistoryMessage[] }
+  | { readonly state: "denied"; readonly reason: string };
+
 export type PresenceEvent =
   | { type: "join"; presence: Presence }
   | { type: "update"; presence: Presence }

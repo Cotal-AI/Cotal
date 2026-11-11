@@ -57,6 +57,11 @@ primitives throw that it is missing. There is no `binding.gyp` in the package, s
 without a C compiler installs the prebuilt helpers; a missing helper, an unsupported
 `linux-<arch>`, or a load failure throws rather than compiling in place.
 
+`pnpm smoke:seat-platform` runs its assembly and pack checks in a temporary package copy,
+using header-only fixtures for all six native targets. It checks that refused and successful
+packs leave the caller's compiled output and native helpers unchanged. These fixtures verify
+package structure, not native loading, and never enter the caller's publish tree.
+
 `pnpm smoke:seat-installed-dist` requires a built tree with the qualified seat and workspace
 artifacts assembled by `scripts/seat-assemble-natives.mjs` and
 `scripts/workspace-assemble-natives.mjs`, as the CI smoke job does. It runs both native guards

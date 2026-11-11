@@ -26,7 +26,7 @@ export function homeCotalDir(): string {
  *  `join(homeCotalDir(), "<entry>")` in shipped source names one of these; `smoke:home-record-entries`
  *  checks that. */
 export const homeRecordEntries: ReadonlySet<string> = new Set([
-  "agent-skills.json", "app-identities", "catalog", "current-mesh", "idp-sessions.json", "linear",
+  "agent-skills.json", "app-identities", "catalog", "chat-sessions", "current-mesh", "idp-sessions.json", "linear",
   "meshes", "onboarded.json", "prepared", "service-launchd", "services",
 ]);
 

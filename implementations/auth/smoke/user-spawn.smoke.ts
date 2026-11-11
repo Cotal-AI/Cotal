@@ -26,6 +26,7 @@
  * COTAL_HOME + the workspace root are sandboxed to temp dirs; kills ONLY the pids it starts (NEVER
  * pkill nats-server). Needs nats-server on PATH. Run: pnpm smoke:user-spawn:live  (pnpm build first —
  * the pty-launched agent child imports @cotal-ai/core from dist).
+ * Set COTAL_SMOKE_RETAIN_FIXTURES=1 to keep the private fixture directories after processes stop.
  */
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -109,7 +110,7 @@ type AddressInfo = import("node:net").AddressInfo;
 
 const {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
-  setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid, eventChannel,
+  setupSpaceStreams, principalKey, registry, clearChannel, mintLifecycleUid, eventChannel,
   resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError, epAuthBucket,
   mintMembershipObserverCreds, observePlaneLivenessWithCreds, sessionsBucket, sessionLedgerKey, mintSessionId,
 } = await import("@cotal-ai/core");
@@ -232,7 +233,20 @@ execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyo
 process.env.NODE_EXTRA_CA_CERTS = cert;
 const { createServer: createHttpsServer } = await import("node:https");
 const { request: httpRequest } = await import("node:http");
+let failNextBearerFor: string | undefined;
 const exchangeProxy = createHttpsServer({ cert: readFileSync(cert), key: readFileSync(key) }, (req, res) => {
+  if (failNextBearerFor && req.url === "/exchange") {
+    let body = "";
+    req.on("data", (data: Buffer) => { body += data.toString(); });
+    req.on("end", () => {
+      const actor = (JSON.parse(body) as { actor?: string }).actor;
+      if (actor !== failNextBearerFor) throw new Error("unexpected exchange during enrollment retry cell");
+      failNextBearerFor = undefined;
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "fixture temporary exchange outage" }));
+    });
+    return;
+  }
   const upstream = httpRequest({ host: "127.0.0.1", port: publicPort, path: req.url, method: req.method, headers: req.headers }, (reply) => {
     res.writeHead(reply.statusCode ?? 502, reply.headers); reply.pipe(res);
   });
@@ -832,9 +846,10 @@ try {
 
   // ---------- B1g. the shipped generic endpoint CLI under a USER bearer ----------
   // This uses the real composition-root binary and the same spawn-scoped login as B1e. The user
-  // holds `spawn`, not `manager.read` or `manager.admin`: describe and inspect must work over its
-  // bearer, while enumeration and admin maintenance remain broker-denied. The missing `--name`
-  // request proves the generic targeted resolver uses the authorized name-keyed inspect path, not
+  // holds `spawn`, not `manager.read` or `manager.admin`. The CLI reaches the manager through a
+  // pinned manager-caller view, which carries `ps` for a spawn holder, so describe, inspect and ps
+  // work while admin maintenance stays broker-denied. B1e's raw bearer is still refused `ps`. The
+  // missing `--name` request proves the generic targeted resolver uses the authorized name-keyed inspect path, not
   // manager-wide ps, without creating a session or changing a managed seat.
   console.log("B1g) the shipped generic endpoint CLI rides the user bearer without widening it");
   const cliResult = async (args: string[], timeoutMs?: number) => {
@@ -938,32 +953,35 @@ try {
     }
   }
   const missing = await cliResult(["invoke", "manager", "attach", "--name", "missing", "--space", SPACE]);
-  // The manager answers the attach target's inspection with not-found; a denied ps scan would be a
-  // PERMISSION_DENIED that no instance answered.
-  check("a nonexistent generic --name target is refused by its inspect resolution, not the denied manager ps scan",
+  // The manager answers the attach target's inspection with not-found.
+  check("a nonexistent generic --name target is refused by its inspect resolution, not a manager ps scan",
     !missing.timedOut && missing.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(missing.plain) && /Native command:\s+attach/.test(missing.plain) &&
       /Native code:\s+not-found/.test(missing.plain) && /Answering instance:/.test(missing.plain), missing);
   // The broker refuses the publish, so the call is not executed and no manager instance answers it.
   const brokerDenied = (r: { plain: string; status: number | null; timedOut: boolean }) =>
     !r.timedOut && r.status === 2 && /Code:\s+PERMISSION_DENIED/.test(r.plain) && /Native code:\s+permission-denied/.test(r.plain) &&
       /Native outcome:\s+not-executed/.test(r.plain) && !/Answering instance:/.test(r.plain);
-  const deniedRead = await cliResult(["invoke", "manager", "ps", "--space", SPACE]);
-  check("the shipped CLI leaves manager.read denied to a spawn-scoped user bearer", brokerDenied(deniedRead), deniedRead);
+  const ownPs = await cliResult(["invoke", "manager", "ps", "--space", SPACE]);
+  check("the shipped CLI's spawn-scoped manager view lists its own agents with ps",
+    !ownPs.timedOut && ownPs.status === 0 && /Answering instance:/.test(ownPs.plain) && /"name": "alpha"/.test(ownPs.plain), ownPs);
   const deniedAdmin = await cliResult(["invoke", "manager", "purge", "--args", "{}", "--space", SPACE]);
   check("the shipped CLI leaves manager.admin denied to a spawn-scoped user bearer", brokerDenied(deniedAdmin), deniedAdmin);
-  // `who` asks the same denied manager.read for the managed column. The roster is still this bearer's
-  // to read, so the denial labels that column rather than failing or partialling the run.
-  const deniedWho = await cliResult(["who", "--json", "--space", SPACE]);
-  const deniedWhoEnvelope = (() => { try { return JSON.parse(deniedWho.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { outcome: string; completeness: string; result: { managers: string; items: { name: string; managed: boolean | null }[] } | null; warnings: { code: string }[] }; } catch { return undefined; } })();
-  check("who labels the census this bearer may not ask as denied, with every agent's managed unknown",
-    deniedWhoEnvelope?.result?.managers === "denied" && deniedWhoEnvelope.warnings.some((w) => w.code === "MANAGERS_DENIED") && deniedWhoEnvelope.result.items.some((row) => row.name === "alpha") && deniedWhoEnvelope.result.items.every((row) => row.managed === null), deniedWho);
+  // `who` asks the same ps for the managed column. The manager answers for this owner's seats only,
+  // so the column is labelled partial while the run itself stays complete.
+  const ownWho = await cliResult(["who", "--json", "--space", SPACE]);
+  const ownWhoEnvelope = (() => { try { return JSON.parse(ownWho.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { outcome: string; completeness: string; result: { managers: string; items: { name: string; managed: boolean | null }[] } | null; warnings: { code: string }[] }; } catch { return undefined; } })();
+  check("who labels the manager's answer as covering this user's own seats, with alpha managed",
+    ownWhoEnvelope?.result?.managers === "partial" && ownWhoEnvelope.warnings.some((w) => w.code === "MANAGED_SCOPE") && ownWhoEnvelope.result.items.some((row) => row.name === "alpha" && row.managed === true), ownWho);
   check("that label is not a part left unread: who exits 0, ok and complete",
-    !deniedWho.timedOut && deniedWho.status === 0 && deniedWhoEnvelope?.outcome === "ok" && deniedWhoEnvelope.completeness === "complete", deniedWho);
+    !ownWho.timedOut && ownWho.status === 0 && ownWhoEnvelope?.outcome === "ok" && ownWhoEnvelope.completeness === "complete", ownWho);
 
   // The same narrow bearer has no admin grant and no human delivery ACL mirror. History must
   // use its real channel grant, include its own send and refuse a channel outside that grant.
   grantActor(dir, { ...cliRow0, scope: [] });
   try {
+  const narrowAttach = await cliResult(["attach", "--name", "alpha", "--no-reconnect", "--space", SPACE]);
+  check("the shipped attach CLI reports permission denial after its actor loses spawn scope",
+    !narrowAttach.timedOut && narrowAttach.status !== null && narrowAttach.status !== 0 && /Code:\s+PERMISSION_DENIED/.test(narrowAttach.plain) && !/attached to alpha/.test(narrowAttach.plain), narrowAttach);
   const nativeText = `narrow native history ${Date.now()}`;
   const postedHistory = await cliResult(["send", "-c", "general", nativeText, "--space", SPACE]);
   check("narrow user sends its own history fixture message", postedHistory.status === 0 && !postedHistory.timedOut, postedHistory);
@@ -1381,13 +1399,13 @@ try {
   const narrowedAttach = await epTargeted(auditor, "attach", "alpha");
   check("narrowing the auditor's scope bites its cross-owner reach on the next exchange", narrowedAttach.ok === false, narrowedAttach);
 
-  // ---------- D2. a spawn-scoped view reads status, counting only its own owner's seats ----------
+  // ---------- D2. a spawn-scoped view reads status and ps, seeing only its own owner's seats ----------
   // The auth service offers this co-located Manager to every owner, so OWNER_B's manager-caller view
-  // reaches the Manager that runs OWNER's seats. Its spawn scope lets it read the launch options, and
-  // the count it reads is OWNER_B's seats, as its `ps` would list them. Admin reach counts every seat.
-  console.log("D2) a spawn-scoped view of the shared Manager counts only its own owner's seats");
+  // reaches the Manager that runs OWNER's seats. This is the one place the Manager's owner filter is
+  // observable: the spawn view's status count and `ps` list are OWNER_B's seats. Admin reach sees every seat.
+  console.log("D2) a spawn-scoped view of the shared Manager sees only its own owner's seats");
   {
-    const viewStatus = async (actor: string, scope: string[]): Promise<number | string> => {
+    const viewReads = async (actor: string, scope: string[]): Promise<{ status: number | string; ps: string[] | string }> => {
       const g = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE, owner: OWNER_B, actor, scope, allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
       const info = loadAuthServiceInfo(dir)!;
       const res = await fetch(`${info.url}/exchange`, {
@@ -1395,25 +1413,37 @@ try {
         body: JSON.stringify({ owner: OWNER_B, actor, actorToken: g.actorToken, view: "manager-caller" }),
       });
       const ex = await res.json() as { token?: string; error?: string };
-      if (!res.ok || !ex.token) return `exchange HTTP ${res.status} ${ex.error ?? ""}`;
+      if (!res.ok || !ex.token) return { status: `exchange HTTP ${res.status} ${ex.error ?? ""}`, ps: "no view" };
       const { lifecycleUid: uid, managerInstanceId } = (decodeJwt(ex.token) as { act: { lifecycleUid: string; managerInstanceId: string } }).act;
       const nc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: ex.token, sentinelCreds: g.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
+      const read = async <T>(command: string, pick: (data: unknown) => T): Promise<T | string> => {
+        try {
+          const svc = await resolveService(nc, SPACE, "manager", { owner: OWNER_B, actor, uid }, { instanceId: managerInstanceId, deadlineMs: 10_000 });
+          const r = await invokeCommand(nc, SPACE, svc, command, undefined, { deadlineMs: 10_000 });
+          return r.reply.ok ? pick(r.reply.data) : `refused ${r.reply.error?.code}`;
+        } catch (e) {
+          return `refused ${(e as Error).message.slice(0, 200)}`;
+        }
+      };
       try {
-        const svc = await resolveService(nc, SPACE, "manager", { owner: OWNER_B, actor, uid }, { instanceId: managerInstanceId, deadlineMs: 10_000 });
-        const r = await invokeCommand(nc, SPACE, svc, "status", undefined, { deadlineMs: 10_000 });
-        return r.reply.ok ? (r.reply.data as { agentCount: number }).agentCount : `refused ${r.reply.error?.code}`;
-      } catch (e) {
-        return `refused ${(e as Error).message.slice(0, 200)}`;
+        return {
+          status: await read("status", (data) => (data as { agentCount: number }).agentCount),
+          ps: await read("ps", (data) => (data as { name: string }[]).map((row) => row.name).sort()),
+        };
       } finally {
         await nc.close();
       }
     };
-    const total = psList(manager!).length, own = psList(manager!, OWNER_B).length;
-    check("D2 fixture: the shared Manager runs a seat of another owner", total > own, { total, own });
-    const spawnCount = await viewStatus("launchview", ["spawn"]);
-    check("a spawn-scoped view of the shared Manager reads status and counts only its own owner's seats", spawnCount === own, { spawnCount, own, total });
-    const adminCount = await viewStatus("launchadmin", ["spawn", "admin"]);
-    check("...and an admin-scoped view of the same owner counts every seat", adminCount === total, { adminCount, total });
+    const names = (rows: PsRow[]) => rows.map((row) => row.name).sort();
+    const all = names(psList(manager!)), own = names(psList(manager!, OWNER_B));
+    check("D2 fixture: the shared Manager runs a seat of another owner", all.length > own.length && all.includes("alpha") && !own.includes("alpha"), { all, own });
+    const spawnView = await viewReads("launchview", ["spawn"]);
+    check("a spawn-scoped view of the shared Manager reads status and counts only its own owner's seats", spawnView.status === own.length, { spawnView, own, all });
+    check("...and its ps answers with only its own owner's seats", Array.isArray(spawnView.ps) && JSON.stringify(spawnView.ps) === JSON.stringify(own), { ps: spawnView.ps, own });
+    check("...so another owner's seat stays out of its ps", Array.isArray(spawnView.ps) && !spawnView.ps.includes("alpha"), spawnView.ps);
+    const adminView = await viewReads("launchadmin", ["spawn", "admin"]);
+    check("...and an admin-scoped view of the same owner counts every seat", adminView.status === all.length, { adminView, all });
+    check("...and lists every seat in its ps", Array.isArray(adminView.ps) && JSON.stringify(adminView.ps) === JSON.stringify(all), { ps: adminView.ps, all });
   }
 
   // ---------- E. the event plane, at the real door, under BOTH rules ----------
@@ -1835,7 +1865,7 @@ try {
   };
   const participantRoot = join(root, "participant");
   mkdirSync(join(participantRoot, ".cotal", "agents"), { recursive: true });
-  for (const n of ["omega", "omicron", "foreign", "adminprobe", "downgrade"])
+  for (const n of ["omega", "omicron", "foreign", "adminprobe", "downgrade", "retryenroll", "retrybearer", "retryunsent"])
     writeFileSync(join(participantRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
   const state = remote.loadOrCreateRemoteManagerIdentity(participantRoot, SPACE);
   const actors = remoteManagerActors(state.instanceId);
@@ -1850,6 +1880,10 @@ try {
   const activated = await authorityCall<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>(remote.remoteManagerAuthorityRequest(state, "cli", "activate", {
     registrationProof: remoteManagerRegistrationProof(OWNER, state, contractArtifacts), contractArtifacts }));
   const proof = remote.currentRegistrationProof(activated);
+  let lostEnrollmentReply = true;
+  const enrollmentRequests: import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest[] = [];
+  let refuseEnrollmentReplay = true;
+  let unsentEnrollment = true;
   participant = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: participantRoot, eventsRequired: true,
     remoteAuthority: { owner: OWNER, actors, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, identities: state.identities,
       supervisorCreds, executorCreds, serveGrant: registered.serveGrant,
@@ -1860,8 +1894,24 @@ try {
       renewExecutor: async () => remote.materialCredential(await authorityCall(remote.remoteManagerAuthorityRequest(state, "cli", "renew", { registrationProof: proof })), "executor", state.identities.executor),
       authorizeAdmin: async (caller) => { const r = remote.remoteManagerAdminAuthorizationRequest(state, "cli", proof, registered.processEpoch, caller);
         return remote.remoteManagerAdminAuthorized(await authorityCall(r), r, OWNER); },
-      enrollManagedAgent: async ({ target }) => { const r = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target);
-        return remote.remoteManagedAgentEnrollmentMaterial(await authorityCall(r), r); },
+      enrollManagedAgent: async ({ target, spawn, requestId }) => {
+        const r = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target, spawn, requestId);
+        enrollmentRequests.push(r);
+        if (target.actor === "retryunsent" && unsentEnrollment) {
+          unsentEnrollment = false;
+          throw new Error("fixture enrollment failed before host dispatch");
+        }
+        if (target.actor === "retryenroll" && !lostEnrollmentReply && refuseEnrollmentReplay) {
+          refuseEnrollmentReplay = false;
+          throw new EpEnvelopeError("permission-denied", "fixture replay temporarily refused", undefined, "not-executed");
+        }
+        const result = await authorityCall<import("@cotal-ai/core").RemoteManagedAgentEnrollmentResult>(r);
+        if (target.actor === "retryenroll" && lostEnrollmentReply) {
+          lostEnrollmentReply = false;
+          throw new Error("fixture lost committed enrollment reply");
+        }
+        return remote.remoteManagedAgentEnrollmentMaterial(result, r);
+      },
       scanGoalIndex: async () => { const r = remote.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch);
         return remote.remoteManagerGoalIndexEntries(await authorityCall(r), r, OWNER); },
       mintSessionServing: async () => { throw new Error("unused fixture session serving"); },
@@ -1883,6 +1933,44 @@ try {
   ownerCaller.on("error", () => {});
   await ownerCaller.start();
   ctlEps.push(ownerCaller);
+  // An unknown outcome can precede host dispatch as well as follow a committed grant. A later
+  // typed spawn keeps the enrollment identity but supplies its current observed authorization.
+  for (const name of ["retryunsent", "retryenroll", "retrybearer"]) {
+    if (name === "retrybearer") failNextBearerFor = name;
+    const launch = () => ownerCaller.invokeService("manager", "spawn", { name, agent: "e2e" },
+      { deadlineMs: 20_000, follow: true }).catch((e: Error) => ({ reply: { ok: false, error: { message: e.message } } }));
+    const failed = await launch();
+    const rowBefore = existsSync(rowFile("managed", OWNER, name))
+      ? JSON.parse(readFileSync(rowFile("managed", OWNER, name), "utf8")) as { lifecycleUid: string; tokenHash: string }
+      : undefined;
+    check(`${name}: a failed preflight reports its own retained enrollment and retry remedy`,
+      failed.reply.ok === false && /held by this manager's earlier enrollment/.test(failed.reply.error?.message ?? "")
+      && !psList(participant).some((a) => a.name === name) && (name === "retryunsent" ? rowBefore === undefined : rowBefore !== undefined),
+      failed.reply.error?.message);
+    if (name === "retryenroll") {
+      const before = enrollmentRequests.length;
+      const changed = await ownerCaller.invokeService("manager", "spawn", { name, agent: "e2e", allowPublish: [] },
+        { deadlineMs: 20_000, follow: true }).catch((e: Error) => ({ reply: { ok: false, error: { message: e.message } } }));
+      check("pending enrollment refuses changed persona authority without reaching the host",
+        changed.reply.ok === false && /earlier enrollment with different launch authority/.test(changed.reply.error?.message ?? "")
+        && enrollmentRequests.length === before, changed.reply.error?.message);
+      const refusedReplay = await launch();
+      check("a refused replay preserves the earlier unknown enrollment and its recovery message",
+        refusedReplay.reply.ok === false && /held by this manager's earlier enrollment/.test(refusedReplay.reply.error?.message ?? ""),
+        refusedReplay.reply.error?.message);
+    }
+    const retried = await launch();
+    const requests = enrollmentRequests.filter((r) => r.target.actor === name);
+    const rowAfter = JSON.parse(readFileSync(rowFile("managed", OWNER, name), "utf8")) as { lifecycleUid: string; tokenHash: string };
+    check(`${name}: the retry keeps the enrollment identity with fresh served-spawn authorization`,
+      retried.reply.ok === true && requests.length === (name === "retryenroll" ? 3 : 2) && requests.every((r) => r.requestId === requests[0]!.requestId)
+      && requests.every((r) => JSON.stringify(r.target) === JSON.stringify(requests[0]!.target))
+      && requests.every((r) => typeof r.spawn?.served === "string" && r.spawn.runId === requests[0]!.spawn?.runId)
+      && new Set(requests.map((r) => r.spawn!.served)).size === requests.length
+      && rowAfter.tokenHash === requests[0]!.target.tokenHash
+      && (rowBefore === undefined || rowAfter.lifecycleUid === rowBefore.lifecycleUid),
+      { ok: retried.reply.ok, error: retried.reply.error?.message });
+  }
   for (const [name, explicit] of [["omega", false], ["omicron", true]] as const) {
     const result = await ownerCaller.invokeService("manager", "spawn", { name, agent: "e2e", ...(explicit ? { events: true } : {}) },
       { deadlineMs: 20_000, follow: true }).catch((e: Error) => ({ reply: { ok: false, error: { message: e.message } } }));
@@ -1937,7 +2025,7 @@ try {
   const downgraded = await participantAccept(foreignCaller, { name: "downgrade", agent: "e2e" });
   check("cell 5: non-owner silent caller keeps disarmed options and downgrade notice before enrollment's owner refusal",
     downgradeOptions?.events === false && /event plane not armed/.test(downgradeOptions.eventsNotice ?? "")
-    && downgraded.ok === false && /not the spawning owner/.test(downgraded.error ?? ""), downgraded);
+    && downgraded.ok === false && /a helper is enrolled only for a spawn asked for by a caller of the manager's own owner/.test(downgraded.error ?? ""), downgraded);
   await participant.stop({ withAgents: true });
   participant = undefined;
   // A count, because several cells above only run when the spawn before them succeeded: a regression
@@ -1954,7 +2042,10 @@ try {
   // 50/133 -> 57/140: seven owner-equal event-plane admission and grant cells.
   // Main adds three shared-Manager status cells; the redesign adds five focused CLI cells.
   // These combined expectations still require an actual integrated run.
-  const EXPECTED = endpointCliFocus ? 62 : 148;
+  // 148 -> 151: D2's spawn and admin views also read ps.
+  // One CLI attach denial after the operator loses spawn scope.
+  // Eight hosted-enrollment checks include uncommitted attempts, changed authority and refused replay.
+  const EXPECTED = endpointCliFocus ? 71 : 160;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
@@ -1980,7 +2071,11 @@ try {
   broker?.kill("SIGKILL");
   idpSrv.close();
   exchangeProxy.close();
-  rmSync(home, { recursive: true, force: true });
-  rmSync(root, { recursive: true, force: true });
+  if (process.env.COTAL_SMOKE_RETAIN_FIXTURES === "1") {
+    console.log(`user-spawn retained fixtures: ${home}, ${root}`);
+  } else {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 process.exit(process.exitCode ?? 0);

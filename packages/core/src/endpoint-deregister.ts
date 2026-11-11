@@ -40,11 +40,13 @@
  * it its rows until it restarts; leaving a dead one costs every operator in the space a full deadline
  * on every command, permanently.
  */
-import {
-  deregisterServiceInstance, describeEndpoint, epProbeInstanceInterest, unansweredRequest, rejectionText,
-  readEndpointGateGeneration,
-  type EpCaller, type EpInstanceLiveness, type ServiceDeregistration,
-} from "@cotal-ai/core";
+import { deregisterServiceInstance, type ServiceDeregistration } from "./endpoint-service.js";
+import { describeEndpoint } from "./endpoint-invoke.js";
+import { epProbeInstanceInterest, type EpInstanceLiveness } from "./endpoint-call.js";
+import { unansweredRequest } from "./endpoint-envelope.js";
+import { rejectionText } from "./cleanup.js";
+import { readEndpointGateGeneration } from "./endpoint-serve-kv.js";
+import type { EpCaller } from "./endpoint-subjects.js";
 import type { KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 
@@ -162,6 +164,8 @@ export async function deregisterEndpointInstance(opts: {
   authKv: KV;
   endpoint: string;
   instanceId: string;
+  /** Authority-checked spec revision, when the caller must not remove another incarnation. */
+  registrationRevision?: number;
   probeInstance: () => Promise<InstanceProbe>;
   log: (line: string) => void;
 }): Promise<InstanceDeregisterReport> {
@@ -202,6 +206,7 @@ export async function deregisterEndpointInstance(opts: {
   const outcome: ServiceDeregistration = await deregisterServiceInstance(kv, {
     endpoint,
     instanceId,
+    registrationRevision: opts.registrationRevision,
     observeGeneration: () => readEndpointGateGeneration(authKv, { endpoint, instanceId }),
   });
   if (!outcome.removed && outcome.reason === "absent")

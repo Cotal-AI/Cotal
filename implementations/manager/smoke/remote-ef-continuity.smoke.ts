@@ -34,7 +34,6 @@ import { Kvm } from "@nats-io/kv";
 import {
   createEndpointStreams,
   createSpaceAuth,
-  credsClaims,
   ensureAdmissionStore,
   ensureAuthorityStores,
   ensureIssuedStores,
@@ -161,8 +160,6 @@ try {
   const reachedAfterClear: Record<string, number> = {};
   let lastAttemptResult: any;
   let firstRunIssuanceWindow: { start: number; end: number } | undefined;
-  let lastRunRenewalMaterial: any;
-  let lastStandingRenewalMaterial: any;
 
   let operatorIssuances = 0;
   let successfulRunRenewals = 0;
@@ -200,11 +197,7 @@ try {
       throw e;
     }
     if (args.request.operation === "renewRunDriver") {
-      lastRunRenewalMaterial = res;
       successfulRunRenewals++;
-    }
-    if (args.request.operation === "renewStandingBundle") {
-      lastStandingRenewalMaterial = res;
     }
     if (args.request.operation === "renewStandingBundle" || args.request.operation === "renewRunDriver") {
       renewalCallCount++;

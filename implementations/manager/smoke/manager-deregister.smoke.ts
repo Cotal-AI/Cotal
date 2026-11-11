@@ -55,7 +55,7 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm, type KV } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { EpCaller } from "@cotal-ai/core";
-import type { InstanceDeregisterRefused as InstanceDeregisterRefusedType, InstanceProbe } from "../src/deregister-instance.js";
+import type { InstanceDeregisterRefused as InstanceDeregisterRefusedType, InstanceProbe } from "@cotal-ai/core";
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 process.env.COTAL_HOME = join(dir, "home");
@@ -68,7 +68,7 @@ const {
 const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
 const { Manager } = await import("../src/manager.js");
 const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
-const { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe } = await import("../src/deregister-instance.js");
+const { deregisterEndpointInstance, makeInstanceProbe } = await import("@cotal-ai/core");
 
 const EXPECTED_CELLS = 30;
 

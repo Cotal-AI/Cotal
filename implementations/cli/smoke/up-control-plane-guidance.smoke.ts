@@ -96,7 +96,7 @@ try {
             JSON.stringify([[recordCheck], [`rm ${pidfile}`, "Remove it once no manager runs for this folder"], ["cotal up --no-manager", "Then refresh the stack without a manager"]]), output);
         // `down` refuses that record too, without calling it a process. Its Next states the check
         // only the operator can make before it names the removal. Nothing is stopped or removed.
-        const refused = run("down");
+        const refused = run("down", "--yes");
         const refusedOutput = plain(refused.stdout + refused.stderr);
         suite.check("down over that pidfile exits 1 and says the record names no process",
           refused.status === 1 && !refusedOutput.includes("Stop that process") &&
@@ -125,7 +125,7 @@ try {
     } finally {
       // Only the fixture's own malformed bytes can be removed; never discard a successor's record.
       if (malformed && existsSync(pidfile) && readFileSync(pidfile, "utf8") === "garbage") rmSync(pidfile);
-      const down = run("down");
+      const down = run("down", "--yes");
       let stopped = brokerPid === undefined || probeLiveness(brokerPid) === "dead";
       for (let i = 0; !stopped && i < 100; i++) {
         await new Promise((r) => setTimeout(r, 50));

@@ -202,6 +202,14 @@ the returned UID, and launches `agent-bearer --exchange-url <base>`. When the ho
 signerless manager refuses the user-mode spawn rather than authoring a local grant the host knows
 nothing about.
 
+The hook also receives a stable `requestId` for an unlaunched enrollment. Forward it to
+`remoteManagedAgentEnrollmentRequest` after the optional `spawn` argument. The manager retains the
+request input and token in its secret store until bearer preflight succeeds. A later spawn with
+the same caller and persona authority keeps that request identity and token, but forwards its
+freshly served spawn request. The host can authorize an attempt that never committed even after
+the earlier observation expired or the auth service restarted. An existing grant still answers
+at its original lifecycle. Host registration proof and serve epoch come from the current manager
+registration.
 
 ### Managed-agent authority transport
 
@@ -394,7 +402,13 @@ deregistration and exact instance registration operations. It carries no records
 lifecycle authority. The manager's boot `goalidx` sweep uses the authenticated host operation, which
 returns parsed `goalidx.manager.<owner>.>` entries for that owner only. The host keeps the sealed
 consumer connection and its create/delete rights. The five-minute executor already renews through
-`remoteAuthority.renewExecutor`. `remoteManagerClient.remoteStandingBundleRenewal` builds standing-bundle renewal requests, with adoption bound to the current serve epoch. `remoteRunHosting` supplies `renewRun` through the `renewRunDriver` authority operation. The host validates and adopts the driver and mediator pair before reconnecting, using the current holder and fencing coordinates. The
+`remoteAuthority.renewExecutor`. During participant registration,
+`registerRemoteManagerAuthority` accepts `refreshPrepareCreds` to request another prepare executor
+after broker-confirmed expiry. It must keep the same account and executor nkey and advance expiry.
+The stock supervise command supplies it through the authenticated host route; an embedding that
+omits it still refuses an expired registration. The frozen operation and durable progress survive
+each replacement connection.
+`remoteManagerClient.remoteStandingBundleRenewal` builds standing-bundle renewal requests, with adoption bound to the current serve epoch. `remoteRunHosting` supplies `renewRun` through the `renewRunDriver` authority operation. The host validates and adopts the driver and mediator pair before reconnecting, using the current holder and fencing coordinates. The
 [hosted runtime contract](design/hosted-runtime-contracts.md) records the bounded additions and
 their ownership; it is not a shipped pooled service.
 

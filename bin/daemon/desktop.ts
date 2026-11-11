@@ -8,11 +8,15 @@ import { loginViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions 
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
 import { applyInstall, planUninstall, startInstalled } from "./install.js";
 import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
+import { runSetup } from "./setup.js";
+import { desktopApplicationPath } from "./desktop-path.js";
 
 export type DesktopRequest =
   | { [K in "about" | "status" | "install"]: { readonly op: K } }["about" | "status" | "install"]
+  | { readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly op: "spaces"; readonly refresh?: boolean }
   | { readonly op: "login"; readonly idp: string }
+  | { readonly op: "setup"; readonly space: string; readonly idp: string }
   | { readonly op: "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status"; readonly space: string };
 
 /** No renderer-supplied command, path, credentials or arbitrary arguments cross this boundary. */
@@ -21,8 +25,12 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   const o = value as Record<string, unknown>;
   const simple = ["about", "status", "install"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
-  const fields = simple ? ["op"] : scoped ? ["op", "space"] : o.op === "login" ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
+  const fields = o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : o.op === "login" ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
+  if (o.op === "space-intent") {
+    if (!isDaemonSpaceName(o.space) || typeof o.enabled !== "boolean") throw new Error("invalid space intent");
+    return { op: "space-intent", space: o.space, enabled: o.enabled };
+  }
   if (simple) return { op: o.op as "about" | "status" | "install" };
   if (scoped) {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
@@ -33,6 +41,10 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     return { op: "spaces", ...(o.refresh !== undefined ? { refresh: o.refresh } : {}) };
   }
   if (typeof o.idp !== "string" || o.idp.length > 2048) throw new Error("invalid provider");
+  if (o.op === "setup") {
+    if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
+    return { op: "setup", space: o.space, idp: normalizeIdpUrl(o.idp) };
+  }
   return { op: "login", idp: normalizeIdpUrl(o.idp) };
 }
 
@@ -77,6 +89,15 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     }
     const { paths, home } = opts.resolveTarget();
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
+    if (req.op === "install" || req.op === "setup") process.env.PATH = await desktopApplicationPath();
+    if (req.op === "setup") {
+      const result = await runSetup({ ...client, daemonHome: home, space: req.space, idp: req.idp, version: opts.version, waitSeconds: 0,
+        report: (line, progress) => emit({ v: 1, event: "setup-progress", line, progress }),
+        onPrompt: (prompt) => emit({ v: 1, event: "login-prompt", prompt }),
+      });
+      emit({ v: 1, event: "result", ok: true, result });
+      return;
+    }
     if (req.op === "install") {
       let existing = false;
       try { planUninstall(paths, home); existing = true; }
@@ -90,7 +111,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         emit({ v: 1, event: "result", ok: true, result: { installed: true, status: answering.result } });
         return;
       }
-      if (existing) startInstalled(paths, home);
+      if (existing) await startInstalled(paths, home, opts.version, detail => emit({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } }));
       else applyInstall(paths, home);
       const deadline = Date.now() + 15_000;
       for (;;) {
@@ -110,6 +131,9 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const status = await queryDaemon(client);
     if (!status.ok) { emit({ ...status, event: "result" }); return; }
     if (req.op === "status") { emit({ ...status, event: "result" }); return; }
+    if (req.op === "spaces" && !req.refresh && status.result.protocol === DAEMON_PROTOCOL_VERSION) {
+      emit({ ...await exchangeDesktopRequest(client, req), event: "result" }); return;
+    }
     if (status.result.version !== opts.version) {
       emit({ v: 1, event: "result", ok: false, error: { code: "VERSION_MISMATCH", message: "The running daemon and this app have different versions. Update them together before making changes." } });
       return;
@@ -123,20 +147,23 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     emit({ ...reply, event: "result" });
   } catch (e) {
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
-    const message = code === "NOT_RUNNING" ? "The daemon is not running. Install its background service first."
+    const message = e instanceof CommandFailure && (req.op === "setup" || (req.op === "install" && e.native?.code !== "NOT_ANSWERING")) ? e.message
+      : code === "NOT_RUNNING" ? "The daemon is not running. Install its background service first."
       : e instanceof CommandFailure && e.code === "DEPENDENCY_UNAVAILABLE" && e.native?.code === "NOT_ANSWERING" ? "The background service was installed and a start was requested, but the daemon did not answer within 15 seconds. Use cotal daemon status for diagnostics."
       : code === "NO_RUNTIME_DIR" ? "The daemon runtime path is unavailable or too long. On Linux, check XDG_RUNTIME_DIR for the intended operating-system user."
       : code === "UNSUPPORTED_PLATFORM" ? "This platform does not have the required native daemon support."
       : code === "PEER_UID_MISMATCH" || code === "PEER_NOT_LOCK_OWNER" ? "The local daemon identity could not be verified. The requested change was not sent."
       : "The operation could not be completed. Use the matching cotal daemon command for diagnostics; no success is assumed.";
-    emit({ v: 1, event: "result", ok: false, error: { code, message } });
+    emit({ v: 1, event: "result", ok: false, error: { code, message,
+      ...(e instanceof CommandFailure && (req.op === "setup" || req.op === "install") ? { remedy: e.remedy, native: e.native } : {}),
+    } });
   }
 }
 
 /** Shared by the app adapter and the ordinary daemon CLI commands. */
 export async function exchangeDesktopRequest(
   opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">,
-  request: Extract<DesktopRequest, { readonly op: "spaces" } | { readonly space: string }>,
+  request: Exclude<Extract<DesktopRequest, { readonly op: "spaces" } | { readonly space: string }>, { readonly op: "setup" }>,
 ): Promise<DaemonResponse> {
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {

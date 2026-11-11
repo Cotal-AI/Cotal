@@ -14,11 +14,13 @@
       {
         "label": "main",
         "title": "Cotal",
-        "width": 940,
-        "height": 900,
+        "width": 880,
+        "height": 660,
         "minWidth": 560,
         "minHeight": 660,
-        "visible": false
+        "visible": false,
+        "backgroundColor": "#fffcee",
+        "skipTaskbar": false
       }
     ],
     "security": {
@@ -44,11 +46,22 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "13.5"
+      "minimumSystemVersion": "13.5",
+      "dmg": {
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 }
+      }
     },
     "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper", "silent": true },
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "startMenuFolder": "Cotal",
+        "installerHooks": "installers/hooks.nsh"
+      },
+      "wix": {
+        "template": "installers/main.wxs"
       }
     }
   },

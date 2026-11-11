@@ -118,13 +118,11 @@ try {
   operator.on("error", () => {});
   let peerId: string | undefined;
   let safetyPeerId: string | undefined;
-  let kickoffPeerId: string | undefined;
   let ambiguousPeerId: string | undefined;
   let guardPeerId: string | undefined;
   operator.on("presence", (event: { type: string; presence: { card: { id: string; name: string } } }) => {
     if (event.type !== "offline" && event.presence.card.name === "jcodepeer") peerId = event.presence.card.id;
     if (event.type !== "offline" && event.presence.card.name === "jcodesafety") safetyPeerId = event.presence.card.id;
-    if (event.type !== "offline" && event.presence.card.name === "jcodekickoff") kickoffPeerId = event.presence.card.id;
     if (event.type !== "offline" && event.presence.card.name === "jcodeambiguous") ambiguousPeerId = event.presence.card.id;
     if (event.type !== "offline" && event.presence.card.name === "jcodeguard") guardPeerId = event.presence.card.id;
   });

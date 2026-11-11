@@ -46,14 +46,35 @@ import { fileURLToPath } from "node:url";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { mkSecretDir } from "@cotal-ai/core";
 import type { DaemonPaths } from "../daemon/endpoint.js";
-import { assertScheduledEntry, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
+import { assertScheduledEntry, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
 import { launchAgentLabel, launchAgentService, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
+
+import { recoverPausedTask } from "../daemon/restart-recovery.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
+for (const scenario of ["old", "absent", "ambiguous", "changed", "pending"] as const) {
+  let enables = 0;
+  let absent = 0;
+  let message = "";
+  try {
+    message = await recoverPausedTask({
+      pendingEnd: scenario === "pending",
+      unchanged() { if (scenario === "changed") throw new Error("changed receipt"); },
+      async oldAnswers() { return scenario === "old"; },
+      async absent() { absent++; if (scenario === "ambiguous") throw new Error("listener ownership unresolved"); },
+      enable() { enables++; },
+    });
+  } catch { /* The assertions below require no enable on ambiguity. */ }
+  const safe = scenario === "old" || scenario === "absent";
+  check(`recovery policy ${scenario}: only verified safe cases enable autostart`, enables === Number(safe) && (!safe || message.includes(scenario === "old" ? "pinned old daemon" : "no daemon runs")) && (scenario !== "old" || absent === 0));
+}
+
+const restartSource = readFileSync(new URL("../daemon/install.ts", import.meta.url), "utf8").split("async function restartWindowsInstalled")[1]!.split("/** Restart only")[0]!;
+check("source inspection: production restart retains its pinned socket until finally recovery completes", !restartSource.split("} finally { clearInterval(heartbeat)")[0]!.includes("socket.destroy()") && restartSource.includes("socket?.destroy(); exclusion?.release();"));
 const code = (fn: () => unknown): string => {
   try { fn(); return "none"; } catch (e) { return e instanceof CommandFailure ? e.code : `throw:${(e as Error).message}`; }
 };
@@ -81,6 +102,18 @@ try {
   const argv = [node, "--max-semi-space-size=1", "/opt/cotal/1.2.3/lib/cotal.js", "daemon", "serve", "--daemon-home", "/Users/a b/&<home>"];
 
   console.log("N1 plist");
+  if (process.platform === "linux") {
+    const entry = process.argv[1];
+    const execArgv = process.execArgv;
+    const path = process.env.PATH;
+    process.env.PATH = "/usr/bin:/bin";
+    process.execArgv = [];
+    process.argv[1] = join(process.cwd(), "bin", "dist", "cotal.js");
+    try {
+      const unit = renderDaemonUnit(join(root, "units"), undefined);
+      check("systemd allows retirement and signals only daemon first", unit.bytes.includes("TimeoutStopSec=90\n") && unit.bytes.includes("KillMode=mixed\n"));
+    } finally { process.argv[1] = entry!; process.execArgv = execArgv; process.env.PATH = path; }
+  }
   {
     check("default label", launchAgentLabel(undefined) === "ai.cotal.daemon");
     check("home label is derived from the home", launchAgentLabel("/x") === `ai.cotal.daemon.${sha("/x").slice(0, 16)}`);
@@ -90,6 +123,7 @@ try {
     const alias = renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, "/usr/local/bin/cotal", "daemon", "serve"], searchPath: "/bin", workingDirectory: "/Users/a", logPath: "/log" });
     check("a CLI alias still pins this package's bootstrap", alias.text.includes(`<string>${xmlText(bootstrap)}</string>`) && !alias.text.includes("/usr/local/bin/daemon-cwd.js"));
     check("no unobservable WorkingDirectory property is emitted", !text.includes("<key>WorkingDirectory</key>"));
+    check("LaunchAgent allows bounded Manager retirement", text.includes("<key>ExitTimeOut</key><integer>90</integer>"));
     check("KeepAlive and RunAtLoad are true", text.includes("<key>KeepAlive</key><true/>") && text.includes("<key>RunAtLoad</key><true/>"));
     check("PATH is pinned", text.includes("<key>PATH</key><string>/usr/bin:/bin</string>") && text.includes("<key>COTAL_DAEMON_NATIVE_SERVICE</key><string>1</string>"));
     check("digest is of the exact bytes", sha256 === sha(text));
@@ -326,7 +360,7 @@ try {
     const posixArgv = ["/opt/node", "/opt/cotal.js", "daemon", "serve"];
     let task: Record<string, unknown> = { present: false };
     // The working directory the adapter writes is the home it reads, which Windows takes from USERPROFILE.
-    const security = { userId: sid, logonType: 3, runLevel: 0, workingDirectory: homedir() };
+    const security = { userId: sid, logonType: 3, runLevel: 0, workingDirectory: homedir(), enabled: true, instances: 0 };
     const r = recorder((c) => {
       if (c.file.endsWith("whoami.exe")) return { stdout: `"host\\user","${sid}"\r\n` };
       if (c.file.endsWith("powershell.exe")) return { stdout: `\uFEFF${JSON.stringify(task)}\r\n` };
@@ -336,6 +370,7 @@ try {
     const plan = service.plan(paths, undefined, posixArgv, () => { throw new Error("a task pins no PATH"); });
     const ps = r.calls.find((c) => c.file.endsWith("powershell.exe"))!;
     const script = Buffer.from(ps.args.at(-1)!, "base64").toString("utf16le");
+    check("task lookup imports ScheduledTasks before command discovery", script.includes("Import-Module ScheduledTasks\n") && script.indexOf("Import-Module ScheduledTasks") < script.indexOf("Get-ScheduledTask"));
     check("the SID comes from whoami", r.calls[0]!.file.endsWith("whoami.exe") && r.calls[0]!.args.join(" ") === "/user /fo csv /nh");
     check("the task read takes the name only from its environment", ps.env?.COTAL_DAEMON_TASK === name && !script.includes(name) && ps.args.slice(0, 4).join(" ") === "-NoLogo -NoProfile -NonInteractive -EncodedCommand");
     check("plan names the task and its definition file", plan.unit === name && plan.unitPath === join(state, "service-task.xml") && plan.mechanism === "scheduled-task");
@@ -370,7 +405,7 @@ try {
       task = { present: true, ...security, state: "Running", actions: 1, ...recorded, ...changed };
       check("changed task principal or working context refuses CONFLICT", code(() => service.check(receipt)) === "CONFLICT");
     }
-    task = { present: true, ...security, state: "Running", actions: 1, ...recorded };
+    task = { present: true, ...security, state: "Running", actions: 1, ...recorded, instances: 1 };
     r.calls.length = 0;
     service.start(receipt);
     check("starting a running task does not restart it", schtasks(r.calls) === "");
@@ -395,6 +430,57 @@ try {
     check("starting an inactive owned task submits one Run", schtasks(r.calls) === `/Run /TN ${name}`);
 
     check("a different recorded digest refuses CONFLICT", code(() => service.check({ ...receipt, unitSha256: "0".repeat(64) })) === "CONFLICT");
+
+    let nativeFailure = false;
+    let keepRunning = false;
+    const refreshRunner = recorder(c => {
+      if (c.file.endsWith("whoami.exe")) return { stdout: `"host\\user","${sid}"\r\n` };
+      if (c.file.endsWith("powershell.exe")) return { stdout: JSON.stringify(task) };
+      if (nativeFailure) return { status: 1, detail: "ambiguous native result" };
+      if (c.args.includes("/DISABLE")) task.enabled = false;
+      if (c.args.includes("/ENABLE")) task.enabled = true;
+      if (c.args[0] === "/End" && !keepRunning) task.instances = 0;
+      if (c.args[0] === "/Run") task.instances = 1;
+      return {};
+    });
+    const asyncCode = async (fn: () => Promise<void>) => {
+      try { await fn(); return "none"; } catch (error) { return error instanceof CommandFailure ? error.code : "unexpected"; }
+    };
+    const refreshService = scheduledTaskService(refreshRunner.run);
+    const runningTask = { present: true, ...security, state: "Running", actions: 1, ...recorded, enabled: true, instances: 1 };
+    task = { ...runningTask, state: "Disabled", enabled: false, instances: 0 };
+    refreshService.start(receipt);
+    check("starting a disabled owned zero-instance task enables before Run", schtasks(refreshRunner.calls) === `/Change /TN ${name} /ENABLE | /Run /TN ${name}`);
+    refreshRunner.calls.length = 0;
+    task = { ...runningTask };
+    await refreshService.pause(receipt);
+    check("refresh disables then ends without Run or deletion", schtasks(refreshRunner.calls) === `/Change /TN ${name} /DISABLE | /End /TN ${name}` && task.enabled === false && task.instances === 0 && existsSync(plan.unitPath));
+    refreshRunner.calls.length = 0;
+    refreshService.resume(receipt);
+    check("refresh resumes only after pause with Enable then Run", schtasks(refreshRunner.calls) === `/Change /TN ${name} /ENABLE | /Run /TN ${name}`);
+    refreshRunner.calls.length = 0;
+    task = { ...runningTask, execute: "foreign" };
+    check("refresh refuses foreign action without native mutation", await asyncCode(() => refreshService.pause(receipt)) === "CONFLICT" && schtasks(refreshRunner.calls) === "");
+    task = { ...runningTask, instances: undefined };
+    check("refresh refuses missing instance evidence", await asyncCode(() => refreshService.pause(receipt)) === "TARGET_UNAVAILABLE" && schtasks(refreshRunner.calls) === "");
+    task = { ...runningTask };
+    keepRunning = true;
+    check("Disabled state alone cannot prove End completed", await asyncCode(() => refreshService.pause(receipt)) === "OPERATION_UNKNOWN");
+    refreshRunner.calls.length = 0;
+    check("resume refuses a still-running disabled task", code(() => refreshService.resume(receipt)) === "CONFLICT" && schtasks(refreshRunner.calls) === "");
+    check("unresolved End forbids even enable-only recovery", refreshService.pendingEnd && code(() => refreshService.enable(receipt)) === "OPERATION_UNKNOWN" && schtasks(refreshRunner.calls) === "");
+    task.instances = 0;
+    refreshService.inspect(receipt);
+    refreshService.enable(receipt);
+    check("fresh zero-instance proof resolves End and enables without Run", !refreshService.pendingEnd && schtasks(refreshRunner.calls) === `/Change /TN ${name} /ENABLE`);
+    refreshRunner.calls.length = 0;
+    task = { ...runningTask, execute: "foreign", enabled: false };
+    check("foreign task recovery sends no native action", code(() => refreshService.enable(receipt)) === "CONFLICT" && schtasks(refreshRunner.calls) === "");
+    keepRunning = false;
+    nativeFailure = true;
+    task = { ...runningTask };
+    refreshRunner.calls.length = 0;
+    check("ambiguous Disable is not retried or followed by End", await asyncCode(() => refreshService.pause(receipt)) === "OPERATION_UNKNOWN" && schtasks(refreshRunner.calls) === `/Change /TN ${name} /DISABLE`);
 
     const copy = readFileSync(plan.unitPath);
     task = { present: true, ...security, state: "Running", actions: 1, ...recorded };

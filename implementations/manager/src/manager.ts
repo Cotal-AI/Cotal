@@ -1,8 +1,8 @@
-import { createHash, randomUUID, randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { credsAuthenticator, RequestError } from "@nats-io/transport-node";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
-import { isAbsolute, join, dirname, resolve, sep } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import Headless from "@xterm/headless";
 import {
@@ -65,7 +65,6 @@ import {
   type IssuedStore,
   mintLifecycleUid,
   managedRetirementOpId,
-  mkSecretDir,
   newIdentity,
   oneLine,
   actionContext,
@@ -80,10 +79,8 @@ import {
   runAgentBearer,
   runDriverCaller,
   saveAgentFile,
-  subjectMatches,
   AUTH_ENDPOINT,
   EP_CMD_RETIRE_LIFECYCLE,
-  controlServiceSubject,
   eventChannel,
   eventChannelPrincipal,
   resolveService,
@@ -123,6 +120,7 @@ import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { RunHosting, servedRequestSubject } from "./run-hosting.js";
 import { enrolledAcl } from "./remote-authority.js";
+import { pendingEnrollment } from "./pending-enrollment.js";
 import { rejectionText, attemptCleanup, describeCleanupFailures, type CleanupFailure } from "@cotal-ai/core";
 import { controlSession } from "./control-session.js";
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readReleasedSeatReference, readSeatRecord, removeReleasedSeatReference, removeSeatRecord, supervisePolicy, writeReleasedSeatReference, writeSeatRecord, type SeatRecord } from "./resume.js";
@@ -135,7 +133,6 @@ import {
   recordsBucket,
   epAuthBucket,
   ensureAuthorityStores,
-  ensureContractStore,
   createEndpointStreams,
   contractStoreContext,
   publishContractArtifact,
@@ -153,7 +150,6 @@ import {
   REMOTE_MANAGER_IDENTITY_NAMES,
   type LifecycleStateTransport,
   type StaticManagedSlotRow,
-  type SignerAnchor,
 } from "@cotal-ai/core";
 // The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
@@ -647,6 +643,8 @@ export interface ManagerOptions {
      * composition with no hosted storage: a signerless manager then refuses a user-mode spawn rather
      * than authoring a local grant the host knows nothing about. */
     enrollManagedAgent?: (args: {
+      /** Stable across retries of an unlaunched enrollment, including a later spawn. */
+      requestId?: string;
       target: {
         actor: string;
         tokenHash: string;
@@ -1206,6 +1204,8 @@ interface ProvisionUserAgentOpts {
   delegatedIntent?: StartAgentOpts["delegatedIntent"];
   /** The served spawn this enrollment answers, which the hosted arm forwards. */
   spawnRequest?: { served: string; runId?: string };
+  /** Authenticated caller identity, so another caller cannot adopt an unanswered enrollment. */
+  enrollmentCaller?: { owner: string; actor: string };
   /** Called once the host's enrollment answer passed the owner, actor and uid checks, before any
    *  later step, so a caller that must hold the enrolled uid holds it whatever fails after. */
   onEnrolled?: (enrolled: Pick<ProvisionedUserAgent, "owner" | "lifecycleUid" | "files">) => void;
@@ -2505,6 +2505,7 @@ export class Manager {
     // (recorded with no presence event) is logged the moment the view can support the verdict.
     this.ep.on("roster", () => this.logSeatMeshTransitions());
     this.ep.on("presence-view", () => this.logSeatMeshTransitions());
+    console.error("manager startup: connecting the supervisor endpoint");
     await this.ep.start();
     await this.ep.setActivity(`supervisor (${this.runtimeKind})`);
     // Per-instance liveness lease (the old per-space singleton is DEMOTED). Acquire
@@ -2517,6 +2518,7 @@ export class Manager {
     // the renew loop puts it back or keeps retrying ({@link renewLease}).
     this.leaseInfo = { holder: this.ep.ref().id, instanceId: this.managerInstanceId, runtime: this.runtimeKind, root: resolve(this.workspaceRoot), pid: process.pid };
     try {
+      console.error("manager startup: acquiring the instance liveness lease");
       this.leaseRevision = await this.acquireInstanceLease(this.leaseInfo);
     } catch (e) {
       await this.ep.stop();
@@ -2631,6 +2633,7 @@ export class Manager {
     // an open mesh runs the same gate/registration ceremony over bare connections and never mints
     // (there is no credential system - the broker enforces nothing, matching the old open-mesh ctl
     // trust). Fail-loud: a manager that cannot register does not start half-registered.
+    console.error("manager startup: binding the service endpoint");
     await this.registerManagerService();
     if (this.staticReconcileStopping) return;
     // Stand up the standing goal-writer connection for spawn-as-action — AFTER
@@ -2643,6 +2646,7 @@ export class Manager {
     // Reconcile any accepted-but-unterminal goals inherited from a predecessor
     // BEFORE spawn-as-action begins accepting (the goalReconcileDone gate) — a fresh incarnation
     // never drops a goal a dead predecessor accepted. Never fatal; the gate opens either way.
+    console.error("manager startup: reconciling predecessor goals");
     await this.reconcileGoalIndex();
     // SPEC 14.3: the manager hosts workflow runs. Stood up AFTER registration (it names this
     // instance's coordinates) and reconciled AFTER the goal index, for the same reason: a fresh
@@ -3169,7 +3173,7 @@ export class Manager {
         ? Object.values(candidate).flatMap((cred) => { try { return typeof cred === "string" && credsClaims(cred).sub ? [credsClaims(cred).sub!] : []; } catch { return []; } })
         : [];
       this.remoteRenewalDebt = { at: Date.now(), processEpoch, reason: rejectionText(e), unadoptedSubjects };
-      console.error(`! remote manager all-duty renewal: ${rejectionText(e)} - no unsigned or local replacement is available`);
+      console.error(`! remote manager all-duty renewal: ${this.remoteRenewalDebt.reason} - no unsigned or local replacement is available`);
       if (force) throw e;
     }
   }
@@ -5262,7 +5266,7 @@ export class Manager {
    */
   private async enrollUserAgent(
     name: string,
-    opts: Omit<ProvisionUserAgentOpts, "delegatedIntent">,
+    opts: ProvisionUserAgentOpts,
     enroll: NonNullable<NonNullable<ManagerOptions["remoteAuthority"]>["enrollManagedAgent"]>,
   ): Promise<ProvisionedUserAgent | UserAgentRefusal> {
     let provider;
@@ -5272,33 +5276,53 @@ export class Manager {
       return { error: rejectionText(e) };
     }
     const secrets = this.secrets;
-    // The token the agent will present to `POST /exchange` for the rest of its life. Generated
-    // here, hashed here, and never sent: the request carries `tokenHash` alone.
-    const actorToken = randomBytes(32).toString("base64url");
+    const input = {
+      target: {
+        actor: name,
+        ...(opts.role !== undefined ? { role: opts.role } : {}),
+        label: opts.label,
+        ...(opts.capabilities !== undefined ? { capabilities: opts.capabilities } : {}),
+        ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
+        allowSubscribe: opts.allowSubscribe,
+        ...(opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
+      },
+      ...(opts.spawnRequest !== undefined ? { spawn: opts.spawnRequest } : {}),
+    };
+    // An unanswered enrollment may already hold the host's alias. Keep its request and standing
+    // token together until preflight succeeds, rather than minting a conflicting successor.
+    let pending: Awaited<ReturnType<typeof pendingEnrollment<typeof input>>> | undefined;
+    if (!opts.delegatedIntent) {
+      try {
+        pending = await pendingEnrollment({ store: secrets, space: this.space,
+          instanceId: this.managerInstanceId, actor: name, input,
+          authority: { target: input.target, owner: this.remoteAuthority!.owner,
+            managerLifecycleUid: this.remoteAuthority!.lifecycleUid, specOwner: opts.specOwner, spawner: opts.spawner,
+            caller: opts.enrollmentCaller, runId: opts.spawnRequest?.runId } });
+      } catch (e) {
+        return { error: `agent auth preflight failed for "${name}": ${rejectionText(e)}` };
+      }
+    }
+    const actorToken = pending?.record.actorToken ?? randomBytes(32).toString("base64url");
     const tokenHash = createHash("sha256").update(actorToken, "utf8").digest("hex");
     // Provisional paths under the participant's OWN uid: the token has to be on disk before the
     // request (a host that granted against a digest whose plaintext was lost would leave an agent
     // that can never exchange), and the host's uid is not known until the request answers. The
     // family is re-keyed to the host's uid below.
-    const staged = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, opts.lifecycleUid);
+    const staged = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, pending?.record.lifecycleUid ?? opts.lifecycleUid);
     let files = staged;
     let material: Awaited<ReturnType<typeof enroll>> | undefined;
+    let sent = false;
     try {
       await secrets.put(agentSecretKeyForFile(staged.actorToken, this.space), actorToken);
       await materializeSecretToFile(secrets, agentSecretKeyForFile(staged.actorToken, this.space), staged.actorToken);
-      material = await enroll({
-        target: {
-          actor: name,
-          tokenHash,
-          ...(opts.role !== undefined ? { role: opts.role } : {}),
-          label: opts.label,
-          ...(opts.capabilities !== undefined ? { capabilities: opts.capabilities } : {}),
-          ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
-          allowSubscribe: opts.allowSubscribe,
-          ...(opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
-        },
-        ...(opts.spawnRequest !== undefined ? { spawn: opts.spawnRequest } : {}),
-      });
+      const saved = pending?.record.input ?? input;
+      if (canonicalJson(saved.target) !== canonicalJson(input.target))
+        throw new Error(`pending enrollment for "${name}" names different target authority`);
+      sent = true;
+      // The original observation may have expired, or vanished on a host restart before commit.
+      // Same-authority retries keep the enrollment identity but carry this freshly served spawn.
+      material = await enroll({ ...input, target: { ...saved.target, tokenHash },
+        ...(pending ? { requestId: pending.record.requestId } : {}) });
       if (material.actor !== name)
         throw new Error(`the host enrolled actor "${material.actor}", not the requested "${name}"`);
       const specOwner = opts.specOwner ?? (opts.spawner ? parsePrincipalKey(opts.spawner)?.owner : undefined);
@@ -5331,6 +5355,7 @@ export class Manager {
         "--health-file", files.health,
       ];
       await runAgentBearer(bearerCmd);
+      if (pending) await secrets.delete(pending.key);
       return {
         owner: material.owner,
         lifecycleUid: material.lifecycleUid,
@@ -5339,21 +5364,27 @@ export class Manager {
         enrolled: { material, actorToken },
       };
     } catch (e) {
-      // Shred every local secret this attempt materialized. The HOST's rows are the host's to
-      // reconcile: a participant holds no writer, so it must not pretend to roll back a grant or a
-      // durable it never authored. A retry with the same requestId re-enters the same enrollment.
+      // Remove launch-file materializations, but retain the pending token and request when the
+      // host may have committed. The next same-authority spawn replays that enrollment.
       // A failed removal joins the refusal instead of throwing, so every removal is attempted and
       // the refusal still reaches the caller.
       const unshredded: CleanupFailure[] = [];
       for (const family of files.actorToken === staged.actorToken ? [staged] : [staged, files])
         await this.shredUserSecrets(unshredded, family);
+      const rejected = material === undefined ? caughtEnvelope(e) : undefined;
+      // Only a first, definitively refused request proves there was no earlier commit. A refusal
+      // during replay cannot prove that an earlier unanswered attempt enrolled nothing.
+      const discard = pending?.created && (!sent || rejected?.outcome === "not-executed");
+      if (discard && pending) {
+        const key = pending.key;
+        await attemptCleanup(unshredded, "pending enrollment", () => secrets.delete(key));
+      }
+      const retained = pending && !discard;
       const leftover = unshredded.length ? `; cleanup failed: ${describeCleanupFailures(unshredded)}` : "";
-      // A host that refused the enrollment enrolled nothing, so once every staged secret is gone
-      // this attempt left nothing behind. A failure after the host answered, or a host that did not
-      // answer, may have left a grant there.
-      const refusal = material === undefined && !unshredded.length ? caughtEnvelope(e) : undefined;
+      const remedy = retained ? `; the name "${name}" is held by this manager's earlier enrollment. Retry this persona with the same caller to replay it. Once it launches, stop it before changing its authority` : "";
+      const refusal = !retained && material === undefined && !unshredded.length ? rejected : undefined;
       return {
-        error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}`,
+        error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}${remedy}`,
         ...(refusal?.outcome === "not-executed" ? { refused: refusal.code, ...(refusal.details ? { details: refusal.details } : {}) } : {}),
       };
     }
@@ -7705,6 +7736,7 @@ export class Manager {
           capabilities,
           label: ref,
           lifecycleUid,
+          enrollmentCaller: authenticatedCaller ? { owner: authenticatedCaller.owner, actor: authenticatedCaller.actor } : undefined,
           delegatedIntent: opts.delegatedIntent,
           ...(opts.served !== undefined ? { spawnRequest: this.servedSpawnRequest(opts.served, authenticatedCaller) } : {}),
           // Hold the name at the UID the host enrolled for the intent's user before any later local
@@ -9173,6 +9205,7 @@ export class Manager {
     );
   }
 
+  // @ts-expect-error TS6133: retained fixtures call this private adapter through structural views.
   private async opStop(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {
     const name = String(args.name ?? "").trim();
     const a = this.agents.get(name);
@@ -10082,7 +10115,6 @@ export class Manager {
         }),
       };
     }, Date.now());
-    const keyId = rotating.current().keyId;
     this.sessionPlane = new ManagerSessionPlane({
       space: this.space,
       // The session's serving identity is the persisted REGISTRATION instanceId, not the

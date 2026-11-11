@@ -30,10 +30,10 @@ const spec = JSON.parse(readFileSync(new URL('../openapi.json', import.meta.url)
   components: { schemas: Record<string, Schema>; responses: Record<string, ResponseEntry> };
 };
 assert.equal(spec.openapi, '3.1.0');
-assert.equal(Object.keys(spec.paths).length, 11);
+assert.equal(Object.keys(spec.paths).length, 12);
 const operations = Object.values(spec.paths).flatMap(Object.values);
-assert.equal(operations.length, 12);
-assert.equal(new Set(operations.map(op => op.operationId)).size, 12);
+assert.equal(operations.length, 13);
+assert.equal(new Set(operations.map(op => op.operationId)).size, 13);
 for (const op of operations) assert.match(op.operationId, /^[a-z][a-z0-9-]*$/);
 // @exodus/schemasafe uses draft-07; this contract uses its shared JSON Schema
 // subset. No OpenAPI-specific nullable keyword or remote schema loading is used.
@@ -155,7 +155,7 @@ try {
   assert.equal(keyResponse.headers.get('cache-control'), 'max-age=300');
   await request(base, '/.well-known/cotal-mesh', 'GET', 200);
   for (const path of ['/health', '/jwks', '/.well-known/cotal-mesh']) await request(base, path, 'POST', 405);
-  for (const path of ['/exchange', '/manager-service-authority', '/manager-instances', '/chat-session/open', '/chat-session/bearer', '/chat-session/retire']) {
+  for (const path of ['/exchange', '/manager-service-authority', '/endpoint-deregister', '/manager-instances', '/chat-session/open', '/chat-session/bearer', '/chat-session/retire']) {
     await request(base, path, 'GET', 405);
     await request(base, path, 'POST', 403, '{}', { origin: 'https://other.invalid' }, true);
     await request(base, path, 'POST', 415, '{}', { 'content-type': 'text/plain' }, true);
@@ -188,6 +188,13 @@ try {
   assert.deepEqual(catalog.instances, []);
   rejects(spec.components.schemas.ManagerCatalog, { ...catalog, complete: false });
   await request(base, '/manager-instances', 'POST', 401, { idpToken: 'invalid' });
+  const deregister = { v: 1, kind: 'endpoint-deregister', space, endpoint: 'manager', instanceId: mintLifecycleUid() };
+  const notRegistered = await request(base, '/endpoint-deregister', 'POST', 200, { idpToken, request: deregister });
+  assert.equal(notRegistered.state, 'refused');
+  assert.equal(notRegistered.condition, 'not-registered');
+  rejects(spec.components.schemas.EndpointDeregisterResult, { ...notRegistered, state: 'removed' });
+  rejects(spec.components.schemas.EndpointDeregisterResult, { ...notRegistered, removedSpecRevision: 1 });
+  await request(base, '/endpoint-deregister', 'POST', 403, { idpToken: 'invalid', request: deregister });
   const identities = Object.fromEntries(['supervisor', 'executor', 'serve', 'goalWriter', 'sessionLedger'].map(name => [name, { id: newIdentity().id }]));
   const authority = await request(base, '/manager-service-authority', 'POST', 200, { idpToken, request: {
     v: 1, kind: 'manager-service-authority', operation: 'prepare', space, actor: 'cli', instanceId: mintLifecycleUid(), managerLifecycleUid: mintLifecycleUid(), requestId: `req${mintLifecycleUid()}`, identities,
@@ -256,8 +263,8 @@ try {
   }
   assert(nativeThrottles > 0, 'Native dispatch failures after a valid proof must consume the public refusal budget');
   await request(base, '/exchange', 'POST', 200, { idpToken, actor: 'cli' });
-  assert.equal(coverage.size, 12, 'Every documented operation must receive an actual HTTP request');
-  console.log(`auth openapi smoke: ${checks} schema checks; ${coverage.size}/12 operations exercised; ${success.size}/12 success shapes exercised`);
+  assert.equal(coverage.size, 13, 'Every documented operation must receive an actual HTTP request');
+  console.log(`auth openapi smoke: ${checks} schema checks; ${coverage.size}/13 operations exercised; ${success.size}/13 success shapes exercised`);
   console.log('Not exercised: complete chat retirement; service authority successful registration/activation/renewal/ready and their native effect states; manager phases after prepare; admission saturation; deadline cutoff. Dedicated native suites own those paths.');
 } finally {
   if (daemon) await killAndAwaitExit(daemon, 'SIGTERM');

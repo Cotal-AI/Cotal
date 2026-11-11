@@ -70,7 +70,6 @@ const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}sysrot-`));
 // registry, and `up` consults it for the port-in-use decision, so without this the smoke would read
 // (and reason about) the developer's or runner's real meshes.
 process.env.COTAL_HOME = mkdtempSync(join(tmpdir(), "cotal-sysrot-home-"));
-const cotal = (f: string) => join(root, ".cotal", f);
 // P7: the $SYS pair is per-SPACE material, so it lives under `.cotal/space.<hex>/`, not flat. Staged
 // crash states below are written HERE, at the canonical location, on purpose: a flat write beside an
 // already-segmented pair is the §2 rule 3 ambiguity, which refuses loudly and would report a

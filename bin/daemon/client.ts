@@ -10,6 +10,7 @@
  */
 import { closeSync } from "node:fs";
 import { connect as netConnect, type Socket } from "node:net";
+import { validAccountComputerStatus } from "./account-state.js";
 import { randomUUID } from "node:crypto";
 import { connectPipe, windowsUserSid, type PipePeer } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSupportedPlatform, checkDir, checkSocket, defaultPeerPid, defaultPeerUid, type DaemonPaths, type PeerPid, type PeerUid } from "./endpoint.js";
@@ -155,8 +156,12 @@ export async function queryDaemon(opts: QueryOptions): Promise<QueryReply> {
     const line = opts.rawLine !== undefined ? `${opts.rawLine}\n` : encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: "status" });
     (opts.counters ?? { bytesWritten: 0 }).bytesWritten += Buffer.byteLength(line, "utf8");
     sock.write(line);
-    const reply = await readLine(sock, opts.timeoutMs ?? 5000);
-    return JSON.parse(reply) as QueryReply;
+    // Status includes parallel hosted-Manager observations, each bounded to fifteen seconds.
+    const reply = await readLine(sock, opts.timeoutMs ?? 20_000);
+    const parsed = JSON.parse(reply) as QueryReply;
+    if (parsed.ok && parsed.result.account !== undefined && !validAccountComputerStatus(parsed.result.account))
+      throw new Error("the daemon returned malformed account computer status");
+    return parsed;
   } finally {
     sock.destroy();
   }

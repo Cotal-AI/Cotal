@@ -30,7 +30,7 @@ import { Kvm } from "@nats-io/kv";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, standaloneConnectOpts,
   replayRunJournal, openRecordsBucket, readRunRecord, admissionBucket, revocationKey, recordsBucket, listRunMigrations,
-  revokeRunAdmission, recordAtomicKey, recordStatusKey, RECORD_KINDS, mintLifecycleUid,
+  revokeRunAdmission, recordAtomicKey, recordStatusKey, RECORD_KINDS, mintLifecycleUid, EpEnvelopeError,
 } from "@cotal-ai/core";
 import { authDir, exitCode, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { CATALOG, type JournalEntry } from "@cotal-ai/lang";
@@ -969,6 +969,21 @@ let P = "";
       rows.length > 5 && requests < rows.length, { rows: rows.length, requests });
   } finally { await reader.drain().catch(() => reader.close()); }
 
+  // A named-run read has the same point-read access as an older issuer's list credential, but
+  // lacks the batch grant introduced in 0.149.0. The broker, not a mock, refuses that publish.
+  await asOperator(P, async ({ nc }) => {
+    const planes = { nc, js: jetstream(nc), jsm: await jetstreamManager(nc), kv: await openRecordsBucket(nc, SPACE), space: SPACE };
+    c("CONTROL: the credential without the batch grant can still read the recorded run",
+      (await readRunRecord(planes.kv, EP, P))?.status?.value.state === "completed");
+    const denied = await cotalLangRunHost.list(planes, {}).then(() => undefined, (e: unknown) => e);
+    c("a denied batched list is a failed precondition instead of an internal broker error",
+      denied instanceof EpEnvelopeError && denied.code === "failed-precondition", String(denied));
+    c("the refusal names the missing grant, auth-service upgrade and responsible operator",
+      denied instanceof Error && denied.message.includes(`$JS.API.DIRECT.GET.KV_${recordsBucket(SPACE)}`)
+        && denied.message.includes("space operator") && denied.message.includes("auth service to 0.149.0 or later")
+        && denied.message.includes("Upgrading only the manager"), String(denied));
+  });
+
   // Remove only this fixture's admission store, after all tests that drive a run have ended.
   const teardown = await connect({ servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() }), tls: false }), maxReconnectAttempts: 0 });
   try { await (await jetstreamManager(teardown)).streams.delete(`KV_${admissionBucket(SPACE)}`); }
@@ -983,7 +998,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 117;
+const DECLARED = 120;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

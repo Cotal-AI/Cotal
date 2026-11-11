@@ -243,7 +243,7 @@ try {
     const stopAgain = cotal(["service", "stop", "web", "--instance", liveBoot!.log.instanceId, "--space", SPACE, "--yes"]);
     for (let i = 0; i < 50 && alive(livePid); i++) await sleep(100);
     ok("the explicit stop ends the dashboard and removes its bootstrap file before the stack", stopAgain.status === 0 && !alive(livePid) && !existsSync(liveBoot!.path) && meshPids.every(alive), out(stopAgain).slice(-500));
-    const down = cotal(["down"]);
+    const down = cotal(["down", "--yes"]);
     ok("bare down then stops the auth mesh", down.status === 0 && meshPids.every((pid) => !alive(pid)), out(down).slice(-500));
   }
 
@@ -257,7 +257,7 @@ try {
   console.log(`\nDOGFOOD LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {
   cotal(["service", "stop", "web", "--space", SPACE, "--yes"]);
-  cotal(["down"]);
+  cotal(["down", "--yes"]);
   for (const p of ownPids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(sandbox, { recursive: true, force: true });
 }

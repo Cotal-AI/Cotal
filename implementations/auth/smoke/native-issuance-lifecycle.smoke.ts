@@ -9,7 +9,7 @@
  *    test-operator account claim; exactly that socket closes while a sibling keeps working (this
  *    proves the mapping only: a fresh connect on the same bearer still gets a new key);
  *  - the plane's own writer prunes a row only after its exp plus the clock tolerance, at boot and
- *    on its timer, leaving a purge marker that carries the bucket's marker TTL; a corrupt row fences the plane visibly and refuses the next open; after close no
+ *    on its timer, leaving a purge marker that carries the bucket's marker TTL; a corrupt row fences the plane visibly, including after a bounded restart check; after close no
  *    pass runs.
  *
  * Instrumentation: a full-grant test-account connection reads/seeds the auth bucket, and a test
@@ -191,11 +191,14 @@ try {
   check("PF the fenced plane refuses new issuance work", z instanceof Error, z instanceof Error ? z.message.slice(0, 80) : "minted");
   await plane.close(); plane = undefined;
 
-  // ---- PB: the boot pass refuses an open over corrupt evidence ----
+  // ---- PB: restart either refuses in its bounded check or fences on continuation ----
   let pb = "";
-  try { const p2 = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet, nativeIssuancePruneMs: PRUNE_MS }); await p2.close(); pb = "opened"; }
-  catch (e) { pb = (e as Error).message; }
-  check("PB the next open refuses while the corrupt row remains", pb !== "opened" && pb.includes("natkey"), pb.slice(0, 160));
+  try {
+    const p2 = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet, nativeIssuancePruneMs: PRUNE_MS });
+    try { pb = await within(p2.fenced, PRUNE_MS * 10); }
+    finally { await p2.close(); }
+  } catch (e) { pb = (e as Error).message; }
+  check("PB the next open refuses or fences while the corrupt row remains", pb !== "timeout" && pb.includes("natkey"), pb.slice(0, 160));
   await kv.purge(`natkey.${bad}`);
   plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet, nativeIssuancePruneMs: PRUNE_MS });
   check("PB control: the open succeeds once the corrupt row is gone", true);

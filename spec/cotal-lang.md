@@ -1315,7 +1315,7 @@ time, L5xxx durability, L6xxx simulation.
 | L4023 | `waitUntil` deadline elapsed |
 | L4024 | `waitUntil` probe or predicate answered the wrong shape |
 | L4025 | Host did not schedule the run |
-| L4026 | Pause plane did not answer before the client deadline |
+| L4026 | A plane read did not answer before the client deadline |
 | L4027 | At-most-once step's outcome was never settled |
 | L4028 | Effect not admitted inside `once` |
 | L5001 | Run divergence |

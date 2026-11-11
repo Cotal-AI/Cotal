@@ -45,7 +45,8 @@ function call(verb, ...flags) {
   let body;
   try { body = JSON.parse(child.stdout); } catch { /* Recorded below without exposing raw native output. */ }
   const row = { verb, dryRun: flags.includes("--dry-run"), exit: child.status, signal: child.signal,
-    outcome: body?.outcome, code: body?.error?.code, nativeCode: body?.error?.cause?.code };
+    outcome: body?.outcome, code: body?.error?.code, nativeCode: body?.error?.cause?.code,
+    ...(body?.error ? { message: body.error.message, remedy: body.error.remedy } : {}) };
   report.calls.push(row);
   if (child.error || child.signal || child.status === null) {
     uncertain = true;
@@ -145,6 +146,29 @@ try {
   const removed = ok("uninstall", "--yes");
   check("uninstall confirms the planned service", removed.state === "removed" && removed.unit === plan.unit);
   await verifyRemoved();
+  if (process.platform === "win32") {
+    // End only the just-installed, receipt-verified direct-Node task. This models a
+    // daemon already ended by the operator without signalling a PID or foreign task.
+    clean = false;
+    uninstallAttempted = false;
+    ok("install");
+    await statusUntil(true);
+    ok("uninstall", "--dry-run");
+    const ended = spawnSync(join(process.env.SystemRoot, "System32", "schtasks.exe"), ["/End", "/TN", plan.unit], {
+      encoding: "utf8", timeout: 30_000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+    });
+    check("owned installed task can be ended before uninstall", ended.status === 0 && !ended.error && !ended.signal);
+    await statusUntil(false);
+    uninstallAttempted = true;
+    check("installed stopped daemon uninstall succeeds", ok("uninstall", "--yes").state === "removed");
+    await verifyRemoved();
+    const delayed = spawnSync(process.execPath, [fileURLToPath(new URL("../dist/daemon-native.js", import.meta.url)), "daemon", "serve", "--daemon-home", home], {
+      encoding: "utf8", timeout: 30_000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+    });
+    check("delayed native child after uninstall refuses", delayed.status !== null && delayed.status !== 0 && !delayed.error && !delayed.signal);
+    await statusUntil(false);
+    check("delayed native child published no endpoint or receipt", !existsSync(receipt));
+  }
 } catch (error) {
   report.failure = error.message;
   process.exitCode = 1;

@@ -1,7 +1,8 @@
 import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess } from "node:child_process";
+import { spawnBroker } from "../lib/broker-spawn.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { createConnection, createServer, isIP } from "node:net";
 import { homedir, hostname } from "node:os";
 import {
@@ -63,7 +64,6 @@ import {
   EpEnvelopeError,
   mkSecretDir,
   openPrivateAppend,
-  realDirNoSymlink,
   writeSecretFile,
   utf16Problem,
   type AuthPrepared,
@@ -161,7 +161,6 @@ import {
   readMaintenanceJournal,
   rootNamesNoSpace,
   readMaintenanceResumeDocument,
-  seatCheckpointDir,
   readStoreIdentity,
   recordOrdinaryResumeManagerCommit,
   releaseMaintenanceLock,
@@ -209,7 +208,7 @@ import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
 import { c, hang, stderrLine } from "../ui.js";
-import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../lib/seat-resume.js";
+import { admitAndRestoreSeatCheckpoints } from "../lib/seat-resume.js";
 import { natsServerLabel, resolveNatsServer, type NatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
 import { detachedNext, renderDetachedSummary } from "../lib/up-report.js";
@@ -358,8 +357,6 @@ interface PendingOrdinaryResume {
   adoptProof?: ListenerProof;
 }
 const pendingOrdinaryResumes = new Map<string, PendingOrdinaryResume>();
-
-interface BrokerLogOptions { logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number }
 
 /** `cotal up` flags — colocated with the command (like `spawnFlags`) so its completion can read them. */
 export const upFlags: FlagSpec[] = [
@@ -2313,7 +2310,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // on POSIX so only this owner receives the interrupt and can finish manager-first teardown
   // before signalling the broker. Keep the child referenced and its output in this terminal.
   // The configuration names a store inside the root relative to it, so the broker runs from the root.
-  const child = spawn(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
+  const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
   let activationFinished = !resumeAttempt;
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
   releaseStartupLock();
@@ -2486,6 +2483,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       runtime: values.runtime,
       noManager,
       onDeliveryExit,
+      isStopping: () => stopping,
     });
     if (noManager && setup && controlPlane) recordOperationWarning(await noManagerCredentialWarning(cotalRoot(), space));
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
@@ -3904,6 +3902,7 @@ async function startDeliveryWithBroker(
     onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
   },
   afterDelivery?: () => Promise<void>,
+  isStopping?: () => boolean,
 ): Promise<Awaited<ReturnType<typeof ensureControlPlane>> | undefined> {
   try {
     const plane = await ensureControlPlane({ space, server, tls: tlsRequired, ...(mgr ?? {}) }, afterDelivery);
@@ -3920,10 +3919,9 @@ async function startDeliveryWithBroker(
       );
     return plane;
   } catch (e) {
-    // Non-fatal (live messaging is unaffected) — but never SILENT: without the manager,
-    // `spawn --detach` / cotal_spawn have no responder, and the operator must hear it here,
-    // not as an unexplained "no manager reachable" later.
-    reportDegradedControlPlane((e as Error).message);
+    // A running mesh must report its missing control plane. A foreground stop can remove the
+    // manager while this startup observation is still pending; that is intentional teardown.
+    if (!isStopping?.()) reportDegradedControlPlane((e as Error).message);
     return undefined;
   }
 }
@@ -4054,6 +4052,8 @@ async function serveReadyListener(l: {
   noManager?: boolean;
   quietBoot?: boolean;
   onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
+  /** Suppress startup failure diagnostics while a foreground guarded stop is in progress. */
+  isStopping?: () => boolean;
 }): Promise<{ authService: boolean; controlPlane: Awaited<ReturnType<typeof ensureControlPlane>> | undefined }> {
   const { child, server, space, setup, transport } = l;
   if (l.resumeAttempt) await recreateMemoryBuckets(server, space, setup);
@@ -4123,7 +4123,7 @@ async function serveReadyListener(l: {
   }, async () => {
     svc = await startUserAuthService(space, server, setup, [...(l.publicExchange ?? []), ...authTimeoutArgs(setup?.authTimeout)], l.quietBoot);
     if (svc.userAuth) recordOurMesh({ space, server, root: cotalRoot(), mode: "user", userAuth: svc.userAuth, ts: new Date().toISOString() }, "refresh", true);
-  });
+  }, l.isStopping);
   seedPersonaAfterUp(cotalRoot(), l.quietBoot);
   return { authService: svc.ok, controlPlane };
 }
@@ -4279,8 +4279,9 @@ export async function startMeshDetached(
   const logPath = cotalPath("nats.log");
   const fd = openBrokerLog(logPath);
   const listenerStartedAt = new Date().toISOString();
-  const child = spawn(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd] });
-  closeSync(fd);
+  let child: ChildProcess;
+  try { child = spawnBroker(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd] }); }
+  finally { closeSync(fd); }
   await recordSpawnedListener(child, listenerStartedAt, opts.boundListener);
   child.unref();
 

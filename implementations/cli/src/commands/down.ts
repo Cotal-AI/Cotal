@@ -4,8 +4,10 @@ import { basename, join, relative, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
+  ConfirmationRequired,
   isCommandFailure,
   localRecordName,
+  oneLine,
   presentationOf,
   renderReport,
   abortMaintenanceCut,
@@ -114,6 +116,9 @@ import { restoreNextStep } from "../lib/restore.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl } from "../lib/control.js";
+import { canPrompt } from "./meshes-wizard.js";
+import * as prompts from "../lib/prompts.js";
+import { yesRequired } from "../lib/confirmation-required.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
  *  `ManagerResumeAgent`; the CLI never imports it, because implementations do not depend on each
@@ -584,6 +589,33 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   let folderContext: LocalProcessContext | undefined;
   const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveRuntimeSpace(process.cwd()) });
   refuseUncontainedRecords(selected, folderCtx());
+  if (args.values.yes !== true) {
+    const target = { root: folderCtx().root, space: guarded.space };
+    if (!canPrompt()) throw new ConfirmationRequired(yesRequired("stopping the whole local stack", false), { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows its local records" });
+    const records = () => selected.map((component) => {
+      const path = localProcessPath(component.pidFile, folderCtx());
+      return { path, recorded: processRecorded(component, folderCtx()), pid: readContainedRecord(target.root, path), identity: readContainedRecord(target.root, `${path}.identity`) };
+    });
+    const reviewedRecords = JSON.stringify(records());
+    console.log(renderReport({ space: guarded.space, sections: [{ title: "Whole-stack stop", blocks: [
+      { kind: "fields", rows: [["Root", target.root], ["Stop recorded components", selected.filter((component) => processRecorded(component, folderCtx())).map((component) => component.label).join(", ") || "none"], ["Retire managed agents", values["with-agents"] ? "requested" : "not requested"]] },
+      { kind: "lines", lines: ["These are retained local records, not a verified process or agent-impact plan. The existing ownership and stop guards still apply."] },
+    ] }] }, "rich", process.stdout));
+    const answer = await prompts.confirm({ message: `Stop ${oneLine(guarded.space)}'s whole local stack?`, initialValue: false });
+    if (prompts.isCancel(answer) || !answer) {
+      console.log("Cancelled; no process was stopped.");
+      return;
+    }
+    // Input can wait indefinitely. A prior scope check cannot authorize the stack now present.
+    const changed = () => new CommandFailure("refused", "CONFLICT", "the local stack changed while confirmation waited; no process was stopped", { target, remedy: "run `cotal down` again to review the current stack" });
+    if (cotalRoot() !== target.root) throw changed();
+    validateDownArguments(args);
+    if (controllerStackRecorded(target.root)) throw changed();
+    const current = guardLegacyBareDown();
+    if (current.space !== guarded.space || current.server !== guarded.server || resolveRuntimeSpace(process.cwd()) !== folderCtx().space) throw changed();
+    refuseUncontainedRecords(selected, folderCtx());
+    if (JSON.stringify(records()) !== reviewedRecords) throw changed();
+  }
   // A signal ends the stop where it is, and the notice names the members it stopped and those still
   // running. One that lands after a member was signalled waits for that member's exit, so its stop is
   // reported first; a second one ends the stop at once and names that member. Once every member is

@@ -44,7 +44,6 @@ import {
   dlvDurable,
   fanoutDurable,
   readerDurable,
-  DEV_OWNER,
   principalKey,
   memberKey,
   deprovisionTargetPrincipal,
@@ -56,8 +55,8 @@ import { requireBrokerFloor } from "./broker-floor.js";
 import { isConsumerNotFound, isStreamNotFound } from "./jetstream-missing.js";
 import { isCasLoss } from "./endpoint-records.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
-import { openAclRegistry, deleteAcl, fenceAcl } from "./acls.js";
-import { openMembersRegistry, deleteMember } from "./members.js";
+import { openAclRegistry, fenceAcl } from "./acls.js";
+import { openMembersRegistry } from "./members.js";
 import {
   BACKUP_PLANE3_DEDUP_WINDOW_MS,
   HISTORY_NO_COUNT,

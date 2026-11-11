@@ -14,6 +14,10 @@ const paths = home === undefined ? daemonPaths() : daemonPathsFor(home);
 ensureStateDir(paths);
 captureNativeDaemonOutput(paths.state);
 process.env.COTAL_DAEMON_NATIVE_SERVICE = "1";
+if (process.platform === "win32") {
+  const { windowsApplicationPath } = await import("./daemon/desktop-path.js");
+  process.env.PATH = await windowsApplicationPath();
+}
 const entry = new URL("./cotal.js", import.meta.url);
 process.argv[1] = fileURLToPath(entry);
 try { await import(entry.href); }

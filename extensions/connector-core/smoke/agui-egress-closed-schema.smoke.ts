@@ -41,9 +41,6 @@ import {
   aguiFrame,
   extraPropertyPath,
   frozenBodyEgressVerdict,
-  type FrozenBodyEgressVerdict,
-  isAguiFramePart,
-  parseAguiFrame,
   runStarted,
   runFinished,
   textMessageContent,
@@ -64,7 +61,6 @@ import {
 } from "../src/agui-emitter.js";
 import { JsonlFileSource } from "../src/durable-source.js";
 import { EventWal } from "../src/event-wal.js";
-import { createClaudeMapper, type ClaudeEntry } from "../../connector-claude-code/src/agui-map.js";
 
 let pass = 0;
 let fail = 0;
@@ -81,7 +77,7 @@ const PRINCIPAL = { owner: "local", actor: "aaa" };
 const PRINCIPAL_KEY = "local.aaa";
 const SPACE = "main";
 const THREAD = "thread-1";
-const CHANNEL = eventChannel(PRINCIPAL);
+eventChannel(PRINCIPAL);
 
 const SIBLING_TOOL_BYTES = "SYNTHETIC-PLACEHOLDER-1432-SIBLING-TOOL-BYTES-NOT-A-SECRET";
 const SMUGGLED_SECRET = "SYNTHETIC-PLACEHOLDER-1432-SMUGGLED-SECRET-NOT-A-SECRET";
@@ -151,9 +147,6 @@ const fresh = async (name: string) => {
   return { d, src, walPath, wal, source: new JsonlFileSource<unknown>(src) };
 };
 
-const append = (path: string, ...recs: unknown[]) => {
-  writeFileSync(path, recs.map((r) => JSON.stringify(r)).join("\n") + "\n", { flag: "a" });
-};
 
 const publishedWire = (ep: FakeEndpoint): string => JSON.stringify(ep.publishes);
 
@@ -360,7 +353,7 @@ try {
   // An AguiEmitter.start() against a WAL with a sent_unacked body carrying a
   // sibling property must halt with egress-extra-property, not republish.
   {
-    const { wal, walPath, source, src } = await fresh("recover-extra-prop");
+    const { wal, walPath, source } = await fresh("recover-extra-prop");
     const sf = memorySubjectFrontier();
     await wal.bindSubjectFrontier(sf);
 

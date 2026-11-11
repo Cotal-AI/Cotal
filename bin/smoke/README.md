@@ -120,6 +120,13 @@ tally wins. Per-row counting is used only when neither is present.
 can join it. On a host other stacks share, set `COTAL_SMOKE_SHARED_HOST=1`: those cells then skip
 and print why.
 
+`pnpm smoke:orphan-seat-succession` keeps its manager hosts and detached seats inside a
+recorded private sandbox. It records each seat at spawn, including seats created after manager
+readiness, and waits for the successor to launch before normal teardown. On Linux the smoke-kit
+watchdog removes remaining sandbox processes when the suite exits, including after a signal.
+The predecessor stays alive during the succession assertions; this cleanup is test ownership,
+not a change to production orphan custody.
+
 ## Failure reports
 
 Pass caught values directly as a separate console argument, such as `console.error(prefix, e)`.
@@ -144,6 +151,13 @@ not the full gate or a replacement name for a smaller testing tier.
 directory under the scanned source roots and removes only that directory. Selected-probe mode
 uses the same ownership rule. Probe inputs are test scratch, not CLI source to commit or publish;
 the full suite checks that an existing file at the old fixed probe name survives both modes.
+
+Honest-text smoke proofs must cite a unique output assertion with reviewed coverage of the
+entry's module in `packages/workspace/smoke/presence-render-proofs.ts`. Review the assertion's
+rendered route or shared renderer before adding a binding. Importing a module does not prove
+that an assertion reads its output. `pnpm smoke:presence-render-proofs` checks all manifest
+smoke proofs and rejects unrelated assertions without creating source probes. It does not run
+the cited suites or replace the AST census.
 
 `pnpm smoke:required-arg-seam --census` prints the actual classified call sites. Review each
 added or removed site before updating `required-arg-sites.json` and the total/smoke pins.

@@ -181,6 +181,8 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
 
   // read-only renders explicitly; readAcl line appears only when it differs from read.
   const text = renderOrientation(o);
+  assert.match(text, /status: working · progress unknown · attention: open/,
+    "the card's own status names unknown progress independently of the peer summary");
   assert.match(text, /read-only/);
   assert.match(text, /may join \(read ACL\)/);
   assert.match(text, /Model pin: none recorded/);

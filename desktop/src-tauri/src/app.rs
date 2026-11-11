@@ -1,11 +1,13 @@
 use crate::{browser_url, daemon_env_key, DesktopRequest, NODE_SIDECAR};
+use crate::native_presence;
+use crate::first_paint::{FirstPaint, ShowAction};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use tauri::{
     ipc::Channel,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, WindowEvent,
+    AppHandle, Emitter, Manager, WindowEvent,
 };
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
@@ -13,6 +15,8 @@ use tokio::sync::Semaphore;
 
 const MAX_FRAME: usize = 64 * 1024;
 struct RequestSlots(Arc<Semaphore>);
+struct TrayStatus(MenuItem<tauri::Wry>);
+struct PaintState(std::sync::Mutex<FirstPaint>);
 
 #[tauri::command]
 async fn daemon_request(
@@ -27,6 +31,11 @@ async fn daemon_request(
         .try_acquire_owned()
         .map_err(|_| "Too many app requests are running. Wait for an operation to finish.")?;
     request.validate()?;
+    let operation = match &request {
+        DesktopRequest::Status {} => "status",
+        DesktopRequest::Setup { .. } => "setup",
+        _ => "other",
+    };
     let seconds = request.timeout_seconds();
     let runtime = app
         .path()
@@ -72,7 +81,7 @@ async fn daemon_request(
                     let frame: Value = serde_json::from_slice(&line).map_err(|_| "The daemon client returned an invalid JSON frame.")?;
                     if frame.get("v").and_then(Value::as_u64) != Some(1) { return Err("The daemon client protocol is unsupported.".into()); }
                     match frame.get("event").and_then(Value::as_str) {
-                        Some("login-prompt") => on_event.send(frame).map_err(|_| "The application closed its approval view.")?,
+                        Some("login-prompt" | "setup-progress") => on_event.send(frame).map_err(|_| "The application closed its progress view.")?,
                         Some("result") if result.is_none() => result = Some(frame),
                         _ => return Err("The daemon client returned an unexpected frame.".into()),
                     }
@@ -93,7 +102,16 @@ async fn daemon_request(
         Err("The daemon client closed without an exit receipt.".into())
     }).await;
     let _ = child.kill();
-    answer.map_err(|_| "The daemon client timed out. The operation outcome is unknown; check status before retrying.".to_string())?
+    let frame = answer.map_err(|_| "The daemon client timed out. The operation outcome is unknown; check status before retrying.".to_string())??;
+    if matches!(operation, "status" | "setup") {
+        let status = crate::presence::tray_status(&frame);
+        app.state::<TrayStatus>().0.set_text(&status).map_err(|e| e.to_string())?;
+    }
+    // An OS integration refusal does not conceal the completed daemon operation.
+    if let Err(message) = native_presence::observe(&app, operation, &frame) {
+        app.emit("desktop-presence-error", message).map_err(|e| e.to_string())?;
+    }
+    Ok(frame)
 }
 
 #[tauri::command]
@@ -118,6 +136,37 @@ fn set_connection_state(app: AppHandle, connected: bool) -> Result<(), String> {
 }
 
 fn show(app: &AppHandle) {
+    let action = app.state::<PaintState>().0.lock().expect("first paint state poisoned").request();
+    match action {
+        ShowAction::Show => show_now(app),
+        ShowAction::Wait => {},
+        ShowAction::StartTimer => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    let action = handle.state::<PaintState>().0.lock().expect("first paint state poisoned").timeout();
+                    if action == ShowAction::Show {
+                        let _ = handle.emit("desktop-presence-error", "Cotal did not finish drawing its first frame within two seconds.");
+                        show_now(&handle);
+                    }
+                });
+            });
+        }
+    }
+}
+
+#[tauri::command]
+fn first_paint(window: tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() != "main" { return Err("Only the main window can report its first frame.".into()); }
+    let app = window.app_handle();
+    let action = app.state::<PaintState>().0.lock().map_err(|_| "The first frame state is unavailable.")?.painted();
+    if action == ShowAction::Show { show_now(app); }
+    Ok(())
+}
+
+fn show_now(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -126,32 +175,53 @@ fn show(app: &AppHandle) {
 }
 
 pub fn run() {
+    #[cfg(windows)]
+    unsafe {
+        windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(windows::core::w!("ai.cotal.desktop"))
+            .expect("Cotal could not set its Windows application identity");
+    }
+    let autostart = tauri_plugin_autostart::Builder::new().app_name("Cotal").args(["--background"]);
+    #[cfg(target_os = "macos")]
+    let autostart = autostart.macos_launcher(tauri_plugin_autostart::MacosLauncher::LaunchAgent);
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| show(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if !args.iter().any(|arg| arg == "--background") { show(app); }
+        }))
         .manage(RequestSlots(Arc::new(Semaphore::new(4))))
+        .manage(PaintState(std::sync::Mutex::new(FirstPaint::default())))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(
-            tauri_plugin_autostart::Builder::new()
-                .args(["--background"])
-                .build(),
-        )
+        .plugin(autostart.build())
         .invoke_handler(tauri::generate_handler![
             daemon_request,
             open_browser,
-            set_connection_state
+            set_connection_state,
+            first_paint,
+            crate::native_presence::desktop_presence,
+            crate::native_presence::set_login_preference,
+            crate::native_presence::dismiss_presence_offer,
+            crate::native_presence::move_to_applications,
+            crate::native_presence::pin_to_taskbar
         ])
         .setup(|app| {
-            let open = MenuItem::with_id(app, "open", "Open Cotal", true, None::<&str>)?;
+            let window = app.get_webview_window("main").ok_or("The main window is unavailable.")?;
+            window.set_background_color(Some(tauri::window::Color(255, 252, 238, 255)))?;
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            app.manage(native_presence::Presence(std::sync::Mutex::new(native_presence::load(app.handle())?)));
+            let status = MenuItem::with_id(app, "status", "Checking connection…", false, None::<&str>)?;
+            let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+            let dashboard = MenuItem::with_id(app, "dashboard", "Open dashboard", true, None::<&str>)?;
             let quit = MenuItem::with_id(
                 app,
                 "quit",
-                "Quit app (keep daemon running)",
+                "Quit Cotal",
                 true,
                 None::<&str>,
             )?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
+            let menu = Menu::with_items(app, &[&status, &settings, &dashboard, &quit])?;
+            app.manage(TrayStatus(status));
             let icon = app
                 .default_window_icon()
                 .ok_or("The packaged application icon is missing.")?
@@ -160,8 +230,10 @@ pub fn run() {
                 .icon(icon)
                 .menu(&menu)
                 .tooltip("Cotal: not connected")
+                .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => show(app),
+                    "settings" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
+                    "dashboard" => { show(app); let _ = app.emit("desktop-open-dashboard", ()); }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -174,9 +246,27 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                match native_presence::explain_close(window.app_handle()) {
+                    Ok(true) => {
+                        let _ = window.emit("desktop-close-explained", "Cotal stays in your system tray. Open it from the tray or Dock. Quit app leaves the background service running.");
+                        // Keep the first explanation visible until the person closes again.
+                        return;
+                    }
+                    Err(message) => { let _ = window.emit("desktop-presence-error", message); return; }
+                    Ok(false) => {}
+                }
                 let _ = window.hide();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("Cotal could not initialize its native desktop application");
+        .build(tauri::generate_context!())
+        .expect("Cotal could not initialize its native desktop application")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            match event {
+                tauri::RunEvent::Reopen { .. } | tauri::RunEvent::Opened { .. } => show(app),
+                _ => {}
+            }
+            #[cfg(not(target_os = "macos"))]
+            { let _ = (app, event); }
+        });
 }

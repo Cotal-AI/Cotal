@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import {
   agentFilePath,
   assertValidName,
-  loadAgentFile,
   oneLine,
   personaDir,
   type CompletionResult,

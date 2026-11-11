@@ -29,7 +29,7 @@ import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TR
 import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { canonicalJson, contractDigest } from "./canonical.js";
 import { isCanonicalEd25519PublicCoordinate } from "./remote-service-authority.js";
-import type { ServiceAuthorityInfo, ServiceAuthorityResult, ServiceIssuerKey, ServiceRegistration, ServiceRegistrationWitness } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
+import type { ServiceAuthorityInfo, ServiceIssuerKey, ServiceRegistration, ServiceRegistrationWitness } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
@@ -601,7 +601,19 @@ export async function registerServiceInstance(
   let progressRevision: number | null = null;
   try {
     const family = await args.barrier.enumerate();
-    for (const row of family) if (row.state === "active") await args.barrier.revoke(row);
+    // Independent row CASes overlap so historical renewals do not cost two serial round trips
+    // apiece. Drain the whole bounded batch, including synchronous throws, before any refusal
+    // or eviction. A failed batch leaves completed revocations durable and the gate frozen.
+    const active = family.filter((row) => row.state === "active");
+    let revoked = family.length - active.length;
+    args.barrier.onRevocationProgress?.({ revoked, total: family.length });
+    const revokeConcurrency = 16;
+    for (let i = 0; i < active.length; i += revokeConcurrency) {
+      const results = await Promise.allSettled(active.slice(i, i + revokeConcurrency).map(async (row) => args.barrier.revoke(row)));
+      for (const result of results) if (result.status === "rejected") throw result.reason;
+      revoked += results.length;
+      args.barrier.onRevocationProgress?.({ revoked, total: family.length });
+    }
     const holders = [...new Set(family.map((row) => row.holderPrincipal))].sort();
     const opId = args.barrier.operationId ?? obs.op?.opId;
     let progress: EndpointRepairCursor | undefined;
@@ -2084,6 +2096,9 @@ export interface EpIssuanceBarrier {
   enumerate: () => Promise<EpServeLedgerRow[]> | EpServeLedgerRow[];
   /** Flip one enumerated row `active`→`revoked` (§13.1: enforce revocation on the ledger). */
   revoke: (row: EpServeLedgerRow) => Promise<void> | void;
+  /** Report retained rows already revoked and each fully settled successful revocation batch.
+   *  This observation does not replace durable rows or verified-holder progress. */
+  onRevocationProgress?: (progress: { revoked: number; total: number }) => void;
   /** VERIFIED cluster-wide eviction of revoked holder principals (§13.1): enforce the revocation
    *  on every server, evict the principals' live connections, and RE-SCAN — answering, per holder
    *  in input order, `true` only when that principal is verified GONE. FAIL-CLOSED: a `false` (or a

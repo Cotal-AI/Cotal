@@ -21,7 +21,7 @@
  *
  * Run: pnpm smoke:views
  */
-import { SignJWT, decodeJwt, generateKeyPair, exportJWK } from "jose";
+import { SignJWT, decodeJwt, generateKeyPair } from "jose";
 import type { CryptoKey } from "jose";
 import {
   chatStream,

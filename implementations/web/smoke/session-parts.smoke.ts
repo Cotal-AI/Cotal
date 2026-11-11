@@ -225,8 +225,10 @@ const tipWords = () => text(document.querySelector("[role=tooltip]"));
     const first = [text(head()?.querySelector("[data-slot=trace-title] b")), head()?.getAttribute("data-status"), head()?.querySelector("[data-slot=spinner].ox-live") !== null];
     clock += 1000;
     await m.run(() => sleep(1100));
-    same("3.1 the open working turn reads \"Working for 3m 2s\" in bold with the live spinner, never shimmers, and counts on",
-      [first, text(head()?.querySelector("[data-slot=trace-title]"))], [["Working for 3m 2s", null, true], "Working for 3m 3s"]);
+    ok("3.1 the open working turn reads \"Working for 3m 2s\" in bold with the live spinner, never shimmers, and counts on",
+      JSON.stringify([first, text(head()?.querySelector("[data-slot=trace-title]"))])
+        === JSON.stringify([["Working for 3m 2s", null, true], "Working for 3m 3s"]),
+      { first, current: text(head()?.querySelector("[data-slot=trace-title]")) });
     await m.unmount();
   } finally {
     Date.now = realNow;

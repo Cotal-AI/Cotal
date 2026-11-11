@@ -12,14 +12,17 @@
  * session, token, JWT or device code; the verification URL and user code are the only IdP values
  * the requester sees, because a person must type them.
  */
+import type { AccountComputerStatus } from "./account-state.js";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
-export const DAEMON_OPS = ["status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+export const DAEMON_OPS = ["daemon-stop", "space-intent", "status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
 export type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
 const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readonly optional: readonly string[] }> = {
+  "daemon-stop": { required: [], optional: ["commit"] },
+  "space-intent": { required: ["space", "enabled"], optional: [] },
   status: { required: [], optional: [] },
   "manager-start": { required: ["space"], optional: [] },
   "manager-status": { required: ["space"], optional: [] },
@@ -37,6 +40,8 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
 };
 
 export type DaemonRequest =
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "daemon-stop"; readonly commit?: boolean }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-start"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-status"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-stop" }
@@ -57,6 +62,7 @@ export type ProtocolErrorCode =
   | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "DEPENDENCY_UNAVAILABLE" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "GENERATION_PENDING";
 
 export interface DaemonStatus {
+  readonly account?: AccountComputerStatus;
   readonly generation?: { readonly installed: string; readonly running: string; readonly waiting: string };
   readonly managers?: readonly HostedManager[];
   /** The local control listener is bound and verified. It does NOT mean connected to a mesh or Cloud. */
@@ -71,7 +77,7 @@ export interface DaemonStatus {
 export interface HostedManager {
   readonly connectors?: readonly { readonly agent: string; readonly state: string; readonly reason?: string }[];
   readonly space: string;
-  readonly state: "starting" | "answering" | "restarting" | "refused" | "stopped";
+  readonly state: "starting" | "answering" | "restarting" | "refused" | "stopping" | "stopped";
   readonly instanceId?: string;
   readonly pid?: number;
   readonly restarts: number;
@@ -148,7 +154,7 @@ export interface DaemonSpaces {
   readonly unreadable: number;
   readonly collisions: number;
   readonly signedInProviders?: readonly string[];
-  readonly spaces: readonly { readonly space: string; readonly label: string; readonly mode: "auth" | "open" | "user"; readonly idp?: string }[];
+  readonly spaces: readonly { readonly space: string; readonly label: string; readonly catalogId?: string; readonly kind?: string; readonly role?: string; readonly mode: "auth" | "open" | "user"; readonly idp?: string }[];
 }
 
 type Envelope = { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string | null };
@@ -196,9 +202,17 @@ export function parseRequest(line: string): ParsedRequest {
   if (id === null) return { ok: false, id: null, code: "BAD_ID", message: "request id must be 1-64 characters of [A-Za-z0-9_-]" };
   if (!op) return { ok: false, id, code: "UNKNOWN_OP", message: `unknown op ${JSON.stringify(obj.op)}` };
   const v = DAEMON_PROTOCOL_VERSION;
+  if (op === "space-intent") {
+    if (!isDaemonSpaceName(obj.space) || typeof obj.enabled !== "boolean") return bad(id, "space and enabled must name a space and a boolean");
+    return { ok: true, request: { v, id, op, space: obj.space, enabled: obj.enabled } };
+  }
   if (op === "spaces") {
     if (obj.refresh !== undefined && typeof obj.refresh !== "boolean") return bad(id, "refresh must be a boolean");
     return { ok: true, request: { v, id, op, ...(obj.refresh !== undefined ? { refresh: obj.refresh } : {}) } };
+  }
+  if (op === "daemon-stop") {
+    if (obj.commit !== undefined && typeof obj.commit !== "boolean") return bad(id, "commit must be a boolean");
+    return { ok: true, request: { v, id, op, ...(obj.commit !== undefined ? { commit: obj.commit } : {}) } };
   }
   if (op === "status" || op === "managers-stop" || op === "managers-prepare-restart" || op === "managers-abort-restart") return { ok: true, request: { v, id, op } };
   if (op === "login-cancel") {

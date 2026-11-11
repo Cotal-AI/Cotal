@@ -983,7 +983,7 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 
 | Profile | Application publish | Read surface | Notes |
 | --- | --- | --- | --- |
-| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info of their client-managed ordered consumers on those two streams only, and no `CONSUMER.DELETE` on either; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; no watch-consumer delete: the broker removes a watch's ordered consumer at its inactive threshold, and a client treats a refused delete of its own watch consumer as that outcome (Appendix B); durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied. The `manager-caller` view narrows this endpoint control set to `ep.inst.manager.<managerInstanceId>.<command>` only, plus the exact instance `describe`, contract reads, own reply/progress rows, and own inbox. It carries no agent messaging, delivery, class, or scatter rows. When the actor holds `spawn`, the view also carries `status`, `models` and `resolve-cwd` on that instance, the reads a launch there needs; a view without `spawn` gains none of them, and no view gains `ps` or `slots` from `spawn`. |
+| `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info of their client-managed ordered consumers on those two streams only, and no `CONSUMER.DELETE` on either; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; no watch-consumer delete: the broker removes a watch's ordered consumer at its inactive threshold, and a client treats a refused delete of its own watch consumer as that outcome (Appendix B); durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied. The `manager-caller` view narrows this endpoint control set to `ep.inst.manager.<managerInstanceId>.<command>` only, plus the exact instance `describe`, contract reads, own reply/progress rows, and own inbox. It carries no agent messaging, delivery, class, or scatter rows. When the actor holds `spawn`, the view also carries `status`, `models`, `resolve-cwd` and `ps` on that instance. The first three are the reads a launch there needs. `ps` lists the caller's own agents, because the manager bounds it to the caller's owner unless the caller holds `admin`. A view without `spawn` gains none of them, and no view gains `slots` from `spawn`. |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
 | `transfer-writer` | one carried transcript's chunk and meta subjects in one manager instance's transfer bucket (§8) | a last-message Direct Get on those two subjects | one-shot per CLI call, minted after the transcript is hashed; no consumer and no other object |
@@ -1168,8 +1168,8 @@ exclusively a lifecycle barrier's job, never a bare re-mint. A bearer MAY carry 
 every connect. The callout then mints the connection as that closed profile instead of `agent`.
 Elevated views such as `admin`, `purger`, `channel-writer`, and `deployer` remain human-only. The
 narrowing `manager-caller` view MAY be minted by either the human or managed-agent exchange and is
-served on both exchange faces. It adds no capability beyond the launch reads §9 lists for a `spawn`
-actor's view. Its required `act.managerInstanceId` binds
+served on both exchange faces. It adds no capability beyond the `status`, `models`, `resolve-cwd`
+and `ps` reads §9 lists for a `spawn` actor's view. Its required `act.managerInstanceId` binds
 every manager request to one exact live registered instance and is valid with no other view. The
 exchange selects from read-only observations of manager issuance gates and service registrations.
 It refuses zero or ambiguous candidates and refuses an unavailable owner-specific remote manager
@@ -2234,11 +2234,12 @@ the write the responder re-reads the lifecycle and credential authority in the s
 then may the JWT leave. Any failure is a signed deny. A row is evidence of an issuance, not proof
 that a client received the JWT or that the broker accepted the connection: a write that landed
 before a refusal stays. `natkey.` is not a ledger family and authorizes nothing. The issuing
-service removes a row only after its `exp` plus the clock tolerance, at boot and then on its own
-timer, walking the family with the leader-served `STREAM.MSG.GET` `next_by_subj` read (never a
-consumer) and purging each row pinned to the sequence it read, with the bucket's marker TTL on the
-purge marker so it expires too. A row
-that does not parse fails the boot open or fences the running service. Connections admitted
+service removes a row only after its `exp` plus the clock tolerance. Startup performs a bounded
+cleanup check, then the service continues the walk in bounded background batches and repeats it
+on its own timer. The walk uses the leader-served `STREAM.MSG.GET` `next_by_subj` read (never a
+consumer) and purges each row pinned to the sequence it read, with the bucket's marker TTL on the
+purge marker so it expires too. A row that does not parse fails the boot open if encountered in
+the startup check, or fences the running service when a background batch reaches it. Connections admitted
 before this row existed, responders that do not write it, and static (non-callout) JWTs have no
 row. This evidence names keys; it does not by itself stop a still-authorized bearer from
 connecting again under a fresh key.
@@ -4339,6 +4340,30 @@ view is unavailable or stale beyond its declared freshness bound, describe fails
 endpoint's descriptor public, in which case no view is consulted and the answer says so.
 Descriptor visibility is never inferred from reachability of `describe` alone. A KV browse
 index (record kind `contracts`) is an advisory convenience copy; `describe` is authoritative.
+
+**Explicit user-auth Manager deregistration.** The governing auth service MAY serve
+`POST /endpoint-deregister` with the closed body `{ idpToken, request }`, where `request` is
+`{ v: 1, kind: "endpoint-deregister", space, endpoint: "manager", instanceId }` and the instance
+id is a full native lifecycle token. It MUST verify the pinned IdP proof, derive the account's
+owner itself and read the current interactive `cli` grant with `supervise`. It MUST require the
+stored spec owner and manager gate's serving principal to belong to that account. A member MUST
+NOT remove another account's registration. A trusted in-process host door MAY additionally
+accept the governing space operator's authenticated authority, never a request-body owner claim
+or a ledger `admin` scope. The same door can be used by a host's computer-removal operation.
+Cross-space targets and environment-manager authority families MUST refuse.
+
+An answering pinned describe MUST refuse removal. An unanswered describe permits removal only
+when the broker affirmatively reports the exact instance rail empty. Probe failure, silence
+without that evidence and an in-flight registration MUST refuse. The authority MUST pin its
+authorization-read spec revision through the native status-before-spec revision-pinned deletion.
+A moved registration is uncertain, never success. The issuance gate remains unchanged. There is
+no expiry or automatic sweep, and no signing material or operation credential crosses to the client.
+The response echoes the request coordinate and carries either `state: "removed"` with positive
+`removedSpecRevision` and positive-or-null `removedStatusRevision`, `state: "refused"` with a
+guard or authorization `condition`, or `state: "unknown"` with `condition: "superseded"` or
+`"unavailable"`. Refused conditions are `instance-answered`, `instance-not-affirmed-gone`,
+`liveness-unestablishable`, `not-registered`, `registration-in-flight`, `permission-denied` and
+`unavailable`. A missing host operation MUST refuse without substituting static authority.
 
 **Manager-service records.** A remote manager registration is one closed, opaque-instance family:
 its `svc.manager.<instanceId>` spec/status pair, its instance-bound contract closure, and its
@@ -7306,6 +7331,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-10 | **A spawn-scoped `manager-caller` view lists its own agents (§9, §10), additive.** A person who may spawn on their own Manager could not list the agents they launched there. `ps` was not in the view unless the actor held `admin`, so `cotal ps` and `cotal status <agent>` were refused by the broker. A view whose actor holds `spawn` now carries `ps` on its one pinned instance, beside `status`, `models` and `resolve-cwd`. The Manager answers it with the caller's own owner's agents only, unless the caller holds `admin`. `slots` stays with `admin`, no class, scatter or other-instance row is added, and the standing `spawn` set is unchanged. |
 | 2026-11-09 | **A spawner hands on endpoint commands it holds (§13.7, §13.15, §14.8).** A persona's `endpoints` list names `{ endpoint, commands, instanceId? }` entries on the inline `spawn` record, on `define-persona` and in a catalog file. On a static space each command lowers to an untargeted caller capability, on the class rail or, with `instanceId`, on that instance's rail alone plus that instance's `describe`; the delegation bound measures it against the spawner's issued evidence (a run's spawn against its admission's ceiling), and the helper's mint and renewals grant it. A static agent mint refuses a targeted or journaled endpoint capability, because the static terminal has no obligation drain, and a copied static credential's reach until expiry is named as a known gap. A single-label endpoint and a reserved command are refused. A user-auth manager refuses the field, `[]` included. Manager cluster revision 47. |
 | 2026-11-09 | **A spawn result says when its seat is not woken by mesh traffic (§13.6 item 6), additive.** A connector MAY declare that an idle seat is woken only after a confirmed startup. A plain spawn of such a seat whose startup watch ended `ready` succeeds, and its result's `startupNotice` carries the connector's clause; the seat's `ps` row carries the same field. A `once` spawn of such a seat is refused as before. A reader that does not read `startupNotice` sees an ordinary success. |
 | 2026-11-03 | **History limits for DMs and the backstop, and none (§4, §8).** `DM_<space>` gets a history limit like the chat stream's, with no age limit and no count limit by default, and unicast is at-least-once within it. Either part of a limit may be none (`max_age` 0, `max_msgs_per_subject` -1), and a reader MUST accept any limit an operator may set. In the reference the INBOX and DLV streams share an operator-set limit with a 2-hour age floor and 1000 per lifecycle by default, the trusted writer stamps each DLV copy with the count it wrote under (`Cotal-Delivery-Limit`, 1000 when absent), and the stored-copies notice compares against that stamp. |

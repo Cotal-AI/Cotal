@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, openSync, closeSync, writeFileSync, readFileSync, readSync, statSync } from "node:fs";
+import { existsSync, openSync, closeSync, readFileSync, readSync, statSync } from "node:fs";
 import {
   DEFAULT_SERVER,
   LEASE_TTL_MS,

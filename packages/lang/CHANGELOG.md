@@ -1,5 +1,64 @@
 # @cotal-ai/lang
 
+## 0.158.1
+
+No changes in this release.
+
+## 0.158.0
+
+No changes in this release.
+
+## 0.157.9
+
+No changes in this release.
+
+## 0.157.8
+
+No changes in this release.
+
+## 0.157.7
+
+No changes in this release.
+
+## 0.157.6
+
+No changes in this release.
+
+## 0.157.5
+
+### Patch Changes
+
+- a722365: Enable unused-local checks in the shared TypeScript configuration and remove unused imports and declarations from source and smoke tests. Preserve initialization, validation and build-time inbox compatibility checks.
+
+## 0.157.4
+
+No changes in this release.
+
+## 0.157.3
+
+No changes in this release.
+
+## 0.157.2
+
+No changes in this release.
+
+## 0.157.1
+
+No changes in this release.
+
+## 0.157.0
+
+No changes in this release.
+
+## 0.156.0
+
+### Patch Changes
+
+- b814b95: Workflow turns survive a transient timeout while waiting for an agent's yield.
+  Result, deadline and presence reads use bounded timeout and host-starvation retries with
+  diagnostics naming the read. A turn that fails on a read withdraws its relay before returning, so
+  the agent cannot later receive a misleading successful yield acknowledgement.
+
 ## 0.155.2
 
 No changes in this release.

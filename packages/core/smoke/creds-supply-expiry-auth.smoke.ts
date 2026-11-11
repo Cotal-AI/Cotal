@@ -43,11 +43,6 @@ import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/sm
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const until = async (cond: () => boolean, timeoutMs = 10_000, stepMs = 50): Promise<boolean> => {
-  const deadline = Date.now() + timeoutMs;
-  while (!cond() && Date.now() < deadline) await wait(stepMs);
-  return cond();
-};
 const awaitExit = (proc: ChildProcess, timeoutMs = 4000): Promise<void> =>
   new Promise((resolve) => {
     if (proc.exitCode !== null || proc.signalCode !== null) return resolve();

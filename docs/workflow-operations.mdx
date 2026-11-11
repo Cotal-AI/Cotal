@@ -135,6 +135,12 @@ hosts none either, since it issues no caller authority to admit a run under.
 
 ## Remote user-auth hosting [#remote-user-auth-hosting]
 
+Run listing on managers from 0.149.0 requires an auth service from 0.149.0 or later. Upgrade the
+space's auth service first. A denied batched list reports `failed-precondition`, names its missing
+grant, and asks the space operator to upgrade the auth service. Upgrading only the manager cannot
+add that grant. After the auth-service upgrade, retry the list to obtain a fresh per-call
+credential. See the [upgrade history](UPGRADING.md#run-listing-requires-the-01490-auth-service-grant).
+
 A logged-in user starts runs on that remote manager with `cotal run start`. The auth callout issues
 the user's manager connection against the user's actor-ledger row, the CLI reads the generation
 back from the connection's accepted row, and every `run` verb rides the versioned rail. The issuing

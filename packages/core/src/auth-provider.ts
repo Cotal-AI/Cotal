@@ -143,6 +143,12 @@ export interface AgentLifecycleRelease {
  */
 export interface AuthProvider extends Extension {
   readonly kind: "auth-provider";
+  /** Remove an explicitly named, broker-affirmed-gone Manager through the governing host only. */
+  deregisterEndpoint?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: import("./remote-endpoint-deregister.js").RemoteEndpointDeregisterRequest;
+  }): Promise<import("./remote-endpoint-deregister.js").RemoteEndpointDeregisterResult>;
   /**
    * Ensure this space's user-auth material exists (generated + persisted on the first call, reused
    * verbatim after — account identities and signing keys MUST be stable across restarts or

@@ -7,6 +7,21 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Run listing requires the 0.149.0 auth-service grant
+
+Managers from 0.149.0 list runs through a batched records read. On a user-auth mesh, upgrade the
+space's auth service to 0.149.0 or later before upgrading participant managers to 0.149.0 or later.
+The auth service issues the per-call credential with the
+`$JS.API.DIRECT.GET.KV_cotal_records_<space>` grant. Upgrading only a manager or CLI cannot add it.
+
+If the manager was upgraded first, ask the space operator to upgrade the auth service, then retry
+`cotal run ps --on <instance> --space <space>`. Each list call obtains a fresh credential, so no
+manager restart or stored-credential replacement is needed for this grant. Starting a run and
+reading one run can still work while the list grant is missing.
+
+The current manager reports the missing grant as `failed-precondition` with the upgrade remedy.
+It does not retry with per-run reads. Other broker and storage failures keep their original errors.
+
 ## Personas read `endpoints` after 0.153.1
 
 A persona file's `endpoints` key used to be an unmodeled list that loading ignored. It now names the

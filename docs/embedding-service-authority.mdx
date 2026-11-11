@@ -81,6 +81,13 @@ Native service receipts bind the same epcred connection and registration witness
 key. Recording rechecks the evidence, receipt, native authority and fixed expiry. Expired service
 receipts are retained, not pruned on elapsed JWT time. The opt-in authority plane now records this evidence for service connections. Qualified terminal retirement remains unsupported.
 
+Auth startup checks at most one historical native receipt before opening HTTP listeners. Cleanup
+continues in batches of at most 64 rows, including deletion markers, without waiting for the
+next full-walk interval. After a walk ends, `nativeIssuancePruneMs` controls the delay before
+starting again (60 seconds by default). Invalid evidence refuses startup if found in its check,
+or fences the running service when a background batch reaches it. Transient store failures retry
+with backoff. Closing cancels the walk between store operations and waits for any in-flight IO.
+
 ### Service name bindings
 
 Internal service-name bindings are create-only and return owner and revision from one native read.

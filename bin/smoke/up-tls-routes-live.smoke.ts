@@ -163,7 +163,7 @@ function cotal(args: string[], home: string, cwd: string, env: Record<string, st
 // Only completed pre-launch refusal cells may have no stack to stop.
 const absentStacks = new Set<string>();
 function down(home: string, cwd: string, allowAbsent = false): void {
-  const result = cotal(["down"], home, cwd);
+  const result = cotal(["down", "--yes"], home, cwd);
   if (allowAbsent && result.status === 2 && /^\s*Code:\s+TARGET_NOT_FOUND\s*$/m.test(result.out)) return;
   assert.equal(result.status, 0, `TEARDOWN FAILED (${cwd}): cotal down exited ${result.status}\n${result.out}`);
 }

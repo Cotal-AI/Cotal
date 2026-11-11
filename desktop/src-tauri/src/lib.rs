@@ -4,6 +4,10 @@ use url::{Host, Url};
 
 #[cfg(feature = "desktop")]
 pub mod app;
+#[cfg(feature = "desktop")]
+mod native_presence;
+pub mod presence;
+pub mod first_paint;
 
 /// The bundled Node executable name, without the platform extension.
 pub const NODE_SIDECAR: &str = if cfg!(windows) { "node" } else { "cotal-node" };
@@ -25,6 +29,10 @@ pub enum DesktopRequest {
     },
     #[serde(rename = "login")]
     Login { idp: String },
+    #[serde(rename = "setup")]
+    Setup { space: String, idp: String },
+    #[serde(rename = "space-intent")]
+    SpaceIntent { space: String, enabled: bool },
     #[serde(rename = "connect-check")]
     ConnectCheck { space: String },
     #[serde(rename = "register")]
@@ -40,13 +48,14 @@ pub enum DesktopRequest {
 impl DesktopRequest {
     pub fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Login { idp } => {
+            Self::Login { idp } | Self::Setup { idp, .. } => {
                 let u = browser_url(idp)?;
                 if u.query().is_some() || u.fragment().is_some() {
                     return Err("A provider URL cannot contain a query or fragment.".into());
                 }
             }
-            Self::ConnectCheck { space }
+            Self::SpaceIntent { space, .. }
+            | Self::ConnectCheck { space }
             | Self::Register { space }
             | Self::Connect { space }
             | Self::Disconnect { space }
@@ -62,12 +71,15 @@ impl DesktopRequest {
             }
             _ => {}
         }
+        if let Self::Setup { space, .. } = self {
+            Self::ConnectCheck { space: space.clone() }.validate()?;
+        }
         Ok(())
     }
 
     pub fn timeout_seconds(&self) -> u64 {
-        if matches!(self, Self::Login { .. }) {
-            915
+        if matches!(self, Self::Login { .. } | Self::Setup { .. }) {
+            1200
         } else {
             150
         }
@@ -151,8 +163,18 @@ mod tests {
             r#"{"op":"exec","command":"sh"}"#,
             r#"{"op":"status","args":[]}"#,
             r#"{"op":"install","path":"/tmp/foreign"}"#,
+            r#"{"op":"setup","space":"team","idp":"https://example.com","PATH":"/foreign"}"#,
+            r#"{"op":"setup","space":"team","idp":"https://example.com","command":"sh"}"#,
         ] {
             assert!(serde_json::from_str::<DesktopRequest>(input).is_err());
+        }
+        for (space, idp, valid) in [
+            ("team", "https://example.com/api/auth", true),
+            ("a b", "https://example.com", false),
+            ("team", "file:///tmp/auth", false),
+            ("team", "https://example.com?token=x", false),
+        ] {
+            assert_eq!(DesktopRequest::Setup { space: space.into(), idp: idp.into() }.validate().is_ok(), valid);
         }
         assert!(DesktopRequest::Connect {
             space: "--help".into()

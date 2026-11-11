@@ -4,7 +4,7 @@ import "./lib/broker-service.js";
 import "./service-unit.js";
 import { registry, type Command } from "@cotal-ai/core";
 import {
-  CommandFailure, credentialMintFlags, jsonFlag, NATS_PIDFILE, plainFlag, presentationOf, serverFlag, spaceFlag, targetFlags, validateCredentialMintArguments, validateCredentialRevokeArguments,
+  CommandFailure, credentialMintFlags, jsonFlag, NATS_PIDFILE, plainFlag, presentationOf, spaceFlag, targetFlags, validateCredentialMintArguments, validateCredentialRevokeArguments,
   type CredentialAction, type LocalProcess,
 } from "@cotal-ai/workspace";
 import { MANAGER_PROCESS } from "./lib/manager-proc.js";
@@ -914,4 +914,4 @@ export { submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUni
 export { launchAgent } from "./lib/manifest/live.js";
 
 // The machine daemon refreshes the same catalog while retaining its own sign-in session.
-export { prepareCatalogTargets } from "./commands/sync.js";
+export { prepareCatalogTargets, importAccountComputerSpace, validateCatalogSnapshot, type SpaceCatalogSnapshot } from "./commands/sync.js";

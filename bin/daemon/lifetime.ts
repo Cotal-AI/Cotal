@@ -98,6 +98,16 @@ export function readLifetimeRecord(path: string): LockRecord | undefined {
   } catch { return undefined; }
 }
 
+/** Exclude new starters during uninstall without writing or clearing the holder's record. */
+export function excludeLifetime(path: string): { release(): void } {
+  const fd = openSync(path, constants.O_RDWR | constants.O_CREAT, 0o600);
+  try {
+    if (!lockExclusiveNb(fd)) throw new EndpointRefusal("LOCK_HELD", "the daemon lifetime is still held; uninstall retained its source and receipt");
+  } catch (error) { closeSync(fd); throw error; }
+  let released = false;
+  return { release() { if (!released) { released = true; closeSync(fd); } } };
+}
+
 /**
  * Take the lifetime lock at `path`, or refuse `LOCK_HELD`. The file is created 0600 if absent and
  * is never replaced, so the descriptor every holder locks is the same inode.

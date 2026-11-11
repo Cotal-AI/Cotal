@@ -200,8 +200,8 @@
     {
       "name": "N21 write a defined persona's capabilities unbounded",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      const refused = kept.length ? refusal(kept) : undefined;\n",
-      "replace": "      const refused = undefined as string | undefined;\n",
+      "find": "        ? refusal({ capabilities: kept, endpoints: keptEndpoints, namesEndpoints })\n",
+      "replace": "        ? refusal({ capabilities: [], endpoints: keptEndpoints, namesEndpoints })\n",
       "expectRed": "and is refused one its row does not hold, by name, writing nothing",
       "cell": "and is refused one its row does not hold, by name, writing nothing"
     },
@@ -216,8 +216,8 @@
     {
       "name": "N23 read the local ledger on a hosted manager",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (this.remoteAuthority)\n      return () => \"define-persona: this manager's user authority is hosted",
-      "replace": "    if (false)\n      return () => \"define-persona: this manager's user authority is hosted",
+      "find": "    if (this.remoteAuthority)\n      return ({ capabilities, namesEndpoints }) => namesEndpoints\n",
+      "replace": "    if (false)\n      return ({ capabilities, namesEndpoints }) => namesEndpoints\n",
       "expectRed": "a hosted manager reads no ledger, so its definer puts no capability into a persona",
       "cell": "a hosted manager reads no ledger, so its definer puts no capability into a persona"
     },
@@ -240,8 +240,8 @@
     {
       "name": "N26 bound only a definition that names capabilities",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (composed.def.capabilities?.length) {\n      const refusal = await this.definerCapabilityRefusal(",
-      "replace": "    if (capabilities?.length) {\n      const refusal = await this.definerCapabilityRefusal(",
+      "find": "    if (composed.def.capabilities?.length || composed.def.endpoints !== undefined) {\n      const refusal = await this.definerGrantRefusal(",
+      "replace": "    if (capabilities?.length || composed.def.endpoints !== undefined) {\n      const refusal = await this.definerGrantRefusal(",
       "expectRed": "a redefine that omits capabilities is refused the saved ones its definer no longer holds, writing nothing",
       "cell": "a redefine that omits capabilities is refused the saved ones its definer no longer holds, writing nothing"
     },

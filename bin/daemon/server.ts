@@ -30,6 +30,8 @@ import { homeCotalDir, isCommandFailure } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
+import { createAccountReconciler } from "./account-reconcile.js";
+import { createAccountComputer } from "./account.js";
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
 export const MAX_REQUESTS_PER_CONNECTION = 64;
@@ -65,6 +67,7 @@ export interface RunningDaemon {
   prepareGenerationRestart(): Promise<void>;
   abortGenerationRestart(): Promise<void>;
   close(): Promise<void>;
+  readonly stopped: Promise<void>;
 }
 
 export interface ServeOptions {
@@ -81,6 +84,10 @@ export interface ServeOptions {
   readonly sessionDir?: string;
   /** Test hook: the stock sign-in to drive. */
   readonly login?: LoginCoordinator;
+  /** Shipped serve entry's receipt-verified native launch provenance. Foreground servers refuse stop. */
+  readonly stopAllowed?: () => Promise<boolean | { state: "owned" | "not-owned" | "unknown" }>;
+  /** Native startup admission, checked under the lifetime lock before publishing an endpoint. */
+  readonly admit?: () => void;
 }
 
 /** A published endpoint: closing it stops new connections and removes only what it published. */
@@ -116,6 +123,7 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
   ensureStateDir(paths, uid);
   const lock = holdLifetime(paths.lock);
   try {
+    opts.admit?.();
     return await serveLocked(opts, uid, lock);
   } catch (e) {
     // A failed start keeps any predecessor socket evidence it has not consumed or rejected.
@@ -126,6 +134,8 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
 }
 
 async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: HeldLifetime): Promise<RunningDaemon> {
+  let resolveStopped!: () => void;
+  const stopped = new Promise<void>(resolve => { resolveStopped = resolve; });
   const log = opts.log ?? (() => {});
   const { paths } = opts;
   let dirOutcome: RunningDaemon["dirOutcome"] = "none";
@@ -139,6 +149,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
   const services = createServiceConnections(machineHome);
   const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir);
+  const reconciler = createAccountReconciler(machineHome, services, managers);
+  const account = createAccountComputer(machineHome, opts.version, reconciler);
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
@@ -149,6 +161,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     startedAt: startedAt.toISOString(),
     uptimeMs: Date.now() - startedAt.getTime(),
     managers: managers.all(),
+    account: account.status(),
     ...(generation ? { generation } : {}),
   });
 
@@ -201,6 +214,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       for (const attempt of owned) void login.cancel(attempt);
       owned.clear();
     });
+    let stopPrepared = false;
     const handle = (line: string): void => {
       counters.framesDecoded++;
       const parsed = parseRequest(line);
@@ -210,6 +224,27 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       const req = parsed.request;
+      if (req.op === "daemon-stop") {
+        // The reply acknowledges the request, not completed shutdown. The uninstaller
+        // independently waits for this process and endpoint to disappear.
+        void (async () => {
+          const observation = req.commit ? stopPrepared : await opts.stopAllowed?.();
+          const allowed = typeof observation === "object" ? observation.state === "owned" : observation === true;
+          if (!allowed) {
+            const unknown = typeof observation === "object" && observation.state === "unknown";
+            await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: unknown
+              ? "the daemon native launch provenance is still unknown; it was not stopped"
+              : "the daemon has no verified native launch provenance; it was not stopped" } });
+            return;
+          }
+          // Only an explicit commit on this prepared connection follows native removal.
+          // A dropped connection or failed native step must leave the daemon running.
+          stopPrepared = true;
+          await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result: status() });
+          if (req.commit) await close();
+        })().catch(error => log(`daemon: shutdown failed: ${String(error)}`));
+        return;
+      }
       const managerResult = (run: () => DaemonStatus | HostedManager | ServiceConnectionResult | Promise<DaemonStatus | HostedManager | ServiceConnectionResult>) => {
         replyTask(Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), (error: unknown) => {
           counters.requestsRefused++;
@@ -252,6 +287,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         }));
         return;
       }
+      if (req.op === "space-intent") {
+        managerResult(async () => { await account.intent(req.space, req.enabled); return status(); });
+        return;
+      }
       if (req.op === "connect-check") {
         replyTask(connectCheck(req.space, machineHome).catch((): ConnectCheckResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the check" }))
           .then((result) => {
@@ -270,12 +309,18 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
         const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
-          : withIdpSessionDir(machineHome, async () => {
-            if (req.op === "service-connect") return services.connect(req.space);
+          : (async () => {
+            if (await account.intent(req.space, req.op === "service-connect")) return services.status(req.space);
+            return reconciler.serial(() => withIdpSessionDir(machineHome, async () => {
+            if (req.op === "service-connect") {
+              reconciler.localAddition(req.space);
+              return services.connect(req.space);
+            }
+            reconciler.localRemoval(req.space);
             await managers.disconnect(req.space);
             return services.disconnect(req.space);
-          })
-            .catch((): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: "the daemon could not complete the request; nothing is connected" }));
+            }));
+          })().catch((error: unknown): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: error instanceof Error ? error.message : "The connection could not be changed. Check daemon status and try again." }));
         managerResult(async () => {
           const result = await run;
           counters.serviceAnswered++;
@@ -296,6 +341,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         onPrompt: (attempt, prompt) => void write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "login-prompt", attempt, prompt }),
         onResult: async (attempt, result) => {
           owned.delete(attempt);
+          if (result.outcome === "signed-in") account.signedIn();
           await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "login-result", attempt, result });
         },
       });
@@ -373,24 +419,30 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     });
   }
 
-  // Resume what this daemon home was connected to before it stopped. This runs after the endpoint
-  // is published, so a space that is slow or unreachable never delays readiness; `service-status`
-  // reports each one's real state. A space with no recorded intent is not connected.
-  const managersResumed = managers.resume().catch(() => { log("daemon: hosted Manager records could not be resumed; inspect daemon status and the hosting records"); });
-  const resumed = withIdpSessionDir(machineHome, () => services.resume()).then((spaces) => {
-    counters.connectionsResumed = spaces.length;
-    if (spaces.length) log(`daemon: resumed ${spaces.length} recorded service connection(s)`);
-  }, () => {});
-
   let closed: Promise<void> | undefined;
+  // Read current account intent before resuming saved hosting. A successful reconciliation
+  // removes withdrawn intents; an unavailable account leaves them intact for offline recovery.
+  // The endpoint is already published, so account or space latency never delays local readiness.
+  const resumed = account.start().then(() => reconciler.serial(async () => {
+    if (closed) return;
+    await Promise.all([
+      managers.resume().catch(() => { log("daemon: hosted Manager records could not be resumed; inspect daemon status and the hosting records"); }),
+      withIdpSessionDir(machineHome, () => services.resume()).then((spaces) => {
+        counters.connectionsResumed = spaces.length;
+        if (spaces.length) log(`daemon: resumed ${spaces.length} recorded service connection(s)`);
+      }, () => {}),
+    ]);
+  }));
+
   const close = (): Promise<void> => {
     closed ??= (async () => {
-      // Cancel network work before waiting for startup resume to settle.
       const servicesClosed = services.close();
+      const managersClosed = managers.close();
+      await account.close();
+      // In-flight account work observes service cancellation before shutdown waits for it.
       // An in-flight sign-in is cancelled through the stock fence before the listener goes away.
       await login.close();
-      await managers.close();
-      await managersResumed;
+      await managersClosed;
       // Every service connection, its endpoint and its renewal source close before the socket does.
       await servicesClosed;
       await resumed;
@@ -400,14 +452,15 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       // published (its removal threw), the lock stays held until this process exits, so no other
       // serve can start beside a live endpoint.
       lock.release();
+      resolveStopped();
     })();
     return closed;
   };
 
-  return { paths, counters, dirOutcome, status, close,
+  return { paths, counters, dirOutcome, status, close, stopped,
     generationSeats: () => managers.generationSeats(),
     generationPending(installed, waiting = "preparing activation") { generation = installed ? { installed, running: opts.version, waiting } : undefined; },
-    async prepareGenerationRestart() { await managersResumed; await managers.prepareGenerationRestart(); }, abortGenerationRestart: () => managers.abortGenerationRestart() };
+    async prepareGenerationRestart() { await resumed; await managers.prepareGenerationRestart(); }, abortGenerationRestart: () => managers.abortGenerationRestart() };
 }
 
 /** Linux and macOS: publish the unix socket, and on close remove it only if it is still ours. */

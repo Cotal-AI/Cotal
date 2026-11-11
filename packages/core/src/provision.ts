@@ -19,7 +19,6 @@ import { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
 import {
   decode,
   encodeOperator,
@@ -37,7 +36,6 @@ import {
   assertValidChannel,
   resolveReadAcl,
   principalKey,
-  parsePrincipalKey,
   deprovisionTargetPrincipal,
   principalTags,
   assertInboxConnId,
@@ -79,7 +77,6 @@ import {
   accountConnectSubject,
   accountDisconnectSubject,
   MEMBERSHIP_INBOX_PREFIX,
-  FANOUT_DURABLE,
   INBOX_READER_DURABLE,
   livenessSubject,
   livenessServeFilter,
@@ -100,7 +97,7 @@ import {
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { parseServiceConnectionBinding, type ServiceConnectionBinding } from "./service-gate.js";
 import { SERVICE_ACCESS_TTL_SECONDS } from "./service-authority-limits.js";
-import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
+import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, assertGeneration, isIssuedCaller, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
 import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, issuedHorizon, issuedPermitsPattern, issuedStoreStreamNames, prepareListing, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef, type ListingBinding, type ListingSeam, type PreparedListing } from "./issued-authority.js";
 import { REGISTRY_ENDPOINTS_GRANT } from "./registry-contract.js";
@@ -1475,9 +1472,8 @@ export function permissionsFor(
   const CHKV = `KV_${channelBucket(space)}`; // channel registry (read-only for everyone)
   const MEMKV = `KV_${membershipBucket(space)}`; // derived graph membership feed (read-only — dashboard)
   const DLVKV = `KV_${deliveryBucket(space)}`; // delivery lease/readiness (read-only — Component 6 health)
-  // Wire identity: owner+actor for subjects/durables/presence (dot-form `pk.key`, name-form `pk.name`);
-  // the reply inbox keys on the CONNECTION nkey, not the principal (see MintPrincipal).
-  const pk = principalKey(pr.owner, pr.actor);
+  // Validate both principal tokens; the reply inbox keys on the connection nkey (see MintPrincipal).
+  principalKey(pr.owner, pr.actor);
   const inbox = `_INBOX_${pr.connId}.>`;
 
   if (profile === "observer" || profile === "admin") {
@@ -1821,12 +1817,13 @@ export function permissionsFor(
   return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...takeReplies, ...livenessReplies, ...subChat, ...epSub] } };
 }
 
-/** The reads a launch on one Manager needs: `status` (its execution mode and which connectors it
- * can launch), `models` (their catalogs) and `resolve-cwd` (a directory's canonical form on its
- * host). A spawn holder learns each by launching there, so a spawn-scoped manager-caller view
- * carries them on its one pinned instance. The standing spawn set does not: it reaches every
- * manager in the space through the class rail. */
-const LAUNCH_READ_COMMANDS = Object.freeze(["status", "models", "resolve-cwd"] as const);
+/** The reads a spawn-scoped manager-caller view carries on its one pinned instance. Three are what
+ * a launch there needs: `status` (its execution mode and which connectors it can launch), `models`
+ * (their catalogs) and `resolve-cwd` (a directory's canonical form on its host). The fourth, `ps`,
+ * lists the caller's own agents: the Manager bounds it to the caller's owner unless the caller
+ * holds admin. The standing spawn set carries none of them, because it reaches every manager in
+ * the space through the class rail. */
+const SPAWN_VIEW_READS = Object.freeze(["status", "models", "resolve-cwd", "ps"] as const);
 
 /** One seat's manager control view. It carries no agent messaging or delivery surface, and every
  * manager request, including describe, is pinned to one exact registered instance. */
@@ -1841,7 +1838,7 @@ function managerCallerPermissions(space: string, pr: MintPrincipal, opts: MintOp
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "describe" },
     ...baselineCallerCapabilities().filter((cap) => cap.endpoint === BASELINE_LIFECYCLE_ENDPOINT),
     ...(caps.includes("spawn") ? spawnCallerCapabilities(pr.owner) : []),
-    ...(caps.includes("spawn") ? LAUNCH_READ_COMMANDS.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })) : []),
+    ...(caps.includes("spawn") ? SPAWN_VIEW_READS.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })) : []),
     ...(caps.includes(MANAGER_VITALS_SCOPE) ? [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: MANAGER_VITALS_COMMAND }] : []),
     ...(caps.includes("run") ? runCallerCapabilities(pr.owner) : []),
     ...(caps.includes("admin") ? operatorInstrumentCapabilities("admin", pr.owner) : []),

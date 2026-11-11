@@ -681,6 +681,7 @@ export function remoteManagedAgentEnrollmentRequest(
   serveEpoch: number,
   target: RemoteManagedAgentEnrollmentRequest["target"],
   spawn?: RemoteManagedAgentEnrollmentRequest["spawn"],
+  requestId = `enroll${mintLifecycleUid()}`,
 ): RemoteManagedAgentEnrollmentRequest {
   return {
     v: 1,
@@ -689,7 +690,7 @@ export function remoteManagedAgentEnrollmentRequest(
     actor,
     instanceId: state.instanceId,
     managerLifecycleUid: state.lifecycleUid,
-    requestId: `enroll${mintLifecycleUid()}`,
+    requestId,
     registrationProof,
     serveEpoch,
     target,

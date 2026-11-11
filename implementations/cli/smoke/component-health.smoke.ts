@@ -23,7 +23,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createConnection, createServer } from "node:net";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -498,7 +498,7 @@ try {
   const webRemove = cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
   webService = webRemove.status !== 0;
   check("service remove forgets the stopped dashboard", webRemove.status === 0, `${webRemove.stdout}${webRemove.stderr}`);
-  const webDown = cliIn(webRoot, ["down"], 120_000);
+  const webDown = cliIn(webRoot, ["down", "--yes"], 120_000);
   webStack = webDown.status !== 0;
   check("cotal down stops the dashboard's static-auth stack", webDown.status === 0, `${webDown.stdout}${webDown.stderr}`);
 
@@ -546,7 +546,7 @@ try {
     cliIn(webRoot, ["service", "stop", "web", "--space", WEB_SPACE, "--yes"], 60_000);
     cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
   }
-  if (webStack) cliIn(webRoot, ["down"], 120_000);
+  if (webStack) cliIn(webRoot, ["down", "--yes"], 120_000);
   await stop(holder);
   await stop(broker);
   rmSync(home, { recursive: true, force: true });

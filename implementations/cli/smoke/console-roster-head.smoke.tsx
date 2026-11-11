@@ -8,7 +8,6 @@
  * used to put the roster back on its first seat; the last section checks that it comes back on the
  * seat and window it left.
  */
-import React from "react";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
