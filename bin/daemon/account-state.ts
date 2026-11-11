@@ -11,7 +11,8 @@ export interface AccountComputerStatus {
   lastRegistration?: string;
   desiredRevision?: number;
   message?: string;
-  spaces: { space: string; desired: boolean; observed: string; lastRefusal?: string }[];
+  /** `observed` is launch readiness. `machineService` is set while that separate registration is not connected. */
+  spaces: { space: string; desired: boolean; observed: string; machineService?: string; lastRefusal?: string }[];
 }
 
 export function validAccountComputerStatus(raw: unknown): raw is AccountComputerStatus {
@@ -28,6 +29,6 @@ export function validAccountComputerStatus(raw: unknown): raw is AccountComputer
     && Array.isArray(r.spaces) && r.spaces.every((row: unknown) => {
       if (!row || typeof row !== "object") return false;
       const s = row as Record<string, unknown>;
-      return typeof s.space === "string" && typeof s.desired === "boolean" && typeof s.observed === "string" && (s.lastRefusal === undefined || typeof s.lastRefusal === "string");
+      return typeof s.space === "string" && typeof s.desired === "boolean" && typeof s.observed === "string" && (s.machineService === undefined || typeof s.machineService === "string") && (s.lastRefusal === undefined || typeof s.lastRefusal === "string");
     });
 }
