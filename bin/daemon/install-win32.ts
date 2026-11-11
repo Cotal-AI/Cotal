@@ -21,6 +21,7 @@
  * uses Node directly and can show a console window. The headless
  * profile, a Windows service under a dedicated service account, is not offered here.
  */
+import { setTimeout as delay } from "node:timers/promises";
 import { createHash } from "node:crypto";
 import { lstatSync, rmSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
@@ -109,6 +110,8 @@ function element(text: string, name: string): string {
 interface RegisteredTask {
   readonly present: boolean;
   readonly state?: string;
+  readonly enabled?: boolean;
+  readonly instances?: number;
   readonly actions?: number;
   readonly execute?: string;
   readonly arguments?: string;
@@ -131,44 +134,84 @@ const READ_TASK = [
   "$principal = $task[0].Principal",
   "$principalSid = [string]$principal.UserId",
   "if ($principalSid -notmatch '^S-1-') { $principalSid = ([System.Security.Principal.NTAccount]::new($principalSid)).Translate([System.Security.Principal.SecurityIdentifier]).Value }",
-  "ConvertTo-Json -Compress -InputObject @{ present = $true; state = [string]$task[0].State; actions = $actions.Count; execute = [string]$actions[0].Execute; arguments = [string]$actions[0].Arguments; workingDirectory = [string]$actions[0].WorkingDirectory; userId = $principalSid; logonType = [int]$principal.LogonType; runLevel = [int]$principal.RunLevel }",
+  "$enabled = $null; $instances = $null",
+  "if ($env:COTAL_DAEMON_TASK_INSTANCES -eq '1') {",
+  "$scheduler = New-Object -ComObject 'Schedule.Service'",
+  "$scheduler.Connect()",
+  "$registered = $scheduler.GetFolder('\\').GetTask($env:COTAL_DAEMON_TASK)",
+  "$enabled = [bool]$registered.Enabled; $instances = [int]$registered.GetInstances(0).Count",
+  "}",
+  "ConvertTo-Json -Compress -InputObject @{ enabled = $enabled; instances = $instances; present = $true; state = [string]$task[0].State; actions = $actions.Count; execute = [string]$actions[0].Execute; arguments = [string]$actions[0].Arguments; workingDirectory = [string]$actions[0].WorkingDirectory; userId = $principalSid; logonType = [int]$principal.LogonType; runLevel = [int]$principal.RunLevel }",
 ].join("\n");
 
-export function scheduledTaskService(run: NativeRun): NativeService {
+/** Windows refresh pauses the owned task without deleting its installation. */
+export interface WindowsTaskService extends NativeService {
+  pause(receipt: UnitReceipt): Promise<void>;
+  resume(receipt: UnitReceipt): void;
+}
+
+export function scheduledTaskService(run: NativeRun): WindowsTaskService {
   const sid = (): string => {
     const out = run(system32("whoami.exe"), ["/user", "/fo", "csv", "/nh"]);
     const value = out.status === 0 ? out.stdout.trim().split(",").pop()?.replace(/^"|"$/g, "").trim() : undefined;
     if (!value || !/^S-1-[0-9]+(?:-[0-9]+)+$/.test(value)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `whoami did not name the current user's SID (${out.detail}); nothing was changed`);
     return value;
   };
-  const registered = (name: string): RegisteredTask => {
-    const out = run(system32("WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(READ_TASK, "utf16le").toString("base64")], { ...process.env, COTAL_DAEMON_TASK: name });
+  const registered = (name: string, requireInstances = false): RegisteredTask => {
+    const out = run(system32("WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(READ_TASK, "utf16le").toString("base64")], { ...process.env, COTAL_DAEMON_TASK: name, COTAL_DAEMON_TASK_INSTANCES: requireInstances ? "1" : "0" });
     let o: unknown;
     try { o = out.status === 0 ? JSON.parse(out.stdout.replace(/^\uFEFF/, "").trim()) : undefined; } catch { o = undefined; }
     const r = o && typeof o === "object" ? o as Record<string, unknown> : undefined;
     if (r?.present === false) return { present: false };
     if (r?.present !== true || typeof r.state !== "string" || typeof r.actions !== "number" || typeof r.execute !== "string" || typeof r.arguments !== "string" || typeof r.workingDirectory !== "string" || typeof r.userId !== "string" || typeof r.logonType !== "number" || typeof r.runLevel !== "number") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `Task Scheduler did not answer for ${name} (${out.detail}); nothing was changed`);
-    return { present: true, state: r.state, actions: r.actions, execute: r.execute, arguments: r.arguments, workingDirectory: r.workingDirectory, userId: r.userId, logonType: r.logonType, runLevel: r.runLevel };
+    if (requireInstances && (typeof r.enabled !== "boolean" || !Number.isSafeInteger(r.instances) || (r.instances as number) < 0)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "Task Scheduler did not confirm enabled state and running instances; nothing was inferred");
+    return { present: true, enabled: r.enabled as boolean | undefined, instances: r.instances as number | undefined, state: r.state, actions: r.actions, execute: r.execute, arguments: r.arguments, workingDirectory: r.workingDirectory, userId: r.userId, logonType: r.logonType, runLevel: r.runLevel };
   };
   const step = (args: readonly string[]): void => {
     const result = run(system32("schtasks.exe"), args);
     if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `schtasks ${args.join(" ")} did not confirm completion (${result.detail}); it was not retried`, { remedy: "inspect the task in Task Scheduler, then remove it with cotal daemon uninstall" });
   };
   /** The registered task, refused unless it runs the recorded definition's exact command. */
-  const owned = (receipt: UnitReceipt): RegisteredTask => {
+  const owned = (receipt: UnitReceipt, requireInstances = false): RegisteredTask => {
     // A receipt names only the task and definition this daemon home and user derive, so it can
     // never steer a delete at another task.
     if (receipt.unit !== scheduledTaskName(receipt.daemonHome, sid()) || basename(receipt.unitPath) !== "service-task.xml") throw new CommandFailure("refused", "CONFLICT", `the recorded task ${receipt.unit} is not this daemon's task; nothing was removed`);
     const bytes = readLocalRecordSource(receipt.unitPath, SOURCE_LIMIT, true);
     if (!bytes || createHash("sha256").update(bytes).digest("hex") !== receipt.unitSha256 || bytes[0] !== 0xff || bytes[1] !== 0xfe) throw new CommandFailure("refused", "CONFLICT", `${receipt.unitPath} is not the task definition this daemon installed; nothing was removed`);
     const text = bytes.subarray(2).toString("utf16le");
-    const task = registered(receipt.unit);
+    const task = registered(receipt.unit, requireInstances);
     if (task.present && (task.actions !== 1 || task.execute !== element(text, "Command") || task.arguments !== element(text, "Arguments") || task.workingDirectory !== element(text, "WorkingDirectory") || task.userId !== element(text, "UserId") || task.logonType !== 3 || task.runLevel !== 0))
       throw new CommandFailure("refused", "CONFLICT", `the task registered as ${receipt.unit} no longer runs the command this daemon installed; nothing was removed`);
     return task;
   };
   return {
     mechanism: "scheduled-task",
+    async pause(receipt) {
+      const task = owned(receipt, true);
+      if (!task.present || !task.enabled) throw new CommandFailure("refused", "CONFLICT", "the owned scheduled task is absent or disabled; refresh was refused");
+      step(["/Change", "/TN", receipt.unit, "/DISABLE"]);
+      const disabled = owned(receipt, true);
+      if (!disabled.present || disabled.enabled !== false) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the owned task did not confirm disabled state");
+      if (disabled.instances! > 0) {
+        owned(receipt, true);
+        step(["/End", "/TN", receipt.unit]);
+      }
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const ended = owned(receipt, true);
+        if (!ended.present || ended.enabled !== false) break;
+        if (ended.instances === 0) return;
+        if (attempt < 2) await delay(250);
+      }
+      throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the owned task did not confirm no running instances after End");
+    },
+    resume(receipt) {
+      const task = owned(receipt, true);
+      if (!task.present || task.enabled !== false || task.instances !== 0) throw new CommandFailure("refused", "CONFLICT", "the paused owned task changed before resume");
+      step(["/Change", "/TN", receipt.unit, "/ENABLE"]);
+      const enabled = owned(receipt, true);
+      if (!enabled.present || enabled.enabled !== true) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the owned task did not confirm enabled state");
+      if (enabled.instances === 0) step(["/Run", "/TN", receipt.unit]);
+    },
     plan(paths, daemonHome, argv): NativePlan {
       const user = sid();
       const unit = scheduledTaskName(daemonHome, user);
@@ -199,6 +242,9 @@ export function scheduledTaskService(run: NativeRun): NativeService {
       if (!task.present) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the recorded scheduled task is absent; no replacement task was created");
       if (task.state !== "Running") step(["/Run", "/TN", receipt.unit]);
     },
+    // Production restarts must use install.ts restartInstalled, which pins the old
+    // listener and confirms its death before resume. This legacy synchronous adapter
+    // operation cannot establish daemon lifetime replacement.
     restart(receipt) {
       const task = owned(receipt);
       if (!task.present) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the recorded scheduled task is absent; no replacement task was created");

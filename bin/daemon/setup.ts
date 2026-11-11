@@ -154,9 +154,9 @@ async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promis
       if (reply.result.version !== opts.version || reply.result.protocol !== DAEMON_PROTOCOL_VERSION) {
         const hosted = (reply.result.managers ?? []).some((manager) => manager.state !== "stopped");
         if (hosted) await managerViaDaemon(opts, { op: "managers-prepare-restart" });
-        try { restartInstalled(opts.paths, opts.daemonHome); }
+        try { await restartInstalled(opts.paths, opts.daemonHome, false, opts.version); }
         catch (error) {
-          if (hosted) {
+          if (hosted && process.platform !== "win32") {
             try { await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
             catch { /* The native restart failure remains the primary outcome. */ }
           }
@@ -192,9 +192,9 @@ async function refreshApplications(opts: InstallOptions, steps: SetupStep[]): Pr
   }
   try {
     refresh?.();
-    restartInstalled(opts.paths, opts.daemonHome, true);
+    await restartInstalled(opts.paths, opts.daemonHome, true, opts.version);
   } catch (error) {
-    try { await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
+    try { if (process.platform !== "win32") await managerViaDaemon(opts, { op: "managers-abort-restart" }); }
     catch { /* Preserve the installation or native service failure. */ }
     throw error;
   }

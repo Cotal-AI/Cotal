@@ -708,6 +708,14 @@ If any seat is active, nothing is changed or restarted. Stop the seats and run t
 named in the refusal from the same terminal. Windows scheduled tasks do not pin PATH. The native
 entry reads the current machine and user PATH on each start. If setup finds an application that
 the running task cannot resolve, it restarts that recorded service under the same hosted-seat fence.
+Windows restarts during setup and update use the same verified shutdown sequence. Each restart
+first prepares shutdown on the verified old daemon connection, disables the owned
+task and confirms its native instances have stopped. It then commits daemon shutdown and waits for
+the old process, endpoint and lifetime lock to be released before enabling and starting the task.
+Setup reports a refreshed PATH only after a different verified daemon lifetime answers with the
+expected version and protocol. An ambiguous stop or start reports an unconfirmed outcome with its
+phase and recovery guidance, retaining the installation records and restart fence. Inspect daemon
+status and the recorded task before recovery. Setup does not clear a fence through a new connection.
 When no new application is found, setup keeps the service running. A Manager with no available
 connector still refreshes its inventory by restarting its idle child.
 The separate `ai.cotal.machine` registration and connection are reported even while owner approval

@@ -410,6 +410,45 @@ try {
 
     check("a different recorded digest refuses CONFLICT", code(() => service.check({ ...receipt, unitSha256: "0".repeat(64) })) === "CONFLICT");
 
+    let nativeFailure = false;
+    let keepRunning = false;
+    const refreshRunner = recorder(c => {
+      if (c.file.endsWith("whoami.exe")) return { stdout: `"host\\user","${sid}"\r\n` };
+      if (c.file.endsWith("powershell.exe")) return { stdout: JSON.stringify(task) };
+      if (nativeFailure) return { status: 1, detail: "ambiguous native result" };
+      if (c.args.includes("/DISABLE")) task.enabled = false;
+      if (c.args.includes("/ENABLE")) task.enabled = true;
+      if (c.args[0] === "/End" && !keepRunning) task.instances = 0;
+      if (c.args[0] === "/Run") task.instances = 1;
+      return {};
+    });
+    const asyncCode = async (fn: () => Promise<void>) => {
+      try { await fn(); return "none"; } catch (error) { return error instanceof CommandFailure ? error.code : "unexpected"; }
+    };
+    const refreshService = scheduledTaskService(refreshRunner.run);
+    const runningTask = { present: true, ...security, state: "Running", actions: 1, ...recorded, enabled: true, instances: 1 };
+    task = { ...runningTask };
+    await refreshService.pause(receipt);
+    check("refresh disables then ends without Run or deletion", schtasks(refreshRunner.calls) === `/Change /TN ${name} /DISABLE | /End /TN ${name}` && task.enabled === false && task.instances === 0 && existsSync(plan.unitPath));
+    refreshRunner.calls.length = 0;
+    refreshService.resume(receipt);
+    check("refresh resumes only after pause with Enable then Run", schtasks(refreshRunner.calls) === `/Change /TN ${name} /ENABLE | /Run /TN ${name}`);
+    refreshRunner.calls.length = 0;
+    task = { ...runningTask, execute: "foreign" };
+    check("refresh refuses foreign action without native mutation", await asyncCode(() => refreshService.pause(receipt)) === "CONFLICT" && schtasks(refreshRunner.calls) === "");
+    task = { ...runningTask, instances: undefined };
+    check("refresh refuses missing instance evidence", await asyncCode(() => refreshService.pause(receipt)) === "TARGET_UNAVAILABLE" && schtasks(refreshRunner.calls) === "");
+    task = { ...runningTask };
+    keepRunning = true;
+    check("Disabled state alone cannot prove End completed", await asyncCode(() => refreshService.pause(receipt)) === "OPERATION_UNKNOWN");
+    refreshRunner.calls.length = 0;
+    check("resume refuses a still-running disabled task", code(() => refreshService.resume(receipt)) === "CONFLICT" && schtasks(refreshRunner.calls) === "");
+    keepRunning = false;
+    nativeFailure = true;
+    task = { ...runningTask };
+    refreshRunner.calls.length = 0;
+    check("ambiguous Disable is not retried or followed by End", await asyncCode(() => refreshService.pause(receipt)) === "OPERATION_UNKNOWN" && schtasks(refreshRunner.calls) === `/Change /TN ${name} /DISABLE`);
+
     const copy = readFileSync(plan.unitPath);
     task = { present: true, ...security, state: "Running", actions: 1, ...recorded };
     r.calls.length = 0;
