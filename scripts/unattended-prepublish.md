@@ -48,7 +48,11 @@ peer ranges, and private publishConfig registry. Built file hashes must match.
 Repacking disables lifecycle scripts. Source manifests and built artifacts stay
 unchanged. These candidates must never reach a public registry.
 
-The optional `config` action emits a Verdaccio YAML template. The coordinator
+The optional `config` action emits a Verdaccio YAML template with
+`max_body_size: 200mb` for the built CLI archive. The default request limit can
+reject it with HTTP 413 after smaller packages were accepted. Retry only the
+rejected archive after inspecting registry state, never the immutable versions
+already published. The coordinator
 provisions htpasswd separately. With the registry ready, the coordinator runs
 `publish <config.json>`. All archive hashes are validated before publishing to
 the explicit private registry, using its npmrc. `cotal-ai` is last. Inspect registry

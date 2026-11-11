@@ -89,7 +89,7 @@ export function main(action, configFile) {
   if (action === 'prepare') return prepare(c, root, env);
   if (action === 'config') {
     const rules = "    access: $all\n    publish: $authenticated\n    unpublish: []\n";
-    writeFileSync(join(root, 'verdaccio.yaml'), `storage: ./storage\nauth:\n  htpasswd:\n    file: ./htpasswd\n    max_users: -1\nuplinks:\n  npmjs:\n    url: https://registry.npmjs.org/\npackages:\n  '@cotal-ai/*':\n${rules}  'cotal-ai':\n${rules}  '**':\n    access: $all\n    proxy: npmjs\nlog:\n  type: stdout\n  format: json\n  level: http\n`, { flag: 'wx', mode: 0o600 });
+    writeFileSync(join(root, 'verdaccio.yaml'), `storage: ./storage\nmax_body_size: 200mb\nauth:\n  htpasswd:\n    file: ./htpasswd\n    max_users: -1\nuplinks:\n  npmjs:\n    url: https://registry.npmjs.org/\npackages:\n  '@cotal-ai/*':\n${rules}  'cotal-ai':\n${rules}  '**':\n    access: $all\n    proxy: npmjs\nlog:\n  type: stdout\n  format: json\n  level: http\n`, { flag: 'wx', mode: 0o600 });
     console.log(`Coordinator: run unchanged verdaccio --config ${join(root, 'verdaccio.yaml')} --listen ${new URL(c.registry).host} as a plain process on the private test network only.`);
     return;
   }
