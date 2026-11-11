@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, 
 import { dirname, join } from "node:path";
 import { acquireLock, acquireLockAsync, inspectLock, processStartToken, type AcquireOptions, type HeldLock } from "./advisory-lock.js";
 import { extensionMutationLockPath } from "./extensions.js";
+import { claimUpdateClosureAccess } from "./update-closure.js";
 
 function extensionUpdatePassLockPath(): string {
   return `${extensionMutationLockPath()}.update`;
@@ -149,17 +150,29 @@ async function runPolicyAsync(policy: MutationPolicy, waitMs: number): Promise<(
 
 /** Blocking claim of the pass -> writer locks; see {@link mutationPolicy}. */
 export function claimExtensionMutationLock(opts: ExtensionMutationOptions = {}): () => void {
-  return runPolicy(mutationPolicy(opts));
+  const release = claimUpdateClosureAccess();
+  try {
+    const writer = runPolicy(mutationPolicy(opts));
+    return () => { try { writer(); } finally { release(); } };
+  } catch (error) { release(); throw error; }
 }
 
 /** {@link claimExtensionMutationLock} for async callers: the wait is an awaited timer, not a blocked
  *  event loop, and `waitMs` is one deadline shared by the pass and the writer acquisition. */
-export function claimExtensionMutationLockAsync(opts: Omit<ExtensionMutationOptions, "borrowUpdateParent"> = {}): Promise<() => void> {
-  return runPolicyAsync(mutationPolicy(opts), opts.waitMs ?? 0);
+export async function claimExtensionMutationLockAsync(opts: Omit<ExtensionMutationOptions, "borrowUpdateParent"> = {}): Promise<() => void> {
+  const release = claimUpdateClosureAccess();
+  try {
+    const writer = await runPolicyAsync(mutationPolicy(opts), opts.waitMs ?? 0);
+    return () => { try { writer(); } finally { release(); } };
+  } catch (error) { release(); throw error; }
 }
 
 export function claimExtensionUpdatePass(opts: { waitMs?: number } = {}): () => void {
-  return runPolicy(updatePassPolicy(opts.waitMs));
+  const release = claimUpdateClosureAccess();
+  try {
+    const pass = runPolicy(updatePassPolicy(opts.waitMs));
+    return () => { try { pass(); } finally { release(); } };
+  } catch (error) { release(); throw error; }
 }
 
 export function extensionUpdatePassOwnedBy(pid: number): boolean {

@@ -62,6 +62,9 @@ registry.provide({ provides: commands("daemon"), load: importing("daemon", "auth
 // provider declares imports that provider's surfaces; any other word imports them all.
 const { commandWord, runCli, stdoutError } = await import("@cotal-ai/cli/dispatch");
 const argv = process.argv.slice(2);
+const { readFileSync } = await import("node:fs");
+const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
+(await import("./update-notice.js")).installUpdateNotice(argv, currentVersion);
 const word = commandWord(argv);
 if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
 else await importing(...(Object.keys(surfaces) as Surface[]))();

@@ -480,6 +480,15 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   };
   return {
     start, status, refresh,
+    async preparedGenerationEvidence(): Promise<{ prepared: boolean; managers: { space: string; seats: number; fenced: boolean }[] }> {
+      const rows = await Promise.all([...live.values()].filter(l => l.child).map(async l => {
+        const child = l.child!;
+        const seats = await generationCall(child, randomUUID(), "inspect");
+        if (seats === undefined || l.child !== child) throw new Error(`hosted Manager for ${l.view.space} changed during prepared observation`);
+        return { space: l.view.space, seats, fenced: generationPrepared && generationAttempts.has(child) };
+      }));
+      return { prepared: generationPrepared, managers: rows };
+    },
     async generationSeats(): Promise<{ space: string; seats: number }[]> {
       return Promise.all([...live.values()].filter((l) => l.child).map(async (l) => {
         const child = l.child!;

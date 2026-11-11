@@ -28,6 +28,7 @@ export function homeCotalDir(): string {
 export const homeRecordEntries: ReadonlySet<string> = new Set([
   "agent-skills.json", "app-identities", "catalog", "chat-sessions", "current-mesh", "idp-sessions.json", "linear",
   "meshes", "onboarded.json", "prepared", "service-launchd", "services",
+  "update-settings.json", "update-recovery.json", "update-check.json", "update-check.lock", "update-attempt.json", "update-attempt.log",
 ]);
 
 /** The OS user's own Cotal directory, which `COTAL_HOME` never redirects: POSIX `~/.cotal`, Windows

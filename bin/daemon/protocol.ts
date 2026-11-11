@@ -61,7 +61,21 @@ export type ProtocolErrorCode =
   | "BAD_JSON" | "NOT_OBJECT" | "BAD_VERSION" | "UNKNOWN_FIELD" | "BAD_ID" | "UNKNOWN_OP" | "LINE_TOO_LONG"
   | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "DEPENDENCY_UNAVAILABLE" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "GENERATION_PENDING";
 
+export interface DaemonUpdateStatus {
+  readonly restartEvidence?: { readonly prepared: boolean; readonly managers: readonly { readonly space: string; readonly seats: number; readonly fenced: boolean }[] };
+  readonly channel?: "desktop" | "npm";
+  readonly current: string;
+  readonly latest?: string;
+  readonly lastCheck?: string;
+  readonly lastResult: string;
+  readonly nextAttempt?: string;
+  readonly automatic: boolean;
+  readonly failures: number;
+}
+
 export interface DaemonStatus {
+  /** Optional for older daemon clients. Shared with desktop status readers. */
+  readonly update?: DaemonUpdateStatus;
   readonly account?: AccountComputerStatus;
   readonly generation?: { readonly installed: string; readonly running: string; readonly waiting: string };
   readonly managers?: readonly HostedManager[];

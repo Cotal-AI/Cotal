@@ -1576,17 +1576,122 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       if (upgrading && !upgradeFixture) throw new Error("upgrade proofs require COTAL_DAEMON_UPGRADE_FIXTURE from build-daemon-upgrade-fixture.mjs");
       let npmRegistry: ReturnType<typeof createHttpServer> | undefined;
       let npmRegistryUrl = "";
+      const closureRollback = process.argv.includes("--closure-rollback-repro");
+      const closureArchives = new Map<string, Buffer>();
+      if (closureRollback) {
+        for (const version of ["0.151.2", "0.151.3"]) {
+          const payload = join(root, `closure-${version}`, "package");
+          mkdirSync(payload, { recursive: true });
+          writeFileSync(join(payload, "package.json"), JSON.stringify({ name: "@cotal-ai/rollback-fixture", version, type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": version }, ...(version === "0.151.3" ? process.argv.includes("--closure-preflight-repro") ? { dependencies: { "unavailable-closure-fixture": "1.0.0" } } : { scripts: { postinstall: "node -e \"console.error('closure post-preflight fixture failure');process.exit(1)\"" } } : {}) }));
+          writeFileSync(join(payload, "index.js"), 'import { registry } from "@cotal-ai/core"; registry.register({ kind: "command", name: "rollback-fixture", description: "Private closure acceptance", run: async () => {} });\n');
+          const archive = join(root, `closure-${version}.tgz`);
+          const packed = spawnSync("tar", ["-czf", archive, "-C", join(root, `closure-${version}`), "package"]);
+          if (packed.status !== 0) throw new Error("could not assemble closure fixture archive");
+          closureArchives.set(version, readFileSync(archive));
+        }
+      }
+      const sdkRoot = join(dirname(fileURLToPath(import.meta.url)), "../../extensions/connector-jcode/node_modules/@1jehuang/jcode-sdk");
+      const sdkArchive = join(root, "jcode-sdk.tgz");
+      if (closureRollback) {
+        const packed = spawnSync("tar", ["-czhf", sdkArchive, "--transform=s,^\\./,package/,", "-C", sdkRoot, "."]);
+        if (packed.status !== 0) throw new Error("could not assemble installed SDK fixture archive");
+      }
       if (process.argv.includes("--update-repro")) {
-        npmRegistry = createHttpServer((request, response) => {
+        npmRegistry = createHttpServer(async (request, response) => {
+          if (closureRollback && request.url === "/jcode-sdk.tgz") { response.end(readFileSync(sdkArchive)); return; }
+          if (closureRollback && decodeURIComponent(request.url ?? "").includes("@1jehuang/jcode-sdk")) {
+            const metadata = JSON.parse(readFileSync(join(sdkRoot, "package.json"), "utf8"));
+            response.end(JSON.stringify({ name: metadata.name, "dist-tags": { latest: metadata.version }, versions: { [metadata.version]: { ...metadata, dist: { tarball: `${npmRegistryUrl}/jcode-sdk.tgz` } } } })); return;
+          }
+          const externalName = decodeURIComponent((request.url ?? "").slice(1).split("?")[0]!);
+          if (closureRollback && (externalName.startsWith("fixture-external/") || !externalName.startsWith("@cotal-ai/") && externalName !== "cotal-ai" && !externalName.endsWith(".tgz") && externalName !== "unavailable-closure-fixture")) {
+            const name = externalName.replace(/^fixture-external\//, "").replace(/\.tgz$/, "");
+            const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
+            const candidates = [join(repo, "extensions/connector-jcode/node_modules", name), join(upgradeFixture!, "hoisted-fix2-0.151.2/node_modules", name)];
+            const pnpm = join(repo, "node_modules/.pnpm");
+            for (const entry of readdirSync(pnpm)) candidates.push(join(pnpm, entry, "node_modules", name));
+            const source = candidates.find(candidate => existsSync(join(candidate, "package.json")));
+            if (!source) { response.writeHead(404).end(JSON.stringify({ error: `missing offline fixture package ${name}` })); return; }
+            const metadata = JSON.parse(readFileSync(join(source, "package.json"), "utf8"));
+            const archive = join(root, `external-${name.replaceAll("/", "_")}.tgz`);
+            if (externalName.startsWith("fixture-external/")) {
+              if (!existsSync(archive)) {
+                const packed = spawnSync("tar", ["-czhf", archive, "--transform=s,^\\./,package/,", "-C", source, "."]);
+                if (packed.status !== 0) { response.writeHead(500).end(); return; }
+              }
+              response.end(readFileSync(archive)); return;
+            }
+            response.end(JSON.stringify({ name, "dist-tags": { latest: metadata.version }, versions: { [metadata.version]: { ...metadata, dist: { tarball: `${npmRegistryUrl}/fixture-external/${encodeURIComponent(name)}.tgz` } } } })); return;
+          }
+          if (closureRollback && externalName.startsWith("@cotal-ai/") && externalName !== "@cotal-ai/rollback-fixture") {
+            const builtins = join(upgradeFixture!, "hoisted-fix2-0.151.2/seeded-connectors");
+            const builtin = readdirSync(builtins).find(name => {
+              const file = join(builtins, name, "package.json");
+              return existsSync(file) && JSON.parse(readFileSync(file, "utf8")).name === externalName;
+            });
+            if (builtin) {
+              const versions = Object.fromEntries(["0.151.2", "0.151.3"].map(version => {
+                const source = join(upgradeFixture!, `hoisted-fix2-${version}/seeded-connectors`, builtin);
+                const metadata = JSON.parse(readFileSync(join(source, "package.json"), "utf8"));
+                const archive = join(root, `builtin-${builtin}-${version}.tgz`);
+                if (!existsSync(archive)) {
+                  const packed = spawnSync("tar", ["-czhf", archive, "--transform=s,^\\./,package/,", "-C", source, "."]);
+                  if (packed.status !== 0) throw new Error("cannot archive bundled connector");
+                }
+                closureArchives.set(`builtin-${builtin}-${version}`, readFileSync(archive));
+                return [version, { ...metadata, dist: { tarball: `${npmRegistryUrl}/closure-builtin-${builtin}-${version}.tgz` } }];
+              }));
+              response.end(JSON.stringify({ name: externalName, "dist-tags": { latest: "0.151.3" }, versions })); return;
+            }
+          }
           response.setHeader("content-type", "application/json");
-          if (request.url?.includes(".tgz")) { response.setHeader("content-type", "application/octet-stream"); response.end(readFileSync(join(upgradeFixture!, "cotal-ai-0.151.3.tgz"))); return; }
-          const metadata = JSON.parse(readFileSync(join(upgradeFixture!, "hoisted-fix2-0.151.3/package.json"), "utf8"));
-          const bytes = readFileSync(join(upgradeFixture!, "cotal-ai-0.151.3.tgz"));
-          response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: "0.151.3" }, versions: { "0.151.3": { ...metadata, dist: { tarball: `${npmRegistryUrl}/cotal-ai-0.151.3.tgz`, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` } } } }));
+          if (closureRollback && request.url?.includes("unavailable-closure-fixture")) { response.writeHead(404).end(JSON.stringify({ error: "fixture dependency unavailable" })); return; }
+          if (closureRollback && request.url?.includes("closure-")) {
+            response.setHeader("content-type", "application/octet-stream");
+            response.end(closureArchives.get(request.url.slice(1).replace(/^closure-/, "").replace(/\.tgz$/, ""))); return;
+          }
+          if (closureRollback && decodeURIComponent(request.url ?? "").includes("@cotal-ai/rollback-fixture")) {
+            const versions = Object.fromEntries([...closureArchives].map(([version, bytes]) => [version, {
+              name: "@cotal-ai/rollback-fixture", version, type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": version },
+              ...(version === "0.151.3" ? process.argv.includes("--closure-preflight-repro") ? { dependencies: { "unavailable-closure-fixture": "1.0.0" } } : { scripts: { postinstall: "node -e \"console.error('closure post-preflight fixture failure');process.exit(1)\"" } } : {}),
+              dist: { tarball: `${npmRegistryUrl}/closure-${version}.tgz`, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` },
+            }]));
+            response.end(JSON.stringify({ name: "@cotal-ai/rollback-fixture", "dist-tags": { latest: "0.151.3" }, versions })); return;
+          }
+          const requestedVersion = request.url?.includes("0.151.2") ? "0.151.2" : "0.151.3";
+          if (request.url?.includes(".tgz")) {
+            if (process.argv.includes("--auto-failure-repro") && requestedVersion === "0.151.3") { response.writeHead(503).end("fixture archive unavailable"); return; }
+            if (process.argv.includes("--auto-seat-race-repro") && requestedVersion === "0.151.3") {
+              let prepared = false;
+              try { prepared = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"))?.preparedRestart === true; } catch { /* Preflight is not a prepared transaction. */ }
+              if (prepared && !existsSync(join(root, "race-seat-ready"))) {
+                const deadline = Date.now() + 60_000;
+                while (!existsSync(join(root, "race-seat-ready"))) {
+                  if (Date.now() > deadline) { response.writeHead(503).end("race synchronization timed out"); return; }
+                  await sleep(10);
+                }
+              }
+            }
+            response.setHeader("content-type", "application/octet-stream"); response.end(readFileSync(join(upgradeFixture!, `cotal-ai-${requestedVersion}.tgz`))); return;
+          }
+          const versions = Object.fromEntries(["0.151.2", "0.151.3"].map(version => {
+            const name = decodeURIComponent((request.url ?? "/cotal-ai").slice(1).split("?")[0]!);
+            const packageName = name.startsWith("@cotal-ai/") ? name : "cotal-ai";
+            const packageRoot = join(upgradeFixture!, `hoisted-fix2-${version}`);
+            const metadata = JSON.parse(readFileSync(join(packageRoot, ...(packageName === "cotal-ai" ? [] : ["node_modules", packageName]), "package.json"), "utf8"));
+            const bytes = readFileSync(join(upgradeFixture!, `cotal-ai-${version}.tgz`));
+            return [version, { ...metadata, dist: { tarball: `${npmRegistryUrl}/cotal-ai-${version}.tgz`, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` } }];
+          }));
+          response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: "0.151.3" }, versions }));
         });
         await new Promise<void>((resolve) => npmRegistry!.listen(0, "127.0.0.1", resolve));
         npmRegistryUrl = `http://127.0.0.1:${(npmRegistry.address() as AddressInfo).port}`;
         env.npm_config_registry = npmRegistryUrl;
+        if (process.argv.includes("--auto-update-repro")) {
+          writeFileSync(join(home, "update-settings.json"), JSON.stringify({ v: 1, auto: false, notify: true }));
+          writeFileSync(join(home, "update-check.json"), JSON.stringify({ v: 1, latest: "0.151.3", checkedAt: Date.now(), attemptedAt: Date.now(), firstSeenAt: Date.now() - 3601_000 }));
+          writeFileSync(join(home, "update-attempt.json"), JSON.stringify({ version: "0.151.3", failures: 0, result: "fixture due", next: 0 }));
+        }
       }
       let cliEntry = join(repo, "bin", "dist", "cotal.js");
       const npmRun = async (args: string[]) => {
@@ -1601,6 +1706,15 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       if (upgrading) {
         await npmRun(["install", "-g", "--prefix", globalPrefix, "--ignore-scripts", join(upgradeFixture!, "cotal-ai-0.151.2.tgz")]);
         cliEntry = join(globalPrefix, "lib/node_modules/cotal-ai/dist/cotal.js");
+        if (process.argv.includes("--desktop-update-repro")) {
+          writeFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/desktop-runtime.json"), "{}\n");
+          writeFileSync(join(home, "update-attempt.log"), "desktop fixture retained log\n");
+        }
+        if (process.argv.includes("--auto-admission-race-repro") || process.argv.includes("--rollback-busy-repro")) {
+          const gate = join(root, "updater-gate.cjs");
+          writeFileSync(gate, `const fs = require('node:fs'); const net = require('node:net'); const original = net.Socket.prototype.write; if (process.argv.includes('update') && process.argv.includes('--self')) net.Socket.prototype.write = function(chunk, ...args) { if (String(chunk).includes('managers-prepare-restart') && (${!process.argv.includes("--rollback-busy-repro")} || (fs.existsSync(${JSON.stringify(join(home, "update-recovery.json"))}) && JSON.parse(fs.readFileSync(${JSON.stringify(join(home, "update-recovery.json"))}, 'utf8'))?.phase === 'restoring'))) { fs.writeFileSync(${JSON.stringify(join(root, "updater-entered"))}, 'ready'); const end = Date.now() + 60000; while (!fs.existsSync(${JSON.stringify(join(root, "updater-release"))})) { if (Date.now() > end) throw new Error('fixture updater gate timed out'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } } return original.call(this, chunk, ...args); };`);
+          Object.assign(env, { NODE_OPTIONS: `--require=${gate}` });
+        }
         seedUnitReceipt(cliEntry, true);
       }
       const connectorUpgrade = process.argv.includes("--upgrade-connectors-repro");
@@ -1672,9 +1786,22 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       const startDaemon = async (managedHome = explicitHome) => {
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
         const servicePath = process.argv.includes("--setup-path-repro") || process.argv.includes("--account-setup-journey") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
-        const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading && (!process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro")) ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] });
-        child.stdout.resume(); child.stderr.on("data", (chunk) => { if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) console.log("  owned daemon", String(chunk).trim()); });
-        for (let i = 0; i < 100; i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
+        let recoveryRestarts = 0;
+        const launch = () => spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading && (!process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro")) ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
+        let child = launch();
+        const attach = () => {
+          child.stdout.on("data", chunk => { if (process.argv.includes("--rollback-busy-repro")) console.log("RB DAEMON STDOUT", String(chunk)); });
+          let errors = "";
+          child.stderr.on("data", chunk => { errors += String(chunk); if (upgrading) console.log("owned daemon", String(chunk)); });
+          child.once("exit", code => {
+            if (process.argv.includes("--rollback-busy-repro") && code !== 0 && errors.includes("restart the daemon with the restored CLI")) {
+              check("RB simulated supervisor restarts only after single recovery clears journal", recoveryRestarts++ === 0 && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null);
+              child = launch(); attach();
+            }
+          });
+        };
+        attach();
+        for (let i = 0; i < (process.argv.includes("--rollback-busy-repro") ? 1200 : 100); i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
         await killAndAwaitExit(child, "SIGTERM");
         throw new Error("shipped daemon did not answer");
       };
@@ -2845,13 +2972,200 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           return;
         }
         if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) {
+          if (process.argv.includes("--prepare-abort-repro")) {
+            const prepared = await ask(paths.socket, { op: "managers-prepare-restart" });
+            const aborted = await ask(paths.socket, { op: "managers-abort-restart" });
+            console.log("PA CONTROL", JSON.stringify({ prepared, aborted }));
+            const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+            const started = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "start", { name: "prepare_abort_seat", agent: "daemon-smoke", events: false, persona: { prompt: "Owned prepare abort proof.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, target.auth, "owner", 40_000, { instanceId: manager.instanceId });
+            check("PA real seat starts after prepare and abort without update", started.ok, started);
+            if (!started.ok) console.log("PA MANAGER LOG", readFileSync(join(home, "daemon", spaceSegment(ON), "manager", "manager.log"), "utf8").replace(/http:\/\/127\.0\.0\.1:\d+\/#t=\S+/g, "<private-console>"));
+            else await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "stop", { name: "prepare_abort_seat" }, target.auth, "owner", 10_000, { instanceId: manager.instanceId });
+            return;
+          }
           let activeTarget: Awaited<ReturnType<typeof resolveControlTarget>> | undefined;
           if (process.argv.includes("--upgrade-active-repro")) {
             activeTarget = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
             const launched = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "start", { name: "npm_upgrade_custody", agent: "daemon-smoke", events: false, persona: { prompt: "Owned direct upgrade custody smoke.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, activeTarget.auth, "owner", 40_000, { instanceId: manager.instanceId });
             check("U1 direct upgrade starts with a real legacy seat", launched.ok, launched.error);
           }
-          if (process.argv.includes("--update-repro")) {
+          if (process.argv.includes("--notify-check-repro")) {
+            writeFileSync(join(home, "update-settings.json"), JSON.stringify({ v: 1, auto: false, notify: true }));
+            writeFileSync(join(home, "update-check.json"), JSON.stringify({ v: 1, attemptedAt: 0 }));
+            writeFileSync(join(home, "update-attempt.json"), JSON.stringify({ failures: 0, result: "notify-only due", next: 0 }));
+            await sleep(35_000);
+            const checked = await cli("status");
+            check("NC notify-only daemon refreshes configured registry latest", checked.doc.result?.update?.latest === "0.151.3" && !!checked.doc.result.update.lastCheck && checked.doc.result.update.automatic === false && checked.doc.result.update.failures === 0, checked);
+            return;
+          }
+          if (process.argv.includes("--desktop-update-repro")) {
+            writeFileSync(join(home, "update-settings.json"), JSON.stringify({ v: 1, auto: true, notify: true }));
+            writeFileSync(join(home, "update-attempt.json"), JSON.stringify({ version: "0.151.3", failures: 0, result: "fixture due", next: 0 }));
+            await sleep(35_000);
+            const status = await cli("status");
+            check("DU desktop runtime reports newer release without automatic attempt", status.doc.result?.update?.channel === "desktop" && status.doc.result.update.latest === "0.151.3" && status.doc.result.update.automatic === false && status.doc.result.update.failures === 0 && status.doc.result.update.lastResult.includes("desktop app"), status);
+            check("DU desktop runtime never truncates updater log", readFileSync(join(home, "update-attempt.log"), "utf8") === "desktop fixture retained log\n");
+            const preference = spawn(process.execPath, [cliEntry, "update", "--auto", "on"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+            let preferenceOutput = "";
+            preference.stdout.on("data", chunk => preferenceOutput += chunk);
+            preference.stderr.on("data", chunk => preferenceOutput += chunk);
+            const preferenceCode = await new Promise(resolve => preference.once("exit", resolve));
+            check("DU desktop auto on explains app installer and exits successfully", preferenceCode === 0 && preferenceOutput.includes("have no effect here") && preferenceOutput.includes("signed platform installer"), preferenceOutput);
+            const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+            const terminal = spawn("script", ["-qec", `${quote(process.execPath)} ${quote(cliEntry)} --version`, "/dev/null"], { cwd: root, env: { ...env, CI: "", CONTINUOUS_INTEGRATION: "", BUILD_NUMBER: "", COTAL_NO_UPDATE_CHECK: "" }, stdio: ["ignore", "pipe", "pipe"] });
+            let terminalOutput = "";
+            terminal.stdout.on("data", chunk => terminalOutput += chunk);
+            terminal.stderr.on("data", chunk => terminalOutput += chunk);
+            const terminalCode = await new Promise(resolve => terminal.once("exit", resolve));
+            check("DU real terminal notice directs desktop app installer", terminalCode === 0 && terminalOutput.includes("update available") && terminalOutput.includes("signed platform installer") && !terminalOutput.includes("Run cotal update --self"), terminalOutput);
+            return;
+          }
+          if (process.argv.includes("--auto-update-repro")) {
+            check("AU off preserves installed generation", JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8")).version === "0.151.2");
+            writeFileSync(join(home, "update-settings.json"), JSON.stringify({ v: 1, auto: true, notify: true }));
+            await sleep(35_000);
+            const waiting = await cli("status", "--space", ON);
+            check("AU automatic update waits for a running seat", waiting.doc.result?.version === "0.151.2" && waiting.doc.result?.update?.lastResult?.includes("waiting for idle"), waiting);
+            if (!activeTarget) throw new Error("automatic acceptance requires active seat");
+            await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "stop", { name: "npm_upgrade_custody" }, activeTarget.auth, "owner", 10_000, { instanceId: manager.instanceId });
+            activeTarget = undefined;
+            if (process.argv.includes("--auto-admission-race-repro")) {
+              const deadline = Date.now() + 90_000;
+              while (!existsSync(join(root, "updater-entered"))) { if (Date.now() > deadline) throw new Error("automatic updater never reached process gate"); await sleep(20); }
+              const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+              const started = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "start", { name: "admission_race", agent: "daemon-smoke", events: false, persona: { prompt: "Owned pre-fence admission race.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, target.auth, "owner", 40_000, { instanceId: manager.instanceId });
+              check("PR real seat enters after daemon idle check before updater fence", started.ok, started);
+              writeFileSync(join(root, "updater-release"), "ready");
+              let status: Record<string, any> = {};
+              for (let i = 0; i < 20; i++) { await sleep(4000); status = (await cli("status", "--space", ON)).doc.result; if (readFileSync(join(home, "update-attempt.log"), "utf8").includes("update admission refused") && status?.update?.lastResult?.includes("waiting for agents to stop")) break; }
+              console.log("PR STATUS", JSON.stringify(status));
+              check("PR updater refuses active seats without replacement or journal", readFileSync(join(home, "update-attempt.log"), "utf8").includes("SEATS_ACTIVE") && status?.update?.failures === 0 && Date.parse(status.update.nextAttempt) - Date.now() > 40_000 && Date.parse(status.update.nextAttempt) - Date.now() <= 60_000 && JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8")).version === "0.151.2" && !existsSync(join(home, "update-recovery.json")), status);
+              const stopped = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "stop", { name: "admission_race" }, target.auth, "owner", 10_000, { instanceId: manager.instanceId });
+              check("PR owned seat survives updater refusal and can be stopped", stopped.ok, stopped);
+              return;
+            }
+            if (process.argv.includes("--auto-seat-race-repro")) {
+              const deadline = Date.now() + 90_000;
+              for (;;) {
+                try { if (JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"))?.preparedRestart) break; } catch { /* Parent has not fenced yet. */ }
+                if (Date.now() > deadline) throw new Error("automatic parent never recorded prepared restart");
+                await sleep(5);
+              }
+              const abortRace = await ask(paths.socket, { op: "managers-abort-restart" });
+              console.log("AR ABORT", JSON.stringify(abortRace));
+              check("AR authenticated operator abort releases fence", abortRace.ok === true, abortRace);
+              writeFileSync(join(root, "race-seat-ready"), "ready\n");
+              {
+                const until = Date.now() + 90_000;
+                for (;;) {
+                  const log = existsSync(join(home, "update-attempt.log")) ? readFileSync(join(home, "update-attempt.log"), "utf8") : "";
+                  if (log.includes("prepared update admission is no longer fenced and empty")) break;
+                  if (Date.now() > until) throw new Error("bound child never refused changed admission");
+                  await sleep(20);
+                }
+                check("AR bound child refuses changed real custody", true);
+              }
+              if (process.argv.includes("--rollback-busy-repro")) {
+                const until = Date.now() + 60_000;
+                while (!existsSync(join(root, "updater-entered"))) { if (Date.now() > until) throw new Error("rollback never reached prepare gate"); await sleep(20); }
+                if (process.argv.includes("--silent-host-repro")) {
+                  process.kill(child.pid!, "SIGSTOP");
+                  writeFileSync(join(root, "updater-release"), "ready");
+                  try {
+                    let paused: any;
+                    for (let i = 0; i < 180; i++) { paused = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")); if (paused?.phase === "paused") break; await sleep(1000); }
+                    check("SH live silent lifetime refuses rollback reconciliation", paused?.phase === "paused" && paused.reason.includes("daemon") && existsSync(paused.snapshot), paused);
+                  } finally { process.kill(child.pid!, "SIGCONT"); }
+                  return;
+                }
+                recordingRestart = false;
+                await killAndAwaitExit(child, "SIGTERM");
+                check("RB owned daemon stopped after old closure restoration", !existsSync(paths.socket));
+                if (process.argv.includes("--power-loss-repro")) {
+                  const journal = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"));
+                  process.kill(journal.owner.pid, "SIGKILL");
+                  writeFileSync(join(root, "updater-release"), "ready");
+                  await sleep(1000);
+                  if (process.argv.includes("--power-start-repro")) {
+                    child = await startDaemon();
+                    const recovered = await cli("status");
+                    check("PL daemon start recovers killed owner without live host", recovered.doc.result?.version === "0.151.2" && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null && !existsSync(journal.snapshot), recovered);
+                    return;
+                  }
+                  const recovery = spawn(process.execPath, [cliEntry, "update", "--self"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+                  let output = ""; recovery.stdout.on("data", b => output += b); recovery.stderr.on("data", b => output += b);
+                  const code = await new Promise(resolve => recovery.once("close", resolve));
+                  console.log("PL RECOVERY", code, output);
+                  check("PL update self recovers killed owner without daemon", code === 0 && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null && !existsSync(journal.snapshot), output);
+                  child = await startDaemon();
+                  check("PL recovered daemon serves", (await cli("status")).doc.result?.version === "0.151.2");
+                  return;
+                }
+                writeFileSync(join(root, "updater-release"), "ready");
+                let paused: any;
+                for (let i = 0; i < 30; i++) { paused = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")); if (paused?.phase === "paused") break; await sleep(1000); }
+                console.log("RB PAUSED", JSON.stringify(paused));
+                check("RB unreachable daemon leaves restored closure paused", paused?.phase === "paused" && /daemon|connect|ENOENT|socket/i.test(paused.reason) && JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8")).version === "0.151.2", paused);
+                child = await startDaemon();
+                let recovered: any;
+                for (let i = 0; i < 60; i++) { recovered = await cli("status"); if (recovered.doc.result?.managers?.[0]?.state === "answering") break; await sleep(1000); }
+                check("RB next daemon start completes recovery and clears snapshot", recovered?.doc.result?.managers?.[0]?.state === "answering" && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null && !existsSync(paused.snapshot), recovered);
+                return;
+              }
+              console.log("AR RECOVERY", readFileSync(join(home, "update-recovery.json"), "utf8"), "INSTALLED", readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8"), "UPDATER", readFileSync(join(home, "update-attempt.log"), "utf8"));
+              let restored;
+              for (let i = 0; i < 20; i++) {
+                restored = await cli("status");
+                if (restored.doc.result?.version === "0.151.2" && restored.doc.result.update?.failures === 1 && restored.doc.result.managers?.[0]?.state === "answering" && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null) break;
+                await sleep(4000);
+              }
+              check("AR refused changed custody restores previous answering generation", restored?.doc.result?.version === "0.151.2" && restored.doc.result.managers?.[0]?.state === "answering" && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null, restored);
+              return;
+            }
+            if (process.argv.includes("--auto-failure-repro")) {
+              let failedStatus;
+              for (let i = 0; i < 100; i++) {
+                failedStatus = await cli("status", "--space", ON);
+                if (failedStatus.doc.result?.update?.lastResult?.startsWith("update failed")) break;
+                await sleep(1000);
+              }
+              check("AF failed preflight keeps old daemon and records backoff", failedStatus?.doc.result?.version === "0.151.2" && failedStatus.doc.result.update.failures === 1 && Date.parse(failedStatus.doc.result.update.nextAttempt) > Date.now() + 3500_000, failedStatus);
+              const attemptFile = join(home, "update-attempt.json");
+              const attempt = JSON.parse(readFileSync(attemptFile, "utf8"));
+              writeFileSync(attemptFile, JSON.stringify({ ...attempt, next: 0 }));
+              await sleep(35_000);
+              failedStatus = await cli("status", "--space", ON);
+              check("AF second failed attempt is recorded", failedStatus.doc.result?.update?.failures === 2, failedStatus);
+              writeFileSync(attemptFile, JSON.stringify({ ...JSON.parse(readFileSync(attemptFile, "utf8")), next: 0 }));
+              await sleep(35_000);
+              const suppressed = await cli("status", "--space", ON);
+              check("AF same version is suppressed after two failures", suppressed.doc.result?.update?.failures === 2 && suppressed.doc.result.update.lastResult.includes("failed twice"), suppressed);
+              const cacheFile = join(home, "update-check.json");
+              writeFileSync(cacheFile, JSON.stringify({ v: 1, latest: "0.151.4", checkedAt: Date.now(), attemptedAt: Date.now(), firstSeenAt: Date.now() }));
+              writeFileSync(attemptFile, JSON.stringify({ ...JSON.parse(readFileSync(attemptFile, "utf8")), next: 0 }));
+              await sleep(35_000);
+              const newer = await cli("status", "--space", ON);
+              check("AF newer release clears failed-version suppression and holds publication", newer.doc.result?.update?.failures === 0 && newer.doc.result.update.lastResult === "waiting for release hold", newer);
+              writeFileSync(attemptFile, JSON.stringify({ version: "0.151.3", failures: 2, result: "suppressed fixture", next: Date.now() + 86400_000 }));
+              const manual = spawn(process.execPath, [cliEntry, "update"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+              let manualOutput = ""; manual.stdout.on("data", chunk => manualOutput += chunk); manual.stderr.on("data", chunk => manualOutput += chunk);
+              const manualCode = await new Promise(resolve => manual.once("exit", resolve));
+              const reset = await cli("status", "--space", ON);
+              check("AF successful manual reconcile clears automatic failure suppression", manualCode === 0 && reset.doc.result?.update?.failures === 0 && reset.doc.result.update.lastResult === "manual update reconciled", { manualCode, manualOutput, reset });
+              return;
+            }
+            let upgraded;
+            for (let i = 0; i < 180; i++) {
+              try {
+                upgraded = await cli("status", "--space", ON);
+                if (upgraded.doc.result?.version === "0.151.3" && upgraded.doc.result?.managers?.[0]?.state === "answering") break;
+                if (upgraded.doc.result?.update?.failures > 0 && upgraded.doc.result?.version !== "0.151.3" && (upgraded.doc.result?.update?.lastResult?.startsWith("update failed") || upgraded.doc.result?.update?.lastResult?.startsWith("automatic updates paused"))) break;
+              } catch { /* Native generation restart is in flight. */ }
+              await sleep(4000);
+            }
+            console.log("AU UPDATER LOG", existsSync(join(home, "update-attempt.log")) ? readFileSync(join(home, "update-attempt.log"), "utf8") : "absent");
+            check("AU daemon installs fixture release without an update command", upgraded?.doc.result?.version === "0.151.3" && upgraded.doc.result?.managers?.[0]?.state === "answering", upgraded);
+          } else if (process.argv.includes("--update-repro")) {
             const other = ctx[1]!;
             grantActor(other.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(other.store, OFF))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
             const secondStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${OFF}` });
@@ -2888,10 +3202,121 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: "0.151.2" }));
             writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: "0.151.2" }));
             env.npm_config_prefix = globalPrefix;
+            if (closureRollback) {
+              const seeded = spawn(process.execPath, [cliEntry, "ext", "seed", "--reset"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+              let seedOutput = ""; seeded.stdout.on("data", b => { seedOutput += String(b); }); seeded.stderr.on("data", b => { seedOutput += String(b); });
+              const seedCode = await new Promise<number | null>(resolve => seeded.once("exit", resolve));
+              console.log("CL SEED OUTPUT", seedOutput);
+              check("CL previous seeded closure installs through shipped CLI", seedCode === 0, seedOutput);
+              if (seedCode !== 0) return;
+              if (process.argv.includes("--closure-parallel-repro")) {
+                let failures = 0, falseUpdates = 0;
+                for (let round = 0; round < 4; round++) {
+                  const results = await Promise.all(Array.from({ length: 40 }, async () => {
+                    const child = spawn(process.execPath, [cliEntry, "meshes", "--json"], { cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "" }, stdio: ["ignore", "pipe", "pipe"] });
+                    let text = "";
+                    child.stdout.on("data", chunk => text += chunk);
+                    child.stderr.on("data", chunk => text += chunk);
+                    const code = await new Promise(resolve => child.once("exit", resolve));
+                    return { code, text };
+                  }));
+                  failures += results.filter(row => row.code !== 0).length;
+                  falseUpdates += results.filter(row => row.text.includes("an update is in progress")).length;
+                  console.log("PARALLEL ROUND", JSON.stringify({ round, failures, falseUpdates, samples: results.filter(row => row.code !== 0).slice(0, 2) }));
+                }
+                check("CL steady seeded 40-way commands never refuse concurrent readers", failures === 0 && falseUpdates === 0, { failures, falseUpdates });
+                return;
+              }
+              const added = spawn(process.execPath, [cliEntry, "ext", "add", "@cotal-ai/rollback-fixture@0.151.2"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+              let addedOutput = ""; added.stdout.on("data", b => { addedOutput += String(b); }); added.stderr.on("data", b => { addedOutput += String(b); });
+              const addedCode = await new Promise<number | null>(resolve => added.once("exit", resolve));
+              check("CL previous operator extension installs through shipped CLI", addedCode === 0, addedOutput);
+            }
             const updater = spawn(process.execPath, [cliEntry, "update", "--self", "--space", ON], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
             let output = ""; updater.stdout.on("data", (b) => { output += String(b); }); updater.stderr.on("data", (b) => { output += String(b); });
-            const code = await new Promise<number | null>((resolve) => updater.once("exit", resolve));
+            if (closureRollback && process.argv.includes("--closure-dead-owner-repro")) {
+              const deadline = Date.now() + 90_000;
+              for (;;) {
+                try {
+                  const pkg = JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8"));
+                  const journal = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"));
+                  if (pkg.version === "0.151.3" && journal?.phase === "replacing") break;
+                } catch { /* Replacement writes the package and journal independently. */ }
+                if (Date.now() > deadline) throw new Error("dead-owner fixture never reached replacement");
+                await sleep(5);
+              }
+              updater.kill("SIGKILL");
+            }
+            let waiters: Promise<{ code: number | null; text: string; firstError?: number; lastError?: number }[]> | undefined;
+            if (process.argv.includes("--closure-waiters-repro")) {
+              const deadline = Date.now() + 90_000;
+              for (;;) {
+                try {
+                  const journal = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"));
+                  const installed = JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8"));
+                  if (journal?.phase === "replacing" && installed.version === "0.151.3" && existsSync(join(globalPrefix, "lib/node_modules/cotal-ai/node_modules/@cotal-ai/manager/dist/resume.js"))) break;
+                } catch { /* Wait for real replacement tree under its journal. */ }
+                if (Date.now() > deadline) throw new Error("real updater never created replacing journal");
+                await sleep(5);
+              }
+              waiters = Promise.all(Array.from({ length: 40 }, async () => {
+                const child = spawn(process.execPath, [cliEntry, "meshes", "--json"], { cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "" }, stdio: ["ignore", "pipe", "pipe"] });
+                let text = "", firstError: number | undefined, lastError: number | undefined;
+                child.stdout.on("data", chunk => text += chunk); child.stderr.on("data", chunk => { text += chunk; if (/ENOENT|MODULE_NOT_FOUND/.test(String(chunk))) { firstError ??= Date.now(); lastError = Date.now(); } });
+                const code = await new Promise<number | null>(resolve => child.once("exit", resolve));
+                return { code, text, firstError, lastError };
+              }));
+            }
+            let code = await new Promise<number | null>((resolve) => updater.once("exit", resolve));
+            if (waiters) {
+              const rows = await waiters;
+              writeFileSync(join(process.env.TMPDIR ?? root, "auto-update-waiter-results.json"), JSON.stringify(rows, null, 2));
+              const loader = rows.filter(row => !row.text.includes("waiting for a Cotal update to finish") && /ENOENT|MODULE_NOT_FOUND/.test(row.text));
+              const gated = rows.filter(row => !loader.includes(row));
+              const first = Math.min(...loader.map(row => row.firstError ?? Infinity));
+              const last = Math.max(...loader.map(row => row.lastError ?? 0));
+              console.log("WAITER COUNTS", JSON.stringify({ total: rows.length, loaderFailures: loader.length, loaderWindowMs: loader.length ? last - first : 0, firstError: first, lastError: last, gated: gated.length, waiting: gated.filter(row => row.text.includes("waiting for a Cotal update to finish")).length }));
+              check("CL real-update waiters finish after restoration without false refusals", gated.length > 0 && gated.every(row => row.code === 0 && !row.text.includes("an update is in progress")) && gated.filter(row => row.text.includes("waiting for a Cotal update to finish")).every(row => row.text.includes("restarting command with the installed CLI")), { failures: gated.filter(row => row.code !== 0) });
+            }
+            if (closureRollback && process.argv.includes("--closure-dead-owner-repro")) {
+              await sleep(3000);
+              const startRecovery = process.argv.includes("--closure-start-repro");
+              const resumed = spawn(process.execPath, startRecovery ? [cliEntry, "daemon", "serve"] : [cliEntry, "update", "--space", ON], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+              resumed.stdout.on("data", b => { output += String(b); }); resumed.stderr.on("data", b => { output += String(b); });
+              const resumedCode = await new Promise<number | null>(resolve => resumed.once("exit", resolve));
+              check(startRecovery ? "CL real daemon start restores dead replacement and requests fresh CLI" : "CL next real update resumes dead replacement owner", startRecovery ? resumedCode !== 0 && output.includes("restart the daemon with the restored CLI") : resumedCode === 0 && output.includes("after an interrupted update"), { resumedCode, output });
+              code = 1;
+            }
             console.log("  UPDATE REPRO", JSON.stringify({ code, output }));
+            if (closureRollback) {
+              if (process.argv.includes("--closure-preflight-repro")) {
+                check("CL dependency preflight refuses before global replacement", code === 1 && output.includes("unavailable-closure-fixture") && output.includes("no global install was attempted") && !output.includes("installing cotal-ai@"), { code, output });
+                const unchanged = await cli("status");
+                check("CL preflight leaves original Manager lifetime answering", unchanged.doc.result?.version === "0.151.2" && unchanged.doc.result?.managers?.some((row: { instanceId: string; state: string }) => row.instanceId === manager.instanceId && row.state === "answering"), unchanged);
+                return;
+              }
+              check("CL failed update restores previous generation", process.argv.includes("--closure-dead-owner-repro") ? output.includes("after an interrupted update") : code === 1 && output.includes("closure post-preflight fixture failure") && output.includes("was restored and reconciled"), { code, output });
+              const installed = JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8"));
+              const entries = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
+              check("CL global and seven seeded surfaces return to previous generation", installed.version === "0.151.2" && entries.filter((e: { source?: string; version?: string }) => e.source === "seeded" && e.version === "0.151.2").length === 7, entries);
+              const extension = JSON.parse(readFileSync(join(prefix, "node_modules/@cotal-ai/rollback-fixture/package.json"), "utf8"));
+              check("CL operator extension returns to previous generation", extension.version === "0.151.2", extension);
+              check("CL restored seed stamp matches previous generation", JSON.parse(readFileSync(join(seed, "stamp.json"), "utf8")).generation === "0.151.2");
+              check("CL successful restore removes private snapshot", !readdirSync(join(root, "config", "cotal")).some(name => name.startsWith(".update-snapshot-")));
+              check("CL recovery fence clears after verified rollback", JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null);
+              let recovered: Awaited<ReturnType<typeof cli>> | undefined;
+              for (let attempt = 0; attempt < 120; attempt++) {
+                try {
+                  recovered = await cli("status");
+                  if (recovered.doc.result?.version === "0.151.2" && [ON, OFF].every(space => recovered!.doc.result?.managers?.some((row: { space: string; state: string }) => row.space === space && row.state === "answering"))) break;
+                } catch { /* Native generation recovery can replace the socket. */ }
+                await sleep(1000);
+              }
+              check("CL both hosted Managers answer after previous generation recovery", recovered?.doc.result?.version === "0.151.2" && [ON, OFF].every(space => recovered!.doc.result?.managers?.some((row: { space: string; state: string }) => row.space === space && row.state === "answering")), recovered);
+              const sharedCore = JSON.parse(readFileSync(join(prefix, "node_modules/@cotal-ai/rollback-fixture/node_modules/@cotal-ai/core/package.json"), "utf8"));
+              check("CL operator shared core matches restored generation", sharedCore.version === "0.151.2", sharedCore);
+              return;
+            }
             check("U2 cotal update self checks both hosted instances and completes native reconcile", code === 0 && output.includes(`instance ${manager.instanceId} answered`) && output.includes(`instance ${second.instanceId} answered`));
             const secondAfter = resultOf(await ask(paths.socket, { op: "manager-status", space: OFF }));
             check("U2 update waits for both hosted Managers to answer again", secondAfter.state === "answering");

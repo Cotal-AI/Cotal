@@ -1,5 +1,5 @@
 import { findCommand, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { jsonFlag, paintFor, writeResult } from "@cotal-ai/workspace";
+import { cachedUpdateSummary, jsonFlag, paintFor, writeResult } from "@cotal-ai/workspace";
 import { commandSurface } from "../ext-loader.js";
 import { printCommandList, printHelpPath } from "../help.js";
 import { unknownCommandMessage } from "../lib/nearest-word.js";
@@ -37,7 +37,7 @@ export async function version(args: ParsedArgs): Promise<void> {
       {
         command: "version",
         target: null,
-        result: { version: cliVersion(), extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
+        result: { version: cliVersion(), update: cachedUpdateSummary(cliVersion()), extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
         ...(unreadable === undefined
           ? {}
           : {
@@ -51,7 +51,7 @@ export async function version(args: ParsedArgs): Promise<void> {
     return;
   }
   const exts = extensionVersions();
-  const lines = [`cotal-ai ${cliVersion()}`];
+  const lines = [`cotal-ai ${cliVersion()}`, `  ${cachedUpdateSummary(cliVersion())}`];
   if (exts.length) {
     const pad = Math.max(...exts.map((e) => e.label.length));
     for (const e of exts) lines.push(`  ${e.label.padEnd(pad)}  ${e.version}`);

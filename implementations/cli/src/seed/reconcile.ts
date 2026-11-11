@@ -1,8 +1,10 @@
 import { existsSync, renameSync } from "node:fs";
-import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
+  claimUpdateClosureAccess,
+  waitForUpdateClosure,
   CorruptExtensionPackageError,
   SEEDED_EXTENSIONS,
   bindExtensionPeers,
@@ -118,6 +120,25 @@ export async function runSeed(flags: SeedFlags): Promise<void> {
 const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], verified: [], removedKept: [] };
 
 async function reconcile(mode: Mode): Promise<ReconcileResult> {
+  if (waitForUpdateClosure()) {
+    if (process.env.COTAL_UPDATE_REEXEC === "1") throw new Error("another Cotal update finished while this command waited; run the command again");
+    console.error("Cotal update finished; restarting command with the installed CLI");
+    const child = spawn(process.execPath, process.argv.slice(1), { env: { ...process.env, COTAL_UPDATE_REEXEC: "1" }, stdio: "inherit" });
+    const forward = (signal: NodeJS.Signals) => child.kill(signal);
+    const onInt = () => forward("SIGINT"), onTerm = () => forward("SIGTERM");
+    process.on("SIGINT", onInt); process.on("SIGTERM", onTerm);
+    const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    process.off("SIGINT", onInt); process.off("SIGTERM", onTerm);
+    if (result.signal) { process.kill(process.pid, result.signal); await new Promise(() => {}); }
+    process.exit(result.code ?? 1);
+  }
+  return reconcileUnderClosure(mode);
+}
+
+async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
   const generation = seedGeneration();
   // Cheap lock-free pre-check: the steady state (stamp current, authority intact) is the common case
   // on EVERY command and must not pay a lock acquire. Health checks run FIRST so a lost authority or a
@@ -167,6 +188,8 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
       return NOOP;
     }
   }
+  const releaseClosure = claimUpdateClosureAccess();
+  try {
   assertReleasedSeedWriter(generation, "reconcile");
   const lock = acquireReconcileLock();
   try {
@@ -200,6 +223,7 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
   } finally {
     lock.release();
   }
+  } finally { releaseClosure(); }
 }
 
 /** A cursor left while the durable stamp still names an older generation is evidence that this

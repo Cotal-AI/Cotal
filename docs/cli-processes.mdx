@@ -536,6 +536,28 @@ without treating an option's value as another command word.
 
 ## daemon [#daemon]
 
+A recorded native machine daemon checks for updates daily with up to one hour of jitter.
+A newly seen release waits one hour before installation. Automatic installation uses
+`cotal update --self` and waits until every hosted Manager is empty, then holds its admission
+fence through the update. Running agents are not stopped to make room for an update.
+An explicit daemon home or a daemon not started by its recorded native service does not install
+automatic updates.
+
+`cotal daemon status` includes an Updates section in human output and an optional `update`
+object in JSON and desktop status replies. Its fields are `current`, `latest`, `lastCheck`,
+`lastResult`, `nextAttempt`, `automatic`, `failures` and `channel`. The channel is `npm` for
+standalone installations and `desktop` for the app's bundled runtime. Desktop runtimes keep registry
+checks but report automatic installation off and direct updates to the signed app installer.
+Older daemons may omit the object or channel.
+Refusals before replacement do not count as failed installations. A busy computer retries after
+60 seconds. Registry or extension-closure unavailability retries after one hour.
+An attempt that begins replacement and does not reach the target version counts as a failure
+and waits one hour before retry. Two such failures of one version stop installation
+attempts for that version until a newer release appears or a person repairs it manually.
+If the updater cannot reconcile or restore a complete generation, automatic updates pause
+and status names the installed version and `cotal update --self` as the repair command.
+Use `cotal update --auto off` to disable automatic installation while keeping CLI notices.
+
 ```bash
 cotal daemon setup [--idp <url>] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon setup --space <s> [--idp <auth base URL>] [--client-id <id>] [--no-manager] [--wait <seconds>] [--daemon-home <dir>] [--json|--plain]
