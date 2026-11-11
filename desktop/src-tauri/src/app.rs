@@ -16,6 +16,7 @@ use tokio::sync::Semaphore;
 const MAX_FRAME: usize = 64 * 1024;
 struct RequestSlots(Arc<Semaphore>);
 struct TrayStatus(MenuItem<tauri::Wry>);
+struct TrayUpdate(MenuItem<tauri::Wry>);
 struct PaintState(std::sync::Mutex<FirstPaint>);
 
 #[tauri::command]
@@ -123,6 +124,14 @@ fn open_browser(app: AppHandle, url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_update_notice(app: AppHandle, version: Option<String>) -> Result<(), String> {
+    if let Some(value) = &version { if value.len() > 64 || !value.bytes().all(|c| c.is_ascii_digit() || c == b'.') { return Err("Invalid update version.".into()); } }
+    let item = &app.state::<TrayUpdate>().0;
+    item.set_text(version.as_ref().map(|v| format!("Cotal {v} available…")).unwrap_or_else(|| "No desktop update".into())).map_err(|e| e.to_string())?;
+    item.set_enabled(version.is_some()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn set_connection_state(app: AppHandle, connected: bool) -> Result<(), String> {
     let tray = app
         .tray_by_id("machine")
@@ -202,6 +211,7 @@ pub fn run() {
             crate::native_presence::set_login_preference,
             crate::native_presence::dismiss_presence_offer,
             crate::native_presence::move_to_applications,
+            set_update_notice,
             crate::native_presence::pin_to_taskbar
         ])
         .setup(|app| {
@@ -220,7 +230,9 @@ pub fn run() {
                 true,
                 None::<&str>,
             )?;
-            let menu = Menu::with_items(app, &[&status, &settings, &dashboard, &quit])?;
+            let update = MenuItem::with_id(app, "update", "No desktop update", false, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&status, &update, &settings, &dashboard, &quit])?;
+            app.manage(TrayUpdate(update));
             app.manage(TrayStatus(status));
             let icon = app
                 .default_window_icon()
@@ -232,6 +244,7 @@ pub fn run() {
                 .tooltip("Cotal: not connected")
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
+                    "update" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "settings" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "dashboard" => { show(app); let _ = app.emit("desktop-open-dashboard", ()); }
                     "quit" => app.exit(0),

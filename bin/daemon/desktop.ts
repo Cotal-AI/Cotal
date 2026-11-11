@@ -6,7 +6,7 @@ import { arch, platform, release, totalmem } from "node:os";
 import type { Readable, Writable } from "node:stream";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
-import { loginViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
+import { loginViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
 import { applyInstall, planUninstall, startInstalled } from "./install.js";
 import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
@@ -14,6 +14,9 @@ import { runSetup } from "./setup.js";
 import { desktopApplicationPath } from "./desktop-path.js";
 
 export type DesktopRequest =
+  | { readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
+  | { readonly op: "update-check" }
+  | { readonly op: "update-release"; readonly version: string }
   | { [K in "about" | "status" | "install"]: { readonly op: K } }["about" | "status" | "install"]
   | { readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly op: "name"; readonly name?: string }
@@ -26,16 +29,24 @@ export type DesktopRequest =
 export function parseDesktopRequest(value: unknown): DesktopRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request must be an object");
   const o = value as Record<string, unknown>;
-  const simple = ["about", "status", "install"].includes(String(o.op));
+  const simple = ["about", "status", "install", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
-  const fields = o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : o.op === "login" ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
+  const fields = o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : o.op === "login" ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
+  if (o.op === "update-release") {
+    if (typeof o.version !== "string" || !/^\d+\.\d+\.\d+$/.test(o.version)) throw new Error("invalid release version");
+    return { op: "update-release", version: o.version };
+  }
+  if (o.op === "update-settings") {
+    if ([o.auto, o.notify].some(value => value !== undefined && typeof value !== "boolean")) throw new Error("invalid update setting");
+    return { op: "update-settings", ...(o.auto !== undefined ? { auto: o.auto as boolean } : {}), ...(o.notify !== undefined ? { notify: o.notify as boolean } : {}) };
+  }
   if (o.op === "space-intent") {
     if (!isDaemonSpaceName(o.space) || typeof o.enabled !== "boolean") throw new Error("invalid space intent");
     return { op: "space-intent", space: o.space, enabled: o.enabled };
   }
   if (o.op === "name") return { op: "name", ...(o.name !== undefined ? { name: computerName(o.name) } : {}) };
-  if (simple) return { op: o.op as "about" | "status" | "install" };
+  if (simple) return { op: o.op as "about" | "status" | "install" | "update-check" };
   if (scoped) {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
     return { op: o.op as "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status", space: o.space };
@@ -91,6 +102,22 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       emit({ v: 1, event: "result", ok: true, result: { version: opts.version, machine: defaultComputerName(), platform: platform(), arch: arch(), release: release(), memoryBytes: totalmem() } });
       return;
     }
+    if (req.op === "update-release") {
+      const response = await fetch(`https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v${req.version}`, { headers: { Accept: "application/vnd.github+json", "User-Agent": "Cotal-desktop" }, signal: AbortSignal.timeout(5000), redirect: "error" });
+      if (!response.ok) throw new Error("The release could not be read.");
+      const length = Number(response.headers.get("content-length"));
+      if (length > 256 * 1024) throw new Error("The release response is too large.");
+      let body = "";
+      if (!response.body) throw new Error("The release response is empty.");
+      const decoder = new TextDecoder();
+      const reader = response.body.getReader();
+      try { for (;;) { const { done, value } = await reader.read(); if (done) break; body += decoder.decode(value, { stream: true }); if (body.length > 256 * 1024) throw new Error("The release response is too large."); } }
+      finally { await reader.cancel(); }
+      const release = JSON.parse(body);
+      if (release.tag_name !== `v${req.version}` || !Array.isArray(release.assets)) throw new Error("The release response is unsupported.");
+      const assets = release.assets.filter((asset: { name?: unknown; browser_download_url?: unknown }) => typeof asset.name === "string" && typeof asset.browser_download_url === "string").map((asset: { name: string; browser_download_url: string }) => ({ name: asset.name, url: asset.browser_download_url }));
+      emit({ v: 1, event: "result", ok: true, result: { assets } }); return;
+    }
     const { paths, home } = opts.resolveTarget();
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     if (req.op === "install" || req.op === "setup") process.env.PATH = await desktopApplicationPath();
@@ -142,6 +169,9 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       emit({ v: 1, event: "result", ok: false, error: { code: "VERSION_MISMATCH", message: "The running daemon and this app have different versions. Update them together before making changes." } });
       return;
     }
+    if (req.op === "update-settings" || req.op === "update-check") {
+      emit({ v: 1, event: "result", ok: true, result: await updateViaDaemon(client, req) }); return;
+    }
     if (req.op === "login") {
       const result = await loginViaDaemon({ ...client, idp: req.idp, onPrompt: (prompt) => emit({ v: 1, event: "login-prompt", prompt }) });
       emit({ v: 1, event: "result", ...result });
@@ -167,7 +197,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
 /** Shared by the app adapter and the ordinary daemon CLI commands. */
 export async function exchangeDesktopRequest(
   opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">,
-  request: Exclude<Extract<DesktopRequest, { readonly op: "name" } | { readonly op: "spaces" } | { readonly space: string }>, { readonly op: "setup" }>,
+  request: Exclude<Extract<DesktopRequest, { readonly op: "name" } | { readonly op: "update-settings" } | { readonly op: "update-check" } | { readonly op: "spaces" } | { readonly space: string }>, { readonly op: "setup" }>,
 ): Promise<DaemonResponse> {
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {

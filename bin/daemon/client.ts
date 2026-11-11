@@ -18,6 +18,20 @@ import { encode, type ConnectCheckResult, type DaemonRequest, type DaemonRespons
 import { processBirth, readLifetimeRecord } from "./lifetime.js";
 import { CommandFailure } from "@cotal-ai/workspace";
 
+/** Read or change shared update preferences, or run the existing cached check without installing. */
+export async function updateViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">, request: { op: "update-settings"; auto?: boolean; notify?: boolean } | { op: "update-check" }): Promise<DaemonStatus> {
+  const sock = await openVerified(opts);
+  try {
+    const id = randomUUID().replaceAll("-", "");
+    sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request }));
+    const reply = JSON.parse(await readLine(sock, 15_000)) as DaemonResponse;
+    if (reply.id !== id || "event" in reply) throw new Error("Invalid update control response.");
+    if (!reply.ok) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", reply.error.message, { native: { code: reply.error.code } });
+    if (!("state" in reply.result) || !("version" in reply.result)) throw new Error("Invalid update status response.");
+    return reply.result as DaemonStatus;
+  } finally { sock.destroy(); }
+}
+
 /** Ask the daemon whether it could register with `space`. Nothing is registered either way. */
 export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> & { readonly space: string }): Promise<
   { readonly ok: true; readonly result: ConnectCheckResult } | { readonly ok: false; readonly code: string; readonly message: string }> {
