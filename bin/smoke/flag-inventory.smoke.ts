@@ -112,6 +112,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       // grants need at or above the caller floor. The auth-service daemon does not take it: the
       // broker configuration renders it and the auth host observes it.
       "max-payload:string",
+      // `--account-resolver` (2026-11): memory or nats-server's full account resolver, fixed at broker
+      // start and recorded in the broker policy. The broker configuration renders it.
+      "account-resolver:string",
       // `--log-file`, `--logfile-size-limit`, `--logfile-max-num` (2026-10): nats-server native log
       // file rotation, recorded with the controller stack.
       "log-file:string", "logfile-size-limit:string", "logfile-max-num:string",

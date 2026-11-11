@@ -943,6 +943,7 @@
     "smoke:down-delivery-retention": "node --experimental-test-module-mocks --import tsx implementations/cli/smoke/down-delivery-retention.smoke.ts",
     "smoke:multi-space": "tsx implementations/cli/smoke/multi-space.smoke.ts",
     "smoke:up-max-payload:live": "tsx implementations/cli/smoke/up-max-payload-live.smoke.ts",
+    "smoke:up-account-resolver:live": "tsx implementations/cli/smoke/up-account-resolver-live.smoke.ts",
     "smoke:up-multi-space-render:live": "tsx implementations/cli/smoke/up-multi-space-render-live.smoke.ts",
     "smoke:up-crash-repair-lease:live": "tsx implementations/cli/smoke/up-crash-repair-lease-live.smoke.ts",
     "smoke:auth-oracle-order:live": "tsx implementations/cli/smoke/auth-oracle-order-live.smoke.ts",
