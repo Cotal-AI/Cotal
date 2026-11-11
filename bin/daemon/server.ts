@@ -279,7 +279,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         counters.statusAnswered++;
         managerResult(async () => {
           await Promise.all(managers.all().map((manager) => managers.refresh(manager.space)));
-          const result = status();
+          const result = { ...status(), agents: await managers.agents() };
           if (!result.update) return result;
           // A hosted Manager that is starting or stopping cannot give restart evidence. Status still
           // answers, and an updater that needs the evidence refuses without it.

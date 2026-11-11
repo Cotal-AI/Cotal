@@ -13,7 +13,8 @@ import { askManager } from "@cotal-ai/workspace/control";
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
-import type { HostedManager } from "./protocol.js";
+import type { HostedManager, HostedAgents } from "./protocol.js";
+import { readHostedAgents } from "./agents.js";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
@@ -481,6 +482,25 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   };
   return {
     start, status, refresh,
+    async agents(): Promise<HostedAgents[]> {
+      const observations = await Promise.all([...live.values()].filter(l => l.view.state !== "stopped").map(async l => {
+        const child = l.child;
+        const space = l.view.space;
+        try {
+          if (!child) throw new Error("Manager unavailable");
+          const agents = await readHostedAgents(child);
+          if (l.child !== child || l.stopping) throw new Error("Manager changed");
+          return { space, observedAt: new Date().toISOString(), state: "read" as const, agents };
+        } catch {
+          return { space, observedAt: new Date().toISOString(), state: "unreadable" as const, message: "Could not read agents for this space." };
+        }
+      }));
+      let bytes = 0;
+      return observations.map(row => {
+        bytes += Buffer.byteLength(JSON.stringify(row));
+        return bytes <= 24 * 1024 ? row : { space: row.space, observedAt: row.observedAt, state: "unreadable" as const, message: "Could not read agents within the local response limit." };
+      });
+    },
     async preparedGenerationEvidence(): Promise<{ prepared: boolean; managers: { space: string; seats: number; fenced: boolean }[] }> {
       // Only a prepared restart has evidence to give. An ordinary status asks no Manager anything.
       if (!generationPrepared) return { prepared: false, managers: [] };
