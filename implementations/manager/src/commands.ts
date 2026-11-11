@@ -516,7 +516,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         // the host knows nothing about.
         ...(provider.enrollRemoteManagedAgent
           ? {
-              enrollManagedAgent: async ({ target, spawn }) => {
+              enrollManagedAgent: async ({ target, spawn, requestId }) => {
                 const request = remoteManagedAgentEnrollmentRequest(
                   state,
                   "cli",
@@ -524,6 +524,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
                   registered.processEpoch,
                   target,
                   spawn,
+                  requestId,
                 );
                 const result = await provider.enrollRemoteManagedAgent!({ ...providerCall, request });
                 return remoteManagedAgentEnrollmentMaterial(result, request);

@@ -168,6 +168,16 @@ Participant supervision asks the host to enroll detached agents and prepare term
 The stock auth service supports these operations when it has a public exchange listener.
 The host chooses a lifecycle UID under the participant's owner, limits it to the participant's grant, and provisions its durable state.
 A second enrollment of the same name is refused while its grant remains, until retirement is prepared.
+If enrollment or its bearer preflight fails with an unknown outcome, the participant keeps the
+unlaunched enrollment's token and request identity in its secret store. Retry the same persona
+with the same caller and channel permissions to replay that enrollment, including after a manager
+restart. Each retry carries its freshly served spawn authorization, so it can enroll even when
+the earlier request never reached the host and its observation has expired. A changed caller,
+run or persona authority is refused while the earlier attempt is held.
+The refusal names the hold and the retry remedy. Once the original launch succeeds, stop that
+agent before changing its authority. If the original authority can no longer be restored, ask the
+host operator to reconcile the held enrollment. Do not delete the participant's pending
+enrollment record while its outcome is unknown.
 A hosted platform with its own storage must handle both operations on its own route.
 Do not copy host secrets or actor-ledger files to participants.
 
