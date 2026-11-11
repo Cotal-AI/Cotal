@@ -29,6 +29,7 @@ try {
   assert.equal(bounded.truncated, true);
   assert.equal(await realpath(join(root, "linked")), await realpath(join(root, "visible")));
   console.log(`PASS native list-dir platform=${process.platform} link=${linkType} home=true roots=${JSON.stringify(home.roots)} hidden=true bounded=true`);
+  console.log("COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0");
 } finally {
   await rm(root, { recursive: true, force: true });
 }

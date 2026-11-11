@@ -1,0 +1,47 @@
+name: Native cell
+
+# Runs one smoke file on Linux, macOS and Windows at the dispatched ref. For a change whose
+# behaviour differs by platform and whose proof is a single suite.
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Repository path of one smoke file, for example implementations/manager/smoke/list-dir-native.smoke.ts"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  cell:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    env:
+      DO_NOT_TRACK: "1"
+      COTAL_TELEMETRY: "off"
+      SUITE: ${{ inputs.suite }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Refuse anything that is not one tracked smoke file
+        shell: bash
+        run: |
+          [[ "$SUITE" =~ ^[A-Za-z0-9_./-]+\.smoke\.ts$ && "$SUITE" != *..* ]] || { echo "::error::suite must be a repository path ending in .smoke.ts"; exit 1; }
+          git ls-files --error-unmatch -- "$SUITE"
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "cotal-ai..." build
+      - name: Run the suite
+        shell: bash
+        run: pnpm exec tsx "$SUITE"

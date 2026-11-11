@@ -304,6 +304,7 @@
     "smoke:turn-notice": "tsx extensions/connector-core/smoke/turn-notice.smoke.ts",
     "smoke:idle-seat-connects": "tsx extensions/connector-core/smoke/idle-seat-connects.smoke.ts",
     "smoke:manager-caller-transport": "tsx implementations/runtime/smoke/manager-caller-transport.smoke.ts",
+    "smoke:list-dir-native": "tsx implementations/manager/smoke/list-dir-native.smoke.ts",
     "smoke:manager-launch-reads": "tsx implementations/manager/smoke/launch-reads.smoke.ts",
     "smoke:manager-chat-session": "tsx implementations/manager/smoke/chat-session.smoke.ts",
     "smoke:static-chat-pure": "tsx packages/workspace/smoke/static-chat-pure.smoke.ts",
