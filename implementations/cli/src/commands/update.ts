@@ -916,7 +916,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   if (child.stdout) rt.stdout(child.stdout);
   if (child.status !== 0) {
     rt.err(c.red(`✗ cotal-ai@${targetVersion} installed globally, but its reconcile failed: ${failure(child)}`));
-    return await repairReplacement(`reconcile failed: ${failure(child)}`);
+    return await repairReplacement(`reconcile failed: ${failure(child)}`, child.status ?? 1);
   }
   snapshot.discard();
   clearUpdateRecovery();
@@ -934,7 +934,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     return result.status === 0;
   }
 
-  async function repairReplacement(reason: string): Promise<number> {
+  async function repairReplacement(reason: string, failureStatus = 1): Promise<number> {
     rt.err(c.yellow("Retrying reconciliation of the installed generation before rollback."));
     try {
       if (await reconcileVersion(targetVersion)) {
@@ -963,14 +963,14 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       clearUpdateRecovery();
       recordUpdateCompletion(targetVersion, `update failed; restored and reconciled ${current}`, false);
       rt.err(`Update failed; cotal-ai@${current} was restored and reconciled. Run cotal update --self to try again.`);
-      return 1;
+      return interrupted || failureStatus;
     } catch (error) {
       let installedVersion = "unknown";
       try { installedVersion = JSON.parse(readFileSync(join(root, "cotal-ai", "package.json"), "utf8")).version ?? "unknown"; } catch { /* Report an unknown install instead of claiming the previous tree survived. */ }
       const detail = `${reason}; repair failed: ${message(error)}`;
       writeUpdateRecovery({ ...readUpdateRecovery(), previous: current, target: targetVersion, installed: installedVersion, phase: "paused", reason: detail });
       rt.err(c.red(`✗ Update stopped: installed cotal-ai ${installedVersion}; ${detail}. Automatic updates are paused. Run cotal update --self to repair this installation.`));
-      return 1;
+      return interrupted || failureStatus;
     }
   }
   } finally {
