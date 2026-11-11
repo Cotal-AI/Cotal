@@ -1,5 +1,14 @@
 # @cotal-ai/auth
 
+## 0.157.9
+
+### Patch Changes
+
+- e3438f8: Auth service restarts no longer wait for the full history of connection receipts before opening HTTP listeners. Native receipt cleanup continues in bounded background batches, keeps service evidence, fences on corrupt evidence and stops between store operations when the service closes.
+- @cotal-ai/core@0.157.9
+  - @cotal-ai/lang@0.157.9
+  - @cotal-ai/workspace@0.157.9
+
 ## 0.157.8
 
 ### Patch Changes
