@@ -107,7 +107,7 @@ try {
   const pkgDir = extractTarball(tarball, join(extractTmp, "out"));
   check("extractTarball produces a package directory", existsSync(pkgDir));
   const binInfo = verifyBinEntry(pkgDir);
-  check("verifyBinEntry finds the cotal bin entry", binInfo.binName === "cotal", binInfo);
+  check("verifyBinEntry finds the npm-owned launcher", binInfo.binName === "cotal-ai" && binInfo.binRel === "./launcher.cjs", binInfo);
   check("the bin entry file exists in the extracted tarball", binInfo.exists, binInfo);
 } finally {
   rmSync(extractTmp, { recursive: true, force: true });
