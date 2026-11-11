@@ -617,6 +617,8 @@ If removal is unsupported or refused, `cotal daemon status` names the registrati
 and its `cotal endpoint deregister manager <instance-id> --space <space> --yes` recovery command.
 An unconfirmed removal stays visible across restarts and is not automatically repeated. Inspect
 that registration before another request. Cleanup never starts a Manager for the removed space.
+An explicit `service-disconnect` closes the machine service and forgets its connection intent
+even when Manager registration cleanup refuses. The cleanup refusal remains visible in status.
 
 Daemon commands use the machine home, not the invoking project's `.cotal` records. They run from
 a removed working directory or a folder with a `.cotal` file, and malformed preferences do not

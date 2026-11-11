@@ -62,6 +62,8 @@
  * and --account-hosted (without service endpoints).
  * Account startup intent: --hosting-only --account-only --account-restart-repro, optionally
  * --account-hosted. Uses power cuts, a held initial account reply, and offline/legacy controls.
+ * Direct per-space withdrawal: --hosting-only --account-only --account-unsupported
+ * --direct-disconnect-repro. Checks cleanup refusals cannot retain the machine connection.
  * Account pin regression only: add --account-mismatch-only (C1, C2, C7b and C10).
  * Offline status regression only: add --status-only (C0, C1, C2, C3, C5, C6, C10 and C15).
  * Add --setup-hints-only to run approval and setup follow-up checks with a leading-hyphen space.
@@ -1876,6 +1878,47 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           grantActor(ctx[2]!.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(ctx[2]!.store, DENY))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] });
           removeMesh(DENY);
           if (!process.argv.includes("--account-restart-repro")) (catalog as { spaces: unknown[] }).spaces.unshift({ id: DENY, slug: DENY, name: "Pending space", kind: "team", role: "member", registration: { ...pendingPublished, space: DENY, tlsRequired: false, userAuth: { ...pendingPublished.userAuth, endpoints: { url: `${idpOrigin}/account-space/${DENY}` } } } });
+          if (process.argv.includes("--direct-disconnect-repro")) {
+            assert.ok(process.argv.includes("--account-unsupported"), "direct withdrawal requires the explicit per-space host fixture");
+            assert.equal((await cli("spaces", "--refresh")).code, 0);
+            const started = await ask(paths.socket, { op: "manager-start", space: ON }, 100_000);
+            assert.ok(started.ok && resultOf(started).state === "answering", "positive control: the real Manager answers");
+            await approve(host, ON, fixture.owner);
+            for (const mode of [undefined, "unsupported", "unknown"] as const) {
+              if (mode !== undefined) {
+                const resumed = await ask(paths.socket, { op: "manager-start", space: ON }, 100_000);
+                assert.ok(resumed.ok && resultOf(resumed).state === "answering", "the recorded Manager can host again");
+              }
+              const connected = await cli("service-connect", "--space", ON);
+              assert.equal(connected.code, 0, JSON.stringify(connected));
+              assert.equal(connected.doc.result?.state, "connected");
+              assert.ok(existsSync(intentFile(ON)), "positive control: accepted service records its connection intent");
+              const instanceId = connected.doc.result.manager.instanceId as string;
+              deregisterMode = mode;
+              const disconnected = await cli("service-disconnect", "--space", ON);
+              const status = resultOf(await ask(paths.socket, { op: "service-status", space: ON }));
+              console.log("  direct withdrawal", JSON.stringify({ mode: mode ?? "supported", exit: disconnected.code, error: disconnected.doc.error?.code, state: status.state, intentRetained: existsSync(intentFile(ON)), manager: status.manager?.state }));
+              assert.equal(status.state, "disconnected", `${mode ?? "supported"} Manager cleanup must not prevent machine-service withdrawal`);
+              assert.equal(existsSync(intentFile(ON)), false, "explicit withdrawal must forget the durable service intent");
+              assert.equal(disconnected.code, mode === undefined ? 0 : 2);
+              if (mode !== undefined) {
+                assert.equal(status.manager?.state, "refused");
+                assert.ok(status.manager.next.includes(`endpoint deregister manager ${instanceId}`), "cleanup refusal remains actionable");
+                const human = await plainCommand("status");
+                assert.ok(human.out.includes(`endpoint deregister manager ${instanceId}`));
+                const calls = deregisterRequests;
+                await killAndAwaitExit(child, "SIGTERM");
+                child = await startDaemon();
+                const afterRestart = resultOf(await ask(paths.socket, { op: "service-status", space: ON }));
+                assert.equal(afterRestart.state, "disconnected", "withdrawal must survive daemon restart");
+                assert.equal(existsSync(intentFile(ON)), false);
+                assert.equal(deregisterRequests, calls, "restart must not repeat an unconfirmed cleanup");
+              }
+              check(`I8 ${mode ?? "supported"} cleanup withdraws the service and its intent`, true);
+            }
+            deregisterMode = undefined;
+            return;
+          }
           if (process.argv.includes("--account-unsupported")) {
             const setup = await cli("setup", "--space", ON, "--idp", idpUrl);
             const status = resultOf(await ask(paths.socket, { op: "status" }, 25_000));

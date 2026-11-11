@@ -7,3 +7,5 @@ Remove abandoned Manager registrations when a computer returns after its space w
 The daemon uses the governing authority's ownership and broker-liveness guard after stopping
 its child. Unsupported, refused or unconfirmed cleanup remains visible in daemon status with
 the recorded instance and a recovery command, without hosting the removed space again.
+Explicit disconnection still closes the machine service and forgets its connection intent when
+Manager registration cleanup cannot complete.
