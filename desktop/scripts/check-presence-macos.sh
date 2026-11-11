@@ -75,6 +75,8 @@ cat > "$out/hidden.swift" <<'SWIFT'
 import AppKit
 let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "ai.cotal.desktop")
 guard apps.count == 1 else { fatalError("Close terminated the app rather than hiding it") }
+print("activation policy after close:", apps[0].activationPolicy.rawValue)
+guard apps[0].activationPolicy == .accessory else { fatalError("Closed Cotal window left a Dock application instead of a menu-bar-only accessory") }
 let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]
 guard !windows.contains(where: { ($0[kCGWindowOwnerPID as String] as? Int32) == apps[0].processIdentifier && ($0[kCGWindowLayer as String] as? Int) == 0 }) else { fatalError("Close did not hide the Cotal window") }
 print("close kept app running with no visible top-level window")
