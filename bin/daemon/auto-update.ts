@@ -48,15 +48,16 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     return { channel: desktop ? "desktop" : "npm", current: host.version, latest: cached?.latest, lastCheck: cached?.checkedAt ? new Date(cached.checkedAt).toISOString() : undefined, automatic, failures: state.failures, lastResult: reason, ...(state.next < Number.MAX_SAFE_INTEGER ? { nextAttempt: new Date(state.next).toISOString() } : {}) };
   };
   const tick = async (): Promise<void> => {
+    if (closed) return;
+    const settings = readUpdateSettings();
+    const cached = process.env.COTAL_NO_UPDATE_CHECK !== "1" && (settings.auto || settings.notify) ? await checkForUpdate() : readUpdateCheck();
     if (closed || Date.now() < state.next) return;
     if (desktop) {
-      if (process.env.COTAL_NO_UPDATE_CHECK !== "1") await checkForUpdate();
       state = { ...state, next: Date.now() + UPDATE_DAY_MS + Math.random() * UPDATE_HOUR_MS };
       persist();
       return;
     }
     if (!status().automatic) return;
-    const cached = await checkForUpdate();
     if (closed) return;
     if (!cached?.latest || cached.error) { state = { ...state, result: cached?.error ?? "registry check unavailable", next: Date.now() + UPDATE_HOUR_MS }; persist(); return; }
     if (state.version !== cached.latest) state = { version: cached.latest, failures: 0, result: "new release observed", next: 0 };

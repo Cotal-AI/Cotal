@@ -2819,6 +2819,15 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             const launched = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "start", { name: "npm_upgrade_custody", agent: "daemon-smoke", events: false, persona: { prompt: "Owned direct upgrade custody smoke.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, activeTarget.auth, "owner", 40_000, { instanceId: manager.instanceId });
             check("U1 direct upgrade starts with a real legacy seat", launched.ok, launched.error);
           }
+          if (process.argv.includes("--notify-check-repro")) {
+            writeFileSync(join(home, "update-settings.json"), JSON.stringify({ v: 1, auto: false, notify: true }));
+            writeFileSync(join(home, "update-check.json"), JSON.stringify({ v: 1, attemptedAt: 0 }));
+            writeFileSync(join(home, "update-attempt.json"), JSON.stringify({ failures: 0, result: "notify-only due", next: 0 }));
+            await sleep(35_000);
+            const checked = await cli("status");
+            check("NC notify-only daemon refreshes configured registry latest", checked.doc.result?.update?.latest === "0.151.3" && !!checked.doc.result.update.lastCheck && checked.doc.result.update.automatic === false && checked.doc.result.update.failures === 0, checked);
+            return;
+          }
           if (process.argv.includes("--desktop-update-repro")) {
             writeFileSync(join(home, "update-settings.json"), JSON.stringify({ v: 1, auto: true, notify: true }));
             writeFileSync(join(home, "update-attempt.json"), JSON.stringify({ version: "0.151.3", failures: 0, result: "fixture due", next: 0 }));
