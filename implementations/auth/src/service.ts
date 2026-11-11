@@ -495,7 +495,8 @@ export interface OpenAuthAuthorityPlaneOptions extends AuthServiceRuntimeOptions
   /** Bounded trusted-host-only TTL of the held issuer session's credential, 5..300 seconds (default
    *  the `issuer` profile's five minutes). */
   issuerSessionTtlSeconds?: number;
-  /** How often expired native-issuance evidence is removed after the boot pass (default 60 s). */
+  /** Delay between completed native-issuance cleanup walks (default 60 s). Startup reads at most
+   *  one historical row, then continues in bounded background batches. */
   nativeIssuancePruneMs?: number;
   /** How often one bounded chat-session sweep pass runs (default 60 s). */
   chatSweepMs?: number;
@@ -782,11 +783,10 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     });
   }
   const recordToolResultConsent = makeToolResultConsentRecorder(registryStores(registry).authKv, () => refuseIfFenced(), space);
-  // Expired evidence goes at boot and then on the plane's own timer. Corrupt evidence means the
-  // store is inconsistent: it refuses the open, and mid-life it fences the plane like a scanner
-  // death, never a silently unbounded recorder. Any other failure leaves the store as it was, such
-  // as a read timing out while the writer's connection rebinds under load, so the pass is retried
-  // on a jittered, capped backoff with one log line for the run of failures, and the plane serves on.
+  // Check at most one row before opening. Continue historical cleanup in bounded batches so
+  // retained service receipts cannot delay HTTP readiness or make close drain the whole history.
+  // Corrupt evidence refuses this open if seen here, or fences the plane when a continuation
+  // reaches it. Transient store failures keep the cursor and retry with capped jittered backoff.
   const pruneMs = opts.nativeIssuancePruneMs ?? 60_000;
   if (!Number.isSafeInteger(pruneMs) || pruneMs < 100 || pruneMs > 3_600_000)
     throw new Error(`nativeIssuancePruneMs must be an integer between 100 and 3600000 (got ${pruneMs})`);
@@ -796,9 +796,18 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       log(`auth-plane: native-issuance cleanup failed (${e instanceof Error ? e.message : String(e)}) - retrying with backoff; expired evidence stays until a pass succeeds`);
     return jitteredBackoffMs(pruneFailures++, Math.min(pruneMs, 1_000), 60_000);
   };
-  let firstPruneMs = pruneMs;
+  const pruneAbort = new AbortController();
+  let pruneSeq = 1;
+  const pruneBatch = async (maxRows: number): Promise<number> => {
+    const result = await pruneNativeIssuance(registry, Math.floor(Date.now() / 1000), {
+      seq: pruneSeq, maxRows, signal: pruneAbort.signal,
+    });
+    pruneSeq = result.nextSeq ?? 1;
+    return result.nextSeq === undefined ? pruneMs : 0;
+  };
+  let firstPruneMs: number;
   try {
-    await pruneNativeIssuance(registry, Math.floor(Date.now() / 1000));
+    firstPruneMs = await pruneBatch(1);
   } catch (e) {
     if (e instanceof CorruptNativeIssuanceEvidence) throw e;
     firstPruneMs = pruneRetryMs(e);
@@ -808,9 +817,9 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   const schedulePrune = (delayMs: number): void => {
     if (closing || fatalReason !== undefined) return;
     pruneTimer = setTimeout(() => {
-      pruneFlight = pruneNativeIssuance(registry, Math.floor(Date.now() / 1000)).then(() => {
+      pruneFlight = pruneBatch(64).then((nextMs) => {
         pruneFailures = 0;
-        schedulePrune(pruneMs);
+        schedulePrune(nextMs);
       }, (e: unknown) => {
         if (!(e instanceof CorruptNativeIssuanceEvidence)) {
           if (!closing) schedulePrune(pruneRetryMs(e));
@@ -827,7 +836,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       });
     }, delayMs);
   };
-  const stopPrune = async (): Promise<void> => { clearTimeout(pruneTimer); await pruneFlight; };
+  const stopPrune = async (): Promise<void> => {
+    clearTimeout(pruneTimer);
+    pruneAbort.abort();
+    await pruneFlight;
+  };
   unwind.push(async () => { closing = true; await stopPrune(); });
   schedulePrune(firstPruneMs);
   // The service endpoint host, default off. Its discovery client only reads, on the ordinary
