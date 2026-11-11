@@ -1701,9 +1701,9 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           writeFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/desktop-runtime.json"), "{}\n");
           writeFileSync(join(home, "update-attempt.log"), "desktop fixture retained log\n");
         }
-        if (process.argv.includes("--auto-admission-race-repro")) {
+        if (process.argv.includes("--auto-admission-race-repro") || process.argv.includes("--rollback-busy-repro")) {
           const gate = join(root, "updater-gate.cjs");
-          writeFileSync(gate, `const fs = require('node:fs'); const net = require('node:net'); const original = net.Socket.prototype.write; if (process.argv.includes('update') && process.argv.includes('--self')) net.Socket.prototype.write = function(chunk, ...args) { if (String(chunk).includes('managers-prepare-restart')) { fs.writeFileSync(${JSON.stringify(join(root, "updater-entered"))}, 'ready'); const end = Date.now() + 60000; while (!fs.existsSync(${JSON.stringify(join(root, "updater-release"))})) { if (Date.now() > end) throw new Error('fixture updater gate timed out'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } } return original.call(this, chunk, ...args); };`);
+          writeFileSync(gate, `const fs = require('node:fs'); const net = require('node:net'); const original = net.Socket.prototype.write; if (process.argv.includes('update') && process.argv.includes('--self')) net.Socket.prototype.write = function(chunk, ...args) { if (String(chunk).includes('managers-prepare-restart') && (${!process.argv.includes("--rollback-busy-repro")} || (fs.existsSync(${JSON.stringify(join(home, "update-recovery.json"))}) && JSON.parse(fs.readFileSync(${JSON.stringify(join(home, "update-recovery.json"))}, 'utf8'))?.phase === 'restoring'))) { fs.writeFileSync(${JSON.stringify(join(root, "updater-entered"))}, 'ready'); const end = Date.now() + 60000; while (!fs.existsSync(${JSON.stringify(join(root, "updater-release"))})) { if (Date.now() > end) throw new Error('fixture updater gate timed out'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } } return original.call(this, chunk, ...args); };`);
           Object.assign(env, { NODE_OPTIONS: `--require=${gate}` });
         }
         seedUnitReceipt(cliEntry, true);
@@ -1778,8 +1778,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
         const servicePath = process.argv.includes("--setup-path-repro") || process.argv.includes("--account-setup-journey") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
         const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading && (!process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro")) ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] });
-        child.stdout.resume(); child.stderr.on("data", (chunk) => { if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) console.log("  owned daemon", String(chunk).trim()); });
-        for (let i = 0; i < 100; i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
+        child.stdout.on("data", chunk => { if (process.argv.includes("--rollback-busy-repro")) console.log("RB DAEMON STDOUT", String(chunk)); }); child.stderr.on("data", (chunk) => { if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) console.log("  owned daemon", String(chunk).trim()); });
+        for (let i = 0; i < (process.argv.includes("--rollback-busy-repro") ? 1200 : 100); i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
         await killAndAwaitExit(child, "SIGTERM");
         throw new Error("shipped daemon did not answer");
       };
@@ -2921,6 +2921,23 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                   await sleep(20);
                 }
                 check("AR bound child refuses changed real custody", true);
+              }
+              if (process.argv.includes("--rollback-busy-repro")) {
+                const until = Date.now() + 60_000;
+                while (!existsSync(join(root, "updater-entered"))) { if (Date.now() > until) throw new Error("rollback never reached prepare gate"); await sleep(20); }
+                recordingRestart = false;
+                await killAndAwaitExit(child, "SIGTERM");
+                check("RB owned daemon stopped after old closure restoration", !existsSync(paths.socket));
+                writeFileSync(join(root, "updater-release"), "ready");
+                let paused: any;
+                for (let i = 0; i < 30; i++) { paused = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")); if (paused?.phase === "paused") break; await sleep(1000); }
+                console.log("RB PAUSED", JSON.stringify(paused));
+                check("RB unreachable daemon leaves restored closure paused", paused?.phase === "paused" && /daemon|connect|ENOENT|socket/i.test(paused.reason) && JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8")).version === "0.151.2", paused);
+                child = await startDaemon();
+                let recovered: any;
+                for (let i = 0; i < 60; i++) { recovered = await cli("status"); if (recovered.doc.result?.managers?.[0]?.state === "answering") break; await sleep(1000); }
+                check("RB next daemon start completes recovery and clears snapshot", recovered?.doc.result?.managers?.[0]?.state === "answering" && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null && !existsSync(paused.snapshot), recovered);
+                return;
               }
               console.log("AR RECOVERY", readFileSync(join(home, "update-recovery.json"), "utf8"), "INSTALLED", readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8"), "UPDATER", readFileSync(join(home, "update-attempt.log"), "utf8"));
               let restored;

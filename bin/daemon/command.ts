@@ -418,7 +418,10 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
 
 async function serve(args: ParsedArgs): Promise<void> {
   const { recoverInterruptedUpdate } = await import("@cotal-ai/cli/update");
-  if (await recoverInterruptedUpdate()) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
+  if (await recoverInterruptedUpdate()) {
+    if (!process.execve || process.platform === "win32") throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
+    process.execve(process.execPath, [process.execPath, ...process.argv.slice(1)], process.env);
+  }
   const { paths, home } = resolveTarget(args);
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;

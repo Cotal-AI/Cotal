@@ -8,6 +8,7 @@ import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
 import { installedDaemonIdentity, restartInstalled, unitReceiptFile } from "./install.js";
+import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { waitForInstalledDaemonGeneration } from "./update-generation.js";
 
 const command = registry.resolve<Command>("command", "update");
@@ -16,10 +17,12 @@ const composed: Command = { ...command, async run(args) {
   let hostedSpaces: string[] = [];
   let daemonObserved = false;
   let preparedRestart = false;
+  let absentRecoveryHost = false;
   await update(args, { ...updateRuntime, preparedRestart: () => preparedRestart, async prepareReplacement() {
     if (process.env.COTAL_AUTO_UPDATE !== "1" || !daemonObserved) return async () => {};
     const paths = daemonPaths();
-    await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
+    try { await managerViaDaemon({ paths }, { op: "managers-prepare-restart" }); }
+    catch (error) { throw new Error(`daemon unavailable or refused update preparation: ${error instanceof Error ? error.message : String(error)}`); }
     preparedRestart = true;
     return async () => {
       try {
@@ -29,12 +32,28 @@ const composed: Command = { ...command, async run(args) {
         if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(error.code)) throw error;
       }
     };
-  }, waitForInstalledGeneration: waitForInstalledDaemonGeneration, reportRunningManager: (flags) => withRemoteExchangeRetry(async () => {
+  }, waitForInstalledGeneration: async version => {
+    if (absentRecoveryHost) return;
+    await waitForInstalledDaemonGeneration(version);
+  }, reportRunningManager: (flags) => withRemoteExchangeRetry(async () => {
     const recovery = readUpdateRecovery();
     if (recovery?.preparedRestart && process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version() && recovery?.owner?.pid === process.ppid && recovery.owner.nonce === process.env.COTAL_UPDATE_CLOSURE_NONCE && recovery.owner.start === process.env.COTAL_UPDATE_CLOSURE_START) {
       const release = claimUpdateClosureAccess();
       release();
-      const observed = await queryDaemon({ paths: daemonPaths() });
+      const paths = daemonPaths();
+      const lifetime = readLifetimeRecord(paths.lock);
+      let absent = !existsSync(paths.lock) || (lifetime?.start !== undefined && processBirth(lifetime.pid) !== lifetime.start);
+      if (!lifetime && !absent) {
+        const exclusion = excludeLifetime(paths.lock);
+        exclusion.release();
+        absent = true;
+      }
+      if (absent) {
+        absentRecoveryHost = recovery.phase === "restoring";
+        console.log("hosted Manager continuity: daemon lifetime proves no live host");
+        return "none";
+      }
+      const observed = await queryDaemon({ paths });
       const evidence = observed.ok ? observed.result.update?.restartEvidence : undefined;
       if (!evidence?.prepared || evidence.managers.some(row => !row.fenced || row.seats !== 0)) throw new Error("prepared update admission is no longer fenced and empty");
       console.log("hosted Manager continuity: daemon verified prepared fences and zero seats");

@@ -549,7 +549,10 @@ object in JSON and desktop status replies. Its fields are `current`, `latest`, `
 standalone installations and `desktop` for the app's bundled runtime. Desktop runtimes keep registry
 checks but report automatic installation off and direct updates to the signed app installer.
 Older daemons may omit the object or channel.
-A failed attempt waits one hour before retry. Two failures of one version stop installation
+Refusals before replacement do not count as failed installations. A busy computer retries after
+60 seconds. Registry or extension-closure unavailability retries after one hour.
+An attempt that begins replacement and does not reach the target version counts as a failure
+and waits one hour before retry. Two such failures of one version stop installation
 attempts for that version until a newer release appears or a person repairs it manually.
 If the updater cannot reconcile or restore a complete generation, automatic updates pause
 and status names the installed version and `cotal update --self` as the repair command.
