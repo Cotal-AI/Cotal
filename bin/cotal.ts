@@ -87,14 +87,34 @@ process.emitWarning = ((warning: unknown, ...rest: unknown[]) => {
 // A spawned seat execs `cotal agent-bearer` for every bearer, so it runs from its own module before
 // the rest of the CLI loads: loading the whole command surface was most of each bearer's cost. A
 // command line that does not parse goes on to the full CLI, which refuses it with the command's help.
-const bearerDone = process.argv[2] === "agent-bearer" && await (await import("@cotal-ai/auth/agent-bearer")).runAgentBearerEntry(process.argv.slice(3));
-if (process.argv[2] === "__update-check") {
-  await (await import("./update-notice.js")).updateCheckWorker();
-} else if (!bearerDone) {
-  // The notice holds until the command begins, or until the command's own notice takes it over. An
-  // internal entry, such as a stack member or shell completion, keeps Node's default signal exit.
-  // Every word before the command word is a flag.
-  const commandWord = process.argv.slice(2).find((word) => !word.startsWith("-"));
-  if (!commandWord?.startsWith("__")) (await import("./startup-interrupt.js")).holdStartupInterrupt();
-  await import("./run.js");
+// Only loading can be retried. Once an entry runs, even a missing module is a command failure:
+// replaying it could duplicate an effect. A separate process gives every load a fresh ESM cache.
+let run: () => Promise<unknown>;
+let releaseNotice: (() => void) | undefined;
+try {
+  if (process.argv[2] === "agent-bearer") {
+    const { runAgentBearerEntry } = await import("@cotal-ai/auth/agent-bearer");
+    run = async () => {
+      if (!await runAgentBearerEntry(process.argv.slice(3))) await (await import("./run.js")).main();
+    };
+  } else if (process.argv[2] === "__update-check") {
+    run = (await import("./update-notice.js")).updateCheckWorker;
+  } else {
+    // The notice holds until the command begins, or until the command's own notice takes it over.
+    // An internal entry keeps Node's default signal exit. Every word before the command is a flag.
+    const commandWord = process.argv.slice(2).find((word) => !word.startsWith("-"));
+    if (!commandWord?.startsWith("__")) {
+      const notice = await import("./startup-interrupt.js");
+      notice.holdStartupInterrupt();
+      releaseNotice = notice.handOverStartupInterrupt;
+    }
+    run = (await import("./run.js")).main;
+  }
+} catch (error) {
+  releaseNotice?.();
+  throw error;
 }
+// The external npm launcher must never replay a command, including one that exits with its
+// startup retry status or throws a missing-module error after it has already changed state.
+Reflect.set(globalThis, Symbol.for("cotal.command-started"), true);
+await run();

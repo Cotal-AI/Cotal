@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
 import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
@@ -1801,6 +1801,17 @@ if (process.platform !== "win32") {
     unlinkSync(bin);
     symlinkSync(entry, bin);
     refuses(() => installedUpdatePrefix(pkg, other));
+    writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.13.1", bin: { "cotal-ai": "./launcher.cjs" } }));
+    const stable = join(modules, ".cotal-launcher", "launcher.cjs");
+    mkdirSync(dirname(stable), { recursive: true });
+    writeFileSync(stable, "// stable launcher\n");
+    writeFileSync(join(pkg, "launcher.cjs"), "// stable launcher\n");
+    unlinkSync(bin);
+    symlinkSync(stable, bin);
+    check(verifyGlobalEntry(modules, "0.13.1") === realpathSync(entry), "stable launcher verifies the package entry");
+    check(installedUpdatePrefix(pkg, entry) === realpathSync(prefix), "stable launcher binds the invoked prefix");
+    writeFileSync(stable, "// stale launcher\n");
+    refuses(() => installedUpdatePrefix(pkg, entry));
     writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.13.1", bin: { cotal: other } }));
     refuses(() => installedUpdatePrefix(pkg, other));
     for (const rel of ["checkout/bin", "cache/_npx/123/node_modules/cotal-ai", "project/node_modules/cotal-ai"]) {

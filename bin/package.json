@@ -27,7 +27,7 @@
   },
   "type": "module",
   "bin": {
-    "cotal": "./dist/cotal.js"
+    "cotal-ai": "./launcher.cjs"
   },
   "engines": {
     "node": ">=22.10"
@@ -36,6 +36,7 @@
     "test": "tsx smoke/dep-pins.smoke.ts && tsx smoke/capability-census.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
+    "postinstall": "node scripts/install-launcher.cjs",
     "seeded-connectors": "node scripts/copy-seeded-connectors.mjs",
     "prepack": "node scripts/copy-seeded-connectors.mjs",
     "prepublishOnly": "pnpm run build"
@@ -51,6 +52,7 @@
     "@cotal-ai/runtime": "workspace:*",
     "@cotal-ai/seat": "workspace:*",
     "@cotal-ai/workspace": "workspace:*",
+    "cmd-shim": "^8.0.0",
     "jose": "^6.2.3"
   },
   "devDependencies": {
@@ -69,6 +71,8 @@
   },
   "files": [
     "dist",
+    "launcher.cjs",
+    "scripts/install-launcher.cjs",
     "seeded-connectors",
     "README.md",
     "LICENSE"

@@ -77,6 +77,16 @@ For an npm installation, run:
 npm install -g cotal-ai@<target-version>
 ```
 
+The npm install script writes `cotal` as a launcher outside the package npm replaces.
+Once that launcher is installed, commands started during a later npm replacement retry loading
+the CLI for up to 120 seconds. A command that has begun is never retried. If installation remains
+incomplete, the launcher refuses and asks you to finish or repair it.
+The first upgrade from an older package still uses its old entry until installation finishes.
+Use the pinned npm install command for that first upgrade, because older `update --self`
+commands cannot verify the new executable layout.
+Do not disable install scripts: a fresh installation needs them to create `cotal`.
+`npx cotal-ai` uses the package's own entry and is not protected while that same cache entry is replaced.
+
 Open a new terminal or use the installer's absolute launcher path if the shell still selects the previous installation.
 Run `cotal version` and confirm that the selected binary is the target version before continuing.
 

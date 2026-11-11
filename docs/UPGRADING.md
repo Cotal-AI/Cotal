@@ -7,6 +7,20 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Global npm installs require the launcher install script
+
+The unreleased stable-launcher change moves the public `cotal` command outside the package npm
+replaces. npm owns a separate `cotal-ai` executable, which also keeps `npx cotal-ai` working.
+
+Allow install scripts when installing or upgrading the global package. A fresh install with
+scripts disabled does not create `cotal`. Reinstall with scripts enabled to repair it.
+An existing stable launcher survives later package replacements and retries module loading for
+up to two minutes. The first upgrade from an older release still uses its older entry until the
+new install script completes. Plan that first upgrade in a quiet window.
+Use `npm install -g cotal-ai@<target-version>` for that first upgrade. Older `update --self`
+commands cannot verify the new executable layout.
+No wire, credential, or durable-state migration is needed.
+
 ## Run listing requires the 0.149.0 auth-service grant
 
 Managers from 0.149.0 list runs through a batched records read. On a user-auth mesh, upgrade the

@@ -1,0 +1,82 @@
+// Real CLI startup from a disposable npm layout, with package retirement held open long enough
+// to make every probe cross it. No service is installed or started. Scratch evidence is retained.
+import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
+const repo = resolve(import.meta.dirname, "..", "..");
+const root = mkdtempSync(join(tmpdir(), "cotal-npm-launcher-"));
+const modules = join(root, "prefix", "lib", "node_modules");
+const pkg = join(modules, "cotal-ai");
+const bin = join(root, "prefix", "bin", "cotal");
+for (const part of [pkg, "home", "config", "runtime", "state", "work", "stubs"].map(p => p.startsWith(root) ? p : join(root, p))) mkdirSync(part, { recursive: true, mode: 0o700 });
+for (const name of ["systemctl", "launchctl", "schtasks"]) writeFileSync(join(root, "stubs", name), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !key.toLowerCase().startsWith("npm_config_")));
+Object.assign(env, { HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: join(root, "runtime"), COTAL_HOME: join(root, "state"), npm_config_global: "true", PATH: `${join(root, "stubs")}:${env.PATH}`, COTAL_TELEMETRY: "off", NO_COLOR: "1" });
+cpSync(join(repo, "bin", "dist"), join(pkg, "dist"), { recursive: true });
+copyFileSync(join(repo, "bin", "package.json"), join(pkg, "package.json"));
+copyFileSync(join(repo, "bin", "launcher.cjs"), join(pkg, "launcher.cjs"));
+mkdirSync(join(pkg, "scripts"));
+copyFileSync(join(repo, "bin", "scripts", "install-launcher.cjs"), join(pkg, "scripts", "install-launcher.cjs"));
+symlinkSync(join(repo, "bin", "node_modules"), join(pkg, "node_modules"), "dir");
+const install = () => spawnSync(process.execPath, [join(pkg, "scripts", "install-launcher.cjs")], { env, cwd: join(root, "work"), encoding: "utf8" });
+const run = (args = ["version"]) => {
+  const child = spawn(process.execPath, [bin, ...args], { env, cwd: join(root, "work"), stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", data => { stdout += data; }); child.stderr.on("data", data => { stderr += data; });
+  const result = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (status, signal) => resolve({ status, signal, stdout, stderr })); });
+  return { child, result };
+};
+const version = JSON.parse(readFileSync(join(pkg, "package.json"))).version;
+const healthy = r => { assert.equal(r.status, 0, JSON.stringify(r)); assert.equal(r.stderr, ""); assert.equal(r.stdout, `cotal-ai ${version}\n`); };
+assert.equal(install().status, 0);
+healthy(await run().result);
+console.log("PASS healthy installed CLI positive control");
+const retired = join(modules, ".retired-cotal-ai");
+renameSync(pkg, retired);
+const probes = Array.from({ length: 8 }, () => run());
+let finished = 0;
+for (const probe of probes) void probe.result.then(() => { finished++; });
+await new Promise(r => setTimeout(r, 500));
+assert.equal(finished, 0, "commands wait while the package is absent");
+renameSync(retired, pkg);
+for (const probe of probes) healthy(await probe.result);
+console.log("PASS eight commands recover across complete npm package retirement");
+// A transitive module disappears while the entry itself remains readable.
+renameSync(join(pkg, "dist", "run.js"), join(pkg, "dist", "run.saved"));
+const partial = run();
+await new Promise(r => setTimeout(r, 300));
+renameSync(join(pkg, "dist", "run.saved"), join(pkg, "dist", "run.js"));
+healthy(await partial.result);
+console.log("PASS partial graph reloads in a fresh process");
+healthy(await run().result);
+const entry = join(pkg, "dist", "cotal.js");
+const saved = readFileSync(entry);
+const effects = join(root, "effects");
+// This fixture verifies the launcher's boundary, not a real command's business behavior.
+writeFileSync(entry, `import { appendFileSync } from 'node:fs'; globalThis[Symbol.for('cotal.command-started')] = true; appendFileSync(${JSON.stringify(effects)}, 'once\\n'); throw Object.assign(new Error('command missing file'), {code:'ENOENT'});`);
+const failure = await run().result;
+assert.equal(failure.status, 1); assert.match(failure.stderr, /command missing file/);
+assert.equal(readFileSync(effects, "utf8"), "once\n");
+writeFileSync(entry, "globalThis[Symbol.for('cotal.command-started')] = true; process.exit(75);");
+assert.equal((await run().result).status, 75, "a command's exit 75 is not a retry receipt");
+writeFileSync(entry, "throw new SyntaxError('invalid package code');");
+const syntax = await run().result;
+assert.equal(syntax.status, 1); assert.match(syntax.stderr, /invalid package code/);
+writeFileSync(entry, saved);
+console.log("PASS a command failure is never replayed");
+renameSync(pkg, retired);
+const cancelled = run();
+await new Promise(r => setTimeout(r, 300));
+cancelled.child.kill("SIGTERM");
+const signal = await cancelled.result;
+assert.equal(signal.status, 143);
+renameSync(retired, pkg);
+console.log("PASS interrupted startup does not retry");
+// npm must not retire the public launcher, and npx must still have one unambiguous binary.
+const manifest = JSON.parse(readFileSync(join(pkg, "package.json")));
+assert.deepEqual(manifest.bin, { "cotal-ai": "./launcher.cjs" });
+assert.ok(existsSync(bin));
+console.log(`SUITE COMPLETE: npm-launcher passed, evidence ${root}`);

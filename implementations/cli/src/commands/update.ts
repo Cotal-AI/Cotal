@@ -1043,10 +1043,12 @@ export function installedUpdatePrefix(packageRoot: string, entry: string): strin
   if (process.platform === "win32" || basename(modules) !== "node_modules" || basename(dirname(modules)) !== "lib")
     return undefined;
   const prefix = dirname(dirname(modules));
-  const meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string };
+  const meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string; bin?: Record<string, string> };
+  const linkedEntry = meta.bin?.["cotal-ai"] === "./launcher.cjs"
+    ? join(modules, ".cotal-launcher", "launcher.cjs") : entry;
   if (basename(root) !== "cotal-ai" || !meta.version ||
       verifyGlobalEntry(modules, meta.version) !== realpathSync(entry) ||
-      realpathSync(join(prefix, "bin", "cotal")) !== realpathSync(entry))
+      realpathSync(join(prefix, "bin", "cotal")) !== realpathSync(linkedEntry))
     throw new Error("the invoked cotal package and its global bin link do not identify the same install");
   return prefix;
 }
@@ -1060,13 +1062,21 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
   };
   if (meta.name !== "cotal-ai" || meta.version !== expectedVersion)
     throw new Error(`expected cotal-ai@${expectedVersion}, found ${meta.name ?? "unnamed"}@${meta.version ?? "unknown"}`);
-  const declared = typeof meta.bin === "string" ? meta.bin : meta.bin?.cotal;
+  const stable = typeof meta.bin === "object" && meta.bin["cotal-ai"] === "./launcher.cjs";
+  const declared = stable ? "./launcher.cjs" : typeof meta.bin === "string" ? meta.bin : meta.bin?.cotal;
   if (!declared) throw new Error("the installed package declares no cotal executable");
   const entry = realpathSync(resolve(packageDir, declared));
   const rel = relative(packageDir, entry);
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
     throw new Error(`the installed cotal executable escapes its package: ${entry}`);
-  return entry;
+  if (!stable) return entry;
+  const launcher = join(resolve(root), ".cotal-launcher", "launcher.cjs");
+  if (!readFileSync(launcher).equals(readFileSync(entry)))
+    throw new Error("the stable cotal launcher does not match the installed package");
+  const command = realpathSync(join(packageDir, "dist", "cotal.js"));
+  if (relative(packageDir, command).startsWith(`..${sep}`))
+    throw new Error("the installed cotal entry escapes its package");
+  return command;
 }
 
 function runNpm(args: string[], inherit = false): CommandResult {
