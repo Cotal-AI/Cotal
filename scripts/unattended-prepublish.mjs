@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { privatePath, publisherNpmrc } from './unattended-path-guards.mjs';
 import { list as listTar } from 'tar';
 import { isMainEntry } from './main-entry.mjs';
 import { stageSource } from './unattended-source-stage.mjs';
@@ -22,14 +23,15 @@ export function validateConfig(c) {
   privateRegistry(c.registry);
   assert(/^\d+\.\d+\.\d+$/.test(c.candidate), 'candidate must be a stable semver');
   assert(Array.isArray(c.allowHosts) && c.allowHosts.length && Array.isArray(c.machines) && c.machines.length, 'explicit host allowlist and machines required');
-  for (const host of [...c.allowHosts, ...c.machines.map(m => m.host)]) assert(/^[a-zA-Z0-9][a-zA-Z0-9.-]*$/.test(host) && !host.toLowerCase().includes('isaac24'), 'unsafe or forbidden host');
+  for (const host of [...c.allowHosts, ...c.machines.map(m => m.host)]) assert(/^[a-zA-Z0-9][a-zA-Z0-9.-]*$/.test(host), 'unsafe or forbidden host');
   assert(new Set(c.machines.map(m => m.host)).size === c.machines.length, 'duplicate machines');
   for (const m of c.machines) {
     assert(c.allowHosts.includes(m.host), 'machine outside explicit allowlist');
     assert(/^[a-z_][a-z0-9_-]*$/.test(m.user), 'explicit SSH user required');
-    assert(m.existingMachine === 'authorized-disposable-6385' && m.user === 'ubuntu', 'explicit existing disposable machine authorization required');
-    assert(/^[a-zA-Z0-9][a-zA-Z0-9.-]*$/.test(m.hostname) && !m.hostname.toLowerCase().includes('isaac24'), 'expected fixture hostname required');
-    for (const path of [m.root, m.prefix, m.cli, m.node]) assert(typeof path === 'string' && /^\/home\/ubuntu\/[a-zA-Z0-9_./-]+$/.test(path) && !path.split('/').includes('..'), 'paths must belong to disposable ubuntu account');
+    assert(m.existingMachine === 'authorized-disposable-6385', 'explicit existing disposable machine authorization required');
+    assert(/^[a-zA-Z0-9][a-zA-Z0-9.-]*$/.test(m.hostname), 'expected fixture hostname required');
+    assert(typeof m.home === 'string' && /^\/[a-zA-Z0-9_./-]+$/.test(m.home) && !m.home.split('/').some(part => part === '..' || part === '.') && !m.home.endsWith('/'), 'explicit safe fixture HOME required');
+    for (const path of [m.root, m.prefix, m.cli, m.node]) assert(typeof path === 'string' && path.startsWith(`${m.home}/`) && /^\/[a-zA-Z0-9_./-]+$/.test(path) && !path.split('/').some(part => part === '..' || part === '.'), 'paths must belong to disposable account HOME');
     assert.equal(m.unit, 'cotal-daemon.service', 'use the existing native daemon unit');
     assert(/^[a-zA-Z0-9_.@-]+\.service$/.test(m.unit) && !m.unit.includes('..'), 'explicit test unit required');
     assert(['success', 'rollback'].includes(m.mode) && /^\d+\.\d+\.\d+$/.test(m.parent), 'parent and success/rollback mode required');
@@ -46,7 +48,7 @@ export function isolatedEnv(root) {
 }
 function prepare(c, root, env) {
   const source = realpathSync(c.sourceDirectory);
-  assert(source.startsWith('/home/david/f26/tmp/u6385/'), 'prepare requires owned versioned source copy');
+  privatePath(source);
   const output = join(root, 'candidate');
   const manifest = packColdCandidate({ root: source, output, exec: (file, args, options) => execFileSync(file, args, { ...options, env }) });
   const names = new Set(manifest.packages.map(p => p.name));
@@ -85,7 +87,7 @@ function prepare(c, root, env) {
 export async function main(action, configFile) {
   const c = validateConfig(JSON.parse(readFileSync(configFile)));
   const root = resolve(c.evidence);
-  assert(root.startsWith('/home/david/f26/tmp/') && realpathSync(dirname(root)).startsWith('/home/david/f26/tmp/'), 'evidence must be on physical f26 TMP');
+  privatePath(root);
   if (!existsSync(root)) mkdirSync(root, { mode: 0o700 });
   assert(realpathSync(root) === root, 'evidence root must not be a symlink');
   const env = isolatedEnv(root);
@@ -101,7 +103,7 @@ export async function main(action, configFile) {
     return;
   }
   if (action === 'publish') {
-    assert(typeof c.publishNpmrc === 'string' && c.publishNpmrc.startsWith('/home/david/f26/tmp/'), 'coordinator-created private publish npmrc required');
+    publisherNpmrc(c.publishNpmrc);
     env.npm_config_userconfig = c.publishNpmrc;
     const directory = join(root, 'candidate');
     assert(existsSync(join(directory, 'identity-audit.json')), 'candidate identity audit required before publishing');

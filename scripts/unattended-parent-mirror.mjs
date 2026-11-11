@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { publisherNpmrc } from './unattended-path-guards.mjs';
 import { closureFromConfig } from './verify-publish-closure.mjs';
 import { list as listTar } from 'tar';
 
@@ -30,7 +31,7 @@ export function parentArchiveManifest(file, name, version, registry) {
 export async function mirrorParents(c, root, env) {
   assert(Array.isArray(c.parentVersions) && c.parentVersions.length && new Set(c.parentVersions).size === c.parentVersions.length, 'explicit unique parentVersions required');
   assert(c.parentVersions.every(version => /^\d+\.\d+\.\d+$/.test(version) && version !== c.candidate), 'invalid parent version');
-  assert(typeof c.publishNpmrc === 'string' && c.publishNpmrc.startsWith('/home/david/f26/tmp/'), 'private publisher npmrc required');
+  publisherNpmrc(c.publishNpmrc);
   const directory = join(root, 'parents'); mkdirSync(directory, { mode: 0o700 });
   const command = (args, publish = false) => execFileSync('npm', args, { cwd: root, env: { ...env, npm_config_userconfig: publish ? c.publishNpmrc : env.npm_config_userconfig }, encoding: 'utf8', timeout: 180000, maxBuffer: 8 * 1024 * 1024 });
   const latestBefore = command(['view', 'cotal-ai', 'dist-tags.latest', '--registry', c.registry]).trim();

@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { privatePath } from './unattended-path-guards.mjs';
 import { closureFromConfig } from './verify-publish-closure.mjs';
 
 export function stageSource(c, evidence, env) {
   const sourceRoot = resolve(import.meta.dirname, '..');
   const destination = resolve(c.sourceDirectory);
-  assert(destination.startsWith('/home/david/f26/tmp/u6385/') && realpathSync(dirname(destination)) === dirname(destination), 'source copy must be physical owned u6385 TMP');
+  privatePath(destination);
   const source = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sourceRoot, encoding: 'utf8' }).trim();
   const paths = execFileSync('git', ['ls-tree', '-r', '--name-only', source], { cwd: sourceRoot, encoding: 'utf8' }).trim().split('\n');
   const archive = execFileSync('git', ['archive', '--format=tar', source], { cwd: sourceRoot, maxBuffer: 128 * 1024 * 1024 });
