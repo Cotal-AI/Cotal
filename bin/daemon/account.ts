@@ -13,7 +13,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
   try { name = readComputerName(home); }
   catch {
     name = defaultComputerName();
-    nameWarning = 'Computer name record is unreadable. Replace it with cotal daemon name "<name>".';
+    nameWarning = 'Computer name record is unreadable. Replace it with `cotal daemon name "<name>"`.';
   }
   const pendingNames = new Set<string>();
   let state: AccountComputerStatus = { mode: "signed-out", hostSupport: "unknown", spaces: [] };
