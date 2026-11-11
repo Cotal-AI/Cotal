@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.157.5
+
+### Patch Changes
+
+- a722365: Enable unused-local checks in the shared TypeScript configuration and remove unused imports and declarations from source and smoke tests. Preserve initialization, validation and build-time inbox compatibility checks.
+
 ## 0.157.4
 
 No changes in this release.
