@@ -391,12 +391,25 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     steps.push({ step: "discover", outcome: "registered", detail: "the daemon discovered the requested space" });
     opts.report("discover: the requested space is registered on this machine", steps.at(-1));
   }
+  if (opts.noManager) {
+    const status = await queryDaemon(opts);
+    if (!status.ok) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the daemon could not check whether an account manages this computer");
+    const accounts = status.result.account?.accounts ?? (status.result.account ? [status.result.account] : []);
+    if (accounts.some(account => account.hostSupport === "unknown")) {
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the account host has not confirmed whether it manages this computer; check daemon status and retry before using --no-manager");
+    }
+    if (accounts.some(account => account.hostSupport === "supported")) {
+      throw new CommandFailure("refused", "UNSUPPORTED", "an account manages this computer's spaces from the dashboard; --no-manager applies only to per-space hosts", {
+        remedy: "manage this computer's spaces from the account dashboard, or use --no-manager on a per-space host",
+      });
+    }
+  }
   const prerequisite = discoveredSignIn ? undefined : await ensureSignedIn(opts, steps);
-  opts.report("connect: checking this computer and turning on the space", { step: "connect", outcome: "running", detail: "Checking this computer and turning on the space." });
-  const intent = await exchangeDesktopRequest(opts, { op: "space-intent", space: opts.space, enabled: true });
-  if (!intent.ok) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", intent.error.message);
-  opts.report("connect: starting the agent host", { step: "connect", outcome: "running", detail: "Starting the agent host." });
   if (!opts.noManager) {
+    opts.report("connect: checking this computer and turning on the space", { step: "connect", outcome: "running", detail: "Checking this computer and turning on the space." });
+    const intent = await exchangeDesktopRequest(opts, { op: "space-intent", space: opts.space, enabled: true });
+    if (!intent.ok) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", intent.error.message);
+    opts.report("connect: starting the agent host", { step: "connect", outcome: "running", detail: "Starting the agent host." });
     let manager = await ensureHostedManager(opts.space, {
       refresh: async space => await managerViaDaemon(opts, { op: "manager-status", space }) as HostedManager,
       start: async space => await managerViaDaemon(opts, { op: "manager-start", space }) as HostedManager,

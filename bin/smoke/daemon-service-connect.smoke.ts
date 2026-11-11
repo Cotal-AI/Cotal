@@ -71,6 +71,7 @@
  * Setup progress regression only: add --setup-progress-only (uses the shipped foreground daemon).
  * Clock-behind regression only: add --clock-behind-only (C1, C2, C15, C18 and C10).
  * Add --cancel-only for C1, C2, C15, C6c and C10; --keep-fixture retains the sandbox after shutdown.
+ * Service-only setup: --hosting-only --no-manager-only, optionally --account-only.
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Credential expiry regression only: add --credential-expiry-only (C1, C2, C7, C10, C15 and C18).
  */
@@ -1914,7 +1915,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("P11 no public output exposes fixture session", !JSON.stringify([signedIn, spaces, identity, read, login, daemonSpaces, isolatedLogin]).includes(SESSION));
           return;
         }
-        if (accountOnly) {
+        if (accountOnly && !process.argv.includes("--no-manager-only")) {
           if (process.argv.includes("--account-setup-journey")) {
             await killAndAwaitExit(child, "SIGTERM");
             rmSync(pathUnit);
@@ -2363,6 +2364,29 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         if (explicitHome) {
           saveIdpSession(explicitHome, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
           recordMesh({ ...original, server: published.server, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString(), userAuth: { ...published.userAuth, remote: true, sentinelCredsPath: original.userAuth!.sentinelCredsPath } });
+        }
+        if (process.argv.includes("--no-manager-only")) {
+          saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+          await killAndAwaitExit(child, "SIGTERM");
+          child = await startDaemon();
+          const discovered = await cli("spaces", "--refresh");
+          check("H6 shipped discovery registers service-only target", discovered.code === 0 && findMesh(ON) !== undefined, discovered);
+          const writesBefore = intentWrites;
+          const intent = join(home, "daemon", `space.${Buffer.from(ON).toString("hex")}`, "manager-host.json");
+          const before = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+          check("H6 fresh daemon has no child or hosting intent", before.state === "stopped" && !existsSync(intent), before);
+          const setup = await cli("setup", "--no-manager", "--space", ON, "--idp", idpUrl, "--wait", "0");
+          console.log("  H6 shipped no-manager setup", JSON.stringify(setup));
+          const after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+          check("H6 --no-manager starts no child or hosting intent", after.state === "stopped" && !existsSync(intent) && intentWrites === writesBefore && !accountDesired, { after, intentWrites, writesBefore, accountDesired });
+          check("H6 --no-manager omits agent-host progress", !setup.err.includes("Starting the agent host") && !setup.err.includes("starting the agent host") && !setup.err.includes("turning on the space"), setup.err);
+          if (accountOnly) {
+            check("H6 account-managed --no-manager refuses with dashboard guidance", setup.code === 2 && setup.doc.error?.code === "UNSUPPORTED" && setup.doc.error?.message?.includes("dashboard") && setup.doc.error?.message?.includes("per-space"), setup);
+            check("H6 account-managed refusal sends no service registration", !existsSync(join(dirname(intent), "register-request.json")) && !setup.err.includes("register:"), setup);
+          } else {
+            check("H6 --no-manager preserves machine-service registration", setup.code === 4 && setup.doc.error?.cause?.code === "APPROVAL_PENDING", setup);
+          }
+          return;
         }
         const setup = explicitHome
           ? { code: 0, doc: { result: { launchReady: true, manager: resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 100_000)) } } as Record<string, any>, err: "" }
