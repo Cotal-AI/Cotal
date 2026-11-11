@@ -6,10 +6,12 @@ import type { ServiceConnections } from "./service.js";
 import type { HostedManager } from "./protocol.js";
 import { findMesh, readMeshRegistry } from "@cotal-ai/workspace";
 import { connectCheck } from "./connect.js";
+import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
 
 interface ManagedSpace { owner: string; id: string; revision: number; removedAt?: number }
 interface Saved { v: 1; spaces: Record<string, ManagedSpace> }
 interface Managers {
+  status(space: string): HostedManager;
   refresh(space: string): Promise<HostedManager>;
   start(space: string): Promise<HostedManager>;
   disconnect(space: string): Promise<unknown>;
@@ -29,6 +31,20 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
   const persist = () => { mkSecretDir(join(file, "..")); writeSecretFileAtomic(file, JSON.stringify(saved)); };
   const refusals = new Map<string, string>();
   const retryAt = new Map<string, number>();
+  const managerOnly = new Set<string>();
+  const connectedHere = (space: string) => services.status(space).state === "connected" || managers.status(space).state === "answering";
+  const disconnect = async (space: string) => {
+    await managers.refresh(space);
+    await managers.disconnect(space);
+    if (services.status(space).state !== "not-requested") await services.disconnect(space);
+  };
+  const observedState = (space: string) => {
+    if (saved.spaces[space]?.removedAt !== undefined) return "removed on this computer";
+    const service = services.status(space).state;
+    const manager = managers.status(space).state;
+    if (managerOnly.has(space) || manager === "answering" && service === "not-requested") return manager === "answering" ? "connected" : manager;
+    return service;
+  };
   let queue = Promise.resolve();
   const serial = <T>(run: () => Promise<T>): Promise<T> => {
     const next = queue.then(run);
@@ -54,9 +70,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       if (state.owner !== account.ownerKey || desired.has(space) || Date.now() < (retryAt.get(space) ?? 0)) continue;
       if (state.removedAt !== undefined) { if (fresh) { delete saved.spaces[space]; persist(); } continue; }
       try {
-        await managers.refresh(space);
-        await managers.disconnect(space);
-        await services.disconnect(space);
+        await disconnect(space);
         delete saved.spaces[space]; persist(); refusals.delete(space);
       } catch { refusals.set(space, "disconnect refused; inspect daemon status before retrying"); retryAt.set(space, Date.now() + 30_000); }
     }
@@ -67,19 +81,29 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       if (prior?.removedAt !== undefined && (!fresh || bindingRevisions[row.id]! <= prior.removedAt)) continue;
       if (prior && prior.removedAt === undefined && !findMesh(row.slug)) {
         prior.removedAt = prior.revision; persist();
-        try { await managers.refresh(row.slug); await managers.disconnect(row.slug); await services.disconnect(row.slug); }
+        try { await disconnect(row.slug); }
         catch { refusals.set(row.slug, "local removal could not stop the space; inspect daemon status"); }
         continue;
       }
       if (Date.now() < (retryAt.get(row.slug) ?? 0)) continue;
       try {
         if ("unavailable" in row) throw new Error("account space is currently unavailable");
-        const legacy = !prior && services.status(row.slug).state === "connected";
+        const legacy = !prior && connectedHere(row.slug);
         importAccountComputerSpace(account, row);
         if (legacy) continue;
         // Persist custody before the first operation, so restart knows which spaces it may remove.
         saved.spaces[row.slug] = { owner: account.ownerKey, id: row.id, revision: bindingRevisions[row.id]! }; persist();
         const check = await connectCheck(row.slug, home);
+        if (!hostingPrerequisite(check.outcome) || check.outcome === "account-mismatch") throw new Error(check.outcome);
+        const manager = await ensureHostedManager(row.slug, managers);
+        if (manager.state !== "answering") throw new Error("Manager is not answering");
+        if (!manager.connectors?.some(connector => connector.state === "available")) throw new Error("no available application");
+        if (check.outcome === "unsupported-by-space") {
+          managerOnly.add(row.slug);
+          refusals.delete(row.slug); retryAt.delete(row.slug);
+          continue;
+        }
+        managerOnly.delete(row.slug);
         if (check.outcome !== "ready-to-register") throw new Error(check.outcome);
         const observed = services.status(row.slug);
         if (observed.state !== "connected") {
@@ -89,12 +113,6 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
           if (connected.state !== "connected") throw new Error(connected.state);
         }
         signal?.throwIfAborted();
-        const manager = await managers.refresh(row.slug);
-        if (manager.state !== "answering") {
-          const started = await managers.start(row.slug);
-          if (started.state !== "answering") throw new Error("Manager is not answering");
-          if (!started.connectors?.some(connector => connector.state === "available")) throw new Error("no available application");
-        }
         refusals.delete(row.slug); retryAt.delete(row.slug);
       } catch (error) {
         const safe = error instanceof Error && /^[a-z -]{1,100}$/i.test(error.message) ? error.message : "space connection refused; inspect daemon status";
@@ -104,7 +122,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
   });
   return { apply, localRemoval, localAddition, serial,
     retainAccounts(owners: string[]) { for (const key of desiredByOwner.keys()) if (!owners.includes(key)) desiredByOwner.delete(key); },
-    view: () => [...new Set([...desiredAll(), ...Object.keys(saved.spaces), ...readMeshRegistry().entries.filter(entry => services.status(entry.space).state === "connected").map(entry => entry.space)])].map(space => ({ space, desired: desiredAll().has(space), observed: saved.spaces[space]?.removedAt !== undefined ? "removed on this computer" : services.status(space).state, ...(refusals.has(space) ? { lastRefusal: refusals.get(space)! } : {}) })),
+    view: () => [...new Set([...desiredAll(), ...Object.keys(saved.spaces), ...readMeshRegistry().entries.filter(entry => connectedHere(entry.space)).map(entry => entry.space)])].map(space => ({ space, desired: desiredAll().has(space), observed: observedState(space), ...(refusals.has(space) ? { lastRefusal: refusals.get(space)! } : {}) })),
     settled: () => queue,
   };
 }

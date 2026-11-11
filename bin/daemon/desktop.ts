@@ -13,6 +13,7 @@ import { desktopApplicationPath } from "./desktop-path.js";
 
 export type DesktopRequest =
   | { [K in "about" | "status" | "install"]: { readonly op: K } }["about" | "status" | "install"]
+  | { readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly op: "spaces"; readonly refresh?: boolean }
   | { readonly op: "login"; readonly idp: string }
   | { readonly op: "setup"; readonly space: string; readonly idp: string }
@@ -24,8 +25,12 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   const o = value as Record<string, unknown>;
   const simple = ["about", "status", "install"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
-  const fields = simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : o.op === "login" ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
+  const fields = o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : o.op === "login" ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
+  if (o.op === "space-intent") {
+    if (!isDaemonSpaceName(o.space) || typeof o.enabled !== "boolean") throw new Error("invalid space intent");
+    return { op: "space-intent", space: o.space, enabled: o.enabled };
+  }
   if (simple) return { op: o.op as "about" | "status" | "install" };
   if (scoped) {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");

@@ -1,4 +1,5 @@
 import { hostname } from "node:os";
+import { findMesh } from "@cotal-ai/workspace";
 import { requestAccountMachine, signedInMachineAccounts, withIdpSessionDir } from "@cotal-ai/auth";
 import { validateCatalogSnapshot, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
 import { accountComputerId } from "./account-identity.js";
@@ -74,7 +75,48 @@ export function createAccountComputer(home: string, version: string, reconciler:
       if (!stopped) { timer = setTimeout(run, 5000); timer.unref(); }
     });
   };
-  return { start: run,
+  const settlePoll = async (owner: string) => {
+    await tick();
+    await contexts.get(owner)?.work;
+  };
+  /** Return false only when this space's authenticated host explicitly lacks account computers. */
+  const intent = async (space: string, enabled: boolean): Promise<boolean> => {
+    const entry = findMesh(space);
+    if (!entry) throw new Error("Refresh your spaces before changing this computer's connection.");
+    if (entry.mode !== "user") return false;
+    const candidates = signedInMachineAccounts(home).filter(item => entry.catalogOwner ? item.ownerKey === entry.catalogOwner : item.idpUrl === entry.userAuth?.idp.url);
+    const account = candidates.length === 1 ? candidates[0] : undefined;
+    if (!account) throw new Error("Sign in again and refresh your spaces before changing this computer's connection.");
+    await settlePoll(account.ownerKey);
+    const context = contexts.get(account.ownerKey)!;
+    if (context.state.mode === "per-space") return false;
+    if (!entry.catalogId || !entry.catalogOwner) throw new Error("Refresh your account's spaces before connecting this computer.");
+    if (context.state.mode === "sign-in-required") throw new Error("Sign in again before changing this computer's spaces.");
+    if (context.state.hostSupport !== "supported") throw new Error("The account host is unavailable. Check your connection and try again.");
+    const machineId = accountComputerId(home, account);
+    const signal = AbortSignal.any([abort.signal, context.abort.signal]);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const fresh = await requestAccountMachine({ dir: home, idpUrl: account.idpUrl, machineId, method: "GET", signal });
+      if (fresh.status === 401 || fresh.status === 403) { context.state.mode = "sign-in-required"; throw new Error("Sign in again before changing this computer's spaces."); }
+      const body = fresh.body as Record<string, unknown> | undefined;
+      if (fresh.status !== 200 || !body || body.machineId !== machineId || !Number.isSafeInteger(body.revision) || Number(body.revision) < 0) throw new Error("The account host could not read this computer's spaces. Try again.");
+      validateCatalogSnapshot(body, account);
+      const rows = (body as unknown as SpaceCatalogSnapshot).spaces;
+      const bindings = body.bindingRevisions as Record<string, unknown> | undefined;
+      if (!bindings || typeof bindings !== "object" || Array.isArray(bindings) || Object.keys(bindings).length !== rows.length || rows.some(row => !Object.hasOwn(bindings, row.id) || !Number.isSafeInteger(bindings[row.id]) || Number(bindings[row.id]) <= 0 || Number(bindings[row.id]) > Number(body.revision))) throw new Error("The account host returned invalid space revisions. Refresh your spaces and try again.");
+      const written = await requestAccountMachine({ dir: home, idpUrl: account.idpUrl, machineId, method: "PUT", signal, intent: { spaceId: entry.catalogId, enabled, expectedRevision: Number(body.revision) } });
+      if (written.status === 409 && attempt === 0) continue;
+      if (written.status === 401 || written.status === 403) { context.state.mode = "sign-in-required"; throw new Error("Sign in again or ask the space owner to allow this computer, then try again."); }
+      const result = written.body as Record<string, unknown> | undefined;
+      if (written.status !== 200 || result?.v !== 1 || result.machineId !== machineId || !Number.isSafeInteger(result.revision)) throw new Error("The account host refused this space change. Refresh your spaces and try again.");
+      if (enabled) reconciler.localAddition(space);
+      delete context.etag;
+      await settlePoll(account.ownerKey);
+      return true;
+    }
+    throw new Error("This computer's spaces changed again. Refresh your spaces and try again.");
+  };
+  return { start: run, intent,
     signedIn() { for (const context of contexts.values()) context.abort.abort(); contexts.clear(); if (timer) clearTimeout(timer); run(); },
     status: (): AccountComputerStatus => ({ ...state, accounts: [...contexts.values()].map(context => ({ ...context.state, spaces: reconciler.view().filter(row => context.snapshot?.spaces.some(space => space.slug === row.space) || !row.desired) })), spaces: reconciler.view() }),
     async close() { stopped = true; if (timer) clearTimeout(timer); abort.abort(); await work; await Promise.all([...tasks]); await reconciler.settled(); },
