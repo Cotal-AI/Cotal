@@ -64,6 +64,7 @@
  * Setup progress regression only: add --setup-progress-only (uses the shipped foreground daemon).
  * Clock-behind regression only: add --clock-behind-only (C1, C2, C15, C18 and C10).
  * Add --cancel-only for C1, C2, C15, C6c and C10; --keep-fixture retains the sandbox after shutdown.
+ * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Credential expiry regression only: add --credential-expiry-only (C1, C2, C7, C10, C15 and C18).
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -215,6 +216,8 @@ let catalogAuthorityDown = false;
 let standingRenewals = 0;
 let catalogAuthorityRequests = 0;
 let tokenGate: ((res: ServerResponse) => Promise<void>) | undefined;
+let exchangeGate: ((view: unknown, res: ServerResponse) => Promise<boolean>) | undefined;
+const exchangeReads: Array<{ view: unknown; managerInstanceId: unknown }> = [];
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/device/code") { deviceCodeRequests++; if (deviceFailure === "unreachable") { req.socket.destroy(); return; } return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 })); }
@@ -230,6 +233,11 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     if (catalogAuthorityDown) { res.writeHead(503); res.end("{}"); return; }
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
+    if (req.url === `/space/${catalogSpace}/exchange`) {
+      const request = JSON.parse(Buffer.concat(chunks).toString()) as { view?: unknown; managerInstanceId?: unknown };
+      exchangeReads.push({ view: request.view, managerInstanceId: request.managerInstanceId });
+      if (await exchangeGate?.(request.view, res)) return;
+    }
     if (Buffer.concat(chunks).toString().includes('"renewStandingBundle"')) standingRenewals++;
     const answer = await fetch(`${catalogTarget}${req.url.slice(`/space/${catalogSpace}`.length)}`, { method: req.method, headers: { "content-type": "application/json" }, ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) });
     res.writeHead(answer.status);
@@ -1739,6 +1747,59 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         }
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--exchange-retry-repro")) {
+          const metadata = createHttpServer((_req, res) => res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: fixtureVersion }, versions: { [fixtureVersion]: { name: "cotal-ai", version: fixtureVersion } } })));
+          await new Promise<void>(resolve => metadata.listen(0, "127.0.0.1", resolve));
+          const runUpdate = async (label: string, expected: number) => {
+            exchangeReads.length = 0;
+            const started = Date.now();
+            const updating = spawn(process.execPath, [cliEntry, "update", "--space", ON], { cwd: root, env: { ...env, COTAL_ALLOW_CHECKOUT_SEED: "1", npm_config_registry: `http://127.0.0.1:${(metadata.address() as AddressInfo).port}` }, stdio: ["ignore", "pipe", "pipe"] });
+            let text = "";
+            updating.stdout.on("data", chunk => { text += String(chunk); });
+            updating.stderr.on("data", chunk => { text += String(chunk); });
+            try {
+              const code = await new Promise<number | null>((resolve, reject) => { updating.once("error", reject); updating.once("close", resolve); });
+              const elapsed = Date.now() - started;
+              console.log("exchange retry", JSON.stringify({ label, code, elapsed, requests: exchangeReads.length, text }));
+              check(`${label}: expected exit and reconciliation admission`, code === expected && text.includes("Built-in connectors") === (expected === 0), text);
+              check(`${label}: every Manager view stays instance-pinned`, exchangeReads.filter(row => row.view === "manager-caller").every(row => row.managerInstanceId === manager.instanceId), exchangeReads);
+              if (expected === 0) check(`${label}: fresh custody answer before reconciliation`, text.indexOf(`instance ${manager.instanceId} answered; 0 seat(s)`) >= 0 && text.indexOf("answered; 0 seat(s)") < text.indexOf("Built-in connectors"), text);
+              return { text, elapsed, requests: exchangeReads.length };
+            } finally { if (updating.exitCode === null && updating.signalCode === null) await killAndAwaitExit(updating, "SIGTERM"); }
+          };
+          try {
+            for (const mode of ["timeout", "502", "view-503"] as const) {
+              let outageStarted = 0;
+              let failures = 0;
+              exchangeGate = async (view, res) => {
+                // The view-only case proves recovery after the base bearer has already succeeded.
+                if (mode === "view-503" && view !== "manager-caller") return false;
+                outageStarted ||= Date.now();
+                if (Date.now() - outageStarted >= 20_000) return false;
+                failures++;
+                if (mode === "timeout") await sleep(16_500);
+                if (!res.destroyed) res.writeHead(mode === "view-503" ? 503 : 502).end("<html>host restarting</html>");
+                return true;
+              };
+              const result = await runUpdate(`20s ${mode} outage`, 0);
+              check(`${mode}: retried unavailable host visibly`, failures >= 2 && result.text.includes("is not answering the continuity exchange; retrying"), result);
+            }
+            for (const status of [400, 401, 403, 404, 429]) {
+              exchangeGate = async (_view, res) => { res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ error: "fixture credential refused" })); return true; };
+              const result = await runUpdate(`HTTP ${status} denial`, 1);
+              check(`HTTP ${status}: no retry or installation repair`, result.requests === 2 && result.elapsed < 15_000 && !result.text.includes("retrying"), result);
+            }
+            exchangeGate = async (_view, res) => { res.writeHead(502).end("host unavailable"); return true; };
+            const exhausted = await runUpdate("persistent HTTP 502", 1);
+            check("persistent outage: one bounded budget and host recovery guidance", exhausted.elapsed >= 119_000 && exhausted.elapsed < 140_000 && exhausted.text.includes("within 120 seconds") && exhausted.text.includes("run `cotal update` again") && !exhausted.text.includes("re-register"), exhausted);
+            exchangeGate = undefined;
+            await runUpdate("healthy exchange after refusal without re-registration", 0);
+          } finally {
+            exchangeGate = undefined;
+            await new Promise<void>(resolve => metadata.close(() => resolve()));
+          }
+          return;
+        }
         if (process.argv.includes("--slow-status-repro")) {
           brokerReplyDelay = 350;
           try {
