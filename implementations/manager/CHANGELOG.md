@@ -1,5 +1,13 @@
 # @cotal-ai/manager
 
+## 0.160.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.160.1
+  - @cotal-ai/seat@0.160.1
+  - @cotal-ai/workspace@0.160.1
+
 ## 0.160.0
 
 ### Patch Changes

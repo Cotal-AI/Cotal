@@ -1,5 +1,21 @@
 # cotal-ai
 
+## 0.160.1
+
+### Patch Changes
+
+- 8c95a0d: Updating a computer that hosts a Manager no longer fails while the daemon restarts. `cotal daemon status` keeps answering while a hosted Manager starts or stops, and the update waits through that restart.
+- @cotal-ai/manager@0.160.1
+  - @cotal-ai/connector-core@0.160.1
+  - @cotal-ai/auth@0.160.1
+  - @cotal-ai/cli@0.160.1
+  - @cotal-ai/delivery@0.160.1
+  - @cotal-ai/registry@0.160.1
+  - @cotal-ai/runtime@0.160.1
+  - @cotal-ai/core@0.160.1
+  - @cotal-ai/seat@0.160.1
+  - @cotal-ai/workspace@0.160.1
+
 ## 0.160.0
 
 ### Patch Changes
