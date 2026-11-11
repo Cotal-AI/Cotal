@@ -11,7 +11,12 @@
  * copies of the app then write at once, each
  * under its own session, and both sessions' records read back whole. Last, the broker restarts with a
  * default user that may not read direct messages, and the agent's conversation says the earlier ones
- * were not read and why. Captures are kept under the printed directory.
+ * were not read and why.
+ *
+ * On the open space the agent also writes to the human unprompted. The message is listed under unread
+ * direct messages above the replies, and is still listed after a restart. `w` opens it, the card goes,
+ * and a private file under the Cotal home records it as read, so it stays gone at the next start. Where
+ * the broker refuses the read, the unread group says so. Captures are kept under the printed directory.
  *
  * Needs Node >= 26.4, tmux and nats-server, and the manager built, so it is not part of smoke:ci.
  * Run: pnpm --filter @cotal-ai/tui smoke
@@ -72,7 +77,7 @@ const mode = (path: string) => (statSync(path).mode & 0o777).toString(8)
 /** The app's remembered-session files for `space`, each with its mode and its parsed record. */
 function remembered(space: string) {
   const folder = join(cotalHome, "chat-sessions", spaceSegment(space))
-  const files = existsSync(folder) ? readdirSync(folder) : []
+  const files = existsSync(folder) ? readdirSync(folder).filter((f) => f !== "read.json") : []
   return { folder, mode: existsSync(folder) ? mode(folder) : "none", files: files.map((f) => ({ f, mode: mode(join(folder, f)), record: JSON.parse(readFileSync(join(folder, f), "utf8")) as Record<string, unknown> })) }
 }
 
@@ -130,6 +135,12 @@ const says = (frame: string, text: string) => middle(frame).join("").replace(/\s
 const inFeed = (frame: string, text: string) => middle(frame).includes(`┃ ${text}`)
 const replyCard = (frame: string) => inspector(frame).some((l) => /^\d+ ↩ reviewer\s+→ you$/.test(l))
 const quoteLine = (frame: string) => middle(frame).find((l) => l.startsWith("↳ ")) ?? ""
+const group = (frame: string, title: string) => inspector(frame).findIndex((l) => l.startsWith(title))
+const unreadCard = (text: string) => (frame: string) => {
+  const lines = inspector(frame)
+  const at = lines.findIndex((l) => /^1 • reviewer$/.test(l))
+  return group(frame, "UNREAD DMS · 1") >= 0 && at > group(frame, "UNREAD DMS") && lines[at + 1] === text
+}
 function save(t: string, dir: string, name: string) {
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, `${name}.txt`), capture(t))
@@ -273,6 +284,44 @@ async function continuity(s: Space) {
   await quit(t)
 }
 
+/** The agent writes to the human's earlier session `to` unprompted, then the app restarts around
+ *  opening it. */
+async function unreadDm(s: Space, to: string) {
+  const dir = join(captures, "unread")
+  const t = "t"
+  const text = `are you around? (${s.mode})`
+  launch(t, s.root, join(work, "unread-1.err"))
+  await see(t, live(s.space), 30000)
+  await see(t, (f) => group(f, "REPLIES AND MENTIONS") >= 0, 15000)
+  const sent = await s.reviewer.ep.unicast(to, text)
+  const listed = await see(t, unreadCard(text))
+  save(t, dir, "01-listed")
+  check(`${s.mode}: an agent's direct message to the human is listed under unread DMs, above the replies`, unreadCard(text)(listed) && group(listed, "UNREAD DMS") < group(listed, "REPLIES AND MENTIONS"), listed)
+  await quit(t)
+
+  launch(t, s.root, join(work, "unread-2.err"))
+  await see(t, live(s.space), 30000)
+  const kept = await see(t, unreadCard(text), 15000)
+  save(t, dir, "02-after-restart")
+  check(`${s.mode}: after a restart the unread direct message is still listed`, unreadCard(text)(kept), kept)
+  await toTree(t)
+  keys(t, "w")
+  const opened = await see(t, (f) => titleOf(f).includes(`reviewer  ${s.space}`) && inFeed(f, text) && group(f, "UNREAD DMS") < 0, 8000)
+  save(t, dir, "03-opened")
+  check(`${s.mode}: w opens the agent's conversation and the card goes`, titleOf(opened).includes(`reviewer  ${s.space}`) && inFeed(opened, text) && group(opened, "UNREAD DMS") < 0, opened)
+  await quit(t)
+  const path = join(cotalHome, "chat-sessions", spaceSegment(s.space), "read.json")
+  const marks = existsSync(path) ? { mode: mode(path), record: JSON.parse(readFileSync(path, "utf8")) as { read?: Record<string, number> } } : undefined
+  check(`${s.mode}: the read message is recorded by id in a 0600 file`, marks?.mode === "600" && marks.record.read?.[sent.id] !== undefined, JSON.stringify(marks))
+
+  launch(t, s.root, join(work, "unread-3.err"))
+  await see(t, live(s.space), 30000)
+  const after = await see(t, (f) => group(f, "REPLIES AND MENTIONS") >= 0, 15000)
+  save(t, dir, "04-after-second-restart")
+  check(`${s.mode}: after another restart the opened message stays read while the replies are still listed`, group(after, "REPLIES AND MENTIONS") >= 0 && group(after, "UNREAD DMS") < 0, after)
+  await quit(t)
+}
+
 const started: CotalEndpoint[] = []
 let stackUp = false
 try {
@@ -318,6 +367,8 @@ try {
     JSON.stringify(records),
   )
 
+  if (asks) await unreadDm(open, asks[0]!.from.id)
+
   // The broker comes back with a default user that may not create consumers on the DM stream.
   await stopBroker()
   const dm = dmStream(open.space)
@@ -341,6 +392,11 @@ try {
   const later = capture("t")
   save("t", join(captures, "denied"), "02-after-the-toast")
   check("open: the conversation still says so after the toast has gone", says(later, "Your direct messages from earlier sessions were not read"), later)
+  check(
+    "open: where the broker refuses the read, the unread direct messages say they were not read rather than listing none",
+    group(later, "UNREAD DMS · 0") >= 0 && inspector(later).join("").replace(/\s+/g, "").includes("Yourdirectmessagesfromearliersessionswerenotread"),
+    later,
+  )
   await quit("t")
   await stopBroker()
 

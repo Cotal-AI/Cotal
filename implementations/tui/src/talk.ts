@@ -4,11 +4,13 @@ import {
   closeSummary,
   describeConnection,
   latestDirected,
+  markRead as rememberRead,
   mentionsName,
   nameInUse,
   nameInUseText,
   openChatSession,
   publish as publishTo,
+  readMarks,
   rememberChatSession,
   rememberedChatSessions,
   resolveChatName,
@@ -70,6 +72,12 @@ export interface Talk {
   /** Why direct messages of the sessions the app opened here in earlier runs are missing, when some
    *  are: their read was refused or failed, or a remembered session could not be read. */
   readonly unread: Accessor<string | undefined>
+  /** The ids of the direct messages to the human that they read here, in this run or an earlier one. */
+  readonly read: Accessor<ReadonlySet<string>>
+  /** Why the direct messages read in earlier runs were not loaded, or the latest were not saved. */
+  readonly readProblem: Accessor<string | undefined>
+  /** Records direct messages to the human as read, for this run and later ones. */
+  markRead(messages: readonly FeedEntry[]): void
   /** Opens a session when none is open. Never sends. A static or user session may post to
    *  `postTo` only. */
   open(postTo?: string): Promise<void>
@@ -171,6 +179,13 @@ export function openTalk(deps: {
   const [own, setOwn] = createSignal<OwnTraffic>({ received: [], sent: [], earlier: [] })
   const [unread, setUnread] = createSignal<string>()
   const missing = (why: string) => setUnread((was) => (was ? `${was}; ${why}` : why))
+  const [read, setRead] = createSignal<ReadonlySet<string>>(new Set())
+  const [readProblem, setReadProblem] = createSignal<string>()
+  try {
+    setRead(readMarks(target.space))
+  } catch (e) {
+    setReadProblem(`The direct messages you read before were not loaded, so they show as unread: ${refusal(e).message}`)
+  }
 
   const readEarlier = async (sessions: readonly RememberedChatSession[]) => {
     const labels = new Map(sessions.map((s) => [s.principal, s.label]))
@@ -238,6 +253,18 @@ export function openTalk(deps: {
     name,
     own,
     unread,
+    read,
+    readProblem,
+    markRead: (messages) => {
+      const fresh = messages.filter((m) => !read().has(m.id))
+      if (!fresh.length) return
+      setRead((was) => new Set([...was, ...fresh.map((m) => m.id)]))
+      try {
+        rememberRead(target.space, fresh)
+      } catch (e) {
+        setReadProblem(`The direct messages you just read were not saved, so they show as unread after a restart: ${refusal(e).message}`)
+      }
+    },
     open: async (postTo) => {
       const p = phase().phase
       if (closing || p === "opening" || p === "open") return
