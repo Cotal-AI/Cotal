@@ -5,6 +5,7 @@
 .settings-row { border-top: 2px solid var(--rule); padding: var(--s-1) 0; }
 .settings-heading { margin-bottom: var(--s-1); }
 #settings-download-row { border-top: 0; padding-top: 0; }
+#settings-download { padding-left: 0; }
 #settings-download-copy { display: none; }
 .settings-row { padding-block: 6px; }
 .settings-row > div, .settings-row > p { min-width: 0; }
