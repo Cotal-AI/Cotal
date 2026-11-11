@@ -1549,7 +1549,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: fixtureVersion }));
       }
       const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
-      if (desktopSetupOnly) env.PATH = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
+      if (desktopSetupOnly || process.argv.includes("--account-setup-gaps") || process.argv.includes("--account-setup-journey")) env.PATH = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
       if (process.argv.includes("--daemon-seed-repro")) env.COTAL_ALLOW_CHECKOUT_SEED = "1";
       if (process.argv.includes("--hosted-seed-repro")) {
         delete env.COTAL_SKIP_CONNECTOR_SEED;
@@ -1653,7 +1653,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       };
       const startDaemon = async (managedHome = explicitHome) => {
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
-        const servicePath = process.argv.includes("--setup-path-repro") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
+        const servicePath = process.argv.includes("--setup-path-repro") || process.argv.includes("--account-setup-journey") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
         const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading && (!process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro")) ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] });
         child.stdout.resume(); child.stderr.on("data", (chunk) => { if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) console.log("  owned daemon", String(chunk).trim()); });
         for (let i = 0; i < 100; i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
@@ -1769,6 +1769,63 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           return;
         }
         if (accountOnly) {
+          if (process.argv.includes("--account-setup-journey")) {
+            const before = deviceCodeRequests;
+            const fresh = await cli("setup", "--idp", idpUrl);
+            check("J1 account setup registers with one device approval", fresh.code === 0 && deviceCodeRequests === before + 1 && typeof fresh.doc.result?.machineId === "string", fresh);
+            const initial = (await cli("status")).doc.result;
+            check("J2 account setup turns on no space", initial?.account?.hostSupport === "supported" && initial.account.spaces.length === 0 && !accountDesired, initial);
+            const again = await cli("setup", "--idp", idpUrl);
+            check("J3 account setup reuses approval and computer identity", again.code === 0 && deviceCodeRequests === before + 1 && again.doc.result?.machineId === fresh.doc.result?.machineId, again);
+            const human = await plainCommand("setup", "--idp", idpUrl);
+            check("J4 human output names account computer and dashboard", human.code === 0 && human.out.includes("Connected to your account") && human.out.includes("machine-owner") && human.out.includes("Cotal Cloud dashboard"), human);
+            for (const flags of [["--no-manager"], ["--wait", "0"]]) {
+              const invalid = await cli("setup", "--idp", idpUrl, ...flags);
+              check("J5 space-only flag refuses without space", invalid.code !== 0 && invalid.doc.error?.message.includes("require --space"), invalid);
+            }
+            accountDesired = true;
+            let unavailable: Record<string, any> = {};
+            for (let i = 0; i < 120; i++) {
+              unavailable = (await cli("status")).doc.result ?? {};
+              if (unavailable.account?.spaces?.some((row: any) => row.lastRefusal === "no available application")) break;
+              await sleep(500);
+            }
+            const missing = await plainCommand("status");
+            check("J6 no-application status provides install and setup Next", /Next:[\s\S]*Install an agent application/.test(missing.out) && missing.out.includes("cotal daemon setup"), missing);
+            const newApplicationBin = join(root, "new-application-bin");
+            mkdirSync(newApplicationBin, { mode: 0o700 });
+            writeFileSync(join(newApplicationBin, "cotal-owned-missing-harness"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+            env.PATH = `${newApplicationBin}:${env.PATH}`;
+            const refreshed = await cli("setup", "--idp", idpUrl);
+            check("J7 account rerun refreshes without approval", refreshed.code === 0 && deviceCodeRequests === before + 1, refreshed);
+            let ready: Record<string, any> = {};
+            for (let i = 0; i < 120; i++) {
+              ready = (await cli("status")).doc.result ?? {};
+              if (ready.managers?.some((row: any) => row.space === ON && row.connectors?.some((c: any) => c.state === "available"))) break;
+              await sleep(500);
+            }
+            check("J8 turned-on hosted Manager sees added application automatically", ready.managers?.some((row: any) => row.space === ON && row.state === "answering" && row.connectors?.some((c: any) => c.state === "available")), ready);
+            return;
+          }
+          if (process.argv.includes("--account-setup-gaps")) {
+            const fresh = await cli("setup", "--idp", idpUrl);
+            check("G1 real CLI rejects account-only setup before approval", fresh.code !== 0 && fresh.doc.error?.message?.includes("needs --space"), fresh);
+            const signed = await cli("login", "--idp", idpUrl);
+            check("G1 existing account login works independently", signed.code === 0, signed);
+            accountDesired = true;
+            let status: Record<string, any> = {};
+            for (let i = 0; i < 120; i++) {
+              status = (await cli("status")).doc.result ?? {};
+              if (status.account?.spaces?.some((row: any) => row.space === ON && row.lastRefusal === "no available application")) break;
+              await sleep(500);
+            }
+            const human = await plainCommand("status");
+            check("G2 status names unavailable application but has no setup next step", human.out.includes("no available application") && !/Next[\s\S]*install an agent application/i.test(human.out), { status, human });
+            const repeated = await cli("setup", "--idp", idpUrl);
+            const installed = await cli("install");
+            check("G3 account refresh is unavailable and install refuses existing unit", repeated.code !== 0 && repeated.doc.error?.message?.includes("needs --space") && installed.code !== 0 && JSON.stringify(installed).includes("already has an installed unit"), { repeated, installed });
+            return;
+          }
           saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
           const pendingPublished = await (await fetch(`${svc[2]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as Record<string, any>;
           accountTargets.set(DENY, svc[2]!.publicUrl!.replace(/\/$/, ""));

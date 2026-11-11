@@ -33,7 +33,7 @@ import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import { applyInstall, applyUninstall, observeDaemonOwnedService, planInstall, planUninstall, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
-import { runSetup } from "./setup.js";
+import { runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { watchDaemonGeneration } from "./generation.js";
@@ -124,7 +124,7 @@ function asFailure(e: unknown): unknown {
 
 function statusView(s: DaemonStatus): Report {
   return { sections: [{ title: "Daemon", blocks: [{ kind: "fields", rows: [["State", s.state], ["Version", s.version], ["Protocol", String(s.protocol)], ["PID", String(s.pid)], ["Started", s.startedAt], ["Uptime", `${Math.round(s.uptimeMs / 1000)}s`]] }, ...(s.generation ? [{ kind: "lines" as const, lines: [`Installed ${s.generation.installed}, running ${s.generation.running}, ${s.generation.waiting}`] }] : [])] },
-    ...(s.account ? (s.account.accounts?.length ? s.account.accounts : [s.account]).map(account => ({ title: `Account computer${account.machineId ? `: ${account.machineId}` : ""}`, blocks: [{ kind: "fields" as const, rows: [["Computer", account.machineId ?? "not registered"], ["Mode", account.mode], ["Host support", account.hostSupport], ["Last registration", account.lastRegistration ?? "none"], ["Desired revision", String(account.desiredRevision ?? "unknown")], ...(account.message ? [["Next", account.message]] : []), ...account.spaces.map((space) => [space.space, `${space.desired ? "desired" : "connected here, not in the account's list"}: ${space.observed}${space.lastRefusal ? ` (${space.lastRefusal})` : ""}`])] as [string, string][] }] })) : []),
+    ...(s.account ? (s.account.accounts?.length ? s.account.accounts : [s.account]).map(account => ({ title: `Account computer${account.machineId ? `: ${account.machineId}` : ""}`, blocks: [{ kind: "fields" as const, rows: [["Computer", account.machineId ?? "not registered"], ["Mode", account.mode], ["Host support", account.hostSupport], ["Last registration", account.lastRegistration ?? "none"], ["Desired revision", String(account.desiredRevision ?? "unknown")], ...(account.message ? [["Next", account.message]] : []), ...(account.spaces.some(space => space.lastRefusal === "no available application") ? [["Next", "Install an agent application, then run cotal daemon setup again in a terminal that finds it."]] : []), ...account.spaces.map((space) => [space.space, `${space.desired ? "desired" : "connected here, not in the account's list"}: ${space.observed}${space.lastRefusal ? ` (${space.lastRefusal})` : ""}`])] as [string, string][] }] })) : []),
     ...(s.managers ?? []).map((manager) => ({ title: `Manager: ${manager.space}`, blocks: [{ kind: "fields" as const, rows: [["Last observed state", manager.state], ["Observed at", manager.observedAt ?? "not yet probed"], ["Instance", manager.instanceId ?? "not registered"], ["PID", String(manager.pid ?? "none")], ["Restarts", String(manager.restarts)], ...(manager.lastStop ? [["Last stop", manager.lastStop]] : []), ...(manager.lastExit ? [["Last exit", manager.lastExit]] : []), ...(manager.logError ? [["Log error", manager.logError]] : []), ...(manager.lastRefusal || manager.reason ? [["Last refusal", manager.lastRefusal ?? manager.reason!]] : []), ...(manager.next ? [["Next", manager.next]] : [])] as [string, string][] }] })),
   ] };
 }
@@ -342,8 +342,9 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const values = args.values as { space?: string; idp?: string; "client-id"?: string; wait?: string; "no-manager"?: boolean };
   const space = values.space;
-  if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon setup needs --space <s>");
-  if (!SPACE_PATTERN.test(space)) throw new CommandFailure("refused", "USAGE_INVALID", "space must be 1-64 characters of [A-Za-z0-9_-]", { native: { code: "BAD_FIELD" } });
+  if (!space && (values["no-manager"] || values.wait !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager and --wait require --space <s>");
+  if (!space && !values.idp) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon setup needs --idp <url> to connect an account, or --space <s>");
+  if (space && !SPACE_PATTERN.test(space)) throw new CommandFailure("refused", "USAGE_INVALID", "space must be 1-64 characters of [A-Za-z0-9_-]", { native: { code: "BAD_FIELD" } });
   let idp: string | undefined;
   if (values.idp !== undefined) {
     try { idp = normalizeIdpUrl(values.idp); }
@@ -357,6 +358,17 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   const plain = presentation === "plain";
   // Progress goes to stderr so a --json caller still reads one document on stdout.
   const report = (line: string) => { process.stderr.write(`${line}\n`); };
+  if (!space) {
+    const r = await runAccountSetup({ paths, daemonHome: home, peerUid, peerPid, report, version: binVersion(), idp: idp!,
+      ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
+      onPrompt: p => { process.stderr.write(`Approve this machine\nOpen: ${p.verificationUriComplete}\nApproval code: ${p.userCode}\n`); },
+    });
+    writeResult(presentation, { command: "daemon setup", target: { idp: idp! }, result: r }, () => ({ sections: [
+      { title: "Connected to your account", blocks: [{ kind: "fields", rows: [["Account", r.account], ["Computer", r.computer]] },
+        { kind: "lines", lines: ["Turn on the spaces that can use this computer in the Cotal Cloud dashboard."] }] },
+    ] }));
+    return;
+  }
   let r;
   try {
     r = await runSetup({
@@ -482,14 +494,14 @@ const daemonCommand: Command = {
   kind: "command",
   name: "daemon",
   group: "Manager",
-  summary: "the local machine daemon: connect this machine to a space with one command, install it as a user service, serve its control endpoint, read its status, sign it in, check and request its own registration with a space, and connect it as its own service",
+  summary: "connect this computer to an account, manage its persistent daemon, or host a space's Manager",
   positionals: "<setup|start|status|serve|install|uninstall|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop>",
   flags: daemonFlags,
   subcommands: [
     { name: "spaces", usage: "cotal daemon spaces [--refresh] [--daemon-home <dir>] [--json|--plain]", examples: [{ command: "cotal daemon spaces", note: "list registered spaces" }, { command: "cotal daemon spaces --refresh", note: "refresh catalogs before listing spaces" }], summary: "list registered spaces; optionally refresh catalogs using the daemon-held sign-in", flagNames: ["refresh", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "start", usage: "cotal daemon start [--daemon-home <dir>] [--json|--plain]", examples: [{ command: "cotal daemon start", note: "start the recorded daemon service" }], summary: "start the unchanged, recorded daemon service without restarting a running instance", flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "desktop", usage: "cotal daemon desktop [--daemon-home <dir>]", examples: [{ command: "cotal daemon desktop < request.json", note: "serve one desktop request from a file" }], summary: "serve one bounded JSON request from the desktop app on stdin; credentials remain in the daemon", flagNames: ["daemon-home"], prepareMeshTarget: false },
-    { name: "setup", usage: "cotal daemon setup --space <s> [--idp <auth base URL>] [--client-id <id>] [--no-manager [--wait <seconds>]] [--daemon-home <dir>] [--json|--plain]", summary: "make this computer launch-ready for a space: install, sign in, discover and host its Manager; machine-service approval is separate", examples: [{ command: "cotal daemon setup --space <space> --idp <url>", note: "connect a headless machine" }, { command: "cotal daemon setup --space <space> --no-manager --wait 0", note: "report machine-service approval without hosting a Manager" }], flagNames: ["space", "idp", "client-id", "wait", "no-manager", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "setup", usage: "cotal daemon setup --idp <url> [--space <s>] [--client-id <id>] [--no-manager [--wait <seconds>]] [--daemon-home <dir>] [--json|--plain]", summary: "connect this computer to an account; with --space, discover and host its Manager (--no-manager and --wait require --space)", examples: [{ command: "cotal daemon setup --idp <url>", note: "connect this computer to your account, then turn on spaces in the dashboard" }, { command: "cotal daemon setup --space <space> --idp <url>", note: "connect directly to a space" }, { command: "cotal daemon setup --space <space> --no-manager --wait 0", note: "report machine-service approval without hosting a Manager" }], flagNames: ["space", "idp", "client-id", "wait", "no-manager", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "status", usage: "cotal daemon status [--space <s>] [--daemon-home <dir>] [--json|--plain]", summary: "ask the running daemon for its status and hosted Managers over the local endpoint", examples: [{ command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon status --json", note: "the same as one JSON document" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "serve", usage: "cotal daemon serve [--daemon-home <dir>] [--json|--plain]", summary: "run the daemon in the foreground and serve its local endpoint (refusals honor --json)", examples: [{ command: "cotal daemon serve", note: "run the machine daemon in this terminal" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "install", usage: "cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]", summary: "install the daemon as this platform's user service; Linux also enables linger", examples: [{ command: "cotal daemon install", note: "run it as a persistent user service" }, { command: "cotal daemon install --dry-run", note: "show the unit it would write" }], flagNames: ["daemon-home", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
@@ -502,7 +514,7 @@ const daemonCommand: Command = {
     { name: "service-status", usage: "cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]", summary: "read the running daemon's service connection to a space, without contacting it", examples: [{ command: "cotal daemon service-status --space <space>", note: "read the state of that connection" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
   ],
   prepareMeshTarget: false,
-  examples: [{ command: "cotal daemon setup --space <space> --idp <url>", note: "connect a headless machine to a space" }, { command: "cotal daemon install", note: "run the machine daemon as a persistent user service" }, { command: "cotal daemon status", note: "ask the running daemon for its status" }],
+  examples: [{ command: "cotal daemon setup --idp <url>", note: "connect this computer to your account" }, { command: "cotal daemon setup --space <space> --idp <url>", note: "connect directly to a space" }, { command: "cotal daemon install", note: "run the machine daemon as a persistent user service" }, { command: "cotal daemon status", note: "ask the running daemon for its status" }],
   run,
 };
 
