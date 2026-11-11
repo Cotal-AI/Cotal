@@ -633,7 +633,7 @@ try {
     const cwd2 = process.cwd();
     process.chdir(downRoot);
     try {
-      await down({ positionals: [], values: {}, raw: [] });
+      await down({ positionals: [], values: { yes: true }, raw: [] });
     } finally {
       process.chdir(cwd2); // chdir out BEFORE the rm (Windows EBUSY on a deleted cwd)
     }
@@ -655,7 +655,7 @@ try {
     process.exitCode = 0;
     process.chdir(blockedRoot);
     try {
-      await down({ positionals: [], values: {}, raw: [] });
+      await down({ positionals: [], values: { yes: true }, raw: [] });
     } finally {
       process.chdir(cwd2);
     }
@@ -687,7 +687,7 @@ try {
   const cwd3 = process.cwd();
   process.chdir(openRoot2);
   try {
-    await down({ positionals: [], values: {}, raw: [] });
+    await down({ positionals: [], values: { yes: true }, raw: [] });
   } finally {
     process.chdir(cwd3); // chdir out BEFORE the rm (Windows EBUSY on a deleted cwd)
   }
