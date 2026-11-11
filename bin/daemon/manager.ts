@@ -407,7 +407,16 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   const startRaw = async (space: string): Promise<HostedManager> => {
     if (closed || generationPending) throw new HostedManagerRefusal("GENERATION_PENDING", "the daemon is stopping or preparing an installed generation transition", command(`wait for the installed generation transition, then run cotal daemon setup --space ${space}`));
     let l = live.get(space);
-    if (!l) { const previous = status(space); l = { view: { space, state: "starting", restarts: 0, ...(previous.lastRefusal ? { lastRefusal: previous.lastRefusal } : {}) }, stopping: false, failures: 0 }; live.set(space, l); }
+    if (!l) {
+      const previous = status(space);
+      // A start attempt does not supersede an unconfirmed deletion. Failed launches
+      // must persist the same fence until a successor actually answers.
+      l = { view: { space, state: "starting", restarts: 0,
+        ...(previous.lastRefusal ? { lastRefusal: previous.lastRefusal } : {}),
+        ...(previous.registrationCleanup === "unknown" ? { registrationCleanup: previous.registrationCleanup, instanceId: previous.instanceId } : {}),
+      }, stopping: false, failures: 0 };
+      live.set(space, l);
+    }
     if (l.starting) return l.starting;
     if (l.child && l.view.instanceId) {
       try {

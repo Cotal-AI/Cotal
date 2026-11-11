@@ -1913,6 +1913,34 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                 assert.equal(afterRestart.state, "disconnected", "withdrawal must survive daemon restart");
                 assert.equal(existsSync(intentFile(ON)), false);
                 assert.equal(deregisterRequests, calls, "restart must not repeat an unconfirmed cleanup");
+                if (mode === "unknown") {
+                  assert.equal(afterRestart.manager?.registrationCleanup, "unknown");
+                  idpRevoked = true;
+                  let failedStart: Frame;
+                  try { failedStart = await ask(paths.socket, { op: "manager-start", space: ON }, 100_000); }
+                  finally { idpRevoked = false; }
+                  assert.ok(failedStart.ok && resultOf(failedStart).state === "refused", "rejected sign-in prevents an answering successor");
+                  const repeated = await cli("service-disconnect", "--space", ON);
+                  const failedView = resultOf(await ask(paths.socket, { op: "service-status", space: ON }));
+                  console.log("  failed re-enable cleanup", JSON.stringify({ before: calls, after: deregisterRequests, state: failedView.manager?.state, cleanup: failedView.manager?.registrationCleanup }));
+                  assert.equal(deregisterRequests, calls, "failed re-enable must not erase the unknown cleanup fence");
+                  assert.equal(repeated.code, 2);
+                  assert.equal(failedView.manager?.registrationCleanup, "unknown");
+                  assert.ok(failedView.manager.next.includes(`endpoint deregister manager ${instanceId}`));
+                  await killAndAwaitExit(child, "SIGTERM");
+                  child = await startDaemon();
+                  const retained = resultOf(await ask(paths.socket, { op: "service-status", space: ON }));
+                  assert.equal(retained.manager?.registrationCleanup, "unknown", "failed-start refusal retains the fence on disk");
+                  assert.equal(retained.manager?.instanceId, instanceId);
+                  assert.equal(deregisterRequests, calls);
+                  const recovered = await ask(paths.socket, { op: "manager-start", space: ON }, 100_000);
+                  assert.ok(recovered.ok && resultOf(recovered).state === "answering", "an actual answering successor can supersede unknown cleanup");
+                  assert.equal(resultOf(recovered).registrationCleanup, undefined);
+                  deregisterMode = undefined;
+                  assert.equal((await cli("service-disconnect", "--space", ON)).code, 0);
+                  assert.equal(deregisterRequests, calls + 1, "confirmed answering successor permits a later cleanup request");
+                  check("I9 failed re-enable preserves unknown cleanup until an answering successor", true);
+                }
               }
               check(`I8 ${mode ?? "supported"} cleanup withdraws the service and its intent`, true);
             }
