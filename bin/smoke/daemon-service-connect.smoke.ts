@@ -1770,6 +1770,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         }
         if (accountOnly) {
           if (process.argv.includes("--account-setup-journey")) {
+            await killAndAwaitExit(child, "SIGTERM");
+            rmSync(pathUnit);
+            rmSync(pathReceipt);
+            writeFileSync(join(pathBin, "loginctl"), `#!${process.execPath}\nconsole.log('Linger=yes');\n`, { mode: 0o700 });
+            writeFileSync(join(pathBin, "systemctl"), `#!${process.execPath}\nconst args=process.argv.slice(2);if(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}const op=args.includes('daemon-reload')?'daemon-reload':args.includes('enable')?'daemon-reload':args.at(-2);if(!['stop','start','disable','daemon-reload'].includes(op))process.exit(99);fetch('http://127.0.0.1:${(pathControl!.address() as AddressInfo).port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
+            check("J0 clean setup starts with no installed service", !existsSync(pathUnit) && !existsSync(pathReceipt));
             const before = deviceCodeRequests;
             const fresh = await cli("setup", "--idp", idpUrl);
             check("J1 account setup registers with one device approval", fresh.code === 0 && deviceCodeRequests === before + 1 && typeof fresh.doc.result?.machineId === "string", fresh);
@@ -1783,7 +1789,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               const invalid = await cli("setup", "--idp", idpUrl, ...flags);
               check("J5 space-only flag refuses without space", invalid.code !== 0 && invalid.doc.error?.message.includes("require --space"), invalid);
             }
-            accountDesired = true;
+            const enabled = await ask(paths.socket, { op: "space-intent", space: ON, enabled: true }, 100_000);
+            check("J5a account intent enables the space", enabled.ok === true && accountDesired, enabled);
             let unavailable: Record<string, any> = {};
             for (let i = 0; i < 120; i++) {
               unavailable = (await cli("status")).doc.result ?? {};
@@ -1805,6 +1812,13 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               await sleep(500);
             }
             check("J8 turned-on hosted Manager sees added application automatically", ready.managers?.some((row: any) => row.space === ON && row.state === "answering" && row.connectors?.some((c: any) => c.state === "available")), ready);
+            if (!process.argv.includes("--account-hosted")) await approve(host, ON, fixture.owner);
+            for (let i = 0; i < 120; i++) {
+              ready = (await cli("status")).doc.result ?? {};
+              if (ready.account?.spaces?.some((row: any) => row.space === ON && row.observed === "connected")) break;
+              await sleep(500);
+            }
+            check("J9 enabled account space connects", ready.account?.spaces?.some((row: any) => row.space === ON && row.observed === "connected"), ready);
             return;
           }
           if (process.argv.includes("--account-setup-gaps")) {
