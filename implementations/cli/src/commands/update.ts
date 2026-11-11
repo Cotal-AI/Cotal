@@ -297,8 +297,14 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       rt.err(c.red(`✗ global update child is cotal-ai ${current}, expected ${child.target}; refusing to mutate extensions`));
       return 1;
     }
-    const result = await reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
-    if (result !== 0) return result;
+    // A parent that journals its transaction holds the daemon on the old generation until this
+    // reconcile is verified. An older parent wrote no journal, and its daemon restarts as soon as
+    // the package changes, so continuity is only answerable after that restart has settled.
+    const journaled = readUpdateRecovery() !== undefined;
+    if (journaled) {
+      const result = await reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
+      if (result !== 0) return result;
+    }
     try {
       const recovery = readUpdateRecovery();
       if (recovery) writeUpdateRecovery({ ...recovery, installed: current, phase: "verified-ready" });
@@ -307,7 +313,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       rt.err(c.red(`✗ installed daemon generation: ${refusal(error)}`));
       return 1;
     }
-    return 0;
+    return journaled ? 0 : reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
   }
 
   if (self) {
