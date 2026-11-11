@@ -1,5 +1,32 @@
 # cotal-ai
 
+## 0.159.1
+
+### Patch Changes
+
+- d2f4b32: Signing in to a working host no longer fails because another saved host is unavailable.
+- c43b597: Cotal checks for updates on every platform and can keep a Linux machine daemon current through the guarded updater, with independent controls for automatic installation and notices. Automatic installation is available only on Linux in this release. Manual updates remain available on every platform.
+- 0494fec: Remove abandoned Manager registrations when a computer returns after its space was removed.
+  The daemon uses the governing authority's ownership and broker-liveness guard after stopping
+  its child. Unsupported, refused or unconfirmed cleanup remains visible in daemon status with
+  the recorded instance and a recovery command, without hosting the removed space again.
+  Explicit disconnection still closes the machine service and forgets its connection intent when
+  Manager registration cleanup cannot complete.
+  Failed attempts to re-enable hosting retain an unconfirmed cleanup fence across restarts, so they
+  cannot cause another registration removal request before a successor Manager answers.
+- Updated dependencies [c43b597]
+- Updated dependencies [0494fec]
+  - @cotal-ai/workspace@0.159.1
+  - @cotal-ai/cli@0.159.1
+  - @cotal-ai/manager@0.159.1
+  - @cotal-ai/auth@0.159.1
+  - @cotal-ai/delivery@0.159.1
+  - @cotal-ai/runtime@0.159.1
+  - @cotal-ai/connector-core@0.159.1
+  - @cotal-ai/registry@0.159.1
+  - @cotal-ai/core@0.159.1
+  - @cotal-ai/seat@0.159.1
+
 ## 0.159.0
 
 ### Patch Changes

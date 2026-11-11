@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.159.1
+
+### Patch Changes
+
+- c43b597: Cotal checks for updates on every platform and can keep a Linux machine daemon current through the guarded updater, with independent controls for automatic installation and notices. Automatic installation is available only on Linux in this release. Manual updates remain available on every platform.
+- Updated dependencies [c43b597]
+  - @cotal-ai/workspace@0.159.1
+  - @cotal-ai/core@0.159.1
+
 ## 0.159.0
 
 ### Patch Changes
