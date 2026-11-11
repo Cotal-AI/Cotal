@@ -54,7 +54,7 @@ export async function reconcileInstalledGeneration(): Promise<void> {
     child.once("close", (code) => {
       clearTimeout(timer);
       if (code === 0) resolve();
-      else reject(new Error(`replacement connector reconciliation failed (exit ${code}): ${error.trim()}; run cotal ext seed --repair with the installed CLI`));
+      else reject(new Error(`replacement connector reconciliation failed (exit ${code}): ${error.trim()}; run \`cotal ext seed --repair\` with the installed CLI`));
     });
   });
 }

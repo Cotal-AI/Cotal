@@ -126,7 +126,7 @@ function registerUserServer(cotal: readonly string[]): string {
   if (added.status !== 0) throw new Error(`mcp add failed (cotal):\n${added.output}`);
   if (userServerState(claudeUserMcpServers().cotal, desired) !== "current")
     throw new Error("the user-scope MCP entry cotal was not registered as requested");
-  return `user MCP entry cotal ${state === "replace" ? "replaced" : "registered"}`;
+  return `user MCP entry \`cotal\` ${state === "replace" ? "replaced" : "registered"}`;
 }
 
 /** Whether Claude Code's user config declares the `cotal` server the wake channel of a launched
@@ -140,7 +140,7 @@ function userServerRow(): ConnectorStatusRow {
   }
   return declared
     ? { label: "Claude wake channel", state: "ok", text: "user MCP entry cotal registered" }
-    : { label: "Claude wake channel", state: "off", text: "user MCP entry cotal not registered · run cotal setup" };
+    : { label: "Claude wake channel", state: "off", text: "user MCP entry `cotal` not registered · run `cotal setup`" };
 }
 
 /** Desktop chat supplies no native session, so its local server cannot join a signed-in space. It

@@ -289,7 +289,8 @@ keeps a line of its own and is never split. A command under Next wraps as one wo
 never holds part of one. So does anything a line writes in backticks, from its opening backtick to its
 closing one, whatever it starts with and whatever words it holds, such as
 `systemctl --user show-environment`. A remedy, Next line, hint, message or option description that
-names a command after other words writes it in backticks, so it wraps whole and `--json` carries the same text. A command that holds a
+names a command after other words writes it in backticks, so it wraps whole and `--json` carries the same text.
+This includes daemon recovery commands and update notices. A command that holds a
 backtick itself, as a quoted path can, is named between double backticks, as Markdown writes such code,
 and wraps whole to the matching pair. A line that starts with a command outside backticks, such as a
 usage line, wraps at its spaces. A command or a span in backticks wider than the line, such as a

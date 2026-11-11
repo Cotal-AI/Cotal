@@ -79,7 +79,7 @@ const composed: Command = { ...command, async run(args) {
     for (const manager of active) {
       // A failed earlier observation is not proof that a retained child's endpoint cannot answer.
       // Keep the fresh, instance-pinned custody check below as the authority for update admission.
-      if (!manager.instanceId) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager for ${manager.space} is ${manager.state}; its custody must answer before update`, { remedy: `run cotal daemon service-disconnect --space ${manager.space}, correct its sign-in or connection, then run cotal update again` });
+      if (!manager.instanceId) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager for ${manager.space} is ${manager.state}; its custody must answer before update`, { remedy: `run \`cotal daemon service-disconnect --space ${manager.space}\`, correct its sign-in or connection, then run \`cotal update\` again` });
       const reply = await withIdpSessionDir(homeCotalDir(), async () => {
         const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
         return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
@@ -88,7 +88,7 @@ const composed: Command = { ...command, async run(args) {
       const status = reply.data as { agentCount?: number; custody?: string; stopImpact?: { agents: { name: string }[] } };
       if (status.custody === "legacy" && status.agentCount !== 0) {
         const names = status.stopImpact?.agents.map((agent) => agent.name);
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager ${manager.instanceId} cannot preserve running agents on this computer during update${names?.length ? ` (${names.join(", ")})` : ""}; restarting it would end them`, { remedy: `save their work; stop each with cotal stop <name> --on ${manager.instanceId} --space ${shellPath(manager.space)}, then rerun the same update command. To list agents, use cotal ps --on ${manager.instanceId} --space ${shellPath(manager.space)} (requires admin scope)` });
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager ${manager.instanceId} cannot preserve running agents on this computer during update${names?.length ? ` (${names.join(", ")})` : ""}; restarting it would end them`, { remedy: `save their work; stop each with \`cotal stop <name> --on ${manager.instanceId} --space ${shellPath(manager.space)}\`, then rerun the same update command. To list agents, use \`cotal ps --on ${manager.instanceId} --space ${shellPath(manager.space)}\` (requires admin scope)` });
       }
       console.log(`hosted Manager ${manager.space}: instance ${manager.instanceId} answered; ${status.agentCount ?? "unknown"} seat(s)`);
     }
@@ -133,7 +133,7 @@ const composed: Command = { ...command, async run(args) {
       const reply = await queryDaemon({ paths });
       if (reply.ok && reply.result.version === updateRuntime.version() && hostedSpaces.every((space) => reply.result.managers?.some((manager) => manager.space === space && manager.state === "answering"))) return;
     } catch (error) { if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(error.code)) throw error; }
-    if (Date.now() >= deadline) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the updated daemon did not restore its hosted Managers before the deadline", { remedy: "read cotal daemon status and the recorded daemon user service" });
+    if (Date.now() >= deadline) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the updated daemon did not restore its hosted Managers before the deadline", { remedy: "read \`cotal daemon status\` and the recorded daemon user service" });
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 } };

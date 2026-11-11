@@ -20,8 +20,8 @@ export async function waitForInstalledDaemonGeneration(version: string): Promise
   let waiting = "the recorded daemon has not answered";
   for (;;) {
     const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `installed Cotal ${version} did not become ready within 120s: ${waiting}; connector reconciliation was not started by this update. Read cotal daemon status and the recorded daemon user service, restore the daemon and its hosted Managers, then run cotal update again`, {
-      remedy: "read cotal daemon status and the recorded daemon user service, restore the daemon and its hosted Managers, then run cotal update again",
+    if (remaining <= 0) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `installed Cotal ${version} did not become ready within 120s: ${waiting}; connector reconciliation was not started by this update. Read \`cotal daemon status\` and the recorded daemon user service, restore the daemon and its hosted Managers, then run \`cotal update\` again`, {
+      remedy: "read \`cotal daemon status\` and the recorded daemon user service, restore the daemon and its hosted Managers, then run \`cotal update\` again",
     });
     try {
       const reply = await queryDaemon({ paths, timeoutMs: Math.min(20_000, Math.max(1, remaining)) });

@@ -168,7 +168,7 @@ for (const [args, usage, foreign] of [
 // before `<file>`, in the refusal line and under `--plain` in its Next.
 {
   const root = join(home, "wide-next");
-  mkdirSync(root);
+  mkdirSync(root, { mode: 0o700 });
   const created = run(["space", "create", "widenext", "--root", root]);
   const at80 = async (args: string[], ptyEnv: Record<string, string> = env as Record<string, string>): Promise<string[]> => {
     let out = "";
@@ -430,6 +430,9 @@ check("under a locale without UTF-8 an unknown command is the report, with no wa
 // A missing --yes outside a terminal is not a grammar mistake: the refusal and a remedy that names
 // --yes are the whole fix, so the command's help is left out, as `down` already did.
 const project = join(home, "proj");
+mkdirSync(project, { mode: 0o700 });
+const confirmationSpace = run(["space", "create", "confirmation", "--root", project]);
+check("confirmation refusals use a prepared local space", confirmationSpace.status === 0, shown(confirmationSpace));
 mkdirSync(join(project, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(project, ".cotal", "agents", "p1.md"), "---\nname: p1\n---\nhello\n");
 const confirmShape = (r: ReturnType<typeof run>, message: RegExp, remedy: string) =>

@@ -149,11 +149,11 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
     const message = e instanceof CommandFailure && (req.op === "setup" || (req.op === "install" && e.native?.code !== "NOT_ANSWERING")) ? e.message
       : code === "NOT_RUNNING" ? "The daemon is not running. Install its background service first."
-      : e instanceof CommandFailure && e.code === "DEPENDENCY_UNAVAILABLE" && e.native?.code === "NOT_ANSWERING" ? "The background service was installed and a start was requested, but the daemon did not answer within 15 seconds. Use cotal daemon status for diagnostics."
+      : e instanceof CommandFailure && e.code === "DEPENDENCY_UNAVAILABLE" && e.native?.code === "NOT_ANSWERING" ? "The background service was installed and a start was requested, but the daemon did not answer within 15 seconds. Use \`cotal daemon status\` for diagnostics."
       : code === "NO_RUNTIME_DIR" ? "The daemon runtime path is unavailable or too long. On Linux, check XDG_RUNTIME_DIR for the intended operating-system user."
       : code === "UNSUPPORTED_PLATFORM" ? "This platform does not have the required native daemon support."
       : code === "PEER_UID_MISMATCH" || code === "PEER_NOT_LOCK_OWNER" ? "The local daemon identity could not be verified. The requested change was not sent."
-      : "The operation could not be completed. Use the matching cotal daemon command for diagnostics; no success is assumed.";
+      : "The operation could not be completed. Use the matching `cotal daemon` command for diagnostics; no success is assumed.";
     emit({ v: 1, event: "result", ok: false, error: { code, message,
       ...(e instanceof CommandFailure && (req.op === "setup" || req.op === "install") ? { remedy: e.remedy, native: e.native } : {}),
     } });
