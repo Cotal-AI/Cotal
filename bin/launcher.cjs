@@ -29,7 +29,7 @@ function retry() {
     try { await import(${JSON.stringify(pathToFileURL(entry).href)}); }
     catch (error) {
       if (!globalThis[Symbol.for('cotal.command-started')] &&
-          ['ERR_MODULE_NOT_FOUND', 'MODULE_NOT_FOUND', 'ENOENT'].includes(error?.code)) {
+          (error instanceof SyntaxError || ['ERR_MODULE_NOT_FOUND', 'MODULE_NOT_FOUND', 'ENOENT'].includes(error?.code))) {
         writeSync(3, 'retry');
         process.exit(75);
       }
@@ -63,7 +63,7 @@ function scheduleRetry() {
 
 import(pathToFileURL(entry).href).catch((error) => {
   if (globalThis[Symbol.for("cotal.command-started")] ||
-      !["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND", "ENOENT"].includes(error?.code)) throw error;
+      !(error instanceof SyntaxError || ["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND", "ENOENT"].includes(error?.code))) throw error;
   for (const [signal, code] of Object.entries(signals)) process.on(signal, () => {
     interrupted = true;
     if (child) child.kill(signal);

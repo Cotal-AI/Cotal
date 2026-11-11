@@ -8,9 +8,10 @@ import { join, resolve } from "node:path";
 
 const repo = resolve(import.meta.dirname, "..", "..");
 const root = mkdtempSync(join(tmpdir(), "cotal-npm-launcher-"));
-const modules = join(root, "prefix", "lib", "node_modules");
+const windows = process.platform === "win32";
+const modules = windows ? join(root, "prefix", "node_modules") : join(root, "prefix", "lib", "node_modules");
 const pkg = join(modules, "cotal-ai");
-const bin = join(root, "prefix", "bin", "cotal");
+const bin = windows ? join(modules, ".cotal-launcher", "launcher.cjs") : join(root, "prefix", "bin", "cotal");
 for (const part of [pkg, "home", "config", "runtime", "state", "work", "stubs"].map(p => p.startsWith(root) ? p : join(root, p))) mkdirSync(part, { recursive: true, mode: 0o700 });
 for (const name of ["systemctl", "launchctl", "schtasks"]) writeFileSync(join(root, "stubs", name), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !key.toLowerCase().startsWith("npm_config_")));
@@ -20,7 +21,7 @@ copyFileSync(join(repo, "bin", "package.json"), join(pkg, "package.json"));
 copyFileSync(join(repo, "bin", "launcher.cjs"), join(pkg, "launcher.cjs"));
 mkdirSync(join(pkg, "scripts"));
 copyFileSync(join(repo, "bin", "scripts", "install-launcher.cjs"), join(pkg, "scripts", "install-launcher.cjs"));
-symlinkSync(join(repo, "bin", "node_modules"), join(pkg, "node_modules"), "dir");
+symlinkSync(join(repo, "bin", "node_modules"), join(pkg, "node_modules"), windows ? "junction" : "dir");
 const install = () => spawnSync(process.execPath, [join(pkg, "scripts", "install-launcher.cjs")], { env, cwd: join(root, "work"), encoding: "utf8" });
 const run = (args = ["version"]) => {
   const child = spawn(process.execPath, [bin, ...args], { env, cwd: join(root, "work"), stdio: ["ignore", "pipe", "pipe"] });
@@ -62,17 +63,23 @@ assert.equal(failure.status, 1); assert.match(failure.stderr, /command missing f
 assert.equal(readFileSync(effects, "utf8"), "once\n");
 writeFileSync(entry, "globalThis[Symbol.for('cotal.command-started')] = true; process.exit(75);");
 assert.equal((await run().result).status, 75, "a command's exit 75 is not a retry receipt");
-writeFileSync(entry, "throw new SyntaxError('invalid package code');");
+writeFileSync(entry, "throw new TypeError('invalid package code');");
 const syntax = await run().result;
 assert.equal(syntax.status, 1); assert.match(syntax.stderr, /invalid package code/);
 writeFileSync(entry, saved);
 console.log("PASS a command failure is never replayed");
+writeFileSync(entry, "export const partial =");
+const syntaxRetry = run();
+await new Promise(r => setTimeout(r, 300));
+writeFileSync(entry, saved);
+healthy(await syntaxRetry.result);
+console.log("PASS partially extracted JavaScript is retried before the command begins");
 renameSync(pkg, retired);
 const cancelled = run();
 await new Promise(r => setTimeout(r, 300));
 cancelled.child.kill("SIGTERM");
 const signal = await cancelled.result;
-assert.equal(signal.status, 143);
+assert.ok(signal.status === 143 || windows && signal.signal === "SIGTERM", JSON.stringify(signal));
 renameSync(retired, pkg);
 console.log("PASS interrupted startup does not retry");
 // npm must not retire the public launcher, and npx must still have one unambiguous binary.
