@@ -71,7 +71,17 @@ export const scenarios = [
   ...["connected", "starting", "approval-pending", "removed on this computer", "refusal", "sign-in-required"].map(observed => ({
     name: `account-${observed.replaceAll(" ", "-")}`,
     state: { installed: true, signedIn: true, connected: observed === "connected", account: { mode: observed === "sign-in-required" ? observed : "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed, ...(observed === "refusal" ? { lastRefusal: "Ask the space owner to approve this computer." } : {}) }] } },
-    expect: async page => { assert.equal(await page.locator("#connected-panel").isVisible(), true); if (observed === "sign-in-required") assert.equal(await page.locator("#connection-title").textContent(), "Sign in again"); },
+    expect: async page => {
+      assert.equal(await page.locator("#connected-panel").isVisible(), true);
+      assert.equal(await page.locator("#sign-in-again").isVisible(), observed === "sign-in-required");
+      const pill = observed === "connected" ? "Connected" : ["sign-in-required", "removed on this computer"].includes(observed) ? "Not connected" : "Starting";
+      assert.equal(await page.locator("#tray-label").textContent(), pill);
+      if (observed === "sign-in-required") {
+        assert.equal(await page.locator("#connection-title").textContent(), "Sign in to keep this computer connected");
+        assert.equal(await page.locator("#sign-in-again").textContent(), "Sign in");
+        assert.equal(await page.locator("#sign-in-again").evaluate(el => el.classList.contains("primary")), true);
+      }
+    },
   })),
   { name: "loading", state: { loading: true }, expect: async page => {
     assert.equal(await page.locator("#tray-label").textContent(), "Checking connection");
