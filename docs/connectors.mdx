@@ -35,14 +35,14 @@ Each guide lists the connector's requirements and supported features.
 
 ## Compare support
 
-| Connector | Maturity | Resume a session with `--resume` | Share selected MCP tools with `--share-tools` |
-|---|---|---|---|
-| Claude Code | Stable | Forks the source session | Supported |
-| OpenCode | Beta | Unsupported | Unsupported. Inherits the user's MCP servers. |
-| Codex | Beta | Unsupported | Unsupported. Uses an isolated `CODEX_HOME`. |
-| Hermes | Alpha | Forks the source session | Unsupported |
-| Jcode | Beta | Forks the source session | Unsupported. Uses private MCP configuration. |
-| pi | Alpha | Forks the source session | Unsupported |
+| Connector | Maturity | Resume a session with `--resume` | Share selected MCP tools with `--share-tools` | List models with `cotal models` |
+|---|---|---|---|---|
+| Claude Code | Stable | Forks the source session | Supported | Models the Claude login can use |
+| OpenCode | Beta | Unsupported | Unsupported. Inherits the user's MCP servers. | Models and variants on 1.x and 2.x |
+| Codex | Beta | Unsupported | Unsupported. Uses an isolated `CODEX_HOME`. | Models and reasoning efforts |
+| Hermes | Alpha | Forks the source session | Unsupported | Unsupported |
+| Jcode | Beta | Forks the source session | Unsupported. Uses private MCP configuration. | Models declared in the Jcode configuration |
+| pi | Alpha | Forks the source session | Unsupported | Models of providers pi holds credentials for |
 
 An unsupported option fails the launch. Cotal does not silently ignore it.
 For containers, see the current [deployment limits](deploy.mdx).

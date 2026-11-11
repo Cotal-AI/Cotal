@@ -201,7 +201,10 @@ cotal spawn --harness claude --model sonnet
 ```
 
 `--model` overrides the persona's model pin.
-The Claude connector exposes no model catalog and rejects `--variant`.
+To list the models your Claude login can use, run `cotal models --harness claude`.
+The connector asks your own `claude` without sending a prompt.
+A logged-out `claude` reports `claude is not logged in; run claude to log in`.
+The Claude connector rejects `--variant`.
 It also rejects `provider/model` names used by other connectors, except Bedrock inference-profile ARNs.
 Choose the corresponding connector for another provider's model.
 

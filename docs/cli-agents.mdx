@@ -420,13 +420,15 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 | `--plain` | off | The same report without color |
 
 Asks the selected manager for each application's model catalog (model ids plus their variants)
-for connectors that expose one. OpenCode and Codex query harness/provider surfaces; Jcode reads
-providers that enable `model_catalog = true` in the operator Jcode `config.toml`. Jcode's listed
-effort tiers render as `<tiers> (declared, not provider-verified)`, and launch can still refuse one.
+for connectors that expose one. Claude Code, OpenCode, Codex and pi ask the installed application.
+Claude Code lists the models its login can use, and pi lists the models of providers it holds
+credentials for. Jcode reads providers that enable `model_catalog = true` in the operator Jcode
+`config.toml`. Jcode's listed effort tiers render as `<tiers> (declared, not provider-verified)`,
+and launch can still refuse one.
 A connector without a catalog says so with `supported: false`, and one whose install has no
-catalog it can list, such as OpenCode 2.x, gives the reason in `unavailable`; neither is a failed
-read. A connector whose catalog could not be read, or that the manager could not load, makes the
-read `partial` (exit 4) with one `MODEL_CATALOG_UNREADABLE` warning naming its cause. The
+catalog it can list, such as a logged-out Claude Code or a pi without provider credentials, gives
+the reason in `unavailable`; neither is a failed read. A connector whose catalog could not be
+read, or that the manager could not load, makes the read `partial` (exit 4) with one `MODEL_CATALOG_UNREADABLE` warning naming its cause. The
 screen points to that warning without repeating it inline. The remedy is to correct the stated
 cause before retrying; a refresh cannot repair missing connector configuration. A manager-level
 refusal is reported separately. When the space's service registry lists no live manager, an
@@ -438,10 +440,9 @@ application its install names, so an empty list says the answering manager has n
 application installed. A connector whose harness the manager did not find at boot
 reports the reason boot recorded, as a spawn does, so restart the manager after installing it. Pick
 a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog
-printed it. OpenCode and Codex ids are the full
-`provider/model`; Jcode ids are bare (`opus-5`, not `cliproxy/opus-5`), because the provider is
-selected by the operator's Jcode config and a prefixed id is refused at launch with the bare form
-named.
+printed it. OpenCode and Codex ids are the full `provider/model`, and pi ids are `provider/id`;
+Jcode ids are bare (`opus-5`, not `cliproxy/opus-5`), because the provider is selected by the
+operator's Jcode config and a prefixed id is refused at launch with the bare form named.
 
 
 ## persona [#persona]
