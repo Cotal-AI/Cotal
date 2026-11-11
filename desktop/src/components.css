@@ -24,6 +24,7 @@
 #tray-indicator { box-sizing: content-box; width: 7px; height: 7px; border: 2px solid var(--ink); background: var(--gold); margin-right: -8px; padding: 0; position: relative; z-index: 1; }
 #tray-label { padding-left: 12px; }
 #tray-indicator.connected { background: var(--green); }
+#tray-indicator.error { background: var(--red); }
 .sidebar-footer:has(.connected) #tray-label { color: var(--green-ink); }
 #journey { gap: 8px; }
 #journey li { flex: 1; gap: 8px; font-size: 12px; }

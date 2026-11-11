@@ -36,7 +36,9 @@ export function nativeStub(scenario) {
         if (state.loginError) return fail(state.loginError, `Sign-in failed: ${state.loginError}.`);
         send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: "https://cloud.cotal.ai/device?user_code=WDJB-MJHT", userCode: "WDJB-MJHT", expiresAt: new Date(Date.now() + (state.expired ? -1000 : 581000)).toISOString() } });
         if (state.waiting || state.expired) await new Promise(() => {});
-        state.signedIn = true; return ok({ outcome: "signed-in" });
+        state.signedIn = true;
+        if (state.accountAfterLogin) state.account = state.accountAfterLogin;
+        return ok({ outcome: "signed-in" });
       }
       if (request.op === "setup") {
         const progress = (step, outcome, detail, extra = {}) => send({ v: 1, event: "setup-progress", line: detail, progress: { step, outcome, detail, ...extra } });
@@ -68,14 +70,26 @@ export const scenarios = [
     await page.evaluate(() => window.__renderState.account.spaces.pop());
     await page.locator('[data-space="research"]').waitFor({ state: "detached", timeout: 6000 });
   } },
+  { name: "account-first-sign-in", state: { accountAfterLogin: { mode: "account", hostSupport: "supported", spaces: [] } }, act: async page => { await page.click("#login"); await page.locator("#connected-panel:not([hidden])").waitFor(); }, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected to your account");
+    assert.equal(await page.locator("#tray-label").textContent(), "Ready");
+  } },
+  { name: "account-ready", state: { installed: true, signedIn: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected to your account");
+    assert.equal(await page.locator("#tray-label").textContent(), "Ready");
+    assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "check");
+    assert.equal(await page.locator("#dashboard").isVisible(), true);
+  } },
   ...["connected", "starting", "approval-pending", "removed on this computer", "refusal", "sign-in-required"].map(observed => ({
     name: `account-${observed.replaceAll(" ", "-")}`,
     state: { installed: true, signedIn: true, connected: observed === "connected", account: { mode: observed === "sign-in-required" ? observed : "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed, ...(observed === "refusal" ? { lastRefusal: "Ask the space owner to approve this computer." } : {}) }] } },
     expect: async page => {
       assert.equal(await page.locator("#connected-panel").isVisible(), true);
       assert.equal(await page.locator("#sign-in-again").isVisible(), observed === "sign-in-required");
-      const pill = observed === "connected" ? "Connected" : ["sign-in-required", "removed on this computer"].includes(observed) ? "Not connected" : "Starting";
+      const pill = observed === "connected" ? "Connected" : observed === "sign-in-required" ? "Sign in required" : observed === "removed on this computer" ? "Ready" : "Starting";
       assert.equal(await page.locator("#tray-label").textContent(), pill);
+      const dot = await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor);
+      assert.equal(dot, ["sign-in-required", "refusal"].includes(observed) ? "rgb(224, 98, 90)" : observed === "connected" ? "rgb(95, 168, 102)" : "rgb(229, 185, 78)");
       if (observed === "sign-in-required") {
         assert.equal(await page.locator("#connection-title").textContent(), "Sign in to keep this computer connected");
         assert.equal(await page.locator("#sign-in-again").textContent(), "Sign in");
