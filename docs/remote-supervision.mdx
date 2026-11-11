@@ -167,7 +167,9 @@ prepare authority for the same identities and resumes the same frozen operation 
 Already-revoked rows and saved verified-holder progress are retained. A refused authority request
 or a non-expiry failure still stops startup. Host eviction and reconciliation refusals stop startup
 even if the prepare connection expires at the same time. An incomplete eviction verdict also refuses;
-expiry recovery cannot replace it with another host request. Historical rows remain retained, so large
+expiry recovery cannot replace it with another host request. The prepare connection does not
+reconnect automatically and closes after its outstanding requests settle, without waiting for a
+drain round trip that credential expiry could interrupt. Historical rows remain retained, so large
 families can require several executor windows.
 
 ### Keep lifecycle changes on the host

@@ -83,6 +83,7 @@ export async function registerRemoteManagerAuthority(args: {
       nc = await dialerFor(args.server)({
         servers: args.server,
         ...standaloneConnectOpts({ creds: prepareCreds, tls: args.tlsRequired }),
+        reconnect: false,
         maxReconnectAttempts: 0,
       });
       const kvm = new Kvm(nc);
@@ -168,7 +169,9 @@ export async function registerRemoteManagerAuthority(args: {
       if (!args.refreshPrepareCreds || !expired) throw error;
       await refresh();
     } finally {
-      if (nc) await nc.drain().catch(() => nc!.close());
+      // This executor serves no inbound work. Every request and revoke batch has settled, so
+      // close directly rather than draining through a PING that expiry can leave unanswered.
+      if (nc) await nc.close();
     }
   }
 }
