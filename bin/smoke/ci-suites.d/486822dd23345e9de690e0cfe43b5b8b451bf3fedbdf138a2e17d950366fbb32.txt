@@ -1,2 +1,1 @@
-smoke:daemon-other-providers
 smoke:daemon-expired-provider
