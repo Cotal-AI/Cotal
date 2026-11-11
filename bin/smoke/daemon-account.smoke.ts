@@ -93,6 +93,9 @@ try {
   mode = 503; const errors = gets;
   await until(() => gets > errors, "503 leaves desired revision unchanged");
   assert.equal(daemon.status().account!.desiredRevision, 1);
+  assert.equal(daemon.status().account!.message, "account computer request failed; existing connections are unchanged");
+  mode = 304; const recovered = gets;
+  await until(() => gets > recovered && daemon.status().account?.message === undefined, "an unchanged poll after a failed one clears the failure message");
   mode = 401; const denied = gets;
   await until(() => gets > denied && daemon.status().account?.mode === "sign-in-required", "401 surfaces sign in again");
   const halted = gets; await sleep(5500); assert.equal(gets, halted);
