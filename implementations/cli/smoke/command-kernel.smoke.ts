@@ -3,7 +3,10 @@
  * strict flags, shorts, positional gating, rawArgs passthrough — plus commandUsage
  * generation and the dispatcher's flag-name completion. Run: pnpm smoke:cli-kernel
  */
-import assert from "node:assert/strict";
+import strictAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
+const counted = countedAssert(strictAssert);
+const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +16,7 @@ import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
-import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
+import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
 import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { supervisorMayServe } from "../src/lib/manager-proc.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
@@ -1198,6 +1201,7 @@ async function completionOut(positionals: string[]): Promise<string> {
         assert.ok(existsSync(cache)); caches.add(cache);
         const spec = args[0] === "view" ? args[1] : args[2];
         const name = spec.slice(0, spec.lastIndexOf("@"));
+        const requestedVersion = spec.slice(spec.lastIndexOf("@") + 1);
         assert.ok(Object.hasOwn(manifests, name), "only runtime first-party dependencies are queried");
         if (args[0] === "cache") {
           downloaded.push(spec);
@@ -1209,17 +1213,17 @@ async function completionOut(positionals: string[]): Promise<string> {
         if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stderr: "npm error code E404" };
         if (name === "@cotal-ai/core" && scenario === "invalid-json") return { status: 0, stdout: "not json" };
         return { status: 0, stdout: JSON.stringify({
-          name, version: scenario === "wrong-version" ? "0.13.3" : version,
+          name, version: scenario === "wrong-version" ? "0.13.3" : requestedVersion,
           dist: { tarball: "https://registry.example/package.tgz", ...(scenario === "missing-integrity" ? {} : { integrity: "sha512-fixture" }) },
-          ...manifests[name],
+          ...JSON.parse(JSON.stringify(manifests[name]).replaceAll(version, requestedVersion)),
           ...(scenario === "skewed-dependency" ? { dependencies: { "@cotal-ai/core": "0.13.1" } } : {}),
         }) };
       },
     });
     assert.equal(await executeUpdate(true, fixture.rt), scenario === "ready" ? 0 : 1, scenario);
-    assert.ok(caches.size === 1 && [...caches].every(cache => !existsSync(cache)), "the private preflight cache is removed");
+    assert.ok(caches.size === (scenario === "ready" ? 2 : 1) && [...caches].every(cache => !existsSync(cache)), "every private preflight cache is removed");
     if (scenario === "ready") {
-      assert.deepEqual(downloaded, Object.keys(manifests).map(name => `${name}@${version}`), "transitive and optional archives are fetched once, despite peer cycles");
+      assert.deepEqual(downloaded, [version, "0.13.1"].flatMap(release => Object.keys(manifests).map(name => `${name}@${release}`)), "target and rollback transitive and optional archives are fetched once, despite peer cycles");
       const lastFetch = fixture.events.findLastIndex(event => event.startsWith("npm:cache add"));
       assert.ok(lastFetch < fixture.events.findIndex(event => event.startsWith("claim-global:")), "readiness precedes global mutation custody");
     } else {
@@ -1304,7 +1308,7 @@ async function completionOut(positionals: string[]): Promise<string> {
       : args[0] === "root"
         ? { status: 0, stdout: "/global/node_modules" }
         : { status: 0 },
-    spawn: () => ({ status: 7, stderr: "child failed" }),
+    spawn: (_file, _args, env) => env.COTAL_UPDATE_TARGET_VERSION === "0.13.1" ? { status: 0 } : { status: 7, stderr: "child failed" },
   });
   assert.equal(await executeUpdate(true, failedChild.rt), 7);
   const priorExitCode = process.exitCode;
@@ -1429,6 +1433,25 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.equal(await executeUpdate(false, unavailable.rt), 1);
   assert.ok(!unavailable.events.includes("report-running-manager") && !unavailable.events.includes("reconcile"), "failed activation leaves continuity and every connector write untouched");
   assert.ok(unavailable.events.some(event => event.includes("installed daemon generation:")));
+
+  const journalHome = mkdtempSync(join(tmpdir(), "kernel-update-journal-"));
+  const priorJournalHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = journalHome;
+  try {
+    writeUpdateRecovery({ previous: "0.13.0", target: "0.13.1", installed: "0.13.0", phase: "replacing", reason: "journaled parent" });
+    const journaled = updateRuntime({ env: { COTAL_UPDATE_TARGET_VERSION: "0.13.1", COTAL_UPDATE_PARENT: "99" } });
+    journaled.rt.waitForInstalledGeneration = async () => {
+      assert.equal(readUpdateRecovery()?.phase, "verified-ready", "journal is verified only after reconciliation");
+      journaled.events.push("generation-ready");
+    };
+    assert.equal(await executeUpdate(false, journaled.rt), 0);
+    assert.ok(journaled.events.indexOf("report-running-manager") < journaled.events.indexOf("reconcile"), "journaled child still observes continuity before connector writes");
+    assert.ok(journaled.events.indexOf("reconcile") < journaled.events.indexOf("generation-ready"), "journaled parent reconciles before releasing the installed generation");
+    clearUpdateRecovery();
+  } finally {
+    if (priorJournalHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = priorJournalHome;
+    rmSync(journalHome, { recursive: true, force: true });
+  }
 
   const wrongChild = updateRuntime({ env: { COTAL_UPDATE_TARGET_VERSION: "0.13.2", COTAL_UPDATE_PARENT: "99" } });
   assert.equal(await executeUpdate(false, wrongChild.rt), 1);
@@ -1815,4 +1838,4 @@ if (process.platform !== "win32") {
   }
 }
 
-console.log("✓ command-kernel smoke passed");
+emitSentinel({ passed: counted.cells(), failed: 0 });
