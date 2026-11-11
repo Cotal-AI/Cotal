@@ -318,6 +318,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           : (async () => {
             if (await account.intent(req.space, req.op === "service-connect")) return services.status(req.space);
             const disconnect = req.op === "service-disconnect" ? services.disconnect(req.space) : undefined;
+            void disconnect?.catch(() => {});
             return reconciler.serial(() => withIdpSessionDir(machineHome, async () => {
             if (req.op === "service-connect") {
               reconciler.localAddition(req.space);

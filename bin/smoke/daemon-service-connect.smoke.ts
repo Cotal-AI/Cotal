@@ -63,7 +63,8 @@
  * Account startup intent: --hosting-only --account-only --account-restart-repro, optionally
  * --account-hosted. Uses power cuts, a held initial account reply, and offline/legacy controls.
  * Direct per-space withdrawal: --hosting-only --account-only --account-unsupported
- * --direct-disconnect-repro. Checks cleanup refusals cannot retain the machine connection.
+ * --direct-disconnect-repro. Checks live-seat retirement and cleanup refusals cannot retain the
+ * machine connection. Add --direct-disconnect-intent-repro to check failed intent removal.
  * Account pin regression only: add --account-mismatch-only (C1, C2, C7b and C10).
  * Offline status regression only: add --status-only (C0, C1, C2, C3, C5, C6, C10 and C15).
  * Add --setup-hints-only to run approval and setup follow-up checks with a leading-hyphen space.
@@ -2021,10 +2022,48 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               assert.equal(connected.doc.result?.state, "connected");
               assert.ok(existsSync(intentFile(ON)), "positive control: accepted service records its connection intent");
               const instanceId = connected.doc.result.manager.instanceId as string;
+              const seatName = `direct_withdrawal_${mode ?? "supported"}`;
+              const seat = spawn(process.execPath, [cliEntry, "spawn", "--on", instanceId, "--space", ON, "--harness", "daemon-smoke", "--name", seatName, "--no-events", "--detach", "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+              let seatOutput = "", seatError = "";
+              seat.stdout.on("data", chunk => { seatOutput += String(chunk); });
+              seat.stderr.on("data", chunk => { seatError += String(chunk); });
+              const seatCode = await new Promise<number | null>(resolve => seat.once("exit", resolve));
+              assert.ok(seatCode === 0 && JSON.parse(seatOutput).result?.readiness === "joined", JSON.stringify({ seatCode, seatOutput, seatError }));
+              if (process.argv.includes("--direct-disconnect-intent-repro")) {
+                const intent = intentFile(ON), saved = `${intent}.before-removal-error`;
+                renameSync(intent, saved);
+                mkdirSync(intent, { mode: 0o700 });
+                let refused;
+                try { refused = await cli("service-disconnect", "--space", ON); }
+                finally {
+                  renameSync(intent, `${intent}.blocked-directory`);
+                  renameSync(saved, intent);
+                }
+                check("I10 hosted intent-removal failure is reported without killing daemon", refused.code === 2 && refused.doc.error?.cause?.code === "UNAVAILABLE", refused);
+                const alive = await ask(paths.socket, { op: "service-status", space: ON });
+                check("I10 daemon still answers after early disconnect rejection", alive.ok === true, alive);
+                check("I10 failed withdrawal still stops Manager gracefully", resultOf(alive).manager?.lastStop === "graceful", resultOf(alive));
+                const observer = await connectNats({ servers, ...standaloneConnectOpts({ creds: await mintCreds(ctx[0]!.auth, newIdentity(), "provisioner"), tls: false }) });
+                try {
+                  const lifecycle = await openLifecycleRegistry(observer, ON);
+                  const head = await readLifecycleHeadForOperation(lifecycle, fixture.owner, seatName);
+                  check("I10 failed withdrawal retires the live seat", head?.mapping.state === "retired", head?.mapping);
+                } finally { await observer.close(); }
+                const repaired = await cli("service-disconnect", "--space", ON);
+                check("I10 repaired intent can be removed", repaired.code === 0 && !existsSync(intent), repaired);
+                return;
+              }
               deregisterMode = mode;
               const disconnected = await cli("service-disconnect", "--space", ON);
               const status = resultOf(await ask(paths.socket, { op: "service-status", space: ON }));
               console.log("  direct withdrawal", JSON.stringify({ mode: mode ?? "supported", exit: disconnected.code, error: disconnected.doc.error?.code, state: status.state, intentRetained: existsSync(intentFile(ON)), manager: status.manager?.state }));
+              const observer = await connectNats({ servers, ...standaloneConnectOpts({ creds: await mintCreds(ctx[0]!.auth, newIdentity(), "provisioner"), tls: false }) });
+              try {
+                const lifecycle = await openLifecycleRegistry(observer, ON);
+                const head = await readLifecycleHeadForOperation(lifecycle, fixture.owner, seatName);
+                check(`I8 ${mode ?? "supported"} direct withdrawal retires the live seat`, head?.mapping.state === "retired", head?.mapping);
+              } finally { await observer.close(); }
+              check(`I8 ${mode ?? "supported"} direct withdrawal stops Manager gracefully`, status.manager?.lastStop === "graceful", status.manager);
               assert.equal(status.state, "disconnected", `${mode ?? "supported"} Manager cleanup must not prevent machine-service withdrawal`);
               assert.equal(existsSync(intentFile(ON)), false, "explicit withdrawal must forget the durable service intent");
               assert.equal(disconnected.code, mode === undefined ? 0 : 2);
