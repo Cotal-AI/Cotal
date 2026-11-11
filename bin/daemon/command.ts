@@ -31,7 +31,7 @@ import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths,
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { applyInstall, applyUninstall, daemonStartedByOwnedService, planInstall, planUninstall, startInstalled } from "./install.js";
+import { applyInstall, applyUninstall, observeDaemonOwnedService, planInstall, planUninstall, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runSetup } from "./setup.js";
 import { daemonCommandCopy } from "./guidance.js";
@@ -395,22 +395,29 @@ async function serve(args: ParsedArgs): Promise<void> {
     throw asFailure(e);
   }
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
+  const provenance = new AbortController();
+  const ownership = observeDaemonOwnedService(paths, home, provenance.signal).catch(() => false);
   await new Promise<void>((resolve, reject) => {
-    const stopWatching = watchDaemonGeneration(binVersion(), async (version) => {
-      if (!daemonStartedByOwnedService(paths, home)) throw new Error("no verified native launch marker; automatic activation is unavailable; use the installed CLI to restart this daemon");
-      planUninstall(paths, home);
-      const seats = await running.generationSeats();
-      const occupied = seats.filter((row) => row.seats > 0);
-      if (occupied.length) throw new Error(`waiting for ${occupied.reduce((sum, row) => sum + row.seats, 0)} seat(s) on ${occupied.map((row) => row.space).join(", ")}`);
-      await running.prepareGenerationRestart();
-      // The new daemon reconciles before it launches any Manager. The old generation never
-      // mutates the shared connector store or reopens admission over a partial replacement.
-      process.stderr.write(`daemon: installed CLI ${version} validated; stopping owned children for native service restart\n`);
-      stopWatching();
-      await running.close();
-      resolve();
-    }, (line) => process.stderr.write(`${line}\n`), (version, reason) => running.generationPending(version, reason), daemonStartedByOwnedService(paths, home));
-    const stop = () => { stopWatching(); void running.close().then(resolve, reject); };
+    let closed = false;
+    let stopWatching = () => {};
+    void ownership.then(verified => {
+      if (closed) return;
+      stopWatching = watchDaemonGeneration(binVersion(), async (version) => {
+        if (!verified) throw new Error("no verified native launch marker; automatic activation is unavailable; use the installed CLI to restart this daemon");
+        planUninstall(paths, home);
+        const seats = await running.generationSeats();
+        const occupied = seats.filter((row) => row.seats > 0);
+        if (occupied.length) throw new Error(`waiting for ${occupied.reduce((sum, row) => sum + row.seats, 0)} seat(s) on ${occupied.map((row) => row.space).join(", ")}`);
+        await running.prepareGenerationRestart();
+        // The new daemon reconciles before it launches any Manager. The old generation never
+        // mutates the shared connector store or reopens admission over a partial replacement.
+        process.stderr.write(`daemon: installed CLI ${version} validated; stopping owned children for native service restart\n`);
+        stopWatching();
+        await running.close();
+        resolve();
+      }, (line) => process.stderr.write(`${line}\n`), (version, reason) => running.generationPending(version, reason), verified);
+    });
+    const stop = () => { closed = true; provenance.abort(); stopWatching(); void running.close().then(resolve, reject); };
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);
   });

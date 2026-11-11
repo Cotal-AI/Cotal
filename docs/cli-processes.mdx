@@ -750,6 +750,9 @@ from five seconds to five minutes, and status shows the installed and running ve
 seat count and space. Only changed waiting causes are logged. A foreground daemon reports the
 pending version and stays running. A daemon started by its recorded native service can activate
 once every Manager is empty.
+Native service ownership is verified once off the serving event loop. Status and sign-in requests
+remain available while native supervisor tools run. Automatic activation waits for that result;
+a failed or unfinished check never grants native-service authority.
 Generation activation prepares idle Managers, then restarts the daemon. The new daemon reconciles
 before admitting a hosted Manager. The old generation never reopens admission after changing the
 shared connector store.
