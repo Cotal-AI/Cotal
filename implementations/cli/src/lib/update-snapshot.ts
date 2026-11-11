@@ -1,5 +1,5 @@
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { protectedLocalDirectory, readUpdateRecovery, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
@@ -66,7 +66,11 @@ export function snapshotUpdateClosure(existing?: string): UpdateSnapshot {
         }
         for (let index = 0; index < renames.length; index++) {
           const entry = renames[index]!;
-          if (![config, path].some(root => entry.from.startsWith(`${root}/`)) || ![config, path].some(root => entry.to.startsWith(`${root}/`)) || entry.from.includes("/../") || entry.to.includes("/../")) throw new Error("invalid update rename path");
+          const contained = (candidate: string) => [config, path].some(root => {
+            const child = relative(resolve(root), resolve(candidate));
+            return child !== "" && child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
+          });
+          if (!contained(entry.from) || !contained(entry.to)) throw new Error("invalid update rename path");
           if (entry.done) continue;
           if (existsSync(entry.from)) {
             if (existsSync(entry.to)) throw new Error(`restore destination already exists: ${entry.to}`);
