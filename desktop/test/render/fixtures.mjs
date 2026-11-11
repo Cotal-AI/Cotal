@@ -13,6 +13,7 @@ export function nativeStub(scenario) {
     transformCallback(fn) { callbacks.set(++next, fn); return next; },
     unregisterCallback(id) { callbacks.delete(id); },
     async invoke(command, args) {
+      if (command === "first_paint") { state.paintReports = (state.paintReports ?? 0) + 1; return null; }
       if (command === "plugin:deep-link|get_current") return state.link ? [state.link] : null;
       if (command === "plugin:event|listen") return 1;
       if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: false, pinOffer: false, pinMessage: "" };

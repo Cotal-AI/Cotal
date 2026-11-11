@@ -3,6 +3,7 @@ import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
 import { approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
+import { reportFirstPaint } from "./first-paint";
 import "./style.css";
 import "./components.css";
 
@@ -668,3 +669,4 @@ document.addEventListener("keydown", event => {
 });
 window.addEventListener("beforeunload", () => { if (poll) clearTimeout(poll); if (countdown) clearInterval(countdown); });
 void start();
+if (isTauri()) void reportFirstPaint(document.querySelector<HTMLImageElement>(".brand-mark")!, document.querySelector<HTMLElement>(".sidebar")!, () => invoke("first_paint")).catch(error => notice(String(error), true));

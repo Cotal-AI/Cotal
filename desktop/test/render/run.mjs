@@ -28,6 +28,34 @@ const browser = await chromium.launch({ ...(process.env.CHROMIUM_PATH ? { execut
 let count = 0;
 const cases = scenarios.filter(scenario => !process.env.CASES || process.env.CASES.split(",").includes(scenario.name));
 try {
+  const initial = await browser.newContext();
+  try {
+    const page = await initial.newPage();
+    await page.route("**/assets/*.css", route => route.abort());
+    await page.goto(address);
+    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor), "rgb(255, 252, 238)", "paper before bundled styles");
+  } finally { await initial.close(); }
+  const hidden = await browser.newContext();
+  try {
+    const page = await hidden.newPage();
+    await page.addInitScript(nativeStub, { loading: true });
+    await page.addInitScript(() => {
+      Object.defineProperty(document, "visibilityState", { get: () => "hidden" });
+      Object.defineProperty(document, "hidden", { get: () => true });
+      // Emulate a hidden webview's suspended frame clock, not a foreground tab.
+      window.requestAnimationFrame = () => 1;
+      window.__paintStart = performance.now();
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+        if (command === "first_paint") window.__paintDelay = performance.now() - window.__paintStart;
+        return invoke(command, args);
+      };
+    });
+    await page.goto(address);
+    await page.waitForFunction(() => window.__renderState.paintReports === 1, null, { polling: 5, timeout: 1000 });
+    assert.equal(await page.evaluate(() => document.visibilityState), "hidden");
+    assert.ok(await page.evaluate(() => window.__paintDelay < 100), "hidden page reports within 100 ms without a frame clock");
+  } finally { await hidden.close(); }
   for (const theme of ["light"]) for (const width of [880, 560]) for (const scenario of cases) {
       const motionModes = process.env.MOTION ? ["no-preference", "reduce"] : ["no-preference"];
       for (const reducedMotion of motionModes) {
@@ -44,6 +72,7 @@ try {
       await page.goto(address);
       await page.evaluate(() => document.fonts.ready);
       await page.waitForTimeout(80);
+      await page.waitForFunction(() => window.__renderState.paintReports === 1);
       if (scenario.prepare) { await scenario.prepare(page); await page.waitForTimeout(300); }
       if (scenario.act && process.env.MOTION) {
         await page.evaluate(() => {
@@ -93,6 +122,7 @@ try {
       await page.waitForTimeout(300);
       await page.screenshot({ path: `${output}/${name}.png`, fullPage: true });
       if (scenario.expect) await scenario.expect(page);
+      assert.equal(await page.evaluate(() => window.__renderState.paintReports), 1, `${name}: first paint reported once, including while daemon status waits`);
       assert.deepEqual(errors, [], `${name}: browser errors`);
       assert.ok(requests.every(url => new URL(url).origin === address), `${name}: same-origin requests only`);
       await page.evaluate(async () => {

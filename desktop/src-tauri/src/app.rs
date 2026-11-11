@@ -1,5 +1,6 @@
 use crate::{browser_url, daemon_env_key, DesktopRequest, NODE_SIDECAR};
 use crate::native_presence;
+use crate::first_paint::{FirstPaint, ShowAction};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use tauri::{
@@ -15,6 +16,7 @@ use tokio::sync::Semaphore;
 const MAX_FRAME: usize = 64 * 1024;
 struct RequestSlots(Arc<Semaphore>);
 struct TrayStatus(MenuItem<tauri::Wry>);
+struct PaintState(std::sync::Mutex<FirstPaint>);
 
 #[tauri::command]
 async fn daemon_request(
@@ -134,6 +136,37 @@ fn set_connection_state(app: AppHandle, connected: bool) -> Result<(), String> {
 }
 
 fn show(app: &AppHandle) {
+    let action = app.state::<PaintState>().0.lock().expect("first paint state poisoned").request();
+    match action {
+        ShowAction::Show => show_now(app),
+        ShowAction::Wait => {},
+        ShowAction::StartTimer => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    let action = handle.state::<PaintState>().0.lock().expect("first paint state poisoned").timeout();
+                    if action == ShowAction::Show {
+                        let _ = handle.emit("desktop-presence-error", "Cotal did not finish drawing its first frame within two seconds.");
+                        show_now(&handle);
+                    }
+                });
+            });
+        }
+    }
+}
+
+#[tauri::command]
+fn first_paint(window: tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() != "main" { return Err("Only the main window can report its first frame.".into()); }
+    let app = window.app_handle();
+    let action = app.state::<PaintState>().0.lock().map_err(|_| "The first frame state is unavailable.")?.painted();
+    if action == ShowAction::Show { show_now(app); }
+    Ok(())
+}
+
+fn show_now(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -155,6 +188,7 @@ pub fn run() {
             if !args.iter().any(|arg| arg == "--background") { show(app); }
         }))
         .manage(RequestSlots(Arc::new(Semaphore::new(4))))
+        .manage(PaintState(std::sync::Mutex::new(FirstPaint::default())))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
@@ -163,6 +197,7 @@ pub fn run() {
             daemon_request,
             open_browser,
             set_connection_state,
+            first_paint,
             crate::native_presence::desktop_presence,
             crate::native_presence::set_login_preference,
             crate::native_presence::dismiss_presence_offer,
@@ -170,6 +205,8 @@ pub fn run() {
             crate::native_presence::pin_to_taskbar
         ])
         .setup(|app| {
+            let window = app.get_webview_window("main").ok_or("The main window is unavailable.")?;
+            window.set_background_color(Some(tauri::window::Color(255, 252, 238, 255)))?;
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
             app.manage(native_presence::Presence(std::sync::Mutex::new(native_presence::load(app.handle())?)));
