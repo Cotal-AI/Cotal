@@ -605,6 +605,11 @@ space list. A local removal caused by a missing registry entry still waits for r
 for that binding. Hosts that return 404 retain per-space behavior and report it in status.
 Existing local connections outside the account list keep running.
 
+After a restart, the daemon reads the account's current desired spaces before resuming saved
+hosting and service connections. A space removed while this computer was off does not start
+again. If the account request fails, saved connection intents still resume. The local daemon
+endpoint remains available while this startup check runs.
+
 Daemon commands use the machine home, not the invoking project's `.cotal` records. They run from
 a removed working directory or a folder with a `.cotal` file, and malformed preferences do not
 block them. Machine-home validation and the permissions required for each operation still apply.
@@ -1196,8 +1201,8 @@ answer is `connecting`, not connected; it is connected again only after the brok
 space accepts the daemon as ready again.
 
 A connection the space accepted is remembered across a restart. `service-connect` records that
-intent for the space once it is connected, and a starting daemon connects every space it has a
-record for, so the connections it held before a crash come back with nothing to run. The records
+intent for the space once it is connected. After its initial account check, a starting daemon
+resumes the records that current account intent has not withdrawn. The records
 are at `<COTAL_HOME>/daemon/<space segment>/service-connect.json`, mode `0600`. A connect that
 never reached connected records nothing, so a space that refuses is not retried at every start.
 The resume runs after the local endpoint is published, so a space that is slow or unreachable does

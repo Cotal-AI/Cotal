@@ -1,0 +1,2 @@
+# Account intent is read before saved hosting resumes after a power cut.
+smoke:daemon-account-restart

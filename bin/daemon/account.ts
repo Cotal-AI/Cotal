@@ -118,7 +118,9 @@ export function createAccountComputer(home: string, version: string, reconciler:
     }
     throw new Error("This computer's spaces changed again. Refresh your spaces and try again.");
   };
-  return { start: run, intent,
+  return {
+    /** Start polling and settle every account's initial attempt before saved hosting resumes. */
+    async start() { run(); await work; await Promise.all([...tasks]); }, intent,
     signedIn() { for (const context of contexts.values()) context.abort.abort(); contexts.clear(); if (timer) clearTimeout(timer); run(); },
     status: (): AccountComputerStatus => ({ ...state, accounts: [...contexts.values()].map(context => ({ ...context.state, spaces: reconciler.view().filter(row => context.snapshot?.spaces.some(space => space.slug === row.space) || !row.desired) })), spaces: reconciler.view() }),
     async close() { stopped = true; if (timer) clearTimeout(timer); abort.abort(); await work; await Promise.all([...tasks]); await reconciler.settled(); },

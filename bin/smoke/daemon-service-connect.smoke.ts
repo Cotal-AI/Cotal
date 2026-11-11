@@ -60,6 +60,8 @@
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
  * Running-seat shutdown: --hosting-only --account-only --stop-seat-only, optionally --three-seats
  * and --account-hosted (without service endpoints).
+ * Account startup intent: --hosting-only --account-only --account-restart-repro, optionally
+ * --account-hosted. Uses power cuts, a held initial account reply, and offline/legacy controls.
  * Account pin regression only: add --account-mismatch-only (C1, C2, C7b and C10).
  * Offline status regression only: add --status-only (C0, C1, C2, C3, C5, C6, C10 and C15).
  * Add --setup-hints-only to run approval and setup follow-up checks with a leading-hyphen space.
@@ -69,6 +71,7 @@
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Credential expiry regression only: add --credential-expiry-only (C1, C2, C7, C10, C15 and C18).
  */
+import assert from "node:assert/strict";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
 import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -213,6 +216,7 @@ let intentWrites = 0;
 let intentHttp = 200;
 let accountHang = false;
 let accountHangs = 0;
+let accountGetGate: (() => Promise<void>) | undefined;
 let catalog: unknown;
 const accountTargets = new Map<string, string>();
 let catalogSpace: string | undefined;
@@ -230,6 +234,7 @@ let catalogAuthorityDown = false;
 let standingRenewals = 0;
 let shutdownLatency = false;
 let catalogAuthorityRequests = 0;
+let catalogManagerStarts = 0;
 let tokenGate: ((res: ServerResponse) => Promise<void>) | undefined;
 let exchangeGate: ((view: unknown, res: ServerResponse) => Promise<boolean>) | undefined;
 const exchangeReads: Array<{ view: unknown; managerInstanceId: unknown }> = [];
@@ -266,6 +271,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     const machineId = req.url.split("/")[4];
     if (req.method === "PUT" && process.argv.includes("--account-unsupported")) { res.writeHead(404); res.end("{}"); return; }
     if (req.method === "PUT") { res.end(JSON.stringify({ v: 1, machine: { id: machineId, lastSeenAt: new Date().toISOString() } })); return; }
+    await accountGetGate?.();
     if (accountHang && req.method === "GET") { accountHangs++; return; }
     if (accountHttp !== 200) { res.writeHead(accountHttp); res.end(accountHttp === 304 ? undefined : "{}"); return; }
     const snapshot = catalog as { account: unknown; spaces: { id: string }[] };
@@ -287,6 +293,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
     if (process.argv.includes("--account-hosted") && req.url.endsWith("/service-endpoint-authority")) { res.writeHead(404); res.end("{}"); return; }
     catalogAuthorityRequests++;
+    if (req.method === "POST" && req.url.endsWith("/manager-service-authority")) catalogManagerStarts++;
     if (shutdownLatency) await sleep(150);
     if (catalogAuthorityDown) { res.writeHead(503); res.end("{}"); return; }
     const chunks: Buffer[] = [];
@@ -1861,7 +1868,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           accountTargets.set(DENY, svc[2]!.publicUrl!.replace(/\/$/, ""));
           grantActor(ctx[2]!.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(ctx[2]!.store, DENY))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] });
           removeMesh(DENY);
-          (catalog as { spaces: unknown[] }).spaces.unshift({ id: DENY, slug: DENY, name: "Pending space", kind: "team", role: "member", registration: { ...pendingPublished, space: DENY, tlsRequired: false, userAuth: { ...pendingPublished.userAuth, endpoints: { url: `${idpOrigin}/account-space/${DENY}` } } } });
+          if (!process.argv.includes("--account-restart-repro")) (catalog as { spaces: unknown[] }).spaces.unshift({ id: DENY, slug: DENY, name: "Pending space", kind: "team", role: "member", registration: { ...pendingPublished, space: DENY, tlsRequired: false, userAuth: { ...pendingPublished.userAuth, endpoints: { url: `${idpOrigin}/account-space/${DENY}` } } } });
           if (process.argv.includes("--account-unsupported")) {
             const setup = await cli("setup", "--space", ON, "--idp", idpUrl);
             const status = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
@@ -1915,7 +1922,68 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           if (!hostedShape) await approve(host, ON, fixture.owner);
           await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A1 desired 200 connects real broker service");
           await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
-          check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === (hostedShape ? "connected" : "approval-pending")));
+          if (!process.argv.includes("--account-restart-repro")) check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === (hostedShape ? "connected" : "approval-pending")));
+          if (process.argv.includes("--account-restart-repro")) {
+            const legacyStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${OFF}` });
+            await legacyStore.put(deliveryCredsKey(OFF, composition), await mintCreds(ctx[1]!.auth, newIdentity(), "delivery"));
+            await legacyStore.put(membershipRwCredsKey(OFF, composition), await mintCreds(ctx[1]!.auth, newIdentity(), "membership-rw"));
+            await legacyStore.put(membershipObserverCredsKey(OFF, composition), await mintMembershipObserverCreds(ctx[1]!.auth, newIdentity()));
+            await legacyStore.put(connectionEvictorCredsKey(OFF, composition), await mintConnectionEvictorCreds(ctx[1]!.auth, newIdentity()));
+            secondDelivery = await startDeliveryService({ context: { accountPublicKey: ctx[1]!.auth.account.pub, lifecycleUid: mintLifecycleUid() }, space: OFF, servers, store: legacyStore, storeIdentity: legacyStore.identity, stateDir: join(root, "legacy-delivery") });
+            grantActor(ctx[1]!.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(ctx[1]!.store, OFF))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
+            const legacy = findMesh(OFF)!;
+            recordMesh({ ...legacy, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString() });
+            const started = await ask(paths.socket, { op: "manager-start", space: OFF }, 100_000);
+            assert.ok(started.ok && resultOf(started).state === "answering", "legacy Manager starts outside account custody");
+            const powerCut = async () => {
+              const pids = (await observed()).managers.map((row: any) => row.pid).filter((pid: unknown): pid is number => typeof pid === "number");
+              await killAndAwaitExit(child, "SIGKILL");
+              for (const pid of pids) process.kill(pid, "SIGKILL");
+            };
+            const participantPs = async () => {
+              const command = spawn(process.execPath, [cliEntry, "ps", "--space", ON, "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+              let out = "", err = "";
+              command.stdout.on("data", chunk => { out += String(chunk); });
+              command.stderr.on("data", chunk => { err += String(chunk); });
+              const code = await new Promise<number | null>((resolve, reject) => { command.once("error", reject); command.once("close", resolve); });
+              assert.equal(code, 0, err);
+              return JSON.parse(out).result;
+            };
+            await powerCut();
+            accountDesired = false; accountRevision++;
+            const before = catalogManagerStarts;
+            let requested = false;
+            let release!: () => void;
+            const held = new Promise<void>(resolve => { release = resolve; });
+            accountGetGate = async () => { requested = true; await held; };
+            try {
+              child = await startDaemon();
+              for (let i = 0; i < 120 && !requested; i++) await sleep(100);
+              assert.ok(requested, "restarted daemon reached desired-space GET");
+              const during = await observed();
+              check("A8 removed space never starts before initial account reply", during.managers.every((row: any) => row.space !== ON || row.state === "stopped") && catalogManagerStarts === before, during);
+              const ps = await participantPs();
+              check("A8 participant sees no answering Manager while initial account reply is pending", ps.managers.length === 0, ps);
+            } finally { accountGetGate = undefined; release(); }
+            await waitAccount(s => s.account?.desiredRevision === accountRevision && !s.account.spaces.some((row: any) => row.space === ON), "A8 current removal applies before saved resume");
+            check("A8 removed space makes no Manager registration calls after initial account reply", catalogManagerStarts === before);
+            check("A8 participant sees no removed Manager after reconciliation", (await participantPs()).managers.length === 0);
+            await waitAccount(s => s.managers.some((row: any) => row.space === OFF && row.state === "answering"), "A8 legacy per-space Manager resumes outside account desired set");
+
+            accountDesired = true; accountBindingRevision = ++accountRevision;
+            await waitAccount(s => s.managers.some((row: any) => row.space === ON && row.state === "answering"), "A9 dashboard re-enable starts Manager");
+            await powerCut();
+            child = await startDaemon();
+            await waitAccount(s => s.account?.desiredRevision === accountRevision && s.managers.some((row: any) => row.space === ON && row.state === "answering"), "A9 still-desired space answers after power cut");
+            check("A9 participant sees still-desired Manager", (await participantPs()).kind === "seats");
+
+            await powerCut();
+            accountHttp = 503;
+            child = await startDaemon();
+            await waitAccount(s => s.account?.message === "account computer request failed; existing connections are unchanged" && s.managers.some((row: any) => row.space === ON && row.state === "answering"), "A10 unavailable account preserves saved-intent recovery");
+            check("A10 participant sees saved Manager during account outage", (await participantPs()).kind === "seats");
+            return;
+          }
           if (process.argv.includes("--stop-seat-only")) {
             const manager = (await observed()).managers.find((row: any) => row.space === ON);
             const countArg = process.argv.find(arg => arg.startsWith("--seats="));
