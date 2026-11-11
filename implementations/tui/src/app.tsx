@@ -13,7 +13,7 @@ import type { ComposerState } from "./compose.js"
 import { layoutFor } from "./layout.js"
 import type { Conn, FeedEntry, Managed, Mesh, Presence, Session } from "./live.js"
 import { safe } from "./safe.js"
-import { type Card, cardsFor, clock, conversationFeed, conversationKey, type DraftKey, draftKey, entryKey, type Mark, meshOf, type Open, openRowKey, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
+import { type Card, cardsFor, clock, conversationFeed, conversationKey, type DraftKey, draftKey, entryKey, type Mark, meshOf, type Open, openRowKey, overview, peerKey, peerOf, route, type Row, STATUS, treeItems, type Unread, unreadBySender } from "./screen.js"
 import type { SpawnRequest, SpawnState } from "./spawn.js"
 import { PersonaDialog, SpawnForm } from "./spawn-form.js"
 import type { Talk } from "./talk.js"
@@ -35,9 +35,14 @@ type Line = { text: string; fg: RGBA }
  *  has them, and the inspector only while it is on screen. */
 type Focus = "box" | "tree" | "inspector"
 
-/** An item of the inspector: a waiting agent, or a reply or mention card with the message that
- *  opening it quotes. `key` stays with the item while others arrive above it. */
-type Need = { key: string; open: Open; quote?: FeedEntry }
+/** An item of the inspector: a waiting agent, a sender's unread direct messages, or a reply or
+ *  mention card with the message that opening it quotes. `key` stays with the item while others
+ *  arrive above it. `dismiss` is what `x` does to it, if anything. */
+type Need = { key: string; open: Open; quote?: FeedEntry; dismiss?: () => void; row: { kind: "waiting"; agent: Presence } | { kind: "unread"; unread: Unread } | { kind: "card"; card: Card } }
+
+/** One group of the inspector, in the order it lists them: its title, its items from `start` on in
+ *  the inspector's numbering, its words in the one-line summary, and why it may be missing some. */
+type Group = { title: string; count: number; needs: Need[]; start: number; summary: string[]; problem?: string }
 
 /** One space's replies and mentions by message id, the ids of the messages the human replied to, and
  *  the ids of the messages the human sent. */
@@ -130,19 +135,51 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     for (const id of found.answered) cards.delete(id)
     return new Map(prev).set(m.status.space, { cards, answered, sent })
   }, new Map())
-  // The open space's cards, newest first, less the ones dismissed. The map holds them in arrival
-  // order, so reversing it first keeps cards that share a timestamp newest first.
-  const cards = createMemo((): Card[] => {
+  // The open space's cards, newest first. The map holds them in arrival order, so reversing it first
+  // keeps cards that share a timestamp newest first.
+  const queued = createMemo((): Card[] => {
     const m = mesh()
     const q = m && queues().get(m.status.space)
-    return q ? [...q.cards.values()].filter((c) => marks().get(c.entry.id) !== "dismissed").reverse().sort((a, b) => b.entry.ts - a.entry.ts) : []
+    return q ? [...q.cards.values()].reverse().sort((a, b) => b.entry.ts - a.entry.ts) : []
   })
+  const cards = createMemo(() => queued().filter((c) => c.kind !== "dm" && marks().get(c.entry.id) !== "dismissed"))
+  const unread = createMemo(() => unreadBySender(queued(), talk()?.read() ?? new Set()))
   const seenCard = (c: Card) => marks().get(c.entry.id) === "seen"
+  const plural = (n: number, one: string, many: string) => (n ? `${n} ${n === 1 ? one : many}` : "")
   // What the inspector lists, in its order: the keys `w` and `1`-`9` open these at every width.
-  const needs = createMemo((): Need[] => [
-    ...waiting().map((p): Need => ({ key: peerKey(p.card.id), open: { kind: "peer", id: p.card.id } })),
-    ...cards().map((c): Need => ({ key: `msg:${c.entry.id}`, open: c.open, quote: c.entry })),
-  ])
+  const groups = createMemo((): Group[] => {
+    const replies = cards().filter((c) => c.kind === "reply").length
+    const messages = unread().reduce((n, u) => n + u.messages.length, 0)
+    const missing = talk()?.unread()
+    const listed: Omit<Group, "start">[] = [
+      {
+        title: "NEEDS YOU",
+        count: waiting().length,
+        needs: waiting().map((p) => ({ key: peerKey(p.card.id), open: { kind: "peer", id: p.card.id }, row: { kind: "waiting", agent: p } })),
+        summary: [plural(waiting().length, "needs you", "need you")],
+      },
+      {
+        title: "UNREAD DMS",
+        count: messages,
+        needs: unread().map((u) => ({ key: `dm:${conversationKey(u.open)}`, open: u.open, dismiss: () => talk()?.markRead(u.messages), row: { kind: "unread", unread: u } })),
+        summary: [messages ? `${messages} unread` : "", missing ? "DMs missing" : ""],
+        ...(missing ? { problem: missing } : {}),
+      },
+      {
+        title: "REPLIES AND MENTIONS",
+        count: cards().length,
+        needs: cards().map((c) => ({ key: `msg:${c.entry.id}`, open: c.open, quote: c.entry, dismiss: () => mark([c.entry.id], "dismissed"), row: { kind: "card", card: c } })),
+        summary: [plural(replies, "reply", "replies"), plural(cards().length - replies, "mention", "mentions")],
+      },
+    ]
+    let start = 0
+    return listed.map((g) => {
+      const at = start
+      start += g.needs.length
+      return { ...g, start: at }
+    })
+  })
+  const needs = createMemo(() => groups().flatMap((g) => g.needs))
   // The inspector's highlight, by key. Once its item leaves the list, the item that slides into the
   // slot has it.
   const [needKey, setNeedKey] = createSignal<string>()
@@ -314,10 +351,10 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     const list = needs()
     if (list.length) setNeedKey(list[Math.max(0, Math.min(list.length - 1, needAt() + by))]!.key)
   }
-  // `x` in the inspector dismisses the highlighted card without a reply. A waiting agent stays.
+  // `x` in the inspector dismisses the highlighted card without a reply, and marks a sender's direct
+  // messages read without opening them. A waiting agent stays.
   const dismissNeed = () => {
-    const item = needs()[needAt()]
-    if (keysAt() === "inspector" && item?.quote) mark([item.quote.id], "dismissed")
+    if (keysAt() === "inspector") needs()[needAt()]?.dismiss?.()
   }
   // What the arrows and enter do in the column that has the keys.
   const column = () => (keysAt() === "inspector" ? { move: moveNeed, open: () => answerNeed(needAt()) } : { move, open: openRow })
@@ -335,7 +372,14 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
       ),
     )
   // Why earlier direct messages are missing, once per space. An agent's conversation keeps saying it.
-  createEffect(on(() => talk()?.unread(), (why) => why && toast.show({ variant: "warning", message: why, duration: 10_000 })))
+  // The same for the read marks.
+  for (const why of [() => talk()?.unread(), () => talk()?.readProblem()]) createEffect(on(why, (line) => line && toast.show({ variant: "warning", message: line, duration: 10_000 })))
+  // An agent's direct messages are read while its conversation is open, the ones arriving then too.
+  createEffect(() => {
+    const o = open()
+    const here = o.kind === "peer" ? unread().find((u) => conversationKey(u.open) === conversationKey(o)) : undefined
+    if (here) talk()?.markRead(here.messages)
+  })
 
   const unsent = () => Object.values(composer().drafts).filter((d) => d.text.trim()).length
   // Quitting closes the chat session first, as `cotal chat` does, and prints how it closed.
@@ -776,14 +820,8 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   })
   Keymap.createLayer(() => ({ mode: "hold", commands: [{ id: "cotal.hold.tree", bind: "tab", title: "Move to the tree", group: "Move", run: () => void setFocus("tree") }] }))
 
-  /** The inspector as one line, for a screen too narrow for it, such as `1 needs you · 2 mentions`. */
-  const summary = () => {
-    const n = waiting().length
-    const replies = cards().filter((c) => c.kind === "reply").length
-    const mentions = cards().length - replies
-    const parts = [n ? `${n} need${n === 1 ? "s" : ""} you` : "", replies ? `${replies} repl${replies === 1 ? "y" : "ies"}` : "", mentions ? `${mentions} mention${mentions === 1 ? "" : "s"}` : ""]
-    return parts.filter(Boolean).join(" · ")
-  }
+  /** The inspector as one line, for a screen too narrow for it, such as `1 needs you · 3 unread · 2 mentions`. */
+  const summary = () => groups().flatMap((g) => g.summary).filter(Boolean).join(" · ")
 
   const Middle = () => (
     <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2} paddingTop={1} minWidth={0} minHeight={0}>
@@ -865,6 +903,44 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     )
   }
 
+  /** A sender's unread direct messages: who, how many when more than one, and the start of the
+   *  newest. A click opens their conversation, as enter does. */
+  const UnreadRow = (p: { unread: Unread; n: number; width: number }) => {
+    const newest = () => p.unread.messages[0]!
+    const more = () => (p.unread.messages.length > 1 ? `${p.unread.messages.length} new` : "")
+    return (
+      <box id={`need-${p.n}`} flexShrink={0} marginBottom={1} backgroundColor={needBg(p.n, false)} onMouseDown={() => answerNeed(p.n)}>
+        <text wrapMode="none" fg={gold()}>
+          <span style={{ fg: theme.text.base }}>{`${p.n + 1} `}</span>
+          {"• "}
+          <span style={{ fg: nameFg(newest().from) }}>{fit(newest().from.name, p.width - 8 - more().length)}</span>
+          <span style={{ fg: theme.text.faint }}>{more() ? `  ${more()}` : ""}</span>
+        </text>
+        <text fg={theme.text.muted}>{fit(newest().text.split("\n")[0]!, (p.width - 4) * 2)}</text>
+      </box>
+    )
+  }
+
+  const WaitingRow = (p: { agent: Presence; n: number; width: number }) => (
+    <box id={`need-${p.n}`} flexShrink={0} marginBottom={1} backgroundColor={needBg(p.n, openPeer() === p.agent.card.id)} onMouseDown={() => answerNeed(p.n)}>
+      <text wrapMode="none" fg={theme.text.feedback.warning.base}>
+        <span style={{ fg: theme.text.base }}>{`${p.n + 1} `}</span>
+        {"◐ "}
+        <span style={{ fg: nameFg(p.agent.card) }}>{fit(p.agent.card.name, p.width - 8 - (p.agent.card.role?.length ?? 0))}</span>
+        <span style={{ fg: theme.text.faint }}>{p.agent.card.role ? `  ${p.agent.card.role}` : ""}</span>
+      </text>
+      <text fg={theme.text.muted}>{fit(p.agent.activity ?? "reported no question", (p.width - 4) * 3)}</text>
+    </box>
+  )
+
+  const NeedRow = (p: { need: Need; n: number; width: number }) => (
+    <Switch>
+      <Match when={p.need.row.kind === "waiting" && p.need.row}>{(r) => <WaitingRow agent={r().agent} n={p.n} width={p.width} />}</Match>
+      <Match when={p.need.row.kind === "unread" && p.need.row}>{(r) => <UnreadRow unread={r().unread} n={p.n} width={p.width} />}</Match>
+      <Match when={p.need.row.kind === "card" && p.need.row}>{(r) => <CardRow card={r().card} n={p.n} width={p.width} />}</Match>
+    </Switch>
+  )
+
   // The highlight stays on screen as it moves and as items arrive above it.
   let needScroller: ScrollBoxRenderable | undefined
   createEffect(
@@ -883,32 +959,26 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     return (
       <box width={p.width} flexShrink={0} flexDirection="column" paddingLeft={2} paddingRight={2} paddingTop={1} backgroundColor={theme.background.raised.base}>
         <scrollbox ref={(r: ScrollBoxRenderable) => (needScroller = r)} flexGrow={1} minHeight={0} scrollbarOptions={{ visible: false }}>
-          <Show when={waiting().length || !cards().length}>
-            <Section title={`NEEDS YOU · ${waiting().length}`} />
+          <Index each={groups()}>
+            {(g) => (
+              <Show when={g().needs.length || g().problem}>
+                <Section title={`${g().title} · ${g().count}`} />
+                <box height={1} flexShrink={0} />
+                <Show when={g().problem}>
+                  {(why) => (
+                    <text fg={theme.text.feedback.warning.base} flexShrink={0} marginBottom={1}>
+                      {fit(why(), (p.width - 4) * 4)}
+                    </text>
+                  )}
+                </Show>
+                <Index each={g().needs}>{(n, i) => <NeedRow need={n()} n={g().start + i} width={p.width} />}</Index>
+              </Show>
+            )}
+          </Index>
+          <Show when={groups().every((g) => !g.needs.length && !g.problem)}>
+            <Section title="NEEDS YOU · 0" />
             <box height={1} flexShrink={0} />
-          </Show>
-          <Show
-            when={waiting().length}
-            fallback={<Show when={!cards().length}><text fg={theme.text.muted}>Nothing needs you.</text></Show>}
-          >
-            <Index each={waiting()}>
-              {(a, i) => (
-                <box id={`need-${i}`} flexShrink={0} marginBottom={1} backgroundColor={needBg(i, openPeer() === a().card.id)} onMouseDown={() => answerNeed(i)}>
-                  <text wrapMode="none" fg={theme.text.feedback.warning.base}>
-                    <span style={{ fg: theme.text.base }}>{`${i + 1} `}</span>
-                    {"◐ "}
-                    <span style={{ fg: nameFg(a().card) }}>{fit(a().card.name, p.width - 8 - (a().card.role?.length ?? 0))}</span>
-                    <span style={{ fg: theme.text.faint }}>{a().card.role ? `  ${a().card.role}` : ""}</span>
-                  </text>
-                  <text fg={theme.text.muted}>{fit(a().activity ?? "reported no question", (p.width - 4) * 3)}</text>
-                </box>
-              )}
-            </Index>
-          </Show>
-          <Show when={cards().length}>
-            <Section title={`REPLIES AND MENTIONS · ${cards().length}`} />
-            <box height={1} flexShrink={0} />
-            <Index each={cards()}>{(c, i) => <CardRow card={c()} n={waiting().length + i} width={p.width} />}</Index>
+            <text fg={theme.text.muted}>Nothing needs you.</text>
           </Show>
           <Show when={selected()}>
             {(a) => (

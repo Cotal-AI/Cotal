@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { assertLifecycleToken, ensureDirNoSymlink, hardenPrivate, parsePrincipalKey, unlinkFileNoFollow, writeSecretFileAtomic } from "@cotal-ai/core";
+import { acquireLock, assertLifecycleToken, ensureDirNoSymlink, hardenPrivate, parsePrincipalKey, unlinkFileNoFollow, writeSecretFileAtomic } from "@cotal-ai/core";
 import { spaceSegment } from "../auth-paths.js";
 import { homeCotalDir } from "../cotal-home.js";
 import type { MeshTarget } from "../mesh-target.js";
@@ -37,18 +37,36 @@ const FIELDS = ["v", "space", "server", "principal", "lifecycleUid", "label", "o
 const RECORD_LIMIT = 4096;
 const FOLDER = "the folder of remembered chat sessions";
 
+/** How many read marks a space keeps, the newest messages first. The app loads a few hundred direct
+ *  messages at most, and fewer read ones than this are newer than any of those. */
+export const READ_MARKS = 1000;
+
+const READ_FILE = "read.json";
+const READ_FIELDS = ["v", "space", "read"];
+const READ_LIMIT = 256 * 1024;
+const ID_LIMIT = 128;
+
 const folder = (space: string) => join(homeCotalDir(), "chat-sessions", spaceSegment(space));
+// A name without `.json` is a write in progress or a lock. The read marks share the folder, so
+// forgetting a space forgets them too.
+const sessionFiles = (dir: string) => readdirSync(dir).filter((name) => name.endsWith(".json") && name !== READ_FILE);
+
+/** The space's folder, made private when it is new. */
+function prepareFolder(space: string): string {
+  prepareCotalHomeForWrite();
+  const dir = folder(space);
+  const created = [join(homeCotalDir(), "chat-sessions"), dir].filter((path) => !existsSync(path));
+  ensureDirNoSymlink(homeCotalDir(), "chat-sessions", spaceSegment(space));
+  for (const path of created) hardenPrivate(path, "dir");
+  protectedLocalDirectory(dir, FOLDER);
+  return dir;
+}
 
 /** Records `identity`, a session just opened at `target`, then removes the space's oldest records past
  *  {@link REMEMBERED_CHAT_SESSIONS}. Each session has its own file, which a rename writes whole, so two
  *  app runs on one space never write the same file and a reader never sees half of one. */
 export function rememberChatSession(target: Pick<MeshTarget, "space" | "server">, identity: SessionIdentity): void {
-  prepareCotalHomeForWrite();
-  const dir = folder(target.space);
-  const created = [join(homeCotalDir(), "chat-sessions"), dir].filter((path) => !existsSync(path));
-  ensureDirNoSymlink(homeCotalDir(), "chat-sessions", spaceSegment(target.space));
-  for (const path of created) hardenPrivate(path, "dir");
-  protectedLocalDirectory(dir, FOLDER);
+  const dir = prepareFolder(target.space);
   const record = { v: VERSION, space: target.space, server: target.server, principal: identity.principal, lifecycleUid: identity.lifecycleUid, label: identity.label, openedAt: Date.now() };
   writeSecretFileAtomic(join(dir, `${assertLifecycleToken(identity.lifecycleUid)}.json`), `${JSON.stringify(record, null, 2)}\n`);
   for (const { path } of scan(target.space).records.slice(REMEMBERED_CHAT_SESSIONS)) {
@@ -70,13 +88,60 @@ export function rememberedChatSessions(target: Pick<MeshTarget, "space" | "serve
   return { sessions: records.map((r) => r.record).filter((r) => r.server === target.server), skipped };
 }
 
-/** Removes every session remembered for `space`, so a later space of the same name starts with none.
- *  Returns how many there were. */
+/** The ids of the direct messages the terminal app showed the human on `space`, in any run. Message
+ *  ids are unique across brokers, so the marks are the space's. A record that does not parse throws,
+ *  as does a folder or file another account could write. */
+export function readMarks(space: string): ReadonlySet<string> {
+  return new Set(loadMarks(space).keys());
+}
+
+/** Adds `messages` to `space`'s read marks and keeps the newest {@link READ_MARKS}. A lock holds the
+ *  read and the write together, so two app runs on one space never drop each other's marks. An id
+ *  longer than 128 characters throws, and nothing is written. */
+export function markRead(space: string, messages: readonly { readonly id: string; readonly ts: number }[]): void {
+  if (messages.some((m) => !m.id || m.id.length > ID_LIMIT)) throw new Error(`a message id is empty or longer than ${ID_LIMIT} characters`);
+  const path = join(prepareFolder(space), READ_FILE);
+  const lock = acquireLock(`${path}.lock`, { label: "a read-marks write", waitMs: 10_000 });
+  try {
+    const marks = loadMarks(space);
+    for (const m of messages) marks.set(m.id, m.ts);
+    const read = Object.fromEntries([...marks].sort((a, b) => b[1] - a[1]).slice(0, READ_MARKS));
+    writeSecretFileAtomic(path, `${JSON.stringify({ v: VERSION, space, read })}\n`);
+  } finally {
+    lock.release();
+  }
+}
+
+function loadMarks(space: string): Map<string, number> {
+  const dir = folder(space);
+  if (!existsSync(dir)) return new Map();
+  protectedLocalDirectory(dir, FOLDER);
+  const path = join(dir, READ_FILE);
+  const bytes = readLocalRecordSource(path, READ_LIMIT, true);
+  if (!bytes) return new Map();
+  try {
+    const value = decodeLocalJson(bytes);
+    const v = (value as { v?: unknown } | null)?.v;
+    if (v !== VERSION) throw new Error(`it is record version ${JSON.stringify(v)}, and this release reads version ${VERSION}`);
+    const r = localRecordObject(value, READ_FIELDS);
+    if (r.space !== space) throw new Error("it names another space");
+    if (!r.read || typeof r.read !== "object" || Array.isArray(r.read)) throw new Error("its marks are not an object");
+    return new Map(Object.entries(r.read).map(([id, ts]) => {
+      if (!id || id.length > ID_LIMIT || typeof ts !== "number" || !Number.isFinite(ts)) throw new Error("a mark is not a message id with its time");
+      return [id, ts];
+    }));
+  } catch (e) {
+    throw new Error(`${path} was not read: ${(e as Error).message}`);
+  }
+}
+
+/** Removes every session remembered for `space`, and its read marks, so a later space of the same name
+ *  starts with none. Returns how many sessions there were. */
 export function forgetChatSessions(space: string): number {
   const dir = folder(space);
   if (!existsSync(dir)) return 0;
   protectedLocalDirectory(dir, FOLDER);
-  const count = readdirSync(dir).filter((name) => name.endsWith(".json")).length;
+  const count = sessionFiles(dir).length;
   rmSync(dir, { recursive: true, force: true });
   return count;
 }
@@ -87,8 +152,7 @@ function scan(space: string): { records: { record: RememberedChatSession; path: 
   protectedLocalDirectory(dir, FOLDER);
   const records: { record: RememberedChatSession; path: string }[] = [];
   const skipped: { path: string; reason: string }[] = [];
-  // A name without `.json` is a write in progress.
-  for (const name of readdirSync(dir).filter((n) => n.endsWith(".json"))) {
+  for (const name of sessionFiles(dir)) {
     const path = join(dir, name);
     try {
       const bytes = readLocalRecordSource(path, RECORD_LIMIT, true);
