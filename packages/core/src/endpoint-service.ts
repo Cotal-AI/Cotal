@@ -601,7 +601,15 @@ export async function registerServiceInstance(
   let progressRevision: number | null = null;
   try {
     const family = await args.barrier.enumerate();
-    for (const row of family) if (row.state === "active") await args.barrier.revoke(row);
+    // Independent row CASes overlap so historical renewals do not cost two serial round trips
+    // apiece. Drain the whole bounded batch, including synchronous throws, before any refusal
+    // or eviction. A failed batch leaves completed revocations durable and the gate frozen.
+    const active = family.filter((row) => row.state === "active");
+    const revokeConcurrency = 16;
+    for (let i = 0; i < active.length; i += revokeConcurrency) {
+      const results = await Promise.allSettled(active.slice(i, i + revokeConcurrency).map(async (row) => args.barrier.revoke(row)));
+      for (const result of results) if (result.status === "rejected") throw result.reason;
+    }
     const holders = [...new Set(family.map((row) => row.holderPrincipal))].sort();
     const opId = args.barrier.operationId ?? obs.op?.opId;
     let progress: EndpointRepairCursor | undefined;
