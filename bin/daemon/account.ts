@@ -1,4 +1,4 @@
-import { hostname } from "node:os";
+import { readComputerName, saveComputerName } from "./computer-name.js";
 import { findMesh } from "@cotal-ai/workspace";
 import { loadIdpSession, requestAccountMachine, signedInMachineAccounts, withIdpSessionDir } from "@cotal-ai/auth";
 import { validateCatalogSnapshot, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
@@ -24,7 +24,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
       const machineId = accountComputerId(home, account);
       const context: NonNullable<ReturnType<typeof contexts.get>> = contexts.get(account.ownerKey) ?? { state: { machineId, mode: "account", hostSupport: "unknown", spaces: [] } as AccountComputerStatus, lastHeartbeat: 0, abort: new AbortController() };
       const session = loadIdpSession(home, account.idpUrl);
-      Object.assign(context.state, { idpUrl: account.idpUrl, sub: account.sub, label: session?.label, computer: hostname() });
+      Object.assign(context.state, { idpUrl: account.idpUrl, sub: account.sub, label: session?.label, computer: readComputerName(home) });
       contexts.set(account.ownerKey, context);
       state = context.state;
       if (context.work || context.state.mode === "per-space" || context.state.mode === "sign-in-required") return;
@@ -33,7 +33,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
       async function poll() {
     const state = context.state;
     const call = (method: "PUT" | "GET") => requestAccountMachine({ dir: home, idpUrl: account.idpUrl, machineId, method, signal: AbortSignal.any([abort.signal, context.abort.signal]),
-      ...(method === "GET" ? { etag: context.etag } : { metadata: { name: hostname().slice(0, 128) || "Computer", platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version } }) });
+      ...(method === "GET" ? { etag: context.etag } : { metadata: { name: readComputerName(home), platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version } }) });
     if (Date.now() - context.lastHeartbeat >= 60_000) {
       const result = await call("PUT");
       if (result.status === 404) { state.mode = "per-space"; state.hostSupport = "unsupported"; state.message = "account computers unsupported; existing per-space connections remain local"; return; }
@@ -121,6 +121,16 @@ export function createAccountComputer(home: string, version: string, reconciler:
   return {
     /** Start polling and settle every account's initial attempt before saved hosting resumes. */
     async start() { run(); await work; await Promise.all([...tasks]); }, intent,
+    async rename(value: string) {
+      const name = saveComputerName(home, value);
+      await Promise.all([...tasks]);
+      for (const context of contexts.values()) {
+        context.lastHeartbeat = 0; context.state.computer = name;
+      }
+      await tick();
+      await Promise.all([...tasks]);
+      return name;
+    },
     signedIn() { for (const context of contexts.values()) context.abort.abort(); contexts.clear(); if (timer) clearTimeout(timer); run(); },
     status: (): AccountComputerStatus => {
       const ordered = [...contexts.values()].sort((a, b) => Number(b.state.hostSupport === "supported") - Number(a.state.hostSupport === "supported") || (a.state.idpUrl ?? "").localeCompare(b.state.idpUrl ?? "") || (a.state.sub ?? "").localeCompare(b.state.sub ?? ""));

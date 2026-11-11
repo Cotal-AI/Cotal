@@ -22,6 +22,11 @@ pub enum DesktopRequest {
     Status {},
     #[serde(rename = "install")]
     Install {},
+    #[serde(rename = "name")]
+    Name {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
     #[serde(rename = "spaces")]
     Spaces {
         #[serde(skip_serializing_if = "Option::is_none")]

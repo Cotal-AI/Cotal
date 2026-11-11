@@ -17,6 +17,7 @@
  */
 import { chmodSync, closeSync, linkSync, unlinkSync, lstatSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { readComputerName } from "./computer-name.js";
 import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
@@ -155,6 +156,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
+    computer: readComputerName(machineHome),
     state: "ready",
     protocol: DAEMON_PROTOCOL_VERSION,
     version: opts.version,
@@ -279,6 +281,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           const result = status();
           return result.update ? { ...result, update: { ...result.update, restartEvidence: await managers.preparedGenerationEvidence() } } : result;
         });
+        return;
+      }
+      if (req.op === "name") {
+        managerResult(async () => { if (req.name !== undefined) await account.rename(req.name); return status(); });
         return;
       }
       if (req.op === "spaces") {

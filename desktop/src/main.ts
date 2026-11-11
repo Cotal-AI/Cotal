@@ -1,3 +1,4 @@
+import { computerName } from "./computer-name";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
@@ -28,6 +29,32 @@ setIcon(el("machine-icon"), "computer");
 setIcon(el("loading-icon"), "spinner");
 el("dashboard").append(icon("external"));
 type Stage = "welcome" | "sign-in" | "connect" | "finished";
+let nameEditing = false;
+let savedComputerName = "This computer";
+function renderComputerName(value: string): void {
+  savedComputerName = value; text("machine-name", value); el("machine-name").title = value;
+}
+function closeNameEditor(): void {
+  nameEditing = false; el("computer-name-form").hidden = true; el("machine-name").hidden = false;
+  el("edit-computer-name").hidden = !(stage === "connect" || stage === "finished"); el("edit-computer-name").focus();
+}
+el("edit-computer-name").addEventListener("click", () => {
+  nameEditing = true; el("machine-name").hidden = true; el("edit-computer-name").hidden = true;
+  el("computer-name-form").hidden = false; text("computer-name-error", "");
+  el<HTMLInputElement>("computer-name-input").value = savedComputerName; el("computer-name-input").focus();
+});
+el("cancel-computer-name").addEventListener("click", closeNameEditor);
+el("computer-name-form").addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeNameEditor(); } });
+el("computer-name-form").addEventListener("submit", event => {
+  event.preventDefault();
+  let name: string;
+  try { name = computerName(el<HTMLInputElement>("computer-name-input").value); }
+  catch (error) { text("computer-name-error", (error as Error).message); return; }
+  void action(async () => {
+    try { const result = await request({ op: "name", name }); renderComputerName(String(result.computer)); closeNameEditor(); }
+    catch (error) { text("computer-name-error", (error as Error).message); }
+  });
+});
 let initialized = false;
 let retrySignIn = false;
 let approvalExpires = 0;
@@ -158,6 +185,7 @@ function resizeCard(previous: number): void {
 function showStage(next: Stage, focus = false): void {
   const previousHeight = document.querySelector(".connection-card")!.getBoundingClientRect().height;
   stage = next;
+  el("edit-computer-name").hidden = nameEditing || !(next === "connect" || next === "finished");
   const finished = next === "finished";
   const anyConnected = [...connections.values()].includes("launch-ready");
   const pending = !anyConnected && [...connections].find(([, value]) => value === "approval-pending");
@@ -406,6 +434,7 @@ async function refresh(): Promise<void> {
     const status = await request({ op: "status" });
     if (!current()) return;
     ready = status.state === "ready";
+    if (typeof status.computer === "string") renderComputerName(status.computer);
     observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
       computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
       if (computerAccount?.hostSupport === "supported") {
@@ -620,7 +649,7 @@ async function start(): Promise<void> {
     await startPresence(notice, { settings: openSettings, dashboard: openDashboard });
     await onOpenUrl(receiveLinks); const initialLinks = await getCurrent(); if (initialLinks?.length) receiveLinks(initialLinks);
     const info = await request({ op: "about" }); appVersion = String(info.version);
-    text("machine-name", String(info.machine)); text("version", `v${String(info.version)}`);
+    renderComputerName(String(info.machine)); text("version", `v${String(info.version)}`);
     const os = ({ darwin: "macOS", win32: "Windows", linux: "Linux" } as Record<string, string>)[String(info.platform)] ?? String(info.platform);
     const arch = info.platform === "darwin" && info.arch === "arm64" ? "Apple silicon" : ({ x64: "64-bit Intel / AMD", arm64: "ARM64", ia32: "32-bit Intel" } as Record<string, string>)[String(info.arch)] ?? String(info.arch);
     text("machine-details", `${os} · ${arch} · ${Math.round(Number(info.memoryBytes) / 1024 ** 3)} GB`);

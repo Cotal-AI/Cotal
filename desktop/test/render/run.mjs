@@ -171,6 +171,12 @@ try {
         const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== "hidden" && !el.closest(".sr-only");
         for (const el of document.querySelectorAll("body *")) {
           if (!visible(el) || el instanceof SVGElement || !el.textContent?.trim()) continue;
+          if (el.id === "machine-name" && getComputedStyle(el).textOverflow === "ellipsis") {
+            if (el.title !== el.textContent) failures.push("truncated machine name lacks full title");
+            const box = el.getBoundingClientRect();
+            if (box.right > innerWidth || box.left < 0) failures.push("machine name outside viewport");
+            continue;
+          }
           if (el.scrollWidth > el.clientWidth + 1 && el.clientWidth > 0) failures.push(`horizontal overflow: ${el.id || el.tagName}`);
           for (const node of el.childNodes) {
             if (node.nodeType !== Node.TEXT_NODE || !node.textContent.trim()) continue;

@@ -56,6 +56,7 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
         return ok({ state: "ready", version: options.mismatch ? "old" : "test", managers: connected ? [manager] : [] });
       }
       if (r.op === "spaces") return ok({ ...((options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon) && r.refresh ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: [options.ownProviderFailed ? COTAL_CLOUD_IDP : "https://hack.cotal.ai/api/auth"] }) } : {}), spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : "My team", kind: options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: COTAL_CLOUD_IDP })) });
+      if (r.op === "name") return ok({ computer: r.name ?? "My computer" });
       if (r.op === "service-status") return ok({ state: options.serviceState ?? "disconnected" });
       if (r.op === "service-disconnect") { connected = false; return ok({ state: "disconnected" }); }
       if (r.op === "login") {
@@ -82,6 +83,25 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };
   return { dom, doc, node, click, calls, urls, options, emit: async (event: string) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload: null }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
 }
+
+test("computer name edits save, cancel and reject invalid input before request", async () => {
+  const a = await app({ installed: true });
+  try {
+    await a.click("login"); await a.login(); await a.click("edit-computer-name");
+    a.node<HTMLInputElement>("computer-name-input").value = "  Named laptop  ";
+    a.node<HTMLFormElement>("computer-name-form").requestSubmit(); await settle();
+    assert.equal(a.node("machine-name").textContent, "Named laptop");
+    assert.equal(a.calls.filter(r => r.op === "name").length, 1);
+    await a.click("edit-computer-name"); a.node<HTMLInputElement>("computer-name-input").value = "";
+    a.node<HTMLFormElement>("computer-name-form").requestSubmit(); await settle();
+    assert.match(a.node("computer-name-error").textContent ?? "", /1 to 128/);
+    assert.equal(a.calls.filter(r => r.op === "name").length, 1);
+    await a.click("cancel-computer-name"); assert.equal(a.node("machine-name").textContent, "Named laptop");
+    await a.click("edit-computer-name");
+    a.node("computer-name-input").dispatchEvent(new a.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    assert.equal(a.node("computer-name-form").hidden, true);
+  } finally { a.dom.window.close(); }
+});
 
 test("another provider failure does not block successful sign-in", async () => {
   const a = await app({ installed: true, otherProviderFailed: true });
