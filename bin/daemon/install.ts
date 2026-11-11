@@ -591,7 +591,14 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
       try {
         const reply = JSON.parse(await readLine(socket, 5000)) as DaemonResponse;
         if (!reply.ok || reply.id !== id) throw uncertain("the daemon did not commit shutdown");
-      } catch (error) { if (processBirth(owner.pid) === owner.start) throw error; }
+      } catch (error) {
+        // Native End/bootout may close the pinned transport just before the process
+        // disappears. These observed transport losses are not a refusal or absence:
+        // continue to the bounded process + endpoint + lifetime checks below.
+        const code = (error as NodeJS.ErrnoException).code;
+        const ended = error instanceof Error && error.message === "daemon closed the connection without a reply";
+        if (code !== "EPIPE" && code !== "ECONNRESET" && !ended && processBirth(owner.pid) === owner.start) throw error;
+      }
     }
     socket?.destroy();
     const deadline = Date.now() + 130_000;

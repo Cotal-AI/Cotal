@@ -865,6 +865,8 @@ not commit shutdown. A foreground daemon refuses this request. Uninstall never s
 by name or an unverified PID. If shutdown cannot be confirmed within 130 seconds, it reports an
 unknown outcome and retains the source and receipt for inspection and retry. A connection reset
 during shutdown is rechecked within that bound, never counted as endpoint absence.
+Native stop can also close the pinned connection before its reply. That transport loss still
+requires confirmation that the original process is gone and the endpoint no longer answers.
 When the daemon is not running, uninstall takes its lifetime exclusion before native removal and
 confirms endpoint absence under that exclusion before deleting the source and receipt. A live
 recorded process without a verified answering endpoint remains an uncertain outcome.
