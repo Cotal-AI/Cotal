@@ -1,5 +1,12 @@
 # @cotal-ai/linear
 
+## 0.160.3
+
+### Patch Changes
+
+- 0cbf6e4: Connection teardown no longer hangs when the broker closes a connection during its drain.
+  Use the shared `drainAndClose` helper to end the drain wait on terminal closure or a short grace period, then close the connection.
+
 ## 0.160.2
 
 No changes in this release.

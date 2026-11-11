@@ -1,5 +1,28 @@
 # cotal-ai
 
+## 0.160.3
+
+### Patch Changes
+
+- 94313d0: Keep recovery commands copyable in narrow terminals and command help examples concise.
+  
+  Mark embedded commands as code spans in daemon diagnostics, update notices, and operator guidance so the terminal renderer keeps each command together.
+- 89f3296: The unreadable computer name warning now writes its repair command as a command, so the terminal keeps it on one line.
+- 30bca7e: Refuse daemon setup with --no-manager on account-managed computers before changing any space.
+  The refusal directs operators to the account dashboard without registering a machine service or starting an agent host. Per-space hosts retain service-only registration and approval waiting, without agent-host startup progress.
+- Updated dependencies [0cbf6e4]
+- Updated dependencies [94313d0]
+  - @cotal-ai/core@0.160.3
+  - @cotal-ai/workspace@0.160.3
+  - @cotal-ai/cli@0.160.3
+  - @cotal-ai/manager@0.160.3
+  - @cotal-ai/auth@0.160.3
+  - @cotal-ai/delivery@0.160.3
+  - @cotal-ai/runtime@0.160.3
+  - @cotal-ai/connector-core@0.160.3
+  - @cotal-ai/registry@0.160.3
+  - @cotal-ai/seat@0.160.3
+
 ## 0.160.2
 
 ### Patch Changes
