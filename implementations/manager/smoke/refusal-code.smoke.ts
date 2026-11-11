@@ -128,6 +128,14 @@ try {
   const owner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
   let enrollments = 0;
   const enrollmentDetails = [{ kind: "org.example.enrollment-refusal", retryable: false }];
+  // Unknown enrollment outcomes retain their persona. Give every entry-point cell its own
+  // persona so a retained request cannot mask the refusal the next cell is testing.
+  let enrollmentPersona = 0;
+  const freshEnrollmentPersona = () => {
+    const name = `worker_${++enrollmentPersona}`;
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\n---\n`);
+    return name;
+  };
   try {
     refuseReservation = false;
     hostState.userMode = true;
@@ -143,24 +151,29 @@ try {
       { name: "plain Error control", error: new Error("enrollment unavailable"), code: undefined },
     ]) {
       refusal = test.error;
-      const expectedError = `agent auth preflight failed for "worker": ${test.error.message}`;
+      const expectedError = (name: string) => `agent auth preflight failed for "${name}": ${test.error.message}`
+        + (test.code === undefined
+          ? `; the name "${name}" is held by this manager's earlier enrollment. Retry this persona with the same caller to replay it. Once it launches, stop it before changing its authority`
+          : "");
       const expectedDetails = test.code === undefined ? undefined : enrollmentDetails;
       await cell(`startAgent enrollment ${test.name} retains classified refusal`, async () => {
+        const name = freshEnrollmentPersona();
         const before = enrollments;
-        const reply = await manager.startAgent({ name: "worker", agent: "refusal-code", events: false });
+        const reply = await manager.startAgent({ name, agent: "refusal-code", events: false });
         assert.equal(enrollments, before + 1, "public startAgent reaches host enrollment");
         assert.equal(reply.ok, false);
-        assert.equal(reply.error, expectedError);
+        assert.equal(reply.error, expectedError(name));
         assert.equal(reply.code, test.code);
         assert.deepEqual(reply.details, expectedDetails);
       });
       for (const command of ["spawn", "launch"] as const) {
         await cell(`${command} enrollment ${test.name} keeps classification and outcome`, async () => {
+          const name = freshEnrollmentPersona();
           const before = enrollments;
-          const args = command === "spawn" ? { name: "worker", agent: "refusal-code", events: false } : {
-            runId: "enrollment-refusal", name: "worker", spec: {
+          const args = command === "spawn" ? { name, agent: "refusal-code", events: false } : {
+            runId: "enrollment-refusal", name, spec: {
               apiVersion: "cotal-launch/v1", space, owner, runId: "enrollment-refusal",
-              agents: [{ name: "worker", agent: "refusal-code", events: false, subscribe: [], allowSubscribe: [], allowPublish: [], hash: "enrollment" }],
+              agents: [{ name, agent: "refusal-code", events: false, subscribe: [], allowSubscribe: [], allowPublish: [], hash: "enrollment" }],
             },
           };
           // launch's owner-equality check must see a user principal, not the open fixture caller.
@@ -168,7 +181,7 @@ try {
           const reply = (await invokeCommand(nc!, space, userService, command, args, {})).reply;
           assert.equal(enrollments, before + 1, "described command reaches host enrollment");
           assert.equal(reply.ok, false);
-          assert.equal(reply.error?.message, expectedError);
+          assert.equal(reply.error?.message, expectedError(name));
           assert.equal(reply.error?.code, test.code ?? "failed-precondition");
           assert.deepEqual(reply.error?.details, expectedDetails);
           assert.equal(reply.error?.outcome, test.code === undefined ? undefined : "not-executed");
