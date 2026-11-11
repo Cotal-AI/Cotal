@@ -10,6 +10,7 @@
   },
   "scripts": {
     "smoke:connection-cleanup": "tsx packages/core/smoke/connection-cleanup.smoke.ts && tsx bin/smoke/connection-cleanup.smoke.ts",
+    "smoke:npm-launcher": "node bin/smoke/npm-launcher.smoke.mjs",
     "smoke:atomic-write-cleanup": "node bin/smoke/atomic-write-cleanup.smoke.mjs",
     "smoke:local-write-quota": "node bin/smoke/local-write-quota.smoke.mjs",
     "smoke:server-intent:live": "tsx implementations/cli/smoke/server-intent-live.smoke.ts",

@@ -135,6 +135,9 @@ importers:
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../packages/workspace
+      cmd-shim:
+        specifier: ^8.0.0
+        version: 8.0.0
       jose:
         specifier: ^6.2.3
         version: 6.2.3
@@ -3929,6 +3932,10 @@ packages:
   clsx@2.1.1:
     resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
     engines: {node: '>=6'}
+
+  cmd-shim@8.0.0:
+    resolution: {integrity: sha512-Jk/BK6NCapZ58BKUxlSI+ouKRbjH1NLZCgJkYoab+vEHUY3f6OzpNBN9u7HFSv9J6TRDGs4PLOHezoKGaFRSCA==}
+    engines: {node: ^20.17.0 || >=22.9.0}
 
   cn@0.2.6:
     resolution: {integrity: sha512-+i4L0zUGgRcEnhsxueVrP7iBGxBx5iD0WOTYg1MwFEu2ZyCmH5Ov2V1cul2Ht5UchRQQgftCf4be/RxspuW6QQ==}
@@ -9111,6 +9118,8 @@ snapshots:
       string-width: 8.2.1
 
   clsx@2.1.1: {}
+
+  cmd-shim@8.0.0: {}
 
   cn@0.2.6: {}
 

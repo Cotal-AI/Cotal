@@ -196,7 +196,7 @@ function isCliEntry(path: string): boolean {
   const name = basename(path);
   if (name !== "cotal.js" && name !== "cotal.ts") return false;
   for (let dir = dirname(path); ; dir = dirname(dir)) {
-    let pkg: { name?: unknown; bin?: { cotal?: unknown } | string };
+    let pkg: { name?: unknown; bin?: { cotal?: unknown; "cotal-ai"?: unknown } | string };
     try {
       pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as typeof pkg;
     } catch {
@@ -204,7 +204,8 @@ function isCliEntry(path: string): boolean {
       continue;
     }
     if (name === "cotal.ts") return pkg.name === "cotal-monorepo";
-    const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.cotal;
+    const bin = typeof pkg.bin === "object" && pkg.name === "cotal-ai" && pkg.bin["cotal-ai"] === "./launcher.cjs"
+      ? "dist/cotal.js" : typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.cotal;
     return typeof bin === "string" && basename(bin) === name;
   }
 }

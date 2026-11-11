@@ -164,6 +164,10 @@ if (process.platform !== "win32") {
   const checkoutEntry = put(join(checkoutBin, "cotal.ts"));
   check("a checkout's `bin/cotal.ts` beside the cotal-ai manifest builds one", builds(argv(checkoutEntry), checkoutEntry));
   check("the package's declared bin `dist/cotal.js` builds one too", builds(argv(installed), installed));
+  put(join(pkg, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.0.0", bin: { "cotal-ai": "./launcher.cjs" } }));
+  check("the stable launcher's command entry builds a re-exec argv", builds(argv(installed), installed));
+  check("the stable manifest still refuses another file inside its package", argv(put(join(pkg, "lib", "cotal.js"))) instanceof Error);
+  manifest(pkg);
 
   const suite = argv(resolve(import.meta.dirname, "delivery-boot-honesty.smoke.ts"));
   check("a `.smoke.ts` entry is REFUSED, not re-execed as a daemon", suite instanceof Error);

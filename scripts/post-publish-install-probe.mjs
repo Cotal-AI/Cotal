@@ -233,7 +233,7 @@ export async function startFakeRegistry(tarballPath, packageName, version) {
  * `--version` or `--help` actually execute it, and a sibling's packaging is not under test at all.
  */
 export function runBinary(binPath, args) {
-  const pkgDir = dirname(dirname(binPath)); // dist/cotal.js -> package dir
+  const pkgDir = basename(binPath) === "launcher.cjs" ? dirname(binPath) : dirname(dirname(binPath));
   const nmLink = join(pkgDir, "node_modules");
 
   // Symlink the workspace bin package's node_modules into the extracted package so ESM

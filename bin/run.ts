@@ -64,7 +64,7 @@ const { commandWord, runCli, stdoutError } = await import("@cotal-ai/cli/dispatc
 const argv = process.argv.slice(2);
 const { readFileSync } = await import("node:fs");
 const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
-(await import("./update-notice.js")).installUpdateNotice(argv, currentVersion);
+const { installUpdateNotice } = await import("./update-notice.js");
 const word = commandWord(argv);
 if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
 else await importing(...(Object.keys(surfaces) as Surface[]))();
@@ -89,4 +89,7 @@ process.stdout.on("error", stdoutError);
 // roots keep the explicit-import model.
 // The bundled app uses only stock daemon operations, never operator extension discovery or seeding.
 const desktopBridge = argv.length === 2 && argv[0] === "daemon" && argv[1] === "desktop";
-await runCli(registry, argv, { extensions: !desktopBridge, startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt } });
+export async function main(): Promise<void> {
+  installUpdateNotice(argv, currentVersion);
+  await runCli(registry, argv, { extensions: !desktopBridge, startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt } });
+}

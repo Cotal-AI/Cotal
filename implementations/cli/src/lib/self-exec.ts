@@ -10,8 +10,8 @@ import { shellWord } from "./endpoint-errors.js";
  *
  *  The entry is `process.argv[1]` through every symlink ({@link entryScript}), and it counts only
  *  when the package that owns it ({@link cliPackageRoot}) is `cotal-ai` and the file is one of that
- *  package's two entries: the `bin.cotal` its package.json declares (`dist/cotal.js`, which is what
- *  an install and npx run), or `cotal.ts` beside that package.json (a checkout's `bin/cotal.ts`,
+ *  package's command entries: the `bin.cotal` a legacy package declares, `dist/cotal.js` behind
+ *  the stable launcher, or `cotal.ts` beside that package.json (a checkout's `bin/cotal.ts`,
  *  which `bin/tsconfig.json` compiles to that bin). `npm i -g` leaves `process.argv[1]` on
  *  `<prefix>/bin/cotal`, a symlink into the package, and resolving it is what admits that shape.
  *
@@ -21,8 +21,8 @@ function runsCliEntry(): boolean {
   try {
     const entry = entryScript();
     const root = cliPackageRoot();
-    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown; bin?: { cotal?: unknown } | null };
-    const bin = pkg.bin?.cotal;
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown; bin?: { cotal?: unknown; "cotal-ai"?: unknown } | null };
+    const bin = pkg.bin?.["cotal-ai"] === "./launcher.cjs" ? "dist/cotal.js" : pkg.bin?.cotal;
     if (pkg.name !== "cotal-ai" || typeof bin !== "string") return false;
     return [bin, "cotal.ts"].some((file) => {
       try { return realpathSync(join(root, file)) === entry; } catch { return false; }
