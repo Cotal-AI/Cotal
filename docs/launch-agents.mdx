@@ -72,8 +72,9 @@ Follow the connector guide for [Claude](connect-claude.mdx), [OpenCode](connect-
 `--model` overrides the persona file's `model:` pin.
 Claude accepts aliases such as `opus` and `sonnet`, or a full model ID.
 OpenCode uses `provider/model`.
-For connectors with a catalog, run `cotal models --harness opencode` to inspect model IDs and variants.
-Select one with `--model provider/model --variant high`.
+To inspect a connector's model IDs and variants, run `cotal models --harness <connector>`.
+Every connector except Hermes lists a catalog.
+For OpenCode, select one with `--model provider/model --variant high`.
 
 A spawned Claude Code agent loads Cotal's tools, Claude's native MCP sources, and declared sharing overrides.
 Use `--share-tools none` for Cotal alone or `--share-tools a,b` for named declared servers.

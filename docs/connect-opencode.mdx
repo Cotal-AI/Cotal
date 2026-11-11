@@ -49,21 +49,20 @@ See [Launch agents](launch-agents.mdx) for persona selection and terminal contro
 
 ## Choose a model [#choose-a-model]
 
-On OpenCode 1.x, inspect the available catalog:
+Inspect the available catalog:
 
 ```bash
 cotal models --harness opencode
-cotal models --harness opencode --refresh
 ```
+
+On 1.x, add `--refresh` to refresh OpenCode's provider cache first.
+On 2.x, the connector runs `opencode api --standalone GET /api/model`, which starts a private OpenCode server for that one request.
 
 Choose a `provider/model` ID and, when the model offers variants, a variant from that listing:
 
 ```bash
 cotal spawn --harness opencode --model <provider/model> --variant <variant>
 ```
-
-On 2.x, `cotal models` cannot list the catalog.
-Pass a model ID supported by your configured OpenCode server.
 
 You can also set `model:` and `variant:` in the agent file.
 Explicit flags override those fields.
@@ -101,7 +100,7 @@ On a space that permits opting out, add `--no-events` to disable publication.
 - Session resume and exact-session continuation are unsupported.
 - `connectors.opencode.mcpServers` is unsupported. Agents inherit the operator's MCP servers through the config merge, without a Cotal filter for selecting a subset.
 - Spawned agents use `permission: "allow"`. Tool calls do not wait for human approval.
-- OpenCode 2.x has no model catalog listing or `/new` session handoff. Select the model explicitly when needed.
+- OpenCode 2.x has no `/new` session handoff.
 
 ## Continue [#see-also]
 

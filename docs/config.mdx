@@ -361,6 +361,9 @@ Model discovery uses a different environment. The `codex` and `opencode` catalog
 `cotal models` and the manager's selector receive the operator environment with `COTAL_*` removed.
 They do not read `spawn.env`. The binary resolves from the operator pin (`COTAL_CODEX_BIN` or `COTAL_OPENCODE_BIN`),
 then the absolute path recorded at manager boot, then the bare name. The seat allow-list does not apply to these short-lived reads.
+The `claude` and `pi` catalog reads receive a launch's environment: the seat allow-list and the
+connector's provider keys, without `spawn.env`. Their binary is the absolute path recorded at
+manager boot, then the bare name.
 
 ### Launch material
 

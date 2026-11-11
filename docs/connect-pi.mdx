@@ -52,6 +52,9 @@ Add `--detach` to launch through a manager and return after readiness.
 To use a persona file on the execution host, add `--file <persona-file>`.
 `--model <model>` overrides that file's `model:` field.
 The connector passes the model name to pi unchanged.
+To list the models your pi can run, use `cotal models --harness pi`.
+It lists each model as `provider/id` for the providers pi holds credentials for.
+With no credentials, it reports `pi lists no models because it holds no provider credentials; sign in with /login in pi or set a provider API key`.
 Provider keys come from the connector's declared list and the names explicitly allowed in `spawn.env`.
 See [Launcher variables](config.mdx#launcher-variables) when a provider needs another variable.
 

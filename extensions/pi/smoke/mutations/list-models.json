@@ -1,0 +1,171 @@
+{
+  "suite": [
+    "extensions/pi/smoke/list-models.smoke.ts"
+  ],
+  "guard": "the pi connector lists the models the user's own pi reports, and returns unavailable with the reason when pi is missing, has no credentials, refuses, answers garbage or never answers, stopping pi every time",
+  "command": "pnpm smoke:pi-list-models",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/pi/smoke/mutations/list-models.json",
+  "mutations": [
+    {
+      "name": "LM1 the catalog is not wired into the connector",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "  listModels: listPiModels,\n",
+      "replace": "",
+      "expectRed": "the pi connector serves its catalog from listPiModels",
+      "cell": "the pi connector serves its catalog from listPiModels"
+    },
+    {
+      "name": "LM2 ids drop the provider",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "id: `${m.provider}/${m.id}`",
+      "replace": "id: m.id",
+      "expectRed": "maps pi's recorded reply to one provider/id per model, the form pi's --model takes",
+      "cell": "maps pi's recorded reply to one provider/id per model, the form pi's --model takes"
+    },
+    {
+      "name": "LM3 the display name is dropped",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "...(typeof m.name === \"string\" && m.name ? { name: m.name } : {})",
+      "replace": "...{}",
+      "expectRed": "keeps pi's provider and display name",
+      "cell": "keeps pi's provider and display name"
+    },
+    {
+      "name": "LM4 a listed catalog loses its source",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "return { source: \"pi --mode rpc get_available_models\", models };",
+      "replace": "return { models };",
+      "expectRed": "a listed catalog is supported and names its source",
+      "cell": "a listed catalog is supported and names its source"
+    },
+    {
+      "name": "LM5 pi runs without --offline",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "[\"--mode\", \"rpc\", \"--no-session\", \"--offline\"]",
+      "replace": "[\"--mode\", \"rpc\", \"--no-session\"]",
+      "expectRed": "asks pi in RPC mode with no session and no startup network work",
+      "cell": "asks pi in RPC mode with no session and no startup network work"
+    },
+    {
+      "name": "LM6 the probe also sends a prompt",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "child.stdin!.write(JSON.stringify({ id: \"cotal-models\", type: \"get_available_models\" }) + \"\\n\");",
+      "replace": "child.stdin!.write(JSON.stringify({ id: \"cotal-models\", type: \"get_available_models\" }) + \"\\n\");\n      child.stdin!.write(JSON.stringify({ type: \"prompt\", message: \"hello\" }) + \"\\n\");",
+      "expectRed": "sends pi one get_available_models command and no prompt",
+      "cell": "sends pi one get_available_models command and no prompt"
+    },
+    {
+      "name": "LM7 the probe passes no provider keys",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "env: launchEnv({ providerKeys: PI_PROVIDER_KEYS }),\n    stdio",
+      "replace": "env: launchEnv(),\n    stdio",
+      "expectRed": "gives pi the provider keys a launch gets",
+      "cell": "gives pi the provider keys a launch gets"
+    },
+    {
+      "name": "LM8 the probe passes the manager's whole env",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "env: launchEnv({ providerKeys: PI_PROVIDER_KEYS }),\n    stdio",
+      "replace": "env: process.env,\n    stdio",
+      "expectRed": "gives pi no seat identity",
+      "cell": "gives pi no seat identity"
+    },
+    {
+      "name": "LM9 pi is left running after it answers",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "    stopPi(child);\n",
+      "replace": "",
+      "expectRed": "stops pi once it answered",
+      "cell": "stops pi once it answered"
+    },
+    {
+      "name": "LM10 an empty catalog is reported as supported",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "  if (models.length === 0)\n    return unavailable(",
+      "replace": "  if (models.length < 0)\n    return unavailable(",
+      "expectRed": "a pi with no credentials is unavailable, saying it holds no provider credentials",
+      "cell": "a pi with no credentials is unavailable, saying it holds no provider credentials"
+    },
+    {
+      "name": "LM11 a pi that cannot start reads as an empty catalog",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "done(unavailable(`pi could not be started (${e.code ?? e.message})`))",
+      "replace": "done({ models: [] })",
+      "expectRed": "a missing pi is unavailable, saying it could not start",
+      "cell": "a missing pi is unavailable, saying it could not start"
+    },
+    {
+      "name": "LM12 the timeout is 60 seconds",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "within 6s\")), 6_000);",
+      "replace": "within 6s\")), 60_000);",
+      "expectRed": "a pi that never answers is unavailable after 6 seconds",
+      "cell": "a pi that never answers is unavailable after 6 seconds"
+    },
+    {
+      "name": "LM13 a line that is not JSON is skipped",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "return done(unavailable(\"pi wrote a line that is not JSON to its RPC output\"));",
+      "replace": "continue;",
+      "expectRed": "a pi that writes a line that is not JSON is unavailable, saying so",
+      "cell": "a pi that writes a line that is not JSON is unavailable, saying so"
+    },
+    {
+      "name": "LM14 a refusal is read as an answer",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "if (reply.success !== true)\n",
+      "replace": "if (reply.success === undefined)\n",
+      "expectRed": "a pi that refuses is unavailable with pi's own error",
+      "cell": "a pi that refuses is unavailable with pi's own error"
+    },
+    {
+      "name": "LM15 a reply with no models list reads as an empty catalog",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "return unavailable(\"pi answered get_available_models without a models list\");",
+      "replace": "return { models: [] };",
+      "expectRed": "a reply with no models list is unavailable",
+      "cell": "a reply with no models list is unavailable"
+    },
+    {
+      "name": "LM16 a model with no provider or id is skipped",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "return unavailable(\"pi answered get_available_models with a model that has no provider or id\");",
+      "replace": "continue;",
+      "expectRed": "a model with no provider or id makes the whole catalog unavailable",
+      "cell": "a model with no provider or id makes the whole catalog unavailable"
+    },
+    {
+      "name": "LM17 an early exit is not watched",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "child.on(\"close\", (code, signal) => done(unavailable(`pi exited (${signal ?? code}) before get_available_models answered`)));",
+      "replace": "",
+      "expectRed": "a pi that exits before answering is unavailable, naming its exit code",
+      "cell": "a pi that exits before answering is unavailable, naming its exit code"
+    },
+    {
+      "name": "LM18 a pi that ignores SIGTERM is never killed",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "setTimeout(() => child.kill(\"SIGKILL\"), 5_000)",
+      "replace": "setTimeout(() => {}, 5_000)",
+      "expectRed": "a pi that ignores SIGTERM is killed within 5 seconds",
+      "cell": "a pi that ignores SIGTERM is killed within 5 seconds"
+    },
+    {
+      "name": "LM19 pi is killed without being asked to shut down",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "  child.kill(\"SIGTERM\");\n",
+      "replace": "  child.kill(\"SIGKILL\");\n",
+      "expectRed": "pi is asked to shut down before it is killed",
+      "cell": "pi is asked to shut down before it is killed"
+    },
+    {
+      "name": "LM20 pi is left running after it never answered",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "    stopPi(child);\n",
+      "replace": "",
+      "expectRed": "a pi that never answered is stopped",
+      "cell": "a pi that never answered is stopped"
+    }
+  ]
+}
