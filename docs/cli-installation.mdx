@@ -206,6 +206,11 @@ end them. The refusal names agents from the Manager's status and gives `cotal st
 `cotal ps` commands pinned to their Manager instance and space. The list command requires admin
 scope on user-auth spaces. Save their work and stop them, then rerun the same update command,
 including `--self` if you used it. No agent is stopped automatically.
+During continuity checks, a timed-out remote credential exchange or an HTTP 5xx response retries
+within one shared 120-second budget. The command reports the host and the remaining retry time.
+HTTP 4xx responses, including credential denials and rate limits, fail without retry. If the host
+does not recover before the deadline, restore its connection and run `cotal update` again.
+Reconciliation still requires a fresh status answer from each pinned Manager.
 After reconciliation, update waits up to 120 seconds
 for the matching daemon version and the previously active hosted spaces to report answering
 Managers. When the daemon version differs, update prepares every hosted child through the local

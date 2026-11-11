@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
 import { update, updateRuntime } from "@cotal-ai/cli/update";
-import { withIdpSessionDir } from "@cotal-ai/auth";
+import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { CommandFailure, homeCotalDir, resolveControlTarget, shellPath } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
@@ -15,7 +15,7 @@ registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
   let hostedSpaces: string[] = [];
   let daemonObserved = false;
-  await update(args, { ...updateRuntime, waitForInstalledGeneration: waitForInstalledDaemonGeneration, async reportRunningManager(flags) {
+  await update(args, { ...updateRuntime, waitForInstalledGeneration: waitForInstalledDaemonGeneration, reportRunningManager: (flags) => withRemoteExchangeRetry(async () => {
     let managers;
     try {
       const reply = await queryDaemon({ paths: daemonPaths() });
@@ -58,7 +58,7 @@ const composed: Command = { ...command, async run(args) {
       }
     }
     return "none";
-  } });
+  }) });
   if (args.values.check === true || process.exitCode || !daemonObserved) return;
   const paths = daemonPaths();
   const current = await queryDaemon({ paths });
