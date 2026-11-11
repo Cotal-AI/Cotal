@@ -1029,7 +1029,7 @@ locale-independent string order and bounded by limit. Truncated MUST state wheth
 matching entries exist. The response MUST NOT contain file names, contents, sizes or timestamps.
 Directory symlinks MUST be marked; explicitly navigating one MUST return its canonical target
 path. Broken and non-directory symlinks MUST be omitted. Roots MUST list existing drive roots on
-Windows, `/` and `/Volumes` on macOS, and `/` on other hosts. Invalid or inaccessible directories
+Windows (a root whose inspection fails MUST be omitted), `/` and `/Volumes` on macOS, and `/` on other hosts. Invalid or inaccessible directories
 MUST refuse with `failed-precondition`. Delegated execution MUST refuse before any filesystem
 lookup with the same execution-mode refusal as `resolve-cwd`; NONE MUST refuse with `unimplemented`.
 The Manager cluster revision is 48.

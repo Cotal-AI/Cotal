@@ -106,7 +106,7 @@ Call `cotal invoke manager list-dir --on <instance> --args '{}'` to start at the
 home. Input accepts an absolute `path`, `includeHidden` (default false) and `limit` (default 200,
 maximum 1000). The response contains canonical `path`, nullable `parent`, sorted child
 `directories` with `name` and `symlink`, `truncated`, and platform `roots`. A root has null parent.
-Windows roots list existing drives. macOS roots include `/` and `/Volumes`; other hosts return `/`.
+Windows roots list drives whose root can be inspected; unavailable drives are omitted. macOS roots include `/` and `/Volumes`; other hosts return `/`.
 No file names, contents, sizes or timestamps are returned. Hidden means a dot-prefixed name.
 
 A directory symlink is marked without returning its target. Explicitly navigating it returns the

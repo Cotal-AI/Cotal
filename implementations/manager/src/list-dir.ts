@@ -40,9 +40,8 @@ export async function listDirectory(path: string, includeHidden: boolean, limit:
       const root = `${letter}:\\`;
       try {
         if ((await stat(root)).isDirectory()) roots.push(root);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      } catch {
+        // Drive letters include empty, locked and disconnected volumes. Only usable roots belong here.
       }
     }
   } else {
