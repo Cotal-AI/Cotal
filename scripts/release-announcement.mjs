@@ -10,6 +10,7 @@
  * Refuses a body with no `## What changed` section rather than posting something else.
  * `--self-test` runs the suite at the bottom of this file.
  */
+import { isMainEntry } from "./main-entry.mjs";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 
@@ -120,4 +121,4 @@ const main = async (argv) => {
   process.stdout.write(JSON.stringify(payload(tag, url, await readText(process.stdin))));
 };
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) await main(process.argv.slice(2));
+if (isMainEntry(import.meta.url)) await main(process.argv.slice(2));
