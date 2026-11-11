@@ -105,6 +105,9 @@ On Linux, a daemon-started automatic update moves its authenticated updater pare
 child into a sibling systemd user scope before reconciliation. This requires cgroup v2,
 `systemctl`, `busctl`, and a reachable user manager that permits transient scopes with existing
 PIDs. The daemon remains in its service. Restart decisions stay with the existing updater.
+The custody inspector accepts group-writable owned paths only for the caller's primary group
+when bounded local account records show no other member or account using that group. Unknown
+or external account sources are refused. This inspector does not examine extended ACLs.
 This preserves updater availability during a service stop, but does not add startup verification
 or rollback guarantees. If migration is refused, the package has already been replaced and
 reconciliation has not started. The parent may retry or restore its previous package. Keep the
