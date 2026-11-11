@@ -60,7 +60,7 @@ try {
   check((await cli([])).includes("CLI computer"), "CLI human getter");
   hold = true;
   const started = Date.now();
-  const offline = await exchangeDesktopRequest({ paths, timeoutMs: 1500 }, { op: "name", name: "Offline computer" });
+  const offline = await exchangeDesktopRequest({ paths }, { op: "name", name: "Offline computer" });
   check(offline.ok && Date.now() - started < 1500, "unreachable host rename answers locally within 1500ms");
   check(daemon.status().computer === "Offline computer", "offline save immediately updates status");
   hold = false;
