@@ -332,7 +332,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         resolve();
         const lastLine = stderr.trim().split("\n").pop()?.slice(-500);
         const exitReason = `Manager exited (${signal ?? `code ${code}`})${lastLine ? `: ${lastLine}` : ""}`;
-        l.view = { ...l.view, pid: undefined, lastExit: exitReason };
+        l.view = { ...l.view, pid: undefined, lastExit: l.stopping && code === 0 && signal === null ? undefined : exitReason };
         if (!nativeReason) nativeReason = exitReason;
         if (!l.stopping && !closed && (l.view.state === "answering" || (l.view.state === "starting" && !l.starting))) {
           l.view = { ...l.view, reason: exitReason };
@@ -549,7 +549,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       return held;
     },
     all: () => [...new Set([...spaces(true), ...live.keys()])].map(status),
-    async disconnect(space: string) {
+    async disconnect(space: string, options?: { account?: boolean }) {
       const l = live.get(space);
       if (l) {
         l.stopping = true;
@@ -558,7 +558,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         await stopChild(l);
         await l.healthTask;
         await l.starting;
-        l.view = { ...l.view, state: "stopped", pid: undefined, reason: undefined, next: `run cotal daemon setup --space ${space} to host its Manager again` };
+        l.view = { ...l.view, state: "stopped", pid: undefined, reason: undefined, next: options?.account ? "enable this space for this computer in the dashboard to host its Manager again" : `run cotal daemon setup --space ${space} to host its Manager again` };
       }
       rmSync(daemonManagerIntentFile(space, home), { force: true });
       rmSync(refusalFile(space), { force: true });

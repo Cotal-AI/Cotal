@@ -565,7 +565,9 @@ heartbeat every 60 seconds and polls the account's desired spaces every five sec
 spaces start or inspect the Manager through the same hosting sequence as setup. Each space's
 connection check decides whether machine-service registration and owner approval are needed.
 Spaces without service endpoints still run their Manager and report its state. Removing a space
-stops its Manager and disconnects its machine service when one exists.
+stops its Manager and disconnects its machine service when one exists. The Manager stops and
+retires its running agents before exiting. A clean stop has no last-exit diagnostic. The stopped
+Manager's next step points to enabling the space for this computer in the dashboard.
 
 `daemon status` and its JSON `account` section separate desired spaces from observed connection
 state, with computer identity, host support, last registration, desired revision and refusals.

@@ -14,7 +14,7 @@ interface Managers {
   status(space: string): HostedManager;
   refresh(space: string): Promise<HostedManager>;
   start(space: string): Promise<HostedManager>;
-  disconnect(space: string): Promise<unknown>;
+  disconnect(space: string, options?: { account?: boolean }): Promise<unknown>;
 }
 
 /** Reconcile through the same checked service and Manager operations as local setup. */
@@ -35,7 +35,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
   const connectedHere = (space: string) => services.status(space).state === "connected" || managers.status(space).state === "answering";
   const disconnect = async (space: string) => {
     await managers.refresh(space);
-    await managers.disconnect(space);
+    await managers.disconnect(space, { account: true });
     if (services.status(space).state !== "not-requested") await services.disconnect(space);
   };
   const observedState = (space: string) => {
