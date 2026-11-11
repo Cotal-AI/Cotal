@@ -22,8 +22,8 @@
 #machine-name { font-size: 10px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .machine { min-width: 0; max-width: 300px; gap: 6px; }
 .sidebar-footer { min-width: 0; }
-#edit-computer-name { flex-shrink: 0; }
-#edit-computer-name, #computer-name-form button { background: var(--card); color: var(--ink); border: 1px solid var(--ink); border-radius: 999px; font: inherit; font-size: 11px; padding: 3px 6px; min-height: 36px; min-width: 36px; }
+#edit-computer-name { flex-shrink: 0; margin-block: -2px; }
+#edit-computer-name, #computer-name-form button { background: var(--card); color: var(--ink); border: 1px solid var(--ink); border-radius: 999px; font: inherit; font-size: 11px; padding: 3px 6px; min-height: 32px; min-width: 32px; }
 #computer-name-form { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; max-width: 100%; }
 #computer-name-form[hidden] { display: none; }
 #computer-name-input { border: 2px solid var(--ink); border-radius: 999px; padding: 5px 8px; font: inherit; font-size: 12px; width: 150px; min-width: 0; background: var(--card); color: var(--ink); }
