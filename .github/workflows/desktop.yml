@@ -223,8 +223,30 @@ jobs:
           } else { Write-Output 'Building signed release packages.' }
           $args = @('--dir', 'desktop', 'exec', 'tauri', 'build', '--bundles', '${{ matrix.bundles }}')
           if ($env:WINDOWS_SIGNING_CONFIG) { $args += @('--config', $env:WINDOWS_SIGNING_CONFIG) }
+          if ($env:RUNNER_OS -eq 'macOS' -and $env:SIGNED_BUILD -ne 'true') {
+            # Without a certificate the bundle is signed ad hoc. A linker-signed binary alone leaves the
+            # bundle's resources unsealed, and macOS reports a downloaded copy as damaged.
+            $adhoc = Join-Path $env:RUNNER_TEMP 'cotal-adhoc-signing.json'
+            '{"bundle":{"macOS":{"signingIdentity":"-"}}}' | Set-Content -Encoding utf8 $adhoc
+            $args += @('--config', $adhoc)
+          }
           & pnpm @args
           if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed.' }
+      - name: Verify the macOS bundle signature seals the whole app
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          app=$(find desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
+          [ -n "$app" ] || { echo 'no built app bundle'; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv --verbose=2 "$app" 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -q '^Sealed Resources=version' "$RUNNER_TEMP/codesign.txt"
+          grep -q '^Info.plist entries=' "$RUNNER_TEMP/codesign.txt"
+          # The same check on a copy carrying the download quarantine mark, as a browser leaves it.
+          copy="$RUNNER_TEMP/quarantined/$(basename "$app")"
+          mkdir -p "$RUNNER_TEMP/quarantined" && cp -R "$app" "$copy"
+          xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");Browser;" "$copy"
+          codesign --verify --deep --strict "$copy"
       - name: Remove temporary signing material
         if: always()
         shell: pwsh
