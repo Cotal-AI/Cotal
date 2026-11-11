@@ -229,6 +229,7 @@ let catalogAuthorityRequests = 0;
 let tokenGate: ((res: ServerResponse) => Promise<void>) | undefined;
 let exchangeGate: ((view: unknown, res: ServerResponse) => Promise<boolean>) | undefined;
 const exchangeReads: Array<{ view: unknown; managerInstanceId: unknown }> = [];
+let unsupportedComputerReads = 0;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/device/code") { deviceCodeRequests++; if (deviceFailure === "unreachable") { req.socket.destroy(); return; } return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 })); }
@@ -236,6 +237,12 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (req.url === "/api/auth/device/token") {
     if (recoverOnApproval) idpRevoked = false;
     return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
+  }
+  // This exchange fixture serves per-space hosting, not the account-computer API.
+  if (process.argv.includes("--exchange-retry-repro") && req.url?.startsWith("/api/cli/machines/")) {
+    if (req.headers.authorization !== `Bearer ${SESSION}`) { res.writeHead(401); res.end("{}"); return; }
+    unsupportedComputerReads++;
+    res.writeHead(404); res.end("{}"); return;
   }
   if (accountOnly && req.url?.startsWith("/api/machines/")) {
     if (req.headers.authorization !== `Bearer ${SESSION}`) { res.writeHead(401); res.end("{}"); return; }
@@ -1933,6 +1940,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
         if (process.argv.includes("--exchange-retry-repro")) {
+          const initial = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+          check("Exchange fixture explicitly admits per-space hosting on an unsupported account host", unsupportedComputerReads > 0 && initial.account?.mode === "per-space" && initial.account?.hostSupport === "unsupported", initial.account);
           const metadata = createHttpServer((_req, res) => res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: fixtureVersion }, versions: { [fixtureVersion]: { name: "cotal-ai", version: fixtureVersion } } })));
           await new Promise<void>(resolve => metadata.listen(0, "127.0.0.1", resolve));
           const runUpdate = async (label: string, expected: number) => {
