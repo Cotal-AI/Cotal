@@ -256,7 +256,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     ["ps", "cotal ps", "List agents"],
     ["attach", "cotal attach <name>", "Return to an agent"],
     ["stop", "cotal stop <name>", "Stop one agent"],
-    ["send", 'cotal send -t <name> "…"', "Send one message"],
+    ["send", `cotal send -t <name> "${localeIsUtf8() ? "…" : "..."}"`, "Send one message"],
     ["chat", "cotal chat", "Join a live conversation"],
     ["watch", "cotal watch", "Follow activity without controlling agents"],
     ["status", "cotal status", "See this machine and the selected space"],
