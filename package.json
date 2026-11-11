@@ -1002,6 +1002,7 @@
     "smoke:deprecated-daemon-entries": "tsx bin/smoke/deprecated-daemon-entries.smoke.ts",
     "smoke:daemon-account-restart": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-account.smoke.ts && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-restart-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-hosted --account-restart-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-unsupported --direct-disconnect-repro",
     "smoke:daemon-other-providers": "tsx bin/smoke/daemon-other-providers.smoke.ts",
+    "smoke:daemon-update-generation": "tsx bin/smoke/daemon-update-generation.smoke.ts",
     "smoke:daemon-expired-provider": "tsx bin/smoke/daemon-other-providers.smoke.ts --expired",
     "smoke:daemon-login-signals": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-login-signals.smoke.ts",
     "smoke:daemon-login": "pnpm --filter @cotal-ai/auth... --filter @cotal-ai/seat build && tsx bin/smoke/daemon-login.smoke.ts",

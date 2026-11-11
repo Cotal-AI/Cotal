@@ -277,7 +277,12 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         managerResult(async () => {
           await Promise.all(managers.all().map((manager) => managers.refresh(manager.space)));
           const result = status();
-          return result.update ? { ...result, update: { ...result.update, restartEvidence: await managers.preparedGenerationEvidence() } } : result;
+          if (!result.update) return result;
+          // A hosted Manager that is starting or stopping cannot give restart evidence. Status still
+          // answers, and an updater that needs the evidence refuses without it.
+          let restartEvidence: Awaited<ReturnType<typeof managers.preparedGenerationEvidence>> | undefined;
+          try { restartEvidence = await managers.preparedGenerationEvidence(); } catch { restartEvidence = undefined; }
+          return { ...result, update: { ...result.update, ...(restartEvidence ? { restartEvidence } : {}) } };
         });
         return;
       }

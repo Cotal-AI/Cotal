@@ -6,7 +6,14 @@ import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { installedDaemonIdentity, unitReceiptFile } from "./install.js";
 import { daemonManagerIntentFile } from "./manager.js";
 
-export async function waitForInstalledDaemonGeneration(version: string): Promise<void> {
+/** Test hooks: the installed-service check, the daemon query and the wait bound. */
+export interface GenerationWaitProbe {
+  readonly installed?: () => boolean;
+  readonly query?: typeof queryDaemon;
+  readonly timeoutMs?: number;
+}
+
+export async function waitForInstalledDaemonGeneration(version: string, probe: GenerationWaitProbe = {}): Promise<void> {
   let paths;
   try { paths = daemonPaths(); }
   catch (error) {
@@ -14,19 +21,23 @@ export async function waitForInstalledDaemonGeneration(version: string): Promise
     throw error;
   }
   // Foreground daemons and another installation keep their existing update behavior.
-  if (!existsSync(unitReceiptFile(paths)) || !installedDaemonIdentity(paths).same) return;
-  console.log(`machine daemon: waiting up to 120s for Cotal ${version} and its hosted Managers before the continuity check`);
-  const deadline = Date.now() + 120_000;
+  if (!(probe.installed ? probe.installed() : existsSync(unitReceiptFile(paths)) && installedDaemonIdentity(paths).same)) return;
+  const query = probe.query ?? queryDaemon;
+  const bound = probe.timeoutMs ?? 120_000;
+  console.log(`machine daemon: waiting up to ${Math.round(bound / 1000)}s for Cotal ${version} and its hosted Managers before the continuity check`);
+  const deadline = Date.now() + bound;
   let waiting = "the recorded daemon has not answered";
   for (;;) {
     const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `installed Cotal ${version} did not become ready within 120s: ${waiting}; connector reconciliation was not started by this update. Read cotal daemon status and the recorded daemon user service, restore the daemon and its hosted Managers, then run cotal update again`, {
+    if (remaining <= 0) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `installed Cotal ${version} did not become ready within ${Math.round(bound / 1000)}s: ${waiting}; connector reconciliation was not started by this update. Read cotal daemon status and the recorded daemon user service, restore the daemon and its hosted Managers, then run cotal update again`, {
       remedy: "read cotal daemon status and the recorded daemon user service, restore the daemon and its hosted Managers, then run cotal update again",
     });
     try {
-      const reply = await queryDaemon({ paths, timeoutMs: Math.min(20_000, Math.max(1, remaining)) });
-      if (!reply.ok) throw new Error(`machine daemon custody is unreadable: ${reply.error.code} ${reply.error.message}`);
-      if (reply.result.version !== version) {
+      const reply = await query({ paths, timeoutMs: Math.min(20_000, Math.max(1, remaining)) });
+      // A daemon that cannot complete status while it stops or starts its hosted Managers is still
+      // restarting. Its reason is kept for the deadline, and the wait goes on.
+      if (!reply.ok) waiting = `the daemon could not answer status: ${reply.error.code} ${reply.error.message}`;
+      else if (reply.result.version !== version) {
         waiting = `daemon PID ${reply.result.pid} still runs Cotal ${reply.result.version}${reply.result.generation ? ` (${reply.result.generation.waiting})` : ""}`;
       } else {
         const pending = (reply.result.managers ?? []).filter(manager =>
