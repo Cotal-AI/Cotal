@@ -205,6 +205,7 @@ jobs:
       - name: Build desktop packages
         shell: pwsh
         env:
+          TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
           SIGNED_BUILD: ${{ steps.signing.outputs.signed }}
           APPLE_CERTIFICATE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
@@ -231,11 +232,40 @@ jobs:
           if ($env:APPLE_API_KEY_PATH -and (Test-Path -LiteralPath $env:APPLE_API_KEY_PATH)) { Remove-Item -LiteralPath $env:APPLE_API_KEY_PATH }
           if ($env:WINDOWS_SIGNING_CONFIG -and (Test-Path -LiteralPath $env:WINDOWS_SIGNING_CONFIG)) { Remove-Item -LiteralPath $env:WINDOWS_SIGNING_CONFIG }
           if ($env:WINDOWS_SIGNING_THUMBPRINT) { Remove-Item -LiteralPath "Cert:\CurrentUser\My\$env:WINDOWS_SIGNING_THUMBPRINT" }
-      - uses: actions/upload-artifact@v4
+      - name: Upload built desktop packages
+        uses: actions/upload-artifact@v4
         with:
           name: desktop-validation-${{ runner.os }}-${{ runner.arch }}
           path: desktop/src-tauri/target/release/bundle/
           if-no-files-found: error
+          retention-days: 7
+      - name: Verify installed macOS Dock presence and reopen
+        if: runner.os == 'macOS'
+        run: bash desktop/scripts/check-presence-macos.sh
+      - name: Verify installed Windows shortcuts and taskbar presence
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./desktop/scripts/check-presence-windows.ps1
+      - name: Verify Linux launcher packaging
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/desktop-presence"
+          deb=$(find desktop/src-tauri/target/release/bundle/deb -name '*.deb' -print -quit)
+          rpm=$(find desktop/src-tauri/target/release/bundle/rpm -name '*.rpm' -print -quit)
+          dpkg-deb --contents "$deb" | tee "$RUNNER_TEMP/desktop-presence/deb-files.txt"
+          rpm -qlp "$rpm" | tee "$RUNNER_TEMP/desktop-presence/rpm-files.txt"
+          for manifest in "$RUNNER_TEMP/desktop-presence/"*-files.txt; do
+            grep -E 'share/applications/.*\.desktop' "$manifest"
+            grep -E 'share/icons/.*\.png' "$manifest"
+          done
+      - name: Upload native presence evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-presence-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/desktop-presence/
+          if-no-files-found: warn
           retention-days: 7
       - name: Stage release installers
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

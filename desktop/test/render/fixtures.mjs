@@ -15,7 +15,7 @@ export function nativeStub(scenario) {
     async invoke(command, args) {
       if (command === "plugin:deep-link|get_current") return state.link ? [state.link] : null;
       if (command === "plugin:event|listen") return 1;
-      if (command === "plugin:autostart|is_enabled") return true;
+      if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: false, pinOffer: false, pinMessage: "" };
       if (command === "open_browser" || command === "set_connection_state" || command.startsWith("plugin:")) return null;
       if (command !== "daemon_request") throw new Error(`Unexpected native command: ${command}`);
       const request = args.request; let index = 0;
@@ -65,6 +65,7 @@ const signIn = async page => { await page.click("#login"); await page.locator("#
 const connect = async page => { await signIn(page); await page.click("#connect"); };
 export const scenarios = [
   { name: "account-live-list", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {
+    assert.equal(await page.locator("#another-space").textContent(), "Add to another space");
     await page.evaluate(() => window.__renderState.account.spaces.push({ space: "research", desired: true, observed: "connecting" }));
     await page.locator('[data-space="research"]').waitFor({ timeout: 6000 });
     await page.evaluate(() => window.__renderState.account.spaces.pop());
@@ -75,6 +76,7 @@ export const scenarios = [
     assert.equal(await page.locator("#tray-label").textContent(), "Ready");
   } },
   { name: "account-ready", state: { installed: true, signedIn: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, expect: async page => {
+    assert.equal(await page.locator("#another-space").textContent(), "Add a space");
     assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected to your account");
     assert.equal(await page.locator("#tray-label").textContent(), "Ready");
     assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "check");

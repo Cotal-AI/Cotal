@@ -43,6 +43,14 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
 
 fn main() {
     #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("--remove-login") {
+        use windows::{core::w, Win32::System::Registry::{RegDeleteKeyValueW, HKEY_CURRENT_USER}};
+        // The installer invokes only this fixed operation as its installing user.
+        let status = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run"), w!("Cotal")) };
+        std::process::exit(if status.0 == 0 || status.0 == 2 { 0 } else { 1 });
+    }
+    #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--daemon") {
         std::process::exit(serve_windows_daemon().unwrap_or(1));
     }

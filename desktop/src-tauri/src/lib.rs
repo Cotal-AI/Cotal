@@ -4,6 +4,9 @@ use url::{Host, Url};
 
 #[cfg(feature = "desktop")]
 pub mod app;
+#[cfg(feature = "desktop")]
+mod native_presence;
+pub mod presence;
 
 /// The bundled Node executable name, without the platform extension.
 pub const NODE_SIDECAR: &str = if cfg!(windows) { "node" } else { "cotal-node" };

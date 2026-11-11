@@ -1,6 +1,6 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { refreshPresence, setLoginPreference, startPresence } from "./presence";
 import { approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import "./style.css";
@@ -224,6 +224,7 @@ function showStage(next: Stage, focus = false): void {
   el("dashboard").hidden = addingSpace || !(anyConnected || computerAccount?.hostSupport === "supported");
   if (finished && pending) { el("connection-icon").dataset.tone = "waiting"; setIcon(el("connection-icon"), "clock"); }
   el("another-space").hidden = addingSpace;
+  text("another-space", connections.size ? "Add to another space" : "Add a space");
   el("sign-in-again").hidden = addingSpace || computerAccount?.mode !== "sign-in-required";
   if (finished && computerAccount?.mode === "sign-in-required") {
     text("sign-in-again", "Sign in");
@@ -375,7 +376,9 @@ async function request(body: Request): Promise<Record<string, unknown>> {
       if (approvalExpires > Date.now()) void invoke("open_browser", { url: approval }).catch(refusal);
     } catch (error) { refusal(error); }
   };
-  return requireResult(await invoke<Frame>("daemon_request", { request: body, onEvent: events }));
+  const result = requireResult(await invoke<Frame>("daemon_request", { request: body, onEvent: events }));
+  if (body.op === "status" || body.op === "setup") await refreshPresence(connected());
+  return result;
 }
 function state(value: string, space = selectedSpace()): void {
   if (space !== selectedSpace()) return;
@@ -391,6 +394,7 @@ function state(value: string, space = selectedSpace()): void {
   else if ((value === "approval-pending" || listOpened) && !editing) { listOpened = true; showStage("finished"); }
   else if (stage === "finished" && !listOpened) showStage(selectedSpace() ? "connect" : "welcome");
   else showStage(stage);
+  if (isTauri()) void refreshPresence(verified).catch(refusal);
 }
 async function refresh(): Promise<void> {
   const space = selectedSpace();
@@ -562,23 +566,35 @@ el("connect").addEventListener("click", () => void action(async () => {
 el("disconnect").addEventListener("click", () => void action(async () => {
   const space = selectedSpace(); instances.delete(space);
   const result = await request({ op: "service-disconnect", space });
+  await request({ op: "status" });
   applicationRefusals.delete(space); progress = progressNames.map(() => "waiting"); clearDetails();
   state(String(result.state), space); notice("");
 }));
 el("sync").addEventListener("click", () => void action(async () => { notice(""); await spaces(true); }));
 el("refresh").addEventListener("click", () => void action(refresh));
 el("space").addEventListener("change", () => { connection = undefined; progress = progressNames.map(() => "waiting"); clearDetails(); notice(""); showStage(stage); void refresh(); });
-el("dashboard").addEventListener("click", () => {
+function openDashboard(): void {
   const space = selectedSpace(); const provider = providers.get(space) ?? el<HTMLInputElement>("provider").value.trim();
   const spaceId = catalogIds.get(space), instanceId = instances.get(space);
   if (computerAccount?.hostSupport === "supported" && computerAccount.mode !== "sign-in-required" && provider) void invoke("open_browser", { url: new URL("/machines", approvalUrl(provider)).href }).catch(refusal);
   else if (connected() && spaceId && instanceId && provider) void invoke("open_browser", { url: machinesUrl(provider, spaceId, instanceId) }).catch(refusal);
-  else notice("The dashboard needs a verified connection and the space's saved address. Refresh spaces before trying again.");
-});
+  else { openSettings(); notice("The dashboard needs a verified connection and the space's saved address. Refresh spaces before trying again."); }
+}
+el("dashboard").addEventListener("click", openDashboard);
+function openSettings(): void {
+  if (busy || loginActive) return;
+  editing = false; addingSpace = false; choosingSpace = false;
+  const select = el<HTMLSelectElement>("space");
+  for (const option of select.options) option.hidden = false;
+  if (!connections.has(select.value)) select.value = connections.keys().next().value ?? select.value;
+  if (connections.size || completedSetup || listOpened || computerAccount?.hostSupport === "supported") {
+    listOpened = true; showStage("finished");
+  }
+  void refresh();
+}
 el("autostart").addEventListener("change", () => void action(async () => {
   const checkbox = el<HTMLInputElement>("autostart");
-  try { if (checkbox.checked) await enable(); else await disable(); }
-  finally { checkbox.checked = await isEnabled(); }
+  await setLoginPreference(checkbox.checked);
 }));
 function receiveLinks(urls: string[]): void {
   if (busy || loginActive) { refusal(new Error("Finish the current operation before opening another connection link.")); return; }
@@ -598,13 +614,13 @@ async function start(): Promise<void> {
     el<HTMLInputElement>("autostart").disabled = true; document.querySelector(".app")!.classList.remove("loading"); return;
   }
   try {
+    await startPresence(notice, { settings: openSettings, dashboard: openDashboard });
     await onOpenUrl(receiveLinks); const initialLinks = await getCurrent(); if (initialLinks?.length) receiveLinks(initialLinks);
     const info = await request({ op: "about" }); appVersion = String(info.version);
     text("machine-name", String(info.machine)); text("version", `v${String(info.version)}`);
     const os = ({ darwin: "macOS", win32: "Windows", linux: "Linux" } as Record<string, string>)[String(info.platform)] ?? String(info.platform);
     const arch = info.platform === "darwin" && info.arch === "arm64" ? "Apple silicon" : ({ x64: "64-bit Intel / AMD", arm64: "ARM64", ia32: "32-bit Intel" } as Record<string, string>)[String(info.arch)] ?? String(info.arch);
     text("machine-details", `${os} · ${arch} · ${Math.round(Number(info.memoryBytes) / 1024 ** 3)} GB`);
-    el<HTMLInputElement>("autostart").checked = await isEnabled();
     await refresh();
     if (ready) {
       await spaces(false);
@@ -615,7 +631,7 @@ async function start(): Promise<void> {
   initialized = true;
   document.querySelector(".app")!.classList.remove("loading");
   if (computerAccount?.hostSupport !== "supported") text("tray-label", [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");
-  const tick = async () => { if (!busy && !document.hidden) await refresh(); poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000); };
+  const tick = async () => { if (!busy) await refresh(); poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000); };
   poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000);
 }
 document.querySelector(".connection-card")!.addEventListener("transitionend", event => {
