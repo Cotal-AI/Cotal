@@ -11,7 +11,6 @@ mkdir "$mount"
 app=/Applications/Cotal.app
 test ! -e "$app"
 cleanup() {
-  if test -n "${menu_press_pid:-}"; then kill "$menu_press_pid" 2>/dev/null || true; wait "$menu_press_pid" 2>/dev/null || true; fi
   /usr/bin/osascript -e 'tell application id "ai.cotal.desktop" to quit' 2>/dev/null || true
   hdiutil detach "$mount" -quiet 2>/dev/null || true
 }
@@ -81,16 +80,32 @@ guard !windows.contains(where: { ($0[kCGWindowOwnerPID as String] as? Int32) == 
 print("close kept app running with no visible top-level window")
 SWIFT
 swift "$out/hidden.swift" | tee "$out/hidden-before-reopen.txt"
-# NSStatusItem's accessibility press can wait until the menu closes. Inspect from
-# another process while the lane-owned press is still pending.
-/usr/bin/osascript <<'APPLESCRIPT' > "$out/menu-press.txt" 2>&1 &
+# tray-icon handles mouseDown on its custom subview, not AXPress on the parent
+# NSStatusBarButton. Derive coordinates from AX and send a real desktop click.
+/usr/bin/osascript <<'APPLESCRIPT' > "$out/menu-position.txt"
 tell application "System Events"
   tell process "cotal-desktop"
-    perform action "AXPress" of menu bar item 1 of menu bar 2
+    set p to position of menu bar item 1 of menu bar 2
+    set s to size of menu bar item 1 of menu bar 2
+    set x to ((item 1 of p) + (item 1 of s) / 2) as text
+    set y to ((item 2 of p) + (item 2 of s) / 2) as text
+    return x & "," & y
   end tell
 end tell
 APPLESCRIPT
-menu_press_pid=$!
+cat > "$out/menu-click.swift" <<'SWIFT'
+import CoreGraphics
+import Foundation
+let values = CommandLine.arguments[1].split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+guard values.count == 2 else { fatalError("No unique status-item center") }
+let point = CGPoint(x: values[0], y: values[1])
+for type in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
+    guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left) else { fatalError("Mouse event unavailable") }
+    event.post(tap: .cghidEventTap)
+    usleep(100_000)
+}
+SWIFT
+swift "$out/menu-click.swift" "$(cat "$out/menu-position.txt")"
 sleep 2
 /usr/sbin/screencapture -x "$out/menu-bar-open.png"
 /usr/bin/osascript <<'APPLESCRIPT' > "$out/menu-bar-tree.txt"
@@ -118,8 +133,6 @@ tell application "System Events"
   end tell
 end tell
 APPLESCRIPT
-wait "$menu_press_pid"
-menu_press_pid=
 sleep 2
 swift "$out/query.swift" | tee "$out/visible-after-settings.txt"
 /usr/bin/osascript <<'APPLESCRIPT'
