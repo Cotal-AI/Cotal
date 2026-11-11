@@ -11,6 +11,7 @@ mkdir "$mount"
 app=/Applications/Cotal.app
 test ! -e "$app"
 cleanup() {
+  if test -n "${menu_press_pid:-}"; then kill "$menu_press_pid" 2>/dev/null || true; wait "$menu_press_pid" 2>/dev/null || true; fi
   /usr/bin/osascript -e 'tell application id "ai.cotal.desktop" to quit' 2>/dev/null || true
   hdiutil detach "$mount" -quiet 2>/dev/null || true
 }
@@ -80,17 +81,25 @@ guard !windows.contains(where: { ($0[kCGWindowOwnerPID as String] as? Int32) == 
 print("close kept app running with no visible top-level window")
 SWIFT
 swift "$out/hidden.swift" | tee "$out/hidden-before-reopen.txt"
-# Capture the actual AX tree and desktop immediately after pressing the status item.
+# NSStatusItem's accessibility press can wait until the menu closes. Inspect from
+# another process while the lane-owned press is still pending.
+/usr/bin/osascript <<'APPLESCRIPT' > "$out/menu-press.txt" 2>&1 &
+tell application "System Events"
+  tell process "cotal-desktop"
+    perform action "AXPress" of menu bar item 1 of menu bar 2
+  end tell
+end tell
+APPLESCRIPT
+menu_press_pid=$!
+sleep 2
+/usr/sbin/screencapture -x "$out/menu-bar-open.png"
 /usr/bin/osascript <<'APPLESCRIPT' > "$out/menu-bar-tree.txt"
 tell application "System Events"
   tell process "cotal-desktop"
-    click menu bar item 1 of menu bar 2
-    delay 1
     get entire contents
   end tell
 end tell
 APPLESCRIPT
-/usr/bin/screencapture -x "$out/menu-bar-open.png"
 /usr/bin/osascript <<'APPLESCRIPT' > "$out/menu-bar.txt"
 tell application "System Events"
   tell process "cotal-desktop"
@@ -109,6 +118,8 @@ tell application "System Events"
   end tell
 end tell
 APPLESCRIPT
+wait "$menu_press_pid"
+menu_press_pid=
 sleep 2
 swift "$out/query.swift" | tee "$out/visible-after-settings.txt"
 /usr/bin/osascript <<'APPLESCRIPT'
