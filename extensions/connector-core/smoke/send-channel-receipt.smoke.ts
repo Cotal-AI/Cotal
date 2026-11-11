@@ -605,12 +605,36 @@ const proto = MeshAgent.prototype as unknown as {
       !send.description.includes("Every agent on the channel receives the post"),
     send.description,
   );
-  // The manager refuses once for a connector without supportsTurnRelay.
   const spawn = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_spawn")!;
   check(
-    "the cotal_spawn description names the harnesses once works on",
-    spawn.description.includes("For a single job on a Claude Code, jcode, OpenCode or pi helper, pass once: true"),
+    "the cotal_spawn description gives short channel and grants guidance",
+    spawn.description.includes("Give a helper only the channels its job needs. On a mesh that checks grants, a spawn that asks for more than you hold is refused.") &&
+      !spawn.description.includes("You can give it only channels, capabilities and endpoint commands you hold."),
     spawn.description,
+  );
+  check(
+    "the cotal_spawn description delegates capabilities without a named list",
+    spawn.description.includes("It gets one of your capabilities only if its persona lists it in capabilities.") &&
+      !spawn.description.includes("It can spawn agents or run workflows only if its persona lists spawn or run."),
+    spawn.description,
+  );
+  // Unsupported connectors are refused by the manager, so do not maintain a harness list here.
+  check(
+    "the cotal_spawn description offers once without a harness list",
+    spawn.description.includes("For a single job, pass once: true with the prompt, and the helper is stopped when it ends that turn"),
+    spawn.description,
+  );
+  const persona = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_persona")!;
+  check(
+    "the cotal_persona description explains wildcards after all three channel fields",
+    persona.description.includes("subscribe for where it starts, allowSubscribe for what it may read, and allowPublish for what it may post to. A wildcard works in all three. For example, review.> covers every channel under review, including ones opened later, and review.* covers one level."),
+    persona.description,
+  );
+  check(
+    "the cotal_persona description points to orientation instead of naming capabilities",
+    persona.description.includes("To give its agent one of your capabilities, list it in capabilities. cotal_orientation shows the ones you hold.") &&
+      !persona.description.includes("To let its agent spawn others or run workflows, list spawn or run in capabilities."),
+    persona.description,
   );
 }
 
