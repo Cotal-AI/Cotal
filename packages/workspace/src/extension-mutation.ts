@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, constants, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
 import { acquireLock, acquireLockAsync, inspectLock, processStartToken, type AcquireOptions, type HeldLock } from "./advisory-lock.js";
 import { extensionMutationLockPath } from "./extensions.js";
@@ -180,7 +180,7 @@ export function extensionUpdatePassOwnedBy(pid: number): boolean {
   return found.state === "active" && found.owner.pid === pid;
 }
 
-type ProcessMutationRecord =
+export type ProcessMutationRecord =
   | { readonly phase: "pending"; readonly owner: number; readonly ownerStart?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string }
   | { readonly phase: "live"; readonly owner: number; readonly ownerStart?: string; readonly pid: number; readonly start?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string }
   | { readonly phase: "ambiguous"; readonly owner: number; readonly nonce: string; readonly operation?: string; readonly reason: string };
@@ -210,6 +210,88 @@ export function beginGlobalUpdateChild(root: string, operation: "install" | "rec
     `global ${operation}`,
     operation === "install" && process.platform === "win32",
   );
+}
+
+/** Local account records used only for the migration inspector's private-group proof. */
+export interface UpdateCustodyAccounts {
+  readonly passwd: string;
+  readonly group: string;
+  readonly nsswitch: string;
+}
+
+function boundedAccountFile(path: string): string {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    const limit = 1024 * 1024;
+    if (!stat.isFile() || stat.uid !== 0 || (stat.mode & 0o022) !== 0 || stat.size > limit) throw new Error(`untrusted local account file (${path})`);
+    const bytes = Buffer.alloc(limit + 1);
+    let size = 0;
+    while (size < bytes.length) { const count = readSync(fd, bytes, size, bytes.length - size, null); if (!count) break; size += count; }
+    const after = fstatSync(fd);
+    if (size > limit || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs || stat.ctimeMs !== after.ctimeMs) throw new Error(`local account file changed or exceeded its limit (${path})`);
+    return bytes.subarray(0, size).toString("utf8");
+  } finally { closeSync(fd); }
+}
+
+/** Prove a primary group from complete local records. No NSS commands or ACL inspection. */
+export function updateCustodyPrivateGroup(accounts: UpdateCustodyAccounts, uid: number, gid: number): boolean {
+  if (Object.values(accounts).some(value => value.length > 1024 * 1024)) return false;
+  const sources = new Map<string, string[]>();
+  for (const raw of accounts.nsswitch.split("\n")) {
+    const line = raw.replace(/#.*$/, "").trim();
+    if (!line) continue;
+    const match = /^([\w-]+)\s*:\s*(.*)$/.exec(line);
+    if (!match) return false;
+    if (!["passwd", "group"].includes(match[1]!)) continue;
+    if (sources.has(match[1]!)) return false;
+    sources.set(match[1]!, match[2]!.split(/\s+/).filter(Boolean));
+  }
+  if (["passwd", "group"].some(key => !sources.get(key)?.length || sources.get(key)!.some(source => !["files", "systemd"].includes(source)))) return false;
+  const users: { name: string; uid: number; gid: number }[] = [];
+  const ids = /^(0|[1-9]\d{0,9})$/;
+  for (const line of accounts.passwd.split("\n").filter(Boolean)) {
+    const row = line.split(":");
+    if (row.length !== 7 || !row[0] || !ids.test(row[2]!) || !ids.test(row[3]!)) return false;
+    users.push({ name: row[0], uid: Number(row[2]), gid: Number(row[3]) });
+  }
+  const self = users.filter(user => user.uid === uid);
+  if (new Set(users.map(user => user.name)).size !== users.length || self.length !== 1 || self[0]!.gid !== gid || users.some(user => user.gid === gid && user.uid !== uid)) return false;
+  const groups: { gid: number; members: string[] }[] = [];
+  for (const line of accounts.group.split("\n").filter(Boolean)) {
+    const row = line.split(":");
+    if (row.length !== 4 || !row[0] || !ids.test(row[2]!)) return false;
+    groups.push({ gid: Number(row[2]), members: row[3] ? row[3].split(",") : [] });
+  }
+  const primary = groups.filter(group => group.gid === gid);
+  return primary.length === 1 && primary[0]!.members.every(member => member === self[0]!.name);
+}
+
+/** Read custody without acquiring, clearing, or repairing the parent's marker.
+ * Group-writable paths require a locally proven primary private group. Extended ACLs are not examined. */
+export function inspectGlobalUpdateChild(root: string, localAccounts?: UpdateCustodyAccounts): { owner: ReturnType<typeof inspectLock>; child: ProcessMutationRecord | undefined } {
+  const canonical = realpathSync(root);
+  let accounts = localAccounts;
+  const protectedMode = (stat: Stats): boolean => {
+    if ((stat.mode & 0o002) !== 0) return false;
+    if ((stat.mode & 0o020) === 0) return true;
+    if (!process.getuid || !process.getgid || stat.uid !== process.getuid() || stat.gid !== process.getgid()) return false;
+    accounts ??= { passwd: boundedAccountFile("/etc/passwd"), group: boundedAccountFile("/etc/group"), nsswitch: boundedAccountFile("/etc/nsswitch.conf") };
+    return updateCustodyPrivateGroup(accounts, process.getuid(), stat.gid);
+  };
+  for (let path = canonical;; path = dirname(path)) {
+    const stat = lstatSync(path);
+    const stickyRoot = path !== canonical && stat.uid === 0 && (stat.mode & 0o1000) !== 0;
+    if (!stat.isDirectory() || (!stickyRoot && !protectedMode(stat)) || (process.getuid && stat.uid !== 0 && stat.uid !== process.getuid()))
+      throw new Error(`global update custody ancestor is not protected (${path})`);
+    if (dirname(path) === path) break;
+  }
+  for (const path of [canonical, join(canonical, ".cotal-update.lock"), join(canonical, ".cotal-update-child")]) {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile()) || (process.getuid && stat.uid !== process.getuid()) || !protectedMode(stat))
+      throw new Error(`global update custody path is not protected (${path})`);
+  }
+  return { owner: inspectLock(join(canonical, ".cotal-update.lock")), child: readMarker(join(canonical, ".cotal-update-child")) };
 }
 
 /** Journal an actual mutating child across wrapper death. Pending closes spawn->PID publication;
