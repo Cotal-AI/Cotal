@@ -76,11 +76,14 @@ cell("every harness states channel retention defaults and operator control", () 
   }
 });
 
-cell("every harness tells agents to leave after their channel task is done", () => {
-  const guidance = "A post wakes an idle agent unless it set dnd or focus or made the channel quiet. "
-    + "Leave a channel with cotal_leave when its task is finished or your part is done. "
-    + "Its posts then stop waking you, and the space shows only who is still working there.";
-  for (const [h, text] of all) assert.ok(text.includes(guidance), `${h}: missing channel leave guidance`);
+// #6246: David's sentence, as written, right after the sentence on what wakes an agent. The
+// second sentence 0.157.6 shipped is gone: a covering family still delivers the channel's posts, and a
+// mention on a live channel still reaches the agent.
+cell("every harness tells the agent to leave a channel when its task is finished", () => {
+  const sentence =
+    "A post wakes an idle agent unless it set dnd or focus or made the channel quiet. " +
+    "Leave a channel with cotal_leave when its task is finished or your part is done. @mention a peer only when";
+  for (const [h, text] of all) assert.ok(text.includes(sentence) && !text.includes("Its posts then stop waking you"), h);
 });
 
 cell("every harness carries the reply etiquette", () => {
