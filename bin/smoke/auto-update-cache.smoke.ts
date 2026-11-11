@@ -1,4 +1,7 @@
-import assert from "node:assert/strict";
+import strictAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "./sentinel.mjs";
+const counted = countedAssert(strictAssert);
+const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 import { createServer } from "node:http";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -29,5 +32,5 @@ try {
  failed = true; await check(); assert.ok(requests > initial);
  const after = requests; await check(); assert.equal(requests, after);
  await check({ COTAL_NO_UPDATE_CHECK: "1" }); assert.equal(requests, after);
- console.log("PASS real registry daily cache, silent failure, failure backoff and environment disable");
+ emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally { await new Promise<void>(resolve => registry.close(() => resolve())); }

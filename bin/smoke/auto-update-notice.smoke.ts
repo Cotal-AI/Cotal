@@ -1,4 +1,7 @@
-import assert from "node:assert/strict";
+import strictAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "./sentinel.mjs";
+const counted = countedAssert(strictAssert);
+const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -22,6 +25,7 @@ function run(args: string[], terminal = false, extra: Record<string, string> = {
 }
 assert.match(run(["update", "--auto", "off"]), /Automatic updates: off/);
 assert.match(run(["update", "--auto"]), /Automatic updates: off/);
+if (process.platform !== "linux") assert.match(run(["update", "--auto"]), /Automatic installation is available on Linux in this release\. Run cotal update --self here/);
 assert.match(run(["--version"], true), /Cotal update available: .* -> 99\.0\.0/);
 assert.doesNotMatch(run(["--version"]), /Cotal update available:/);
 assert.doesNotMatch(run(["version", "--json"], true), /Cotal update available:/);
@@ -32,4 +36,4 @@ assert.match(run(["update", "--notify", "off"]), /Update notices: off/);
 assert.doesNotMatch(run(["--version"], true), /Cotal update available:/);
 assert.match(run(["update", "--notify", "on"]), /Update notices: on/);
 assert.equal((run(["--version"], true).match(/Cotal update available:/g) ?? []).length, 1);
-console.log("PASS real CLI terminal notice, once per command, independent persisted settings, JSON/non-TTY/CI/environment suppression");
+emitSentinel({ passed: counted.cells(), failed: 0 });

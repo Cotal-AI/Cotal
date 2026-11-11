@@ -1,4 +1,6 @@
-import assert from 'node:assert/strict';
+import strictAssert from 'node:assert/strict';
+import { countedAssert, emitSentinel } from './sentinel.mjs';
+const { assert, cells } = countedAssert(strictAssert);
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, readFileSync, mkdtempSync, existsSync } from 'node:fs';
@@ -11,7 +13,7 @@ const previous = JSON.parse(readFileSync(join(repo,'bin/package.json'),'utf8')).
 for (const scenario of ['retry','rollback','paused','preflight']) {
  const root=mkdtempSync(join(tmpdir(),'autoupd-repair-'));
  const home=join(root,'home'), prefix=join(root,'prefix');
- for(const dir of [home,prefix,join(root,'.cotal'),join(root,'payload/package/dist')]) mkdirSync(dir,{recursive:true,mode:0o700});
+ for(const dir of [home,prefix,join(root,'config/cotal'),join(root,'.cotal'),join(root,'payload/package/dist')]) mkdirSync(dir,{recursive:true,mode:0o700});
  const archives={};
  for(const version of ['99.0.0',previous]) {
   writeFileSync(join(root,'payload/package/package.json'),JSON.stringify({name:'cotal-ai',version,bin:{cotal:'dist/cotal.js'}}));
@@ -40,6 +42,6 @@ for (const scenario of ['retry','rollback','paused','preflight']) {
    const recovery=JSON.parse(readFileSync(join(home,'update-recovery.json'),'utf8'));
    if(scenario==='paused'){assert.equal(recovery.phase,'paused');assert.match(output,/Automatic updates are paused/)}else assert.equal(recovery,null);
   }
-  console.log('PASS real shipped updater recovery '+scenario);
  } finally { await new Promise(r=>server.close(r)); }
 }
+emitSentinel({ passed: cells(), failed: 0 });

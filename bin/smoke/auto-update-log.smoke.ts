@@ -1,4 +1,7 @@
-import assert from "node:assert/strict";
+import strictAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "./sentinel.mjs";
+const counted = countedAssert(strictAssert);
+const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 import { mkdtempSync, writeFileSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,5 +17,5 @@ const updater=automaticUpdates({version:"1.0.0",eligible:()=>true,prepare:async(
 try {
  await new Promise(resolve=>setTimeout(resolve,31000));
  assert.equal(readFileSync(victim,"utf8"),"preserve-me","updater must refuse a symlink log without overwriting its target");
- console.log("PASS updater log refuses final symlink");
+ emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally { await updater.close(); }

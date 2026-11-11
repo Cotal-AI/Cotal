@@ -1,4 +1,7 @@
-import assert from "node:assert/strict";
+import strictAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "./sentinel.mjs";
+const counted = countedAssert(strictAssert);
+const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -13,7 +16,7 @@ const update={current:"1.0.0",latest:"2.0.0",lastCheck:new Date().toISOString(),
 const daemon=await serveDaemon({paths,version:"1.0.0",sessionDir:home,updateStatus:()=>update});
 async function cli(args:string[]){const child=spawn(process.execPath,[fileURLToPath(new URL("../dist/cotal.js",import.meta.url)),"daemon","status",...args],{cwd:root,env,stdio:["ignore","pipe","pipe"]});let out="",err="";child.stdout.on("data",c=>out+=c);child.stderr.on("data",c=>err+=c);const code=await new Promise(r=>child.once("exit",r));assert.equal(code,0,err+out);return out;}
 try{
- const json=JSON.parse(await cli(["--json"]));assert.deepEqual(json.result.update,update);
+ const json=JSON.parse(await cli(["--json"]));assert.deepEqual(json.result.update,{...update,restartEvidence:{prepared:false,managers:[]}});
  const human=await cli(["--plain"]);for(const text of ["Updates","Latest seen","2.0.0","waiting for idle Managers","Automatic updates"])assert.ok(human.includes(text),human);
- console.log("PASS authenticated real daemon status carries additive update state in JSON and human reports");
+ emitSentinel({ passed: counted.cells(), failed: 0 });
 }finally{await daemon.close();}

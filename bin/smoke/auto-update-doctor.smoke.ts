@@ -1,4 +1,7 @@
-import assert from "node:assert/strict";
+import strictAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "./sentinel.mjs";
+const counted = countedAssert(strictAssert);
+const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,4 +17,4 @@ for(const latest of ["99.0.0","0.0.0"]){
  const doc=JSON.parse(report.stdout);assert.equal(doc.result.update,expected,report.stderr);
  const human=spawnSync(process.execPath,[entry,"doctor","auth"],{cwd:root,env,encoding:"utf8"});assert.ok(human.stdout.includes(expected),human.stdout+human.stderr);
 }
-console.log("PASS real doctor human/JSON uses cached newer/current state without registry access");
+emitSentinel({ passed: counted.cells(), failed: 0 });
