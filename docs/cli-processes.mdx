@@ -714,7 +714,8 @@ task and confirms its native instances have stopped. It then commits daemon shut
 the old process, endpoint and lifetime lock to be released before enabling and starting the task.
 Setup reports a refreshed PATH only after a different verified daemon lifetime answers with the
 expected version and protocol. An ambiguous stop or start reports an unconfirmed outcome with its
-phase and recovery guidance, retaining the installation records and restart fence. Inspect daemon
+phase and recovery guidance, retaining the installation records and restart fence. A validated daemon
+refusal retains its code and message in the failure detail and JSON native cause. Inspect daemon
 status and the recorded task before recovery. Setup does not clear a fence through a new connection.
 After a failed pause, autostart is re-enabled without running a replacement when the pinned old daemon
 still answers on the same connection, or when no daemon or native task instance remains and the

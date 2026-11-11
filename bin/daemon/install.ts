@@ -532,6 +532,24 @@ export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: strin
   });
 }
 
+/** Send a restart handshake on the caller's already verified, pinned connection. */
+export async function requestInstalledDaemon(socket: Awaited<ReturnType<typeof openVerified>> | undefined, op: "daemon-stop" | "status", commit = false) {
+  const id = randomUUID().replaceAll("-", "");
+  if (!socket) throw new Error("the pinned daemon connection is absent");
+  socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op, ...(commit ? { commit: true } : {}) }));
+  const reply = JSON.parse(await readLine(socket, commit ? 5000 : 70_000)) as DaemonResponse;
+  const unacknowledged = () => new Error(`the pinned daemon did not acknowledge ${op}`);
+  if (!reply || typeof reply !== "object" || reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || "event" in reply) throw unacknowledged();
+  if (reply.ok === false) {
+    if (!reply.error || typeof reply.error.code !== "string" || typeof reply.error.message !== "string") throw unacknowledged();
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the pinned daemon refused ${op}: ${reply.error.code}: ${reply.error.message}`, {
+      native: { code: reply.error.code, detail: reply.error.message },
+    });
+  }
+  if (reply.ok !== true || !("result" in reply) || !reply.result || typeof reply.result !== "object" || !("version" in reply.result) || typeof reply.result.version !== "string") throw unacknowledged();
+  return reply.result;
+}
+
 /** Restart the recorded Windows task only after the pinned daemon lifetime exits. */
 async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, expectedVersion?: string, report?: (detail: string) => void, startOnly = false): Promise<UninstallPlan> {
   const { receipt, plan } = recordedUnit(paths, daemonHome);
@@ -549,14 +567,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
   const startedAt = Date.now();
   const heartbeat = setInterval(() => report?.(`${phase} (${Math.floor((Date.now() - startedAt) / 1000)}s elapsed)`), 5000);
   let exclusion: ReturnType<typeof excludeLifetime> | undefined;
-  const request = async (op: "daemon-stop" | "status", commit = false) => {
-    const id = randomUUID().replaceAll("-", "");
-    if (!socket) throw new Error("the pinned daemon connection is absent");
-    socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op, ...(commit ? { commit: true } : {}) }));
-    const reply = JSON.parse(await readLine(socket, commit ? 5000 : 70_000)) as DaemonResponse;
-    if (reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || !reply.ok || "event" in reply || !("version" in reply.result)) throw new Error(`the pinned daemon did not acknowledge ${op}`);
-    return reply.result;
-  };
+  const request = (op: "daemon-stop" | "status", commit = false) => requestInstalledDaemon(socket, op, commit);
   try {
     let version = expectedVersion;
     if (socket) {
@@ -654,7 +665,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
         enable() { task.enable(receipt); },
       });
     } catch (recoveryError) { recovery += ` (${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)})`; }
-    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained`, { remedy: "inspect cotal daemon status and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: "inspect cotal daemon status and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
   } finally { clearInterval(heartbeat); socket?.destroy(); exclusion?.release(); }
 }
 
