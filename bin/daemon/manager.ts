@@ -188,7 +188,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   async function stopChildOnce(l: Live): Promise<void> {
     const child = l.child;
     if (!child) return;
-    l.view = { ...l.view, state: "stopping", observedAt: new Date().toISOString() };
+    // Entering retirement is not a new Manager observation.
+    l.view = { ...l.view, state: "stopping" };
     // Retirement and deregistration need broker round trips even with no seats. Observe over
     // parent IPC before disconnecting, then allow five seconds per seat, capped at one minute.
     let seats: number | undefined;
