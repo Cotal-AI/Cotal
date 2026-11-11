@@ -401,6 +401,7 @@
     "smoke:opencode": "tsx extensions/connector-opencode/smoke/turn-wedge.smoke.ts",
     "smoke:opencode-coop": "tsx extensions/connector-opencode/smoke/cooperative-stop.smoke.ts",
     "smoke:opencode-boot-prompt": "tsx extensions/connector-opencode/smoke/boot-prompt.smoke.ts",
+    "smoke:opencode-model-catalog": "tsx extensions/connector-opencode/smoke/model-catalog.smoke.ts",
     "smoke:opencode-teardown-before-model": "tsx extensions/connector-opencode/smoke/teardown-before-model.smoke.ts",
     "smoke:opencode-once": "tsx extensions/connector-opencode/smoke/once-handoff.smoke.ts",
     "smoke:opencode-setup-refused": "tsx extensions/connector-opencode/smoke/setup-refused.smoke.ts",

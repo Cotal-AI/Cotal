@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
@@ -77,7 +77,75 @@ function parseModels(stdout: string): ModelInfo[] {
   return models;
 }
 
-function listOpenCodeModels(opts: ModelCatalogOpts = {}): ModelCatalog {
+/** The 2.x catalog read. `--standalone` makes the CLI start a private `opencode serve` for this one
+ *  request and stop it on exit, so a catalog read never starts OpenCode's background service. */
+const OPENCODE2_CATALOG_ARGS = ["api", "--standalone", "GET", "/api/model"];
+const OPENCODE2_CATALOG_TIMEOUT_MS = 10_000;
+
+/** Maps the `GET /api/model` reply (`{ location, data: Model.Info[] }`, the same shape since 2.0.0)
+ *  to `provider/model` ids, the form `--model` accepts. Only ids, names and variant names are read:
+ *  a model's `settings` and `headers` carry provider credentials. */
+function parseModels2(stdout: string): ModelInfo[] {
+  let reply: unknown;
+  try {
+    reply = JSON.parse(stdout);
+  } catch {
+    // JSON.parse quotes the input in its message, and this input can hold provider keys.
+    throw new Error("the reply is not JSON");
+  }
+  const data = (reply as { data?: unknown } | null)?.data;
+  if (!Array.isArray(data)) throw new Error("the reply has no model list");
+  return data.map((raw: unknown, i) => {
+    const { id, providerID, name, variants } = (raw ?? {}) as Record<string, unknown>;
+    if (typeof id !== "string" || !id || typeof providerID !== "string" || !providerID)
+      throw new Error(`model ${i} has no id or providerID`);
+    if (!Array.isArray(variants)) throw new Error(`model ${providerID}/${id} has no variant list`);
+    const variantNames = variants.map((v: unknown) => {
+      const variant = (v as { id?: unknown } | null)?.id;
+      if (typeof variant !== "string" || !variant) throw new Error(`model ${providerID}/${id} has a variant without an id`);
+      return { name: variant };
+    });
+    return {
+      id: `${providerID}/${id}`,
+      provider: providerID,
+      ...(typeof name === "string" ? { name } : {}),
+      ...(variantNames.length ? { variants: variantNames } : {}),
+    };
+  });
+}
+
+/** Reports every failure as `unavailable` rather than throwing, and settles by the timeout even if
+ *  the killed CLI's pipes stay open. */
+function listOpenCode2Models(bin: string, env: NodeJS.ProcessEnv): Promise<ModelCatalog> {
+  const source = `opencode ${OPENCODE2_CATALOG_ARGS.join(" ")}`;
+  const unavailable = (why: string): ModelCatalog => ({
+    models: [],
+    unavailable: `OpenCode 2.x did not list its models (${source}: ${why}); pass --model provider/model`,
+  });
+  return new Promise((settle) => {
+    const child = execFile(
+      bin,
+      OPENCODE2_CATALOG_ARGS,
+      { encoding: "utf8", env, maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        clearTimeout(timer);
+        if (err) return settle(unavailable((stderr.trim() || err.message).replace(/\s+/g, " ")));
+        try {
+          settle({ source, models: parseModels2(stdout) });
+        } catch (e) {
+          settle(unavailable((e as Error).message));
+        }
+      },
+    );
+    child.stdin?.end();
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      settle(unavailable(`no answer within ${OPENCODE2_CATALOG_TIMEOUT_MS / 1000} seconds`));
+    }, OPENCODE2_CATALOG_TIMEOUT_MS);
+  });
+}
+
+function listOpenCodeModels(opts: ModelCatalogOpts = {}): ModelCatalog | Promise<ModelCatalog> {
   const env = discoveryEnv();
   // The file a launch runs: the operator pin, then the path boot resolved, then the bare name. The
   // pin is read here because discoveryEnv strips every COTAL_* key, which is what keeps a catalog
@@ -92,11 +160,7 @@ function listOpenCodeModels(opts: ModelCatalogOpts = {}): ModelCatalog {
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
   const line = opencodeLine(versionRaw, "opencode");
-  if (line === 2)
-    return {
-      models: [],
-      unavailable: "OpenCode 2.x serves its model catalog from a running opencode server, not the CLI; pass --model provider/model",
-    };
+  if (line === 2) return listOpenCode2Models(bin, env);
   const args = ["models", "--pure", "--verbose"];
   if (opts.refresh) args.push("--refresh");
   try {
