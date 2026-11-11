@@ -2959,10 +2959,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             let code = await new Promise<number | null>((resolve) => updater.once("exit", resolve));
             if (closureRollback && process.argv.includes("--closure-dead-owner-repro")) {
               await sleep(3000);
-              const resumed = spawn(process.execPath, [cliEntry, "update", "--space", ON], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+              const startRecovery = process.argv.includes("--closure-start-repro");
+              const resumed = spawn(process.execPath, startRecovery ? [cliEntry, "daemon", "serve"] : [cliEntry, "update", "--space", ON], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
               resumed.stdout.on("data", b => { output += String(b); }); resumed.stderr.on("data", b => { output += String(b); });
               const resumedCode = await new Promise<number | null>(resolve => resumed.once("exit", resolve));
-              check("CL next real update resumes dead replacement owner", resumedCode === 0 && output.includes("after an interrupted update"), { resumedCode, output });
+              check(startRecovery ? "CL real daemon start restores dead replacement and requests fresh CLI" : "CL next real update resumes dead replacement owner", startRecovery ? resumedCode !== 0 && output.includes("restart the daemon with the restored CLI") : resumedCode === 0 && output.includes("after an interrupted update"), { resumedCode, output });
               code = 1;
             }
             console.log("  UPDATE REPRO", JSON.stringify({ code, output }));
