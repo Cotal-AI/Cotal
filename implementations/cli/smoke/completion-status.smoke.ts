@@ -16,6 +16,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { assertSmokeSandboxDown, createSuite } from "@cotal-ai/smoke-kit";
+import { privateGroupGap } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -85,25 +86,23 @@ function assignedGroup(gid: string, paths: string[]): boolean {
   return paths.every((path) => spawnSync("stat", ["-c", "%g", path], { encoding: "utf8" }).stdout.trim() === gid);
 }
 
-/** Whether getent shows that the caller's primary group is a user private group. */
-function primaryGroupIsPrivate(): boolean {
+/** Use the production account proof, including whether NSS can enumerate every account. */
+function groupGap(gid: number): string | undefined {
   const uid = process.getuid?.();
-  const gid = process.getgid?.();
-  if (uid === undefined || gid === undefined) return false;
-  const self = spawnSync("getent", ["passwd", String(uid)], { encoding: "utf8" });
-  const group = spawnSync("getent", ["group", String(gid)], { encoding: "utf8" });
-  const all = spawnSync("getent", ["passwd"], { encoding: "utf8" });
-  if (self.status !== 0 || group.status !== 0 || all.status !== 0) return false;
-  const fields = self.stdout.split(":");
-  const name = fields[0];
-  if (!name || Number(fields[3]) !== gid) return false;
-  const members = (group.stdout.split(":")[3] ?? "").trim().split(",").filter(Boolean);
-  if (members.some((member) => member !== name)) return false;
-  return !all.stdout.split("\n").some((row) => {
-    const account = row.split(":");
-    return account[0] !== "" && Number(account[2]) !== uid && Number(account[3]) === gid;
-  });
+  if (uid === undefined) return "the caller has no POSIX uid";
+  const getent = (...args: string[]) => {
+    const result = spawnSync("getent", args, { encoding: "utf8", timeout: 2000, maxBuffer: 4 * 1024 * 1024 });
+    if (result.error || result.status !== 0) throw new Error("getent failed");
+    return result.stdout;
+  };
+  return privateGroupGap({
+    nameServices: () => readFileSync("/etc/nsswitch.conf", "utf8"),
+    user: (id) => getent("passwd", String(id)),
+    group: (id) => getent("group", String(id)),
+    users: () => getent("passwd"),
+  }, uid, gid);
 }
+const primaryGap = groupGap(process.getgid?.() ?? -1);
 
 /** A PATH that still has getent but not `command`, so a missing-tool refusal is that tool's. */
 function pathWithout(command: string): string | undefined {
@@ -269,10 +268,10 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   if (assigned) {
     const refused = s.run(["completion", "install", "bash", "--json"]);
     const error = refused.stdout.startsWith("{") ? JSON.parse(refused.stdout).error : undefined;
-    check("install refuses a group-writable rc and stub folder at once, exit 2, naming each with its mode and writing nothing", refused.status === 2 && error?.code === "PERMISSION_DENIED" && error.message.includes(`${rc} is group-writable and its group is not your primary group (mode 0664)`) && error.message.includes(`${folder} is group-writable and its group is not your primary group (mode 0775)`) && readdirSync(folder).length === 0 && readFileSync(rc, "utf8") === "# mine\n", shown(refused));
+    check("install refuses a group-writable rc and stub folder at once, exit 2, naming each with its mode and writing nothing", refused.status === 2 && error?.code === "PERMISSION_DENIED" && error.message.includes(`${rc} is group-writable and ${groupGap(Number(shared))} (mode 0664)`) && error.message.includes(`${folder} is group-writable and ${groupGap(Number(shared))} (mode 0775)`) && readdirSync(folder).length === 0 && readFileSync(rc, "utf8") === "# mine\n", shown(refused));
     const report = s.run(["completion", "--json"]);
     const reportEnv = report.stdout.startsWith("{") ? JSON.parse(report.stdout) : undefined;
-    check("the report names the rc and its mode", report.status === 4 && reportEnv?.warnings.some((w: { code: string; message: string }) => w.code === "COMPLETION_UNREADABLE" && w.message.startsWith(`${rc} is group-writable and its group is not your primary group (mode 0664)`)) === true, shown(report));
+    check("the report names the rc and its mode", report.status === 4 && reportEnv?.warnings.some((w: { code: string; message: string }) => w.code === "COMPLETION_UNREADABLE" && w.message.startsWith(`${rc} is group-writable and ${groupGap(Number(shared))} (mode 0664)`)) === true, shown(report));
     const text = s.run(["completion"]);
     const next = text.stdout.slice(text.stdout.indexOf("Next"));
     check("Next offers the file chmod before install", text.status === 4 && next.indexOf(`chmod g-w ${rc}`) >= 0 && next.indexOf(`chmod g-w ${rc}`) < next.indexOf("cotal completion install bash"), shown(text));
@@ -307,33 +306,39 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
 
 // A startup file left group-writable by umask 002 is accepted when its group is the caller's proven
 // user private group and it has no extended ACL. getfacl has to be installed, and the primary group
-// has to be private. A host that has neither does not assert the acceptance.
-if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfacl", ["--version"], { encoding: "utf8" }).status === 0 && primaryGroupIsPrivate()) {
+// has to be provably private. Otherwise assert the account-proof refusal before ACL inspection.
+if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfacl", ["--version"], { encoding: "utf8" }).status === 0) {
   const s = sandbox("/bin/bash");
   const rc = join(s.home, ".bashrc");
   writeFileSync(rc, "# mine\n");
   chmodSync(rc, 0o664);
   const status = s.run(["completion"]);
   const installed = s.run(["completion", "install", "bash"]);
-  check("install accepts a group-writable rc in the caller's user private group, exit 0, and the status does not warn", status.status === 0 && !status.stderr.includes("group-writable") && installed.status === 0 && readFileSync(rc, "utf8").includes("completion.bash"), { status: shown(status), install: shown(installed) });
+  if (primaryGap === undefined) {
+    check("install accepts a group-writable rc in the caller's proven private group", status.status === 0 && !status.stderr.includes("group-writable") && installed.status === 0 && readFileSync(rc, "utf8").includes("completion.bash"), { status: shown(status), install: shown(installed) });
+  } else {
+    check("an unproven primary group refuses install without changing the rc or writing a stub", status.status === 4 && status.stderr.includes(primaryGap) && installed.status === 2 && installed.stderr.includes(primaryGap) && readFileSync(rc, "utf8") === "# mine\n" && !existsSync(join(s.xdg, "cotal")), { status: shown(status), install: shown(installed) });
+  }
   const group = supplementaryGroup();
   if (group) {
     const inherited = sandbox("/bin/bash");
     const startup = join(inherited.home, ".bashrc");
     const original = "# private-group startup\n";
     writeFileSync(startup, original);
-    chmodSync(startup, 0o664);
+    // Keep the replacement/group/mode regression live even when group write cannot be proven safe.
+    const mode = primaryGap === undefined ? 0o664 : 0o644;
+    chmodSync(startup, mode);
     const gid = statSync(startup).gid;
     check("the setgid regression has a supplementary-group parent", assignedGroup(group, [inherited.home]));
     chmodSync(inherited.home, 0o2750);
     const install = inherited.run(["completion", "install", "bash", "--json"]);
-    check("install preserves the startup file's private group and mode under a setgid parent",
-      install.status === 0 && statSync(startup).gid === gid && (statSync(startup).mode & 0o777) === 0o664, shown(install));
+    check("install preserves the startup file's group and safe mode under a setgid parent",
+      install.status === 0 && statSync(startup).gid === gid && (statSync(startup).mode & 0o777) === mode, shown(install));
     const after = inherited.run(["completion", "--json"]);
     check("the replacement remains safe on the next status read", after.status === 0, shown(after));
     const uninstall = inherited.run(["completion", "uninstall", "bash", "--json"]);
-    check("uninstall also preserves the private group, mode and original text",
-      uninstall.status === 0 && statSync(startup).gid === gid && (statSync(startup).mode & 0o777) === 0o664 && readFileSync(startup, "utf8") === original, shown(uninstall));
+    check("uninstall also preserves the group, mode and original text",
+      uninstall.status === 0 && statSync(startup).gid === gid && (statSync(startup).mode & 0o777) === mode && readFileSync(startup, "utf8") === original, shown(uninstall));
   }
   const barePath = pathWithout("getfacl");
   if (barePath) {
@@ -343,7 +348,7 @@ if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfa
     chmodSync(bareRc, 0o664);
     const bareStatus = bare.run(["completion"], { PATH: barePath });
     const bareNext = bareStatus.stdout.slice(bareStatus.stdout.indexOf("Next"));
-    check("without getfacl, Next offers chmod before install", bareStatus.status === 4 && bareStatus.stderr.includes("getfacl is not installed") && bareNext.indexOf(`chmod g-w ${bareRc}`) >= 0 && bareNext.indexOf(`chmod g-w ${bareRc}`) < bareNext.indexOf("cotal completion install bash"), shown(bareStatus));
+    check("without getfacl, Next offers chmod before install", bareStatus.status === 4 && bareStatus.stderr.includes(primaryGap ?? "getfacl is not installed") && bareNext.indexOf(`chmod g-w ${bareRc}`) >= 0 && bareNext.indexOf(`chmod g-w ${bareRc}`) < bareNext.indexOf("cotal completion install bash"), shown(bareStatus));
     const bareInstall = bare.run(["completion", "install", "bash"], { PATH: barePath });
     check("without getfacl, install refuses and writes nothing", bareInstall.status === 2 && !existsSync(join(bare.xdg, "cotal")), shown(bareInstall));
   }
@@ -355,24 +360,26 @@ if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfa
     const granted = spawnSync("setfacl", ["-m", "u:nobody:rw", aclRc], { encoding: "utf8" });
     check("an extended ACL can be granted on the private-group file", granted.status === 0, { stderr: granted.stderr.slice(0, 200) });
     if (granted.status === 0) {
+      const aclBefore = spawnSync("getfacl", ["--skip-base", "--absolute-names", "--", aclRc], { encoding: "utf8" });
+      check("the fixture has a named extended ACL", aclBefore.status === 0 && aclBefore.stdout.includes("user:nobody:rw-"), aclBefore.stdout);
       const aclStatus = acl.run(["completion"]);
       const aclNext = aclStatus.stdout.slice(aclStatus.stdout.indexOf("Next"));
       const aclInstall = acl.run(["completion", "install", "bash"]);
-      check("an extended ACL offers chmod before install and install writes nothing", aclStatus.status === 4 && aclStatus.stderr.includes("extended ACL") && aclNext.indexOf(`chmod g-w ${aclRc}`) >= 0 && aclNext.indexOf(`chmod g-w ${aclRc}`) < aclNext.indexOf("cotal completion install bash") && aclInstall.status === 2 && !existsSync(join(acl.xdg, "cotal")), { status: shown(aclStatus), install: shown(aclInstall) });
+      check("an extended ACL offers chmod before install and install writes nothing", aclStatus.status === 4 && aclStatus.stderr.includes(primaryGap ?? "extended ACL") && aclNext.indexOf(`chmod g-w ${aclRc}`) >= 0 && aclNext.indexOf(`chmod g-w ${aclRc}`) < aclNext.indexOf("cotal completion install bash") && aclInstall.status === 2 && !existsSync(join(acl.xdg, "cotal")) && readFileSync(aclRc, "utf8") === "# mine\n" && spawnSync("getfacl", ["--skip-base", "--absolute-names", "--", aclRc], { encoding: "utf8" }).stdout === aclBefore.stdout, { status: shown(aclStatus), install: shown(aclInstall) });
     }
   }
 }
 
 // The acceptance above needs getfacl. When it is not installed, a group-writable file in the proven
 // private group is still refused, and the status offers its chmod before install.
-if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfacl", ["--version"], { encoding: "utf8" }).status !== 0 && primaryGroupIsPrivate()) {
+if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfacl", ["--version"], { encoding: "utf8" }).status !== 0) {
   const bare = sandbox("/bin/bash");
   const bareRc = join(bare.home, ".bashrc");
   writeFileSync(bareRc, "# mine\n");
   chmodSync(bareRc, 0o664);
   const bareStatus = bare.run(["completion"]);
   const bareNext = bareStatus.stdout.slice(bareStatus.stdout.indexOf("Next"));
-  check("without getfacl, Next offers chmod before install", bareStatus.status === 4 && bareStatus.stderr.includes("getfacl is not installed") && bareNext.indexOf(`chmod g-w ${bareRc}`) >= 0 && bareNext.indexOf(`chmod g-w ${bareRc}`) < bareNext.indexOf("cotal completion install bash"), shown(bareStatus));
+  check("without getfacl, Next offers chmod before install", bareStatus.status === 4 && bareStatus.stderr.includes(primaryGap ?? "getfacl is not installed") && bareNext.indexOf(`chmod g-w ${bareRc}`) >= 0 && bareNext.indexOf(`chmod g-w ${bareRc}`) < bareNext.indexOf("cotal completion install bash"), shown(bareStatus));
   const bareInstall = bare.run(["completion", "install", "bash"]);
   check("without getfacl, install refuses and writes nothing", bareInstall.status === 2 && !existsSync(join(bare.xdg, "cotal")), shown(bareInstall));
 }
@@ -394,7 +401,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     check("absent files under a group-writable config folder are missing and the report is complete, exit 0",
       report.status === 0 && env?.outcome === "ok" && ["bash", "zsh", "fish"].every((shell) => env.result.shells.some((row) => row.shell === shell && row.state === "missing" && row.ownership === "unrecorded")), shown(report));
     check("the folder is one warning naming it, its mode and the chmod that fixes it",
-      env?.warnings.length === 1 && env.warnings[0]!.code === "COMPLETION_FOLDER_UNSAFE" && env.warnings[0]!.message === `${s.xdg} is group-writable and its group is not your primary group (mode 0775); completion does not open the bash, zsh and fish completion files under it, and install and uninstall refuse there; chmod g-w ${s.xdg} fixes it`, env?.warnings);
+      env?.warnings.length === 1 && env.warnings[0]!.code === "COMPLETION_FOLDER_UNSAFE" && env.warnings[0]!.message === `${s.xdg} is group-writable and ${groupGap(Number(shared))} (mode 0775); completion does not open the bash, zsh and fish completion files under it, and install and uninstall refuse there; chmod g-w ${s.xdg} fixes it`, env?.warnings);
     const text = s.run(["completion"]);
     const next = text.stdout.slice(text.stdout.indexOf("Next"));
     check("Next offers the chmod first, then install, and no uninstall with nothing installed",
