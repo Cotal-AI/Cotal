@@ -1,5 +1,5 @@
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { protectedLocalDirectory, readUpdateRecovery, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
@@ -12,7 +12,7 @@ export interface UpdateSnapshot {
 }
 
 /** Capture the seed and operator prefix under their native writer barriers. */
-export function snapshotUpdateClosure(): UpdateSnapshot {
+export function snapshotUpdateClosure(existing?: string): UpdateSnapshot {
   const config = globalConfigDir();
   protectedLocalDirectory(config, "the Cotal config folder");
   const lock = acquireReconcileLock();
@@ -20,10 +20,12 @@ export function snapshotUpdateClosure(): UpdateSnapshot {
   let path: string;
   const present = new Set<string>();
   try {
+    if (existing && (dirname(resolve(existing)) !== resolve(config) || !basename(existing).startsWith(".update-snapshot-") || lstatSync(existing).isSymbolicLink())) throw new Error("invalid update snapshot directory");
     release = claimExtensionMutation({ waitMs: 30000 });
-    path = mkdtempSync(join(config, ".update-snapshot-"));
+    path = existing ?? mkdtempSync(join(config, ".update-snapshot-"));
     chmodSync(path, 0o700);
     for (const name of ["seed", "extensions"]) {
+      if (existing) { if (existsSync(join(existing, name))) present.add(name); continue; }
       const source = join(config, name);
       if (!existsSync(source)) continue;
       if (!lstatSync(source).isDirectory() || lstatSync(source).isSymbolicLink()) throw new Error(`cannot snapshot non-directory ${source}`);
@@ -64,6 +66,7 @@ export function snapshotUpdateClosure(): UpdateSnapshot {
         }
         for (let index = 0; index < renames.length; index++) {
           const entry = renames[index]!;
+          if (![config, path].some(root => entry.from.startsWith(`${root}/`)) || ![config, path].some(root => entry.to.startsWith(`${root}/`)) || entry.from.includes("/../") || entry.to.includes("/../")) throw new Error("invalid update rename path");
           if (entry.done) continue;
           if (existsSync(entry.from)) {
             if (existsSync(entry.to)) throw new Error(`restore destination already exists: ${entry.to}`);

@@ -7,6 +7,7 @@ import {
   CommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, writeResult, type OutputWarning,
   cmdSpawnSpec,
   beginGlobalUpdateChild,
+  processStartToken,
   claimUpdateClosureAccess,
   updateClosureOwner,
   readUpdateRecovery,
@@ -171,6 +172,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
       remedy: "update the desktop app with its signed platform installer; no npm self-update was attempted",
     });
   }
+  if (await recoverInterruptedUpdate(rt)) return;
   // A folder above the config folder is not one this command repairs. Refuse it before the mode
   // repair and before seeding, so a refusal writes nothing and does not replace the binary.
   try {
@@ -194,6 +196,43 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
     if (childBinding(rt).kind !== "bound") clearUpdateRecovery();
     if (args.values.self !== true && childBinding(rt).kind !== "bound") recordUpdateCompletion(rt.version(), "manual update reconciled", true);
   }
+}
+
+/** Resume an abandoned replacement before a command or daemon can activate its closure. */
+export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime): Promise<boolean> {
+  const record = readUpdateRecovery();
+  if (!record?.owner || childBinding(rt).kind === "bound") return false;
+  const start = processStartToken(record.owner.pid);
+  if (start !== undefined && start === record.owner.start) return false;
+  const release = claimUpdateClosureAccess(true);
+  try {
+    if (!record.snapshot) throw new Error("interrupted update has no closure snapshot");
+    writeUpdateRecovery({ ...record, owner: updateClosureOwner(), phase: "restoring" });
+    const snapshot = snapshotUpdateClosure(record.snapshot);
+    const prefix = rt.installPrefix();
+    const selected = rt.npm(["root", "-g", ...(prefix ? ["--prefix", prefix] : [])]);
+    const root = selected.stdout.trim();
+    if (selected.status !== 0 || !isAbsolute(root) || /[\r\n]/.test(root)) throw new Error("cannot identify interrupted update installation");
+    const releaseGlobal = rt.claimGlobalUpdate(root);
+    try {
+      checkReleaseArchives(record.previous, rt);
+      const command = cmdSpawnSpec("npm", ["install", "-g", ...(prefix ? ["--prefix", prefix] : []), `cotal-ai@${record.previous}`]);
+      const installed = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
+      if (installed.status !== 0) throw new Error(failure(installed));
+      const entry = rt.verifyGlobalEntry(root, record.previous);
+      snapshot.restore();
+      const env = { ...rt.env, [UPDATE_TARGET_ENV]: record.previous, [UPDATE_PARENT_ENV]: String(rt.pid) };
+      const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
+      if (reconciled.status !== 0) throw new Error(failure(reconciled));
+      snapshot.discard();
+      clearUpdateRecovery();
+      rt.out(`Restored cotal-ai@${record.previous} after an interrupted update.`);
+      return true;
+    } finally { releaseGlobal(); }
+  } catch (error) {
+    writeUpdateRecovery({ ...readUpdateRecovery()!, phase: "paused", reason: `interrupted update restore failed: ${message(error)}` });
+    throw error;
+  } finally { release(); }
 }
 
 /** Check mode is installation metadata only; target and mutation inputs are never ignored. */
