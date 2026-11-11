@@ -1,5 +1,21 @@
 # cotal-ai
 
+## 0.160.5
+
+### Patch Changes
+
+- 2a5fdcc: The macOS desktop app starts its bundled runtime again. Installers built from 0.159.1 to 0.160.4 were signed without the entitlements Node needs under the hardened runtime, so on macOS 26 every action in the app ended in "This operation could not finish". Install the app from this release to replace an affected copy.
+- @cotal-ai/connector-core@0.160.5
+  - @cotal-ai/auth@0.160.5
+  - @cotal-ai/cli@0.160.5
+  - @cotal-ai/delivery@0.160.5
+  - @cotal-ai/manager@0.160.5
+  - @cotal-ai/registry@0.160.5
+  - @cotal-ai/runtime@0.160.5
+  - @cotal-ai/core@0.160.5
+  - @cotal-ai/seat@0.160.5
+  - @cotal-ai/workspace@0.160.5
+
 ## 0.160.4
 
 ### Patch Changes
