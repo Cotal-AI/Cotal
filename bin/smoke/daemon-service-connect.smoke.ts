@@ -2735,7 +2735,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         if (process.argv.includes("--prepare-observation-repro")) {
           process.kill(manager.pid, "SIGSTOP");
           try {
-            const frozen = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 10_000));
+            // The composed status observation can take 15s, including caller issuance and admission.
+            const frozen = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 20_000));
             check("6217 failed observation withdraws answering", frozen.state === "starting", frozen);
             const prepared = ask(paths.socket, { op: "managers-prepare-restart" }, 30_000);
             setTimeout(() => process.kill(manager.pid, "SIGCONT"), 500);
