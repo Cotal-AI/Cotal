@@ -39,6 +39,8 @@ const npmrc = join(home, '.npmrc');
 const npmBackup = existsSync(npmrc) ? readFileSync(npmrc) : undefined;
 writeFileSync(join(c.root, 'restore-policy.json'), JSON.stringify({ policy: backup?.toString('base64') ?? null, npmrc: npmBackup?.toString('base64') ?? null }) + '\n', { flag: 'wx', mode: 0o600 });
 const since = new Date().toISOString();
+const deadline = Date.now() + 10 * 60 * 1000;
+const withinDeadline = () => assert(Date.now() < deadline, 'remote acceptance wall-clock deadline exceeded');
 let passed = false;
 try {
   const initial = sample(); assert.equal(initial.status.version, c.parent);
@@ -54,11 +56,19 @@ try {
   save('update-check.json', { ...check, checkedAt: Date.now() - 25 * 3600000, ...(check.attemptedAt === undefined ? {} : { attemptedAt: Date.now() - 25 * 3600000 }) });
   save('update-attempt.json', { ...before, next: 0 });
   let observed = false;
-  for (let i = 0; i < 24; i++) { await sleep(); const next = read('update-check.json'); if (next.latest === c.candidate && next.checkedAt > check.checkedAt) { assert(Number.isFinite(next.firstSeenAt)); save('update-check.json', { ...next, firstSeenAt: Date.now() - 2 * 3600000 }); save('update-attempt.json', { ...read('update-attempt.json'), next: 0 }); observed = true; break; } }
+  for (let i = 0; i < 24; i++) { withinDeadline(); await sleep(); const next = read('update-check.json'); if (next.latest === c.candidate && next.checkedAt > check.checkedAt) { assert(Number.isFinite(next.firstSeenAt)); save('update-check.json', { ...next, firstSeenAt: Date.now() - 2 * 3600000 }); save('update-attempt.json', { ...read('update-attempt.json'), next: 0 }); observed = true; break; } }
   assert(observed, 'scheduler did not observe private candidate');
   let stable = 0, identity;
   for (let i = 0; i < 54; i++) {
+    withinDeadline();
     await sleep();
+    const recorded = read('update-attempt.json');
+    if (recorded.version === c.candidate && (recorded.version !== before.version || recorded.result !== before.result || recorded.deferred !== before.deferred || recorded.failures !== before.failures)) {
+      assert(!recorded.deferred, `terminal scheduler deferral: ${recorded.deferred}`);
+      if (c.mode === 'success' && recorded.failures > 0 && typeof recorded.result === 'string' && /restor|roll.?back|failed|paused/i.test(recorded.result) && !recorded.result.startsWith('updating to ')) {
+        assert.fail(`candidate failed instead of upgrading: ${recorded.result}`);
+      }
+    }
     try {
       const current = sample(), attempt = read('update-attempt.json');
       console.log(JSON.stringify({ event: 'poll', sample: current, attempt }));

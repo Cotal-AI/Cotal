@@ -103,6 +103,12 @@ updates. It advances only existing check/attempt clock fields, waits for the rea
 registry observation, then advances release-hold time. It does not synthesize
 latest, version, result or failure records, change the unit or invoke installation.
 
+The observer has a ten-minute wall-clock budget, below the SSH transport timeout.
+A newly recorded deferral fails immediately. In success mode a recorded failed
+upgrade or rollback also fails immediately, preserving final diagnostics and the
+failed-suite automatic-update stop policy. A transport timeout still does not prove
+remote quiescence. Inspect the actual remote process before another run.
+
 Three consecutive observations must show the expected daemon and CLI version,
 stable PID/start identity, active unit and matching cgroup, completed attempt,
 cleared recovery journal (null tombstone allowed) and absent child marker.
