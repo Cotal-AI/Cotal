@@ -262,12 +262,14 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   const accountTarget = [...accountTargets].find(([space]) => req.url?.startsWith(`/account-space/${space}/`));
   if (accountOnly && accountTarget) {
     const [space, target] = accountTarget;
+    if (process.argv.includes("--account-hosted") && req.url?.endsWith("/service-endpoint-authority")) { res.writeHead(404); res.end("{}"); return; }
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
     const answer = await fetch(`${target}${req.url!.slice(`/account-space/${space}`.length)}`, { method: req.method, headers: { "content-type": "application/json" }, ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) });
     res.writeHead(answer.status); res.end(Buffer.from(await answer.arrayBuffer())); return;
   }
   if (catalogSpace && catalogTarget && req.url?.startsWith(`/space/${catalogSpace}/`)) {
+    if (process.argv.includes("--account-hosted") && req.url.endsWith("/service-endpoint-authority")) { res.writeHead(404); res.end("{}"); return; }
     catalogAuthorityRequests++;
     if (catalogAuthorityDown) { res.writeHead(503); res.end("{}"); return; }
     const chunks: Buffer[] = [];
@@ -1746,6 +1748,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
           const pendingPublished = await (await fetch(`${svc[2]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as Record<string, any>;
           accountTargets.set(DENY, svc[2]!.publicUrl!.replace(/\/$/, ""));
+          grantActor(ctx[2]!.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(ctx[2]!.store, DENY))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] });
           removeMesh(DENY);
           (catalog as { spaces: unknown[] }).spaces.unshift({ id: DENY, slug: DENY, name: "Pending space", kind: "team", role: "member", registration: { ...pendingPublished, space: DENY, tlsRequired: false, userAuth: { ...pendingPublished.userAuth, endpoints: { url: `${idpOrigin}/account-space/${DENY}` } } } });
           if (process.argv.includes("--account-unsupported")) {
@@ -1759,7 +1762,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             const local = await cli("setup", "--space", ON, "--idp", idpUrl);
             check("I0 setup enables the consented space in the account desired set", accountDesired, local);
             check("I1 conflict retries once using a fresh revision", intentWrites >= 2 && intentConflicts === 0);
-            await approve(host, ON, fixture.owner);
+            if (!process.argv.includes("--account-hosted")) await approve(host, ON, fixture.owner);
             const waitIntent = async (connected: boolean) => {
               let status: Record<string, any> = {};
               for (let i = 0; i < 120; i++) {
@@ -1796,11 +1799,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             for (let i = 0; i < 120; i++) { value = await observed(); if (predicate(value)) break; await sleep(500); }
             check(label, predicate(value), value); return value;
           };
-          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "approval-pending"), "A0 desired registration remains pending without owner approval");
-          await approve(host, ON, fixture.owner);
+          const hostedShape = process.argv.includes("--account-hosted");
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === (hostedShape ? "connected" : "approval-pending")), "A0 desired space reconciles its endpoint shape");
+          if (!hostedShape) await approve(host, ON, fixture.owner);
           await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A1 desired 200 connects real broker service");
           await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
-          check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === "approval-pending"));
+          check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === (hostedShape ? "connected" : "approval-pending")));
           accountHttp = 503; await sleep(5500);
           check("A2c 503 never disconnects a connected space", (await observed()).account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"));
           accountHttp = 304; await sleep(5500);
@@ -1819,14 +1823,15 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           await sleep(6000);
           let removedStatus: Record<string, any> = {};
           for (let i = 0; i < 60; i++) {
-            removedStatus = resultOf(await ask(paths.socket, { op: "service-status", space: ON }, 25_000));
-            if (removedStatus.state !== "connected") break;
+            removedStatus = await observed();
+            if (removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer")) break;
             await sleep(500);
           }
-          check("A2g local registry removal closes active service", removedStatus.state !== "connected", removedStatus);
+          check("A2g local registry removal stops the Manager and marks local veto", removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer") && removedStatus.managers?.every((row: any) => row.space !== ON || row.state === "stopped"), removedStatus);
           accountBindingRevision = ++accountRevision;
           await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A2h dashboard rebind restores locally removed registration");
-          await ask(paths.socket, { op: "service-disconnect", space: ON }, 100_000);
+          removeMesh(ON);
+          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "removed on this computer"), "A3 missing registry records local removal veto");
           accountRevision++;
           await sleep(6000);
           await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "removed on this computer"), "A3 unrelated machine revision cannot clear local veto");

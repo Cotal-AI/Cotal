@@ -562,9 +562,12 @@ Setup prints these commands with `--space=<s>` so names beginning with a hyphen 
 After sign-in, the daemon registers an account computer with hosts that support it. Each
 issuer and subject pair has its own protected, persisted computer UUID. It sends a metadata
 heartbeat every 60 seconds and polls the account's desired spaces every five seconds. Desired
-spaces still pass the existing registration, owner approval and Manager launch checks.
+spaces start or inspect the Manager through the same hosting sequence as setup. Each space's
+connection check decides whether machine-service registration and owner approval are needed.
+Spaces without service endpoints still run their Manager and report its state. Removing a space
+stops its Manager and disconnects its machine service when one exists.
 
-`daemon status` and its JSON `account` section separate desired spaces from observed service
+`daemon status` and its JSON `account` section separate desired spaces from observed connection
 state, with computer identity, host support, last registration, desired revision and refusals.
 A host without the route reports account computers unsupported and keeps per-space behavior.
 Authentication refusal asks you to sign in again. Network failures retain existing connections.
