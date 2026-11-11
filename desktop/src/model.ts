@@ -1,5 +1,5 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-export type Request = { op: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean };
+export type Request = { op: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string };
 export const COTAL_CLOUD_IDP = "https://cloud.cotal.ai/api/auth";
 export interface SetupProgress { step: "install" | "sign-in" | "discover" | "manager" | "applications" | "register" | "connect"; outcome: string; detail: string; applications?: readonly string[] }
 export interface Frame { v: 1; event: "result" | "login-prompt" | "setup-progress"; progress?: SetupProgress; line?: string; ok?: boolean; result?: Record<string, unknown>; prompt?: Record<string, unknown>; error?: { code: string; message: string; remedy?: string; native?: { code: string } }; code?: string; message?: string }
@@ -32,10 +32,17 @@ export function computerSpaces(account: { spaces: ComputerSpace[] }): ComputerSp
   return account.spaces.filter(row => row.desired || row.observed === "connected" || row.observed === "removed on this computer");
 }
 
+export function canonicalProvider(value: string): string {
+  const url = new URL(approvalUrl(value));
+  if (url.search || url.hash) throw new Error("The provider URL must not contain a query or fragment.");
+  const path = url.pathname.replace(/\/+$/, "");
+  return url.origin + (path || "/api/auth");
+}
+
 export interface ComputerAccount { idpUrl?: string; mode: string; hostSupport: string; spaces: ComputerSpace[] }
 export function activeComputerAccount(account: ComputerAccount & { accounts?: ComputerAccount[] } | undefined, provider?: string): ComputerAccount | undefined {
   if (!account?.accounts) return account;
-  if (provider) return account.accounts.find(item => item.idpUrl === provider);
+  if (provider) return account.accounts.find(item => item.idpUrl !== undefined && canonicalProvider(item.idpUrl) === canonicalProvider(provider));
   const supported = account.accounts.filter(item => item.hostSupport === "supported");
   return supported.length === 1 ? supported[0] : undefined;
 }
@@ -45,7 +52,7 @@ export function catalogRefreshNotice(result: Record<string, unknown>, provider?:
   const failed = Array.isArray(result.failedProviders) && result.failedProviders.every(item => typeof item === "string") ? result.failedProviders as string[] : undefined;
   const partial = result.refresh === "failed" || result.refresh === "partial";
   if (partial && !failed) throw new Error("Some space catalogs could not be refreshed. Saved entries may be out of date.");
-  if (failed?.length && (!provider || failed.includes(provider))) {
+  if (failed?.length && (!provider || failed.some(item => canonicalProvider(item) === canonicalProvider(provider)))) {
     const host = provider ? new URL(provider).host : failed.map(url => new URL(url).host).join(", ");
     throw new Error(`Spaces from ${host} could not be refreshed. Saved entries from that host may be out of date.`);
   }

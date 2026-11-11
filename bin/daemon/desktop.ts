@@ -1,6 +1,8 @@
 /** The desktop shell's bounded stdio adapter. It holds no login session or broker credentials. */
 import { randomUUID } from "node:crypto";
-import { arch, hostname, platform, release, totalmem } from "node:os";
+import { defaultComputerName } from "./computer-name.js";
+import { computerName } from "./name-validation.js";
+import { arch, platform, release, totalmem } from "node:os";
 import type { Readable, Writable } from "node:stream";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
@@ -14,6 +16,7 @@ import { desktopApplicationPath } from "./desktop-path.js";
 export type DesktopRequest =
   | { [K in "about" | "status" | "install"]: { readonly op: K } }["about" | "status" | "install"]
   | { readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
+  | { readonly op: "name"; readonly name?: string }
   | { readonly op: "spaces"; readonly refresh?: boolean }
   | { readonly op: "login"; readonly idp: string }
   | { readonly op: "setup"; readonly space: string; readonly idp: string }
@@ -25,12 +28,13 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   const o = value as Record<string, unknown>;
   const simple = ["about", "status", "install"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
-  const fields = o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : o.op === "login" ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
+  const fields = o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : o.op === "login" ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
   if (o.op === "space-intent") {
     if (!isDaemonSpaceName(o.space) || typeof o.enabled !== "boolean") throw new Error("invalid space intent");
     return { op: "space-intent", space: o.space, enabled: o.enabled };
   }
+  if (o.op === "name") return { op: "name", ...(o.name !== undefined ? { name: computerName(o.name) } : {}) };
   if (simple) return { op: o.op as "about" | "status" | "install" };
   if (scoped) {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
@@ -84,7 +88,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
   }
   try {
     if (req.op === "about") {
-      emit({ v: 1, event: "result", ok: true, result: { version: opts.version, machine: hostname(), platform: platform(), arch: arch(), release: release(), memoryBytes: totalmem() } });
+      emit({ v: 1, event: "result", ok: true, result: { version: opts.version, machine: defaultComputerName(), platform: platform(), arch: arch(), release: release(), memoryBytes: totalmem() } });
       return;
     }
     const { paths, home } = opts.resolveTarget();
@@ -163,7 +167,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
 /** Shared by the app adapter and the ordinary daemon CLI commands. */
 export async function exchangeDesktopRequest(
   opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">,
-  request: Exclude<Extract<DesktopRequest, { readonly op: "spaces" } | { readonly space: string }>, { readonly op: "setup" }>,
+  request: Exclude<Extract<DesktopRequest, { readonly op: "name" } | { readonly op: "spaces" } | { readonly space: string }>, { readonly op: "setup" }>,
 ): Promise<DaemonResponse> {
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {

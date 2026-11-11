@@ -31,6 +31,7 @@ export function nativeStub(scenario) {
       if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.connected ? [manager()] : [], ...(state.account ? { account: state.account } : {}) });
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
       if (request.op === "spaces") return ok({ ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : [] });
+      if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? "Davids-MacBook-Pro" }); }
       if (request.op === "service-status") return ok({ state: state.serviceState ?? "disconnected" });
       if (request.op === "service-disconnect") { state.connected = false; return ok({ state: "disconnected" }); }
       if (request.op === "login") {
@@ -65,6 +66,24 @@ const link = "cotal://connect?idp=https%3A%2F%2Fcloud.cotal.ai%2Fapi%2Fauth&spac
 const signIn = async page => { await page.click("#login"); await page.locator("#connect-panel:not([hidden]), #space-panel:not([hidden]), #recovery-panel:not([hidden])").first().waitFor(); };
 const connect = async page => { await signIn(page); await page.click("#connect"); };
 export const scenarios = [
+  ...["view", "edit", "save", "cancel", "invalid", "long", "settings"].map(mode => ({
+    name: `computer-name-${mode}`, state: { installed: true, signedIn: mode === "settings", connected: mode === "settings" },
+    act: async page => {
+      if (mode !== "settings") await signIn(page);
+      if (mode === "view") return;
+      await page.click("#edit-computer-name");
+      if (mode === "edit" || mode === "settings") return;
+      await page.fill("#computer-name-input", mode === "invalid" ? "" : mode === "long" ? "Very long computer name ".repeat(5) : "My named computer");
+      if (mode === "cancel") await page.press("#computer-name-input", "Escape");
+      else await page.press("#computer-name-input", "Enter");
+    },
+    expect: async page => {
+      if (mode === "invalid") assert.match(await page.locator("#computer-name-error").textContent(), /1 to 128/);
+      if (mode === "save") assert.equal(await page.locator("#machine-name").textContent(), "My named computer");
+      if (mode === "cancel") assert.equal(await page.locator("#machine-name").textContent(), "Davids-MacBook-Pro");
+      if (mode === "long") assert.equal(await page.locator("#machine-name").getAttribute("title"), ("Very long computer name ".repeat(5)).trim());
+    },
+  })),
   { name: "other-provider-notice", state: { installed: true, otherProviderFailed: true }, act: signIn, expect: async page => {
     assert.equal(await page.locator("#recovery-panel").isVisible(), false);
     assert.match(await page.locator("#notice").textContent(), /Spaces from hack\.cotal\.ai could not be refreshed/);

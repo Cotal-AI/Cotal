@@ -155,6 +155,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
+    computer: account.name(),
     state: "ready",
     protocol: DAEMON_PROTOCOL_VERSION,
     version: opts.version,
@@ -284,6 +285,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           try { restartEvidence = await managers.preparedGenerationEvidence(); } catch { restartEvidence = undefined; }
           return { ...result, update: { ...result.update, ...(restartEvidence ? { restartEvidence } : {}) } };
         });
+        return;
+      }
+      if (req.op === "name") {
+        managerResult(async () => { if (req.name !== undefined) await account.rename(req.name); return status(); });
         return;
       }
       if (req.op === "spaces") {

@@ -5,7 +5,7 @@
   <div class="app loading">
     <aside class="sidebar">
       <div class="brand"><img class="brand-mark" src="/src/brand.svg" alt=""><strong>cotal</strong></div>
-      <div class="sidebar-footer"><div class="machine"><p id="machine-name">This computer</p><p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span></div><span class="status-pill"><span id="tray-indicator" class="dot"></span><span id="tray-label">Checking connection</span></span></div>
+      <div class="sidebar-footer"><div class="machine"><p id="machine-name" title="This computer">This computer</p><button id="edit-computer-name" type="button" aria-label="Edit computer name" hidden>Edit</button><form id="computer-name-form" hidden><label class="sr-only" for="computer-name-input">Computer name</label><input id="computer-name-input" autocomplete="off" aria-describedby="computer-name-error"><button type="submit">Save</button><button id="cancel-computer-name" type="button">Cancel</button><span id="computer-name-error" role="alert"></span></form><p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span></div><span class="status-pill"><span id="tray-indicator" class="dot"></span><span id="tray-label">Checking connection</span></span></div>
     </aside>
     <main>
       <ol id="journey" aria-label="Connection steps">

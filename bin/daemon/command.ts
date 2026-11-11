@@ -490,7 +490,7 @@ async function run(args: ParsedArgs): Promise<void> {
   const [mode, ...rest] = args.positionals;
   const subcommand = daemonCommand.subcommands?.find((command) => command.name === mode);
   if (subcommand) recordOperationContext({ command: `${daemonCommand.name} ${subcommand.name}` });
-  if (rest.length) throw new CommandFailure("refused", "USAGE_INVALID", `cotal daemon ${mode} takes no positionals`);
+  if (rest.length && (mode !== "name" || rest.length > 1)) throw new CommandFailure("refused", "USAGE_INVALID", `cotal daemon ${mode} takes no positionals`);
   if (subcommand) {
     for (const name of Object.keys(args.values)) {
       if (!subcommand.flagNames?.includes(name)) throw new CommandFailure("refused", "USAGE_INVALID", `--${name} does not belong to cotal daemon ${mode}`, { remedy: `run \`cotal help daemon ${mode}\`` });
@@ -500,6 +500,17 @@ async function run(args: ParsedArgs): Promise<void> {
   }
   if (mode === "desktop") {
     return runDesktopBridge({ resolveTarget: () => target(args), version: binVersion(), peerUid, peerPid });
+  }
+  if (mode === "name") {
+    const { paths } = resolveTarget(args);
+    let reply;
+    try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "name", ...(rest[0] !== undefined ? { name: rest[0] } : {}) }); }
+    catch (error) { throw asFailure(error); }
+    if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", reply.error.message);
+    if ("event" in reply || !("computer" in reply.result) || typeof reply.result.computer !== "string") throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon returned no computer name");
+    const result = { computer: reply.result.computer };
+    writeResult(presentationOf(args.values), { command: "daemon name", target: null, result }, () => ({ sections: [{ title: "Computer", blocks: [{ kind: "lines", lines: [result.computer] }] }] }));
+    return;
   }
   if (mode === "spaces") {
     const { paths } = resolveTarget(args);
@@ -546,9 +557,10 @@ const daemonCommand: Command = {
   name: "daemon",
   group: "Manager",
   summary: "connect this computer to an account, manage its persistent daemon, or host a space's Manager",
-  positionals: "<setup|start|status|serve|install|uninstall|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop>",
+  positionals: "<name|setup|start|status|serve|install|uninstall|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop>",
   flags: daemonFlags,
   subcommands: [
+    { name: "name", usage: "cotal daemon name [<name>] [--daemon-home <dir>] [--json|--plain]", summary: "read or change this computer's saved name", examples: [{ command: "cotal daemon name", note: "print the saved computer name" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "spaces", usage: "cotal daemon spaces [--refresh] [--daemon-home <dir>] [--json|--plain]", examples: [{ command: "cotal daemon spaces", note: "list registered spaces" }, { command: "cotal daemon spaces --refresh", note: "refresh catalogs before listing spaces" }], summary: "list registered spaces; optionally refresh catalogs using the daemon-held sign-in", flagNames: ["refresh", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "start", usage: "cotal daemon start [--daemon-home <dir>] [--json|--plain]", examples: [{ command: "cotal daemon start", note: "start the recorded daemon service" }], summary: "start the unchanged, recorded daemon service without restarting a running instance", flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "desktop", usage: "cotal daemon desktop [--daemon-home <dir>]", examples: [{ command: "cotal daemon desktop < request.json", note: "serve one desktop request from a file" }], summary: "serve one bounded JSON request from the desktop app on stdin; credentials remain in the daemon", flagNames: ["daemon-home"], prepareMeshTarget: false },
