@@ -166,7 +166,7 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 #connected-panel:has(#running-agents[data-available="true"]) #connected-applications { display: none; }
 .has-running-agents #connection-icon { display: none; }
 .has-running-agents #connection-title { font-size: 20px; margin-bottom: var(--s-1); }
-.has-running-agents #connection-description { margin-bottom: var(--s-1); }
+.has-running-agents #connection-description { display: none; }
 .has-running-agents #connected-spaces { margin: 4px 0 8px; }
 .has-running-agents #connected-spaces li { padding: 2px 0; }
 .has-running-agents #applications-summary { margin-bottom: var(--s-1); }
