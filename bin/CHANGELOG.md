@@ -1,5 +1,30 @@
 # cotal-ai
 
+## 0.159.0
+
+### Patch Changes
+
+- 61f6f77: Windows daemon restart failures now include the daemon's refusal code and message.
+  The restart handshake validates the response version, request ID and response shape before retaining the refusal in the command's native cause.
+- 61f6f77: Retry native daemon ownership checks before restart and uninstall when startup could not verify ownership. Distinguish missing provenance from an unknown observation, keep checks bounded and cache only verified ownership.
+- 61f6f77: Confirm Windows daemon restarts replace the running process before setup or update reports success.
+  
+  Pause the recorded scheduled task around a pinned two-phase daemon shutdown, then verify a fresh daemon lifetime and the expected version. Application refresh and version updates share this restart path. Preserve restart fences and installation evidence when a native operation has an uncertain outcome.
+- 61f6f77: Recover owned disabled Windows daemon tasks during setup and show progress while restarting.
+  
+  Failed restarts restore autostart only after verifying the pinned old listener or unchanged installation with no running daemon. Unresolved native End operations retain the disabled task and restart fence for inspection.
+- Updated dependencies [b6abf6c]
+  - @cotal-ai/core@0.159.0
+  - @cotal-ai/connector-core@0.159.0
+  - @cotal-ai/auth@0.159.0
+  - @cotal-ai/cli@0.159.0
+  - @cotal-ai/delivery@0.159.0
+  - @cotal-ai/manager@0.159.0
+  - @cotal-ai/registry@0.159.0
+  - @cotal-ai/runtime@0.159.0
+  - @cotal-ai/workspace@0.159.0
+  - @cotal-ai/seat@0.159.0
+
 ## 0.158.1
 
 ### Patch Changes
