@@ -106,6 +106,10 @@ For an npm installation, run:
 npm uninstall -g cotal-ai
 ```
 
+For a release using the stable npm launcher, also remove the `cotal` launcher from that prefix's
+binary directory and `.cotal-launcher` from its global `node_modules` directory. npm leaves those
+outside the package so they survive upgrades. `npm prefix -g` and `npm root -g` show the locations.
+
 For a shell installation with the default locations, remove `~/.local/bin/cotal` and the `cotal` directory under `${XDG_DATA_HOME:-~/.local/share}`.
 If you selected custom install locations, remove those locations instead.
 Delete the `# cotal` block the installer added to your shell configuration.
