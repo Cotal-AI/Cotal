@@ -303,13 +303,13 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
  *    not the instance, and saying so is what keeps a local gap from reading as a remote fault.
  */
 function silentManager(liveness: ScatterInstanceLiveness | undefined, instanceId: string, mode?: string): { state: Styled; remedy?: string } {
-  // A static space's own root holds the authority that removes the record. Any other space has none,
-  // so only the manager's own clean stop removes it, and that needs its host.
+  // Static roots remove locally. User-auth removal is decided by the governing auth service.
   if (liveness === "gone")
     return {
       state: { text: "registration is stale (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)", tone: "failed" },
       remedy: mode === "auth"
         ? `remove the record from this space's own root: \`cotal endpoint deregister manager ${instanceId} --yes\``
+        : mode === "user" ? `ask this space's governing auth service to remove your registration: \`cotal endpoint deregister manager ${instanceId} --yes\`; the service requires ownership and broker-confirmed absence`
         : "if its host is still available, start that manager there again and stop it cleanly, as with `cotal service start <name>` then `cotal service stop <name> --yes`; if the host is gone, no supported command removes this record",
     };
   const why =
@@ -827,7 +827,7 @@ function seatCensus(target: SeatCensus["target"], slots: readonly ScatterInstanc
         remedy: mismatches.length
           ? `Managers in this space serve different ps contracts. ${mismatches.join("; ")}. Align the manager versions and retry.`
           : target.scope === "your-managers" && silent.length
-            ? silentManagersNext(silent)
+            ? silentManagersNext(silent, target.space)
             : "retry, or read one manager with `cotal ps --on <instance>`",
       }
     : undefined;
@@ -835,9 +835,9 @@ function seatCensus(target: SeatCensus["target"], slots: readonly ScatterInstanc
 }
 
 /** The Next for your managers that did not answer on a user-auth mesh, each by instance id. */
-function silentManagersNext(instanceIds: readonly string[]): string {
+function silentManagersNext(instanceIds: readonly string[], space: string): string {
   const one = instanceIds.length === 1;
-  return `${one ? "manager" : "managers"} ${instanceIds.join(", ")} did not answer. If ${one ? "it is" : "one is"} still running, retry; a manager that ended without a clean stop stays registered under its instance id`;
+  return `${one ? "manager" : "managers"} ${instanceIds.join(", ")} did not answer. If ${one ? "it is" : "one is"} still running, retry. For a computer that is gone, ask the governing auth service to remove your registration: ${instanceIds.map(id => `\`cotal endpoint deregister manager ${id} --space ${space} --yes\``).join("; ")}. The service must support guarded removal and affirm the instance rail empty; an older hosted authority must add that operation`;
 }
 
 /** None of your managers answered a read on a user-auth mesh: the one the exchange picked, or each of

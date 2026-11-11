@@ -191,6 +191,7 @@ export {
   type DelegatedUserIntentRecord,
   type ObservePlatformControlAssignment,
 } from "./delegated-user-intent.js";
+export type { EndpointDeregisterGranter } from "./endpoint-deregister.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./service-adapter.js"; // self-registers the native auth service preset and child
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry

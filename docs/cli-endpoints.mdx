@@ -385,8 +385,11 @@ cotal endpoint deregister <class> <full-instance-id> [--space <space>] [--server
 
 This removes a departed instance's registration, not a process or an agent. Both the native
 class and full instance ID are required; there is no default instance, prefix match or saved
-reference. The selected static space must have validated local signing authority. Open and
-user-auth targets refuse instead of borrowing a static credential path.
+reference. A static space needs validated local signing authority. A user-auth space sends
+`manager` removal to its pinned governing auth service with a fresh login proof. That service
+requires the current `cli` grant's `supervise` scope and checks that the account owns both the
+stored registration and its manager gate. `admin` alone does not authorize removal. Open spaces
+refuse. User-auth removal accepts no `--server` override and never borrows a static signer.
 
 The command resolves one root, account and broker policy, including its TLS requirement.
 A terminal reviews that full target and defaults to Cancel. Scripts need `--yes`.
@@ -404,10 +407,22 @@ A registration that moves during deletion is not success: its spec was not remov
 older status may already have been removed. That uncertain outcome retains the target and is
 not retried. Raw probe diagnostics and credential material are not copied into the receipt.
 
+The stock auth service serves `POST /endpoint-deregister` on its exchange faces. The body is
+`{ idpToken, request: { v: 1, kind: "endpoint-deregister", space, endpoint: "manager", instanceId } }`.
+The loopback face also requires its exchange capability. No owner claim, credential or grant is
+accepted from the request. A hosted service with its own route table must expose this operation.
+An older host refuses `UNSUPPORTED`; the client does not delete records itself.
+
+The embedded auth-service handle's `deregisterEndpoint(request, granter)` is the trusted host
+door. A host authenticates the space operator before supplying `{ kind: "operator", auditId }`,
+or a member before supplying `{ kind: "owner", owner }`. Only the operator arm can target another
+account's registration. Neither a ledger `admin` scope nor the public body grants operator authority.
+Computer-removal handlers can call this door for the recorded native instance after the broker
+reports its rail empty. They must retain an unconfirmed result for inspection, not retry blindly.
+Environment-manager registrations use their separate admission authority and refuse this route.
+
 The old `deregister-instance` spelling is a hidden migration refusal. It starts no operation
-and names the literal replacement, and says that the replacement needs a static space's signing
-authority, since an open or user-auth space has no command that removes a registration. Its former
-default-to-this-folder instance is not retained.
+and names the literal replacement. Its former default-to-this-folder instance is not retained.
 
 
 ## Native endpoint reports [#native-endpoint-reports]

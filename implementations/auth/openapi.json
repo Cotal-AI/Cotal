@@ -3,7 +3,7 @@
   "info": {
     "title": "Auth HTTP API",
     "version": "1.0.0",
-    "description": "HTTP interface of the stock auth public listener: 11 paths and 12 operations. Public means reachable through the configured listener, not unauthenticated. This implementation surface uses Cotal native contracts and does not establish a stable cloud API. Description version 1.0.0 identifies this document, not the wire or npm package version.\n\nCredentials are JSON body proofs, with no loopback capability required. No CORS headers are sent. All POST routes and service authority GET reject any Origin header. Health, JWKS and mesh discovery GET permit Origin headers.\n\nThe listener binds 127.0.0.1; an operator HTTPS proxy supplies the external origin. Service endpoint routes require service endpoints enabled. Route lookup uses the exact request target: query strings and trailing slashes do not match and return JSON 404. Unknown paths and loopback-only lifecycle, enrollment verification, human-proof and consent routes return JSON 404. Configuration and route-specific native parser checks remain authoritative.\n\nPOST JSON bodies default to 65536 bytes; service authority accepts 2097152 bytes. Public work has 64 concurrent admissions and a 10000 ms deadline. Its separate rolling 30-refusal/minute peer budget is bounded to 1024 peer entries. Failure accounting is route-specific. Manager dispatch failures and chat native or store failures can consume the budget after valid proof verification. Otherwise successful requests are still evaluated when the refusal budget is full. Peer is socket address unless trusted proxy mode selects the last X-Forwarded-For hop."
+    "description": "HTTP interface of the stock auth public listener: 12 paths and 13 operations. Public means reachable through the configured listener, not unauthenticated. This implementation surface uses Cotal native contracts and does not establish a stable cloud API. Description version 1.0.0 identifies this document, not the wire or npm package version.\n\nCredentials are JSON body proofs, with no loopback capability required. No CORS headers are sent. All POST routes and service authority GET reject any Origin header. Health, JWKS and mesh discovery GET permit Origin headers.\n\nThe listener binds 127.0.0.1; an operator HTTPS proxy supplies the external origin. Service endpoint routes require service endpoints enabled. Route lookup uses the exact request target: query strings and trailing slashes do not match and return JSON 404. Unknown paths and loopback-only lifecycle, enrollment verification, human-proof and consent routes return JSON 404. Configuration and route-specific native parser checks remain authoritative.\n\nPOST JSON bodies default to 65536 bytes; service authority accepts 2097152 bytes. Public work has 64 concurrent admissions and a 10000 ms deadline. Its separate rolling 30-refusal/minute peer budget is bounded to 1024 peer entries. Failure accounting is route-specific. Manager dispatch failures and chat native or store failures can consume the budget after valid proof verification. Otherwise successful requests are still evaluated when the refusal budget is full. Peer is socket address unless trusted proxy mode selects the last X-Forwarded-For hop."
   },
   "servers": [
     {
@@ -12,6 +12,40 @@
     }
   ],
   "paths": {
+    "/endpoint-deregister": {
+      "post": {
+        "operationId": "auth-endpoint-deregister",
+        "summary": "Remove one departed Manager registration",
+        "description": "A fresh IdP proof derives the same-account owner. The current cli grant needs supervise. Both stored spec and manager gate must belong to that account. A pinned describe answer, silence without broker-affirmed absence, unavailable probe or in-flight registration refuses. Status precedes spec with both revisions pinned. The issuance gate is unchanged. Native refused and unknown results also answer HTTP 200, so inspect state. No static credential or operator claim is accepted from the client. Origin is refused.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object", "additionalProperties": false, "required": ["idpToken", "request"],
+                "properties": {
+                  "idpToken": { "type": "string", "minLength": 1 },
+                  "request": { "$ref": "#/components/schemas/EndpointDeregisterRequest" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Native guard result, including refused and unknown outcomes.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EndpointDeregisterResult" } } } },
+          "400": { "$ref": "#/components/responses/RequestError" },
+          "403": { "$ref": "#/components/responses/RequestError" },
+          "405": { "$ref": "#/components/responses/RequestError" },
+          "413": { "$ref": "#/components/responses/RequestError" },
+          "415": { "$ref": "#/components/responses/RequestError" },
+          "422": { "$ref": "#/components/responses/RequestError" },
+          "429": { "$ref": "#/components/responses/RequestError" },
+          "500": { "$ref": "#/components/responses/InternalServerError" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
     "/health": {
       "get": {
         "operationId": "auth-health",
@@ -735,6 +769,33 @@
   },
   "components": {
     "schemas": {
+      "EndpointDeregisterRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["v", "kind", "space", "endpoint", "instanceId"],
+        "properties": {
+          "v": { "const": 1 }, "kind": { "const": "endpoint-deregister" },
+          "space": { "type": "string", "minLength": 1 }, "endpoint": { "const": "manager" },
+          "instanceId": { "type": "string", "minLength": 1 }
+        }
+      },
+      "EndpointDeregisterResult": {
+        "type": "object", "additionalProperties": false,
+        "required": ["v", "kind", "space", "endpoint", "instanceId", "state"],
+        "properties": {
+          "v": { "const": 1 }, "kind": { "const": "endpoint-deregister" },
+          "space": { "type": "string", "minLength": 1 }, "endpoint": { "const": "manager" },
+          "instanceId": { "type": "string", "minLength": 1 },
+          "state": { "enum": ["removed", "refused", "unknown"] },
+          "removedSpecRevision": { "type": "integer", "minimum": 1 },
+          "removedStatusRevision": { "type": ["integer", "null"], "minimum": 1 },
+          "condition": { "enum": ["instance-answered", "instance-not-affirmed-gone", "liveness-unestablishable", "not-registered", "registration-in-flight", "permission-denied", "unavailable", "superseded"] }
+        },
+        "oneOf": [
+          { "properties": { "state": { "const": "removed" } }, "required": ["removedSpecRevision", "removedStatusRevision"], "not": { "required": ["condition"] } },
+          { "properties": { "state": { "const": "refused" }, "condition": { "enum": ["instance-answered", "instance-not-affirmed-gone", "liveness-unestablishable", "not-registered", "registration-in-flight", "permission-denied", "unavailable"] } }, "required": ["condition"], "not": { "anyOf": [{ "required": ["removedSpecRevision"] }, { "required": ["removedStatusRevision"] }] } },
+          { "properties": { "state": { "const": "unknown" }, "condition": { "enum": ["superseded", "unavailable"] } }, "required": ["condition"], "not": { "anyOf": [{ "required": ["removedSpecRevision"] }, { "required": ["removedStatusRevision"] }] } }
+        ]
+      },
       "Error": {
         "type": "object",
         "properties": {
