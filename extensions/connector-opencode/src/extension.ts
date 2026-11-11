@@ -80,7 +80,7 @@ function parseModels(stdout: string): ModelInfo[] {
 /** The 2.x catalog read. `--standalone` makes the CLI start a private `opencode serve` for this one
  *  request and stop it on exit, so a catalog read never starts OpenCode's background service. */
 const OPENCODE2_CATALOG_ARGS = ["api", "--standalone", "GET", "/api/model"];
-const OPENCODE2_CATALOG_TIMEOUT_MS = 10_000;
+const OPENCODE2_CATALOG_TIMEOUT_MS = 6_000;
 
 /** Maps the `GET /api/model` reply (`{ location, data: Model.Info[] }`, the same shape since 2.0.0)
  *  to `provider/model` ids, the form `--model` accepts. Only ids, names and variant names are read:

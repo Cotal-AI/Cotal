@@ -85,7 +85,7 @@ export async function listPiModels(opts: ModelCatalogOpts = {}): Promise<ModelCa
         clearTimeout(timer);
         resolve(catalog);
       };
-      const timer = setTimeout(() => done(unavailable("pi did not answer get_available_models within 10s")), 10_000);
+      const timer = setTimeout(() => done(unavailable("pi did not answer get_available_models within 6s")), 6_000);
       let buf = "";
       child.stdout!.setEncoding("utf8");
       child.stdout!.on("data", (d: string) => {

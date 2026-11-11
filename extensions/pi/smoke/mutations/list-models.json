@@ -103,10 +103,10 @@
     {
       "name": "LM12 the timeout is 60 seconds",
       "file": "extensions/pi/src/connector.ts",
-      "find": "within 10s\")), 10_000);",
-      "replace": "within 10s\")), 60_000);",
-      "expectRed": "a pi that never answers is unavailable after 10 seconds",
-      "cell": "a pi that never answers is unavailable after 10 seconds"
+      "find": "within 6s\")), 6_000);",
+      "replace": "within 6s\")), 60_000);",
+      "expectRed": "a pi that never answers is unavailable after 6 seconds",
+      "cell": "a pi that never answers is unavailable after 6 seconds"
     },
     {
       "name": "LM13 a line that is not JSON is skipped",

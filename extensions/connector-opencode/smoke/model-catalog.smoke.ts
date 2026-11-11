@@ -5,7 +5,7 @@
  *   1. 2.x: the catalog comes from `opencode api --standalone GET /api/model`. The recorded reply
  *      (OpenCode 2.2.5, scrubbed) maps to `provider/model` ids with variant names, and nothing from a
  *      model's settings or headers reaches the catalog. A refusal, a reply that is not a model list,
- *      and a read that does not answer within 10 seconds each come back `unavailable`, never thrown
+ *      and a read that does not answer within 6 seconds each come back `unavailable`, never thrown
  *      and never hung.
  *   2. 1.x: `opencode models --pure --verbose` is parsed as before, synchronously, with `--refresh`
  *      passed through and a failed read still thrown.
@@ -117,8 +117,8 @@ try {
   const pidFile = join(dir, "slow.pid");
   const slow = await list(fakeOpenCode("oc2-slow", "opencode v2.2.5", `echo $$ > '${pidFile}'\nexec sleep 60`));
   check(
-    "on 2.x a read that does not answer within 10 seconds is reported unavailable, not hung",
-    unavailableOnly(slow, /10 seconds/) && slow.ms >= 9_500 && slow.ms < 15_000,
+    "on 2.x a read that does not answer within 6 seconds is reported unavailable, not hung",
+    unavailableOnly(slow, /6 seconds/) && slow.ms >= 5_500 && slow.ms < 11_000,
     { ...slow, returned: undefined },
   );
   let slowKilled = false;

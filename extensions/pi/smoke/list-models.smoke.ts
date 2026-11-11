@@ -129,7 +129,7 @@ try {
       new Promise<ModelCatalog>((r) => setTimeout(() => r({ models: [], unavailable: "the suite stopped waiting after 15s" }), 15_000)),
     ]);
     const elapsed = Date.now() - started;
-    check("a pi that never answers is unavailable after 10 seconds", /did not answer get_available_models within 10s/.test(catalog.unavailable ?? "") && elapsed >= 9_500 && elapsed < 12_000, { catalog, elapsed });
+    check("a pi that never answers is unavailable after 6 seconds", /did not answer get_available_models within 6s/.test(catalog.unavailable ?? "") && elapsed >= 5_500 && elapsed < 8_000, { catalog, elapsed });
     check("a pi that never answered is stopped", await goneWithin(pi.pid(), 3_000));
   }
 

@@ -202,7 +202,7 @@ function initializeAnswer(text: string): ModelCatalog | undefined {
 
 /** Ask the operator's own `claude` which models its login can use (see MODELS_ARGS). It runs the file a
  *  launch runs, with the env a launch gets, from an empty private directory so no project's settings
- *  apply. Every way the question can go unanswered ends `unavailable` with its cause within 10s, never
+ *  apply. Every way the question can go unanswered ends `unavailable` with its cause within 6s, never
  *  a throw, and the child is always killed. */
 async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
   const cwd = mkdtempSync(join(tmpdir(), "cotal-claude-models-"));
@@ -214,7 +214,7 @@ async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatal
   try {
     return await new Promise<ModelCatalog>((settle) => {
       const claude = (child = spawn(opts.resolvedBinaries?.claude ?? "claude", MODELS_ARGS, { cwd, env, stdio: ["pipe", "pipe", "ignore"] }));
-      timer = setTimeout(() => settle(unavailable("claude did not list its models within 10s")), 10_000);
+      timer = setTimeout(() => settle(unavailable("claude did not list its models within 6s")), 6_000);
       claude.on("error", (e) => settle(unavailable(`claude could not start: ${e.message}`)));
       // `close` follows the last `data` event, so an answer written just before exit is read first.
       claude.on("close", (code, signal) => settle(unavailable(`claude exited (${code ?? signal}) before it listed its models`)));

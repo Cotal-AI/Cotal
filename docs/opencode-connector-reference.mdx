@@ -145,7 +145,7 @@ cotal models --harness opencode --refresh  # 1.x: refresh the provider cache fir
 On 1.x the catalog comes from `opencode models --pure --verbose`. On 2.x it comes from
 `opencode api --standalone GET /api/model`, which starts a private OpenCode server for that one
 request and stops it on exit. `--refresh` does not apply to 2.x. A 2.x read that fails, returns
-something other than a model list, or takes longer than 10 seconds reports the catalog unavailable
+something other than a model list, or takes longer than 6 seconds reports the catalog unavailable
 with the reason.
 
 The catalog runs the OpenCode binary a launch runs: `COTAL_OPENCODE_BIN` when you set it, otherwise

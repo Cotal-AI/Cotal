@@ -121,8 +121,8 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
   const catalog = await ask(bin);
   const waited = Date.now() - asked;
   check(
-    "a claude that never answers is unavailable once the 10s bound passes, not a hang",
-    catalog.models.length === 0 && /within 10s/.test(catalog.unavailable ?? "") && waited >= 9_500 && waited < 13_000,
+    "a claude that never answers is unavailable once the 6s bound passes, not a hang",
+    catalog.models.length === 0 && /within 6s/.test(catalog.unavailable ?? "") && waited >= 5_500 && waited < 9_000,
     { waited, catalog },
   );
   const { pid } = logged(log)[0];
