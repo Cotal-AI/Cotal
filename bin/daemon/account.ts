@@ -89,6 +89,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
     const candidates = signedInMachineAccounts(home).filter(item => entry.catalogOwner ? item.ownerKey === entry.catalogOwner : item.idpUrl === entry.userAuth?.idp.url);
     const account = candidates.length === 1 ? candidates[0] : undefined;
     if (!account) throw new Error("Sign in again and refresh your spaces before changing this computer's connection.");
+    if (contexts.get(account.ownerKey)?.state.mode === "per-space") return false;
     await settlePoll(account.ownerKey);
     const context = contexts.get(account.ownerKey)!;
     if (context.state.mode === "per-space") return false;
