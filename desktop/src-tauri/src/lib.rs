@@ -7,6 +7,7 @@ pub mod app;
 #[cfg(feature = "desktop")]
 mod native_presence;
 pub mod presence;
+pub mod first_paint;
 
 /// The bundled Node executable name, without the platform extension.
 pub const NODE_SIDECAR: &str = if cfg!(windows) { "node" } else { "cotal-node" };

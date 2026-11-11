@@ -31,6 +31,7 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
   win.setInterval = (fn: () => void) => { clock = fn; return 2; }; win.clearInterval = () => { clock = undefined; };
   let copied = "";
   Object.defineProperty(win.navigator, "clipboard", { value: { writeText: async (value: string) => { copied = value; } } });
+  win.HTMLImageElement.prototype.decode = async () => {};
   win.isTauri = true;
   win.__TAURI_INTERNALS__ = {
     transformCallback(fn: (frame: unknown) => void) { callbacks.set(++next, fn); return next; }, unregisterCallback() {},
@@ -38,6 +39,7 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
       if (cmd === "plugin:deep-link|get_current") return options.link ? [options.link] : null;
       if (cmd === "plugin:event|listen") { listeners.set(args.event!, args.handler!); return ++next; }
       if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "" };
+      if (cmd === "first_paint") return;
       if (cmd === "set_connection_state") return;
       if (cmd === "open_browser") { urls.push(args.url!); return; }
       assert.equal(cmd, "daemon_request"); const r = args.request!; calls.push(r);
