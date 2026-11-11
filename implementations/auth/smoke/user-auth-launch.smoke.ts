@@ -744,7 +744,7 @@ try {
     other = { root: otherRoot, home: otherHome, env, sandbox: recordSmokeSandbox({ root: otherRoot, cotalHome: otherHome, xdgConfigHome: env.XDG_CONFIG_HOME }) };
     const otherUp = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", `nats://127.0.0.1:${await pickFreePort()}`, "--space", SPACE], { cwd: otherRoot, env });
     check("the second root starts the same space on its own broker", otherUp.status === 0, otherUp.out);
-    const otherDown = await cotal(["down"], { cwd: otherRoot, env, sandbox: other.sandbox });
+    const otherDown = await cotal(["down", "--yes"], { cwd: otherRoot, env, sandbox: other.sandbox });
     check("…and stops it, keeping its own signer", otherDown.status === 0 && existsSync(join(otherRoot, ".cotal", "auth")), otherDown.out);
     const refused = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: otherRoot });
     const text = plain(refused.out);
@@ -1003,7 +1003,7 @@ try {
 
   // ---------- F. down + fail-closed re-up ----------
   console.log("F) down stops the auth service; re-up without --user-auth is refused");
-  const down = await cotal(["down"]);
+  const down = await cotal(["down", "--yes"]);
   check("down exits 0 and stops the user-auth service", down.status === 0 && down.out.includes("user-auth service"), down.out);
   check("auth-service pid file is gone", !existsSync(join(root, ".cotal", `auth-service.${spaceKey(SPACE)}.pid`)));
   let brokerGone = false;
@@ -1060,10 +1060,10 @@ try {
   process.exitCode = 1;
 } finally {
   try { await witnessNc?.close(); } catch { /* */ }
-  await cotal(["down"], { timeoutMs: 30_000 }); // idempotent — kills by ITS OWN pid files only
+  await cotal(["down", "--yes"], { timeoutMs: 30_000 }); // idempotent — kills by ITS OWN pid files only
   await cotal(["down", "--yes"], { timeoutMs: 30_000 }); // the controller stack of G, if it is still up
   if (other) {
-    await cotal(["down"], { cwd: other.root, env: other.env, sandbox: other.sandbox, timeoutMs: 30_000 }); // E3's second root, if it is still up
+    await cotal(["down", "--yes"], { cwd: other.root, env: other.env, sandbox: other.sandbox, timeoutMs: 30_000 }); // E3's second root, if it is still up
     rmSync(other.home, { recursive: true, force: true });
     rmSync(other.root, { recursive: true, force: true });
   }
