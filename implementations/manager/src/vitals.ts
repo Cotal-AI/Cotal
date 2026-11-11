@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { dirname, parse } from "node:path";
 import { homedir, uptime } from "node:os";
@@ -149,13 +151,25 @@ async function homeMount(): Promise<string[]> {
   const home = await realpath(homedir());
   if (process.platform === "win32") {
     if (!process.env.SystemRoot) refusal("computer vitals cannot locate the Windows system volume");
-    const roots = [safeMount(parse(home).root), safeMount(parse(process.env.SystemRoot).root)];
-    return [...new Set(roots)];
+    const roots = [...new Set([safeMount(parse(home).root), safeMount(parse(process.env.SystemRoot).root)])];
+    for (const root of roots) {
+      if (root.length !== 3 || !/^[A-Za-z]$/.test(root[0]!) || root[1] !== ":" || root[2] !== "\\") refusal("computer vitals requires a local Windows drive root");
+      const { stdout } = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `[int]([System.IO.DriveInfo]::new('${root}').DriveType)`], { timeout: 5000, maxBuffer: 1024, windowsHide: true });
+      if (stdout.trim() !== "3") refusal("computer vitals excludes non-fixed Windows volumes");
+    }
+    return roots;
   }
   let mount = home;
   const device = (await stat(home)).dev;
   while (dirname(mount) !== mount && (await stat(dirname(mount))).dev === device) mount = dirname(mount);
   if (mount === home || mount.startsWith("/home/") || mount.startsWith("/Users/")) refusal("computer vitals cannot disclose a personal mount point");
+  if (process.platform === "darwin") {
+    const { stdout } = await promisify(execFile)("/sbin/mount", [], { timeout: 5000, maxBuffer: 1024 * 1024 });
+    for (const point of new Set(["/", mount])) {
+      const row = stdout.split("\n").find(line => line.includes(` on ${point} (`));
+      if (!row || !/\((?:apfs|hfs),/.test(row) || !row.includes(", local")) refusal("computer vitals requires local macOS volumes");
+    }
+  }
   if (process.platform === "linux") {
     const rows = (await readFile("/proc/self/mountinfo", "utf8")).trim().split("\n");
     const row = rows.map(line => line.split(" ")).find(fields => unescapeMount(fields[4] ?? "") === mount);
@@ -195,7 +209,12 @@ export async function measureComputerVitals(deps: ComputerVitalsDeps = computerD
     }
   }
   if (!Number.isSafeInteger(total) || total <= 0) refusal("computer vitals CPU counters did not advance");
-  const resources = await measureResources({ ...deps.resources, logicalCount: () => after.length, ...(os === "win32" ? { load: (): [number, number, number] => [0, 0, 0] } : {}) }, os);
+  const filesystem: ManagerVitalsDeps["filesystem"] = async mount => {
+    const fs = await deps.resources.filesystem(mount);
+    integer(fs.blocks, "filesystem blocks"); integer(fs.bsize, "filesystem block size"); integer(fs.bfree, "filesystem free blocks");
+    return fs;
+  };
+  const resources = await measureResources({ ...deps.resources, filesystem, logicalCount: () => after.length, ...(os === "win32" ? { load: (): [number, number, number] => [0, 0, 0] } : {}) }, os);
   const cpu: ComputerVitals["cpu"] = { logicalCount: after.length, utilisationPercent: 100 * (total - idle) / total, intervalMs };
   if (os !== "win32") Object.assign(cpu, resources.cpu);
   return { ...resources, cpu, uptimeSeconds: integer(Math.floor(deps.uptime()), "system uptime") };
