@@ -2763,6 +2763,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               await sleep(35_000);
               const suppressed = await cli("status", "--space", ON);
               check("AF same version is suppressed after two failures", suppressed.doc.result?.update?.failures === 2 && suppressed.doc.result.update.lastResult.includes("failed twice"), suppressed);
+              const cacheFile = join(home, "update-check.json");
+              writeFileSync(cacheFile, JSON.stringify({ v: 1, latest: "0.151.4", checkedAt: Date.now(), attemptedAt: Date.now(), firstSeenAt: Date.now() }));
+              writeFileSync(attemptFile, JSON.stringify({ ...JSON.parse(readFileSync(attemptFile, "utf8")), next: 0 }));
+              await sleep(35_000);
+              const newer = await cli("status", "--space", ON);
+              check("AF newer release clears failed-version suppression and holds publication", newer.doc.result?.update?.failures === 0 && newer.doc.result.update.lastResult === "waiting for release hold", newer);
               return;
             }
             let upgraded;
