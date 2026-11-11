@@ -384,8 +384,21 @@ try {
     }
     if (!restored) throw new Error("harness KV client did not reconnect");
     check("hosted failed close still leaves its claim held", parsePlaneClaimRow((await wideKv.get(PLANE_CLAIM_KEY))!.value)?.state === "held");
-    const retryClose = await rejects(() => plane3.close());
-    check("hosted plane close retries its release after reconnect", retryClose === "" && parsePlaneClaimRow((await wideKv.get(PLANE_CLAIM_KEY))!.value)?.state === "released", retryClose);
+    // The harness and the plane's private barrier reconnect independently. A harness flush
+    // cannot prove that barrier is ready. Retry only the documented unreachable-release face
+    // within the same ten-second reconnect budget used above, never a lost-claim refusal.
+    const reconnectDeadline = Date.now() + 10_000;
+    let retryClose: unknown;
+    let closeAttempts = 0;
+    do {
+      closeAttempts++;
+      try { await plane3.close(); retryClose = undefined; break; }
+      catch (e) { retryClose = e; }
+      if (planeClaimRefusal(retryClose) !== "release-unreachable") break;
+      await wait(100);
+    } while (Date.now() < reconnectDeadline);
+    console.log(`  hosted close reconnect attempts: ${closeAttempts}`);
+    check("hosted plane close retries its release after reconnect", retryClose === undefined && parsePlaneClaimRow((await wideKv.get(PLANE_CLAIM_KEY))!.value)?.state === "released", retryClose);
   }
 } finally {
   await wide.close();
