@@ -1777,8 +1777,21 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       const startDaemon = async (managedHome = explicitHome) => {
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
         const servicePath = process.argv.includes("--setup-path-repro") || process.argv.includes("--account-setup-journey") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
-        const child = spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading && (!process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro")) ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] });
-        child.stdout.on("data", chunk => { if (process.argv.includes("--rollback-busy-repro")) console.log("RB DAEMON STDOUT", String(chunk)); }); child.stderr.on("data", (chunk) => { if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) console.log("  owned daemon", String(chunk).trim()); });
+        let recoveryRestarts = 0;
+        const launch = () => spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading && (!process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro")) ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
+        let child = launch();
+        const attach = () => {
+          child.stdout.on("data", chunk => { if (process.argv.includes("--rollback-busy-repro")) console.log("RB DAEMON STDOUT", String(chunk)); });
+          let errors = "";
+          child.stderr.on("data", chunk => { errors += String(chunk); if (upgrading) console.log("owned daemon", String(chunk)); });
+          child.once("exit", code => {
+            if (process.argv.includes("--rollback-busy-repro") && code !== 0 && errors.includes("restart the daemon with the restored CLI")) {
+              check("RB simulated supervisor restarts only after single recovery clears journal", recoveryRestarts++ === 0 && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null);
+              child = launch(); attach();
+            }
+          });
+        };
+        attach();
         for (let i = 0; i < (process.argv.includes("--rollback-busy-repro") ? 1200 : 100); i++) { try { await ask(socket, { op: "status" }, 1000); return child; } catch { await sleep(100); } }
         await killAndAwaitExit(child, "SIGTERM");
         throw new Error("shipped daemon did not answer");
@@ -2925,9 +2938,39 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               if (process.argv.includes("--rollback-busy-repro")) {
                 const until = Date.now() + 60_000;
                 while (!existsSync(join(root, "updater-entered"))) { if (Date.now() > until) throw new Error("rollback never reached prepare gate"); await sleep(20); }
+                if (process.argv.includes("--silent-host-repro")) {
+                  process.kill(child.pid!, "SIGSTOP");
+                  writeFileSync(join(root, "updater-release"), "ready");
+                  try {
+                    let paused: any;
+                    for (let i = 0; i < 180; i++) { paused = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")); if (paused?.phase === "paused") break; await sleep(1000); }
+                    check("SH live silent lifetime refuses rollback reconciliation", paused?.phase === "paused" && paused.reason.includes("daemon") && existsSync(paused.snapshot), paused);
+                  } finally { process.kill(child.pid!, "SIGCONT"); }
+                  return;
+                }
                 recordingRestart = false;
                 await killAndAwaitExit(child, "SIGTERM");
                 check("RB owned daemon stopped after old closure restoration", !existsSync(paths.socket));
+                if (process.argv.includes("--power-loss-repro")) {
+                  const journal = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"));
+                  process.kill(journal.owner.pid, "SIGKILL");
+                  writeFileSync(join(root, "updater-release"), "ready");
+                  await sleep(1000);
+                  if (process.argv.includes("--power-start-repro")) {
+                    child = await startDaemon();
+                    const recovered = await cli("status");
+                    check("PL daemon start recovers killed owner without live host", recovered.doc.result?.version === "0.151.2" && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null && !existsSync(journal.snapshot), recovered);
+                    return;
+                  }
+                  const recovery = spawn(process.execPath, [cliEntry, "update", "--self"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+                  let output = ""; recovery.stdout.on("data", b => output += b); recovery.stderr.on("data", b => output += b);
+                  const code = await new Promise(resolve => recovery.once("close", resolve));
+                  console.log("PL RECOVERY", code, output);
+                  check("PL update self recovers killed owner without daemon", code === 0 && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null && !existsSync(journal.snapshot), output);
+                  child = await startDaemon();
+                  check("PL recovered daemon serves", (await cli("status")).doc.result?.version === "0.151.2");
+                  return;
+                }
                 writeFileSync(join(root, "updater-release"), "ready");
                 let paused: any;
                 for (let i = 0; i < 30; i++) { paused = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")); if (paused?.phase === "paused") break; await sleep(1000); }
