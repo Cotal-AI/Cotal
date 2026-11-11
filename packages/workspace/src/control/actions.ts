@@ -27,6 +27,9 @@ const OPS = {
   // false miss. Located and pinned like `stop`.
   status: { profile: "control-caller-privileged", targeted: true },
   start: { profile: "control-caller-privileged", targeted: false, timeoutMs: START_TIMEOUT_MS },
+  // What a spawn form offers: the manager's applications and their model catalogs.
+  managerStatus: { profile: "control-caller-privileged", targeted: false },
+  models: { profile: "control-caller-privileged", targeted: false },
   purge: { profile: "control-caller-admin", targeted: false },
   stop: { profile: "control-caller-admin", targeted: true },
 } as const;
