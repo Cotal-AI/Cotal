@@ -1,6 +1,6 @@
 import { TextAttributes, type InputRenderable, type KeyEvent, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, For, Index, Match, on, onCleanup, Show, Switch } from "solid-js"
+import { type Accessor, createEffect, createMemo, createRoot, createSignal, For, Index, Match, on, onCleanup, Show, Switch } from "solid-js"
 import type { ManagedRow } from "@cotal-ai/workspace/control"
 import { COMMAND_PALETTE_COMMAND, Keymap } from "../vendor/opencode/packages/tui/src/context/keymap"
 import { useTheme } from "../vendor/opencode/packages/tui/src/context/theme"
@@ -12,7 +12,10 @@ import type { Catalog, Entry } from "./catalog.js"
 import type { ComposerState } from "./compose.js"
 import { layoutFor } from "./layout.js"
 import type { Conn, FeedEntry, Managed, Mesh, Presence, Session } from "./live.js"
+import { safe } from "./safe.js"
 import { type Card, cardsFor, clock, conversationFeed, conversationKey, type DraftKey, draftKey, entryKey, type Mark, meshOf, type Open, openRowKey, overview, peerKey, peerOf, route, type Row, STATUS, treeItems } from "./screen.js"
+import type { SpawnRequest, SpawnState } from "./spawn.js"
+import { PersonaDialog, SpawnForm } from "./spawn-form.js"
 import type { Talk } from "./talk.js"
 
 type ComposerModule = typeof import("./composer.js")
@@ -44,11 +47,16 @@ type Queue = { cards: ReadonlyMap<string, Card>; answered: ReadonlySet<string>; 
 type Stop = { phase: "idle" } | { phase: "confirm"; name: string } | { phase: "stopping"; name: string; force: boolean } | { phase: "done"; text: string; tone: "success" | "error" }
 type Answer = "graceful" | "force" | "cancel"
 
+/** A spawn the notice line follows. `from` is the conversation that was open when it began; the new
+ *  agent's conversation opens only if it still is. */
+type Spawning = { state: Accessor<SpawnState>; from: string }
+
 const FEED_ROWS = 200
 // The channel a space opens on, as `cotal join` defaults to it.
 const DEFAULT_CHANNEL = "general"
-const STOP_NOTICE_MS = 8000
+const NOTICE_MS = 8000
 
+const settled = (s: SpawnState) => s.phase === "joined" || s.phase === "exited" || s.phase === "refused"
 const fit = (s: string, n: number) => (n <= 0 ? "" : s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s)
 const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p
 // Workspace messages start with the file they name, which the row already shows.
@@ -69,6 +77,9 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const [marks, setMarks] = createSignal<ReadonlyMap<string, Mark>>(new Map())
   const [now, setNow] = createSignal(Date.now())
   const [stop, setStop] = createSignal<Stop>({ phase: "idle" })
+  const [spawns, setSpawns] = createSignal<readonly Spawning[]>([])
+  // The personas spawned from this app, the latest first, which the persona list shows first.
+  const [recent, setRecent] = createSignal<readonly string[]>([])
   const [composer, setComposer] = createSignal<ComposerState>({ drafts: {}, sending: {} })
   const [focus, setFocus] = createSignal<Focus>("box")
   // The space a switch opens, and the one it leaves until that one's chat session has closed.
@@ -230,6 +241,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     setOpen({ kind: "channel", channel: DEFAULT_CHANNEL })
     setSeen({})
     setStop({ phase: "idle" })
+    setSpawns([])
     const chat = await old?.close()
     if (mine === switches) setSwitching({ to: space })
     if (chat && !chat.clean) toast.show({ variant: "warning", message: `your session on ${was} did not close cleanly: ${chat.summary}` })
@@ -380,7 +392,70 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     if (session() !== s) return
     const done: Stop = r.ok ? { phase: "done", text: `${force ? "force-killed" : "stopped"} ${name}`, tone: "success" } : { phase: "done", text: `stop: ${r.error}`, tone: "error" }
     setStop(done)
-    setTimeout(() => setStop((cur) => (cur === done ? { phase: "idle" } : cur)), STOP_NOTICE_MS)
+    setTimeout(() => setStop((cur) => (cur === done ? { phase: "idle" } : cur)), NOTICE_MS)
+  }
+
+  // A spawn that failed stays on the notice line until the next one starts; one that joined leaves
+  // after a while.
+  const askSpawn = async () => {
+    const s = session()
+    if (!s || !talk()) return toast.show({ variant: "info", message: "No space is open" })
+    let setup: Awaited<ReturnType<Session["spawnSetup"]>>
+    try {
+      setup = await s.spawnSetup()
+    } catch (e) {
+      return toast.show({ variant: "error", message: `Spawning is not available: ${safe((e as Error).message)}` })
+    }
+    if (session() !== s) return
+    const large = { size: "large" as const }
+    const list = (at?: string) =>
+      dialog.replace(
+        () => (
+          <PersonaDialog
+            setup={setup}
+            recent={recent()}
+            at={at}
+            pick={(persona) =>
+              dialog.replace(
+                () => (
+                  <SpawnForm
+                    setup={setup}
+                    persona={persona}
+                    nameError={s.nameError}
+                    back={() => list(persona.name)}
+                    launch={(req) => {
+                      dialog.clear()
+                      setRecent((all) => [req.persona, ...all.filter((n) => n !== req.persona)])
+                      runSpawn(s, req)
+                    }}
+                  />
+                ),
+                undefined,
+                large,
+              )
+            }
+          />
+        ),
+        undefined,
+        large,
+      )
+    list()
+  }
+  const runSpawn = (s: Session, req: SpawnRequest) => {
+    const spawn: Spawning = { state: s.spawn(req), from: conversationKey(open()) }
+    setSpawns((all) => [...all.filter((x) => !settled(x.state())), spawn])
+    createRoot((dispose) =>
+      createEffect(() => {
+        const st = spawn.state()
+        if (!settled(st)) return
+        dispose()
+        if (st.phase !== "joined") return
+        setTimeout(() => setSpawns((all) => all.filter((x) => x !== spawn)), NOTICE_MS)
+        if (session() !== s || conversationKey(open()) !== spawn.from) return
+        setOpen({ kind: "peer", id: st.id })
+        setCursor(peerKey(st.id))
+      }),
+    )
   }
 
   const sendToRole = () => {
@@ -414,6 +489,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     { id: "cotal.quit", bind: "q", keys: "q ctrl+c", title: "Quit", group: "System", palette: true, run: requestQuit },
     { id: "cotal.quit-anywhere", bind: "ctrl+c", title: "Quit", group: "System", global: true, run: requestQuit },
     { id: "cotal.stop", bind: "shift+d", keys: "D", title: "Stop the selected agent", group: "Agents", palette: true, run: askStop },
+    { id: "cotal.spawn", bind: "shift+s", keys: "S", title: "Spawn agent", group: "Agents", palette: true, run: () => void askSpawn() },
     { id: "cotal.reply.quote", keys: "↑ ↓ click", title: "Quote a message to reply to; ↑ ↓ on an empty box", group: "Reply" },
     { id: "cotal.reply.drop", keys: "esc", title: "Drop the quote and keep the text", group: "Reply" },
     // Last, so the palette at 80x24 still opens on the commands above.
@@ -856,12 +932,34 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     return undefined
   }
 
+  const toneFg = (tone: "success" | "warning" | "error") => theme.text.feedback[tone].base
   const stopLine = (): Line | undefined => {
     const s = stop()
     if (s.phase === "stopping") return { text: `${s.force ? "force-killing" : "stopping"} ${s.name}…`, fg: theme.text.muted }
-    if (s.phase === "done") return { text: s.text, fg: s.tone === "success" ? theme.text.feedback.success.base : theme.text.feedback.error.base }
+    if (s.phase === "done") return { text: s.text, fg: toneFg(s.tone) }
     return undefined
   }
+  const ago = (since: number) => {
+    const s = Math.max(0, Math.round((now() - since) / 1000))
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`
+  }
+  const spawnLine = (st: SpawnState): Line => {
+    switch (st.phase) {
+      case "launching":
+        return { text: `spawning ${st.label}… · ${ago(st.since)}`, fg: theme.text.muted }
+      case "waiting":
+        if (st.late) return { text: `${st.name} is running but has not joined yet; following it · ${ago(st.since)}`, fg: toneFg("warning") }
+        if (st.waitingFor) return { text: `${st.name} waits for you at ${st.waitingFor}; \`cotal attach ${st.name}\` opens it`, fg: toneFg("warning") }
+        return { text: `the manager started ${st.name}; waiting for it on the roster…${st.notice ? ` · ${st.notice}` : ""}`, fg: theme.text.muted }
+      case "joined":
+        return st.notice ? { text: `${st.name} joined · ${st.notice}`, fg: toneFg("warning") } : { text: `${st.name} joined`, fg: toneFg("success") }
+      case "exited":
+        return { text: st.reason, fg: toneFg("error") }
+      case "refused":
+        return { text: `spawn: ${st.error}`, fg: toneFg("error") }
+    }
+  }
+  const noticeLines = () => [stopLine(), ...spawns().map((x) => spawnLine(x.state()))].filter((l): l is Line => l !== undefined)
 
   const StatusBar = () => (
     <box flexShrink={0} flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1} backgroundColor={theme.background.raised.high}>
@@ -881,13 +979,13 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
         <Middle />
         <Show when={inspectorWidth()}>{(width) => <Inspector width={width()} />}</Show>
       </box>
-      <Show when={stopLine()}>
+      <For each={noticeLines()}>
         {(line) => (
           <box flexShrink={0} paddingLeft={1} paddingRight={1} backgroundColor={theme.background.raised.base}>
-            <text fg={line().fg}>{fit(line().text, dims().width - 2)}</text>
+            <text fg={line.fg}>{fit(line.text, dims().width - 2)}</text>
           </box>
         )}
-      </Show>
+      </For>
       <StatusBar />
     </box>
   )
