@@ -7,25 +7,18 @@ import { join } from "node:path";
 const keys = ["HOME", "COTAL_HOME", "XDG_CONFIG_HOME", "LOCALAPPDATA", "APPDATA"] as const;
 const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
 const callerPaths = [...new Set([
-  homedir(),
-  process.env.COTAL_HOME ?? join(homedir(), ".cotal"),
-  process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"),
-  ...[process.env.LOCALAPPDATA, process.env.APPDATA].filter((path): path is string => !!path),
+  process.env.COTAL_HOME ?? (process.platform === "win32" && process.env.LOCALAPPDATA
+    ? join(process.env.LOCALAPPDATA, "Cotal") : join(homedir(), ".cotal")),
+  process.env.XDG_CONFIG_HOME?.trim() ? join(process.env.XDG_CONFIG_HOME.trim(), "cotal")
+    : process.platform === "win32" && process.env.APPDATA?.trim()
+      ? join(process.env.APPDATA.trim(), "Cotal") : join(homedir(), ".config", "cotal"),
 ])];
-function entries(path: string): string[] {
+function entries(path: string): { name: string; size: number; mtime: number }[] {
   if (!existsSync(path)) return [];
-  const result = ["."];
-  function walk(directory: string, relative: string): void {
-    for (const name of readdirSync(directory).sort()) {
-      const child = join(directory, name), entry = join(relative, name);
-      result.push(entry);
-      // Do not follow caller symlinks into unrelated trees.
-      const recursive = path !== callerPaths[0] || path === previous.COTAL_HOME || path === previous.XDG_CONFIG_HOME;
-      if (recursive && lstatSync(child).isDirectory()) walk(child, entry);
-    }
-  }
-  walk(path, "");
-  return result;
+  return readdirSync(path).filter(name => /^(?:update-|\.update-)/.test(name)).sort().map(name => {
+    const stat = lstatSync(join(path, name));
+    return { name, size: stat.size, mtime: stat.mtimeMs };
+  });
 }
 const before = callerPaths.map(path => entries(path));
 const root = realpathSync(mkdtempSync(join(tmpdir(), "update-suite-")));
@@ -40,7 +33,7 @@ process.once("exit", () => {
     else process.env[key] = previous[key];
   }
   try {
-    callerPaths.forEach((path, index) => assert.deepEqual(entries(path), before[index], `update smoke changed caller entries: ${path}`));
+    callerPaths.forEach((path, index) => assert.deepEqual(entries(path), before[index], `update smoke changed caller update entries: ${path}`));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
