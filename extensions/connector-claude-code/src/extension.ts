@@ -205,7 +205,11 @@ async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatal
   try {
     return await new Promise<ModelCatalog>((settle) => {
       const claude = (child = spawn(opts.resolvedBinaries?.claude ?? "claude", MODELS_ARGS, { cwd, env, stdio: ["pipe", "pipe", "ignore"] }));
-      timer = setTimeout(() => settle(unavailable("claude did not list its models within 6s")), 6_000);
+      // The bound also cuts short stopClaude's grace, so the whole read ends within 6s.
+      timer = setTimeout(() => {
+        settle(unavailable("claude did not list its models within 6s"));
+        claude.kill("SIGKILL");
+      }, 6_000);
       claude.on("error", (e) => settle(unavailable(`claude could not start: ${e.message}`)));
       // `close` follows the last `data` event, so an answer written just before exit is read first.
       claude.on("close", (code, signal) => settle(unavailable(`claude exited (${code ?? signal}) before it listed its models`)));
@@ -224,10 +228,22 @@ async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatal
       claude.stdin.write(JSON.stringify({ type: "control_request", request_id: MODELS_REQUEST_ID, request: { subtype: "initialize" } }) + "\n");
     });
   } finally {
+    if (child) await stopClaude(child);
     clearTimeout(timer);
-    child?.kill("SIGKILL");
     rmSync(cwd, { recursive: true, force: true });
   }
+}
+
+/** After it answers, claude still rewrites its config in the user's home, and it removes the session it
+ *  registered there only as it exits. A kill skips both. Closing its input makes claude exit on its own,
+ *  so it is killed only if it is still running a second later. */
+async function stopClaude(claude: ChildProcess): Promise<void> {
+  if (claude.exitCode !== null || claude.signalCode !== null) return;
+  const exited = new Promise((done) => claude.once("exit", done));
+  claude.stdin!.end();
+  const force = setTimeout(() => claude.kill("SIGKILL"), 1_000);
+  await exited;
+  clearTimeout(force);
 }
 
 /**
