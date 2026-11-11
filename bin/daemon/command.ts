@@ -196,7 +196,7 @@ async function login(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("failed", "OPERATION_FAILED", `${r.message}; a session may have been saved before the failure, so sign in again`, native);
   }
   writeResult(presentation, { command: "daemon login", target: { idp }, result: { attempt: reply.attempt, ...r } }, () => ({ sections: [
-    { title: "Signed in", blocks: [{ kind: "fields", rows: [["Account", r.label || r.sub], ["Subject", r.sub], ["Provider", r.idp]] }, { kind: "lines", lines: [{ text: "The daemon holds this session in the machine's Cotal home. No session token is printed. Each space's grants decide access separately.", tone: "hint" }] }] },
+    { title: "Signed in", blocks: [{ kind: "fields", rows: [["Account", r.label || r.sub], ["Subject", r.sub], ["Provider", r.idp]] }, { kind: "lines", lines: [...(r.previousSub ? [`Replaced account: ${r.previousSub}`] : []), { text: "The daemon holds this session in the machine's Cotal home. No session token is printed. Each space's grants decide access separately.", tone: "hint" }] }] },
   ] }));
 }
 

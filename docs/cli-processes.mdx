@@ -1122,7 +1122,10 @@ reaches the default daemon.
 
 `login` signs the running daemon in with device approval. The daemon runs the same sign-in as
 `cotal login` and keeps the session in the machine's Cotal home, where `cotal login` keeps it. The
-command prints only the approval link, code and expiry to stderr, then the signed-in account. No
+command prints only the approval link, code and expiry to stderr, then the signed-in account.
+When it replaces another account at the same provider, human and plain output add
+`Replaced account: <subject>` naming the previous subject. JSON retains `previousSub`.
+First sign-ins and same-account repeats do not report a replacement. No
 session token crosses the endpoint or reaches the terminal. `--idp` takes an HTTPS auth URL, or an
 HTTP loopback IP URL; `--client-id` defaults to `cotal-cli`.
 
