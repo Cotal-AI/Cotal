@@ -5,6 +5,26 @@ kind: Reference
 audience: integrators
 ---
 
+## Client endpoints
+
+Node applications that connect with already-issued credentials can import the endpoint from
+`@cotal-ai/core/client`:
+
+```ts
+import { CotalEndpoint, type EndpointOptions } from "@cotal-ai/core/client";
+```
+
+This entry exports `CotalEndpoint`, its binding and presence error classes, permission and
+authentication error predicates, and client-facing types. It uses the same implementation and
+class identities as `@cotal-ai/core`. It does not eagerly import agent-file parsing, credential
+provisioning or snapshot transfer modules. Required credential-health and durable-consumer
+checks still run through shared implementations.
+
+Use the existing root entry for provisioning, agent files, extension registration and other
+operator APIs. Its exports and synchronous behavior are unchanged. The client entry does not
+restrict what the process can import or which credentials it can read; it is not an isolation
+boundary. Broker authorization and credential custody still apply.
+
 ## Workspace registry liveness
 
 `@cotal-ai/workspace` exports `pruneStaleMeshes()` for a liveness sweep. It keeps every

@@ -29,6 +29,8 @@ import { accessSync, constants, lstatSync, mkdirSync, readdirSync, readFileSync,
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
+import { assertValidKind } from "./endpoint-kind.js";
+export { assertValidKind } from "./endpoint-kind.js";
 import { assertValidName } from "./resolve.js";
 import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
 import { utf16Problem } from "./text-encoding.js";
@@ -142,17 +144,6 @@ function assertLaunchSelectors(def: Pick<AgentDef, "model" | "variant">, where: 
     const v = def[k];
     if (v !== undefined && !v.trim()) throw new Error(`${where}: "${k}" must not be empty`);
   }
-}
-
-/** Validate an endpoint **kind** (`card.kind`, `COTAL_KIND`, or an agent file's `kind:`): the
- *  closed `"agent" | "endpoint"` set ({@link EndpointKind}). The endpoint branches on
- *  `card.kind === "agent"` for the authed agent's `dm_` incarnation proof before presence
- *  publishes, so an unvalidated string would skip that proof. */
-export function assertValidKind(kind: unknown, where?: string): EndpointKind {
-  if (kind === "agent" || kind === "endpoint") return kind;
-  throw new Error(
-    `${where ? `${where}: ` : `invalid kind ${JSON.stringify(kind)}: `}"kind" must be "agent" or "endpoint"`,
-  );
 }
 
 /** Load and parse an agent definition file (Markdown + `---` frontmatter). */

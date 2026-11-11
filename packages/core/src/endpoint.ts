@@ -38,7 +38,7 @@ import { nativeCredsAuthenticator } from "./creds-authenticator.js";
 import { armRenewal, renewalDeadlineMs, jitteredBackoffMs } from "./renewal.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { withDeadline } from "./deadline.js";
-import { inspectCredHealth } from "./provision.js";
+import { inspectCredHealth } from "./cred-health.js";
 import {
   parseSecretStoreIdentity,
   type SecretStoreIdentity,
@@ -55,9 +55,9 @@ import { listRegistryEndpoints, registryListingCaller } from "./registry-client.
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
-import { isRestoredConsumer } from "./backup.js";
+import { isRestoredConsumer } from "./persistent-consumer.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
-import { assertValidKind } from "./agent-file.js";
+import { assertValidKind } from "./endpoint-kind.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import { nextHeartbeat } from "./presence-heartbeat.js";

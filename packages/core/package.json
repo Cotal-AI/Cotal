@@ -75,12 +75,16 @@
     "./browser-validators-build": {
       "types": "./dist/browser-validators-build.d.ts",
       "import": "./dist/browser-validators-build.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
     }
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm smoke:seat-idle-results && tsx smoke/presence-heartbeat.smoke.ts && tsx smoke/native-nkey-signing.smoke.ts && tsx smoke/resolve.smoke.ts && tsx smoke/registry-aliases.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts && pnpm smoke:schema-own-properties && pnpm smoke:schema-own-properties-controls && node --test smoke/advisory-lock.test.mjs",
+    "test": "pnpm smoke:seat-idle-results && tsx smoke/presence-heartbeat.smoke.ts && tsx smoke/native-nkey-signing.smoke.ts && tsx smoke/resolve.smoke.ts && tsx smoke/registry-aliases.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts && pnpm smoke:schema-own-properties && pnpm smoke:schema-own-properties-controls && node --test smoke/advisory-lock.test.mjs && pnpm smoke:client-entry",
     "smoke:backup": "tsx smoke/backup.smoke.ts",
     "smoke:seat-idle-load": "tsx smoke/seat-idle-load.smoke.ts",
     "smoke:seat-idle-results": "tsx smoke/seat-idle-results.smoke.ts",
@@ -88,7 +92,8 @@
     "prepublishOnly": "pnpm run build",
     "smoke:schema-own-properties": "node smoke/schema-own-properties.public.mjs --gate partial",
     "smoke:schema-own-properties-controls": "node smoke/schema-own-properties.public.mjs --gate controls",
-    "smoke:schema-conformance-20": "node smoke/schema-own-properties.public.mjs --gate full"
+    "smoke:schema-conformance-20": "node smoke/schema-own-properties.public.mjs --gate full",
+    "smoke:client-entry": "tsx smoke/client-entry.smoke.ts"
   },
   "devDependencies": {
     "@cotal-ai/smoke-kit": "workspace:*"
