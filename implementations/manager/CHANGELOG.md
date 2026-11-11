@@ -1,5 +1,17 @@
 # @cotal-ai/manager
 
+## 0.158.1
+
+### Patch Changes
+
+- 884b619: Participant managers now resume large startup registrations after the five-minute executor expires and report revocation counts.
+  
+  Fresh prepare authority keeps the same account, lifecycle and executor identity while the existing frozen operation preserves completed revocations and verified-holder progress. Non-expiry failures and refused host requests still stop startup, including eviction or reconciliation failures that overlap executor expiry. Prepare connections close without a drain round trip, so expiry cannot leave startup waiting for teardown.
+- Updated dependencies [884b619]
+  - @cotal-ai/core@0.158.1
+  - @cotal-ai/workspace@0.158.1
+  - @cotal-ai/seat@0.158.1
+
 ## 0.158.0
 
 ### Minor Changes
