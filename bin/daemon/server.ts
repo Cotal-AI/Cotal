@@ -67,6 +67,7 @@ export interface RunningDaemon {
   prepareGenerationRestart(): Promise<void>;
   abortGenerationRestart(): Promise<void>;
   close(): Promise<void>;
+  readonly stopped: Promise<void>;
 }
 
 export interface ServeOptions {
@@ -83,6 +84,10 @@ export interface ServeOptions {
   readonly sessionDir?: string;
   /** Test hook: the stock sign-in to drive. */
   readonly login?: LoginCoordinator;
+  /** Shipped serve entry's receipt-verified native launch provenance. Foreground servers refuse stop. */
+  readonly stopAllowed?: () => Promise<boolean>;
+  /** Native startup admission, checked under the lifetime lock before publishing an endpoint. */
+  readonly admit?: () => void;
 }
 
 /** A published endpoint: closing it stops new connections and removes only what it published. */
@@ -118,6 +123,7 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
   ensureStateDir(paths, uid);
   const lock = holdLifetime(paths.lock);
   try {
+    opts.admit?.();
     return await serveLocked(opts, uid, lock);
   } catch (e) {
     // A failed start keeps any predecessor socket evidence it has not consumed or rejected.
@@ -128,6 +134,8 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
 }
 
 async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: HeldLifetime): Promise<RunningDaemon> {
+  let resolveStopped!: () => void;
+  const stopped = new Promise<void>(resolve => { resolveStopped = resolve; });
   const log = opts.log ?? (() => {});
   const { paths } = opts;
   let dirOutcome: RunningDaemon["dirOutcome"] = "none";
@@ -206,6 +214,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       for (const attempt of owned) void login.cancel(attempt);
       owned.clear();
     });
+    let stopPrepared = false;
     const handle = (line: string): void => {
       counters.framesDecoded++;
       const parsed = parseRequest(line);
@@ -215,6 +224,22 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       const req = parsed.request;
+      if (req.op === "daemon-stop") {
+        // The reply acknowledges the request, not completed shutdown. The uninstaller
+        // independently waits for this process and endpoint to disappear.
+        void (async () => {
+          if (req.commit ? !stopPrepared : !await opts.stopAllowed?.()) {
+            await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "the daemon has no verified native launch provenance; it was not stopped" } });
+            return;
+          }
+          // Only an explicit commit on this prepared connection follows native removal.
+          // A dropped connection or failed native step must leave the daemon running.
+          stopPrepared = true;
+          await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result: status() });
+          if (req.commit) await close();
+        })().catch(error => log(`daemon: shutdown failed: ${String(error)}`));
+        return;
+      }
       const managerResult = (run: () => DaemonStatus | HostedManager | ServiceConnectionResult | Promise<DaemonStatus | HostedManager | ServiceConnectionResult>) => {
         replyTask(Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), (error: unknown) => {
           counters.requestsRefused++;
@@ -420,11 +445,12 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       // published (its removal threw), the lock stays held until this process exits, so no other
       // serve can start beside a live endpoint.
       lock.release();
+      resolveStopped();
     })();
     return closed;
   };
 
-  return { paths, counters, dirOutcome, status, close,
+  return { paths, counters, dirOutcome, status, close, stopped,
     generationSeats: () => managers.generationSeats(),
     generationPending(installed, waiting = "preparing activation") { generation = installed ? { installed, running: opts.version, waiting } : undefined; },
     async prepareGenerationRestart() { await managersResumed; await managers.prepareGenerationRestart(); }, abortGenerationRestart: () => managers.abortGenerationRestart() };

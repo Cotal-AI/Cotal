@@ -853,7 +853,23 @@ the CLI. The task starts at this user's logon and runs with the user's own token
 stored and a standard account can install it without elevation. Its logon trigger repeats every
 minute and skips a start while the daemon runs, so a daemon that exits starts again within a
 minute. The daemon is a console program, so its console window shows in the user's session.
-`uninstall` disables, ends and deletes the task, then removes the definition.
+`uninstall` disables, ends and deletes the task. Before removing its definition and receipt,
+it also confirms that the daemon process and its local endpoint have stopped. An owned launcher
+exiting does not by itself prove that its Node child stopped.
+
+For a running daemon, uninstall holds a connection authenticated against the daemon's kernel
+process identity and lifetime record. A native-launch-verified daemon acknowledges a stop request
+on that connection, then closes its Managers, service connections and endpoint only when uninstall
+commits shutdown after native removal succeeds. A dropped connection or failed native removal does
+not commit shutdown. A foreground daemon refuses this request. Uninstall never signals a process
+by name or an unverified PID. If shutdown cannot be confirmed within 130 seconds, it reports an
+unknown outcome and retains the source and receipt for inspection and retry.
+On Windows, uninstall also refuses before native changes when no verified daemon answers. A
+launcher can still be starting Node before the lifetime record exists, so an absent endpoint alone
+does not prove shutdown. Start the recorded task, wait for daemon status to answer, then retry.
+The updated Windows native runtime checks its recorded source under the lifetime lock before
+publishing. Uninstall holds that same lock through its final endpoint check and removal of both
+the source and receipt, so a delayed updated native child cannot publish after removal.
 
 The task's native entry writes its output to `daemon.log` in the daemon's state directory,
 replacing the previous launch's log and retaining at most 64 KiB of output. When the daemon does

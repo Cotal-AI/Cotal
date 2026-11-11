@@ -16,11 +16,12 @@ import type { AccountComputerStatus } from "./account-state.js";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
-export const DAEMON_OPS = ["space-intent", "status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+export const DAEMON_OPS = ["daemon-stop", "space-intent", "status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
 export type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
 const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readonly optional: readonly string[] }> = {
+  "daemon-stop": { required: [], optional: ["commit"] },
   "space-intent": { required: ["space", "enabled"], optional: [] },
   status: { required: [], optional: [] },
   "manager-start": { required: ["space"], optional: [] },
@@ -39,6 +40,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
 };
 
 export type DaemonRequest =
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "daemon-stop"; readonly commit?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-start"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "manager-status"; readonly space: string }
@@ -207,6 +209,10 @@ export function parseRequest(line: string): ParsedRequest {
   if (op === "spaces") {
     if (obj.refresh !== undefined && typeof obj.refresh !== "boolean") return bad(id, "refresh must be a boolean");
     return { ok: true, request: { v, id, op, ...(obj.refresh !== undefined ? { refresh: obj.refresh } : {}) } };
+  }
+  if (op === "daemon-stop") {
+    if (obj.commit !== undefined && typeof obj.commit !== "boolean") return bad(id, "commit must be a boolean");
+    return { ok: true, request: { v, id, op, ...(obj.commit !== undefined ? { commit: obj.commit } : {}) } };
   }
   if (op === "status" || op === "managers-stop" || op === "managers-prepare-restart" || op === "managers-abort-restart") return { ok: true, request: { v, id, op } };
   if (op === "login-cancel") {
