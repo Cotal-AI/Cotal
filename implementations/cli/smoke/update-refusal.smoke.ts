@@ -1,4 +1,5 @@
 /** Update keeps recovery guidance and suggests an upgrade only after successful reconciliation. */
+import "./update-isolation.js";
 import assert from "node:assert/strict";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";

@@ -3,6 +3,7 @@
  * strict flags, shorts, positional gating, rawArgs passthrough — plus commandUsage
  * generation and the dispatcher's flag-name completion. Run: pnpm smoke:cli-kernel
  */
+import "./update-isolation.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
@@ -20,14 +21,6 @@ import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext
 import { compareSemver } from "../src/seed/reconcile.js";
 
 const noop = async (): Promise<void> => {};
-const updateConfig = mkdtempSync(join(tmpdir(), "kernel-update-config-"));
-const priorUpdateConfig = process.env.XDG_CONFIG_HOME;
-process.env.XDG_CONFIG_HOME = updateConfig;
-mkdirSync(join(updateConfig, "cotal"), { mode: 0o700 });
-process.once("exit", () => {
-  if (priorUpdateConfig === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = priorUpdateConfig;
-  rmSync(updateConfig, { recursive: true, force: true });
-});
 
 function installed(pkg: string, version = "0.13.1", spec = pkg): InstalledExtension {
   return { pkg, version, spec, commands: [] };

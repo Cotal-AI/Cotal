@@ -1,8 +1,9 @@
+import "../../implementations/cli/smoke/update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
-import { mkdtempSync, writeFileSync, readFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { automaticUpdates } from "../daemon/auto-update.js";
@@ -18,4 +19,4 @@ try {
  await new Promise(resolve=>setTimeout(resolve,31000));
  assert.equal(readFileSync(victim,"utf8"),"preserve-me","updater must refuse a symlink log without overwriting its target");
  emitSentinel({ passed: counted.cells(), failed: 0 });
-} finally { await updater.close(); }
+} finally { await updater.close(); rmSync(home, { recursive: true, force: true }); }

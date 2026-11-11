@@ -1,3 +1,4 @@
+import "../../implementations/cli/smoke/update-isolation.js";
 import assertions from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
