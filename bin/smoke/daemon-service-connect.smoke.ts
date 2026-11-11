@@ -1778,6 +1778,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             writeFileSync(join(pathBin, "loginctl"), `#!${process.execPath}\nconsole.log('Linger=yes');\n`, { mode: 0o700 });
             writeFileSync(join(pathBin, "systemctl"), `#!${process.execPath}\nconst args=process.argv.slice(2);if(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}const op=args.includes('daemon-reload')?'daemon-reload':args.includes('enable')?'daemon-reload':args.at(-2);if(!['stop','start','disable','daemon-reload'].includes(op))process.exit(99);fetch('http://127.0.0.1:${(pathControl!.address() as AddressInfo).port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
             check("J0 clean setup starts with no installed service", !existsSync(pathUnit) && !existsSync(pathReceipt));
+            const absent = await cli("setup");
+            check("J0a no installed daemon names provider flag", absent.code !== 0 && absent.doc.error?.message.includes("--idp <url>"), absent);
             const before = deviceCodeRequests;
             const fresh = await cli("setup", "--idp", idpUrl);
             check("J1 account setup registers with one device approval", fresh.code === 0 && deviceCodeRequests === before + 1 && typeof fresh.doc.result?.machineId === "string", fresh);
@@ -1801,11 +1803,13 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             }
             const missing = await plainCommand("status");
             check("J6 no-application status provides install and setup Next", /Next:[\s\S]*Install an agent application/.test(missing.out) && missing.out.includes("cotal daemon setup"), missing);
+            const hinted = await cli("setup");
+            check("J6a status setup hint works without arguments", hinted.code === 0 && deviceCodeRequests === before + 1, hinted);
             const newApplicationBin = join(root, "new-application-bin");
             mkdirSync(newApplicationBin, { mode: 0o700 });
             writeFileSync(join(newApplicationBin, "cotal-owned-missing-harness"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
             env.PATH = `${newApplicationBin}:${env.PATH}`;
-            const refreshed = await cli("setup", "--idp", idpUrl);
+            const refreshed = await cli("setup");
             check("J7 account rerun refreshes without approval", refreshed.code === 0 && deviceCodeRequests === before + 1, refreshed);
             let ready: Record<string, any> = {};
             for (let i = 0; i < 120; i++) {
@@ -1821,6 +1825,16 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               await sleep(500);
             }
             check("J9 enabled account space connects", ready.account?.spaces?.some((row: any) => row.space === ON && row.observed === "connected"), ready);
+            const used = await plainCommand("setup");
+            check("J10 rerun names enabled spaces", used.code === 0 && used.out.includes(`Spaces using this computer: ${ON}`) && !used.out.includes("Turn on the spaces"), used);
+            const otherProvider = `${idpUrl}/other`;
+            saveIdpSession(home, otherProvider, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+            const multiple = await cli("setup");
+            check("J11 several providers require an explicit choice", multiple.code !== 0 && multiple.doc.error?.message.includes("--idp <url>") && multiple.doc.error.message.includes(idpUrl) && multiple.doc.error.message.includes(otherProvider) && deviceCodeRequests === before + 1, multiple);
+            deleteIdpSession(home, otherProvider);
+            deleteIdpSession(home, idpUrl);
+            const unsigned = await cli("setup");
+            check("J12 no sign-in names provider flag without approval", unsigned.code !== 0 && unsigned.doc.error?.message.includes("not signed in") && unsigned.doc.error.message.includes("--idp <url>") && deviceCodeRequests === before + 1, unsigned);
             return;
           }
           if (process.argv.includes("--account-setup-gaps")) {

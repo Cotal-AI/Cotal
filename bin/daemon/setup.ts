@@ -206,7 +206,7 @@ async function refreshApplications(opts: InstallOptions, steps: SetupStep[]): Pr
 }
 
 /** Connect this computer to an account without changing any space intent. */
-export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSeconds"> & { idp: string }) {
+export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSeconds"> & { idp: string; existingSignInOnly?: boolean }) {
   const steps: SetupStep[] = [];
   const unit = await ensureInstalled(opts, steps);
   const beforeRefresh = await queryDaemon(opts);
@@ -216,6 +216,7 @@ export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSe
   const signedIn = discovery.ok && !("event" in discovery) && "signedInProviders" in discovery.result
     && discovery.result.signedInProviders?.includes(opts.idp);
   if (!signedIn) {
+    if (opts.existingSignInOnly) throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon is not signed in; pass --idp <url> to connect an account");
     const signed = await loginFromCli(opts);
     if (!signed.ok) throw new CommandFailure("refused", "AUTH_REQUIRED", signed.message, { native: { code: signed.code } });
     if (signed.result.outcome === "failed") throw new CommandFailure("refused", "AUTH_REQUIRED", signed.result.message);
@@ -231,7 +232,7 @@ export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSe
     if (registration?.lastRegistration && registration.hostSupport === "supported") {
       steps.push({ step: "register", outcome: "registered", detail: "this computer is registered with the account" });
       if (!registration.machineId || !registration.sub || !registration.computer) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the daemon did not return this computer's account identity");
-      return { account: registration.sub, label: registration.label, computer: registration.computer, machineId: registration.machineId, steps, ...(unit ? { unit } : {}) };
+      return { account: registration.sub, label: registration.label, computer: registration.computer, machineId: registration.machineId, spaces: registration.spaces.filter(space => space.desired).map(space => space.space).sort(), steps, ...(unit ? { unit } : {}) };
     }
     if (Date.now() >= deadline) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the account did not confirm this computer's registration within 60 seconds; run setup again");
     await sleep(250);
