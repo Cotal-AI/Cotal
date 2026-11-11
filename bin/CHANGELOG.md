@@ -1,5 +1,21 @@
 # cotal-ai
 
+## 0.160.6
+
+### Patch Changes
+
+- 0d40691: A space turned on for an account computer now reads as connected as soon as its hosted Manager answers. On spaces that also host service endpoints, the daemon and the app used to show `approval-required` and "This computer is starting" until the space owner approved the machine status service, although agent applications could already be launched. That approval is now reported apart, as `machineService` in `cotal daemon status --json` and one clause in the text view, and it is no longer a refusal.
+- @cotal-ai/connector-core@0.160.6
+  - @cotal-ai/auth@0.160.6
+  - @cotal-ai/cli@0.160.6
+  - @cotal-ai/delivery@0.160.6
+  - @cotal-ai/manager@0.160.6
+  - @cotal-ai/registry@0.160.6
+  - @cotal-ai/runtime@0.160.6
+  - @cotal-ai/core@0.160.6
+  - @cotal-ai/seat@0.160.6
+  - @cotal-ai/workspace@0.160.6
+
 ## 0.160.5
 
 ### Patch Changes
