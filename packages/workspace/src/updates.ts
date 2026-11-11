@@ -63,5 +63,12 @@ export function writeUpdateRecovery(record: Omit<UpdateRecovery, "v" | "recorded
   save("update-recovery.json", { ...record, v: 1, recordedAt: new Date().toISOString() });
 }
 
+/** Record completion from the updater itself, which can outlive the daemon generation. */
+export function recordUpdateCompletion(version: string, result: string, success: boolean): void {
+  const previous = readRecord("update-attempt.json") as { failures?: number } | undefined;
+  const automatic = process.env.COTAL_AUTO_UPDATE === "1";
+  save("update-attempt.json", { version, failures: success || !automatic ? 0 : previous?.failures ?? 1, result, next: Date.now() + (success ? 86400_000 : 3600_000) });
+}
+
 /** Keep a tombstone so completion is an atomic write, rather than an unlink race. */
 export function clearUpdateRecovery(): void { save("update-recovery.json", null); }

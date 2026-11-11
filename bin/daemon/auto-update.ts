@@ -30,6 +30,12 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
   const persist = () => writeSecretFileAtomic(file, `${JSON.stringify(state)}\n`);
   try { persist(); } catch (error) { host.report(`automatic updates paused: ${String(error)}`); state.next = Number.MAX_SAFE_INTEGER; }
   const status = (): DaemonUpdateStatus => {
+    if (!busy) {
+      try {
+        const recorded = JSON.parse(readFileSync(file, "utf8"));
+        if (recorded && Number.isInteger(recorded.failures) && typeof recorded.result === "string" && Number.isFinite(recorded.next)) state = recorded;
+      } catch { /* The last validated state remains visible if a read fails. */ }
+    }
     const cached = readUpdateCheck();
     let automatic = false, reason = state.result;
     try {
@@ -56,7 +62,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       persist();
       const result = await new Promise<{ code: number | null; output: string }>(resolve => {
         const logPath = join(homeCotalDir(), "update-attempt.log");
-        const outputFd = openSync(logPath, "a", 0o600);
+        const outputFd = openSync(logPath, "w", 0o600);
         child = spawn(process.execPath, [fileURLToPath(new URL("../cotal.js", import.meta.url)), "update", "--self"], { env: { ...process.env, COTAL_NO_UPDATE_CHECK: "1", COTAL_AUTO_UPDATE: "1" }, stdio: ["ignore", outputFd, outputFd], detached: true, windowsHide: true });
         closeSync(outputFd);
         const readOutput = () => { try { return readFileSync(logPath, "utf8").slice(-4000); } catch { return "update log unavailable"; } };

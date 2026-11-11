@@ -10,6 +10,7 @@ import {
   clearUpdateRecovery,
   writeUpdateRecovery,
   readUpdateSettings,
+  recordUpdateCompletion,
   setUpdateSetting,
   bindExtensionPeers,
   claimGlobalNpmUpdateLock,
@@ -185,7 +186,10 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   }
   const code = await executeUpdate(Boolean(args.values.self), rt, args.values);
   if (code !== 0) process.exitCode = code;
-  else clearUpdateRecovery();
+  else {
+    clearUpdateRecovery();
+    if (args.values.self !== true) recordUpdateCompletion(rt.version(), "manual update reconciled", true);
+  }
 }
 
 /** Check mode is installation metadata only; target and mutation inputs are never ignored. */
@@ -826,6 +830,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     return await repairReplacement(`reconcile failed: ${failure(child)}`);
   }
   clearUpdateRecovery();
+  recordUpdateCompletion(targetVersion, `updated to ${targetVersion}`, true);
   rt.out(c.green(`✓ cotal-ai@${targetVersion} installed globally and reconciled`));
   return interrupted;
 
@@ -844,6 +849,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     try {
       if (await reconcileVersion(targetVersion)) {
         clearUpdateRecovery();
+        recordUpdateCompletion(targetVersion, `repaired and updated to ${targetVersion}`, true);
         rt.out(c.green(`✓ cotal-ai@${targetVersion} repaired and reconciled`));
         return interrupted;
       }
@@ -856,6 +862,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       if (restored.status !== 0) throw new Error(failure(restored));
       if (!await reconcileVersion(current)) throw new Error("previous generation reconciliation failed");
       clearUpdateRecovery();
+      recordUpdateCompletion(targetVersion, `update failed; restored and reconciled ${current}`, false);
       rt.err(`Update failed; cotal-ai@${current} was restored and reconciled. Run cotal update --self to try again.`);
       return 1;
     } catch (error) {
