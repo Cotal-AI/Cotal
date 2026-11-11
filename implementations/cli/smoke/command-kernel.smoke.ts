@@ -23,6 +23,15 @@ import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext
 import { compareSemver } from "../src/seed/reconcile.js";
 
 const noop = async (): Promise<void> => {};
+// The updater now snapshots the existing config tree before any replacement.
+const updateConfig = mkdtempSync(join(tmpdir(), "kernel-update-config-"));
+const priorUpdateConfig = process.env.XDG_CONFIG_HOME;
+process.env.XDG_CONFIG_HOME = updateConfig;
+mkdirSync(join(updateConfig, "cotal"), { mode: 0o700 });
+process.once("exit", () => {
+  if (priorUpdateConfig === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = priorUpdateConfig;
+  rmSync(updateConfig, { recursive: true, force: true });
+});
 
 function installed(pkg: string, version = "0.13.1", spec = pkg): InstalledExtension {
   return { pkg, version, spec, commands: [] };
@@ -1220,7 +1229,7 @@ async function completionOut(positionals: string[]): Promise<string> {
         }) };
       },
     });
-    assert.equal(await executeUpdate(true, fixture.rt), scenario === "ready" ? 0 : 1, scenario);
+    assert.equal(await executeUpdate(true, fixture.rt), scenario === "ready" ? 0 : 1, `${scenario}\n${fixture.events.join("\n")}`);
     assert.ok(caches.size === (scenario === "ready" ? 2 : 1) && [...caches].every(cache => !existsSync(cache)), "every private preflight cache is removed");
     if (scenario === "ready") {
       assert.deepEqual(downloaded, [version, "0.13.1"].flatMap(release => Object.keys(manifests).map(name => `${name}@${release}`)), "target and rollback transitive and optional archives are fetched once, despite peer cycles");
