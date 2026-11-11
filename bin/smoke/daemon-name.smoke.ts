@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, mkdirSync, statSync, renameSync } from "node:fs";
+import { mkdtempSync, mkdirSync, statSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -31,8 +31,8 @@ const paths = daemonPathsFor(machineHome, { XDG_RUNTIME_DIR: process.env.XDG_RUN
 let daemon = await serveDaemon({ paths, version: "test", sessionDir: machineHome });
 let checks = 0;
 function check(value: unknown, label: string) { assert.ok(value, label); checks++; console.log(`ok ${label}`); }
-async function cli(args: string[]) {
-  const child = spawn(process.execPath, ["--import", "tsx", "bin/cotal.ts", "daemon", "name", "--daemon-home", machineHome, ...args], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+async function cli(args: string[], op = "name") {
+  const child = spawn(process.execPath, ["--import", "tsx", "bin/cotal.ts", "daemon", op, "--daemon-home", machineHome, ...args], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = ""; child.stdout.on("data", chunk => out += chunk); child.stderr.on("data", chunk => err += chunk);
   const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
   assert.equal(code, 0, err + out); return out;
@@ -73,5 +73,16 @@ try {
   daemon = await serveDaemon({ paths, version: "test", sessionDir: machineHome });
   await new Promise(resolve => setTimeout(resolve, 100));
   check(daemon.status().computer === "CLI computer" && registeredName === "CLI computer", "restart retains name and registers it");
+  await daemon.close();
+  writeFileSync(join(machineHome, "daemon", "computer-name.json"), "{broken", { mode: 0o600 });
+  daemon = await serveDaemon({ paths, version: "test", sessionDir: machineHome });
+  check(Boolean(daemon.status().computer), "damaged cosmetic record does not prevent daemon startup");
+  check((await cli([], "status")).includes('cotal daemon name "<name>"'), "human status reports one-line name repair remedy");
+  check(JSON.parse(await cli(["--json"], "status")).result.computerNameWarning.includes("unreadable"), "JSON status reports damaged name record");
+  check(JSON.parse(await cli(["Repaired computer", "--json"])).result.computer === "Repaired computer", "name command replaces damaged record");
+  check(!daemon.status().computerNameWarning, "successful repair clears warning");
+  await daemon.close();
+  daemon = await serveDaemon({ paths, version: "test", sessionDir: machineHome });
+  check(daemon.status().computer === "Repaired computer" && !daemon.status().computerNameWarning, "repair survives restart without warning");
 } finally { await daemon.close(); fixture.closeAllConnections(); await new Promise<void>(resolve => fixture.close(() => resolve())); }
 console.log(`COTAL_SMOKE_SENTINEL cells=${checks} passed=${checks} failed=0`);

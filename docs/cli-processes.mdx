@@ -608,6 +608,9 @@ If the host is unavailable, the next successful heartbeat carries the saved name
 name held since daemon startup, updated on save. The initial name is macOS ComputerName, then
 LocalHostName or hostname when unset, or the Windows or Linux hostname. A future dashboard rename
 must go through a desired name the computer adopts, rather than overwrite the host's copy.
+If the saved name is unreadable, the daemon starts with its default name and status reports
+`computerNameWarning` with the remedy `cotal daemon name "<name>"`. Setting a name replaces
+the damaged record and clears the warning.
 
 After sign-in, the daemon registers an account computer with hosts that support it.
 With several accounts, the status summary prefers a supported provider and breaks ties by
