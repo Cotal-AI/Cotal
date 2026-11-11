@@ -56,7 +56,8 @@
  *     naming `cotal daemon uninstall`;
  *  L7 refusals with no effect: `uninstall` with no recorded unit refuses TARGET_NOT_FOUND naming
  *     `cotal daemon install`, and `uninstall` outside a terminal without `--yes` refuses USAGE_INVALID;
- *  L8 `setup` validates before it touches anything: a missing `--space`, a non-loopback HTTP
+ *  L8 `setup` validates before it touches anything: account setup without a provider or installed
+ *     daemon, a missing `--space` with `--no-manager` or `--wait`, a non-loopback HTTP
  *     `--idp` and an out-of-range `--wait` each refuse USAGE_INVALID with no unit written; and with
  *     a daemon already answering while no unit is recorded it refuses CONFLICT /
  *     RUNNING_WITHOUT_UNIT rather than installing a second one its lifetime lock would refuse.
@@ -491,11 +492,15 @@ try {
     // A recorded unit refuses a second install before anything is read from the user manager's linger.
     const receipt = join(home, "daemon", "service-unit.json");
     writeFileSync(receipt, `${JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath: join(root, "cotal-daemon.service"), unitSha256: r.doc.result?.sha256, installedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
+    const receiptBefore = readFileSync(receipt, "utf8");
     try {
       const again = await shippedCli("install", "--dry-run", "--json"), againPlain = await shippedCli("install", "--dry-run", "--plain");
       check("L6 with a recorded unit it refuses CONFLICT, exit 2", again.status === 2 && again.doc.error?.code === "CONFLICT", { status: again.status, out: again.out.slice(0, 300) });
-      const text = `${againPlain.out}${againPlain.err}`;
-      check("L6 that refusal names `cotal daemon uninstall` in backticks, in plain and --json alike", String(again.doc.error?.message).includes("remove it with `cotal daemon uninstall` before installing again") && againPlain.status === 2 && text.includes(again.doc.error.message), { message: again.doc.error?.message, plain: text });
+      check("L6 that refusal gives the exact uninstall remedy in plain and --json alike", again.doc.error?.remedy === "remove it with `cotal daemon uninstall` before installing again" && againPlain.status === 2 && sameText(again, againPlain), { error: again.doc.error, plain: againPlain.out + againPlain.err });
+      const explicit = await shippedCli("install", "--daemon-home", paths.state, "--dry-run", "--json");
+      const explicitPlain = await shippedCli("install", "--daemon-home", paths.state, "--dry-run", "--plain");
+      check("L6 an explicit target stays in the exact uninstall remedy in plain and --json alike", explicit.status === 2 && explicit.doc.error?.code === "CONFLICT" && explicit.doc.error?.remedy === `remove it with \`cotal daemon uninstall --daemon-home ${paths.state}\` before installing again` && explicitPlain.status === 2 && sameText(explicit, explicitPlain), { error: explicit.doc.error, plain: explicitPlain.out + explicitPlain.err });
+      check("L6 refused installs preserve the receipt and write no unit", readFileSync(receipt, "utf8") === receiptBefore && !existsSync(r.doc.result.unitPath) && !existsSync(join(root, "cotal-daemon.service")));
     } finally {
       rmSync(receipt, { force: true });
     }
@@ -513,7 +518,12 @@ try {
   await cell("L8 setup validates before it changes anything", async () => {
     const receipt = join(home, "daemon", "service-unit.json");
     const noSpace = await cli("setup", "--json");
-    check("L8 a missing --space refuses USAGE_INVALID naming it, exit 1", noSpace.status === 1 && noSpace.doc.error?.code === "USAGE_INVALID" && String(noSpace.doc.error?.message).includes("--space"), { status: noSpace.status, out: noSpace.out.slice(0, 250) });
+    check("L8 bare account setup without an installed daemon requires --idp, exit 1", noSpace.status === 1 && noSpace.doc.error?.code === "USAGE_INVALID" && noSpace.doc.error?.message === "No daemon is installed; pass --idp <url> to connect an account", { status: noSpace.status, out: noSpace.out.slice(0, 250) });
+    for (const flags of [["--no-manager"], ["--wait", "1"]]) {
+      const r = await cli("setup", ...flags, "--json");
+      check(`L8 ${flags.join(" ")} without --space refuses USAGE_INVALID naming it, exit 1`, r.status === 1 && r.doc.error?.code === "USAGE_INVALID" && r.doc.error?.message === "--no-manager and --wait require --space <s>", { status: r.status, out: r.out.slice(0, 250) });
+      check(`L8 ${flags.join(" ")} without --space writes no unit receipt`, !existsSync(receipt));
+    }
     const badIdp = await cli("setup", "--space", "demo", "--idp", "http://example.com/api/auth", "--json");
     check("L8 a non-loopback HTTP --idp refuses USAGE_INVALID, exit 1", badIdp.status === 1 && badIdp.doc.error?.code === "USAGE_INVALID", { status: badIdp.status, out: badIdp.out.slice(0, 250) });
     for (const [value, what] of [["-1", "negative"], ["90000", "past a day"], ["5.5", "fractional"]] as const) {

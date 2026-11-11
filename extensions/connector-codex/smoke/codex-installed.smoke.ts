@@ -198,8 +198,8 @@ async function teardown(): Promise<{ status: number; stdout: string; stderr: str
   if (tornDown) return tornDown;
   if (!meshUp) return (tornDown = { status: 0, stdout: "", stderr: "" });
   const options = { cwd: ROOT, env: cliEnv, encoding: "utf8" as const };
-  assertSmokeSandboxDown(sandbox, ["down"], options);
-  const r = spawnSync("node", [CLI, "down"], options);
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], options);
+  const r = spawnSync("node", [CLI, "down", "--yes"], options);
   tornDown = { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   for (let i = 0; i < 40 && (await portOpen(PORT)); i++) await sleep(250);
   return tornDown;

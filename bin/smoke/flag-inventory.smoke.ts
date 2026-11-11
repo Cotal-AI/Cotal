@@ -69,7 +69,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   setup: { flags: ["configure-only:boolean", "connection-file:string", "demo:boolean", "destination:string", "detach:boolean:d", "full:boolean", "harness:string:H", "json:boolean:j", "on:string", "plain:boolean", "project:string", "runtime:string", "skills:boolean", "space:string:s", "start:boolean", "yes:boolean:y"], positionals: false },
   // `--space`/`--server`/`--creds` (2026-09): after disk reconciliation, `update` reports the
   // selected running manager's custody generation. `--check` reads without changing anything.
-  update: { flags: [...TARGET, "check:boolean", "json:boolean:j", "plain:boolean", "self:boolean"], positionals: false },
+  update: { flags: [...TARGET, "auto:boolean", "check:boolean", "json:boolean:j", "notify:boolean", "on:string", "plain:boolean", "self:boolean"], positionals: true },
   // The command kernel's local entries (2026-10): `help [command…] [--all]` and `version`.
   help: { flags: ["all:boolean"], positionals: true },
   version: { flags: ["json:boolean:j"], positionals: false },
@@ -141,7 +141,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `space` (2026-10): the registered spaces and one in full, on the structured output contract.
   // `space add` (2026-10) registers a space that runs elsewhere, from `--server` or a user-auth bundle;
   // `space delete` previews with `--dry-run`.
-  space: { flags: ["adopt:boolean", "allow-unencrypted-overlay:boolean", "dry-run:boolean", "file:string:f", "force:boolean", "from:string", "json:boolean:j", "mode:string", "plain:boolean", "root:string", "server:string", "tls:boolean", "yes:boolean:y"], positionals: true },
+  space: { flags: ["adopt:boolean", "allow-unencrypted-overlay:boolean", "dry-run:boolean", "file:string:f", "force:boolean", "from:string", "json:boolean:j", "mode:string", "out:string", "plain:boolean", "root:string", "server:string", "tls:boolean", "yes:boolean:y"], positionals: true },
   // `sync` (2026-09): refresh the signed-in space catalogs; `--idp` narrows the refresh to one account.
   // `--json` and `--plain` (2026-10): the refresh on the structured output contract.
   sync: { flags: ["idp:string", "json:boolean:j", "plain:boolean"], positionals: false },
@@ -234,7 +234,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `history clear` confirms with `--yes` and previews with `--dry-run`; `--force` is the removed
   // spelling and refuses with that remedy. `history limit` sets the chat stream's limit with
   // `--max-age` and `--per-sender`.
-  history: { flags: [...TARGET, "dms:boolean", "dry-run:boolean", "follow:boolean", "force:boolean", "from:string", "grep:string", "json:boolean:j", "limit:string", "max-age:string", "per-sender:string", "plain:boolean", "since:string", "yes:boolean:y"], positionals: true },
+  history: { flags: [...TARGET, "dm-max-age:string", "dm-per-sender:string", "inbox-max-age:string", "inbox-per-agent:string", "dms:boolean", "dry-run:boolean", "follow:boolean", "force:boolean", "from:string", "grep:string", "json:boolean:j", "limit:string", "max-age:string", "per-sender:string", "plain:boolean", "since:string", "yes:boolean:y"], positionals: true },
   watch: { flags: [...TARGET, "json:boolean:j", "plain:boolean", "view:string"], positionals: false },
   // Held DMs of one agent, or one exact retired durable with `--durable`.
   pending: { flags: ["creds:string", "durable:string", "json:boolean:j", "limit:string", "plain:boolean", "server:string", "space:string"], positionals: true },
@@ -301,7 +301,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "expires-at:string",
       "expires-in:string", "force:boolean", "full:boolean", "identity:string", "json:boolean:j", "label:string",
-      "no-expiry:boolean", "out:string", "owner:string", "parent:string", "plain:boolean", "profile:string", "provision:boolean",
+      "no-expiry:boolean", "no-persona:boolean", "out:string", "owner:string", "parent:string", "plain:boolean", "profile:string", "provision:boolean",
       "replace:boolean", "role:string", "scope:string", "server:string", "space:string:s", "sub:string", "yes:boolean:y",
     ],
     positionals: true,
@@ -364,7 +364,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       // its twin take it; the native service child, which runs the one primary, does not.
       "callout-only:boolean",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
-      "port:string", "server:string", "service-endpoints:boolean", "space:string",
+      "port:string", "registry:boolean", "server:string", "service-endpoints:boolean", "space:string",
       // `--auth-timeout` (2026-10): the broker's auth callout timeout in seconds, from `up`.
       "auth-timeout:string",
       // `--spaces` (2026-10, #4819): several spaces served from one callout process.
@@ -376,7 +376,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "advertised-server:string", "agent-provisioning-url:string", "callout-only:boolean",
       "exchange-public-port:string", "exchange-public-url:string", "exchange-trusted-proxy:boolean",
-      "port:string", "server:string", "service-endpoints:boolean", "space:string", "auth-timeout:string", "spaces:string",
+      "port:string", "registry:boolean", "server:string", "service-endpoints:boolean", "space:string", "auth-timeout:string", "spaces:string",
     ],
     positionals: false,
   },
@@ -407,7 +407,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "advertised-server:string", "agent-provisioning-url:string", "exchange-public-port:string",
       "exchange-public-url:string", "exchange-trusted-proxy:boolean", "launch-request:string", "port:string",
-      "ready-file:string", "root:string", "server:string", "service-endpoints:boolean", "service-instance:string",
+      "ready-file:string", "registry:boolean", "root:string", "server:string", "service-endpoints:boolean", "service-instance:string",
       "space:string", "auth-timeout:string",
     ],
     positionals: false,
@@ -462,7 +462,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   mint: {
     flags: [
       "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "expires-at:string",
-      "expires-in:string", "force:boolean", "identity:string", "json:boolean:j", "no-expiry:boolean", "out:string",
+      "expires-in:string", "force:boolean", "identity:string", "json:boolean:j", "no-expiry:boolean", "no-persona:boolean", "out:string",
       "plain:boolean", "profile:string", "provision:boolean", "replace:boolean", "role:string", "server:string", "signer:boolean", "space:string:s",
     ],
     positionals: true,
