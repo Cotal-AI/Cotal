@@ -144,6 +144,7 @@ update the desktop app instead.
 
 Interactive commands print a one-line update notice on stderr from a daily cached registry check.
 The check runs daily with `npm view cotal-ai@latest` against your configured registry, and nothing else is sent.
+A command started during the few seconds an update replaces the installation can fail to load and should be run again.
 The check runs in the background. JSON, plain, CI and redirected output receive no notice.
 Version output reports the cached update state without waiting for the registry.
 

@@ -2984,7 +2984,37 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               }
               updater.kill("SIGKILL");
             }
+            let waiters: Promise<{ code: number | null; text: string; firstError?: number; lastError?: number }[]> | undefined;
+            if (process.argv.includes("--closure-waiters-repro")) {
+              const deadline = Date.now() + 90_000;
+              for (;;) {
+                try {
+                  const journal = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"));
+                  const installed = JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8"));
+                  if (journal?.phase === "replacing" && installed.version === "0.151.3" && existsSync(join(globalPrefix, "lib/node_modules/cotal-ai/node_modules/@cotal-ai/manager/dist/resume.js"))) break;
+                } catch { /* Wait for real replacement tree under its journal. */ }
+                if (Date.now() > deadline) throw new Error("real updater never created replacing journal");
+                await sleep(5);
+              }
+              waiters = Promise.all(Array.from({ length: 40 }, async () => {
+                const child = spawn(process.execPath, [cliEntry, "meshes", "--json"], { cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "" }, stdio: ["ignore", "pipe", "pipe"] });
+                let text = "", firstError: number | undefined, lastError: number | undefined;
+                child.stdout.on("data", chunk => text += chunk); child.stderr.on("data", chunk => { text += chunk; if (/ENOENT|MODULE_NOT_FOUND/.test(String(chunk))) { firstError ??= Date.now(); lastError = Date.now(); } });
+                const code = await new Promise<number | null>(resolve => child.once("exit", resolve));
+                return { code, text, firstError, lastError };
+              }));
+            }
             let code = await new Promise<number | null>((resolve) => updater.once("exit", resolve));
+            if (waiters) {
+              const rows = await waiters;
+              writeFileSync(join(process.env.TMPDIR ?? root, "auto-update-waiter-results.json"), JSON.stringify(rows, null, 2));
+              const loader = rows.filter(row => !row.text.includes("waiting for a Cotal update to finish") && /ENOENT|MODULE_NOT_FOUND/.test(row.text));
+              const gated = rows.filter(row => !loader.includes(row));
+              const first = Math.min(...loader.map(row => row.firstError ?? Infinity));
+              const last = Math.max(...loader.map(row => row.lastError ?? 0));
+              console.log("WAITER COUNTS", JSON.stringify({ total: rows.length, loaderFailures: loader.length, loaderWindowMs: loader.length ? last - first : 0, firstError: first, lastError: last, gated: gated.length, waiting: gated.filter(row => row.text.includes("waiting for a Cotal update to finish")).length }));
+              check("CL real-update waiters finish after restoration without false refusals", gated.length > 0 && gated.every(row => row.code === 0 && !row.text.includes("an update is in progress")) && gated.filter(row => row.text.includes("waiting for a Cotal update to finish")).every(row => row.text.includes("restarting command with the installed CLI")), { failures: gated.filter(row => row.code !== 0) });
+            }
             if (closureRollback && process.argv.includes("--closure-dead-owner-repro")) {
               await sleep(3000);
               const startRecovery = process.argv.includes("--closure-start-repro");

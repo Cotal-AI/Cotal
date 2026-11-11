@@ -11,7 +11,8 @@ let references = 0;
 const lockPath = () => join(homeCotalDir(), ".update-closure.lock");
 
 /** Wait without acquiring on read-only boot gates. */
-export function waitForUpdateClosure(): void {
+export function waitForUpdateClosure(): boolean {
+  let waitedForUpdate = false;
   const deadline = Date.now() + 300_000;
   let updateDeadline: number | undefined;
   let announced = false;
@@ -20,11 +21,12 @@ export function waitForUpdateClosure(): void {
     const record = readUpdateRecovery();
     if (current.state !== "active") {
       if (record && record.phase !== "verified-ready") throw new Error("an interrupted update needs restoration; run cotal update --self");
-      return;
+      return waitedForUpdate;
     }
-    if (String(current.owner.pid) === process.env[OWNER] && current.owner.nonce === process.env[NONCE]) return;
+    if (String(current.owner.pid) === process.env[OWNER] && current.owner.nonce === process.env[NONCE]) return false;
     const updating = record?.owner?.pid === current.owner.pid && record.owner.nonce === current.owner.nonce;
     if (updating) {
+      waitedForUpdate = true;
       updateDeadline ??= Date.now() + 120_000;
       if (!announced) { console.error("waiting for a Cotal update to finish"); announced = true; }
     }
