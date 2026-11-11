@@ -1,5 +1,29 @@
 # cotal-ai
 
+## 0.160.2
+
+### Patch Changes
+
+- a526258: You can name this computer before connecting and change its saved name later from Settings or the command line.
+- 98469c6: Disconnect per-space services promptly while their registration or connection is waiting on a network response.
+  
+  Cancel network work before joining the reconciliation queue and avoid another account-host poll when that host has already reported per-space operation.
+- b748f06: Keep the daemon available when its saved computer name is unreadable. Status reports the repair command, and setting a name replaces the damaged record.
+- 65cc576: Preserve a hosted Manager's last observation timestamp when it stops. Entering retirement no longer replaces that timestamp, while bounded seat retirement waits remain unchanged.
+- Updated dependencies [4c9c2a1]
+- Updated dependencies [eebfd4f]
+- Updated dependencies [7acdf93]
+  - @cotal-ai/connector-core@0.160.2
+  - @cotal-ai/cli@0.160.2
+  - @cotal-ai/manager@0.160.2
+  - @cotal-ai/auth@0.160.2
+  - @cotal-ai/delivery@0.160.2
+  - @cotal-ai/registry@0.160.2
+  - @cotal-ai/runtime@0.160.2
+  - @cotal-ai/core@0.160.2
+  - @cotal-ai/seat@0.160.2
+  - @cotal-ai/workspace@0.160.2
+
 ## 0.160.1
 
 ### Patch Changes

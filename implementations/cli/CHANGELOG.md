@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.160.2
+
+### Patch Changes
+
+- eebfd4f: Keep the entry screen's send example in ASCII under non-UTF-8 locales.
+- 7acdf93: Preserve the failed update child's exit status after restoring the previous version.
+- @cotal-ai/core@0.160.2
+  - @cotal-ai/workspace@0.160.2
+
 ## 0.160.1
 
 ### Patch Changes
