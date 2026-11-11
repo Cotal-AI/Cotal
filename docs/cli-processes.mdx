@@ -716,6 +716,12 @@ Setup reports a refreshed PATH only after a different verified daemon lifetime a
 expected version and protocol. An ambiguous stop or start reports an unconfirmed outcome with its
 phase and recovery guidance, retaining the installation records and restart fence. Inspect daemon
 status and the recorded task before recovery. Setup does not clear a fence through a new connection.
+After a failed pause, autostart is re-enabled without running a replacement when the pinned old daemon
+still answers on the same connection, or when no daemon or native task instance remains and the
+installation receipt is unchanged. An unresolved native End or ownership check leaves the task
+untouched and reports why. Setup and Check again recover an owned disabled task with zero instances
+by enabling and starting it, then requiring a fresh kernel lifetime to answer. Restart progress names
+the old-process wait (up to 130 seconds) and replacement wait (up to 60 seconds), with periodic updates.
 When no new application is found, setup keeps the service running. A Manager with no available
 connector still refreshes its inventory by restarting its idle child.
 The separate `ai.cotal.machine` registration and connection are reported even while owner approval

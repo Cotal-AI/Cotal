@@ -488,7 +488,7 @@ async function run(args: ParsedArgs): Promise<void> {
   }
   if (mode === "start") {
     const { paths, home } = resolveTarget(args);
-    const result = startInstalled(paths, home);
+    const result = await startInstalled(paths, home);
     writeResult(presentationOf(args.values), { command: "daemon start", target: { unit: result.unit }, result }, () => ({ sections: [
       { title: "Start requested", blocks: [{ kind: "lines", lines: [{ text: "The owned service received the start request. Check `cotal daemon status` for readiness; no connection is assumed.", tone: "hint" }] }] },
     ] }));
