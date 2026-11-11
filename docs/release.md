@@ -19,6 +19,10 @@ Unchanged native inputs can reuse a complete, unexpired artifact set from a succ
 of this repository's Changesets workflow. Source files, SDK pins, build scripts, install inputs and
 build instructions must match; the packing checkout checks them again. The original builder commit
 stays in each receipt, and the existing architecture, binary-hash and source-hash checks still run.
+Lockfile matching covers the seat and workspace importers, linked workspace importers, and all
+reachable package and snapshot entries, including peer and optional dependencies. Shared resolution
+settings still match in full. Unrelated importer or package changes do not require new native builds.
+Unsupported lockfile versions, dependency forms or incomplete dependency graphs refuse reuse.
 No receipt is rewritten to name the application release commit. Changed inputs or missing artifacts
 require fresh native builds; an API or validation failure refuses rather than using unverified bytes.
 
