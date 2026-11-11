@@ -69,6 +69,40 @@ on a multi-space root rather than scoping to one tenant, and the per-space lifec
 remaining multi-space operator layer. See
 [Known gaps](embedding.mdx#hosted-composition-gaps).
 
+#### Space accounts without a reload
+
+With the default MEMORY resolver, the broker learns accounts only from its config, so every added
+or removed space means rendering the whole config again and reloading the broker. A reload takes
+longer with every account already on it, and it re-runs auth callout for live callout sessions.
+
+A host can render the broker with `accountResolver: { kind: "full", directory, limit, intervalMs }`
+instead. nats-server then keeps each account's signed claim in `directory`, and a space account is
+added at run time:
+
+```ts
+import { createSpaceAccountAuth, pushAccountClaim, retireAccountClaim } from "@cotal-ai/core";
+
+const space = await createSpaceAccountAuth(broker, "acme");
+// `system` is a connection as a system-account user allowed to publish $SYS.REQ.ACCOUNT.*.CLAIMS.UPDATE.
+await pushAccountClaim(system, { accountJwt: space.account.jwt, expectedServerIds: [system.info!.server_id], maxWaitMs: 5000 });
+
+// Later, to stop the space: its live connections close and its users are refused.
+const retired = await retireAccountClaim(broker, space.account.jwt, Math.floor(Date.now() / 1000));
+await pushAccountClaim(system, { accountJwt: retired, expectedServerIds: [system.info!.server_id], maxWaitMs: 5000 });
+```
+
+- **The directory is broker state.** It sits beside `store_dir`: give it the same ownership and
+  backup coverage. A pushed claim survives a restart there even when the config does not list it.
+- **Keep rendering the config.** List every active space in the preloads as before, so a fresh
+  directory boots complete. nats-server keeps a newer pushed claim over an older preload.
+- **Removal is a retired claim.** Native deletion stays off. The retired claim keeps the account's
+  JetStream data in place; deleting the space's streams is a separate step.
+- **One writer per account.** The host orders the pushes for one account and owns the set of
+  servers it expects to answer. `pushAccountClaim` refuses an answer other than "jwt updated", an
+  unexpected server, or a missing answer.
+- **Switching resolvers is a restart.** nats-server refuses to change resolvers on a reload. `cotal up`
+  keeps using MEMORY.
+
 ## Issued-authority stores from before 0.111.0
 
 A space whose `KV_cotal_issued_<space>` and `KV_cotal_accepted_<space>` were created before
@@ -138,7 +172,9 @@ issuer and scope at 75% of its lifetime.
    (`createBrokerAuth` + `createSpaceAccountAuth` + N-space `serverConfig`, persisted as
    `broker.json` + `account.<key>.json`) and `cotal up` renders the whole tenant list. The CLI
    still lacks tenant-account provisioning and per-space teardown/backup/restore on that
-   broker. Its broker-wide lifecycle verbs refuse on a multi-space root, naming the tenants.
+   broker. A host composition can add and retire space accounts without a reload through the full
+   resolver ([above](#space-accounts-without-a-reload)). Its broker-wide lifecycle verbs refuse
+   on a multi-space root, naming the tenants.
    The existing `cotal space add` registers a connection, and `space delete` removes a
    space's streams; neither supplies that tenant-account lifecycle.
 3. **A non-Better-Auth production IdP.** The exchange core (`createIdpBridge`) is EdDSA-generic, but

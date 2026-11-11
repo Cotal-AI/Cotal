@@ -19,6 +19,7 @@ import { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { randomBytes } from "node:crypto";
+import { isAbsolute } from "node:path";
 import {
   decode,
   encodeOperator,
@@ -108,7 +109,7 @@ import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey, credentialIdOf } from "./lifecycle-state.js";
 import { environmentManagerPermissions, isEnvironmentManagerProfile, type EnvironmentManagerGrantPin } from "./environment-manager-grants.js";
-import { credsClaims, isUserNkey, type Identity } from "./identity.js";
+import { credsClaims, isAccountNkey, isUserNkey, type Identity } from "./identity.js";
 import {
   backupProfilePermissions,
   restoreProfilePermissions,
@@ -524,6 +525,26 @@ export async function revokeAccountUser(auth: SpaceAuth, userPub: string, at: nu
   const okp = fromSeed(new TextEncoder().encode(auth.operator.seed));
   const jwt = await encodeAccount(claims.name, auth.account.pub, { ...claims.nats, revocations: { ...revocations, [userPub]: at } }, { signer: okp });
   return { ...auth, account: { ...auth.account, jwt } };
+}
+
+/** Re-issue an account JWT that this broker's operator signed so the account serves nobody: every
+ *  user key issued at or before `at` (Unix seconds) is revoked, and the account admits no client or
+ *  leaf connection, so a user minted later is refused as well. Every other claim is kept, so the
+ *  account's JetStream data stays where it is. Push the result with {@link pushAccountClaim} to stop
+ *  a space on a running full-resolver broker; its live connections close without a reload. */
+export async function retireAccountClaim(broker: BrokerAuth, accountJwt: string, at: number): Promise<string> {
+  if (!broker.operator.seed)
+    throw new Error("retireAccountClaim: the broker operator seed is required - a stripped broker cannot re-sign the account");
+  if (!Number.isSafeInteger(at) || at <= 0) throw new Error("retireAccountClaim: at must be a positive whole number of Unix seconds");
+  const okp = fromSeed(new TextEncoder().encode(broker.operator.seed));
+  const claims = decode<Account>(accountJwt);
+  if (claims.iss !== okp.getPublicKey() || !isAccountNkey(claims.sub ?? ""))
+    throw new Error("retireAccountClaim: the account was not signed by this broker's operator - refusing to re-sign it");
+  return encodeAccount(claims.name, claims.sub!, {
+    ...claims.nats,
+    limits: { ...claims.nats.limits, conn: 0, leaf: 0 },
+    revocations: { ...claims.nats.revocations, "*": at },
+  }, { signer: okp });
 }
 
 /** Rotate the SYSTEM account and re-issue the operator JWT so persisted system-account users (currently
@@ -3373,8 +3394,31 @@ function renderTlsBlock(transport: BrokerTransport): string {
 `;
 }
 
-/** Render the `nats-server` config that trusts ONE broker operator and serves N spaces' accounts via
- *  the in-config MEMORY resolver.
+/** How the broker resolves account JWTs. `memory`, the default, is the static preload map, so adding
+ *  or removing an account rewrites the whole config and reloads the broker. `full` is nats-server's
+ *  directory resolver: it keeps each account's operator-signed claim in `directory` (at most `limit`
+ *  of them, synchronized every `intervalMs`) and takes new or updated claims at run time from
+ *  {@link pushAccountClaim}, with no reload. Native deletion stays off; {@link retireAccountClaim}
+ *  stops an account instead. nats-server refuses to switch resolvers on a reload, so moving a broker
+ *  between the two is a restart. */
+export type AccountResolver =
+  | { kind: "memory" }
+  | { kind: "full"; directory: string; limit: number; intervalMs: number };
+
+function renderAccountResolver(resolver: AccountResolver | undefined): string {
+  if (resolver === undefined) return "resolver: MEMORY\n";
+  const keys = resolver !== null && typeof resolver === "object" && !Array.isArray(resolver) ? Object.keys(resolver) : [];
+  if (keys.length === 1 && keys[0] === "kind" && resolver.kind === "memory") return "resolver: MEMORY\n";
+  if (keys.length !== 4 || resolver.kind !== "full" || !["kind", "directory", "limit", "intervalMs"].every((k) => keys.includes(k)) ||
+      typeof resolver.directory !== "string" || !isAbsolute(resolver.directory) || /[\0\r\n]/.test(resolver.directory) ||
+      !Number.isSafeInteger(resolver.limit) || resolver.limit < 1 ||
+      !Number.isSafeInteger(resolver.intervalMs) || resolver.intervalMs < 1000 || resolver.intervalMs > 86_400_000)
+    throw new Error('serverConfig: accountResolver must be { kind: "memory" } or { kind: "full", directory, limit, intervalMs } with an absolute directory, a positive whole limit and an interval of 1000 to 86400000 ms');
+  return `resolver: { type: full, dir: ${JSON.stringify(resolver.directory)}, allow_delete: false, interval: "${resolver.intervalMs}ms", limit: ${resolver.limit} }\n`;
+}
+
+/** Render the `nats-server` config that trusts ONE broker operator and serves N spaces' accounts,
+ *  resolved by MEMORY unless {@link AccountResolver} `full` is chosen.
  *
  *  Broker trust (operator + system account) comes from `broker` and has exactly one owner; the
  *  per-space data accounts are listed in `spaces`. Every space account is asserted to be signed by
@@ -3382,8 +3426,10 @@ function renderTlsBlock(transport: BrokerTransport): string {
  *  refuse broker boot or, worse, advertise a tenant the broker cannot actually authenticate.
  *
  *  NOTE: the MEMORY resolver is one static whole-broker map, so every mutation rewrites all of
- *  it. Concurrent add/remove of spaces needs a broker-authoritative inventory with generation/CAS
- *  and atomic promotion above this function; this renderer is deliberately pure. */
+ *  it. With the `full` resolver the preloads seed its directory at boot, and nats-server keeps a
+ *  newer pushed claim over an older preload, so a later render does not undo a push. Concurrent
+ *  add/remove of spaces needs a broker-authoritative inventory with generation/CAS and atomic
+ *  promotion above this function; this renderer is deliberately pure. */
 export function serverConfig(
   broker: BrokerAuth,
   spaces: readonly SpaceAccountAuth[],
@@ -3404,7 +3450,9 @@ export function serverConfig(
      *  `authorization { timeout: N }`. Omitted renders no block and leaves nats-server's default. An
      *  auth callout serving this broker must use the same value as its deadline. */
     authTimeout?: number;
-    /** Additional operator-signed accounts to preload in the MEMORY resolver — e.g. the dedicated
+    /** Account resolution; omitted is MEMORY, byte-identical to `{ kind: "memory" }`. */
+    accountResolver?: AccountResolver;
+    /** Additional operator-signed accounts to preload in the resolver — e.g. the dedicated
      *  auth-callout account (`@cotal-ai/auth`), which must never share the data account. */
     extraAccounts?: Array<{ pub: string; jwt: string }>;
     /** How the client port is served. REQUIRED, and required on purpose: an optional TLS field
@@ -3463,8 +3511,7 @@ max_control_line: ${MAX_CONTROL_LINE_BYTES}
 ${opts.maxPayload === undefined ? "" : `max_payload: ${opts.maxPayload}\n`}${opts.authTimeout === undefined ? "" : `authorization { timeout: ${opts.authTimeout} }\n`}${logBlock}${tlsBlock}${renderJetStreamBlock("serverConfig", opts.storeDir, opts.maxFileStore)}
 ${websocket}operator: ${broker.operator.jwt}
 system_account: ${broker.sys.pub}
-resolver: MEMORY
-resolver_preload: {
+${renderAccountResolver(opts.accountResolver)}resolver_preload: {
 ${spaces.map((s) => `  ${s.account.pub}: ${s.account.jwt}`).join("\n")}
   ${broker.sys.pub}: ${broker.sys.jwt}${(opts.extraAccounts ?? []).map((a) => `\n  ${a.pub}: ${a.jwt}`).join("")}
 }
