@@ -49,6 +49,9 @@ If you already have Node.js 22.10 or newer, run:
 npm install -g cotal-ai
 ```
 
+Allow the package's install script. It creates the `cotal` launcher outside the package npm
+replaces, so later upgrades can wait for the new files without losing the command.
+
 Use this route on Windows.
 The shell installer does not support Windows shells.
 You can also use the shell installer inside WSL.

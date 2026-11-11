@@ -12,8 +12,8 @@ import { shellWord } from "./endpoint-errors.js";
  *  when the package that owns it ({@link cliPackageRoot}) is `cotal-ai` and the file is one of that
  *  package's command entries: the `bin.cotal` a legacy package declares, `dist/cotal.js` behind
  *  the stable launcher, or `cotal.ts` beside that package.json (a checkout's `bin/cotal.ts`,
- *  which `bin/tsconfig.json` compiles to that bin). `npm i -g` leaves `process.argv[1]` on
- *  `<prefix>/bin/cotal`, a symlink into the package, and resolving it is what admits that shape.
+ *  which `bin/tsconfig.json` compiles to that bin). A legacy npm bin leaves `process.argv[1]` on
+ *  `<prefix>/bin/cotal`, a symlink into the package. The stable launcher sets it to the command entry.
  *
  *  A filename rule admitted any file NAMED `cotal.ts` or `cotal.js`, and one that reaches a detached
  *  starter on load re-execs itself exactly as #1629 describes. Anything unresolvable is not the entry. */
