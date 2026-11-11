@@ -88,7 +88,9 @@ process.emitWarning = ((warning: unknown, ...rest: unknown[]) => {
 // the rest of the CLI loads: loading the whole command surface was most of each bearer's cost. A
 // command line that does not parse goes on to the full CLI, which refuses it with the command's help.
 const bearerDone = process.argv[2] === "agent-bearer" && await (await import("@cotal-ai/auth/agent-bearer")).runAgentBearerEntry(process.argv.slice(3));
-if (!bearerDone) {
+if (process.argv[2] === "__update-check") {
+  await (await import("./update-notice.js")).updateCheckWorker();
+} else if (!bearerDone) {
   // The notice holds until the command begins, or until the command's own notice takes it over. An
   // internal entry, such as a stack member or shell completion, keeps Node's default signal exit.
   // Every word before the command word is a flag.

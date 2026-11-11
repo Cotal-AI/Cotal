@@ -59,7 +59,7 @@ const composed: Command = { ...command, async run(args) {
     }
     return "none";
   }) });
-  if (args.values.check === true || process.exitCode || !daemonObserved) return;
+  if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode || !daemonObserved) return;
   const paths = daemonPaths();
   const current = await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");
