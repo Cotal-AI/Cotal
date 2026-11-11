@@ -45,7 +45,8 @@ function call(verb, ...flags) {
   let body;
   try { body = JSON.parse(child.stdout); } catch { /* Recorded below without exposing raw native output. */ }
   const row = { verb, dryRun: flags.includes("--dry-run"), exit: child.status, signal: child.signal,
-    outcome: body?.outcome, code: body?.error?.code, nativeCode: body?.error?.cause?.code };
+    outcome: body?.outcome, code: body?.error?.code, nativeCode: body?.error?.cause?.code,
+    ...(body?.error ? { message: body.error.message, remedy: body.error.remedy } : {}) };
   report.calls.push(row);
   if (child.error || child.signal || child.status === null) {
     uncertain = true;

@@ -599,7 +599,12 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
     for (;;) {
       let absent = false;
       try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); }
-      catch (error) { if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true; else throw error; }
+      catch (error) {
+        if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true;
+        // The native CI reproducer observed a connect reset while close() tears down
+        // accepted sockets. It proves neither a live endpoint nor absence. Reobserve.
+        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") throw error;
+      }
       if (absent && (!socket || !owner || (owner.start && processBirth(owner.pid) !== owner.start)) && Date.now() >= observeUntil) break;
       if (Date.now() >= deadline) throw uncertain("daemon shutdown was not confirmed within 130s");
       await delay(50);

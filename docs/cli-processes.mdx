@@ -863,7 +863,8 @@ on that connection, then closes its Managers, service connections and endpoint o
 commits shutdown after native removal succeeds. A dropped connection or failed native removal does
 not commit shutdown. A foreground daemon refuses this request. Uninstall never signals a process
 by name or an unverified PID. If shutdown cannot be confirmed within 130 seconds, it reports an
-unknown outcome and retains the source and receipt for inspection and retry.
+unknown outcome and retains the source and receipt for inspection and retry. A connection reset
+during shutdown is rechecked within that bound, never counted as endpoint absence.
 When the daemon is not running, uninstall takes its lifetime exclusion before native removal and
 confirms endpoint absence under that exclusion before deleting the source and receipt. A live
 recorded process without a verified answering endpoint remains an uncertain outcome.
