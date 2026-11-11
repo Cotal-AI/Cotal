@@ -253,8 +253,9 @@ such as the letters of a name or a message, are written as they are. Commands an
 backtick spans retain their literal punctuation, including punctuation in quoted paths. Control
 and formatting characters are still displayed as escapes for terminal safety.
 Under a locale whose character set is not UTF-8, as `LC_ALL`, then `LC_CTYPE`, then `LANG` decide,
-reports and error lines draw their marks and punctuation as plain does, and keep their color. With
-none of the three set, the marks are drawn in UTF-8. Windows consoles are always treated as UTF-8.
+reports and error lines draw their marks and punctuation as plain does, and keep their color.
+The entry screen's sample message uses `...` in these locales.
+With none of the three set, the marks are drawn in UTF-8. Windows consoles are always treated as UTF-8.
 A usage refusal under `--plain` or such a locale prints the classified report that begins
 `Request refused`, then the command's help. Every refusal line, the `✗` line included, shows a
 control character in the text it quotes, such as a file's bytes or an argument, as an escape like

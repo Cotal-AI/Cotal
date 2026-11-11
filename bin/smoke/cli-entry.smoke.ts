@@ -78,6 +78,12 @@ function cotal(args: string[], prepare?: (cotalHome: string) => void, extraEnv: 
   const cotalHome = join(root, "home");
   cleanup.push(root, cfg);
   mkdirSync(cotalHome, { recursive: true });
+  // Catalog operations need a space's project, not just an arbitrary .cotal folder.
+  // Prepare it without starting a broker so these cells reach the offline catalog.
+  if (args[0] === "persona" || args[0] === "personas") {
+    mkdirSync(join(cotalHome, "prepared"), { recursive: true });
+    writeFileSync(join(cotalHome, "prepared", `${spaceSegment("entry")}.json`), JSON.stringify({ space: "entry", root, ts: "2026-10-23T00:00:00.000Z" }));
+  }
   prepare?.(cotalHome);
   const sandbox = recordSmokeSandbox({ root, cotalHome, xdgConfigHome: cfg });
   const options = {
