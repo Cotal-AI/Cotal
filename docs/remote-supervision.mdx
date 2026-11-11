@@ -157,6 +157,11 @@ It also issues a one-shot retirement request pinned to the target.
 It never exports the space signer, a static provisioner credential, or generic storage authority.
 Registration publishes the instance revision and process epoch so callers can find it.
 
+On restart, registration revokes prior credential rows in batches of at most 16 concurrent writes.
+Each batch settles before any failure is reported. All prior rows must be revoked and their holders
+verified evicted before registration publishes the successor. A failed revocation leaves the gate
+frozen and keeps completed revocations for recovery.
+
 ### Keep lifecycle changes on the host
 
 Participant supervision asks the host to enroll detached agents and prepare terminal retirement through that same authority transport.
