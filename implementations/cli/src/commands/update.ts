@@ -7,6 +7,9 @@ import {
   CommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, writeResult, type OutputWarning,
   cmdSpawnSpec,
   beginGlobalUpdateChild,
+  claimUpdateClosureAccess,
+  updateClosureOwner,
+  readUpdateRecovery,
   clearUpdateRecovery,
   writeUpdateRecovery,
   readUpdateSettings,
@@ -22,6 +25,7 @@ import {
   targetFlags,
   resolveControlTarget,
 } from "@cotal-ai/workspace";
+import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
@@ -187,8 +191,8 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   const code = await executeUpdate(Boolean(args.values.self), rt, args.values);
   if (code !== 0) process.exitCode = code;
   else {
-    clearUpdateRecovery();
-    if (args.values.self !== true) recordUpdateCompletion(rt.version(), "manual update reconciled", true);
+    if (childBinding(rt).kind !== "bound") clearUpdateRecovery();
+    if (args.values.self !== true && childBinding(rt).kind !== "bound") recordUpdateCompletion(rt.version(), "manual update reconciled", true);
   }
 }
 
@@ -248,13 +252,17 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       rt.err(c.red(`✗ global update child is cotal-ai ${current}, expected ${child.target}; refusing to mutate extensions`));
       return 1;
     }
+    const result = await reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
+    if (result !== 0) return result;
     try {
+      const recovery = readUpdateRecovery();
+      if (recovery) writeUpdateRecovery({ ...recovery, installed: current, phase: "verified-ready" });
       await rt.waitForInstalledGeneration?.(current);
     } catch (error) {
       rt.err(c.red(`✗ installed daemon generation: ${refusal(error)}`));
       return 1;
     }
-    return reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
+    return 0;
   }
 
   if (self) {
@@ -791,6 +799,18 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.err(`update admission refused: ${message(error)}`);
     return 1;
   }
+  let releaseClosure: (() => void) | undefined;
+  let snapshot: UpdateSnapshot;
+  try {
+    releaseClosure = claimUpdateClosureAccess();
+    snapshot = snapshotUpdateClosure();
+  } catch (error) {
+    releaseClosure?.();
+    await releaseAdmission?.();
+    releaseGlobal();
+    rt.err(`update snapshot refused: ${message(error)}`);
+    return 1;
+  }
   // npm replaces the live package tree. Keep custody until it and the verified reconcile
   // finish, even when the terminal sends Ctrl-C during that replacement.
   let interrupted = 0;
@@ -806,7 +826,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   try {
   rt.out(c.bold("cotal-ai binary"));
   rt.out(c.dim(`installing cotal-ai@${targetVersion} into npm's global installation; this ${current} process remains loaded until the verified global copy takes over`));
-  writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress" });
+  writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress", owner: updateClosureOwner(), snapshot: snapshot.path });
   const npmInstall = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`]);
   const installed = await rt.spawnGlobal(
     root,
@@ -843,6 +863,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.err(c.red(`✗ cotal-ai@${targetVersion} installed globally, but its reconcile failed: ${failure(child)}`));
     return await repairReplacement(`reconcile failed: ${failure(child)}`);
   }
+  snapshot.discard();
   clearUpdateRecovery();
   recordUpdateCompletion(targetVersion, `updated to ${targetVersion}`, true);
   rt.out(c.green(`✓ cotal-ai@${targetVersion} installed globally and reconciled`));
@@ -862,6 +883,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.err(c.yellow("Retrying reconciliation of the installed generation before rollback."));
     try {
       if (await reconcileVersion(targetVersion)) {
+        snapshot.discard();
         clearUpdateRecovery();
         recordUpdateCompletion(targetVersion, `repaired and updated to ${targetVersion}`, true);
         rt.out(c.green(`✓ cotal-ai@${targetVersion} repaired and reconciled`));
@@ -870,11 +892,17 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     } catch (error) { rt.err(`reconcile retry: ${message(error)}`); }
     rt.err(c.yellow(`Restoring verified cotal-ai@${current} through the global updater.`));
     try {
+      const recovery = readUpdateRecovery();
+      if (!recovery) throw new Error("update recovery journal is missing");
+      writeUpdateRecovery({ ...recovery, phase: "restoring" });
       checkReleaseArchives(current, rt);
       const command = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${current}`]);
       const restored = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
       if (restored.status !== 0) throw new Error(failure(restored));
+      rt.verifyGlobalEntry(root, current);
+      snapshot.restore();
       if (!await reconcileVersion(current)) throw new Error("previous generation reconciliation failed");
+      snapshot.discard();
       clearUpdateRecovery();
       recordUpdateCompletion(targetVersion, `update failed; restored and reconciled ${current}`, false);
       rt.err(`Update failed; cotal-ai@${current} was restored and reconciled. Run cotal update --self to try again.`);
@@ -883,7 +911,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       let installedVersion = "unknown";
       try { installedVersion = JSON.parse(readFileSync(join(root, "cotal-ai", "package.json"), "utf8")).version ?? "unknown"; } catch { /* Report an unknown install instead of claiming the previous tree survived. */ }
       const detail = `${reason}; repair failed: ${message(error)}`;
-      writeUpdateRecovery({ previous: current, target: targetVersion, installed: installedVersion, phase: "paused", reason: detail });
+      writeUpdateRecovery({ ...readUpdateRecovery(), previous: current, target: targetVersion, installed: installedVersion, phase: "paused", reason: detail });
       rt.err(c.red(`✗ Update stopped: installed cotal-ai ${installedVersion}; ${detail}. Automatic updates are paused. Run cotal update --self to repair this installation.`));
       return 1;
     }
@@ -891,7 +919,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   } finally {
     try {
       try { await releaseAdmission?.(); }
-      finally { releaseGlobal(); }
+      finally { try { releaseClosure?.(); } finally { releaseGlobal(); } }
     } finally {
       process.off("SIGINT", onInt);
       process.off("SIGTERM", onTerm);

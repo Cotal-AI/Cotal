@@ -3,6 +3,7 @@ import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
+  claimUpdateClosureAccess,
   CorruptExtensionPackageError,
   SEEDED_EXTENSIONS,
   bindExtensionPeers,
@@ -118,6 +119,12 @@ export async function runSeed(flags: SeedFlags): Promise<void> {
 const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], verified: [], removedKept: [] };
 
 async function reconcile(mode: Mode): Promise<ReconcileResult> {
+  const release = claimUpdateClosureAccess();
+  try { return await reconcileUnderClosure(mode); }
+  finally { release(); }
+}
+
+async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
   const generation = seedGeneration();
   // Cheap lock-free pre-check: the steady state (stamp current, authority intact) is the common case
   // on EVERY command and must not pay a lock acquire. Health checks run FIRST so a lost authority or a

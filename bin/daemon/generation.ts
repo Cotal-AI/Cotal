@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { readUpdateRecovery } from "@cotal-ai/workspace";
+import { updateActivationBlocked } from "@cotal-ai/workspace";
 import { globalConfigDir } from "@cotal-ai/core";
 import { fileURLToPath } from "node:url";
 
@@ -20,6 +20,7 @@ export class ReplacedDaemonGeneration extends Error {
 }
 
 export async function reconcileHostedConnectors(version: string): Promise<void> {
+  if (updateActivationBlocked()) throw new Error("an update is in progress, retry in a minute");
   const installed = installedGenerationVersion();
   if (installed !== version) throw new ReplacedDaemonGeneration(version, installed);
   try {
@@ -73,7 +74,7 @@ export function watchDaemonGeneration(version: string, changed: (version: string
   };
   const timer = setInterval(() => {
     if (busy || closed) return;
-    try { if (readUpdateRecovery()?.phase === "paused") return; } catch { return; }
+    try { if (updateActivationBlocked()) return; } catch { return; }
     let next: string;
     try {
       const pkg = JSON.parse(readFileSync(file, "utf8"));
@@ -100,6 +101,7 @@ export function watchDaemonGeneration(version: string, changed: (version: string
       clearTimeout(timeout);
       if (settled || closed) return;
       if (code !== 0 || output.split(/\r?\n/, 1)[0] !== `cotal-ai ${next}`) { failed(next, `entry verification did not confirm its version (exit ${code})`); return; }
+      try { if (updateActivationBlocked()) { busy = false; return; } } catch { busy = false; return; }
       void changed(next).catch((error: unknown) => { if (!closed) failed(next, error instanceof Error ? error.message : "the replacement could not be activated"); });
     });
   }, 1000);
