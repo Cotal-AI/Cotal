@@ -1567,9 +1567,36 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       if (upgrading && !upgradeFixture) throw new Error("upgrade proofs require COTAL_DAEMON_UPGRADE_FIXTURE from build-daemon-upgrade-fixture.mjs");
       let npmRegistry: ReturnType<typeof createHttpServer> | undefined;
       let npmRegistryUrl = "";
+      const closureRollback = process.argv.includes("--closure-rollback-repro");
+      const closureArchives = new Map<string, Buffer>();
+      if (closureRollback) {
+        for (const version of ["0.151.2", "0.151.3"]) {
+          const payload = join(root, `closure-${version}`, "package");
+          mkdirSync(payload, { recursive: true });
+          writeFileSync(join(payload, "package.json"), JSON.stringify({ name: "@cotal-ai/rollback-fixture", version, type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": version }, ...(version === "0.151.3" ? { dependencies: { "unavailable-closure-fixture": "1.0.0" } } : {}) }));
+          writeFileSync(join(payload, "index.js"), 'import { registry } from "@cotal-ai/core"; registry.register({ kind: "command", name: "rollback-fixture", description: "Private closure acceptance", run: async () => {} });\n');
+          const archive = join(root, `closure-${version}.tgz`);
+          const packed = spawnSync("tar", ["-czf", archive, "-C", join(root, `closure-${version}`), "package"]);
+          if (packed.status !== 0) throw new Error("could not assemble closure fixture archive");
+          closureArchives.set(version, readFileSync(archive));
+        }
+      }
       if (process.argv.includes("--update-repro")) {
         npmRegistry = createHttpServer((request, response) => {
           response.setHeader("content-type", "application/json");
+          if (closureRollback && request.url?.includes("unavailable-closure-fixture")) { response.writeHead(404).end(JSON.stringify({ error: "fixture dependency unavailable" })); return; }
+          if (closureRollback && request.url?.includes("closure-")) {
+            response.setHeader("content-type", "application/octet-stream");
+            response.end(closureArchives.get(request.url.includes("0.151.2") ? "0.151.2" : "0.151.3")); return;
+          }
+          if (closureRollback && decodeURIComponent(request.url ?? "").includes("@cotal-ai/rollback-fixture")) {
+            const versions = Object.fromEntries([...closureArchives].map(([version, bytes]) => [version, {
+              name: "@cotal-ai/rollback-fixture", version, type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": version },
+              ...(version === "0.151.3" ? { dependencies: { "unavailable-closure-fixture": "1.0.0" } } : {}),
+              dist: { tarball: `${npmRegistryUrl}/closure-${version}.tgz`, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` },
+            }]));
+            response.end(JSON.stringify({ name: "@cotal-ai/rollback-fixture", "dist-tags": { latest: "0.151.3" }, versions })); return;
+          }
           const requestedVersion = request.url?.includes("0.151.2") ? "0.151.2" : "0.151.3";
           if (request.url?.includes(".tgz")) {
             if (process.argv.includes("--auto-failure-repro") && requestedVersion === "0.151.3") { response.writeHead(503).end("fixture archive unavailable"); return; }
@@ -2824,10 +2851,37 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: "0.151.2" }));
             writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: "0.151.2" }));
             env.npm_config_prefix = globalPrefix;
+            if (closureRollback) {
+              const added = spawn(process.execPath, [cliEntry, "ext", "add", "@cotal-ai/rollback-fixture@0.151.2"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+              let addedOutput = ""; added.stdout.on("data", b => { addedOutput += String(b); }); added.stderr.on("data", b => { addedOutput += String(b); });
+              const addedCode = await new Promise<number | null>(resolve => added.once("exit", resolve));
+              check("CL previous operator extension installs through shipped CLI", addedCode === 0, addedOutput);
+            }
             const updater = spawn(process.execPath, [cliEntry, "update", "--self", "--space", ON], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
             let output = ""; updater.stdout.on("data", (b) => { output += String(b); }); updater.stderr.on("data", (b) => { output += String(b); });
             const code = await new Promise<number | null>((resolve) => updater.once("exit", resolve));
             console.log("  UPDATE REPRO", JSON.stringify({ code, output }));
+            if (closureRollback) {
+              check("CL failed new dependency restores previous generation", code === 1 && output.includes("unavailable-closure-fixture") && output.includes("was restored and reconciled"), { code, output });
+              const installed = JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8"));
+              const entries = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")).extensions;
+              check("CL global and seven seeded surfaces return to previous generation", installed.version === "0.151.2" && entries.filter((e: { source?: string; version?: string }) => e.source === "seeded" && e.version === "0.151.2").length === 7, entries);
+              const extension = JSON.parse(readFileSync(join(prefix, "node_modules/@cotal-ai/rollback-fixture/package.json"), "utf8"));
+              check("CL operator extension returns to previous generation", extension.version === "0.151.2", extension);
+              check("CL recovery fence clears after verified rollback", JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null);
+              let recovered: Awaited<ReturnType<typeof cli>> | undefined;
+              for (let attempt = 0; attempt < 120; attempt++) {
+                try {
+                  recovered = await cli("status");
+                  if (recovered.doc.result?.version === "0.151.2" && [ON, OFF].every(space => recovered!.doc.result?.managers?.some((row: { space: string; state: string }) => row.space === space && row.state === "answering"))) break;
+                } catch { /* Native generation recovery can replace the socket. */ }
+                await sleep(1000);
+              }
+              check("CL both hosted Managers answer after previous generation recovery", recovered?.doc.result?.version === "0.151.2" && [ON, OFF].every(space => recovered!.doc.result?.managers?.some((row: { space: string; state: string }) => row.space === space && row.state === "answering")), recovered);
+              const sharedCore = JSON.parse(readFileSync(join(prefix, "node_modules/@cotal-ai/core/package.json"), "utf8"));
+              check("CL operator shared core matches restored generation", sharedCore.version === "0.151.2", sharedCore);
+              return;
+            }
             check("U2 cotal update self checks both hosted instances and completes native reconcile", code === 0 && output.includes(`instance ${manager.instanceId} answered`) && output.includes(`instance ${second.instanceId} answered`));
             const secondAfter = resultOf(await ask(paths.socket, { op: "manager-status", space: OFF }));
             check("U2 update waits for both hosted Managers to answer again", secondAfter.state === "answering");
