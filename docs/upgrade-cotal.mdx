@@ -101,6 +101,15 @@ Before replacing the global binary, it checks the release's first-party package 
 npm. If the release is still reaching the registry, it refuses with retry guidance without starting
 the global install or connector reconciliation.
 
+On Linux, a daemon-started automatic update moves its authenticated updater parent and reconcile
+child into a sibling systemd user scope before reconciliation. This requires cgroup v2,
+`systemctl`, `busctl`, and a reachable user manager that permits transient scopes with existing
+PIDs. The daemon remains in its service. Restart decisions stay with the existing updater.
+This preserves updater availability during a service stop, but does not add startup verification
+or rollback guarantees. If migration is refused, the package has already been replaced and
+reconciliation has not started. The parent may retry or restore its previous package. Keep the
+reported failure and inspect the installed version and daemon state before retrying.
+
 ## Restart the mesh
 
 Complete the release-specific credential and state migrations before restarting components.

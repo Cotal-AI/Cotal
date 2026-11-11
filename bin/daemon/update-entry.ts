@@ -10,6 +10,7 @@ import { managerViaDaemon, queryDaemon } from "./client.js";
 import { installedDaemonIdentity, restartInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { waitForInstalledDaemonGeneration } from "./update-generation.js";
+import { adoptAutomaticUpdateChild } from "./update-scope.js";
 
 const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
@@ -18,7 +19,7 @@ const composed: Command = { ...command, async run(args) {
   let daemonObserved = false;
   let preparedRestart = false;
   let absentRecoveryHost = false;
-  await update(args, { ...updateRuntime, preparedRestart: () => preparedRestart, async prepareReplacement() {
+  await update(args, { ...updateRuntime, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
     if (process.env.COTAL_AUTO_UPDATE !== "1" || !daemonObserved) return async () => {};
     const paths = daemonPaths();
     try { await managerViaDaemon({ paths }, { op: "managers-prepare-restart" }); }

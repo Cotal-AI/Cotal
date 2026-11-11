@@ -88,6 +88,8 @@ export interface UpdateRuntime {
   readonly nodePath: string;
   version(): string;
   reconcile(): Promise<void>;
+  /** Preserve native custody of an authenticated automatic update child before reconciliation. */
+  adoptUpdateChild?(): Promise<void>;
   /** Bring what connectors installed in their harnesses to this release; one line per connector. */
   refreshConnectors(): Promise<readonly string[]>;
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
@@ -295,6 +297,11 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
   if (child.kind === "bound") {
     if (current !== child.target) {
       rt.err(c.red(`✗ global update child is cotal-ai ${current}, expected ${child.target}; refusing to mutate extensions`));
+      return 1;
+    }
+    try { await rt.adoptUpdateChild?.(); }
+    catch (error) {
+      rt.err(c.red(`✗ automatic update custody: ${refusal(error)}; package replacement already occurred; reconciliation was not started and the parent may retry or restore`));
       return 1;
     }
     // A parent that journals its transaction holds the daemon on the old generation until this

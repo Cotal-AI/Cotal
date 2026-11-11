@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { acquireLock, acquireLockAsync, inspectLock, processStartToken, type AcquireOptions, type HeldLock } from "./advisory-lock.js";
 import { extensionMutationLockPath } from "./extensions.js";
@@ -180,7 +180,7 @@ export function extensionUpdatePassOwnedBy(pid: number): boolean {
   return found.state === "active" && found.owner.pid === pid;
 }
 
-type ProcessMutationRecord =
+export type ProcessMutationRecord =
   | { readonly phase: "pending"; readonly owner: number; readonly ownerStart?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string }
   | { readonly phase: "live"; readonly owner: number; readonly ownerStart?: string; readonly pid: number; readonly start?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string }
   | { readonly phase: "ambiguous"; readonly owner: number; readonly nonce: string; readonly operation?: string; readonly reason: string };
@@ -210,6 +210,23 @@ export function beginGlobalUpdateChild(root: string, operation: "install" | "rec
     `global ${operation}`,
     operation === "install" && process.platform === "win32",
   );
+}
+
+/** Read custody without acquiring, clearing, or repairing the parent's marker. */
+export function inspectGlobalUpdateChild(root: string): { owner: ReturnType<typeof inspectLock>; child: ProcessMutationRecord | undefined } {
+  const canonical = realpathSync(root);
+  for (let path = canonical;; path = dirname(path)) {
+    const stat = lstatSync(path);
+    if (!stat.isDirectory() || (stat.mode & 0o022) !== 0 || (process.getuid && stat.uid !== 0 && stat.uid !== process.getuid()))
+      throw new Error(`global update custody ancestor is not protected (${path})`);
+    if (dirname(path) === path) break;
+  }
+  for (const path of [canonical, join(canonical, ".cotal-update.lock"), join(canonical, ".cotal-update-child")]) {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile()) || (process.getuid && stat.uid !== process.getuid()) || (stat.mode & 0o022) !== 0)
+      throw new Error(`global update custody path is not protected (${path})`);
+  }
+  return { owner: inspectLock(join(canonical, ".cotal-update.lock")), child: readMarker(join(canonical, ".cotal-update-child")) };
 }
 
 /** Journal an actual mutating child across wrapper death. Pending closes spawn->PID publication;
