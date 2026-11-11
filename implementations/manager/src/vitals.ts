@@ -150,8 +150,9 @@ export interface ComputerVitalsDeps {
 async function homeMount(): Promise<string[]> {
   const home = await realpath(homedir());
   if (process.platform === "win32") {
-    if (!process.env.SystemRoot) refusal("computer vitals cannot locate the Windows system volume");
-    const roots = [...new Set([safeMount(parse(home).root), safeMount(parse(process.env.SystemRoot).root)])];
+    const systemRoot = process.env.SystemRoot;
+    if (!systemRoot) return refusal("computer vitals cannot locate the Windows system volume");
+    const roots = [...new Set([safeMount(parse(home).root), safeMount(parse(systemRoot).root)])];
     for (const root of roots) {
       if (root.length !== 3 || !/^[A-Za-z]$/.test(root[0]!) || root[1] !== ":" || root[2] !== "\\") refusal("computer vitals requires a local Windows drive root");
       const { stdout } = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `[int]([System.IO.DriveInfo]::new('${root}').DriveType)`], { timeout: 5000, maxBuffer: 1024, windowsHide: true });
