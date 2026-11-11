@@ -2769,6 +2769,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               await sleep(35_000);
               const newer = await cli("status", "--space", ON);
               check("AF newer release clears failed-version suppression and holds publication", newer.doc.result?.update?.failures === 0 && newer.doc.result.update.lastResult === "waiting for release hold", newer);
+              writeFileSync(attemptFile, JSON.stringify({ version: "0.151.3", failures: 2, result: "suppressed fixture", next: Date.now() + 86400_000 }));
+              const manual = spawn(process.execPath, [cliEntry, "update"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+              let manualOutput = ""; manual.stdout.on("data", chunk => manualOutput += chunk); manual.stderr.on("data", chunk => manualOutput += chunk);
+              const manualCode = await new Promise(resolve => manual.once("exit", resolve));
+              const reset = await cli("status", "--space", ON);
+              check("AF successful manual reconcile clears automatic failure suppression", manualCode === 0 && reset.doc.result?.update?.failures === 0 && reset.doc.result.update.lastResult === "manual update reconciled", { manualCode, manualOutput, reset });
               return;
             }
             let upgraded;
