@@ -575,15 +575,13 @@ const steps = (tab: HTMLElement) => all(tab, ".ox-compact > .ox-step").map(textO
     [["Open reviewer's page", "#/agent/local.rev", "default"], ["Message", formatRoute({ view: "dm", peer: "local.rev" }), "outline"]]);
 
   const working = tabWith(withPlane("on"), { sessions: { "local.rev": sessionOf({ frames: openTurn() }) } });
-  same("8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn's last three steps, and no footer",
-    {
-      head: textOf(working.querySelector(".ox-now-head h5")),
-      title: /^Working for \d+m \d+s,/.test(textOf(working.querySelector(".ox-now-t"))),
-      steps: steps(working),
-      foot: working.querySelector(".ox-foot"),
-      after: working.querySelector(".ui-sline")?.nextElementSibling?.classList.contains("ox-now-head"),
-    },
-    { head: "Now", title: true, steps: ["step 2", "step 3", "step 4"], foot: null, after: true });
+  ok("8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn's last three steps, and no footer",
+    textOf(working.querySelector(".ox-now-head h5")) === "Now"
+      && /^Working for \d+m \d+s,/.test(textOf(working.querySelector(".ox-now-t")))
+      && JSON.stringify(steps(working)) === JSON.stringify(["step 2", "step 3", "step 4"])
+      && working.querySelector(".ox-foot") === null
+      && working.querySelector(".ui-sline")?.nextElementSibling?.classList.contains("ox-now-head"),
+    working.innerHTML);
   ok("8.3 Now's title counts the failed call of the whole turn, though that step is not among the three shown",
     textOf(working.querySelector(".ox-now-t")).endsWith(", 1 command failed"), textOf(working.querySelector(".ox-now-t")));
 

@@ -135,7 +135,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
+        "anchor": "assert.match(text, /status: working · progress unknown · attention: open/,"
       }
     },
     {
@@ -146,7 +146,7 @@
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/,"
+        "anchor": "assert.match(text, /status: working · progress unknown · attention: open/,"
       }
     },
     {
@@ -1986,10 +1986,10 @@
       "kind": "derived-output",
       "anchor": "call={running.call}",
       "class": "honest-text",
-      "rationale": "The Agents view's live step: the call in the open turn with no result marker, drawn as running only while presence says working; the cited assertion reads a finished call drawing no step.",
+      "rationale": "The running ToolLine receives the call in the open turn with no result marker; the cited assertion reads its rendered title, tool description and spinner.",
       "proof": {
         "path": "implementations/web/smoke/agents-view.smoke.ts",
-        "anchor": "ok(\"11.6 a working row whose call has finished shows no step line, and keeps View work\""
+        "anchor": "ok(\"11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button\""
       }
     },
     {
@@ -1997,10 +1997,10 @@
       "kind": "derived-output",
       "anchor": "{running.call}",
       "class": "honest-text",
-      "rationale": "The Agents view's live step: the call in the open turn with no result marker, drawn as running only while presence says working; the cited assertion reads a finished call drawing no step.",
+      "rationale": "The running ToolLine receives the call in the open turn with no result marker; the cited assertion reads its rendered title, tool description and spinner.",
       "proof": {
         "path": "implementations/web/smoke/agents-view.smoke.ts",
-        "anchor": "ok(\"11.6 a working row whose call has finished shows no step line, and keeps View work\""
+        "anchor": "ok(\"11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button\""
       }
     },
     {
@@ -3135,8 +3135,8 @@
       "class": "honest-text",
       "rationale": "The turn's title from turnTitle: Working for while presence says working, Open for while it waits, and No end arrived once it is idle or offline. The cited assertion reads the words.",
       "proof": {
-        "path": "implementations/web/smoke/session.smoke.ts",
-        "anchor": "ok(\"turn title: open while working reads \\\"Working for 3m 2s\\\"\""
+        "path": "implementations/web/smoke/session-parts.smoke.ts",
+        "anchor": "ok(\"3.1 the open working turn reads \\\"Working for 3m 2s\\\" in bold with the live spinner, never shimmers, and counts on\""
       }
     },
     {
@@ -3174,8 +3174,8 @@
       "class": "honest-text",
       "rationale": "The turn's title from turnTitle: Working for while presence says working, Open for while it waits, and No end arrived once it is idle or offline. The cited assertion reads the words.",
       "proof": {
-        "path": "implementations/web/smoke/session.smoke.ts",
-        "anchor": "ok(\"turn title: open while working reads \\\"Working for 3m 2s\\\"\""
+        "path": "implementations/web/smoke/session-parts.smoke.ts",
+        "anchor": "ok(\"3.1 the open working turn reads \\\"Working for 3m 2s\\\" in bold with the live spinner, never shimmers, and counts on\""
       }
     },
     {
@@ -3185,8 +3185,8 @@
       "class": "honest-text",
       "rationale": "The turn's title from turnTitle: Working for while presence says working, Open for while it waits, and No end arrived once it is idle or offline. The cited assertion reads the words.",
       "proof": {
-        "path": "implementations/web/smoke/session.smoke.ts",
-        "anchor": "ok(\"turn title: open while working reads \\\"Working for 3m 2s\\\"\""
+        "path": "implementations/web/smoke/session-parts.smoke.ts",
+        "anchor": "ok(\"3.1 the open working turn reads \\\"Working for 3m 2s\\\" in bold with the live spinner, never shimmers, and counts on\""
       }
     },
     {
@@ -3357,8 +3357,8 @@
       "class": "honest-text",
       "rationale": "The peek's Now heading from turnTitle over the whole turn: Working for while presence says working, Open for while it waits, Worked for once it finished. The cited assertion reads the words.",
       "proof": {
-        "path": "implementations/web/smoke/session.smoke.ts",
-        "anchor": "ok(\"turn title: open while working reads \\\"Working for 3m 2s\\\"\""
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn's last three steps, and no footer\""
       }
     },
     {
@@ -3368,8 +3368,8 @@
       "class": "honest-text",
       "rationale": "The peek's Now heading from turnTitle over the whole turn: Working for while presence says working, Open for while it waits, Worked for once it finished. The cited assertion reads the words.",
       "proof": {
-        "path": "implementations/web/smoke/session.smoke.ts",
-        "anchor": "ok(\"turn title: open while working reads \\\"Working for 3m 2s\\\"\""
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn's last three steps, and no footer\""
       }
     },
     {
@@ -3463,8 +3463,8 @@
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"2.10 every work-list branch renders the held work and its reported working footer\""
       }
     },
     {
@@ -3474,8 +3474,8 @@
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"2.10 every work-list branch renders the held work and its reported working footer\""
       }
     },
     {
@@ -3485,8 +3485,8 @@
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"2.10 every work-list branch renders the held work and its reported working footer\""
       }
     },
     {
@@ -3496,8 +3496,8 @@
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"2.10 every work-list branch renders the held work and its reported working footer\""
       }
     },
     {
@@ -3514,8 +3514,8 @@
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"2.10 every work-list branch renders the held work and its reported working footer\""
       }
     },
     {
@@ -3546,8 +3546,8 @@
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"2.10 every work-list branch renders the held work and its reported working footer\""
       }
     },
     {
@@ -6270,10 +6270,10 @@
       "kind": "derived-output",
       "anchor": "emit(\"snapshot\", data)",
       "class": "honest-text",
-      "rationale": "Watch snapshot event: the JSON presentation emits the machine record for programs, and the plain presentation prints watchReport's roster, whose working rows name unknown progress; the cited output assertion renders that roster.",
+      "rationale": "Watch snapshot event: the JSON presentation emits the machine record for programs, and the plain presentation prints the roster. The cited assertion captures the real stream's output, whose working row names unknown progress.",
       "proof": {
-        "path": "implementations/cli/smoke/view.smoke.ts",
-        "anchor": "check(\"the watch roster names a working agent's progress as unknown\""
+        "path": "implementations/cli/smoke/watch-output.tsx",
+        "anchor": "assert.match(output, /\\balice\\b[^\\n]*working - progress unknown/, \"the real watch stream prints working with unknown progress\")"
       }
     },
     {
@@ -6344,10 +6344,10 @@
       "kind": "derived-output",
       "anchor": "{!shown.length ? <Text dimColor>{connected ? \"Waiting for activity in this authorized view.\" : \"No current feed. Events may be missing.\"}</Text> : shown.map((line, index) => <Text key={index}>{line}</Text>)}",
       "class": "honest-text",
-      "rationale": "Watch body: the empty-feed placeholder, or the rendered view lines; for the roster view those lines are watchReport's table, whose working rows name unknown progress; the cited output assertion renders that roster.",
+      "rationale": "Watch body: the empty-feed placeholder or the rendered view lines. The cited assertion mounts WatchView in Ink and reads the painted working row with unknown progress.",
       "proof": {
-        "path": "implementations/cli/smoke/view.smoke.ts",
-        "anchor": "check(\"the watch roster names a working agent's progress as unknown\""
+        "path": "implementations/cli/smoke/watch-output.tsx",
+        "anchor": "assert.match(frame, /\\balice\\b[^\\n]*working - progress unknown/, \"the mounted watch view paints working with unknown progress\")"
       }
     },
     {
