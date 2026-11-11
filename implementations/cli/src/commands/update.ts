@@ -15,6 +15,8 @@ import {
   writeUpdateRecovery,
   readUpdateSettings,
   recordUpdateCompletion,
+  recordUpdateDeferral,
+  recordUpdateReplacement,
   setUpdateSetting,
   bindExtensionPeers,
   claimGlobalNpmUpdateLock,
@@ -283,6 +285,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
 /** Injectable command body: production keeps one process seam; the smoke covers every decision branch. */
 export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}): Promise<number> {
   const current = rt.version();
+  if (self && rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for update preflight");
   const child = childBinding(rt);
   if (child.kind === "invalid") {
     rt.err(c.red(`✗ invalid global update child binding: ${child.reason}; refusing to mutate extensions`));
@@ -763,8 +766,9 @@ function assertConfigAncestorProtected(): void {
 
 async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>): Promise<number> {
   try {
-    if (await rt.reportRunningManager(target) === "legacy") return 1;
+    if (await rt.reportRunningManager(target) === "legacy") { recordUpdateDeferral(targetVersion, "waiting for agents to stop"); return 1; }
   } catch (e) {
+    recordUpdateDeferral(targetVersion, "waiting for agents to stop");
     rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
     return 1;
   }
@@ -775,6 +779,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     // A previous generation must remain downloadable and verified before replacement begins.
     checkReleaseArchives(current, rt);
   } catch (e) {
+    recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
     rt.err(c.red(`✗ cotal-ai@${targetVersion} release is not ready: ${message(e)}. The release is still reaching the registry or registry access failed; no global install was attempted. Check registry access and run \`cotal update --self\` again in a few minutes.`));
     return 1;
   }
@@ -837,6 +842,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     releaseAdmission = await rt.prepareReplacement?.();
   } catch (error) {
     releaseGlobal();
+    recordUpdateDeferral(targetVersion, "waiting for agents to stop");
     rt.err(`update admission refused: ${message(error)}`);
     return 1;
   }
@@ -867,6 +873,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   try {
   rt.out(c.bold("cotal-ai binary"));
   rt.out(c.dim(`installing cotal-ai@${targetVersion} into npm's global installation; this ${current} process remains loaded until the verified global copy takes over`));
+  recordUpdateReplacement(targetVersion);
   writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress", owner: updateClosureOwner(), preparedRestart: rt.preparedRestart?.() ?? false, snapshot: snapshot.path });
   const npmInstall = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`]);
   const installed = await rt.spawnGlobal(
@@ -942,6 +949,8 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       if (restored.status !== 0) throw new Error(failure(restored));
       rt.verifyGlobalEntry(root, current);
       snapshot.restore();
+      await releaseAdmission?.();
+      releaseAdmission = await rt.prepareReplacement?.();
       if (!await reconcileVersion(current)) throw new Error("previous generation reconciliation failed");
       snapshot.discard();
       clearUpdateRecovery();

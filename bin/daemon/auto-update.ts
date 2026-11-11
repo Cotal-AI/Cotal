@@ -68,9 +68,9 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     catch (error) { state = { ...state, result: `waiting for idle Managers: ${error instanceof Error ? error.message : String(error)}`, next: Date.now() + 60_000 }; persist(); return; }
     try {
       if (closed || !status().automatic) return;
-      state = { ...state, failures: state.failures + 1, result: `updating to ${cached.latest}`, next: Date.now() + UPDATE_HOUR_MS };
+      state = { ...state, failures: state.failures, result: `updating to ${cached.latest}`, next: Date.now() + UPDATE_HOUR_MS };
       persist();
-      const result = await new Promise<{ code: number | null; output: string }>(resolve => {
+      await new Promise<{ code: number | null; output: string }>(resolve => {
         const logPath = join(homeCotalDir(), "update-attempt.log");
         const outputFd = openPrivateAppend(logPath);
         ftruncateSync(outputFd, 0);
@@ -81,7 +81,8 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
         child.once("close", code => resolve({ code, output: readOutput() }));
       });
       child = undefined;
-      state = { ...state, result: result.code === 0 ? `updated to ${cached.latest}` : `update failed (${result.code}): ${result.output.trim()}`, next: Date.now() + (result.code === 0 ? UPDATE_DAY_MS : UPDATE_HOUR_MS) };
+      const recorded = JSON.parse(readFileSync(join(homeCotalDir(), "update-attempt.json"), "utf8")) as Attempt;
+      state = recorded;
       persist(); host.report(state.result);
     } finally { if (!closed) await host.abort(); }
   };

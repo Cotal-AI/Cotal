@@ -1701,6 +1701,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           writeFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/desktop-runtime.json"), "{}\n");
           writeFileSync(join(home, "update-attempt.log"), "desktop fixture retained log\n");
         }
+        if (process.argv.includes("--auto-admission-race-repro")) {
+          const gate = join(root, "updater-gate.cjs");
+          writeFileSync(gate, `const fs = require('node:fs'); const net = require('node:net'); const original = net.Socket.prototype.write; if (process.argv.includes('update') && process.argv.includes('--self')) net.Socket.prototype.write = function(chunk, ...args) { if (String(chunk).includes('managers-prepare-restart')) { fs.writeFileSync(${JSON.stringify(join(root, "updater-entered"))}, 'ready'); const end = Date.now() + 60000; while (!fs.existsSync(${JSON.stringify(join(root, "updater-release"))})) { if (Date.now() > end) throw new Error('fixture updater gate timed out'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } } return original.call(this, chunk, ...args); };`);
+          Object.assign(env, { NODE_OPTIONS: `--require=${gate}` });
+        }
         seedUnitReceipt(cliEntry, true);
       }
       const connectorUpgrade = process.argv.includes("--upgrade-connectors-repro");
@@ -2824,6 +2829,17 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           return;
         }
         if (process.argv.includes("--upgrade-repro") || process.argv.includes("--update-repro")) {
+          if (process.argv.includes("--prepare-abort-repro")) {
+            const prepared = await ask(paths.socket, { op: "managers-prepare-restart" });
+            const aborted = await ask(paths.socket, { op: "managers-abort-restart" });
+            console.log("PA CONTROL", JSON.stringify({ prepared, aborted }));
+            const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+            const started = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "start", { name: "prepare_abort_seat", agent: "daemon-smoke", events: false, persona: { prompt: "Owned prepare abort proof.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, target.auth, "owner", 40_000, { instanceId: manager.instanceId });
+            check("PA real seat starts after prepare and abort without update", started.ok, started);
+            if (!started.ok) console.log("PA MANAGER LOG", readFileSync(join(home, "daemon", spaceSegment(ON), "manager", "manager.log"), "utf8").replace(/http:\/\/127\.0\.0\.1:\d+\/#t=\S+/g, "<private-console>"));
+            else await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "stop", { name: "prepare_abort_seat" }, target.auth, "owner", 10_000, { instanceId: manager.instanceId });
+            return;
+          }
           let activeTarget: Awaited<ReturnType<typeof resolveControlTarget>> | undefined;
           if (process.argv.includes("--upgrade-active-repro")) {
             activeTarget = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
@@ -2870,6 +2886,21 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             if (!activeTarget) throw new Error("automatic acceptance requires active seat");
             await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "stop", { name: "npm_upgrade_custody" }, activeTarget.auth, "owner", 10_000, { instanceId: manager.instanceId });
             activeTarget = undefined;
+            if (process.argv.includes("--auto-admission-race-repro")) {
+              const deadline = Date.now() + 90_000;
+              while (!existsSync(join(root, "updater-entered"))) { if (Date.now() > deadline) throw new Error("automatic updater never reached process gate"); await sleep(20); }
+              const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+              const started = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "start", { name: "admission_race", agent: "daemon-smoke", events: false, persona: { prompt: "Owned pre-fence admission race.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, target.auth, "owner", 40_000, { instanceId: manager.instanceId });
+              check("PR real seat enters after daemon idle check before updater fence", started.ok, started);
+              writeFileSync(join(root, "updater-release"), "ready");
+              let status: Record<string, any> = {};
+              for (let i = 0; i < 20; i++) { await sleep(4000); status = (await cli("status", "--space", ON)).doc.result; if (readFileSync(join(home, "update-attempt.log"), "utf8").includes("update admission refused") && status?.update?.lastResult?.includes("waiting for agents to stop")) break; }
+              console.log("PR STATUS", JSON.stringify(status));
+              check("PR updater refuses active seats without replacement or journal", readFileSync(join(home, "update-attempt.log"), "utf8").includes("SEATS_ACTIVE") && status?.update?.failures === 0 && Date.parse(status.update.nextAttempt) - Date.now() > 40_000 && Date.parse(status.update.nextAttempt) - Date.now() <= 60_000 && JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8")).version === "0.151.2" && !existsSync(join(home, "update-recovery.json")), status);
+              const stopped = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "stop", { name: "admission_race" }, target.auth, "owner", 10_000, { instanceId: manager.instanceId });
+              check("PR owned seat survives updater refusal and can be stopped", stopped.ok, stopped);
+              return;
+            }
             if (process.argv.includes("--auto-seat-race-repro")) {
               const deadline = Date.now() + 90_000;
               for (;;) {
@@ -2877,12 +2908,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                 if (Date.now() > deadline) throw new Error("automatic parent never recorded prepared restart");
                 await sleep(5);
               }
-              await ask(paths.socket, { op: "managers-abort-restart" });
-              const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
-              const raced = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "start", { name: "admission_race", agent: "daemon-smoke", events: false, persona: { prompt: "Owned admission race seat.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, target.auth, "owner", 40_000, { instanceId: manager.instanceId });
-              check("AR operator abort admits actual race seat", raced.ok, raced);
+              const abortRace = await ask(paths.socket, { op: "managers-abort-restart" });
+              console.log("AR ABORT", JSON.stringify(abortRace));
+              check("AR authenticated operator abort releases fence", abortRace.ok === true, abortRace);
               writeFileSync(join(root, "race-seat-ready"), "ready\n");
-              try {
+              {
                 const until = Date.now() + 90_000;
                 for (;;) {
                   const log = existsSync(join(home, "update-attempt.log")) ? readFileSync(join(home, "update-attempt.log"), "utf8") : "";
@@ -2891,11 +2921,10 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                   await sleep(20);
                 }
                 check("AR bound child refuses changed real custody", true);
-              } finally {
-                await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "stop", { name: "admission_race" }, target.auth, "owner", 10_000, { instanceId: manager.instanceId });
               }
+              console.log("AR RECOVERY", readFileSync(join(home, "update-recovery.json"), "utf8"), "INSTALLED", readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8"), "UPDATER", readFileSync(join(home, "update-attempt.log"), "utf8"));
               let restored;
-              for (let i = 0; i < 100; i++) {
+              for (let i = 0; i < 20; i++) {
                 restored = await cli("status");
                 if (restored.doc.result?.version === "0.151.2" && restored.doc.result.update?.failures === 1 && restored.doc.result.managers?.[0]?.state === "answering" && JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8")) === null) break;
                 await sleep(4000);

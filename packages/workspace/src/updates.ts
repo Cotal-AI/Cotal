@@ -78,5 +78,19 @@ export function recordUpdateCompletion(version: string, result: string, success:
   save("update-attempt.json", { version, failures: success || !automatic ? 0 : previous?.failures ?? 1, result, next: Date.now() + (success ? 86400_000 : 3600_000) });
 }
 
+/** Count an automatic attempt only after replacement begins. */
+export function recordUpdateReplacement(version: string): void {
+  if (process.env.COTAL_AUTO_UPDATE !== "1") return;
+  const previous = readRecord("update-attempt.json") as { failures?: number } | undefined;
+  save("update-attempt.json", { version, failures: (previous?.failures ?? 0) + 1, result: `updating to ${version}`, next: Date.now() + 3600_000 });
+}
+
+/** Record an automatic attempt that did not begin replacement. */
+export function recordUpdateDeferral(version: string, reason: string, registry = false): void {
+  if (process.env.COTAL_AUTO_UPDATE !== "1") return;
+  const previous = readRecord("update-attempt.json") as { failures?: number } | undefined;
+  save("update-attempt.json", { version, failures: previous?.failures ?? 0, deferred: reason, result: reason, next: Date.now() + (registry ? 3600_000 : 60_000) });
+}
+
 /** Keep a tombstone so completion is an atomic write, rather than an unlink race. */
 export function clearUpdateRecovery(): void { save("update-recovery.json", null); }
