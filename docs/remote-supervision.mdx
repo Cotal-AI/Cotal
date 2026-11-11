@@ -161,6 +161,12 @@ On restart, registration revokes prior credential rows in batches of at most 16 
 Each batch settles before any failure is reported. All prior rows must be revoked and their holders
 verified evicted before registration publishes the successor. A failed revocation leaves the gate
 frozen and keeps completed revocations for recovery.
+Registration reports revoked and total row counts at five-second intervals while batches settle,
+and at completion. If the broker expires the prepare executor, the participant requests fresh
+prepare authority for the same identities and resumes the same frozen operation in that process.
+Already-revoked rows and saved verified-holder progress are retained. A refused authority request
+or a non-expiry failure still stops startup. Historical rows remain retained, so large families
+can require several executor windows.
 
 ### Keep lifecycle changes on the host
 
