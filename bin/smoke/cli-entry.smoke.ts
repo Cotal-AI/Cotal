@@ -78,6 +78,11 @@ function cotal(args: string[], prepare?: (cotalHome: string) => void, extraEnv: 
   const cotalHome = join(root, "home");
   cleanup.push(root, cfg);
   mkdirSync(cotalHome, { recursive: true });
+  // Catalog commands resolve a prepared space's project without starting a broker.
+  if (args[0] === "persona" || args[0] === "personas") {
+    mkdirSync(join(cotalHome, "prepared"), { recursive: true });
+    writeFileSync(join(cotalHome, "prepared", `${spaceSegment("entry")}.json`), JSON.stringify({ space: "entry", root, ts: "2026-10-23T00:00:00.000Z" }));
+  }
   prepare?.(cotalHome);
   const sandbox = recordSmokeSandbox({ root, cotalHome, xdgConfigHome: cfg });
   const options = {
@@ -404,6 +409,9 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     const env = { LC_ALL: "", LC_CTYPE: "", LANG: "", ...set };
     const named = Object.entries(set).map(([key, value]) => `${key}=${value}`).join(" ") || "no locale variable";
     const help = cotal(["help"], undefined, env);
+    const entry = cotal([], undefined, env);
+    check(`under ${named} bare entry uses the locale's send placeholder`,
+      entry.status === 0 && entry.stdout.includes(`cotal send -t <name> "${ascii ? "..." : "…"}"`) && nonAscii.test(entry.stdout) === !ascii, shown(entry));
     const error = cotal(["nope"], undefined, env);
     check(`under ${named} help and an error are ${ascii ? "ASCII" : "drawn with UTF-8 marks"}`,
       help.status === 0 && error.status === 1 && nonAscii.test(help.stdout + error.stderr) === !ascii && error.stderr.startsWith(ascii ? "Request refused\n  unknown command: nope" : "✗ unknown command: nope"), { help: help.stdout.slice(0, 200), error: shown(error) });
