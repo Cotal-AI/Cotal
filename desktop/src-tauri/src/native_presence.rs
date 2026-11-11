@@ -103,7 +103,7 @@ pub async fn desktop_presence(app: AppHandle) -> Result<PresenceView, String> {
 pub fn set_login_preference(app: AppHandle, enabled: bool) -> Result<(), String> {
     let state = app.state::<Presence>();
     let mut p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
-    if enabled && !p.connected { return Err("Connect a space before enabling Open at login.".into()); }
+    if enabled && !p.connected { return Err("Connect this computer before enabling Open at login.".into()); }
     if enabled && transient(&app)? { return Err("Move Cotal to Applications before enabling Open at login.".into()); }
     p.login = Some(enabled);
     apply_login(&app, &p)?;

@@ -27,11 +27,18 @@ pub fn relocation_source(bundle: &Path, downloads: &Path) -> bool {
 
 /// A verified inventory retains login startup during a manager restart, not after disconnect.
 pub fn has_connected_space(result: &serde_json::Value) -> Option<bool> {
+    if let Some(connected) = account_connected(result) { return Some(connected); }
     let managers = result.get("managers")?.as_array()?;
     Some(managers.iter().any(|manager| {
         matches!(manager.get("state").and_then(|v| v.as_str()),
             Some("starting" | "answering" | "restarting" | "refused"))
     }))
+}
+
+fn account_connected(result: &serde_json::Value) -> Option<bool> {
+    let account = result.get("account")?;
+    if account["hostSupport"] != "supported" { return None; }
+    Some(account["mode"] == "account" && account["lastRegistration"].is_string())
 }
 
 /// Describe verified Manager inventory without treating service-only connectivity as ready.
@@ -40,6 +47,17 @@ pub fn tray_status(frame: &serde_json::Value) -> String {
         return if frame["error"]["code"] == "NOT_RUNNING" { "Not connected" } else { "Needs attention" }.into();
     }
     let result = &frame["result"];
+    if let Some(connected) = account_connected(result) {
+        let account = &result["account"];
+        if !connected || account["message"].is_string() { return "Needs attention".into(); }
+        let rows = account["spaces"].as_array();
+        let count = rows.map_or(0, |rows| rows.iter().filter(|row| row["observed"] == "connected").count());
+        if rows.is_some_and(|rows| rows.iter().any(|row| row["lastRefusal"].is_string()
+            || (row["desired"] == true && row["observed"] != "connected"))) {
+            return format!("Needs attention · {count} connected");
+        }
+        return format!("Connected · {count} {}", if count == 1 { "space" } else { "spaces" });
+    }
     if let Some(managers) = result["managers"].as_array() {
         let ready = managers.iter().filter(|m| m["state"] == "answering"
             && m["instanceId"].is_string()
@@ -69,6 +87,16 @@ mod tests {
         assert_eq!(tray_status(&json!({"ok":false,"error":{"code":"NOT_RUNNING"}})), "Not connected");
         assert_eq!(tray_status(&json!({"ok":false,"error":{"code":"NOT_ANSWERING"}})), "Needs attention");
         assert_eq!(tray_status(&json!({"ok":true,"result":{"state":"connected"}})), "Needs attention");
+    }
+    #[test]
+    fn registered_account_keeps_login_and_tray_connected_without_assigned_spaces() {
+        use serde_json::json;
+        let mut result = json!({"managers":[],"account":{"mode":"account","hostSupport":"supported","lastRegistration":"2026-11-11T00:00:00Z","spaces":[]}});
+        assert_eq!(has_connected_space(&result), Some(true));
+        assert_eq!(tray_status(&json!({"ok":true,"result":result.clone()})), "Connected · 0 spaces");
+        result["account"]["mode"] = json!("sign-in-required");
+        assert_eq!(has_connected_space(&result), Some(false));
+        assert_eq!(tray_status(&json!({"ok":true,"result":result})), "Needs attention");
     }
     #[test]
     fn login_defaults_only_when_connected_and_opt_out_survives_reconnect() {

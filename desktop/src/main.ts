@@ -586,7 +586,7 @@ function openSettings(): void {
   const select = el<HTMLSelectElement>("space");
   for (const option of select.options) option.hidden = false;
   if (!connections.has(select.value)) select.value = connections.keys().next().value ?? select.value;
-  if (connections.size || completedSetup || listOpened) {
+  if (connections.size || completedSetup || listOpened || computerAccount?.hostSupport === "supported") {
     listOpened = true; showStage("finished");
   }
   void refresh();
