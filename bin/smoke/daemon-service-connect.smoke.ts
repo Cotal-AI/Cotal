@@ -1570,14 +1570,26 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       if (process.argv.includes("--update-repro")) {
         npmRegistry = createHttpServer((request, response) => {
           response.setHeader("content-type", "application/json");
-          if (request.url?.includes(".tgz")) { response.setHeader("content-type", "application/octet-stream"); response.end(readFileSync(join(upgradeFixture!, "cotal-ai-0.151.3.tgz"))); return; }
-          const metadata = JSON.parse(readFileSync(join(upgradeFixture!, "hoisted-fix2-0.151.3/package.json"), "utf8"));
-          const bytes = readFileSync(join(upgradeFixture!, "cotal-ai-0.151.3.tgz"));
-          response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: "0.151.3" }, versions: { "0.151.3": { ...metadata, dist: { tarball: `${npmRegistryUrl}/cotal-ai-0.151.3.tgz`, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` } } } }));
+          const requestedVersion = request.url?.includes("0.151.2") ? "0.151.2" : "0.151.3";
+          if (request.url?.includes(".tgz")) { response.setHeader("content-type", "application/octet-stream"); response.end(readFileSync(join(upgradeFixture!, `cotal-ai-${requestedVersion}.tgz`))); return; }
+          const versions = Object.fromEntries(["0.151.2", "0.151.3"].map(version => {
+            const name = decodeURIComponent((request.url ?? "/cotal-ai").slice(1).split("?")[0]!);
+            const packageName = name.startsWith("@cotal-ai/") ? name : "cotal-ai";
+            const packageRoot = join(upgradeFixture!, `hoisted-fix2-${version}`);
+            const metadata = JSON.parse(readFileSync(join(packageRoot, ...(packageName === "cotal-ai" ? [] : ["node_modules", packageName]), "package.json"), "utf8"));
+            const bytes = readFileSync(join(upgradeFixture!, `cotal-ai-${version}.tgz`));
+            return [version, { ...metadata, dist: { tarball: `${npmRegistryUrl}/cotal-ai-${version}.tgz`, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` } }];
+          }));
+          response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: "0.151.3" }, versions }));
         });
         await new Promise<void>((resolve) => npmRegistry!.listen(0, "127.0.0.1", resolve));
         npmRegistryUrl = `http://127.0.0.1:${(npmRegistry.address() as AddressInfo).port}`;
         env.npm_config_registry = npmRegistryUrl;
+        if (process.argv.includes("--auto-update-repro")) {
+          writeFileSync(join(home, "update-settings.json"), JSON.stringify({ v: 1, auto: false, notify: true }));
+          writeFileSync(join(home, "update-check.json"), JSON.stringify({ v: 1, latest: "0.151.3", checkedAt: Date.now(), attemptedAt: Date.now(), firstSeenAt: Date.now() - 3601_000 }));
+          writeFileSync(join(home, "update-attempt.json"), JSON.stringify({ version: "0.151.3", failures: 0, result: "fixture due", next: 0 }));
+        }
       }
       let cliEntry = join(repo, "bin", "dist", "cotal.js");
       const npmRun = async (args: string[]) => {
@@ -2721,7 +2733,26 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             const launched = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "start", { name: "npm_upgrade_custody", agent: "daemon-smoke", events: false, persona: { prompt: "Owned direct upgrade custody smoke.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, activeTarget.auth, "owner", 40_000, { instanceId: manager.instanceId });
             check("U1 direct upgrade starts with a real legacy seat", launched.ok, launched.error);
           }
-          if (process.argv.includes("--update-repro")) {
+          if (process.argv.includes("--auto-update-repro")) {
+            check("AU off preserves installed generation", JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8")).version === "0.151.2");
+            writeFileSync(join(home, "update-settings.json"), JSON.stringify({ v: 1, auto: true, notify: true }));
+            await sleep(35_000);
+            const waiting = await cli("status", "--space", ON);
+            check("AU automatic update waits for a running seat", waiting.doc.result?.version === "0.151.2" && waiting.doc.result?.update?.lastResult?.includes("waiting for idle"), waiting);
+            if (!activeTarget) throw new Error("automatic acceptance requires active seat");
+            await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, activeTarget.server, "stop", { name: "npm_upgrade_custody" }, activeTarget.auth, "owner", 10_000, { instanceId: manager.instanceId });
+            activeTarget = undefined;
+            let upgraded;
+            for (let i = 0; i < 180; i++) {
+              try {
+                upgraded = await cli("status", "--space", ON);
+                if (upgraded.doc.result?.version === "0.151.3" && upgraded.doc.result?.managers?.[0]?.state === "answering") break;
+                if (upgraded.doc.result?.update?.lastResult?.startsWith("update failed")) break;
+              } catch { /* Native generation restart is in flight. */ }
+              await sleep(1000);
+            }
+            check("AU daemon installs fixture release without an update command", upgraded?.doc.result?.version === "0.151.3" && upgraded.doc.result?.managers?.[0]?.state === "answering", upgraded);
+          } else if (process.argv.includes("--update-repro")) {
             const other = ctx[1]!;
             grantActor(other.stateDir, { owner: deriveOwnerForIdpSubject((await loadOwnerSecret(other.store, OFF))!, idpOrigin, "machine-owner"), actor: "cli", scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
             const secondStore = new MemoryStore({ kind: "injected", coordinate: `memory:delivery:${OFF}` });

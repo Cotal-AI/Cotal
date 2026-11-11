@@ -36,6 +36,7 @@ import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
+import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
 import { SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
@@ -411,6 +412,7 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
 async function serve(args: ParsedArgs): Promise<void> {
   const { paths, home } = resolveTarget(args);
   let running;
+  let updates: ReturnType<typeof automaticUpdates> | undefined;
   let owned = false;
   let provenance = new AbortController();
   const loggedReasons = new Set<string>();
@@ -435,13 +437,14 @@ async function serve(args: ParsedArgs): Promise<void> {
     return stopObservation;
   };
   try {
-    running = await serveDaemon({ paths, version: binVersion(), peerUid, stopAllowed,
+    running = await serveDaemon({ paths, updateStatus: () => updates?.status() ?? { current: binVersion(), automatic: false, failures: 0, lastResult: "starting" }, version: binVersion(), peerUid, stopAllowed,
       ...(process.platform === "win32" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" ? { admit: () => admitWindowsNativeDaemon(paths, home) } : {}),
       log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
   } catch (e) {
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
     throw asFailure(e);
   }
+  updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && owned, prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
   const ownership = observe();
   await new Promise<void>((resolve, reject) => {
@@ -461,11 +464,12 @@ async function serve(args: ParsedArgs): Promise<void> {
         // mutates the shared connector store or reopens admission over a partial replacement.
         process.stderr.write(`daemon: installed CLI ${version} validated; stopping owned children for native service restart\n`);
         stopWatching();
+        await updates?.close();
         await running.close();
         resolve();
       }, (line) => process.stderr.write(`${line}\n`), (version, reason) => running.generationPending(version, reason), verified);
     });
-    const stop = () => { closed = true; provenance.abort(); stopWatching(); void running.close().then(resolve, reject); };
+    const stop = () => { closed = true; provenance.abort(); stopWatching(); void updates!.close().then(() => running.close()).then(resolve, reject); };
     void running.stopped.then(stop, reject);
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);

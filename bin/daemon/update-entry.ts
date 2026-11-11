@@ -15,7 +15,19 @@ registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
   let hostedSpaces: string[] = [];
   let daemonObserved = false;
-  await update(args, { ...updateRuntime, waitForInstalledGeneration: waitForInstalledDaemonGeneration, reportRunningManager: (flags) => withRemoteExchangeRetry(async () => {
+  await update(args, { ...updateRuntime, async prepareReplacement() {
+    if (process.env.COTAL_AUTO_UPDATE !== "1" || !daemonObserved) return async () => {};
+    const paths = daemonPaths();
+    await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
+    return async () => {
+      try {
+        const current = await queryDaemon({ paths });
+        if (current.ok && current.result.version === updateRuntime.version()) await managerViaDaemon({ paths }, { op: "managers-abort-restart" });
+      } catch (error) {
+        if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(error.code)) throw error;
+      }
+    };
+  }, waitForInstalledGeneration: waitForInstalledDaemonGeneration, reportRunningManager: (flags) => withRemoteExchangeRetry(async () => {
     let managers;
     try {
       const reply = await queryDaemon({ paths: daemonPaths() });

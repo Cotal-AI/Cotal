@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { readUpdateRecovery } from "@cotal-ai/workspace";
 import { globalConfigDir } from "@cotal-ai/core";
 import { fileURLToPath } from "node:url";
 
@@ -72,6 +73,7 @@ export function watchDaemonGeneration(version: string, changed: (version: string
   };
   const timer = setInterval(() => {
     if (busy || closed) return;
+    try { if (readUpdateRecovery()?.phase === "paused") return; } catch { return; }
     let next: string;
     try {
       const pkg = JSON.parse(readFileSync(file, "utf8"));

@@ -1,5 +1,7 @@
+import { readUpdateRecovery } from "./updates.js";
 import { spawn } from "node:child_process";
 import { acquireLock } from "@cotal-ai/core";
+import { cmdSpawnSpec } from "./win-cmd.js";
 import { join } from "node:path";
 import { homeCotalDir } from "./cotal-home.js";
 import { readFileSync } from "node:fs";
@@ -36,7 +38,8 @@ export async function checkForUpdate(): Promise<UpdateCheck | undefined> {
     const cached = readUpdateCheck();
     if (cached && now - (cached.checkedAt ?? 0) < UPDATE_DAY_MS && !cached.error || cached && now - cached.attemptedAt < UPDATE_HOUR_MS) return cached;
     const result = await new Promise<{ version?: string; error?: string }>(resolve => {
-      const child = spawn(process.platform === "win32" ? "npm.cmd" : "npm", ["view", "cotal-ai@latest", "version", "--json", "--fetch-retries=0", "--fetch-timeout=3000", "--update-notifier=false"], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      const command = cmdSpawnSpec("npm", ["view", "cotal-ai@latest", "version", "--json", "--fetch-retries=0", "--fetch-timeout=3000", "--update-notifier=false"]);
+      const child = spawn(command.file, command.args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, windowsVerbatimArguments: command.windowsVerbatimArguments });
       let stdout = "";
       const timeout = setTimeout(() => child.kill(), 4000);
       child.stdout.on("data", chunk => { stdout += chunk; if (stdout.length > 8192) child.kill(); });
@@ -66,6 +69,10 @@ export function newerUpdate(latest: string, current: string): boolean {
 }
 
 export function cachedUpdateSummary(current: string): string {
+  try {
+    const recovery = readUpdateRecovery();
+    if (recovery) return `update needs repair: installed ${recovery.installed}; automatic updates paused; run cotal update --self`;
+  } catch { return "update state unreadable; automatic updates paused"; }
   const cached = readUpdateCheck();
   return !cached?.latest ? "update status unknown" : newerUpdate(cached.latest, current) ? `newer version ${cached.latest} available` : "up to date";
 }

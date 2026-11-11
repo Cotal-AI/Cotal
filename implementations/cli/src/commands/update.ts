@@ -89,6 +89,8 @@ export interface UpdateRuntime {
   /** Why a first-party extension still needs its reinstall at `generation`, or undefined once it is kept. */
   verifyExtension(entry: InstalledExtension, generation: string): string | undefined;
   claimUpdatePass(): () => void;
+  /** Reserve empty hosted Manager admission after continuity checks, before replacement. */
+  prepareReplacement?(): Promise<() => Promise<void>>;
   claimGlobalUpdate(root: string): () => void;
   selfArgv(): string[];
   /** Whether this CLI runs from a source checkout, where `--self` installs a separate global copy. */
@@ -763,6 +765,14 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     return 1;
   }
 
+  let releaseAdmission: (() => Promise<void>) | undefined;
+  try {
+    releaseAdmission = await rt.prepareReplacement?.();
+  } catch (error) {
+    releaseGlobal();
+    rt.err(`update admission refused: ${message(error)}`);
+    return 1;
+  }
   // npm replaces the live package tree. Keep custody until it and the verified reconcile
   // finish, even when the terminal sends Ctrl-C during that replacement.
   let interrupted = 0;
@@ -858,8 +868,10 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     }
   }
   } finally {
-    try { releaseGlobal(); }
-    finally {
+    try {
+      try { await releaseAdmission?.(); }
+      finally { releaseGlobal(); }
+    } finally {
       process.off("SIGINT", onInt);
       process.off("SIGTERM", onTerm);
     }
