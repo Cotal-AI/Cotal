@@ -48,7 +48,8 @@ let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "ai.co
 guard apps.count == 1, apps[0].activationPolicy == .regular else { fatalError("Cotal is not one regular Dock application") }
 let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]
 guard windows.contains(where: { ($0[kCGWindowOwnerPID as String] as? Int32) == apps[0].processIdentifier && ($0[kCGWindowLayer as String] as? Int) == 0 }) else { fatalError("No visible Cotal window") }
-print("regular activation policy and visible top-level window", apps[0].processIdentifier)
+guard apps[0].isActive else { fatalError("Shown Cotal application did not regain focus") }
+print("regular activation policy, active application and visible top-level window", apps[0].processIdentifier)
 SWIFT
 sleep 4
 swift "$out/query.swift" | tee "$out/visible-before.txt"
@@ -87,8 +88,8 @@ swift "$out/hidden.swift" | tee "$out/hidden-before-reopen.txt"
 /usr/bin/osascript <<'APPLESCRIPT' > "$out/menu-position.txt"
 tell application "System Events"
   tell process "cotal-desktop"
-    set p to position of menu bar item 1 of menu bar 2
-    set s to size of menu bar item 1 of menu bar 2
+    set p to position of menu bar item 1 of last menu bar
+    set s to size of menu bar item 1 of last menu bar
     set x to ((item 1 of p) + (item 1 of s) / 2) as text
     set y to ((item 2 of p) + (item 2 of s) / 2) as text
     return x & "," & y
@@ -120,8 +121,8 @@ APPLESCRIPT
 /usr/bin/osascript <<'APPLESCRIPT' > "$out/menu-bar.txt"
 tell application "System Events"
   tell process "cotal-desktop"
-    set titles to name of every menu item of menu 1 of menu bar item 1 of menu bar 2
-    repeat with requiredTitle in {"Settings…", "Open dashboard", "Quit Cotal"}
+    set titles to name of every menu item of menu 1 of menu bar item 1 of last menu bar
+    repeat with requiredTitle in {"Settings…", "Open dashboard", "Quit app (computer stays connected)"}
       if titles does not contain (requiredTitle as text) then error "Missing tray menu action: " & requiredTitle
     end repeat
     return titles
@@ -131,7 +132,7 @@ APPLESCRIPT
 /usr/bin/osascript <<'APPLESCRIPT'
 tell application "System Events"
   tell process "cotal-desktop"
-    click menu item "Settings…" of menu 1 of menu bar item 1 of menu bar 2
+    click menu item "Settings…" of menu 1 of menu bar item 1 of last menu bar
   end tell
 end tell
 APPLESCRIPT
@@ -160,11 +161,34 @@ sleep 4
 cat > "$out/background.swift" <<'SWIFT'
 import AppKit
 let app = NSRunningApplication.runningApplications(withBundleIdentifier: "ai.cotal.desktop")
-guard app.count == 1, app[0].activationPolicy == .regular else { fatalError("Background app missing Dock identity") }
+guard app.count == 1, app[0].activationPolicy == .accessory else { fatalError("Background app retained a Dock icon") }
 let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]
 guard !windows.contains(where: { ($0[kCGWindowOwnerPID as String] as? Int32) == app[0].processIdentifier && ($0[kCGWindowLayer as String] as? Int) == 0 }) else { fatalError("Background launch showed a window") }
-print("background launch kept window hidden")
+print("background launch kept window hidden with accessory activation policy")
 SWIFT
 swift "$out/background.swift" | tee "$out/background.txt"
+# LaunchServices is the same reopen path used by Finder and Spotlight.
+/usr/bin/open "$app"
+sleep 2
+swift "$out/query.swift" | tee "$out/visible-after-background-reopen.txt"
+/usr/bin/osascript <<'APPLESCRIPT'
+tell application "System Events"
+  tell process "cotal-desktop" to click button 1 of window 1
+end tell
+APPLESCRIPT
+sleep 2
+swift "$out/hidden.swift" | tee "$out/hidden-before-link.txt"
+/usr/bin/open 'cotal://connect?idp=https%3A%2F%2Fexample.com&space=presence-check'
+sleep 2
+swift "$out/query.swift" | tee "$out/visible-after-link.txt"
+/usr/bin/osascript <<'APPLESCRIPT' > "$out/restored-app-menu.txt"
+tell application "System Events"
+  tell process "cotal-desktop"
+    if not frontmost then error "Restored Cotal window is not focused"
+    if not (exists menu bar 1) then error "Restored application menu is missing"
+    get name of every menu bar item of menu bar 1
+  end tell
+end tell
+APPLESCRIPT
 /usr/bin/osascript -e 'tell application id "ai.cotal.desktop" to quit'
-printf '{"platform":"macOS","architecture":"%s","result":"passed","checks":["dmg-install","layout-recorded","regular-activation","visible-window","close-hidden","menu-bar-actions","settings-restore","reopen","quit","disconnected-login-absent","background-hidden"]}\n' "$(uname -m)" > "$out/result.json"
+printf '{"platform":"macOS","architecture":"%s","result":"passed","checks":["dmg-install","layout-recorded","regular-activation","visible-window","close-hidden-accessory","menu-bar-actions","settings-restore","reopen","quit","disconnected-login-absent","background-hidden-accessory","background-reopen","deep-link-restore","restored-focus-menu"]}\n' "$(uname -m)" > "$out/result.json"
