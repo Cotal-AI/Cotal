@@ -53,6 +53,9 @@ import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsAr
 import { recoverPausedTask } from "../daemon/restart-recovery.js";
 
 let pass = 0, fail = 0;
+const check = (name: string, cond: boolean, extra?: unknown) => {
+  if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
+};
 for (const scenario of ["old", "absent", "ambiguous", "changed", "pending"] as const) {
   let enables = 0;
   let absent = 0;
@@ -67,15 +70,11 @@ for (const scenario of ["old", "absent", "ambiguous", "changed", "pending"] as c
     });
   } catch { /* The assertions below require no enable on ambiguity. */ }
   const safe = scenario === "old" || scenario === "absent";
-  if (enables === Number(safe) && (!safe || message.includes(scenario === "old" ? "pinned old daemon" : "no daemon runs")) && (scenario !== "old" || absent === 0)) pass++;
-  else { fail++; console.error(`recovery policy failed: ${scenario}`); }
+  check(`recovery policy ${scenario}: only verified safe cases enable autostart`, enables === Number(safe) && (!safe || message.includes(scenario === "old" ? "pinned old daemon" : "no daemon runs")) && (scenario !== "old" || absent === 0));
 }
 
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
 const restartSource = readFileSync(new URL("../daemon/install.ts", import.meta.url), "utf8").split("async function restartWindowsInstalled")[1]!.split("/** Restart only")[0]!;
-check("production restart retains its pinned socket until finally recovery completes", !restartSource.split("} finally { clearInterval(heartbeat)")[0]!.includes("socket.destroy()") && restartSource.includes("socket?.destroy(); exclusion?.release();"));
+check("source inspection: production restart retains its pinned socket until finally recovery completes", !restartSource.split("} finally { clearInterval(heartbeat)")[0]!.includes("socket.destroy()") && restartSource.includes("socket?.destroy(); exclusion?.release();"));
 const code = (fn: () => unknown): string => {
   try { fn(); return "none"; } catch (e) { return e instanceof CommandFailure ? e.code : `throw:${(e as Error).message}`; }
 };
