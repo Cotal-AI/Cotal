@@ -14,7 +14,6 @@ export function defaultComputerName(): string {
       } catch { /* An unset persistent preference uses the next documented name. */ }
     }
   }
-  if (process.platform === "win32") return computerName(execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "[System.Environment]::MachineName"], { encoding: "utf8", timeout: 5000, windowsHide: true }).trim());
   return computerName(hostname());
 }
 const pathFor = (home: string) => join(home, "daemon", "computer-name.json");

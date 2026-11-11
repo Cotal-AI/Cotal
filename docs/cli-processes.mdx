@@ -602,9 +602,11 @@ Setup prints these commands with `--space=<s>` so names beginning with a hyphen 
 
 The daemon owns this computer's name. Read it with `cotal daemon name`, or set it with
 `cotal daemon name "<name>"`. Names are trimmed and contain 1 to 128 characters without control
-characters or line breaks. The saved name survives restarts and is sent on every registration;
-a change registers again immediately. The initial name is macOS ComputerName, then LocalHostName
-or hostname when unset, Windows MachineName, or the Linux hostname. A future dashboard rename
+characters or line breaks. The saved name survives restarts and is sent on every registration.
+Saving answers locally without waiting for the account host and schedules registration immediately.
+If the host is unavailable, the next successful heartbeat carries the saved name. Status reads the
+name held since daemon startup, updated on save. The initial name is macOS ComputerName, then
+LocalHostName or hostname when unset, or the Windows or Linux hostname. A future dashboard rename
 must go through a desired name the computer adopts, rather than overwrite the host's copy.
 
 After sign-in, the daemon registers an account computer with hosts that support it.

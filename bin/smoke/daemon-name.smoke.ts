@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, mkdirSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, statSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -11,8 +11,9 @@ import { exchangeDesktopRequest } from "../daemon/desktop.js";
 const root = mkdtempSync(join(tmpdir(), "ownacct-name-"));
 Object.assign(process.env, { HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_HOME: join(root, "cotal"), XDG_RUNTIME_DIR: join(root, "rt") });
 for (const dir of [process.env.HOME!, process.env.COTAL_HOME!, process.env.XDG_RUNTIME_DIR!]) mkdirSync(dir, { recursive: true, mode: 0o700 });
-let registeredName = "", puts = 0, idp = "";
+let registeredName = "", puts = 0, idp = "", hold = false;
 const fixture = createServer(async (req, res) => {
+  if (hold) return;
   res.setHeader("content-type", "application/json");
   const machine = req.url?.match(/^\/api\/cli\/machines\/([0-9a-f-]+)(\/spaces)?$/);
   if (!machine) { res.writeHead(404); res.end("{}"); return; }
@@ -40,15 +41,34 @@ try {
   const before = puts;
   const reply = await exchangeDesktopRequest({ paths }, { op: "name", name: "  David's computer  " });
   check(reply.ok && !("event" in reply) && "computer" in reply.result && reply.result.computer === "David's computer", "name request trims and reports persisted name");
-  check(puts > before && registeredName === "David's computer", "save immediately sends registration name");
+  const registrationDeadline = Date.now() + 1500;
+  while (registeredName !== "David's computer" && Date.now() < registrationDeadline) await new Promise(resolve => setTimeout(resolve, 10));
+  check(puts > before && registeredName === "David's computer", "save promptly sends registration name without gating reply");
   check((statSync(join(machineHome, "daemon", "computer-name.json")).mode & 0o777) === 0o600, "name record is private");
-  for (const name of ["", "a\nb", "a".repeat(129)]) {
+  const namePath = join(machineHome, "daemon", "computer-name.json");
+  renameSync(namePath, `${namePath}.held`);
+  try {
+    const statusStarted = Date.now();
+    check(daemon.status().computer === "David's computer" && Date.now() - statusStarted < 100, "status uses held name without reading missing record");
+  } finally { renameSync(`${namePath}.held`, namePath); }
+  for (const name of ["","a\nb", "a".repeat(129)]) {
     const invalid = await exchangeDesktopRequest({ paths }, { op: "name", name });
     check(!invalid.ok, "invalid name refused");
   }
   check(JSON.parse(await cli(["CLI computer", "--json"])).result.computer === "CLI computer", "CLI setter json");
   check((await cli(["--plain"])).includes("CLI computer"), "CLI plain getter");
   check((await cli([])).includes("CLI computer"), "CLI human getter");
+  hold = true;
+  const started = Date.now();
+  const offline = await exchangeDesktopRequest({ paths, timeoutMs: 1500 }, { op: "name", name: "Offline computer" });
+  check(offline.ok && Date.now() - started < 1500, "unreachable host rename answers locally within 1500ms");
+  check(daemon.status().computer === "Offline computer", "offline save immediately updates status");
+  hold = false;
+  fixture.closeAllConnections();
+  const deadline = Date.now() + 12_000;
+  while (registeredName !== "Offline computer" && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+  check(registeredName === "Offline computer", "next successful heartbeat carries offline name");
+  await cli(["CLI computer", "--json"]);
   await daemon.close();
   daemon = await serveDaemon({ paths, version: "test", sessionDir: machineHome });
   await new Promise(resolve => setTimeout(resolve, 100));

@@ -17,7 +17,6 @@
  */
 import { chmodSync, closeSync, linkSync, unlinkSync, lstatSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { readComputerName } from "./computer-name.js";
 import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
@@ -156,7 +155,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
-    computer: readComputerName(machineHome),
+    computer: account.name(),
     state: "ready",
     protocol: DAEMON_PROTOCOL_VERSION,
     version: opts.version,

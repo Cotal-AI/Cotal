@@ -8,6 +8,8 @@ import type { createAccountReconciler } from "./account-reconcile.js";
 
 /** Poll account intent without interpreting transport failure as an empty desired set. */
 export function createAccountComputer(home: string, version: string, reconciler: ReturnType<typeof createAccountReconciler>) {
+  let name = readComputerName(home);
+  const pendingNames = new Set<string>();
   let state: AccountComputerStatus = { mode: "signed-out", hostSupport: "unknown", spaces: [] };
   const contexts = new Map<string, { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void> }>();
   const tasks = new Set<Promise<void>>();
@@ -24,24 +26,25 @@ export function createAccountComputer(home: string, version: string, reconciler:
       const machineId = accountComputerId(home, account);
       const context: NonNullable<ReturnType<typeof contexts.get>> = contexts.get(account.ownerKey) ?? { state: { machineId, mode: "account", hostSupport: "unknown", spaces: [] } as AccountComputerStatus, lastHeartbeat: 0, abort: new AbortController() };
       const session = loadIdpSession(home, account.idpUrl);
-      Object.assign(context.state, { idpUrl: account.idpUrl, sub: account.sub, label: session?.label, computer: readComputerName(home) });
+      Object.assign(context.state, { idpUrl: account.idpUrl, sub: account.sub, label: session?.label, computer: name });
       contexts.set(account.ownerKey, context);
       state = context.state;
       if (context.work || context.state.mode === "per-space" || context.state.mode === "sign-in-required") return;
-      context.work = poll().catch((error: unknown) => { context.state.message = error instanceof Error && error.message.startsWith("invalid computer") ? error.message : "account computer request failed; existing connections are unchanged"; }).finally(() => { tasks.delete(context.work!); context.work = undefined; });
+      context.work = poll().catch((error: unknown) => { context.state.message = error instanceof Error && error.message.startsWith("invalid computer") ? error.message : "account computer request failed; existing connections are unchanged"; }).finally(() => { tasks.delete(context.work!); context.work = undefined; if (!stopped && pendingNames.delete(account.ownerKey)) void tick().catch(() => {}); });
       tasks.add(context.work);
       async function poll() {
     const state = context.state;
     const call = (method: "PUT" | "GET") => requestAccountMachine({ dir: home, idpUrl: account.idpUrl, machineId, method, signal: AbortSignal.any([abort.signal, context.abort.signal]),
-      ...(method === "GET" ? { etag: context.etag } : { metadata: { name: readComputerName(home), platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version } }) });
+      ...(method === "GET" ? { etag: context.etag } : { metadata: { name, platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version } }) });
     if (Date.now() - context.lastHeartbeat >= 60_000) {
+      const sentName = name;
       const result = await call("PUT");
       if (result.status === 404) { state.mode = "per-space"; state.hostSupport = "unsupported"; state.message = "account computers unsupported; existing per-space connections remain local"; return; }
       if (result.status === 401 || result.status === 403) { state.mode = "sign-in-required"; state.message = "sign in again"; return; }
       if (result.status !== 200 && result.status !== 201) throw new Error("computer registration unavailable");
       const body = result.body as { v?: unknown; machine?: { id?: unknown; lastSeenAt?: unknown } } | undefined;
       if (body?.v !== 1 || body.machine?.id !== machineId || typeof body.machine.lastSeenAt !== "string" || !Number.isFinite(Date.parse(body.machine.lastSeenAt))) throw new Error("invalid computer registration response");
-      context.lastHeartbeat = Date.now(); state.lastRegistration = body.machine.lastSeenAt; state.hostSupport = "supported";
+      context.lastHeartbeat = sentName === name ? Date.now() : 0; state.lastRegistration = body.machine.lastSeenAt; state.hostSupport = "supported";
     }
     context.abort.signal.throwIfAborted();
     const result = await call("GET");
@@ -121,14 +124,15 @@ export function createAccountComputer(home: string, version: string, reconciler:
   return {
     /** Start polling and settle every account's initial attempt before saved hosting resumes. */
     async start() { run(); await work; await Promise.all([...tasks]); }, intent,
-    async rename(value: string) {
-      const name = saveComputerName(home, value);
-      await Promise.all([...tasks]);
-      for (const context of contexts.values()) {
+    name: () => name,
+    rename(value: string) {
+      name = saveComputerName(home, value);
+      for (const [owner, context] of contexts) {
+        if (context.work) pendingNames.add(owner);
         context.lastHeartbeat = 0; context.state.computer = name;
       }
-      await tick();
-      await Promise.all([...tasks]);
+      // Polling owns network work. Saving a local preference never waits for a host.
+      void tick().catch(() => { state.message = "account computer request failed; existing connections are unchanged"; });
       return name;
     },
     signedIn() { for (const context of contexts.values()) context.abort.abort(); contexts.clear(); if (timer) clearTimeout(timer); run(); },
