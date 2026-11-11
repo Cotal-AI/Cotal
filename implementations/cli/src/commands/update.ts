@@ -167,7 +167,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
     if (value !== undefined) setUpdateSetting(key, value === "on");
     const settings = readUpdateSettings();
     rt.out(`${key === "auto" ? "Automatic updates" : "Update notices"}: ${settings[key] ? "on" : "off"}${rt.env.COTAL_NO_UPDATE_CHECK === "1" ? " (disabled by COTAL_NO_UPDATE_CHECK=1)" : ""}`);
-    if (key === "auto") rt.out("Automatic installation is available on Linux in this release. Run cotal update --self here for a manual update.");
+    if (key === "auto" && process.platform !== "linux") rt.out("Automatic installation is available on Linux in this release. Run cotal update --self here for a manual update.");
     if (key === "auto" && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) rt.out("This runtime belongs to the desktop app. Automatic npm updates have no effect here; update the desktop app with its signed platform installer.");
     return;
   }
