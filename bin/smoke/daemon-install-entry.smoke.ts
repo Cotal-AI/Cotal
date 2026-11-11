@@ -1,12 +1,13 @@
 /** The scheduled-task entry belongs to the stock build and starts the same real daemon as the CLI. */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { mkSecretDir } from "@cotal-ai/core";
 import { createSuite, killAndAwaitExit } from "@cotal-ai/smoke-kit";
-import { renderScheduledTask } from "../daemon/install-win32.js";
+import { renderScheduledTask, scheduledTaskName } from "../daemon/install-win32.js";
+import { windowsUserSid } from "@cotal-ai/seat";
 
 const suite = createSuite();
 const repo = resolve(import.meta.dirname, "../..");
@@ -38,6 +39,13 @@ for (const [label, entry] of [["native", native], ["ordinary", cli]] as const) {
   const cotalHome = join(fixture, "operator");
   mkSecretDir(cotalHome);
   Object.assign(env, { COTAL_HOME: cotalHome, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" });
+  if (process.platform === "win32" && label === "native") {
+    const sid = windowsUserSid();
+    const definition = renderScheduledTask({ sid, argv: [process.execPath, cli, "daemon", "serve", "--daemon-home", home], workingDirectory: fixture });
+    const unitPath = join(home, "service-task.xml");
+    writeFileSync(unitPath, definition.bytes, { mode: 0o600 });
+    writeFileSync(join(home, "service-unit.json"), JSON.stringify({ v: 1, mechanism: "scheduled-task", unit: scheduledTaskName(home, sid), unitPath, unitSha256: definition.sha256, installedAt: new Date().toISOString(), daemonHome: home }), { mode: 0o600 });
+  }
   const status = () => {
     const result = spawnSync(process.execPath, [cli, "daemon", "status", "--daemon-home", home, "--json"], { cwd: fixture, env, encoding: "utf8", timeout: 15_000 });
     let body: { result?: { state?: string; pid?: number }; error?: { cause?: { code?: string } } } | undefined;
@@ -65,6 +73,11 @@ for (const [label, entry] of [["native", native], ["ordinary", cli]] as const) {
     suite.check(`${label}: owned child is stopped`, child.exitCode !== null || child.signalCode !== null || Boolean(spawnError));
     const stopped = status();
     suite.check(`${label}: stopped endpoint refuses NOT_RUNNING`, stopped.code === 2 && stopped.cause === "NOT_RUNNING", stopped);
+    if (process.platform === "win32" && label === "native") {
+      rmSync(join(home, "service-unit.json"));
+      const delayed = spawnSync(process.execPath, [entry, "daemon", "serve", "--daemon-home", home], { cwd: fixture, env, encoding: "utf8", timeout: 20_000 });
+      suite.check("native: delayed start after receipt removal refuses without publishing", delayed.status !== 0 && delayed.status !== null && status().cause === "NOT_RUNNING", { code: delayed.status, error: delayed.error?.message });
+    }
     writeFileSync(join(fixture, "stdout.log"), stdout);
     writeFileSync(join(fixture, "stderr.log"), stderr);
   }

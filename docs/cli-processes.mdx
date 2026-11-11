@@ -858,7 +858,26 @@ the CLI. The task starts at this user's logon and runs with the user's own token
 stored and a standard account can install it without elevation. Its logon trigger repeats every
 minute and skips a start while the daemon runs, so a daemon that exits starts again within a
 minute. The daemon is a console program, so its console window shows in the user's session.
-`uninstall` disables, ends and deletes the task, then removes the definition.
+`uninstall` disables, ends and deletes the task. Before removing its definition and receipt,
+it also confirms that the daemon process and its local endpoint have stopped. An owned launcher
+exiting does not by itself prove that its Node child stopped.
+
+For a running daemon, uninstall holds a connection authenticated against the daemon's kernel
+process identity and lifetime record. A native-launch-verified daemon acknowledges a stop request
+on that connection, then closes its Managers, service connections and endpoint only when uninstall
+commits shutdown after native removal succeeds. A dropped connection or failed native removal does
+not commit shutdown. A foreground daemon refuses this request. Uninstall never signals a process
+by name or an unverified PID. If shutdown cannot be confirmed within 130 seconds, it reports an
+unknown outcome and retains the source and receipt for inspection and retry. A connection reset
+during shutdown is rechecked within that bound, never counted as endpoint absence.
+Native stop can also close the pinned connection before its reply. That transport loss still
+requires confirmation that the original process is gone and the endpoint no longer answers.
+When the daemon is not running, uninstall takes its lifetime exclusion before native removal and
+confirms endpoint absence under that exclusion before deleting the source and receipt. A live
+recorded process without a verified answering endpoint remains an uncertain outcome.
+The updated Windows native runtime checks its recorded source under the lifetime lock before
+publishing. Uninstall holds that same lock through its final endpoint check and removal of both
+the source and receipt, so a delayed updated native child cannot publish after removal.
 
 The task's native entry writes its output to `daemon.log` in the daemon's state directory,
 replacing the previous launch's log and retaining at most 64 KiB of output. When the daemon does

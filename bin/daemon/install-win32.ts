@@ -205,7 +205,7 @@ export function scheduledTaskService(run: NativeRun): NativeService {
       if (task.state === "Running") step(["/End", "/TN", receipt.unit]);
       step(["/Run", "/TN", receipt.unit]);
     },
-    remove(receipt) {
+    remove(receipt, preserveSource = false) {
       const task = owned(receipt);
       if (task.present) {
         // Disabled first, so its one-minute repetition cannot start it between the end and the delete.
@@ -213,7 +213,7 @@ export function scheduledTaskService(run: NativeRun): NativeService {
         if (task.state === "Running") step(["/End", "/TN", receipt.unit]);
         step(["/Delete", "/TN", receipt.unit, "/F"]);
       }
-      rmSync(receipt.unitPath, { force: true });
+      if (!preserveSource) rmSync(receipt.unitPath, { force: true });
     },
   };
 }

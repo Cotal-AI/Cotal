@@ -31,7 +31,7 @@ import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths,
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { applyInstall, applyUninstall, observeDaemonOwnedService, planInstall, planUninstall, startInstalled } from "./install.js";
+import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, planInstall, planUninstall, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy } from "./guidance.js";
@@ -325,7 +325,7 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
   if (!dry) {
     planUninstall(paths, home);
   }
-  const r = dry ? { ...planUninstall(paths, home), state: "would-remove" as const } : applyUninstall(paths, home);
+  const r = dry ? { ...planUninstall(paths, home), state: "would-remove" as const } : await applyUninstall(paths, home);
   if (!dry) forgetHostedManagerIntents(home ?? homeCotalDir());
   writeResult(presentation, { command: "daemon uninstall", target: { unit: r.unit }, result: r }, () => ({ sections: [
     { title: dry ? "Would remove" : "Removed", blocks: [
@@ -411,15 +411,18 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
 async function serve(args: ParsedArgs): Promise<void> {
   const { paths, home } = resolveTarget(args);
   let running;
+  let ownership: Promise<boolean> = Promise.resolve(false);
   try {
-    running = await serveDaemon({ paths, version: binVersion(), peerUid, log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
+    running = await serveDaemon({ paths, version: binVersion(), peerUid, stopAllowed: () => ownership,
+      ...(process.platform === "win32" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" ? { admit: () => admitWindowsNativeDaemon(paths, home) } : {}),
+      log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
   } catch (e) {
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
     throw asFailure(e);
   }
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
   const provenance = new AbortController();
-  const ownership = observeDaemonOwnedService(paths, home, provenance.signal).catch(() => false);
+  ownership = observeDaemonOwnedService(paths, home, provenance.signal).catch(() => false);
   await new Promise<void>((resolve, reject) => {
     let closed = false;
     let stopWatching = () => {};
@@ -441,6 +444,7 @@ async function serve(args: ParsedArgs): Promise<void> {
       }, (line) => process.stderr.write(`${line}\n`), (version, reason) => running.generationPending(version, reason), verified);
     });
     const stop = () => { closed = true; provenance.abort(); stopWatching(); void running.close().then(resolve, reject); };
+    void running.stopped.then(stop, reject);
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);
   });

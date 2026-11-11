@@ -34,12 +34,18 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join, posix } from "node:path";
 import { Worker } from "node:worker_threads";
+import { setTimeout as delay } from "node:timers/promises";
+import { randomUUID } from "node:crypto";
 import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
-import { codeSpan, CommandFailure } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
-import type { DaemonPaths } from "./endpoint.js";
+import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
+import { openVerified, readLine } from "./client.js";
+import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
+import { windowsUserSid } from "@cotal-ai/seat";
+import { encode, type DaemonResponse } from "./protocol.js";
 import { launchAgentService, xmlText } from "./install-darwin.js";
-import { scheduledTaskService } from "./install-win32.js";
+import { scheduledTaskName, scheduledTaskService } from "./install-win32.js";
 import { daemonCommandCopy } from "./guidance.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
@@ -226,7 +232,7 @@ export interface NativeService {
   check(receipt: UnitReceipt): void;
   start(receipt: UnitReceipt): void;
   restart(receipt: UnitReceipt, reload?: boolean): void;
-  remove(receipt: UnitReceipt): void;
+  remove(receipt: UnitReceipt, preserveSource?: boolean): void;
 }
 
 /** This OS's per-user supervisor, or `undefined` on Linux, whose systemd route is below. */
@@ -475,8 +481,22 @@ export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: str
     const source = readFileSync(receipt.unitPath).toString(plan.mechanism === "scheduled-task" ? "utf16le" : "utf8");
     return plan.mechanism === "systemd-user" ? source.includes("Environment=COTAL_DAEMON_NATIVE_SERVICE=1")
       : plan.mechanism === "launchd-agent" ? source.includes("<key>COTAL_DAEMON_NATIVE_SERVICE</key><string>1</string>")
-      : source.includes("daemon-native.js");
+      : source.includes("daemon-native.js") || (source.includes("cotal-desktop.exe</Command>") && source.includes("<Arguments>--daemon"));
   } catch { return false; }
+}
+
+/** A delayed Windows native child must not publish after uninstall removed its installation. */
+export function admitWindowsNativeDaemon(paths: DaemonPaths, daemonHome?: string): void {
+  const receipt = readReceipt(paths);
+  if (!receipt || receipt.mechanism !== "scheduled-task" || receipt.daemonHome !== daemonHome ||
+      receipt.unit !== scheduledTaskName(daemonHome, windowsUserSid()) || receipt.unitPath !== join(paths.state, "service-task.xml"))
+    throw new CommandFailure("refused", "CONFLICT", "the native daemon installation is no longer recorded for this home; startup refused");
+  const source = readLocalRecordSource(receipt.unitPath, 64 * 1024, true);
+  if (!source || createHash("sha256").update(source).digest("hex") !== receipt.unitSha256)
+    throw new CommandFailure("refused", "CONFLICT", "the native daemon source changed before startup; startup refused");
+  const plan: UninstallPlan = { mechanism: "scheduled-task", unit: receipt.unit, unitPath: receipt.unitPath, installedAt: receipt.installedAt };
+  if (!recordedDaemonIdentity({ receipt, plan, service: undefined }).same)
+    throw new CommandFailure("refused", "CONFLICT", "the native daemon source names another installation; startup refused");
 }
 
 /** Observe native provenance without running supervisor tools on the serving event loop. */
@@ -528,17 +548,85 @@ export interface UninstallResult extends UninstallPlan {
 
 /** Stop it, disable autostart, remove the unit and its receipt, and reload the user manager (on
  *  macOS and Windows, the adapter's own stop and deregistration). */
-export function applyUninstall(paths: DaemonPaths, daemonHome: string | undefined): UninstallResult {
+export async function applyUninstall(paths: DaemonPaths, daemonHome: string | undefined): Promise<UninstallResult> {
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
-  if (service) {
-    service.remove(receipt);
+  checkDir(paths.state);
+  // Pin a kernel-authenticated connection before removing the supervisor. It can
+  // stop only that listener, never a reused PID or a later daemon generation.
+  const before = readLifetimeRecord(paths.lock);
+  let socket;
+  try { socket = await openVerified({ paths }); }
+  catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
+  const owner = readLifetimeRecord(paths.lock);
+  let exclusion: ReturnType<typeof excludeLifetime> | undefined;
+  const uncertain = (detail: string) => new CommandFailure("unknown", "OPERATION_UNKNOWN", `${detail}; the daemon source and receipt were retained`, { remedy: "inspect cotal daemon status and the native service, then retry cotal daemon uninstall" });
+  try {
+    if (socket && (!owner?.start || before?.pid !== owner.pid || before.start !== owner.start))
+      throw uncertain("the daemon lifetime changed while its endpoint was opened");
+    if (owner?.start && processBirth(owner.pid) === owner.start && !socket)
+      throw uncertain("the recorded daemon has no verified answering endpoint");
+    if (!socket) exclusion = excludeLifetime(paths.lock);
+    // The supervisor can close this connection during the synchronous native step.
+    socket?.on("error", () => {});
+    if (socket && owner?.start && processBirth(owner.pid) === owner.start) {
+      const id = randomUUID().replaceAll("-", "");
+      socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "daemon-stop" }));
+      try {
+        const reply = JSON.parse(await readLine(socket, 70_000)) as DaemonResponse;
+        if (!reply.ok || reply.id !== id) throw uncertain("the daemon did not acknowledge shutdown");
+      } catch (error) {
+        // A native stop can close the pinned connection before the request replies.
+        // Only confirmed death of that same process permits proceeding.
+        if (processBirth(owner.pid) === owner.start) throw error;
+      }
+    }
+    if (service) service.remove(receipt, true);
+    else {
+      submitSystemdUnitControl("stop", plan.unit);
+      submitSystemdUnitRegistration("disable", plan.unit);
+    }
+    if (socket && owner?.start && processBirth(owner.pid) === owner.start) {
+      const id = randomUUID().replaceAll("-", "");
+      socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "daemon-stop", commit: true }));
+      try {
+        const reply = JSON.parse(await readLine(socket, 5000)) as DaemonResponse;
+        if (!reply.ok || reply.id !== id) throw uncertain("the daemon did not commit shutdown");
+      } catch (error) {
+        // Native End/bootout may close the pinned transport just before the process
+        // disappears. These observed transport losses are not a refusal or absence:
+        // continue to the bounded process + endpoint + lifetime checks below.
+        const code = (error as NodeJS.ErrnoException).code;
+        const ended = error instanceof Error && error.message === "daemon closed the connection without a reply";
+        if (code !== "EPIPE" && code !== "ECONNRESET" && !ended && processBirth(owner.pid) === owner.start) throw error;
+      }
+    }
+    socket?.destroy();
+    const deadline = Date.now() + 130_000;
+    const observeUntil = Date.now() + (exclusion ? 250 : 0);
+    for (;;) {
+      let absent = false;
+      try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); }
+      catch (error) {
+        if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true;
+        // The native CI reproducer observed a connect reset while close() tears down
+        // accepted sockets. It proves neither a live endpoint nor absence. Reobserve.
+        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") throw error;
+      }
+      if (absent && (!socket || !owner || (owner.start && processBirth(owner.pid) !== owner.start)) && Date.now() >= observeUntil) break;
+      if (Date.now() >= deadline) throw uncertain("daemon shutdown was not confirmed within 130s");
+      await delay(50);
+    }
+    // A delayed native child must acquire this same lock and recheck its receipt before
+    // publishing. Keep exclusion through final absence and both deletions.
+    exclusion ??= excludeLifetime(paths.lock);
+    try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); throw uncertain("a daemon endpoint still answers"); }
+    catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
+    // The wait above must not turn a changed source/receipt into deletion authority.
+    const current = recordedUnit(paths, daemonHome).receipt;
+    if (current.unitSha256 !== receipt.unitSha256 || current.installedAt !== receipt.installedAt) throw uncertain("the daemon installation changed during shutdown");
+    rmSync(plan.unitPath, { force: true });
+    if (!service) submitSystemdUnitRegistration("reload", plan.unit);
     rmSync(unitReceiptFile(paths), { force: true });
     return { ...plan, state: "removed" };
-  }
-  submitSystemdUnitControl("stop", plan.unit);
-  submitSystemdUnitRegistration("disable", plan.unit);
-  rmSync(plan.unitPath, { force: true });
-  submitSystemdUnitRegistration("reload", plan.unit);
-  rmSync(unitReceiptFile(paths), { force: true });
-  return { ...plan, state: "removed" };
+  } finally { socket?.destroy(); exclusion?.release(); }
 }
