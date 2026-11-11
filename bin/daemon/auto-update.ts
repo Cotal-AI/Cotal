@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFileSync, openSync, closeSync } from "node:fs";
+import { readFileSync, closeSync, ftruncateSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { writeSecretFileAtomic } from "@cotal-ai/core";
+import { openPrivateAppend, writeSecretFileAtomic } from "@cotal-ai/core";
 import { checkForUpdate, homeCotalDir, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
 import type { DaemonUpdateStatus } from "./protocol.js";
 
@@ -62,7 +62,8 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       persist();
       const result = await new Promise<{ code: number | null; output: string }>(resolve => {
         const logPath = join(homeCotalDir(), "update-attempt.log");
-        const outputFd = openSync(logPath, "w", 0o600);
+        const outputFd = openPrivateAppend(logPath);
+        ftruncateSync(outputFd, 0);
         child = spawn(process.execPath, [fileURLToPath(new URL("../cotal.js", import.meta.url)), "update", "--self"], { env: { ...process.env, COTAL_NO_UPDATE_CHECK: "1", COTAL_AUTO_UPDATE: "1" }, stdio: ["ignore", outputFd, outputFd], detached: true, windowsHide: true });
         closeSync(outputFd);
         const readOutput = () => { try { return readFileSync(logPath, "utf8").slice(-4000); } catch { return "update log unavailable"; } };
