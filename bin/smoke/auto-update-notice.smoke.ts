@@ -25,6 +25,7 @@ assert.match(run(["update", "--auto"]), /Automatic updates: off/);
 assert.match(run(["--version"], true), /Cotal update available: .* -> 99\.0\.0/);
 assert.doesNotMatch(run(["--version"]), /Cotal update available:/);
 assert.doesNotMatch(run(["version", "--json"], true), /Cotal update available:/);
+assert.doesNotMatch(run(["config", "--plain"], true), /Cotal update available:/);
 assert.doesNotMatch(run(["--version"], true, { CI: "1" }), /Cotal update available:/);
 assert.doesNotMatch(run(["--version"], true, { COTAL_NO_UPDATE_CHECK: "1" }), /Cotal update available:/);
 assert.match(run(["update", "--notify", "off"]), /Update notices: off/);
