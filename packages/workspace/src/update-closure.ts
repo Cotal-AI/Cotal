@@ -10,6 +10,29 @@ let held: HeldLock | undefined;
 let references = 0;
 const lockPath = () => join(homeCotalDir(), ".update-closure.lock");
 
+/** Wait without acquiring on read-only boot gates. */
+export function waitForUpdateClosure(): void {
+  const deadline = Date.now() + 300_000;
+  let updateDeadline: number | undefined;
+  let announced = false;
+  for (;;) {
+    const current = inspectLock(lockPath());
+    const record = readUpdateRecovery();
+    if (current.state !== "active") {
+      if (record && record.phase !== "verified-ready") throw new Error("an interrupted update needs restoration; run cotal update --self");
+      return;
+    }
+    if (String(current.owner.pid) === process.env[OWNER] && current.owner.nonce === process.env[NONCE]) return;
+    const updating = record?.owner?.pid === current.owner.pid && record.owner.nonce === current.owner.nonce;
+    if (updating) {
+      updateDeadline ??= Date.now() + 120_000;
+      if (!announced) { console.error("waiting for a Cotal update to finish"); announced = true; }
+    }
+    if (Date.now() >= (updating ? updateDeadline! : deadline)) throw new Error(updating ? "Cotal update did not finish within 120 seconds; retry once it finishes" : `closure writer pid ${current.owner.pid} did not finish within 300 seconds`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  }
+}
+
 /** Reserve the outer closure barrier before taking seed or extension writer locks. */
 export function claimUpdateClosureAccess(recover = false): () => void {
   const owner = process.env[OWNER];
@@ -27,11 +50,8 @@ export function claimUpdateClosureAccess(recover = false): () => void {
     return () => {};
   }
   if (!held) {
-    const current = inspectLock(lockPath());
-    if (current.state === "active") throw new Error("an update is in progress, retry in a minute");
-    const recovery = readUpdateRecovery();
-    if (!recover && recovery && recovery.phase !== "verified-ready") throw new Error("an interrupted update needs restoration; run cotal update --self");
-    held = acquireLock(lockPath(), { label: "an update closure transaction", waitMs: 0 });
+    if (!recover) waitForUpdateClosure();
+    held = acquireLock(lockPath(), { label: "a closure writer", waitMs: 300_000 });
     process.env[OWNER] = String(process.pid);
     process.env[NONCE] = held.nonce;
     process.env[START] = processStartToken(process.pid) ?? "";

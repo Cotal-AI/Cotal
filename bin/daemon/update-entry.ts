@@ -15,10 +15,12 @@ registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
   let hostedSpaces: string[] = [];
   let daemonObserved = false;
-  await update(args, { ...updateRuntime, async prepareReplacement() {
+  let preparedRestart = false;
+  await update(args, { ...updateRuntime, preparedRestart: () => preparedRestart, async prepareReplacement() {
     if (process.env.COTAL_AUTO_UPDATE !== "1" || !daemonObserved) return async () => {};
     const paths = daemonPaths();
     await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
+    preparedRestart = true;
     return async () => {
       try {
         const current = await queryDaemon({ paths });
@@ -29,10 +31,13 @@ const composed: Command = { ...command, async run(args) {
     };
   }, waitForInstalledGeneration: waitForInstalledDaemonGeneration, reportRunningManager: (flags) => withRemoteExchangeRetry(async () => {
     const recovery = readUpdateRecovery();
-    if (process.env.COTAL_AUTO_UPDATE === "1" && process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version() && recovery?.owner?.pid === process.ppid && recovery.owner.nonce === process.env.COTAL_UPDATE_CLOSURE_NONCE && recovery.owner.start === process.env.COTAL_UPDATE_CLOSURE_START) {
+    if (recovery?.preparedRestart && process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version() && recovery?.owner?.pid === process.ppid && recovery.owner.nonce === process.env.COTAL_UPDATE_CLOSURE_NONCE && recovery.owner.start === process.env.COTAL_UPDATE_CLOSURE_START) {
       const release = claimUpdateClosureAccess();
       release();
-      console.log("hosted Manager continuity: parent verified empty seats; update admission remains fenced");
+      const observed = await queryDaemon({ paths: daemonPaths() });
+      const evidence = observed.ok ? observed.result.update?.restartEvidence : undefined;
+      if (!evidence?.prepared || evidence.managers.some(row => !row.fenced || row.seats !== 0)) throw new Error("prepared update admission is no longer fenced and empty");
+      console.log("hosted Manager continuity: daemon verified prepared fences and zero seats");
       return "none";
     }
     let managers;

@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
   claimUpdateClosureAccess,
+  waitForUpdateClosure,
   CorruptExtensionPackageError,
   SEEDED_EXTENSIONS,
   bindExtensionPeers,
@@ -119,9 +120,8 @@ export async function runSeed(flags: SeedFlags): Promise<void> {
 const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], verified: [], removedKept: [] };
 
 async function reconcile(mode: Mode): Promise<ReconcileResult> {
-  const release = claimUpdateClosureAccess();
-  try { return await reconcileUnderClosure(mode); }
-  finally { release(); }
+  waitForUpdateClosure();
+  return reconcileUnderClosure(mode);
 }
 
 async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
@@ -174,6 +174,8 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
       return NOOP;
     }
   }
+  const releaseClosure = claimUpdateClosureAccess();
+  try {
   assertReleasedSeedWriter(generation, "reconcile");
   const lock = acquireReconcileLock();
   try {
@@ -207,6 +209,7 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
   } finally {
     lock.release();
   }
+  } finally { releaseClosure(); }
 }
 
 /** A cursor left while the durable stamp still names an older generation is evidence that this

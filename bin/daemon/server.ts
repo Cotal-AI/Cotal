@@ -274,7 +274,11 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "status") {
         counters.statusAnswered++;
-        managerResult(async () => { await Promise.all(managers.all().map((manager) => managers.refresh(manager.space))); return status(); });
+        managerResult(async () => {
+          await Promise.all(managers.all().map((manager) => managers.refresh(manager.space)));
+          const result = status();
+          return result.update ? { ...result, update: { ...result.update, restartEvidence: await managers.preparedGenerationEvidence() } } : result;
+        });
         return;
       }
       if (req.op === "spaces") {

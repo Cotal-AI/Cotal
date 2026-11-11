@@ -95,6 +95,7 @@ export interface UpdateRuntime {
   /** Why a first-party extension still needs its reinstall at `generation`, or undefined once it is kept. */
   verifyExtension(entry: InstalledExtension, generation: string): string | undefined;
   claimUpdatePass(): () => void;
+  preparedRestart?(): boolean;
   /** Reserve empty hosted Manager admission after continuity checks, before replacement. */
   prepareReplacement?(): Promise<() => Promise<void>>;
   claimGlobalUpdate(root: string): () => void;
@@ -866,7 +867,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   try {
   rt.out(c.bold("cotal-ai binary"));
   rt.out(c.dim(`installing cotal-ai@${targetVersion} into npm's global installation; this ${current} process remains loaded until the verified global copy takes over`));
-  writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress", owner: updateClosureOwner(), snapshot: snapshot.path });
+  writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress", owner: updateClosureOwner(), preparedRestart: rt.preparedRestart?.() ?? false, snapshot: snapshot.path });
   const npmInstall = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`]);
   const installed = await rt.spawnGlobal(
     root,

@@ -2887,10 +2887,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               try {
                 upgraded = await cli("status", "--space", ON);
                 if (upgraded.doc.result?.version === "0.151.3" && upgraded.doc.result?.managers?.[0]?.state === "answering") break;
-                if (upgraded.doc.result?.update?.lastResult?.startsWith("update failed")) break;
+                if (upgraded.doc.result?.update?.failures > 0 && upgraded.doc.result?.version !== "0.151.3" && (upgraded.doc.result?.update?.lastResult?.startsWith("update failed") || upgraded.doc.result?.update?.lastResult?.startsWith("automatic updates paused"))) break;
               } catch { /* Native generation restart is in flight. */ }
-              await sleep(1000);
+              await sleep(4000);
             }
+            console.log("AU UPDATER LOG", existsSync(join(home, "update-attempt.log")) ? readFileSync(join(home, "update-attempt.log"), "utf8") : "absent");
             check("AU daemon installs fixture release without an update command", upgraded?.doc.result?.version === "0.151.3" && upgraded.doc.result?.managers?.[0]?.state === "answering", upgraded);
           } else if (process.argv.includes("--update-repro")) {
             const other = ctx[1]!;
@@ -2936,6 +2937,24 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               console.log("CL SEED OUTPUT", seedOutput);
               check("CL previous seeded closure installs through shipped CLI", seedCode === 0, seedOutput);
               if (seedCode !== 0) return;
+              if (process.argv.includes("--closure-parallel-repro")) {
+                let failures = 0, falseUpdates = 0;
+                for (let round = 0; round < 4; round++) {
+                  const results = await Promise.all(Array.from({ length: 40 }, async () => {
+                    const child = spawn(process.execPath, [cliEntry, "meshes", "--json"], { cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "" }, stdio: ["ignore", "pipe", "pipe"] });
+                    let text = "";
+                    child.stdout.on("data", chunk => text += chunk);
+                    child.stderr.on("data", chunk => text += chunk);
+                    const code = await new Promise(resolve => child.once("exit", resolve));
+                    return { code, text };
+                  }));
+                  failures += results.filter(row => row.code !== 0).length;
+                  falseUpdates += results.filter(row => row.text.includes("an update is in progress")).length;
+                  console.log("PARALLEL ROUND", JSON.stringify({ round, failures, falseUpdates, samples: results.filter(row => row.code !== 0).slice(0, 2) }));
+                }
+                check("CL steady seeded 40-way commands never refuse concurrent readers", failures === 0 && falseUpdates === 0, { failures, falseUpdates });
+                return;
+              }
               const added = spawn(process.execPath, [cliEntry, "ext", "add", "@cotal-ai/rollback-fixture@0.151.2"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
               let addedOutput = ""; added.stdout.on("data", b => { addedOutput += String(b); }); added.stderr.on("data", b => { addedOutput += String(b); });
               const addedCode = await new Promise<number | null>(resolve => added.once("exit", resolve));
