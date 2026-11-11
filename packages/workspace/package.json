@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/workspace",
   "description": "Cotal machine-local operator and client-surface layer: the ~/.cotal mesh registry, target resolution, preflight, on-disk auth-path I/O, the command-copy renderer, and the live space model (`MeshView`), observer, manager control calls, managed-launch request, chat session and terminal attach that terminal surfaces share — operator concerns over a local checkout, kept separate from the wire protocol in @cotal-ai/core.",
-  "version": "0.160.4",
+  "version": "0.160.5",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
