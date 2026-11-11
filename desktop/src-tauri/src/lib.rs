@@ -208,6 +208,11 @@ mod tests {
         }
         .validate()
         .is_err());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"update-settings","auto":false,"notify":true}"#).is_ok());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"update-settings","notify":"on"}"#).is_err());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"update-check","force":true}"#).is_err());
+        assert!(DesktopRequest::UpdateRelease { version: "0.160.5".into() }.validate().is_ok());
+        assert!(DesktopRequest::UpdateRelease { version: "../latest".into() }.validate().is_err());
         // Names are stdin JSON values, never concatenated into argv or interpreted by a shell.
     }
     #[test]

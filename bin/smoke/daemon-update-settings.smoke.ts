@@ -1,4 +1,7 @@
-import assert from "node:assert/strict";
+import strictAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "./sentinel.mjs";
+const counted = countedAssert(strictAssert);
+const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,8 +21,7 @@ let prepares = 0, aborts = 0;
 const updates = automaticUpdates({ version: "0.160.5", eligible: () => false, prepare: async () => { prepares++; }, abort: async () => { aborts++; }, report: () => {} });
 const paths = daemonPathsFor(process.env.COTAL_HOME!, { XDG_RUNTIME_DIR: runtime });
 const daemon = await serveDaemon({ paths, sessionDir: process.env.COTAL_HOME!, version: "0.160.5", updateStatus: updates.status, updateCheck: updates.check });
-let checks = 0;
-const check = (value: unknown, label: string) => { assert.ok(value, label); checks++; console.log(`ok ${label}`); };
+const check = (value: unknown, label: string) => { assert.ok(value, label); console.log(`ok ${label}`); };
 try {
   for (const key of ["auto", "notify"] as const) for (const enabled of [false, true]) {
     const result = await updateViaDaemon({ paths }, { op: "update-settings", [key]: enabled });
@@ -35,5 +37,5 @@ try {
   }
   check(!parseRequest(JSON.stringify({ v: 1, id: "bad", op: "update-check", force: true })).ok, "unknown check field refused");
   assert.throws(() => parseDesktopRequest({ op: "update-release", version: "../../bad" }));
-  console.log(`COTAL_SMOKE_RESULT ${JSON.stringify({ suite: "daemon-update-settings", passed: checks, failed: 0 })}`);
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally { await daemon.close(); await updates.close(); }
