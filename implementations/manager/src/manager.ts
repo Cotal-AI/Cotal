@@ -9415,6 +9415,15 @@ export class Manager {
   /** Parent-local inventory read. It does not enter maintenance or change admission. */
   hostedSeatCount(): number { return this.agents.size; }
 
+  /** Public local-seat facts for the owning machine daemon. No mesh or secret reads. */
+  hostedAgents(): { name: string; application: string; model?: string; cwd: string; startedAt: string; state: "running" | "exited" }[] {
+    if (this.agents.size > 50) throw new Error("local agent inventory exceeds its bound");
+    return [...this.agents.values()].map(a => ({
+      name: a.name, application: a.agent, ...(a.launch.model ? { model: a.launch.model } : {}),
+      cwd: a.launch.cwd, startedAt: new Date(a.startedAt).toISOString(), state: a.handle.status(),
+    }));
+  }
+
   /** The served manager-level health summary. Given an owner, `agentCount` counts only that owner's
    *  seats, as `ps` lists them ({@link psOwnerFilter}), so a person reading a shared Manager does not
    *  learn how many seats other owners hold on it. */
