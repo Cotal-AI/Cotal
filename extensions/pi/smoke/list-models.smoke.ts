@@ -1,13 +1,3 @@
-/**
- * The pi connector's model catalog asks the user's own pi over `pi --mode rpc`.
- *
- * A fake `pi` replays replies recorded from pi 1.5.2, with a provider key set and with none, and the
- * failures around them. Each case runs the shipped `listPiModels` against it and checks the ids it
- * returns, the reason it gives when pi has no credentials, is missing, refuses, answers garbage or
- * never answers, and that pi is stopped every time.
- *
- * Run: pnpm smoke:pi-list-models
- */
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,8 +6,6 @@ import { createSuite } from "@cotal-ai/smoke-kit";
 import type { ModelCatalog } from "@cotal-ai/core";
 import { listPiModels, piConnector } from "../src/connector.js";
 
-// Whatever runs this suite may be a managed agent session. Drop the whole COTAL_ prefix before the
-// first read, then set a seat identity and a provider key the probe must and must not pass to pi.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 process.env.COTAL_SPACE = "pilistmodels";
 process.env.COTAL_NAME = "pi-1";
@@ -39,7 +27,6 @@ interface JournalEntry {
 
 const journals: (() => JournalEntry[])[] = [];
 let cases = 0;
-/** A `pi` executable in its own directory that runs the fake in `mode`, and its journal. */
 function fakePi(mode: string, vars: Record<string, string> = {}): { bin: string; journal: () => JournalEntry[]; pid: () => number | undefined } {
   const home = join(dir, String(++cases));
   mkdirSync(home);

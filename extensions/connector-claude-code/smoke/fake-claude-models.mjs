@@ -1,6 +1,3 @@
-// Stands in for `claude` in models.smoke.ts. It logs its pid, argv and env names, then each request
-// it reads, and answers with the reply FAKE_CLAUDE_REPLY holds: a recorded control response, "silent"
-// (never answers) or "exit" (exits before answering).
 import { appendFileSync, readFileSync } from "node:fs";
 
 const log = (entry) => appendFileSync(process.env.FAKE_CLAUDE_LOG, JSON.stringify(entry) + "\n");

@@ -114,8 +114,6 @@ function parseModels2(stdout: string): ModelInfo[] {
   });
 }
 
-/** Reports every failure as `unavailable` rather than throwing, and settles by the timeout even if
- *  the killed CLI's pipes stay open. */
 function listOpenCode2Models(bin: string, env: NodeJS.ProcessEnv): Promise<ModelCatalog> {
   const source = `opencode ${OPENCODE2_CATALOG_ARGS.join(" ")}`;
   const unavailable = (why: string): ModelCatalog => ({
@@ -138,6 +136,7 @@ function listOpenCode2Models(bin: string, env: NodeJS.ProcessEnv): Promise<Model
       },
     );
     child.stdin?.end();
+    // execFile calls back only once every pipe closes, which a killed CLI's children can delay.
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       settle(unavailable(`no answer within ${OPENCODE2_CATALOG_TIMEOUT_MS / 1000} seconds`));

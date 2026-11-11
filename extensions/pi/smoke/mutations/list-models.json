@@ -6,11 +6,6 @@
   "command": "pnpm smoke:pi-list-models",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/pi/smoke/mutations/list-models.json",
-  "why": [
-    "Each mutation breaks one rule of listPiModels and names the cell that must go red.",
-    "",
-    "NO BUILD STEP: the suite imports ../src/connector.js."
-  ],
   "mutations": [
     {
       "name": "LM1 the catalog is not wired into the connector",

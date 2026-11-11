@@ -160,8 +160,6 @@ function assertServableModel(model: string): void {
 const MODELS_ARGS = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--settings", '{"disableAllHooks":true}', "--no-session-persistence"];
 const MODELS_REQUEST_ID = "cotal-models";
 
-/** One line of `claude` stdout, typed only as far as the catalog reads it. Parsed JSON can have any
- *  shape, so every field is checked before use. */
 interface ControlLine {
   type?: unknown;
   response?: {
@@ -179,7 +177,6 @@ function isModelRow(row: unknown): row is { value: string; displayName: string }
   return typeof value === "string" && typeof displayName === "string";
 }
 
-/** The catalog one stdout line settles on, or undefined when the line does not answer the request. */
 function initializeAnswer(text: string): ModelCatalog | undefined {
   let line: ControlLine | null;
   try {
@@ -196,18 +193,12 @@ function initializeAnswer(text: string): ModelCatalog | undefined {
   const rows = result?.models;
   if (!Array.isArray(rows) || !rows.every(isModelRow)) return unavailable("claude answered without a model list");
   // `default` points at claude's own default model, which a launch that names no model gets anyway.
-  // Effort levels are not offered as variants, because this connector refuses a variant at launch.
   return { source: "claude stream-json initialize", models: rows.filter((m) => m.value !== "default").map((m) => ({ id: m.value, name: m.displayName })) };
 }
 
-/** Ask the operator's own `claude` which models its login can use (see MODELS_ARGS). It runs the file a
- *  launch runs, with the env a launch gets, from an empty private directory so no project's settings
- *  apply. Every way the question can go unanswered ends `unavailable` with its cause within 6s, never
- *  a throw, and the child is always killed. */
 async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
+  // claude applies the settings of the project it runs in, so it runs in an empty private directory.
   const cwd = mkdtempSync(join(tmpdir(), "cotal-claude-models-"));
-  // A launch's env, not this process's, so the question sees the auth and provider a seat sees and
-  // none of the session markers a manager started inside a Claude session would otherwise pass on.
   const env = launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS });
   let child: ChildProcess | undefined;
   let timer: NodeJS.Timeout | undefined;

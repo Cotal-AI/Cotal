@@ -69,12 +69,8 @@ function piCatalog(reply: PiRpcResponse): ModelCatalog {
   return { source: "pi --mode rpc get_available_models", models };
 }
 
-/** Ask the user's own pi which models it can run: one `get_available_models` over a short-lived
- *  `pi --mode rpc`. `--no-session` writes no session and `--offline` skips startup network work,
- *  such as an OAuth refresh that stopping pi mid-request would lose. The env is the one a launch
- *  gets, so the providers listed are those a seat can use and no seat identity reaches pi. Every
- *  failure, including a missing pi and a 10 second timeout, returns `unavailable` with the reason. */
 export async function listPiModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
+  // `--offline` skips startup network work, such as an OAuth refresh that stopping pi mid-request would lose.
   const child = spawn(opts.resolvedBinaries?.pi ?? "pi", ["--mode", "rpc", "--no-session", "--offline"], {
     env: launchEnv({ providerKeys: PI_PROVIDER_KEYS }),
     stdio: ["pipe", "pipe", "ignore"],
@@ -117,7 +113,7 @@ export async function listPiModels(opts: ModelCatalogOpts = {}): Promise<ModelCa
 }
 
 /** Closing stdin and SIGTERM together start pi's orderly shutdown, which also stops the MCP
- *  servers it started. SIGKILL ends a shutdown that has not finished in 5 seconds. */
+ *  servers it started. */
 function stopPi(child: ChildProcess): void {
   if (child.exitCode !== null || child.signalCode !== null) return;
   child.stdin!.end();

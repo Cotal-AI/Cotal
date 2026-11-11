@@ -1,8 +1,3 @@
-// A fake `pi --mode rpc` for list-models.smoke.ts. It journals to FAKE_PI_LOG its pid and argv,
-// whether a seat identity or a provider key reached it, each command it reads and any SIGTERM, then
-// acts by FAKE_PI_MODE: reply → answer each command with the response in FAKE_PI_REPLY under that
-// command's id; silent → never answer; garbage → write a line that is not JSON; exit → exit 3 before
-// reading anything. FAKE_PI_STUBBORN=1 ignores SIGTERM and stdin EOF, so only SIGKILL ends it.
 import { appendFileSync, readFileSync } from "node:fs";
 
 const log = (entry) => appendFileSync(process.env.FAKE_PI_LOG, JSON.stringify(entry) + "\n");

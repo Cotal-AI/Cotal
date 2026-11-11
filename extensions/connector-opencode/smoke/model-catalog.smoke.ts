@@ -1,17 +1,3 @@
-/**
- * OpenCode model catalog test (no test runner): `opencodeConnector.listModels` against fake
- * `opencode` binaries, one per line and failure shape. No broker and no real OpenCode.
- *
- *   1. 2.x: the catalog comes from `opencode api --standalone GET /api/model`. The recorded reply
- *      (OpenCode 2.2.5, scrubbed) maps to `provider/model` ids with variant names, and nothing from a
- *      model's settings or headers reaches the catalog. A refusal, a reply that is not a model list,
- *      and a read that does not answer within 6 seconds each come back `unavailable`, never thrown
- *      and never hung.
- *   2. 1.x: `opencode models --pure --verbose` is parsed as before, synchronously, with `--refresh`
- *      passed through and a failed read still thrown.
- *
- * Run: pnpm smoke:opencode-model-catalog
- */
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,8 +12,6 @@ const { check, finish } = createSuite();
 delete process.env.COTAL_OPENCODE_BIN;
 const dir = mkdtempSync(join(tmpdir(), "oc-catalog-"));
 
-/** A fake `opencode` that answers `--version` with `version`, records any other argv to
- *  `<bin>.argv`, and then runs `body`. */
 function fakeOpenCode(name: string, version: string, body: string): string {
   const bin = join(dir, name);
   writeFileSync(bin, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo '${version}'; exit 0; fi\necho "$*" >> '${bin}.argv'\n${body}\n`);
@@ -61,7 +45,6 @@ const unavailableOnly = (r: Awaited<ReturnType<typeof list>>, reason: RegExp) =>
   r.error === "" && r.catalog?.models.length === 0 && reason.test(r.catalog.unavailable ?? "");
 
 try {
-  // ── 1. 2.x ─────────────────────────────────────────────────────────────────────────────────────
   const SECRET = "sk-fixture-secret-must-not-surface";
   const recorded = JSON.parse(readFileSync(new URL("./fixtures/opencode2-model-list.json", import.meta.url), "utf8"));
   recorded.data[0].settings.apiKey = SECRET;
@@ -125,9 +108,7 @@ try {
   let pid = NaN;
   try {
     pid = Number(readFileSync(pidFile, "utf8"));
-  } catch {
-    // No pid file: the slow read never ran, so nothing here proves a kill.
-  }
+  } catch {}
   // The catalog settles at the deadline without waiting for the exit, so give the kill time to be reaped.
   for (let waited = 0; Number.isInteger(pid) && !slowKilled && waited < 2_000; waited += 50) {
     try {
@@ -139,7 +120,6 @@ try {
   }
   check("on 2.x the timed-out read's process is killed", slowKilled);
 
-  // ── 2. 1.x ─────────────────────────────────────────────────────────────────────────────────────
   const v1Out = [
     "opencode/big-pickle",
     "{",

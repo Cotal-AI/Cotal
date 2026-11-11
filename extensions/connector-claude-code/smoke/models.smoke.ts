@@ -1,13 +1,3 @@
-/**
- * The claude connector's model catalog asks the operator's own `claude` over its stream-json control
- * protocol. A stand-in `claude` answers with replies recorded from Claude Code 2.1.322
- * (fixtures/claude-initialize.json, account values redacted), so each cell drives the real lister
- * through the connector's `listModels` hook: the process it starts, the request it writes, the reply
- * it reads and the child it kills. The remaining cells use a missing binary, a stand-in that exits
- * before answering and one that never answers.
- *
- * Run: pnpm smoke:claude-models
- */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,11 +14,9 @@ const FAKE = fileURLToPath(new URL("./fake-claude-models.mjs", import.meta.url))
 const dir = mkdtempSync(join(tmpdir(), "claude-models-smoke-"));
 const LOGGED_IN_IDS = ["opus", "fable", "sonnet", "haiku", "claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"];
 
-// Set here so the env cell can see whether either one reaches claude.
 process.env.CLAUDECODE = "1";
 process.env.COTAL_NAME = "models-smoke";
 
-/** A stand-in `claude` that answers with `reply` and logs what it was given to `log`. */
 function standIn(name: string, reply: unknown): { bin: string; log: string } {
   const bin = join(dir, name);
   const log = `${bin}.log`;
