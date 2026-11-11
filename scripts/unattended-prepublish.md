@@ -40,16 +40,26 @@ The evidence parent must exist on physical f26 TMP. Use a fresh suite root.
 Local HOME, COTAL_HOME, XDG, npm cache and temporary paths are suite-private.
 Only explicit private IPv4 registry origins are accepted.
 
-After the coordinator builds packages, run `node scripts/unattended-prepublish.mjs
-prepare <config.json>`. It reuses the cold packer and its prepublish guards, retains
-the original public closure and hashes, then extracts into private staging. Only
-copied manifests change: one higher stable version, closure dependency/optional/
-peer ranges, private publishConfig registry and `provenance: false`. Local Verdaccio
-has no public OIDC attestation provider. This setting applies only to copied private
-test manifests, never public release policy. Source/native receipts and built file
-hashes must still match.
-Repacking disables lifecycle scripts. Source manifests and built artifacts stay
-unchanged. These candidates must never reach a public registry.
+Set `sourceDirectory` to a fresh owned copy such as
+`/home/david/f26/tmp/u6385/candidate6386-source` and candidate to `0.160.6386`.
+Run `stage-source <config.json>` before any build. It exports tracked HEAD, records
+its archive hash, and changes only public package manifests in that copy. Versions
+and first-party ranges advance together, workspace protocols remain for pnpm's
+normal packing, and private publishConfig disables public OIDC provenance.
+Plugin metadata using an independent `0.0.0` version is left unchanged.
+The source-stage receipt lists every changed manifest and before/after hashes.
+
+The coordinator runs normal `pnpm install --no-frozen-lockfile` in the copied tree
+to synchronize the lockfile, then the normal full build. Use suite-private HOME,
+COTAL_HOME, XDG and TMP variables. Preserve the lockfile and its hash. Select and
+assemble source-matched native artifacts through the existing release scripts.
+Do not copy generated bundles from an older version or edit JavaScript literals.
+Then run `prepare <config.json>`. It invokes the unchanged cold packer against the
+copy, including prepublish and prepack guards, with no postpack version rewriting.
+It audits top-level and nested seeded first-party manifests, exact dependencies,
+private publishConfig and generated DOCS_VERSION constants. The retained identity
+audit and archive/file hash manifest must match the candidate. These private
+candidates must never reach a public registry.
 
 The optional `config` action emits a Verdaccio YAML template with
 `max_body_size: 200mb` for the built CLI archive. The default request limit can

@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { dirname, join, resolve } from 'node:path';
 import { list as listTar } from 'tar';
 import { isMainEntry } from './main-entry.mjs';
+import { stageSource } from './unattended-source-stage.mjs';
 import { mirrorParents } from './unattended-parent-mirror.mjs';
 import { packColdCandidate } from './pack-cold-candidate.mjs';
 
@@ -44,39 +45,42 @@ export function isolatedEnv(root) {
   return { PATH: process.env.PATH, HOME: join(root, 'home'), COTAL_HOME: join(root, 'home/.cotal'), XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'), TMPDIR: join(root, 'tmp'), npm_config_userconfig: join(root, 'npmrc'), npm_config_globalconfig: join(root, 'global-npmrc'), npm_config_cache: join(root, 'npm-cache') };
 }
 function prepare(c, root, env) {
-  const original = join(root, 'original');
-  const manifest = packColdCandidate({ output: original, exec: (file, args, options) => execFileSync(file, args, { ...options, env }) });
+  const source = realpathSync(c.sourceDirectory);
+  assert(source.startsWith('/home/david/f26/tmp/u6385/'), 'prepare requires owned versioned source copy');
+  const output = join(root, 'candidate');
+  const manifest = packColdCandidate({ root: source, output, exec: (file, args, options) => execFileSync(file, args, { ...options, env }) });
   const names = new Set(manifest.packages.map(p => p.name));
-  const staged = [];
-  const output = join(root, 'candidate'); mkdirSync(output);
+  const audit = [];
   for (const pkg of manifest.packages) {
-    const directory = join(root, 'stage', pkg.name.replaceAll('/', '-')); mkdirSync(directory, { recursive: true });
-    assert.equal(sha256(readFileSync(join(original, pkg.archive))), pkg.sha256);
-    exec('tar', ['-xzf', join(original, pkg.archive), '-C', directory]);
-    const file = join(directory, 'package/package.json');
-    const info = JSON.parse(readFileSync(file)); info.version = c.candidate;
-    // Tarball publishConfig can override npm's CLI registry. Pin only the private copy.
-    info.publishConfig = { ...info.publishConfig, registry: privateRegistry(c.registry), provenance: false };
-    for (const [name, expected] of Object.entries(pkg.files)) if (name !== 'package.json') assert.equal(sha256(readFileSync(join(directory, 'package', name))), expected, `built bytes changed: ${pkg.name}/${name}`);
-    for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) for (const name of Object.keys(info[field] ?? {})) if (names.has(name)) info[field][name] = c.candidate;
-    writeFileSync(file, JSON.stringify(info, null, 2) + '\n');
-    const result = JSON.parse(exec('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', output], { cwd: dirname(file), env }));
-    const archive = result[0].filename;
-    const packedFiles = {};
-    listTar({ file: join(output, archive), sync: true, strict: true, onReadEntry(entry) {
-      if (entry.type === 'Directory') { entry.resume(); return; }
-      assert.equal(entry.type, 'File');
-      assert(entry.path.startsWith('package/') && !entry.path.split('/').includes('..'));
-      const name = entry.path.slice(8), hash = createHash('sha256');
-      assert(!Object.hasOwn(packedFiles, name)); packedFiles[name] = '';
-      entry.on('data', chunk => hash.update(chunk));
-      entry.on('end', () => { packedFiles[name] = hash.digest('hex'); });
+    assert.equal(pkg.version, c.candidate, 'version source before building, never rewrite packed versions');
+    const records = [];
+    let docsVersions = 0;
+    listTar({ file: join(output, pkg.archive), sync: true, strict: true, onReadEntry(entry) {
+      const path = entry.path.slice('package/'.length);
+      if (!(path.endsWith('package.json') || /\.(?:js|cjs|mjs)$/.test(path)) || entry.type !== 'File') { entry.resume(); return; }
+      const chunks = []; let size = 0;
+      entry.on('data', chunk => { size += chunk.length; assert(size < 32 * 1024 * 1024, 'audit input too large'); chunks.push(chunk); });
+      entry.on('end', () => {
+        const text = Buffer.concat(chunks).toString();
+        if (path.endsWith('package.json')) {
+          const info = JSON.parse(text);
+          if (names.has(info.name)) {
+            assert.equal(info.version, c.candidate, `skewed nested manifest ${pkg.name}/${path}`);
+            for (const field of ['dependencies', 'optionalDependencies']) for (const [name, range] of Object.entries(info[field] ?? {})) if (names.has(name)) assert.equal(range, c.candidate, 'packed first-party dependency skew');
+            assert.equal(info.publishConfig?.registry, privateRegistry(c.registry));
+            assert.equal(info.publishConfig?.provenance, false);
+            records.push({ path, name: info.name, version: info.version, sha256: sha256(text) });
+          }
+        } else {
+          for (const match of text.matchAll(/\bDOCS_VERSION\s*=\s*["']([^"']+)["']/g)) { assert.equal(match[1], c.candidate, `stale generated docs identity in ${pkg.name}/${path}`); docsVersions++; }
+        }
+      });
     } });
-    assert.deepEqual(Object.keys(packedFiles).sort(), Object.keys(pkg.files).sort(), 'repacking changed file census');
-    for (const [name, expected] of Object.entries(pkg.files)) if (name !== 'package.json') assert.equal(packedFiles[name], expected, `repacking changed ${pkg.name}/${name}`);
-    staged.push({ name: pkg.name, version: c.candidate, archive, sha256: sha256(readFileSync(join(output, archive))), originalSha256: pkg.sha256, files: packedFiles });
+    assert(records.some(record => record.path === 'package.json'), 'top-level candidate manifest not audited');
+    if (pkg.name === '@cotal-ai/connector-core') assert(docsVersions > 0, 'generated docs identity missing');
+    audit.push({ name: pkg.name, records, docsVersions });
   }
-  writeFileSync(join(output, 'manifest.json'), JSON.stringify({ source: manifest.source, packages: staged }, null, 2) + '\n', { flag: 'wx' });
+  writeFileSync(join(output, 'identity-audit.json'), JSON.stringify(audit, null, 2) + '\n', { flag: 'wx' });
 }
 export async function main(action, configFile) {
   const c = validateConfig(JSON.parse(readFileSync(configFile)));
@@ -87,6 +91,7 @@ export async function main(action, configFile) {
   const env = isolatedEnv(root);
   for (const path of Object.values(env).filter(v => v?.startsWith(root) && !v.endsWith('npmrc'))) mkdirSync(path, { recursive: true, mode: 0o700 });
   for (const file of [env.npm_config_userconfig, env.npm_config_globalconfig]) if (!existsSync(file)) writeFileSync(file, '', { mode: 0o600, flag: 'wx' });
+  if (action === 'stage-source') return stageSource(c, root, env);
   if (action === 'mirror-parents') return mirrorParents(c, root, env);
   if (action === 'prepare') return prepare(c, root, env);
   if (action === 'config') {
@@ -99,6 +104,7 @@ export async function main(action, configFile) {
     assert(typeof c.publishNpmrc === 'string' && c.publishNpmrc.startsWith('/home/david/f26/tmp/'), 'coordinator-created private publish npmrc required');
     env.npm_config_userconfig = c.publishNpmrc;
     const directory = join(root, 'candidate');
+    assert(existsSync(join(directory, 'identity-audit.json')), 'candidate identity audit required before publishing');
     const manifest = JSON.parse(readFileSync(join(directory, 'manifest.json')));
     for (const p of manifest.packages) {
       assert.equal(p.version, c.candidate); assert(/^[^/\\]+\.tgz$/.test(p.archive));
