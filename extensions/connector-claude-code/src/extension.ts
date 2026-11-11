@@ -1,6 +1,9 @@
-import { resolve } from "node:path";
+import { spawn, type ChildProcess } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
@@ -150,6 +153,92 @@ function assertServableModel(model: string): void {
   );
 }
 
+/** Flags for asking `claude` which models its login can use. With them `claude` reads one `initialize`
+ *  control request over stream-json and answers before any user message exists, so asking starts no
+ *  turn and spends no tokens. The rest keep the question from starting anything the operator
+ *  configured: no MCP server (their own `cotal` server included), no hook and no saved session. */
+const MODELS_ARGS = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--settings", '{"disableAllHooks":true}', "--no-session-persistence"];
+const MODELS_REQUEST_ID = "cotal-models";
+
+/** One line of `claude` stdout, typed only as far as the catalog reads it. Parsed JSON can have any
+ *  shape, so every field is checked before use. */
+interface ControlLine {
+  type?: unknown;
+  response?: {
+    request_id?: unknown;
+    subtype?: unknown;
+    error?: unknown;
+    response?: { models?: unknown; account?: { tokenSource?: unknown; apiKeySource?: unknown } };
+  };
+}
+
+const unavailable = (why: string): ModelCatalog => ({ models: [], unavailable: why });
+
+function isModelRow(row: unknown): row is { value: string; displayName: string } {
+  const { value, displayName } = (row ?? {}) as { value?: unknown; displayName?: unknown };
+  return typeof value === "string" && typeof displayName === "string";
+}
+
+/** The catalog one stdout line settles on, or undefined when the line does not answer the request. */
+function initializeAnswer(text: string): ModelCatalog | undefined {
+  let line: ControlLine | null;
+  try {
+    line = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const answer = line?.response;
+  if (line?.type !== "control_response" || answer?.request_id !== MODELS_REQUEST_ID) return undefined;
+  if (answer.subtype === "error") return unavailable(`claude refused to list its models: ${String(answer.error)}`);
+  const result = answer.subtype === "success" ? answer.response : undefined;
+  // Logged out, claude still answers, with its built-in aliases, and no seat of this install can run one.
+  if (result?.account?.tokenSource === "none" && !result.account.apiKeySource) return unavailable("claude is not logged in; run claude to log in");
+  const rows = result?.models;
+  if (!Array.isArray(rows) || !rows.every(isModelRow)) return unavailable("claude answered without a model list");
+  // `default` points at claude's own default model, which a launch that names no model gets anyway.
+  // Effort levels are not offered as variants, because this connector refuses a variant at launch.
+  return { source: "claude stream-json initialize", models: rows.filter((m) => m.value !== "default").map((m) => ({ id: m.value, name: m.displayName })) };
+}
+
+/** Ask the operator's own `claude` which models its login can use (see MODELS_ARGS). It runs the file a
+ *  launch runs, with the env a launch gets, from an empty private directory so no project's settings
+ *  apply. Every way the question can go unanswered ends `unavailable` with its cause within 10s, never
+ *  a throw, and the child is always killed. */
+async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
+  const cwd = mkdtempSync(join(tmpdir(), "cotal-claude-models-"));
+  // A launch's env, not this process's, so the question sees the auth and provider a seat sees and
+  // none of the session markers a manager started inside a Claude session would otherwise pass on.
+  const env = launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS });
+  let child: ChildProcess | undefined;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await new Promise<ModelCatalog>((settle) => {
+      const claude = (child = spawn(opts.resolvedBinaries?.claude ?? "claude", MODELS_ARGS, { cwd, env, stdio: ["pipe", "pipe", "ignore"] }));
+      timer = setTimeout(() => settle(unavailable("claude did not list its models within 10s")), 10_000);
+      claude.on("error", (e) => settle(unavailable(`claude could not start: ${e.message}`)));
+      // `close` follows the last `data` event, so an answer written just before exit is read first.
+      claude.on("close", (code, signal) => settle(unavailable(`claude exited (${code ?? signal}) before it listed its models`)));
+      // Without this listener, writing to a child that already closed its input is an unhandled error that stops the manager.
+      claude.stdin.on("error", (e) => settle(unavailable(`claude stopped reading before it listed its models: ${e.message}`)));
+      let buf = "";
+      claude.stdout.setEncoding("utf8");
+      claude.stdout.on("data", (chunk: string) => {
+        buf += chunk;
+        for (let nl = buf.indexOf("\n"); nl >= 0; nl = buf.indexOf("\n")) {
+          const answer = initializeAnswer(buf.slice(0, nl));
+          buf = buf.slice(nl + 1);
+          if (answer) settle(answer);
+        }
+      });
+      claude.stdin.write(JSON.stringify({ type: "control_request", request_id: MODELS_REQUEST_ID, request: { subtype: "initialize" } }) + "\n");
+    });
+  } finally {
+    clearTimeout(timer);
+    child?.kill("SIGKILL");
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}
+
 /**
  * The Claude Code connector: launches the real `claude` with the Cotal identity in
  * the environment and the mesh channel enabled, so the session joins the mesh and
@@ -167,6 +256,7 @@ export const claudeConnector: Connector = {
   eventChannel,
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
+  listModels: listClaudeModels,
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
   resumeTranscript: claudeResumeTranscript,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
