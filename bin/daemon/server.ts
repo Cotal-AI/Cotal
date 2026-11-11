@@ -327,6 +327,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
           : (async () => {
             if (await account.intent(req.space, req.op === "service-connect")) return services.status(req.space);
+            const disconnect = req.op === "service-disconnect" ? services.disconnect(req.space) : undefined;
+            void disconnect?.catch(() => {});
             return reconciler.serial(() => withIdpSessionDir(machineHome, async () => {
             if (req.op === "service-connect") {
               reconciler.localAddition(req.space);
@@ -335,7 +337,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
             reconciler.localRemoval(req.space);
             let disconnected: ServiceConnectionResult;
             try { await managers.disconnect(req.space); }
-            finally { disconnected = await services.disconnect(req.space); }
+            finally { disconnected = await disconnect!; }
             return disconnected;
             }));
           })().catch((error: unknown): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: error instanceof Error ? error.message : "The connection could not be changed. Check daemon status and try again." }));
