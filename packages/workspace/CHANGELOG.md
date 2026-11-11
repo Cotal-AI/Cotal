@@ -1,5 +1,15 @@
 # @cotal-ai/workspace
 
+## 0.158.0
+
+### Patch Changes
+
+- 8962134: A terminal surface can ask a space's manager which applications and models it can run, so a spawn form offers what that manager has instead of what this machine has installed.
+  
+  `control()` from `@cotal-ai/workspace/control` now accepts the `managerStatus` and `models` operations, with the same caller profile as `start`.
+- Updated dependencies [f7f5cc6]
+  - @cotal-ai/core@0.158.0
+
 ## 0.157.9
 
 ### Patch Changes
