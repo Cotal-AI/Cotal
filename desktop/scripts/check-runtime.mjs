@@ -16,7 +16,7 @@ const stagedNode = join(root, 'binaries', `${sidecar}-${manifest.target}${suffix
 const node = join(scratch, `${sidecar}${suffix}`);
 const home = join(scratch, 'home'); mkdirSync(home, { mode: 0o700 });
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH'].includes(key)));
-Object.assign(env, { HOME: home, USERPROFILE: home, APPDATA: join(home, 'appdata'), LOCALAPPDATA: join(home, 'localappdata'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, 'data'), XDG_CACHE_HOME: join(home, 'cache'), XDG_RUNTIME_DIR: join(home, 'run'), DO_NOT_TRACK: '1' });
+Object.assign(env, { HOME: home, USERPROFILE: home, APPDATA: join(home, 'appdata'), LOCALAPPDATA: join(home, 'localappdata'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, 'data'), XDG_CACHE_HOME: join(home, 'cache'), XDG_RUNTIME_DIR: join(home, 'run'), DO_NOT_TRACK: '1', COTAL_NO_UPDATE_CHECK: '1' });
 mkdirSync(env.XDG_RUNTIME_DIR, { mode: 0o700 });
 cpSync(staged, relocated, { recursive: true, verbatimSymlinks: true });
 // Exercise the installed basename, after Tauri removes the target suffix.
