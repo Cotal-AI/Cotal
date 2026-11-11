@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { JSDOM } from "jsdom";
+import { createRequire } from "node:module";
+const { JSDOM } = createRequire(import.meta.url)("jsdom");
 import { agentInventory, renderAgents, runningFor, shortFolder } from "../src/agents.js";
 import { parseHostedAgents } from "../../bin/daemon/agents.js";
 const agent: { name: string; application: string; cwd: string; startedAt: string; state: string; model?: string } = { name: "writer", application: "codex", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" };
