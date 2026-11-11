@@ -103,7 +103,10 @@ try {
     const run = (b: EpIssuanceBarrier) => registerServiceInstance(records, { space, spec, instanceId, registrant: { owner },
       authority: { authorize: () => ({ authorized: true, revision: 0 }) }, barrier: b, readClusterArtifact: (digest) => documents.get(digest) });
     const opId = mintLifecycleUid(), first = barrier(opId);
-    await assert.rejects(run({ ...first, reopen: async () => { throw new Error("interrupted before reopen"); } }), /reopen did not complete/);
+    await assert.rejects(
+      run({ ...first, reopen: async () => { throw new Error("interrupted before reopen"); } }),
+      { code: "unavailable", message: /reopen's outcome is unknown:.*interrupted before reopen/ },
+    );
     assert.equal((await loadEndpointRepairCursor(kv, endpoint, instanceId))?.cursor.opId, opId);
     const resumed = barrier(opId);
     if (scenario === "resume-alone") {
