@@ -31,10 +31,68 @@ try {
   const status = run(['daemon', 'desktop'], '{"op":"status"}\n'); assert.equal(status.status, 0); assert.equal(JSON.parse(status.stdout).ok, false);
   assert.equal(existsSync(join(env.XDG_RUNTIME_DIR, 'cotal/daemon.sock')), false);
   console.log('PASS missing daemon remains unavailable; no service started');
-  const daemonStatus = run(['daemon', 'status']); assert.notEqual(daemonStatus.status, 0); assert.match(daemonStatus.stdout + daemonStatus.stderr, /no daemon endpoint/);
+  const daemonStatus = run(['daemon', 'status']); assert.notEqual(daemonStatus.status, 0); assert.match(daemonStatus.stdout + daemonStatus.stderr, /Native code:\s+NOT_RUNNING/);
   console.log('PASS relocated CLI daemon status reports missing endpoint cleanly');
   const update = run(['update', '--self']); assert.notEqual(update.status, 0); assert.match(update.stdout + update.stderr, /runtime belongs to the desktop app/);
   console.log('PASS bundled runtime refuses npm self-update');
+
+  const lazyRuntimeFiles = [
+    'package.json',
+    'desktop-runtime.json',
+    'dist/cotal.js',
+    'dist/daemon-cwd.js',
+    'dist/daemon-native.js',
+    'seeded-connectors/_shared/docs-bundle.bin',
+    'seeded-connectors/_shared/docs-index.bin',
+    'seeded-connectors/claude/.claude-plugin/plugin.json',
+    'seeded-connectors/claude/.mcp.json',
+    'seeded-connectors/claude/hooks/hooks.json',
+    'seeded-connectors/claude/dist/mcp.cjs',
+    'seeded-connectors/claude/dist/seat.cjs',
+    'seeded-connectors/claude/dist/hook.cjs',
+    'seeded-connectors/claude/dist/monitor.cjs',
+    'seeded-connectors/codex/dist/host.js',
+    'seeded-connectors/codex/dist/personal.js',
+    'seeded-connectors/hermes/dist/launch.js',
+    'seeded-connectors/hermes/plugin/cotal/_sidecar/standalone.cjs',
+    'seeded-connectors/jcode/dist/host.js',
+    'seeded-connectors/jcode/dist/mcp.js',
+    'seeded-connectors/opencode/dist/plugin/index.js',
+    'seeded-connectors/opencode/dist/serve.js',
+    'seeded-connectors/opencode/dist/launch.js',
+    'seeded-connectors/pi/dist/standalone.js',
+    'seeded-connectors/web/dist/web/index.html',
+    'seeded-connectors/web/dist/web/theme-boot.js',
+    'seeded-connectors/web/dist/web/bundle-licenses.json',
+    'seeded-connectors/claude/skills-plugin/.claude-plugin/plugin.json',
+    'node_modules/@cotal-ai/cli/cotal-skills/skills/team-topology/SKILL.md',
+    'node_modules/@cotal-ai/connector-core/dist/docs-bundle.bin',
+    'node_modules/@cotal-ai/connector-core/dist/docs-index.bin',
+    'node_modules/@cotal-ai/lang/conformance/corpus.json',
+    'node_modules/@cotal-ai/lang/dist/engine/worker-entry.js',
+    'node_modules/@cotal-ai/manager/dist/console/index.html',
+    'node_modules/@cotal-ai/manager/dist/console/app.js',
+    'node_modules/@cotal-ai/manager/dist/console/session-bundle.js',
+    'node_modules/@cotal-ai/seat/dist/custodian.js',
+    'node_modules/@cotal-ai/workspace/dist/win32-custodian.js',
+    'node_modules/@xterm/xterm/lib/xterm.js',
+    'node_modules/@xterm/xterm/css/xterm.css',
+    'node_modules/@xterm/addon-fit/lib/addon-fit.js',
+    'node_modules/@xterm/addon-attach/lib/addon-attach.js',
+  ];
+  for (const rel of lazyRuntimeFiles) {
+    assert.equal(existsSync(join(relocated, rel)), true, `missing lazily read runtime file: ${rel}`);
+  }
+  const docsSpec = run(['docs', 'spec']); assert.equal(docsSpec.status, 0, `cotal docs spec failed: ${docsSpec.stderr}`); assert.ok(docsSpec.stdout.length > 1000);
+  const docsSchema = run(['docs', 'schema']); assert.equal(docsSchema.status, 0, `cotal docs schema failed: ${docsSchema.stderr}`); assert.ok(docsSchema.stdout.includes('"$schema"'));
+  const docsLang = run(['docs', 'lang']); assert.equal(docsLang.status, 0, `cotal docs lang failed: ${docsLang.stderr}`); assert.ok(docsLang.stdout.length > 1000);
+  const corpusCheck = spawnSync(
+    node,
+    ['--input-type=module', '-e', 'import { conformanceCorpus } from "@cotal-ai/lang"; const c = conformanceCorpus(); if (!c.cases.length) throw new Error("empty corpus");'],
+    { cwd: relocated, env, encoding: 'utf8', timeout: 30000 },
+  );
+  assert.equal(corpusCheck.status, 0, `conformanceCorpus() failed: ${corpusCheck.stderr || corpusCheck.stdout}`);
+  console.log(`PASS ${lazyRuntimeFiles.length} lazily read runtime files exist and docs/conformance readers succeed`);
 
   const noBrokerBin = join(scratch, 'empty-bin'); mkdirSync(noBrokerBin, { mode: 0o700 });
   const projDir = join(scratch, 'local-proj'); mkdirSync(projDir, { mode: 0o700 });
