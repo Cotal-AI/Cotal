@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import { isolatedEnv, privateRegistry, validateConfig } from './unattended-prepublish.mjs';
+const config = { optIn: 'unattended-prepublish-6385', registry: 'http://10.227.13.1:14873', candidate: '0.160.5', allowHosts: ['10.0.0.2'], key: '/private/id', knownHosts: '/private/known_hosts', machines: [{ host: '10.0.0.2', user: 'ubuntu', root: '/home/ubuntu/proof', prefix: '/home/ubuntu/.local/share/cotal', cli: '/home/ubuntu/.local/bin/cotal', node: '/home/ubuntu/.local/share/cotal/nodebin/node', hostname: 'cotal-test', existingMachine: 'authorized-disposable-6385', unit: 'cotal-daemon.service', parent: '0.160.3', mode: 'success' }] };
+assert.equal(validateConfig(config), config);
+for (const registry of ['https://registry.npmjs.org/', 'http://example.org/', 'http://user:secret@10.0.0.1/', 'http://10.0.0.1/path', 'http://172.32.0.1/']) assert.throws(() => privateRegistry(registry));
+for (const patch of [{ optIn: false }, { candidate: '0.160.3' }, { candidate: '0.160.5-test.1' }, { allowHosts: ['other'] }, { allowHosts: ['isaac24'] }]) assert.throws(() => validateConfig({ ...config, ...patch }));
+for (const patch of [{ host: 'isaac24' }, { host: '-oProxyCommand=bad' }, { root: '/tmp/unattended-6385/../foreign' }, { root: '/home/david/proof' }, { unit: 'bad;command.service' }, { mode: 'pretend' }]) assert.throws(() => validateConfig({ ...config, machines: [{ ...config.machines[0], ...patch }] }));
+const env = isolatedEnv('/suite');
+assert.equal(env.HOME, '/suite/home'); assert.equal(env.COTAL_HOME, '/suite/home/.cotal'); assert.equal(env.npm_config_userconfig, '/suite/npmrc');
+assert(!('NPM_TOKEN' in env)); assert(!('SSH_AUTH_SOCK' in env));
+console.log('unattended prepublish guards passed (no network, registry, build, install or machine execution)');
