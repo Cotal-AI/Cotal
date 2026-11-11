@@ -1,5 +1,15 @@
 # @cotal-ai/auth
 
+## 0.160.7
+
+### Patch Changes
+
+- 7551eb9: The daemon's account computer registration now lists the Managers the computer hosts, so the account host can show a Manager under the name you gave the computer.
+- Updated dependencies [c0f7b08]
+  - @cotal-ai/workspace@0.160.7
+  - @cotal-ai/core@0.160.7
+  - @cotal-ai/lang@0.160.7
+
 ## 0.160.6
 
 ### Patch Changes
