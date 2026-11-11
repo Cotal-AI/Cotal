@@ -36,6 +36,8 @@
  *  L17 malformed session records refuse before provider requests, preserving the sign-in cache.
  *  L17 an initial device-authorization refusal exits 2 with no persistence warning, prompt or poll.
  *  L18 initial refusals stay typed when the optional error body is null or has non-string fields.
+ *  L19 replacing an account names the previous subject in human and plain reports, and in JSON;
+ *      first sign-ins and same-subject repeats report no replacement.
  *
  * Run: tsx bin/smoke/daemon-login.smoke.ts   (Linux only)
  */
@@ -189,6 +191,7 @@ let tokenGate: Promise<void> | undefined;
 /** When set, /device/token answers exactly this, whatever `approved` says. */
 let tokenOverride: { status: number; body: string } | undefined;
 let codeOverride: { status: number; body: string } | undefined;
+let scriptedSub = "scripted-user";
 const fakeJwt = (sub: string) => `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub, iss: "x" })).toString("base64url")}.sig`;
 const scripted = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   const route = new URL(req.url!, "http://x").pathname;
@@ -198,12 +201,12 @@ const scripted = createHttpServer(async (req: IncomingMessage, res: ServerRespon
   if (route === "/api/auth/device/code") return send(200, { device_code: "scripted-device-code", user_code: "SCRIPTED", verification_uri: "http://127.0.0.1/v", verification_uri_complete: "http://127.0.0.1/v?c=SCRIPTED", expires_in: 60, interval: 1 });
   if (route === "/api/auth/device/token" && tokenOverride) return void res.writeHead(tokenOverride.status, { "content-type": "application/json" }).end(tokenOverride.body);
   if (route === "/api/auth/device/token") return approved ? send(200, { access_token: "scripted-session-token", expires_in: 3600 }) : send(400, { error: "authorization_pending" });
-  if (route === "/api/auth/token") { if (tokenGate) await tokenGate; return send(200, { token: fakeJwt("scripted-user") }); }
+  if (route === "/api/auth/token") { if (tokenGate) await tokenGate; return send(200, { token: fakeJwt(scriptedSub) }); }
   send(404, {});
 });
 await new Promise<void>((r) => scripted.listen(0, "127.0.0.1", r));
 const sBase = `http://127.0.0.1:${(scripted.address() as AddressInfo).port}/api/auth`;
-const resetScripted = () => { for (const k of Object.keys(hits)) delete hits[k]; approved = false; tokenGate = undefined; tokenOverride = undefined; codeOverride = undefined; };
+const resetScripted = () => { for (const k of Object.keys(hits)) delete hits[k]; approved = false; tokenGate = undefined; tokenOverride = undefined; codeOverride = undefined; scriptedSub = "scripted-user"; };
 const totalHits = () => Object.values(hits).reduce((a, b) => a + b, 0);
 const polls = () => hits["/api/auth/device/token"] ?? 0;
 /** The scripted IdP's session token reached the stock session file. */
@@ -481,6 +484,41 @@ try {
       check("L12 the session landed in the DAEMON's session dir, not the CLI's COTAL_HOME", !!stored?.token && !existsSync(join(cliHome, "idp-sessions.json")));
       check("L12 neither stdout nor stderr carries the session token", !!stored?.token && !out.includes(stored.token) && !err.includes(stored.token));
     } finally { await d.close(); }
+  });
+
+  await cell("L19 account replacement through the CLI in every presentation", async () => {
+    for (const format of [[], ["--plain"], ["--json"]]) {
+      resetScripted();
+      approved = true;
+      const { paths, rt, home } = fresh(); await mkRuntime(rt);
+      const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home });
+      const label = format[0] ?? "human";
+      try {
+        for (const [step, sub, previousSub] of [
+          ["first sign-in", "scripted-user", undefined],
+          ["same-subject repeat", "scripted-user", undefined],
+          ["replacement", "replacement-user", "scripted-user"],
+          ["replacement repeat", "replacement-user", undefined],
+        ] as const) {
+          scriptedSub = sub;
+          const run = await runCli(rt, sBase, format);
+          check(`L19 ${label} ${step}: exit 0`, run.status === 0, { status: run.status });
+          if (label === "--json") {
+            const doc = JSON.parse(run.out) as { result: { sub: string; previousSub?: string } };
+            check(`L19 ${label} ${step}: current and previous subjects`, doc.result.sub === sub && (previousSub
+              ? doc.result.previousSub === previousSub
+              : !Object.hasOwn(doc.result, "previousSub")));
+          } else {
+            const lines = run.out.trimEnd().split("\n").map((line) => line.trim());
+            const replacements = lines.filter((line) => line.startsWith("Replaced account:"));
+            check(`L19 ${label} ${step}: current subject and provider remain visible`, lines.some((line) => /^Subject:\s+/.test(line) && line.endsWith(sub)) && run.out.includes(sBase));
+            check(`L19 ${label} ${step}: one replacement line only when the subject changes`, previousSub
+              ? replacements.length === 1 && replacements[0] === `Replaced account: ${previousSub}`
+              : replacements.length === 0, { replacements });
+          }
+        }
+      } finally { await d.close(); }
+    }
   });
 
   // ---- L13: a cancel waits for the result's delivery, even after the sign-in itself completed ----
