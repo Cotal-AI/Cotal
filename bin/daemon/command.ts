@@ -25,7 +25,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, codeSpan, homeCotalDir, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, codeSpan, homeCotalDir, readUpdateRecovery, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
@@ -419,7 +419,10 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
 
 async function serve(args: ParsedArgs): Promise<void> {
   const { recoverInterruptedUpdate } = await import("@cotal-ai/cli/update");
-  if (await recoverInterruptedUpdate()) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
+  // A paused update already failed its restoration and waits for `cotal update --self`. Trying it
+  // again on every service restart would stop the daemon each time. The daemon starts instead:
+  // status names the repair, and nothing activates or reconciles until the repair succeeds.
+  if (readUpdateRecovery()?.phase !== "paused" && await recoverInterruptedUpdate()) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
   const { paths, home } = resolveTarget(args);
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;
@@ -465,6 +468,8 @@ async function serve(args: ParsedArgs): Promise<void> {
       const verified = observation.state === "owned";
       stopWatching = watchDaemonGeneration(binVersion(), async (version) => {
         if (!verified) throw new Error("no verified native launch marker; automatic activation is unavailable; use the installed CLI to restart this daemon");
+        // The service restart stops every process of this service, the daemon's own update included.
+        if (updates?.updating()) throw new Error("this daemon's update is still finishing");
         planUninstall(paths, home);
         const seats = await running.generationSeats();
         const occupied = seats.filter((row) => row.seats > 0);

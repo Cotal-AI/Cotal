@@ -103,6 +103,9 @@ const composed: Command = { ...command, async run(args) {
     return "none";
   }) });
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode || !daemonObserved) return;
+  // The daemon started this update and restarts itself once this process has exited. A restart
+  // asked for from here would stop this process with the rest of the service.
+  if (process.env.COTAL_AUTO_UPDATE === "1") return;
   const paths = daemonPaths();
   const current = await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");

@@ -304,6 +304,11 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     if (journaled) {
       const result = await reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
       if (result !== 0) return result;
+      // The daemon's own update runs inside the daemon's service control group. The restart that
+      // activates this generation stops every process in that group, so this child cannot outlive
+      // it. The journal stays unverified, which holds the daemon on its old generation until the
+      // parent has finished and cleared it.
+      if (rt.env.COTAL_AUTO_UPDATE === "1") return 0;
     }
     try {
       const recovery = readUpdateRecovery();
