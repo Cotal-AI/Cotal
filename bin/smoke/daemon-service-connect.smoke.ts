@@ -394,7 +394,7 @@ try {
   const svc = await Promise.all(ctx.map((c, i) => startAuthService({ context: { accountPublicKey: c.auth.account.pub, lifecycleUid: mintLifecycleUid() }, space: c.space, servers,
     store: c.store, storeIdentity: c.store.identity, stateDir: c.stateDir, publicFace: { port: 0, trustedProxy: false },
     ...(process.argv.includes("--renewal-abort-repro") ? { standingRenewableTtlSeconds: 40 } : {}),
-    ...(i === 1 ? {} : { serviceEndpoints: { startup: { kind: "normal" as const },
+    ...(i === 1 || (process.argv.includes("--account-hosted") && (i === 0 || i === 2)) ? {} : { serviceEndpoints: { startup: { kind: "normal" as const },
       callerPayload: { observerCreds: () => mintServiceCallerPayloadObserverCreds({ pub: c.auth.sys.pub, signingSeed: c.auth.sys.signingSeed! }) } } }) })));
   handles.push(...svc);
 
@@ -1824,7 +1824,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           let removedStatus: Record<string, any> = {};
           for (let i = 0; i < 60; i++) {
             removedStatus = await observed();
-            if (removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer")) break;
+            if (removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer") && removedStatus.managers?.every((row: any) => row.space !== ON || row.state === "stopped")) break;
             await sleep(500);
           }
           check("A2g local registry removal stops the Manager and marks local veto", removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer") && removedStatus.managers?.every((row: any) => row.space !== ON || row.state === "stopped"), removedStatus);
