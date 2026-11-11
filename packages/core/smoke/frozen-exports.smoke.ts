@@ -123,6 +123,7 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
     ["./loopback", { module: "loopback", additions: [] }],
     ["./subjects", { module: "subjects", additions: [] }],
     ["./advisory-lock", { module: "advisory-lock", additions: [] }],
+    ["./presence-ages", { module: "presence-ages", additions: [] }],
     ["./browser-control", { module: "browser-control", additions: ["browserServiceSurface", "openBrowserEndpointCaller", "openBrowserManagerCaller", "verifyGoalResultFact"] }],
     ["./browser-validators-build", { module: "browser-validators-build", additions: ["generateBrowserContracts"] }],
   ]);
