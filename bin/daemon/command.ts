@@ -364,8 +364,8 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
       onPrompt: p => { process.stderr.write(`Approve this machine\nOpen: ${p.verificationUriComplete}\nApproval code: ${p.userCode}\n`); },
     });
     writeResult(presentation, { command: "daemon setup", target: { idp: idp! }, result: r }, () => ({ sections: [
-      { title: "Connected to your account", blocks: [{ kind: "fields", rows: [["Account", r.account], ["Computer", r.computer]] },
-        { kind: "lines", lines: ["Turn on the spaces that can use this computer in the Cotal Cloud dashboard."] }] },
+      { title: "Connected to your account", blocks: [{ kind: "fields", rows: [["Account", r.label || "Signed in"], ["Computer", r.computer]] },
+        { kind: "lines", lines: ["Turn on the spaces that can use this computer in the dashboard."] }] },
     ] }));
     return;
   }

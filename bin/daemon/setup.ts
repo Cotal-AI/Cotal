@@ -15,10 +15,7 @@ import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
  * stay separate commands; this one does not absorb them.
  */
 import { codeSpan, CommandFailure, resolveOnPath } from "@cotal-ai/workspace";
-import { loadIdpSession, normalizeIdpUrl, signedInMachineAccounts } from "@cotal-ai/auth";
-import { hostname } from "node:os";
-import { homeCotalDir } from "@cotal-ai/workspace";
-import { accountComputerId } from "./account-identity.js";
+import { normalizeIdpUrl } from "@cotal-ai/auth";
 import type { DaemonPaths } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
 import { loginFromCli } from "./cli-login.js";
@@ -215,7 +212,6 @@ export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSe
   const beforeRefresh = await queryDaemon(opts);
   if (!beforeRefresh.ok) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", beforeRefresh.error.message);
   if (beforeRefresh.result.managers?.some(hasNewApplications)) await refreshApplications(opts, steps);
-  const home = opts.daemonHome ?? homeCotalDir();
   const discovery = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
   const signedIn = discovery.ok && !("event" in discovery) && "signedInProviders" in discovery.result
     && discovery.result.signedInProviders?.includes(opts.idp);
@@ -226,19 +222,16 @@ export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSe
     steps.push({ step: "sign-in", outcome: "signed-in", detail: `signed in as ${signed.result.label || signed.result.sub}` });
   } else steps.push({ step: "sign-in", outcome: "already-signed-in", detail: "already signed in; no approval was needed" });
   opts.report(`sign-in: ${steps.at(-1)!.detail}`, steps.at(-1));
-  const account = signedInMachineAccounts(home).find(item => item.idpUrl === opts.idp);
-  const session = loadIdpSession(home, opts.idp);
-  if (!account || !session?.sub) throw new CommandFailure("refused", "AUTH_REQUIRED", "the daemon has no signed-in account for this provider");
-  const machineId = accountComputerId(home, account);
   const deadline = Date.now() + 60_000;
   for (;;) {
     const status = await queryDaemon(opts);
-    const registration = status.ok ? (status.result.account?.accounts ?? [status.result.account]).find(item => item?.machineId === machineId) : undefined;
+    const registration = status.ok ? (status.result.account?.accounts ?? [status.result.account]).find(item => item?.idpUrl === opts.idp) : undefined;
     if (registration?.hostSupport === "unsupported") throw new CommandFailure("refused", "UNSUPPORTED", "this provider does not support account computers; use setup --space <s>");
     if (registration?.mode === "sign-in-required") throw new CommandFailure("refused", "AUTH_REQUIRED", "sign in again to register this computer");
     if (registration?.lastRegistration && registration.hostSupport === "supported") {
       steps.push({ step: "register", outcome: "registered", detail: "this computer is registered with the account" });
-      return { account: session.sub, computer: hostname(), machineId, steps, ...(unit ? { unit } : {}) };
+      if (!registration.machineId || !registration.sub || !registration.computer) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the daemon did not return this computer's account identity");
+      return { account: registration.sub, label: registration.label, computer: registration.computer, machineId: registration.machineId, steps, ...(unit ? { unit } : {}) };
     }
     if (Date.now() >= deadline) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the account did not confirm this computer's registration within 60 seconds; run setup again");
     await sleep(250);

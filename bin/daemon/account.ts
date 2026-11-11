@@ -1,6 +1,6 @@
 import { hostname } from "node:os";
 import { findMesh } from "@cotal-ai/workspace";
-import { requestAccountMachine, signedInMachineAccounts, withIdpSessionDir } from "@cotal-ai/auth";
+import { loadIdpSession, requestAccountMachine, signedInMachineAccounts, withIdpSessionDir } from "@cotal-ai/auth";
 import { validateCatalogSnapshot, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
 import { accountComputerId } from "./account-identity.js";
 import type { AccountComputerStatus } from "./account-state.js";
@@ -23,6 +23,8 @@ export function createAccountComputer(home: string, version: string, reconciler:
     accounts.forEach((account) => {
       const machineId = accountComputerId(home, account);
       const context: NonNullable<ReturnType<typeof contexts.get>> = contexts.get(account.ownerKey) ?? { state: { machineId, mode: "account", hostSupport: "unknown", spaces: [] } as AccountComputerStatus, lastHeartbeat: 0, abort: new AbortController() };
+      const session = loadIdpSession(home, account.idpUrl);
+      Object.assign(context.state, { idpUrl: account.idpUrl, sub: account.sub, label: session?.label, computer: hostname() });
       contexts.set(account.ownerKey, context);
       state = context.state;
       if (context.work || context.state.mode === "per-space" || context.state.mode === "sign-in-required") return;

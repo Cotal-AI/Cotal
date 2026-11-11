@@ -1,6 +1,10 @@
 /** Public account-computer state. Desired intent is separate from observed readiness. */
 export interface AccountComputerStatus {
   machineId?: string;
+  idpUrl?: string;
+  sub?: string;
+  label?: string;
+  computer?: string;
   accounts?: AccountComputerStatus[];
   mode: "signed-out" | "account" | "per-space" | "sign-in-required" | "account-selection-required" | "unavailable";
   hostSupport: "unknown" | "supported" | "unsupported";
@@ -14,6 +18,7 @@ export function validAccountComputerStatus(raw: unknown): raw is AccountComputer
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
   const r = raw as Record<string, unknown>;
   return (r.machineId === undefined || (typeof r.machineId === "string" && /^[0-9a-f-]{36}$/.test(r.machineId)))
+    && [r.idpUrl, r.sub, r.label, r.computer].every(value => value === undefined || typeof value === "string")
     && (r.accounts === undefined || (Array.isArray(r.accounts) && r.accounts.every(validAccountComputerStatus)))
     && ["signed-out", "account", "per-space", "sign-in-required", "account-selection-required", "unavailable"].includes(String(r.mode))
     && ["unknown", "supported", "unsupported"].includes(String(r.hostSupport))
