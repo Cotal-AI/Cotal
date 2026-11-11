@@ -21,6 +21,8 @@ import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { AGENT_LIFECYCLE_HELD, AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, agentLifecycleHeld, type AgentLifecycleRelease, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
 import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@cotal-ai/core";
+import { parseRemoteEndpointDeregisterRequest, parseRemoteEndpointDeregisterResult } from "@cotal-ai/core";
+import { CommandFailure } from "@cotal-ai/workspace";
 import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
 import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -105,6 +107,20 @@ const deprovisionSecretKeys = (space: string) => [authCalloutKey(space), authIss
 export const cotalAuthProvider: AuthProvider = {
   kind: "auth-provider",
   name: AUTH_PROVIDER_NAME,
+  async deregisterEndpoint({ store, dir, request }) {
+    const parsed = parseRemoteEndpointDeregisterRequest(request);
+    const route = await managerAuthorityEndpoint(store, dir, request.space, "removing a stale manager registration");
+    const endpoint = route.endpoint.replace(/\/manager-service-authority$/, "/endpoint-deregister");
+    try {
+      return parseRemoteEndpointDeregisterResult(await postManagerAuthority(endpoint, route.idpUrl, route.authorization, parsed, "endpoint deregistration"), parsed);
+    } catch (error) {
+      if (error instanceof ManagerAuthorityRefusal && [400, 401, 403, 404, 405, 415, 429].includes(error.status))
+        throw new CommandFailure("refused", error.status === 404 ? "UNSUPPORTED" : "PERMISSION_DENIED", "the governing auth service refused endpoint deregistration", {
+          remedy: error.status === 404 ? "the hosted authority must serve authenticated /endpoint-deregister using the native guarded removal door; no local signer was substituted" : "verify your current supervise grant and ownership of this manager registration",
+        });
+      throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "endpoint deregistration returned no confirmed result; inspect the same registration before another request");
+    }
+  },
   async requestRemoteRunSubmission({ store, dir, request }) {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "keyed run submission");
     return postManagerAuthority(endpoint, idpUrl, authorization, request, "keyed run submission") as Promise<import("@cotal-ai/core").RemoteRunSubmissionResult>;

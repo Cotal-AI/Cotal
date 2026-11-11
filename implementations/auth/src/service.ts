@@ -91,6 +91,8 @@ import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerParticipation } from "./manager-participation-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
+import { deregisterUserEndpoint, type EndpointDeregisterGranter } from "./endpoint-deregister.js";
+import { parseRemoteEndpointDeregisterRequest } from "@cotal-ai/core";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, servedSpawnRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
@@ -280,6 +282,7 @@ export interface ManagerInstanceCatalog {
  *  arm through the supervised, shape-proved reader — and (b) the exchange-time root-credential
  *  ensure both exchange arms stamp `act.credentialId` from. */
 export interface AuthAuthorityPlane extends CalloutAuthority {
+  deregisterEndpoint: (request: unknown, granter: EndpointDeregisterGranter) => Promise<import("@cotal-ai/core").RemoteEndpointDeregisterResult>;
   recordToolResultConsent: ToolResultConsentRecorder;
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
   /** Admit one user-mode chat session for an owner the route derived from a verified IdP proof
@@ -1614,6 +1617,10 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       }
       throw new EpEnvelopeError("conflict", `ending the platform supervisor of ${owner} lost repeated CAS attempts on ${key}; retry`);
     },
+    deregisterEndpoint: async (request, granter) => {
+      refuseIfFenced();
+      return deregisterUserEndpoint({ request, granter, space, server, auth: issuerAuth(), observeGate: observeManagerGate, onConnection });
+    },
     maintainRemoteManager: async (holder) => {
       refuseIfFenced();
       const { owner } = holder;
@@ -2674,6 +2681,8 @@ async function runAuthServiceHost(args: { manifest: string; server: string; root
 /** An embedded auth-service context: what `runAuthService` writes to `auth-service.json` (the
  *  loopback URL, the public URL and the capability) plus the hosted lifecycle handle. */
 export interface AuthServiceHandle extends HostedServiceHandle {
+  /** Trusted host door. The embedder authenticates the space operator or same-account owner. */
+  deregisterEndpoint: AuthAuthorityPlane["deregisterEndpoint"];
   /** Settles after clean-close ordering and every owned connection's terminal closed signal.
    * A failed close leaves it pending while any connection has not ended. Retry close after repair. */
   readonly closed: Promise<AuthServiceClosed>;
@@ -3009,6 +3018,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       ownerSecret,
       authorizeActor,
       managerServiceAuthority: plane.issueManagerServiceAuthority,
+      deregisterEndpoint: plane.deregisterEndpoint,
       maintainRemoteManager: plane.maintainRemoteManager,
       validateRetainedAgent: plane.validateRetainedAgent,
       verifyManagedAgentEnrollment: plane.verifyManagedAgentEnrollment,
@@ -3188,6 +3198,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       return await invokeCommand(readerNc, space, await resolveService(readerNc, space, "manager", caller, { instanceId, commands: ["status"] }), "status", undefined, {});
     };
     const service: Omit<AuthServiceHandle, "readiness"> = {
+      deregisterEndpoint: (request, granter) => { refuseUnlessReady(); return plane.deregisterEndpoint(request, granter); },
       url,
       ...(publicUrl !== undefined ? { publicUrl } : {}),
       cap,
@@ -3289,6 +3300,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
 type HumanHolder = Extract<ManagerAuthorityHolder, { scope: string[] }>;
 
 interface HandlerCtx {
+  deregisterEndpoint: AuthAuthorityPlane["deregisterEndpoint"];
   /** The callout's connect limits, which the exchange checks before it mints. */
   connectLimiter: ConnectLimiter;
   issueToolResultConsent?: (raw: unknown) => Promise<import("@cotal-ai/core").ToolResultConsent>;
@@ -3549,6 +3561,7 @@ const ROUTES = new Map<string, RouteHandler>([
   ],
   ["/exchange", (req, res, ctx) => handleExchange(req, res, ctx, LOOPBACK_POLICY)],
   ["/manager-service-authority", (req, res, ctx) => handleManagerServiceAuthority(req, res, ctx, LOOPBACK_POLICY)],
+  ["/endpoint-deregister", (req, res, ctx) => handleEndpointDeregister(req, res, ctx, LOOPBACK_POLICY)],
   ["/manager-instances", (req, res, ctx) => handleManagerInstances(req, res, ctx, LOOPBACK_POLICY)],
   [SERVICE_ENDPOINT_AUTHORITY_PATH, (req, res, ctx) => handleServiceEndpointAuthority(req, res, ctx, LOOPBACK_POLICY)],
   [SERVICE_ENDPOINT_HOST_PATH, (req, res, ctx) => handleServiceEndpointHost(req, res, ctx, LOOPBACK_POLICY)],
@@ -4340,9 +4353,42 @@ async function handleServiceEndpointAuthority(req: IncomingMessage, res: ServerR
  *  way around the other's budget. */
 export type ManagerServiceAuthorityCtx = ManagerAuthorityDispatchCtx & Pick<HandlerCtx, "cap" | "bridgeIdp" | "ownerSecret" | "failures" | "badCaps">;
 
-/** The typed manager authority exchange, served on both faces. The face's policy decides whether the
- *  loopback capability is demanded; on the public face the verified IdP JWT is the proof, and the
- *  dispatcher reads the caller's scope from the ledger either way. */
+/** Same-account human removal. Operator authority exists only on the trusted in-process door. */
+async function handleEndpointDeregister(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
+  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? "")) return send(res, 415, { error: "content-type must be application/json" });
+  if (policy.requireCapability && req.headers.authorization !== `Bearer ${ctx.cap}`)
+    return refuseCapability(res, ctx, "missing/invalid exchange capability");
+  const peer = policy.peerKey(req), throttled = policy.throttled(ctx, peer);
+  let body: { idpToken: string; request: unknown };
+  try {
+    const raw = await readJsonBody(req);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).sort().join(",") !== "idpToken,request" ||
+        !("idpToken" in raw) || typeof raw.idpToken !== "string" || !raw.idpToken) return send(res, 400, { error: "endpoint deregistration needs only { idpToken, request }" });
+    body = raw as typeof body;
+    parseRemoteEndpointDeregisterRequest(body.request);
+  } catch (error) {
+    if (error instanceof RequestBodyError) return sendRequestError(res, error);
+    return send(res, error instanceof EpEnvelopeError && error.code === "unimplemented" ? 422 : 400, { error: "invalid endpoint deregistration request" });
+  }
+  let owner: string;
+  try {
+    const verified = await verifyIdpToken(body.idpToken, ctx.bridgeIdp);
+    owner = deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, verified.sub);
+    const row = findInteractiveActor(ctx.dir, owner, "cli");
+    if (!row || !(row.scope ?? []).includes("supervise")) throw new Error("endpoint deregistration requires the current cli supervise grant");
+  } catch {
+    return refuseExchange(res, ctx, policy, peer, throttled, "endpoint deregistration proof or current grant refused", 403, { error: "endpoint deregistration proof or current grant refused" });
+  }
+  try {
+    return send(res, 200, await ctx.deregisterEndpoint(body.request, { kind: "owner", owner }), { "cache-control": "no-store" });
+  } catch {
+    return send(res, 503, { error: "endpoint deregistration did not return a confirmed result; inspect the same registration before another request" });
+  }
+}
+
+/** Authenticated manager issuance and maintenance on the selected exchange face. */
 export async function handleManagerServiceAuthority(req: IncomingMessage, res: ServerResponse, ctx: ManagerServiceAuthorityCtx, policy: ExchangePolicy): Promise<void> {
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
   if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
@@ -4543,6 +4589,7 @@ function makePublicHandler(
     ],
     ["/exchange", (req, res, c) => handleExchange(req, res, c, policy)],
     ["/manager-service-authority", (req, res, c) => handleManagerServiceAuthority(req, res, c, policy)],
+    ["/endpoint-deregister", (req, res, c) => handleEndpointDeregister(req, res, c, policy)],
     ["/manager-instances", (req, res, c) => handleManagerInstances(req, res, c, policy)],
     [SERVICE_ENDPOINT_AUTHORITY_PATH, (req, res, c) => handleServiceEndpointAuthority(req, res, c, policy)],
     [SERVICE_ENDPOINT_HOST_PATH, (req, res, c) => handleServiceEndpointHost(req, res, c, policy)],

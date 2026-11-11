@@ -4341,6 +4341,30 @@ endpoint's descriptor public, in which case no view is consulted and the answer 
 Descriptor visibility is never inferred from reachability of `describe` alone. A KV browse
 index (record kind `contracts`) is an advisory convenience copy; `describe` is authoritative.
 
+**Explicit user-auth Manager deregistration.** The governing auth service MAY serve
+`POST /endpoint-deregister` with the closed body `{ idpToken, request }`, where `request` is
+`{ v: 1, kind: "endpoint-deregister", space, endpoint: "manager", instanceId }` and the instance
+id is a full native lifecycle token. It MUST verify the pinned IdP proof, derive the account's
+owner itself and read the current interactive `cli` grant with `supervise`. It MUST require the
+stored spec owner and manager gate's serving principal to belong to that account. A member MUST
+NOT remove another account's registration. A trusted in-process host door MAY additionally
+accept the governing space operator's authenticated authority, never a request-body owner claim
+or a ledger `admin` scope. The same door can be used by a host's computer-removal operation.
+Cross-space targets and environment-manager authority families MUST refuse.
+
+An answering pinned describe MUST refuse removal. An unanswered describe permits removal only
+when the broker affirmatively reports the exact instance rail empty. Probe failure, silence
+without that evidence and an in-flight registration MUST refuse. The authority MUST pin its
+authorization-read spec revision through the native status-before-spec revision-pinned deletion.
+A moved registration is uncertain, never success. The issuance gate remains unchanged. There is
+no expiry or automatic sweep, and no signing material or operation credential crosses to the client.
+The response echoes the request coordinate and carries either `state: "removed"` with positive
+`removedSpecRevision` and positive-or-null `removedStatusRevision`, `state: "refused"` with a
+guard or authorization `condition`, or `state: "unknown"` with `condition: "superseded"` or
+`"unavailable"`. Refused conditions are `instance-answered`, `instance-not-affirmed-gone`,
+`liveness-unestablishable`, `not-registered`, `registration-in-flight`, `permission-denied` and
+`unavailable`. A missing host operation MUST refuse without substituting static authority.
+
 **Manager-service records.** A remote manager registration is one closed, opaque-instance family:
 its `svc.manager.<instanceId>` spec/status pair, its instance-bound contract closure, and its
 `epgate.manager.<instanceId>` / `epcred.manager.<instanceId>.<credentialId>` rows all name the

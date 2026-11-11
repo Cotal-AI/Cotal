@@ -9,7 +9,7 @@ import {
   hasUserAuthState, isCommandFailure, workspaceSecretStore,
   type EndpointDeregisterAction, type EndpointDeregisterRequest, type EndpointDeregisterResult, type OutputWarning,
 } from "@cotal-ai/workspace";
-import { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe } from "./deregister-instance.js";
+import { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe } from "@cotal-ai/core";
 
 /** Reuse the shipped guard and native key-pinned executor. Do not copy either into another CLI. */
 export const endpointDeregisterAction: EndpointDeregisterAction = {
