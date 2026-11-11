@@ -260,7 +260,7 @@ jobs:
           # the signature carries the entitlements for them. Node then dies before it runs a line.
           "$node" -e 'console.log(process.version)'
           "$node" "$runtime/dist/cotal.js" --version
-          find "$runtime/node_modules" -name '*.node' -print0 | xargs -0 -n 1 "$node" -e 'require(process.argv[1])'
+          find "$runtime/node_modules" -name '*.node' -print0 | xargs -0 -n 1 "$node" -e 'require(require("node:path").resolve(process.argv[1]))'
       - name: Remove temporary signing material
         if: always()
         shell: pwsh
