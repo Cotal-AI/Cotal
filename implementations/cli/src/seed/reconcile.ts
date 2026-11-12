@@ -101,6 +101,20 @@ export async function reconcileSeededConnectors(): Promise<void> {
   await reconcile("auto");
 }
 
+/** Whether the seed journal, authority and installed built-in payloads need no package repair. */
+export function seedInstallationCurrent(): boolean {
+  try {
+    const generation = seedGeneration();
+    if (readCursor() || readRecovery() || seedChildStatus().kind !== "none" || reconcileLockActive()) return false;
+    if (!readWitness() || !authorityIntact() || !builtinsAccounted() || !builtinsMetadataCurrent() || readStamp()?.generation !== generation) return false;
+    const entries = SEED_BUILTINS.map(name => ({ name, entry: installedEntry(name) }));
+    if (entries.some(({ entry }) => entry !== undefined) && prefixLockDiffers() !== undefined) return false;
+    return entries.every(({ name, entry }) => entry === undefined || seededInstallDiffers(name, generation, entry) === undefined);
+  } catch {
+    return false;
+  }
+}
+
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
 export async function runSeed(flags: SeedFlags): Promise<void> {
   const mode: Mode = flags.reset ? "reset" : flags.repair ? "repair" : flags.force ? "force" : flags.verify ? "verify" : "auto";

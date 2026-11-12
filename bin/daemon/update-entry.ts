@@ -19,7 +19,11 @@ const composed: Command = { ...command, async run(args) {
   let daemonObserved = false;
   let preparedRestart = false;
   let absentRecoveryHost = false;
-  await update(args, { ...updateRuntime, async automaticUpdateAdvice() {
+  let currentPackages = false;
+  await update(args, { ...updateRuntime, isCurrent() {
+    currentPackages = updateRuntime.isCurrent?.() === true;
+    return currentPackages;
+  }, async automaticUpdateAdvice() {
     try {
       const reply = await queryDaemon({ paths: daemonPaths() });
       if (!reply.ok) throw new Error(`machine daemon update schedule is unreadable: ${reply.error.message}`);
@@ -129,7 +133,7 @@ const composed: Command = { ...command, async run(args) {
     }
     return localVerdict;
   }) });
-  if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode || !daemonObserved) return;
+  if (currentPackages || args.values.check === true || args.values.auto || args.values.notify || process.exitCode || !daemonObserved) return;
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (process.env.COTAL_AUTO_UPDATE === "1") return;
