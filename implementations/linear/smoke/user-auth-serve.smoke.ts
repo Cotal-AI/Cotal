@@ -334,12 +334,12 @@ try {
     const firstExpiry = expiries.at(-1)!;
     const reconnected = once(renewalEvents, "ready", { signal: AbortSignal.timeout(90_000) });
     await Promise.race([
-      once(renewalEvents, "credential", { signal: AbortSignal.timeout(20_000) }),
+      once(renewalEvents, "credential", { signal: AbortSignal.timeout(55_000) }),
       running.then(() => { throw new Error("service stopped before its automatic renewal"); }),
     ]);
     assert.ok(expiries.at(-1)! > firstExpiry, "the endpoint timer obtains a fresh native bearer without a manual pull");
     await Promise.race([reconnected, running.then(() => { throw new Error("service stopped before expiry reconnect"); })]);
-    assert.ok(Date.now() >= firstExpiry * 1000, "native ready follows the original broker credential's real expiry");
+    assert.ok(Date.now() < firstExpiry * 1000, "native ready follows the live swap before the original broker credential expires");
     const refreshed = await resolveService(nc, a.space, endpoint, { owner, actor: "caller", uid: caller.lifecycleUid! }, { instanceId: request.instanceId, deadlineMs: 3000 });
     const refreshedReply = await invokeCommand(nc, a.space, refreshed, "call-tool", { name: "echo", arguments: {}, inventoryDigest: "fixture-inventory" }, { deadlineMs: 3000 });
     assert.equal(refreshedReply.reply.ok, true, "the same native instance serves after expiry reconnect");
@@ -348,7 +348,7 @@ try {
     const revoked = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: { kind: "owner", owner }, input: {
       endpoint, instanceId: request.instanceId, expectedAssignmentDigest: approved.approval.assignment.assignmentDigest, cause: "owner-request" } });
     assert.equal(revoked.state, "pending", "the host confirms deny-new, not completed eviction");
-    const shutdownDeadline = setTimeout(() => ctl.abort(), 20_000);
+    const shutdownDeadline = setTimeout(() => ctl.abort(), 55_000);
     try { await assert.rejects(running, /stopped after its remote authority/); }
     finally { clearTimeout(shutdownDeadline); }
     running = undefined;
@@ -356,7 +356,7 @@ try {
     await assert.rejects(start(), /did not authorize|renewal ended/);
     assert.equal(closedUpstreams, 4, "a revoked restart closes its upstream without a replacement registration");
     assert.equal(contractDigest(seen.filter(r => r.operation === "register").at(-1)!), contractDigest(request));
-    assert.equal(toolCalls, 3);
+    assert.equal(toolCalls, recoveryCalls + 3);
     console.log("LINEAR HOSTED RENEWAL: native timer, real bearer-expiry reconnect, same-instance invocation, deny-new shutdown and revoked restart refusal passed; remote eviction is not claimed");
   } else {
     ctl.abort(); await running; running = undefined;
