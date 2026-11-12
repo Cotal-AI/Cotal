@@ -200,7 +200,7 @@ try {
       await page.addScriptTag({ url: `${address}/axe.js` });
       const violations = await page.evaluate(async () => (await axe.run(document)).violations.map(v => ({ id: v.id, targets: v.nodes.map(n => n.target) })));
       assert.deepEqual(violations, [], `${name}: accessibility`);
-      const expected = await page.locator("button:visible:enabled,input:visible:enabled,select:visible:enabled,summary:visible").evaluateAll(elements => elements.map(el => el.id || el.tagName));
+      const expected = await page.locator("button:visible:enabled,input:visible:enabled,select:visible:enabled,summary:visible,[tabindex]:visible:not([tabindex='-1'])").evaluateAll(elements => elements.map(el => el.id || el.tagName));
       await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
       // A click on the non-focusable shell resets the sequential navigation starting point.
       await page.locator(".brand").click();
