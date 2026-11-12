@@ -48,7 +48,9 @@ The cotal.ai site design system is the visual source: cream paper, navy ink, har
 
 ## Settings
 
-Open **Settings** in the window or **Settings…** from the tray or menu bar after setup. It uses the same window and shows this computer's name, update preferences, Open at login, the selected account and its spaces, and app and background service versions. **Edit name** uses the existing computer-name editor. Account information is read-only.
+Open **Settings** in the window or **Settings…** from the tray or menu bar after setup. It uses the same window and shows this computer's name, update preferences, Open at login, the selected account and its spaces, and app and background service versions. **Edit name** uses the existing computer-name editor. **Sign out** names the selected host and asks for confirmation. It revokes that login session and clears its cached sign-in and discovered spaces. Existing computer connections keep running on their own service proofs. Disconnect first if you also want to stop those connections.
+
+**Disconnect this computer** shows the spaces it will stop before confirmation. It stops their hosted Managers and machine-service connections and removes their resume intent. Account hosts also update the desired space list. The background service stays installed. This action does not remove the computer from the dashboard or revoke remote authority. Current versions retain connection credentials on disk. A refused or unknown result is shown rather than reported as a completed disconnect.
 
 ## Updates
 
@@ -69,7 +71,7 @@ pnpm --dir desktop check:runtime
 pnpm --dir desktop app:dev
 ```
 
-The runtime staging command uses lockfile-based `pnpm deploy` with a hoisted dependency layout to package the built stock workspace. It refuses an existing staged runtime rather than overwriting files a daemon could still be using. Use a clean build checkout for another version. No install or service start happens during staging.
+The runtime staging command uses lockfile-based `pnpm deploy` with a hoisted dependency layout to package the built stock workspace. It removes build-only source maps, TypeScript declarations, test trees, duplicate non-runtime package outputs and the local `nats-server` binary before sealing `desktop-runtime.json`, and strips local debug symbols from the bundled Node binary on Linux and macOS. It refuses an existing staged runtime rather than overwriting files a daemon could still be using. Use a clean build checkout for another version. No install or service start happens during staging.
 
 On Windows, the bundled executable keeps the name `node.exe`. The runtime check relocates it with that installed name. Linux and macOS continue to use `cotal-node`. The app selects the bundled executable from its own installation, never from PATH.
 

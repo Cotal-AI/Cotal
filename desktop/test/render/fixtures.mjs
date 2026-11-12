@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 export function nativeStub(scenario) {
   const callbacks = new Map(); let next = 0;
-  const state = { ...scenario };
+  const state = { ...scenario, accountRequests: [] };
   const ok = result => ({ v: 1, event: "result", ok: true, result });
   const fail = (code, message, native) => ({ v: 1, event: "result", ok: false, error: { code, message, ...(native ? { native: { code: native } } : {}) } });
   const manager = () => ({ space: "acme-team", state: "answering", instanceId: "machine-1", connectors: [{ agent: "claude", state: "available" }, { agent: "codex", state: "available" }] });
@@ -32,12 +32,30 @@ export function nativeStub(scenario) {
       if (request.op === "install") { state.installed = true; return ok({ installed: true }); }
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
       if (request.op === "status" && state.offline) return fail("NOT_ANSWERING", "The background service did not answer. Check the host connection before retrying.");
-      if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
-      if (request.op === "spaces") return ok({ ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : [] });
+      if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? ["https://cloud.cotal.ai/api/auth"] : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
       if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? "Davids-MacBook-Pro" }); }
-      if (request.op === "service-status") return ok({ state: state.serviceState ?? "disconnected" });
-      if (request.op === "service-disconnect") { state.connected = false; return ok({ state: "disconnected" }); }
+      if (request.op === "service-status") return ok({ state: state.accountAction && state.account.spaces.some(row => row.space === request.space && row.desired) ? "connected" : state.serviceState ?? "disconnected" });
+      if (request.op === "logout") {
+        state.accountRequests.push({ ...request });
+        if (state.accountAction === "signout-busy") await new Promise(() => {});
+        if (state.accountAction === "signout-refusal") return fail("LOGOUT_FAILED", "The provider refused to revoke this sign-in. Try again.");
+        state.signedIn = false;
+        return ok({ kind: "logout", localLoginCleared: true, serverRevoked: true, removedRegistrations: [] });
+      }
+      if (request.op === "service-disconnect") {
+        if (state.accountAction) {
+          state.accountRequests.push({ ...request });
+          if (state.accountAction === "disconnect-busy") await new Promise(() => {});
+          if (state.accountAction === "disconnect-refusal" || (state.accountAction === "disconnect-partial" && request.space === "research")) return fail("LIFECYCLE_BLOCKED", "Active sessions prevent disconnecting this space.", "SEATS_ACTIVE");
+          if (state.accountAction === "disconnect-unknown") return ok({ state: "unknown" });
+          const row = state.account.spaces.find(item => item.space === request.space);
+          if (row) { row.desired = false; row.observed = "removed on this computer"; }
+          state.connected = state.account.spaces.some(item => item.desired);
+        } else state.connected = false;
+        return ok({ state: "disconnected" });
+      }
       if (request.op === "login") {
         if (state.loginError) return fail(state.loginError, `Sign-in failed: ${state.loginError}.`);
         send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: "https://cloud.cotal.ai/device?user_code=WDJB-MJHT", userCode: "WDJB-MJHT", expiresAt: new Date(Date.now() + (state.expired ? -1000 : 581000)).toISOString() } });
@@ -71,6 +89,7 @@ const signIn = async page => { await page.click("#login"); await page.locator("#
 const connect = async page => { await signIn(page); await page.click("#connect"); };
 const update = { channel: "desktop", current: "0.156.0", latest: "0.161.0", lastCheck: "2026-11-11T22:00:00Z", lastResult: "available", automatic: true, notify: true };
 const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
+const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
 export const scenarios = [
   { name: "audit-update-banner-agents", state: { installed: true, signedIn: true, connected: true, update, agents: auditAgents } },
   { name: "audit-account-spaces-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "connected" }] }, agents: auditAgents } },
@@ -115,6 +134,116 @@ export const scenarios = [
       ["acme-team", ...(mode === "spaces" ? ["research"] : [])].map(space => ({ space, state: "read", agents: Array.from({ length: mode === "many" ? 12 : 1 }, (_, i) => ({ name: mode === "long" ? "writer-with-a-very-long-agent-name-".repeat(3) : `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: mode === "long" ? `/projects/${"long-folder/".repeat(20)}work` : "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) })) },
     expect: async page => { assert.equal(await page.locator("#running-agents").isVisible(), true); if (mode === "unreadable") assert.match(await page.locator("#agents-unavailable").textContent(), /Could not read/); else assert.equal(await page.locator(".agent-row").count(), mode === "none" ? 0 : mode === "many" ? 12 : mode === "spaces" ? 2 : 1); },
   })),
+  { name: "account-disconnect-long-confirmation", state: { installed: true, signedIn: true, connected: true, accountAction: "disconnect-confirmation", catalogSpaces: longAccountSpaces, account: { idpUrl: "https://cloud.cotal.ai/api/auth", mode: "account", hostSupport: "supported", spaces: [{ space: longAccountSpaces[0].space, desired: true, observed: "connected" }] } }, act: async page => {
+    await page.click("#open-settings");
+    await page.evaluate(spaces => {
+      window.__renderState.catalogSpaces = spaces;
+      window.__renderState.account.spaces = spaces.map(({ space }) => ({ space, desired: true, observed: "connected" }));
+    }, longAccountSpaces);
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid="connected-space-row"]').length === 12, null, { timeout: 6000 });
+    await page.click("#settings-disconnect");
+    await page.locator("#account-confirmation:not([hidden])").waitFor();
+  }, expect: async page => {
+    assert.equal(await page.locator("#account-confirm-spaces li").count(), 12);
+    assert.match(await page.locator("#account-confirm-spaces li").first().textContent(), /Organization \/ engineering \/ projects/);
+    const bounds = await page.locator("#account-confirm-spaces").evaluate(el => ({ height: el.clientHeight, scroll: el.scrollHeight, right: el.getBoundingClientRect().right, width: window.innerWidth }));
+    assert.ok(bounds.height <= 100);
+    assert.ok(bounds.scroll > bounds.height, "long lists remain scrollable");
+    assert.ok(bounds.right <= bounds.width, "pathlike names stay within the window");
+    assert.equal(await page.locator("#account-confirm").isVisible(), true);
+    assert.equal(await page.locator("#account-cancel").isVisible(), true);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.accountRequests), []);
+  } },
+  { name: "account-signedout-connected", state: { installed: true, signedIn: false, connected: true, account: { idpUrl: "https://cloud.cotal.ai/api/auth", sub: "stale-account-owner", mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, act: page => page.click("#open-settings"), expect: async page => {
+    assert.equal(await page.locator("#settings-signout").isDisabled(), true);
+    assert.equal(await page.locator("#settings-disconnect").isEnabled(), true);
+    assert.equal(await page.evaluate(() => window.__renderState.connected), true);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.accountRequests), []);
+  } },
+  ...["signout", "disconnect"].flatMap(action => (action === "signout" ? ["confirmation", "cancel", "success", "refusal", "outcome-back", "busy"] : ["confirmation", "cancel", "success", "refusal", "partial", "unknown", "busy"]).map(mode => ({
+    name: `account-${action}-${mode}`,
+    state: { installed: true, signedIn: true, connected: true, multiple: true, accountAction: `${action}-${mode}`, account: { idpUrl: "https://cloud.cotal.ai/api/auth", sub: "account-owner", mode: "account", hostSupport: "supported", spaces: ["acme-team", "research"].map(space => ({ space, desired: true, observed: "connected" })) } },
+    act: async page => {
+      await page.click("#open-settings");
+      await page.click(`#settings-${action}`);
+      await page.locator("#account-confirmation:not([hidden])").waitFor();
+      if (mode === "confirmation") return;
+      if (mode === "cancel") await page.click("#account-cancel");
+      else {
+        await page.click("#account-confirm");
+        if (mode === "busy") await page.waitForFunction(() => window.__renderState.accountRequests.length === 1);
+        else {
+          await page.locator("#account-confirmation").waitFor({ state: "hidden" });
+          await page.locator("#account-outcome:not([hidden])").waitFor();
+          if (mode === "outcome-back") await page.click("#account-outcome-back");
+        }
+      }
+    },
+    expect: async page => {
+      const snapshot = await page.evaluate(() => ({ requests: window.__renderState.accountRequests, connected: window.__renderState.connected, signedIn: window.__renderState.signedIn, spaces: window.__renderState.account.spaces }));
+      if (mode === "confirmation" || mode === "cancel") {
+        assert.deepEqual(snapshot.requests, []);
+        assert.equal(snapshot.connected, true);
+        assert.equal(snapshot.signedIn, true);
+        assert.equal(await page.locator("#account-confirmation").isVisible(), mode === "confirmation");
+        if (mode === "confirmation") {
+          assert.equal(await page.locator("#account-confirm-title").textContent(), action === "signout" ? "Sign out of Cotal Cloud, cloud.cotal.ai?" : "Disconnect this computer from Cotal Cloud, cloud.cotal.ai?");
+          assert.equal(await page.locator("#account-confirm-copy").textContent(), action === "signout" ? "Existing connections keep running. Disconnect this computer first if you also want to stop its connections. Only this provider will be signed out." : "Stop the following spaces one by one. This does not remove this computer from the dashboard, uninstall the service, revoke provider authority or erase retained renewal records. Disconnect before signing out if you want both.");
+          assert.equal(await page.locator("#account-cancel").evaluate(el => el === document.activeElement), true);
+          if (action === "disconnect") {
+            assert.match(await page.locator("#account-confirm-spaces").textContent(), /acme-team/);
+            assert.match(await page.locator("#account-confirm-spaces").textContent(), /research/);
+          }
+        } else assert.equal(await page.locator(`#settings-${action}`).evaluate(el => el === document.activeElement), true);
+        return;
+      }
+      assert.equal(snapshot.requests[0].op, action === "signout" ? "logout" : "service-disconnect");
+      if (mode === "busy") {
+        assert.equal(snapshot.requests.length, 1);
+        assert.equal(snapshot.connected, true);
+        assert.equal(await page.locator("#account-confirm").isDisabled(), true);
+        assert.equal(await page.locator("#account-cancel").isDisabled(), true);
+        return;
+      }
+      if (mode === "outcome-back") {
+        assert.equal(await page.locator("#settings-panel").evaluate(el => el.classList.contains("account-outcome-view")), false);
+        for (const id of ["settings-name", "check-updates", "update-preference", "autostart", "settings-signout", "settings-disconnect", "settings-versions", "release-notes"]) {
+          const geometry = await page.locator(`#${id}`).evaluate(el => { const rect = el.getBoundingClientRect(); return { top: rect.top, bottom: rect.bottom, right: rect.right, height: window.innerHeight, width: window.innerWidth }; });
+          assert.equal(await page.locator(`#${id}`).isVisible(), true);
+          assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.height && geometry.right <= geometry.width, `${id} fully restored within viewport`);
+        }
+        assert.equal(await page.locator("#settings-title").evaluate(el => el === document.activeElement), true);
+        assert.equal(await page.locator("#account-outcome-back").isVisible(), false);
+        assert.equal(snapshot.connected, true);
+        return;
+      }
+      assert.equal(await page.locator("#settings-panel").evaluate(el => el.classList.contains("account-outcome-view")), true);
+      assert.equal(await page.locator("#account-outcome-back").isVisible(), true);
+      assert.equal(await page.locator("#settings-versions").isVisible(), false);
+      const outcome = (await page.locator("#account-outcome").textContent()).trim();
+      assert.ok(outcome, "completed actions always describe their outcome");
+      if (action === "signout") {
+        assert.equal(snapshot.requests.length, 1);
+        assert.equal(snapshot.requests[0].idp, "https://cloud.cotal.ai/api/auth");
+        assert.equal(snapshot.connected, true, "signing out does not disconnect the computer");
+        assert.equal(snapshot.signedIn, mode !== "success");
+        assert.equal(outcome, mode === "success" ? "Signed out of Cotal Cloud, cloud.cotal.ai. Existing connections keep running." : "Sign-out: The provider refused to revoke this sign-in. Try again.");
+      } else {
+        assert.deepEqual(snapshot.requests.map(request => request.space), ["acme-team", "research"]);
+        assert.match(outcome, /acme-team/);
+        assert.match(outcome, /research/);
+        assert.equal(snapshot.connected, mode !== "success");
+        assert.deepEqual(snapshot.spaces.map(space => space.desired), mode === "success" ? [false, false] : mode === "partial" ? [false, true] : [true, true]);
+        assert.equal(snapshot.signedIn, true, "disconnecting does not sign out");
+        if (mode === "refusal" || mode === "partial") {
+          for (const space of mode === "partial" ? ["research"] : ["acme-team", "research"]) assert.ok(outcome.includes(`${space}: Active sessions prevent disconnecting this space.`));
+          if (mode === "partial") assert.ok(outcome.includes("acme-team: disconnected, confirmed by refresh."));
+        }
+        if (mode === "success") for (const space of ["acme-team", "research"]) assert.ok(outcome.includes(`${space}: disconnected, confirmed by refresh.`));
+        if (mode === "unknown") for (const space of ["acme-team", "research"]) assert.ok(outcome.includes(`${space}: Disconnect not confirmed (unknown).`));
+      }
+    },
+  }))),
   ...["available", "missing", "current", "failed", "off", "linux", "windows", "toggle-off", "toggle-on", "check"].map(mode => ({
     name: `settings-${mode}`,
     state: { installed: true, signedIn: true, connected: true, missingAsset: mode === "missing", platform: mode === "linux" ? "linux" : mode === "windows" ? "win32" : "darwin", update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : mode === "failed" ? { latest: undefined, lastResult: "check failed" } : mode === "off" || mode === "toggle-on" ? { notify: false } : {}) } },

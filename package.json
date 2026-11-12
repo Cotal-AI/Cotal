@@ -9,6 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
+    "smoke:daemon-desktop-account": "tsx bin/smoke/daemon-desktop-account.smoke.ts",
     "smoke:daemon-update-settings": "tsx bin/smoke/daemon-update-settings.smoke.ts",
     "smoke:connection-cleanup": "tsx packages/core/smoke/connection-cleanup.smoke.ts && tsx bin/smoke/connection-cleanup.smoke.ts",
     "smoke:atomic-write-cleanup": "node bin/smoke/atomic-write-cleanup.smoke.mjs",

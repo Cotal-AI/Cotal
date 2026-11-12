@@ -186,6 +186,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
     assertConfigAncestorProtected();
   } catch (e) {
     rt.err(c.red(`✗ config folder protection: ${refusal(e)}`));
+    recordUpdateDeferral(rt.version(), `config folder protection: ${preflightDetail(e)}`);
     process.exitCode = 1;
     return;
   }
@@ -765,6 +766,10 @@ function checkReleaseArchives(version: string, rt: UpdateRuntime): void {
 }
 
 
+function preflightDetail(error: unknown): string {
+  return message(error).replace(/[\r\n\u001b]+/g, " ").replace(/(?:[A-Za-z]:[\\/]|\/)[^\s,;"']+/g, "<config path>").slice(0, 500);
+}
+
 /** The nearest existing directory of the config folder. Seeding creates the folder itself, but a
  *  group-writable ancestor above it is outside the folders update repairs. */
 function assertConfigAncestorProtected(): void {
@@ -845,6 +850,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     assertConfigAncestorProtected();
   } catch (e) {
     rt.err(c.red(`✗ config folder protection: ${refusal(e)}`));
+    recordUpdateDeferral(targetVersion, `config folder protection: ${preflightDetail(e)}`);
     return 1;
   }
 
@@ -874,6 +880,8 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     releaseClosure?.();
     await releaseAdmission?.();
     releaseGlobal();
+    const detail = preflightDetail(error);
+    recordUpdateDeferral(targetVersion, `update snapshot refused: ${detail}`);
     rt.err(`update snapshot refused: ${message(error)}`);
     return 1;
   }

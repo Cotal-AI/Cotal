@@ -45,6 +45,8 @@ pub enum DesktopRequest {
     },
     #[serde(rename = "login")]
     Login { idp: String },
+    #[serde(rename = "logout")]
+    Logout { idp: String },
     #[serde(rename = "setup")]
     Setup { space: String, idp: String },
     #[serde(rename = "space-intent")]
@@ -70,7 +72,7 @@ impl DesktopRequest {
                     return Err("Invalid release version.".into());
                 }
             }
-            Self::Login { idp } | Self::Setup { idp, .. } => {
+            Self::Login { idp } | Self::Logout { idp } | Self::Setup { idp, .. } => {
                 let u = browser_url(idp)?;
                 if u.query().is_some() || u.fragment().is_some() {
                     return Err("A provider URL cannot contain a query or fragment.".into());
