@@ -1,4 +1,6 @@
 /** Real daemon endpoint against account-computer HTTP routes, in a private machine home. */
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,7 +55,7 @@ const fixture = createServer((req, res) => {
   if (req.method === "PUT") {
     let body = "";
     req.on("data", chunk => { body += String(chunk); });
-    req.on("end", () => { assert.ok(Buffer.byteLength(body) <= 4096); registration = JSON.parse(body) as Record<string, unknown>; });
+    req.on("end", () => { assert.ok(Buffer.byteLength(body) <= 16384); registration = JSON.parse(body) as Record<string, unknown>; });
     puts++;
     persistedBeforePut = readdirSync(join(machineHome, "daemon", "accounts"), { recursive: true }).some(path => String(path).endsWith("computer.json"));
     if (mode === 404) { res.writeHead(404); res.end("{}"); return; }
@@ -83,6 +85,10 @@ try {
   assert.ok(persistedBeforePut);
   assert.ok(registration?.vitals, "registration carries a measured sample");
   assert.deepEqual(registration.vitals, daemon.status().vitals, "status exposes the sent sample");
+  const { stdout: humanStatus } = await promisify(execFile)(process.execPath, ["--import", "tsx", "bin/cotal.ts", "daemon", "status", "--daemon-home", machineHome], { env: { ...process.env, COTAL_HOME: join(root, "cli-cotal"), XDG_RUNTIME_DIR: runtime } });
+  assert.match(humanStatus, /\d+\.\d GiB free \/ \d+\.\d GiB total \(\d+\.\d% used\)/);
+  assert.match(humanStatus, /System uptime:\s+\d+ days \d+ hours/);
+  console.log("ok real CLI status renders GiB, used percentage and days/hours");
   const vitals = daemon.status().vitals!;
   assert.ok(Number.isFinite(Date.parse(vitals.sampledAt)));
   assert.ok(vitals.cpu.logicalCount > 0 && Number.isSafeInteger(vitals.cpu.logicalCount));
@@ -95,8 +101,11 @@ try {
   for (const fs of vitals.filesystems) { assert.ok(fs.freeBytes <= fs.totalBytes); assert.ok(Buffer.byteLength(fs.mount) <= 1024); }
   assert.deepEqual(Object.keys(vitals).sort(), ["cpu", "filesystems", "memory", "sampledAt", "uptimeSeconds"]);
   const identity = daemon.status().account!.machineId!;
+  const managers = Array.from({ length: 100 }, (_, i) => ({ spaceId: `space-${i}`, instanceId: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}` }));
+  await requestAccountMachine({ dir: machineHome, idpUrl, machineId: identity, method: "PUT", metadata: { name: "capacity", platform: "linux", daemonVersion: "test", managers, vitals } });
+  await until(() => Array.isArray(registration?.managers) && registration.managers.length === 100, "100 Managers plus vitals register");
   const beforeOversize = puts;
-  await assert.rejects(() => requestAccountMachine({ dir: machineHome, idpUrl, machineId: identity, method: "PUT", metadata: { name: "x".repeat(4096), platform: "linux", daemonVersion: "test", managers: [], vitals } }), /exceeds 4096 bytes/);
+  await assert.rejects(() => requestAccountMachine({ dir: machineHome, idpUrl, machineId: identity, method: "PUT", metadata: { name: "x".repeat(16384), platform: "linux", daemonVersion: "test", managers: [], vitals } }), /exceeds 16384 bytes/);
   assert.equal(puts, beforeOversize, "oversized registration refuses before network");
   assert.equal(accountComputerId(machineHome, { issuer, sub: "owner" }), identity);
   assert.notEqual(accountComputerId(machineHome, { issuer, sub: "other" }), identity);

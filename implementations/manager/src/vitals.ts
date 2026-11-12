@@ -147,6 +147,20 @@ export interface ComputerVitalsDeps {
   uptime(): number;
 }
 
+const fixedWindowsRoots = new Map<string, Promise<void>>();
+async function requireFixedWindowsRoot(root: string): Promise<void> {
+  const key = root.toUpperCase();
+  let check = fixedWindowsRoots.get(key);
+  if (!check) {
+    check = (async () => {
+      const { stdout } = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `[int]([System.IO.DriveInfo]::new('${root}').DriveType)`], { timeout: 5000, maxBuffer: 1024, windowsHide: true });
+      if (stdout.trim() !== "3") refusal("computer vitals excludes non-fixed Windows volumes");
+    })();
+    fixedWindowsRoots.set(key, check);
+  }
+  await check;
+}
+
 async function homeMount(): Promise<string[]> {
   const home = await realpath(homedir());
   if (process.platform === "win32") {
@@ -155,15 +169,13 @@ async function homeMount(): Promise<string[]> {
     const roots = [...new Set([safeMount(parse(home).root), safeMount(parse(systemRoot).root)])];
     for (const root of roots) {
       if (root.length !== 3 || !/^[A-Za-z]$/.test(root[0]!) || root[1] !== ":" || root[2] !== "\\") refusal("computer vitals requires a local Windows drive root");
-      const { stdout } = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `[int]([System.IO.DriveInfo]::new('${root}').DriveType)`], { timeout: 5000, maxBuffer: 1024, windowsHide: true });
-      if (stdout.trim() !== "3") refusal("computer vitals excludes non-fixed Windows volumes");
+      await requireFixedWindowsRoot(root);
     }
     return roots;
   }
   let mount = home;
   const device = (await stat(home)).dev;
   while (dirname(mount) !== mount && (await stat(dirname(mount))).dev === device) mount = dirname(mount);
-  if (mount === home || mount.startsWith("/home/") || mount.startsWith("/Users/")) refusal("computer vitals cannot disclose a personal mount point");
   if (process.platform === "darwin") {
     const { stdout } = await promisify(execFile)("/sbin/mount", [], { timeout: 5000, maxBuffer: 1024 * 1024 });
     for (const point of new Set(["/", mount])) {
@@ -177,13 +189,13 @@ async function homeMount(): Promise<string[]> {
     const separator = row?.indexOf("-") ?? -1;
     const fsType = row?.[separator + 1];
     const source = row?.[separator + 2];
-    if (!row || separator < 6 || !fsType || !source || (!LOCAL_LINUX_FILESYSTEMS.has(fsType) && fsType !== "overlay") || source.startsWith("/dev/loop") || mount.startsWith("/run/user/")) refusal("computer vitals excludes remote or transient home volumes");
+    if (!row || separator < 6 || !fsType || !source || (!LOCAL_LINUX_FILESYSTEMS.has(fsType) && fsType !== "overlay" && fsType !== "tmpfs") || source.startsWith("/dev/loop") || mount.startsWith("/run/user/")) refusal("computer vitals excludes remote or transient home volumes");
   }
-  return [...new Set(["/", safeMount(mount)])];
+  return [...new Set(["/", mount === home || mount.startsWith("/home/") || mount.startsWith("/Users/") ? "~" : safeMount(mount)])];
 }
 
 const computerDeps: ComputerVitalsDeps = {
-  resources: { ...systemDeps, mounts: homeMount },
+  resources: { ...systemDeps, mounts: homeMount, filesystem: mount => systemDeps.filesystem(mount === "~" ? homedir() : mount) },
   cpuTimes: () => cpus().map(cpu => cpu.times),
   wait: async () => { await delay(250); },
   clock: () => performance.now(),

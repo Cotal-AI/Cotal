@@ -645,7 +645,9 @@ The home volume and the root or system volume are reported, without personal dir
 network mounts, loop devices or per-user runtime mounts. The sample contains no process list or CPU model.
 `cotal daemon status` prints the cached sample. JSON includes `vitals` with `sampledAt`,
 `cpu`, `memory`, `filesystems` and `uptimeSeconds`. This uptime is the computer's uptime,
-separate from the daemon's `uptimeMs`. A measurement failure adds `vitalsError`; any retained
+separate from the daemon's `uptimeMs`. Human status shows capacity in GiB with one decimal
+and the used percentage, and system uptime in days and hours. JSON retains exact numbers.
+A personal home-volume mount is labelled `~`, without disclosing its path. A measurement failure adds `vitalsError`; any retained
 sample keeps its original timestamp and no stale sample is sent as a fresh measurement.
 Desired spaces start or inspect the Manager through the same hosting sequence as setup. Each space's
 connection check decides whether machine-service registration and owner approval are needed.

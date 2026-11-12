@@ -649,7 +649,7 @@ export async function requestAccountMachine(opts: {
   if (opts.etag) headers["if-none-match"] = opts.etag;
   if (opts.method === "PUT") headers["content-type"] = "application/json";
   const body = opts.method === "PUT" ? JSON.stringify(opts.intent ? { enabled: opts.intent.enabled, expectedRevision: opts.intent.expectedRevision } : opts.metadata) : undefined;
-  if (body !== undefined && Buffer.byteLength(body, "utf8") > 4096) throw new Error("invalid computer registration exceeds 4096 bytes");
+  if (body !== undefined && Buffer.byteLength(body, "utf8") > 16384) throw new Error("invalid computer registration exceeds 16384 bytes");
   const response = await idpFetch(url, { method: opts.method, headers, redirect: "manual", ...(opts.method === "PUT" ? { body } : {}) }, opts.signal);
   const etag = response.headers.get("etag");
   return { status: response.status, ...(etag ? { etag } : {}), ...(response.ok ? { body: await idpJson<unknown>(url, response, opts.signal) } : {}) };

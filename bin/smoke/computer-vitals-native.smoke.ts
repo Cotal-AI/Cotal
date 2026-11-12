@@ -1,3 +1,5 @@
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +11,15 @@ try {
   for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
   for (const name of ["home", "config", "cotal"]) mkdirSync(join(root, name), { mode: 0o700 });
   Object.assign(process.env, { HOME: join(root, "home"), USERPROFILE: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_HOME: join(root, "cotal"), COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1" });
+  let powershellChecks = 0;
+  const originalExecFile = childProcess.execFile;
+  if (process.platform === "win32") {
+    childProcess.execFile = ((...args: Parameters<typeof childProcess.execFile>) => {
+      if (args[0] === "powershell.exe") powershellChecks++;
+      return Reflect.apply(originalExecFile, childProcess, args);
+    }) as typeof childProcess.execFile;
+    syncBuiltinESMExports();
+  }
   const { measureComputerVitals } = await import("@cotal-ai/manager");
   const { cpus, totalmem } = await import("node:os");
   const sample = await measureComputerVitals();
@@ -29,6 +40,14 @@ try {
   }
   for (const value of [sample.memory.totalBytes, sample.memory.availableBytes, sample.uptimeSeconds]) assert.ok(Number.isSafeInteger(value) && value >= 0);
   assert.ok(Number.isFinite(Date.parse(sample.sampledAt)));
+  if (process.platform === "win32") {
+    const initialChecks = powershellChecks;
+    assert.ok(initialChecks >= 1 && initialChecks <= 2);
+    await measureComputerVitals();
+    assert.equal(powershellChecks, initialChecks, "second heartbeat reuses root classifications");
+    childProcess.execFile = originalExecFile;
+    syncBuiltinESMExports();
+  }
   console.log(JSON.stringify({ platform: process.platform, sample }));
   console.log("computer vitals native acceptance passed");
 } finally {
