@@ -4,6 +4,7 @@ import {
   jetstreamManager,
   AckPolicy,
   DeliverPolicy,
+  DiscardPolicy,
   JetStreamApiError,
   StorageType,
   type ConsumerConfig,
@@ -37,6 +38,7 @@ import {
   aclKey,
   membershipBucket,
   anycastBucket,
+  permissionBucket,
   deliveryBucket,
   managerBucket,
   inboxStream,
@@ -66,10 +68,12 @@ import {
   historyLimitProblem,
   historyLimitStreamName,
   historyLimitStreamOf,
+  spaceStreamCreationBase,
   validateCanonicalBackupStreamConfig,
   type HistoryLimit,
   type HistoryLimitStream,
 } from "./backup-config.js";
+import { PERMISSION_RECORD_MAX_BYTES, PERMISSION_RETENTION_MS } from "./permissions.js";
 
 /** Default presence-bucket entry TTL (ms) — matches the endpoint's default liveness window. */
 const PRESENCE_TTL_MS = 6_000;
@@ -305,6 +309,42 @@ export async function ensureMembershipStore(
  *  space setup and the daemon create it, the daemon for a mesh that predates the bucket. */
 export function anycastStoreDefinition(space: string) {
   return { bucket: anycastBucket(space), createOptions: { history: 1, max_bytes: -1, maxValueSize: ANYCAST_RECORD_MAX_VALUE_SIZE } };
+}
+
+/** The permission records bucket, created in its final shape by one native STREAM.CREATE. Agents
+ *  write it, so it takes nothing but plain puts: one `Nats-Rollup: all` header would purge every
+ *  owner's records, and purge, message delete and direct gets are refused as well. One revision per
+ *  key, the record size limit and the retention age bound it without reserving storage. */
+export function permissionStoreConfig(space: string) {
+  const bucket = permissionBucket(space);
+  return {
+    ...spaceStreamCreationBase(`KV_${bucket}`, [`$KV.${bucket}.>`]),
+    max_msgs_per_subject: 1,
+    max_msg_size: PERMISSION_RECORD_MAX_BYTES,
+    max_age: nanos(PERMISSION_RETENTION_MS),
+    discard: DiscardPolicy.New,
+    allow_rollup_hdrs: false,
+    allow_direct: false,
+    deny_delete: true,
+    deny_purge: true,
+  };
+}
+
+/** nats-server's code for a STREAM.CREATE whose name is taken by a stream of another config. */
+const STREAM_NAME_IN_USE = 10058;
+
+/** Create the permission records bucket, or confirm it already holds {@link permissionStoreConfig}.
+ *  STREAM.CREATE succeeds for an equal config and refuses any other, so a reshaped bucket is
+ *  refused by name and never adopted. */
+export async function ensurePermissionStore(jsm: JetStreamManager, space: string): Promise<void> {
+  const config = permissionStoreConfig(space);
+  try {
+    await jsm.streams.add(config);
+  } catch (e) {
+    if (e instanceof JetStreamApiError && e.code === STREAM_NAME_IN_USE)
+      throw new Error(`permission store ${config.name} exists with another configuration; it is never adopted, so restore the declared shape or delete it`, { cause: e });
+    throw e;
+  }
 }
 
 /**
@@ -886,6 +926,7 @@ export async function setupSpaceStreams(opts: {
     await ensureMembershipStore(jsm, kvm, opts.space);
     const anycast = anycastStoreDefinition(opts.space);
     await kvm.create(anycast.bucket, anycast.createOptions);
+    await ensurePermissionStore(jsm, opts.space);
     // The two §13.12 AUTHORITY stores (records + auth): every auth-mode mesh now carries a
     // lifecycle registry — user mode's service re-ensures at its own boot, the STATIC manager's
     // start reconcile re-ensures for pre-existing spaces — and the up-time seed creates

@@ -87,6 +87,7 @@ import {
   takeServeFilter,
   takeReplyGrant,
   anycastBucket,
+  permissionBucket,
 } from "./subjects.js";
 import { LIVENESS_PLANES } from "./liveness.js";
 import {
@@ -2552,7 +2553,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // ownership list consumed by inventory and teardown. The provisioner holds create-or-verify only on
   // those authority stores; lifecycle/session writes ride their narrower executor credentials.
   const buckets = [
-    presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, anycastBucket, deliveryBucket, managerBucket,
+    presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, anycastBucket, permissionBucket, deliveryBucket, managerBucket,
   ].map((b) => `KV_${b(space)}`);
   // STREAM.CREATE + INFO for each (idempotent setup at `cotal up`; CREATE is create-if-matching, INFO covers
   // the client's existence checks). NO DELETE/PURGE — provisioning never tears a stream down.

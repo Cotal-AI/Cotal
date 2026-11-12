@@ -687,6 +687,7 @@
     "smoke:consumer-already-exists": "tsx packages/core/smoke/consumer-already-exists.smoke.ts",
     "smoke:agui-kind": "tsx packages/core/smoke/agui-kind.smoke.ts",
     "smoke:permission-record": "tsx packages/core/smoke/permission-record.smoke.ts",
+    "smoke:permission-store": "tsx packages/core/smoke/permission-store.smoke.ts",
     "smoke:agui-conformance": "tsx extensions/connector-core/smoke/agui-conformance.smoke.ts",
     "smoke:event-channel-classify": "tsx packages/core/smoke/event-channel-classify.smoke.ts",
     "smoke:agui-render": "tsx extensions/connector-core/smoke/agui-render.smoke.ts",

@@ -26,6 +26,10 @@ export function principalId(owner: string, actor: string): PrincipalId {
 }
 
 export const PERMISSION_RECORD_VERSION = 1;
+/** The largest serialized record, the bucket's per-message limit. A larger input is withheld. */
+export const PERMISSION_RECORD_MAX_BYTES = 262_144;
+/** How long a record is kept: the bucket's max age. */
+export const PERMISSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** The process holding the prompt: the `lifecycleUid` and `runtime.id` its presence row carries. */
 export interface PermissionHolder {

@@ -19,6 +19,7 @@ import {
   anycastStoreDefinition,
   artifactStoreDefinition,
   membershipStoreDefinition,
+  permissionStoreConfig,
   spaceMessageStreamConfigs,
   spaceRegistryStreamConfigs,
   ttlBuckets,
@@ -83,6 +84,7 @@ export function spaceResourceDefinitions(space: string, options: EndpointStreamO
     ...[...spaceMessageStreamConfigs(space), ...spaceRegistryStreamConfigs(space)].map((config) => ({ config, verification: "canonical-backup" as const })),
     ...endpointDataStreamConfigs(space, options).map((config) => ({ config, verification: "declared-fields" as const })),
     { config: endpointContractStreamConfig(space), verification: "contract" as const },
+    { config: permissionStoreConfig(space), verification: "declared-fields" as const },
   ];
   const authority = endpointAuthorityStoreDefinitions(space);
   const buckets = [

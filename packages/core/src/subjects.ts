@@ -1206,6 +1206,13 @@ export function anycastBucket(space: string): string {
   return `cotal_anycast_${token(space)}`;
 }
 
+/** Name of the KV bucket holding harness permission prompts: one record per prompt, keyed
+ *  `<owner>.<actor>.<id>` by the agent that asked. Only that agent writes its keys, and only its
+ *  owner's interactive principals read them. */
+export function permissionBucket(space: string): string {
+  return `cotal_permissions_${token(space)}`;
+}
+
 /** KV key for one shard's delivery lease/readiness (N=1 → `lease.0`). */
 export function leaseKey(shardIndex: number): string {
   return `lease.${shardIndex}`;
