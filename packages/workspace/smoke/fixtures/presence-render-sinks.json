@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1027,
+    "total": 1030,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 10,
-    "non-render/control": 808
+    "non-render/control": 811
   },
   "renderers": [
     {
@@ -21,6 +21,27 @@
     }
   ],
   "entries": [
+    {
+      "path": "packages/workspace/src/chat/name.ts",
+      "kind": "derived-output",
+      "anchor": "`sign in again with \\`${loginRecoveryCommand(idp)}\\``;\n  if (!status.logi",
+      "class": "non-render/control",
+      "rationale": "Login recovery helper consumes the sign-in provider URL, not peer presence or progress."
+    },
+    {
+      "path": "packages/workspace/src/chat/name.ts",
+      "kind": "derived-output",
+      "anchor": "d in to ${idp}; run \\`${loginRecoveryCommand(idp)}\\``, { target: { space ",
+      "class": "non-render/control",
+      "rationale": "Login recovery helper consumes the sign-in provider URL, not peer presence or progress."
+    },
+    {
+      "path": "packages/workspace/src/chat/name.ts",
+      "kind": "derived-output",
+      "anchor": "ace }, remedy: `run \\`${loginRecoveryCommand(idp)}\\`` });\n  if (!status.l",
+      "class": "non-render/control",
+      "rationale": "Login recovery helper consumes the sign-in provider URL, not peer presence or progress."
+    },
     {
       "path": "packages/core/src/resolve.ts",
       "kind": "derived-output",
@@ -6500,14 +6521,14 @@
     {
       "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",
-      "anchor": "`not signed in to ${idp}; run \\`cotal login --idp ${idp}\\``",
+      "anchor": "`not signed in to ${idp}; run \\`${loginRecoveryCommand(idp)}\\``",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",
-      "anchor": "`run \\`cotal login --idp ${idp}\\``",
+      "anchor": "`run \\`${loginRecoveryCommand(idp)}\\``",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -6528,7 +6549,7 @@
     {
       "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",
-      "anchor": "`sign in again with \\`cotal login --idp ${idp}\\``",
+      "anchor": "`sign in again with \\`${loginRecoveryCommand(idp)}\\``",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
