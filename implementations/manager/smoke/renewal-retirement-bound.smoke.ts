@@ -1,5 +1,5 @@
 /**
- * Real Manager renewal against a broker paused at the original serve handle's native drain.
+ * Real Manager renewal with a failed replacement subscription flush and a stalled old serve drain.
  * Run: pnpm tsx implementations/manager/smoke/renewal-retirement-bound.smoke.ts
  *
  * The fixture authority owns the test signer. Real public status/ps establish serving before
@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { appendFileSync, closeSync, mkdtempSync, openSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer, connect as tcpConnect, type Socket } from "node:net";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
@@ -86,6 +87,43 @@ type Observation = {
 const calls: Observation[] = [];
 const byId = new Map<string, Observation>();
 const clients: NatsConnection[] = [];
+const sockets = new Set<Socket>();
+let stallCandidate = false;
+let candidateJwt: string | undefined;
+let candidateDials = 0;
+let candidateFlushAt = 0;
+let candidateClosedAt = 0;
+const relay = createServer((inbound) => {
+  const outbound = tcpConnect(port, "127.0.0.1");
+  sockets.add(inbound); sockets.add(outbound);
+  let replacement = false;
+  let pongs = 0;
+  let connectBytes = "";
+  const drop = () => {
+    if (replacement) candidateClosedAt = performance.now();
+    inbound.destroy(); outbound.destroy(); sockets.delete(inbound); sockets.delete(outbound);
+  };
+  for (const socket of [inbound, outbound]) { socket.on("error", drop); socket.on("close", drop); }
+  inbound.on("data", (chunk) => {
+    if (candidateJwt && !replacement) {
+      connectBytes = (connectBytes + chunk.toString()).slice(-65_536);
+      if (connectBytes.includes(candidateJwt)) {
+        replacement = ++candidateDials === 2; // The first dial is the serve credential preflight.
+        connectBytes = "";
+      }
+    }
+    outbound.write(chunk);
+  });
+  outbound.on("data", (chunk) => {
+    if (replacement && chunk.includes("PONG\r\n") && ++pongs > 1) {
+      candidateFlushAt ||= performance.now();
+      // The handshake has completed. Leave the native subscription flush and all later drains
+      // unanswered until the candidate closes, without pausing any old or adopted transport.
+      return;
+    }
+    if (!inbound.destroyed) inbound.write(chunk);
+  });
+});
 const children: ReturnType<typeof spawn>[] = [];
 const watchers: Promise<void>[] = [];
 let manager: Manager | undefined;
@@ -116,6 +154,9 @@ function observeConnection(nc: NatsConnection, duty: string) {
 }
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 100 });
+  await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", resolve));
+  const relayAddress = relay.address();
+  assert.ok(relayAddress && typeof relayAddress === "object");
   await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   const initial = Object.fromEntries(await Promise.all(names.map(async (n) => [n, await sign(n)]))) as Record<Duty, string>;
   const registered = await registerRemoteManagerAuthority({
@@ -172,6 +213,7 @@ try {
       },
     });
     const family = remoteManagerRenewalCredentials(material, request, owner, held) as Record<Duty, string>;
+    if (stallCandidate) { candidateJwt = jwtFromCreds(family.serve)!; candidateDials = 0; }
     renewals++;
     record("authority-renewal", { count: renewals, processEpoch, expires: credsClaims(family.serve).exp });
     return family;
@@ -179,7 +221,7 @@ try {
   let slowRead: { entered: () => void; resume: Promise<void> } | undefined;
   const unused = async (): Promise<never> => { throw new Error("fixture does not enroll or retire agents"); };
   manager = new Manager({
-    space, servers, runtime: "pty", workspaceRoot: join(store, "workspace"),
+    space, servers: `nats://127.0.0.1:${relayAddress.port}`, runtime: "pty", workspaceRoot: join(store, "workspace"),
     remoteAuthority: {
       owner, actors, instanceId, lifecycleUid, identities: held, accountPublicKey: auth.account.pub,
       supervisorCreds: initial.supervisor, executorCreds: initial.executor, serveCreds: initial.serve,
@@ -261,6 +303,27 @@ try {
   assert.equal((await call("status")).ok, true, "SETUP: status must answer before sampling");
   assert.equal((await call("ps")).ok, true, "SETUP: ps must answer before sampling");
   setupComplete = true;
+  const renew = () => (manager as unknown as { renewRemoteStandingBundle(force: boolean): Promise<void> }).renewRemoteStandingBundle(true);
+  const candidateOldNc = m.serviceServe!.nc;
+  stallCandidate = true;
+  const failedCandidateStart = performance.now();
+  await assert.rejects(renew(), /standing serve flush exceeded its 10000ms aggregate budget/);
+  const failedCandidateMs = performance.now() - failedCandidateStart;
+  assert.ok(candidateFlushAt > 0, "native replacement handshake completed and subscription flush reached the relay");
+  assert.ok(failedCandidateMs >= 9_500 && failedCandidateMs < 12_000, `failed native candidate took ${failedCandidateMs}ms`);
+  assert.equal(m.serviceServe!.nc, candidateOldNc, "failed replacement never replaces the old serving connection");
+  assert.equal(candidateOldNc.isClosed(), false, "failed replacement cleanup leaves the old transport alive");
+  await wait(100);
+  assert.ok(candidateClosedAt > candidateFlushAt, "failed candidate socket closes without receiving a drain PONG");
+  const adoption = manager as unknown as { remoteBundleAdoption?: Promise<void>; remoteBundleRenewal?: Promise<void>; remoteRenewalDebt?: { reason: string } };
+  assert.equal(adoption.remoteBundleAdoption, undefined, "failed native cleanup releases executor adoption waiters");
+  assert.equal(adoption.remoteBundleRenewal, undefined, "failed native cleanup releases renewal ownership");
+  assert.match(adoption.remoteRenewalDebt!.reason, /standing serve flush exceeded/);
+  stallCandidate = false;
+  candidateJwt = undefined;
+  assert.equal((await call("ps")).ok, true, "old native serving still answers after failed candidate cleanup");
+  record("failed-candidate-flush", { failedCandidateMs, candidateFlushAt, candidateClosedAt });
+  console.log(`PASS: failed native replacement closed and reported in ${Math.round(failedCandidateMs)}ms`);
   let enter!: () => void;
   let resume!: () => void;
   const entered = new Promise<void>((resolve) => { enter = resolve; });
@@ -271,7 +334,6 @@ try {
   const normalDiagnostics: string[] = [];
   const originalError = console.error;
   console.error = (...args: unknown[]) => { normalDiagnostics.push(args.map(String).join(" ")); originalError(...args); };
-  const renew = () => (manager as unknown as { renewRemoteStandingBundle(force: boolean): Promise<void> }).renewRemoteStandingBundle(true);
   const normalRenewal = renew();
   await wait(300);
   assert.notEqual(m.serviceServe!.nc, normalOldNc, "replacement adopted while original public ps is pending");
@@ -321,6 +383,8 @@ try {
   await manager?.stop({ withAgents: true }).catch(() => {});
   await Promise.all(clients.map((nc) => nc.close()));
   await Promise.allSettled(watchers);
+  for (const socket of sockets) socket.destroy();
+  await new Promise<void>((resolve) => relay.close(() => resolve()));
   releaseBroker();
   await killAndAwaitExit(broker);
 }

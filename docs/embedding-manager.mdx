@@ -417,6 +417,9 @@ preflights and the post-adoption reconnect wait. Failed preparation retains the 
 reports renewal debt. A late host response cannot adopt credentials. Timeout does not cancel host
 issuance or prove it failed; the host still owns that operation, and all five held subjects are
 recorded as possibly issued when no response arrived. Late broker dials close without serving.
+Failed serving candidates close before subscription cleanup, so an unanswered drain PONG cannot
+extend preparation. Any handlers already dispatched on that candidate keep their original outcomes
+and are not replayed. The current serving transport stays intact.
 After adoption, reconnect timeout leaves the adopted family and native transport reconnects intact.
 Existing requests retain their original outcomes and are never replayed by this recovery.
 

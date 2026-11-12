@@ -3294,7 +3294,7 @@ export class Manager {
       ]), remoteStandingTimeLeft(deadline), "remote manager standing reconnect exceeded its 10000ms aggregate budget; adopted transports keep their native reconnect ownership");
     } catch (e) {
       if (replacement) {
-        await this.retireConnection(replacement.nc, () => replacement!.handle.stop());
+        await this.discardServeCandidate(replacement.nc, replacement.handle);
       }
       if (adopted) {
         console.error(`! remote manager adopted standing family: ${rejectionText(e)}`);
@@ -4227,6 +4227,14 @@ export class Manager {
     }
     if (flush) try { await flush(); } catch { /* best effort */ }
     try { await drainAndClose(nc); } catch { /* best effort */ }
+  }
+
+  /** A failed candidate must not extend preparation by draining subscriptions on a stalled socket.
+   * Close only that candidate first. Native stop still owns any already-dispatched handlers, whose
+   * outcomes remain unknown to callers and must not be replayed; they do not hold family adoption. */
+  private async discardServeCandidate(nc: NatsConnection, handle?: EpServeHandle): Promise<void> {
+    await nc.close();
+    if (handle) void handle.stop().catch((e) => console.error(`! remote manager discarded serve candidate cleanup: ${rejectionText(e)}`));
   }
 
   /** Track a dedicated connection's transport into {@link transportDown} from the first moment:
@@ -9753,10 +9761,10 @@ export class Manager {
       else await withTimeout(nc.flush(), remoteStandingTimeLeft(deadline),
         "remote manager standing serve flush exceeded its 10000ms aggregate budget");
     } catch (e) {
-      await this.retireConnection(nc, handle ? () => handle!.stop() : undefined);
+      await this.discardServeCandidate(nc, handle);
       throw e;
     }
-    // Wired only once the connection serves: a connection this method drains itself after a
+    // Wired only once the connection serves: a candidate this method closes after a
     // refused serve is not a fault to recover, and the caller already sees the refusal.
     nc.closed().then((err) => {
       if (this.serviceServe?.nc === nc) void this.onServeConnectionClosed(err ?? undefined, nc);
