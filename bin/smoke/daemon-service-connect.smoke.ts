@@ -94,7 +94,7 @@ import {
   writeSecretFileAtomic, mintMembershipObserverCreds, mintConnectionEvictorCreds, type SecretStore,
 } from "@cotal-ai/core";
 import {
-  deleteIdpSession, deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadOwnerSecret, saveIdpSession,
+  deleteIdpSession, deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadIdpSession, loadOwnerSecret, saveIdpSession,
   saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
 import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
@@ -231,6 +231,8 @@ let deregisterRequests = 0;
 const jwtsIssued: string[] = [];
 /** R11: the IdP rejects the session handle, as for an expired or revoked session. */
 let idpRevoked = false;
+let signOutRequests = 0;
+let signOutSuccesses = 0;
 let idpJwtTtl = 120;
 let tokenFailure: "unreachable" | "unusable" | undefined;
 let recoverOnApproval = false;
@@ -248,6 +250,14 @@ const exchangeReads: Array<{ view: unknown; managerInstanceId: unknown }> = [];
 let unsupportedComputerReads = 0;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
+  if (req.url === "/api/auth/sign-out") {
+    signOutRequests++;
+    if (req.method !== "POST") { res.writeHead(405); res.end("{}"); return; }
+    if (req.headers.authorization !== `Bearer ${SESSION}`) { res.writeHead(401); res.end("{}"); return; }
+    idpRevoked = true;
+    signOutSuccesses++;
+    res.end("{}"); return;
+  }
   if (req.url === "/api/auth/device/code") { deviceCodeRequests++; if (deviceFailure === "unreachable") { req.socket.destroy(); return; } return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 })); }
   if (req.url === "/api/auth/device/token" && deviceFailure) { res.writeHead(400); return void res.end(JSON.stringify({ error: deviceFailure === "denied" ? "access_denied" : "expired_token" })); }
   if (req.url === "/api/auth/device/token") {
@@ -576,10 +586,12 @@ try {
   };
 
   let probeCalls = 0;
-  const probeMachine = async (direct?: { instanceId: string; epoch: number }) => {
-    const tokenResponse = await fetch(`${idpUrl}/token`, { headers: { authorization: `Bearer ${SESSION}` } });
-    if (!tokenResponse.ok) throw new Error("fixture IdP refused the probe");
-    const idpToken = (await tokenResponse.json() as { token: string }).token;
+  const probeMachine = async (direct?: { instanceId: string; epoch: number }, idpToken?: string) => {
+    if (!idpToken) {
+      const tokenResponse = await fetch(`${idpUrl}/token`, { headers: { authorization: `Bearer ${SESSION}` } });
+      if (!tokenResponse.ok) throw new Error("fixture IdP refused the probe");
+      idpToken = (await tokenResponse.json() as { token: string }).token;
+    }
     const exchange = await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/exchange`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken, actor: "probe" }),
     });
@@ -1143,6 +1155,33 @@ try {
       check("C12 the space still reads the instance as ready", (await instanceStatus(ON)) === "ready");
       const reply = await probeMachine();
       check("C12 the registered command still answers after credential renewals", reply.reply.ok && reply.reply.data === null && reply.responder.instanceId === identityOf(ON)!.instanceId);
+    });
+
+    await cell("C12b real socket logout leaves the connected service answering", async () => {
+      const session = loadIdpSession(home, idpUrl);
+      if (!session) throw new Error("logout continuity control requires a cached session");
+      const wasRevoked = idpRevoked;
+      const requests = signOutRequests, successes = signOutSuccesses;
+      check("C12b service is connected before logout", stateOf(await connectS(ON)) === "connected");
+      const instanceId = identityOf(ON)!.instanceId;
+      // Obtain the independent caller's proof before revoking the machine's login.
+      const response = await fetch(`${idpUrl}/token`, { headers: { authorization: `Bearer ${SESSION}` } });
+      if (!response.ok) throw new Error("fixture IdP refused the independent caller proof");
+      const proof = (await response.json() as { token: string }).token;
+      try {
+        const logout = await askLogged({ op: "logout", idp: idpUrl });
+        const result = resultOf(logout);
+        check("C12b socket logout confirms server revocation and local removal", logout.ok === true && result.kind === "logout" && result.serverRevoked === true && result.localLoginCleared === true, logout);
+        check("C12b explicit sign-out route receives and completes exactly one request", signOutRequests === requests + 1 && signOutSuccesses === successes + 1 && idpRevoked);
+        check("C12b socket logout removes the cached session", loadIdpSession(home, idpUrl) === undefined);
+        check("C12b socket logout result exposes no session or caller proof", !JSON.stringify(logout).includes(SESSION) && !JSON.stringify(logout).includes(proof));
+        check("C12b connected status survives logout on the same instance", stateOf(await statusS(ON)) === "connected" && identityOf(ON)?.instanceId === instanceId);
+        const reply = await probeMachine(undefined, proof);
+        check("C12b registered command answers after logout on the same instance", reply.reply.ok && reply.reply.data === null && reply.responder.instanceId === instanceId);
+      } finally {
+        idpRevoked = wasRevoked;
+        saveIdpSession(home, idpUrl, session);
+      }
     });
 
     await cell("C7 outage: not connected while the door is gone, connected again after", async () => {

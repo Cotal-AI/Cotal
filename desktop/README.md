@@ -46,7 +46,9 @@ The cotal.ai site design system is the visual source: cream paper, navy ink, har
 
 ## Settings
 
-Open **Settings** in the window or **Settings…** from the tray or menu bar after setup. It uses the same window and shows this computer's name, update preferences, Open at login, the selected account and its spaces, and app and background service versions. **Edit name** uses the existing computer-name editor. Account information is read-only.
+Open **Settings** in the window or **Settings…** from the tray or menu bar after setup. It uses the same window and shows this computer's name, update preferences, Open at login, the selected account and its spaces, and app and background service versions. **Edit name** uses the existing computer-name editor. **Sign out** names the selected host and asks for confirmation. It revokes that login session and clears its cached sign-in and discovered spaces. Existing computer connections keep running on their own service proofs. Disconnect first if you also want to stop those connections.
+
+**Disconnect this computer** shows the spaces it will stop before confirmation. It stops their hosted Managers and machine-service connections and removes their resume intent. Account hosts also update the desired space list. The background service stays installed. This action does not remove the computer from the dashboard or revoke remote authority. Current versions retain connection credentials on disk. A refused or unknown result is shown rather than reported as a completed disconnect.
 
 ## Updates
 

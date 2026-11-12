@@ -14,6 +14,21 @@
 .settings-row button { flex-shrink: 0; max-width: 44%; }
 .settings-card .preferences { margin-top: 0; padding-top: var(--s-1); padding-bottom: var(--s-1); }
 .settings-card #settings-message:empty { display: none; }
+.account-actions { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.settings-row .account-actions button { max-width: none; }
+.account-confirmation { margin-top: 8px; }
+.account-confirmation h3 { font-size: var(--t-small); margin: 0 0 8px; }
+.account-confirmation ul { margin: 8px 0; padding-left: 20px; max-height: 100px; overflow-y: auto; overflow-wrap: anywhere; }
+#account-confirm-spaces:empty, #account-outcome:empty { display: none; }
+#settings-spaces { max-height: 42px; overflow-y: auto; }
+#account-outcome { white-space: pre-line; max-height: 120px; overflow-y: auto; }
+.settings-card.confirming-account > :not(.settings-heading):not(:has(#account-confirmation)) { display: none; }
+.confirming-account #settings-account, .confirming-account #settings-spaces, .confirming-account #account-confirmation + #account-outcome, .confirming-account .account-actions:has(#settings-signout) { display: none; }
+.settings-card { max-height: calc(100vh - 150px); overflow-y: auto; }
+.settings-card.account-outcome-view > :not(.settings-heading):not(:has(#account-outcome)) { display: none; }
+.account-outcome-view #settings-account, .account-outcome-view #settings-spaces, .account-outcome-view .account-actions:has(#settings-signout) { display: none; }
+.account-outcome-view #account-outcome { max-height: 250px; color: var(--ink); }
+.settings-row #account-outcome-back { max-width: none; margin-top: 8px; }
 .settings-card #settings-message { margin: var(--s-1) 0 0; }
 .update-banner { display: flex; align-items: center; gap: var(--s-1); background: var(--t-gold); color: var(--gold-ink); border: 2px solid var(--ink); border-radius: var(--r-md); padding: var(--s-1) var(--s-2); margin-bottom: var(--s-2); font-size: var(--t-label); }
 .connection-card:has(#update-banner:not([hidden])) #connection-icon { display: none; }
