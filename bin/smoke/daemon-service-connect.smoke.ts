@@ -72,6 +72,7 @@
  * Clock-behind regression only: add --clock-behind-only (C1, C2, C15, C18 and C10).
  * Add --cancel-only for C1, C2, C15, C6c and C10; --keep-fixture retains the sandbox after shutdown.
  * Add --retirement-only for shipped disconnect/uninstall credential erasure and sign-out guidance.
+ * Add --renewal-only for the two-access-lifetime service renewal observation.
  * Service-only setup: --hosting-only --no-manager-only, optionally --account-only.
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Credential expiry regression only: add --credential-expiry-only (C1, C2, C7, C10, C15 and C18).
@@ -152,6 +153,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, JSON.stringify(extra ?? "")?.slice(0, 600)); }
 };
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
+  if (process.argv.includes("--renewal-only") && !/^(C1 |C2 |C15 |C12 |C10 )/.test(title)) return;
   if (process.argv.includes("--retirement-only") && !/^(C1 |C2 |C15 |C3 |C5r |C10 )/.test(title)) return;
   if (title.startsWith("C5r ") && !process.argv.includes("--retirement-only")) return;
   if (process.argv.includes("--clock-behind-only") && !/^(C1 |C2 |C15 |C18 |C10 )/.test(title)) return;
@@ -1281,6 +1283,7 @@ try {
     });
 
     await cell("C12 held past two access-bearer lifetimes: the space keeps it ready and connected returns after each reconnect", async () => {
+      assert.equal(await waitState(ON, state => state === "connected"), "connected", "resumed service must be connected before renewal sampling");
       const samples: string[] = [];
       const t0 = Date.now();
       while (Date.now() - t0 < 130_000) { samples.push(String(stateOf(await statusS(ON)))); await sleep(1000); }
@@ -1695,7 +1698,11 @@ try {
         const expired = await cli("connect-check", "--space", sessionSpace);
         const expiredBefore = deviceCodeRequests;
         const renewed = await cli(...setupArgs, "--idp", idpUrl);
-        check("H2 expired rejected session also signs in once and reconnects", expired.code === 2 && expired.doc.error?.code === "AUTH_REQUIRED" && renewed.code === 0 && renewed.doc.result?.state === "connected" && deviceCodeRequests === expiredBefore + 1);
+        check("H2 expired rejected session signs in once and requests new approval after disconnect", expired.code === 2 && expired.doc.error?.code === "AUTH_REQUIRED"
+          && renewed.code === 4 && renewed.doc.error?.cause?.code === "APPROVAL_PENDING" && deviceCodeRequests === expiredBefore + 1);
+        assert.equal((await approve(sessionHost, sessionSpace, sessionOwner)).decided.state, "approved");
+        const reconnected = await cli(...setupArgs, "--idp", idpUrl);
+        check("H2 fresh approval reconnects without another sign-in", reconnected.code === 0 && reconnected.doc.result?.state === "connected" && deviceCodeRequests === expiredBefore + 1);
         await cli("service-disconnect", "--space", sessionSpace);
       } finally {
         tokenFailure = undefined; idpRevoked = false; recoverOnApproval = false;
@@ -3907,7 +3914,9 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               check(`C18 ${offset}s clock reaches ready and serves an authorized caller`, await instanceStatus(ON) === "ready" && (await probeMachine()).reply.ok);
             }
             check(`C18 ${offset}s clock preserves activate and renew request ids`, requestIds() === ids);
-            await cli(["service-disconnect", "--space", ON]);
+            // Compare clocks against one registration. Shutdown preserves credentials, whereas
+            // explicit service-disconnect deliberately erases the record being compared.
+            rmSync(intentFile(ON), { force: true });
           } finally {
             await killAndAwaitExit(foreground, "SIGTERM"); foreground = undefined;
             check(`C18 ${offset}s clock logs contain no bearer or session`, !daemonOutput.includes(SESSION)
