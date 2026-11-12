@@ -318,6 +318,12 @@ export interface EndpointOptions {
   /** Trusted composition custody of each opened transport, including replacement epochs.
    * Called before binding so the owner can await its terminal closed signal on bind failure. */
   onConnection?: (nc: NatsConnection) => void;
+  /** A planned credential swap dials a second connection, calls {@link onConnection}, and flushes
+   *  before it reconnects the resident connection. The second connection closes after that
+   *  reconnect. `onConnection` must accept a connection that exists only for the swap. Serve
+   *  subscriptions that share an incarnation queue keep dispatch while the resident connection
+   *  is down. Without this option the resident connection reconnects in place. */
+  overlapOnConnectionRenewal?: boolean;
   /** Await local admission checks before presence, consumers and the ready event on each bind. */
   beforeBind?: () => Promise<void>;
   /** The collaboration to join. */
@@ -699,6 +705,7 @@ export class CotalEndpoint extends EventEmitter {
   private nc?: NatsConnection;
   private readonly requestsAwaitingReply = new Map<NatsConnection, Set<(error: Error) => void>>();
   private readonly onConnection?: (nc: NatsConnection) => void;
+  private readonly overlapOnConnectionRenewal: boolean;
   private readonly beforeBind?: () => Promise<void>;
   private js?: JetStreamClient;
   private jsm?: JetStreamManager;
@@ -1161,6 +1168,7 @@ export class CotalEndpoint extends EventEmitter {
     if ((opts.transportPingIntervalMs === undefined) !== (opts.transportMaxPingOut === undefined))
       throw new Error("EndpointOptions transportPingIntervalMs and transportMaxPingOut must be configured together");
     this.onConnection = opts.onConnection;
+    this.overlapOnConnectionRenewal = opts.overlapOnConnectionRenewal === true;
     this.beforeBind = opts.beforeBind;
     this.transportPingIntervalMs = opts.transportPingIntervalMs ?? 10_000;
     this.transportMaxPingOut = opts.transportMaxPingOut ?? 2;
@@ -1503,9 +1511,48 @@ export class CotalEndpoint extends EventEmitter {
    *  reconnect succeeds, re-arm the expiry fence for the credential now authenticated on the wire. */
   private async swapConnectionOntoFreshCreds(): Promise<void> {
     const nc = this.nc;
-    if (nc && !this.stopped) {
+    if (!(nc && !this.stopped)) return;
+    const overlap = this.overlapOnConnectionRenewal && this.onConnection
+      ? await this.openRenewalOverlap().catch(() => undefined)
+      : undefined;
+    try {
+      // reconnect() resolves when the disconnect is requested, before subscriptions return.
+      // A flush started now is sent after those subscriptions, so it resolves only once they
+      // are on the broker. The overlap stays up until then.
       await nc.reconnect().catch(() => {});
+      if (overlap && !nc.isClosed())
+        await withDeadline(nc.flush(), 10_000, () => new Error("resident renewal flush did not finish")).catch(() => {});
       if (this.nc === nc && !this.stopped) this.armAuthExpiryReconnectFence(nc);
+    } finally {
+      if (overlap && !overlap.isClosed()) await this.closeWithoutLibraryReconnect(overlap).catch(() => {});
+    }
+  }
+
+  /** A second connection whose `onConnection` subscriptions are flushed before the resident
+   *  reconnect. Its inbox is not the resident connection's inbox. A flush that does not finish
+   *  closes it and leaves the caller to reconnect in place. */
+  private async openRenewalOverlap(): Promise<NatsConnection> {
+    const overlap = await dialerFor(this.servers)({
+      servers: this.servers,
+      noAsyncTraces: true,
+      name: `cotal:${this.card.name}:renewal`,
+      inboxPrefix: `_INBOX_renew_${randomUUID()}`,
+      maxReconnectAttempts: 0,
+      ...authOpts({
+        token: this.token, user: this.user, pass: this.pass,
+        creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined,
+        bearer: this.userMode ? () => this.presentBearer() : undefined,
+        sentinelCreds: this.sentinelCreds, tls: this.tls,
+      }),
+    });
+    this.ownedConnections.add(overlap);
+    try {
+      this.onConnection?.(overlap);
+      await withDeadline(overlap.flush(), 5_000, () => new Error("renewal overlap flush did not finish"));
+      return overlap;
+    } catch (error) {
+      await this.closeWithoutLibraryReconnect(overlap).catch(() => {});
+      throw error;
     }
   }
 
