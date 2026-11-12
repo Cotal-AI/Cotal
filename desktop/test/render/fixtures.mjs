@@ -16,7 +16,7 @@ export function nativeStub(scenario) {
       if (command === "first_paint") { state.paintReports = (state.paintReports ?? 0) + 1; return null; }
       if (command === "plugin:deep-link|get_current") return state.link ? [state.link] : null;
       if (command === "plugin:event|listen") return 1;
-      if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: false, pinOffer: false, pinMessage: "" };
+      if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: state.relocationOffer ?? false, pinOffer: state.pinOffer ?? false, pinMessage: state.pinMessage ?? "" };
       if (command === "set_update_notice") { state.trayUpdate = args.version; return null; }
       if (command === "open_browser" || command === "set_connection_state" || command.startsWith("plugin:")) return null;
       if (command !== "daemon_request") throw new Error(`Unexpected native command: ${command}`);
@@ -88,9 +88,77 @@ const link = "cotal://connect?idp=https%3A%2F%2Fcloud.cotal.ai%2Fapi%2Fauth&spac
 const signIn = async page => { await page.click("#login"); await page.locator("#connect-panel:not([hidden]), #space-panel:not([hidden]), #recovery-panel:not([hidden])").first().waitFor(); };
 const connect = async page => { await signIn(page); await page.click("#connect"); };
 const update = { channel: "desktop", current: "0.156.0", latest: "0.161.0", lastCheck: "2026-11-11T22:00:00Z", lastResult: "available", automatic: true, notify: true };
+const presenceOffer = id => async page => {
+  assert.equal(await page.locator(`#${id} .actions .button`).count(), 1);
+  assert.equal(await page.locator(`#${id} .actions .text-button`).count(), 1);
+  if (id === "pin-offer") assert.equal(await page.locator("#settings-startup #pin-offer").count(), 1);
+};
+const zoom = factor => async page => {
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ width: Math.round(viewport.width / factor), height: Math.round(viewport.height / factor) });
+};
+const reachable = async page => {
+  assert.ok(await page.locator("#settings-panel").evaluate(el => el.getBoundingClientRect().top >= 0), "card top stays reachable at zoom");
+  await page.locator("#release-notes").scrollIntoViewIfNeeded();
+  assert.ok(await page.locator("#release-notes").evaluate(el => el.getBoundingClientRect().bottom <= innerHeight), "last Settings action stays reachable at zoom");
+  await page.locator("#settings-title").scrollIntoViewIfNeeded();
+};
 const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
 const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
 export const scenarios = [
+  ...["edit", "invalid", "current"].map(mode => ({
+    name: `audit-settings-name-location-${mode}`, state: { installed: true, signedIn: true, connected: true, update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}) } },
+    act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); if (mode === "invalid") { await page.fill("#computer-name-input", ""); await page.press("#computer-name-input", "Enter"); } },
+    expect: async page => {
+      assert.equal(await page.locator("#settings-panel #computer-name-form").isVisible(), true);
+      assert.equal(await page.locator("#computer-name-input").evaluate(el => el === document.activeElement), true);
+      if (mode === "invalid") assert.match(await page.locator("#computer-name-error").textContent(), /1 to 128/);
+      await page.press("#computer-name-input", "Escape");
+      assert.equal(await page.locator("#computer-name-form").isVisible(), false);
+      assert.equal(await page.locator("#settings-name").evaluate(el => el === document.activeElement), true);
+      assert.equal(await page.locator("#settings-computer").isVisible(), true);
+    },
+  })),
+  ...[false, true].map(missingAsset => ({
+    name: `audit-settings-installer-outcome-${missingAsset ? "missing" : "available"}`, state: { installed: true, signedIn: true, connected: true, missingAsset, update },
+    act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); },
+    expect: async page => {
+      assert.equal(await page.locator("#settings-last-check").textContent(), missingAsset ? "No installer for this platform is on this release. Opening its release page." : "Install the downloaded version, then reopen Cotal.");
+      assert.equal(await page.locator("#settings-last-check").isVisible(), true);
+      assert.equal(await page.locator("#announcer").textContent(), await page.locator("#settings-last-check").textContent());
+    },
+  })),
+  ...["connected-label", "settings-label", "add-space", "approval-copy"].map(mode => ({
+    name: `audit-account-${mode}`,
+    state: mode === "approval-copy" ? { installed: true, signedIn: true, serviceState: "approval-pending" } : { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "starting" }] } },
+    act: async page => {
+      if (mode === "settings-label") await page.click("#open-settings");
+      if (mode === "add-space") await page.click("#another-space");
+    },
+    expect: async page => {
+      if (mode === "connected-label") assert.equal(await page.locator('[data-space="acme-team"] strong').textContent(), "Acme team");
+      if (mode === "settings-label") assert.match(await page.locator("#settings-spaces").textContent(), /Acme team/);
+      if (mode === "add-space") {
+        assert.equal(await page.locator("#space").isVisible(), true);
+        assert.deepEqual(await page.locator("#space option").evaluateAll(options => options.filter(option => option.value).map(option => ({ value: option.value, label: option.textContent }))), [{ value: "acme-team", label: "Acme team" }, { value: "research", label: "Research" }]);
+      }
+      if (mode === "approval-copy") {
+        assert.match(await page.locator("#connection-description").textContent(), /approve this computer/i);
+        assert.doesNotMatch(await page.locator("#connection-description").textContent(), /approve this machine/i);
+      }
+    },
+  })),
+  { name: "audit-settings-name-edit", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); } },
+  { name: "audit-settings-name-invalid", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); await page.fill("#computer-name-input", ""); await page.press("#computer-name-input", "Enter"); } },
+  { name: "audit-settings-current-name-edit", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: "0.156.0" } }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); } },
+  { name: "audit-settings-download-click", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); } },
+  { name: "audit-settings-missing-click", state: { installed: true, signedIn: true, connected: true, missingAsset: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); } },
+  { name: "audit-account-several-spaces", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "starting" }] } } },
+  { name: "audit-move-offer", state: { installed: true, relocationOffer: true }, expect: presenceOffer("move-offer") },
+  { name: "audit-pin-offer", state: { installed: true, signedIn: true, connected: true, pinOffer: true }, act: page => page.click("#open-settings"), expect: presenceOffer("pin-offer") },
+  { name: "audit-pin-message", state: { installed: true, signedIn: true, connected: true, pinMessage: "Cotal is pinned to your taskbar." }, act: page => page.click("#open-settings"), expect: async page => assert.equal(await page.locator("#settings-startup > #pin-availability").count(), 1) },
+  ...[1.25, 1.5].map(factor => ({ name: `audit-zoom-${factor * 100}-settings`, state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await zoom(factor)(page); }, expect: reachable })),
+
   { name: "audit-update-banner-agents", state: { installed: true, signedIn: true, connected: true, update, agents: auditAgents } },
   { name: "audit-account-spaces-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "connected" }] }, agents: auditAgents } },
   { name: "audit-account-refusal-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "refusal", lastRefusal: "No available connector in the hosted Manager environment. Install Claude Code or Codex, then check again." }] }, agents: auditAgents } },
@@ -301,10 +369,15 @@ export const scenarios = [
     expect: async page => {
       assert.equal(await page.locator("#connected-panel").isVisible(), true);
       assert.equal(await page.locator("#sign-in-again").isVisible(), observed === "sign-in-required");
-      const pill = observed === "connected" ? "Connected" : observed === "sign-in-required" ? "Sign in required" : observed === "removed on this computer" ? "Ready" : "Starting";
+      const pill = observed === "connected" ? "Connected" : observed === "sign-in-required" ? "Sign in required" : observed === "removed on this computer" ? "Ready" : observed === "refusal" ? "Needs attention" : "Starting";
       assert.equal(await page.locator("#tray-label").textContent(), pill);
       const dot = await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor);
       assert.equal(dot, ["sign-in-required", "refusal"].includes(observed) ? "rgb(224, 98, 90)" : observed === "connected" || observed === "removed on this computer" ? "rgb(95, 168, 102)" : "rgb(229, 185, 78)");
+      if (observed === "refusal") {
+        assert.equal(await page.locator("#connection-title").textContent(), "Connection needs attention");
+        assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "warning");
+        assert.equal(await page.locator("#connection-icon").getAttribute("data-tone"), "error");
+      }
       if (observed === "sign-in-required") {
         assert.equal(await page.locator("#connection-title").textContent(), "Sign in to keep this computer connected");
         assert.equal(await page.locator("#sign-in-again").textContent(), "Sign in");
