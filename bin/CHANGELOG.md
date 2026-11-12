@@ -1,5 +1,42 @@
 # cotal-ai
 
+## 0.160.8
+
+### Patch Changes
+
+- 771a25d: Manage update preferences and see available desktop releases in Cotal Settings.
+  
+  The daemon exposes closed preference and cached-check requests shared with the update CLI. The desktop announces newer versions and opens a matching published installer without replacing itself.
+- 4cda366: Daemon sign-in now names the replaced account in human and plain output when you switch accounts at the same provider. First sign-ins, same-account repeats and JSON output are unchanged.
+- 68a9ac5: Add confirmed sign-out and disconnect controls to desktop Settings.
+  
+  Sign-out shares the CLI's provider-session revocation and local sign-in cleanup while leaving existing computer connections running. Disconnect uses the existing per-space operations and reports incomplete outcomes without claiming credential erasure or remote revocation.
+- ea02ceb: Shrink the Cotal desktop app bundle by over 80 MB across macOS, Linux and Windows. Desktop runtime staging now prunes build-only source maps, TypeScript declarations, Windows PDB symbols, package test trees, duplicate non-runtime package outputs and the local `nats-server` binary before sealing `desktop-runtime.json`, strips debug and local symbols from the bundled Node and Tauri binaries, verifies every `@cotal-ai/*` package import, CLI command `--help`, `daemon status` and native `.node` addon in `check-runtime.mjs`, and enforces installed and installer size budgets in the desktop build workflow.
+- a0b9202: Keep desktop navigation reachable when many spaces use this computer.
+  
+  Long space lists scroll inside a keyboard-accessible region while the header and connection controls stay visible.
+- bb849c8: Keep desktop Settings name editing and installer feedback beside their controls.
+  
+  Settings shows catalog space names when available, and approval guidance consistently calls the device a computer.
+- c4c4d34: Show the agents running on this computer in daemon status and the desktop app. Read bounded public seat facts from each hosted Manager over its parent channel and report spaces whose inventory could not be read.
+- c7c509c: Browse directories on your computer when choosing where to launch an agent.
+  The Manager serves a bounded directory-only listing through the same authorized control path as working-directory validation, without opening another host service.
+- Updated dependencies [68a9ac5]
+- Updated dependencies [a331933]
+- Updated dependencies [3d20eda]
+- Updated dependencies [c4c4d34]
+- Updated dependencies [c7c509c]
+  - @cotal-ai/auth@0.160.8
+  - @cotal-ai/cli@0.160.8
+  - @cotal-ai/connector-core@0.160.8
+  - @cotal-ai/manager@0.160.8
+  - @cotal-ai/core@0.160.8
+  - @cotal-ai/delivery@0.160.8
+  - @cotal-ai/registry@0.160.8
+  - @cotal-ai/runtime@0.160.8
+  - @cotal-ai/workspace@0.160.8
+  - @cotal-ai/seat@0.160.8
+
 ## 0.160.7
 
 ### Patch Changes

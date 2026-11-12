@@ -17,7 +17,7 @@ import type { AccountComputerStatus } from "./account-state.js";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
-export const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-intent", "status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+export const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-intent", "status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
 export type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
@@ -35,6 +35,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "managers-abort-restart": { required: [], optional: [] },
   spaces: { required: [], optional: ["refresh"] },
   "login-start": { required: ["idp"], optional: ["clientId"] },
+  logout: { required: ["idp"], optional: [] },
   "login-cancel": { required: ["attempt"], optional: [] },
   "connect-check": { required: ["space"], optional: [] },
   register: { required: ["space"], optional: [] },
@@ -43,7 +44,16 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "service-status": { required: ["space"], optional: [] },
 };
 
+export type LogoutChange =
+  | { readonly kind: "local-login"; readonly idp: string; readonly cleared: true }
+  | { readonly kind: "idp-session"; readonly idp: string; readonly revoked: true };
+
+export type LogoutResult =
+  | { readonly kind: "logout"; readonly localLogin: "absent"; readonly serverRevoked: null }
+  | { readonly kind: "logout"; readonly serverRevoked: boolean; readonly localLoginCleared: true; readonly removedRegistrations: readonly string[] };
+
 export type DaemonRequest =
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "logout"; readonly idp: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-check" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "name"; readonly name?: string }
@@ -66,6 +76,7 @@ export type DaemonRequest =
 
 export type ProtocolErrorCode =
   | "BAD_JSON" | "NOT_OBJECT" | "BAD_VERSION" | "UNKNOWN_FIELD" | "BAD_ID" | "UNKNOWN_OP" | "LINE_TOO_LONG"
+  | "SCHEMA_INVALID" | "OPERATION_UNKNOWN" | "OPERATION_PARTIAL"
   | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "DEPENDENCY_UNAVAILABLE" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "GENERATION_PENDING";
 
 export interface DaemonUpdateStatus {
@@ -89,6 +100,7 @@ export interface DaemonStatus {
   readonly account?: AccountComputerStatus;
   readonly generation?: { readonly installed: string; readonly running: string; readonly waiting: string };
   readonly managers?: readonly HostedManager[];
+  readonly agents?: readonly HostedAgents[];
   /** The local control listener is bound and verified. It does NOT mean connected to a mesh or Cloud. */
   readonly state: "ready";
   readonly protocol: typeof DAEMON_PROTOCOL_VERSION;
@@ -97,6 +109,20 @@ export interface DaemonStatus {
   readonly startedAt: string;
   readonly uptimeMs: number;
 }
+
+export interface HostedAgent {
+  readonly name: string;
+  readonly application: string;
+  readonly model?: string;
+  readonly cwd: string;
+  readonly startedAt: string;
+  readonly state: "running" | "exited";
+}
+
+export type HostedAgents = { readonly space: string; readonly observedAt: string } & (
+  | { readonly state: "read"; readonly agents: readonly HostedAgent[] }
+  | { readonly state: "unreadable"; readonly message: string }
+);
 
 export interface HostedManager {
   readonly connectors?: readonly { readonly agent: string; readonly state: string; readonly reason?: string }[];
@@ -186,8 +212,8 @@ export interface DaemonSpaces {
 
 type Envelope = { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string | null };
 export type DaemonResponse =
-  | (Envelope & { readonly ok: true; readonly result: HostedManager | DaemonSpaces | DaemonStatus | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult })
-  | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode; readonly message: string; readonly remedy?: string } })
+  | (Envelope & { readonly ok: true; readonly result: HostedManager | DaemonSpaces | DaemonStatus | LogoutResult | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult })
+  | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode; readonly message: string; readonly remedy?: string; readonly outcome?: "failed" | "refused" | "unknown" | "partial"; readonly changed?: readonly LogoutChange[] } })
   | (Envelope & { readonly ok: true; readonly event: "login-prompt"; readonly attempt: string; readonly prompt: LoginPrompt })
   | (Envelope & { readonly ok: true; readonly event: "login-result"; readonly attempt: string; readonly result: LoginResult });
 
@@ -266,6 +292,7 @@ export function parseRequest(line: string): ParsedRequest {
   } catch {
     return bad(id, "idp must be an HTTPS auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment");
   }
+  if (op === "logout") return { ok: true, request: { v, id, op, idp } };
   if (obj.clientId !== undefined && (typeof obj.clientId !== "string" || !obj.clientId.trim() || obj.clientId.length > MAX_CLIENT_ID)) return bad(id, `clientId must be a non-empty string of at most ${MAX_CLIENT_ID} characters`);
   return { ok: true, request: { v, id, op, idp, ...(obj.clientId !== undefined ? { clientId: obj.clientId as string } : {}) } };
 }

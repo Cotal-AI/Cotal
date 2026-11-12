@@ -13,15 +13,13 @@ import * as prompts from "@clack/prompts";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import { CommandFailure, resolvePreference, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, writeResult, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
 import {
-  deleteIdpSession,
   deleteIdpSpaceCatalog,
   establishIdpSession,
   IdpUnreachableError,
-  loadIdpSession,
   listIdpAccounts,
   normalizeIdpUrl,
-  revokeIdpSession,
 } from "./login.js";
+import { signOutIdpSession } from "./logout.js";
 import { inspectHandleFile } from "./handle-inspect.js";
 import { checkedEviction } from "./barrier-evict.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -211,32 +209,13 @@ async function runLogout(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "logout", target: null, result: { kind: "logout", providerSelected: false, serverRevoked: null }, noOp: true }, () => ({ sections: [{ title: "No sign-out performed", blocks: [{ kind: "lines", lines: ["No provider was selected. No server session was revoked."] }] }] }));
     return;
   }
-  const dir = homeCotalDir();
-  let session: ReturnType<typeof loadIdpSession>;
-  try { session = loadIdpSession(dir, idp); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the cached login could not be read; nothing was cleared", { target: { idp } }); }
-  if (!session) {
+  const local = args.values.local === true;
+  const result = await signOutIdpSession({ dir: homeCotalDir(), idp, local });
+  if ("localLogin" in result) {
     writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", localLogin: "absent", serverRevoked: null }, noOp: true }, () => ({ sections: [{ title: "No cached sign-in", blocks: [{ kind: "fields", rows: [["Provider", idp]] }, { kind: "lines", lines: [{ text: "No local session was found. Other server sessions were not checked or revoked.", tone: "hint" }] }] }] }));
     return;
   }
-  // `--local` forgets this machine's login without contacting the provider, whose session stays valid.
-  const local = args.values.local === true;
-  if (!local) {
-    try { await revokeIdpSession(idp, session.token); }
-    catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: `retry logout for this provider, or revoke the session at the provider; to forget the login on this machine only, run \`cotal logout --idp ${idp} --local\`` }); }
-  }
-  let localCleared = false;
-  let removed: string[] = [];
-  try {
-    deleteIdpSession(dir, idp);
-    localCleared = true;
-    if (session.sub) removed = removeCatalogMeshes(deleteIdpSpaceCatalog(dir, idp, session.sub));
-  } catch {
-    if (local && !localCleared) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the cached login could not be confirmed cleared; the provider was not contacted", { target: { idp } });
-    if (local) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the cached login was cleared, but discovered-space cleanup was not confirmed; the provider was not contacted", { target: { idp }, changed: [{ kind: "local-login", idp, cleared: true }] });
-    throw new CommandFailure("partial", "OPERATION_PARTIAL", localCleared ? "the server session was revoked and the cached login cleared, but discovered-space cleanup was not confirmed" : "the server session was revoked, but local cleanup was not confirmed", { target: { idp }, changed: [{ kind: "idp-session", idp, revoked: true }, ...(localCleared ? [{ kind: "local-login", idp, cleared: true }] : [])] });
-  }
-  writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", serverRevoked: !local, localLoginCleared: true, removedRegistrations: removed } }, (result) => ({ sections: [
+  writeResult(presentation, { command: "logout", target: { idp }, result }, (result) => ({ sections: [
     { title: local ? "Signed out on this machine" : "Signed out", blocks: [{ kind: "fields", rows: [["Provider", idp], ["Provider session", local ? { text: "not contacted; it stays valid until it expires or is revoked at the provider", tone: "waiting" } : { text: "revoked", tone: "ok" }], ["Local login", "cleared"], ["Discovered spaces removed", String(result.removedRegistrations.length)]] }, { kind: "lines", lines: [{ text: "This does not claim that independently running agents or other provider sessions were stopped.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal login", description: "Sign in deliberately when needed" }] }] },
   ] }));

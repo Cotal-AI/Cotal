@@ -1,5 +1,17 @@
 # @cotal-ai/manager
 
+## 0.160.8
+
+### Patch Changes
+
+- c4c4d34: Show the agents running on this computer in daemon status and the desktop app. Read bounded public seat facts from each hosted Manager over its parent channel and report spaces whose inventory could not be read.
+- c7c509c: Browse directories on your computer when choosing where to launch an agent.
+  The Manager serves a bounded directory-only listing through the same authorized control path as working-directory validation, without opening another host service.
+- Updated dependencies [c7c509c]
+  - @cotal-ai/core@0.160.8
+  - @cotal-ai/workspace@0.160.8
+  - @cotal-ai/seat@0.160.8
+
 ## 0.160.7
 
 ### Patch Changes

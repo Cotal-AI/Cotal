@@ -22,6 +22,7 @@ export type DesktopRequest =
   | { readonly op: "name"; readonly name?: string }
   | { readonly op: "spaces"; readonly refresh?: boolean }
   | { readonly op: "login"; readonly idp: string }
+  | { readonly op: "logout"; readonly idp: string }
   | { readonly op: "setup"; readonly space: string; readonly idp: string }
   | { readonly op: "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status"; readonly space: string };
 
@@ -31,7 +32,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   const o = value as Record<string, unknown>;
   const simple = ["about", "status", "install", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
-  const fields = o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : o.op === "login" ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
+  const fields = o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
   if (o.op === "update-release") {
     if (typeof o.version !== "string" || !/^\d+\.\d+\.\d+$/.test(o.version)) throw new Error("invalid release version");
@@ -60,7 +61,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
     return { op: "setup", space: o.space, idp: normalizeIdpUrl(o.idp) };
   }
-  return { op: "login", idp: normalizeIdpUrl(o.idp) };
+  return { op: o.op as "login" | "logout", idp: normalizeIdpUrl(o.idp) };
 }
 
 export async function readDesktopRequest(input: Readable): Promise<DesktopRequest> {
@@ -197,7 +198,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
 /** Shared by the app adapter and the ordinary daemon CLI commands. */
 export async function exchangeDesktopRequest(
   opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">,
-  request: Exclude<Extract<DesktopRequest, { readonly op: "name" } | { readonly op: "update-settings" } | { readonly op: "update-check" } | { readonly op: "spaces" } | { readonly space: string }>, { readonly op: "setup" }>,
+  request: Exclude<Extract<DesktopRequest, { readonly op: "name" } | { readonly op: "update-settings" } | { readonly op: "update-check" } | { readonly op: "spaces" } | { readonly op: "logout" } | { readonly space: string }>, { readonly op: "setup" }>,
 ): Promise<DaemonResponse> {
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {

@@ -554,6 +554,7 @@ Boolean `auto` and `notify` fields. It uses the same preferences as the update C
 `update-check` takes no fields and returns daemon status after the existing registry check,
 including its daily success cache and hourly attempt limit. Neither request installs a version,
 stops agents or restarts a service.
+
 Refusals before replacement do not count as failed installations. A busy computer retries after
 60 seconds. Registry or extension-closure unavailability retries after one hour.
 An attempt that begins replacement and does not reach the target version counts as a failure
@@ -562,6 +563,14 @@ attempts for that version until a newer release appears or a person repairs it m
 If the updater cannot reconcile or restore a complete generation, automatic updates pause
 and status names the installed version and `cotal update --self` as the repair command.
 Use `cotal update --auto off` to disable automatic installation while keeping CLI notices.
+
+The closed local `logout` request takes the selected provider's `idp` URL. It uses the same
+session revocation and cached sign-in cleanup as `cotal logout`, in the daemon's login directory.
+An active browser sign-in refuses the request. An unconfirmed provider response keeps the local
+login and reports an unknown outcome. Local cleanup failures report partial progress.
+Signing out does not stop existing hosted Managers or machine-service connections.
+The desktop's confirmed disconnect action uses `service-disconnect` for each named space.
+It reports incomplete outcomes per space and does not claim credential erasure or remote revocation.
 
 ```bash
 cotal daemon setup [--idp <url>] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
@@ -679,6 +688,8 @@ A failed attempt to re-enable hosting keeps that unconfirmed-removal state. It i
 when a successor Manager answers or registration removal is confirmed.
 An explicit `service-disconnect` closes the machine service and forgets its connection intent
 even when Manager registration cleanup refuses. The cleanup refusal remains visible in status.
+
+Daemon status includes `agents`, a per-space local inventory read from each hosted Manager over its parent IPC channel. A `read` observation contains agent name, application, optional pinned model, folder, start time and running or exited state. An `unreadable` observation means the Manager did not answer, changed during the read or exceeded the response bound. It never means no agents. Text and JSON show the same observation. The read changes no seat or admission state and carries no prompts, credentials or console links.
 
 Daemon commands use the machine home, not the invoking project's `.cotal` records. They run from
 a removed working directory or a folder with a `.cotal` file, and malformed preferences do not

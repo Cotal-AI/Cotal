@@ -1,5 +1,12 @@
 # @cotal-ai/core
 
+## 0.160.8
+
+### Patch Changes
+
+- c7c509c: Browse directories on your computer when choosing where to launch an agent.
+  The Manager serves a bounded directory-only listing through the same authorized control path as working-directory validation, without opening another host service.
+
 ## 0.160.7
 
 No changes in this release.

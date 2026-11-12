@@ -1,5 +1,6 @@
 /** @module index */
 export { retainManagerAuthorityRoute } from "./provider.js";
+export { signOutIdpSession, type SignOutIdpSessionResult } from "./logout.js";
 export { mintServiceCallerPayloadObserverCreds, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
 export { deriveOwnerToken, deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 export { parsePlatformControlAuthorityRequest, type ManagerAuthorityHolder } from "./platform-control.js";
@@ -87,6 +88,7 @@ export {
   IdpUnreachableError,
   IdpDeviceAuthorizationRefusedError,
   IdpSessionRejectedError,
+  IdpRateLimitedError,
   type IdpSession,
   type DeviceLoginOpts,
   type DeviceLoginPrompt,
