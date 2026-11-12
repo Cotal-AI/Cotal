@@ -32,13 +32,14 @@ const check = (name: string, action: () => void) => {
 
 for (const [name, signal, code, format, noManager] of [
   ["control", undefined, 0, "--json", false],
+  ["early-timeout", "SIGINT", 130, "--json", false],
   ["early", "SIGINT", 130, "--json", false],
   ["interrupt", "SIGINT", 130, "--json", false],
   ["terminate", "SIGTERM", 143, "--json", true],
   ["hangup", "SIGHUP", 129, "--json", false],
   ["plain", "SIGINT", 130, "--plain", true],
 ] as const) {
-  if (name === "early" && process.platform === "win32") {
+  if (name.startsWith("early") && process.platform === "win32") {
     console.log("SKIP early: creation-bound pause requires POSIX signals");
     continue;
   }
@@ -72,11 +73,11 @@ for (const [name, signal, code, format, noManager] of [
         assert.ok(Date.now() < until, "broker did not listen before deadline");
         await sleep(100);
       }
-      if (name === "early") {
+      if (name.startsWith("early")) {
         const savedHome = process.env.COTAL_HOME;
         process.env.COTAL_HOME = home;
         try {
-          let manager;
+          let manager: ReturnType<typeof serviceInstances>[number] | undefined;
           while (!manager) {
             try { manager = serviceInstances(space, "stack-manager").find((row) => row.record.value.process); }
             catch (error) {
@@ -149,12 +150,12 @@ for (const [name, signal, code, format, noManager] of [
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     await closed;
     clearTimeout(deadline);
-    let stopped;
+    let stopped: { status: number | null; stdout: string; stderr: string };
     if (earlyProcess) {
       const pinned = earlyProcess;
       const resume = setTimeout(() => {
         if (assertRecordIdentity(pinned).kind === "match") process.kill(pinned.pid, "SIGCONT");
-      }, 4000);
+      }, name === "early-timeout" ? 20000 : 4000);
       try {
         stopped = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
           const down = spawn(process.execPath, ["--import", loader, entry, "down", "--yes", "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -170,6 +171,17 @@ for (const [name, signal, code, format, noManager] of [
         if (assertRecordIdentity(pinned).kind === "match") process.kill(pinned.pid, "SIGCONT");
       }
     } else stopped = cli("down", "--yes", "--json");
+    if (name === "early-timeout") {
+      writeFileSync(join(base, `${name}-refused.stdout`), stopped.stdout);
+      check("early-timeout: bounded refusal submits no native stop", () => {
+        assert.equal(stopped.status, 2);
+        const refusal = JSON.parse(stopped.stdout);
+        assert.equal(refusal.error.code, "LIFECYCLE_BLOCKED");
+        assert.match(refusal.error.message, /has not completed startup/);
+      });
+      await sleep(2000);
+      stopped = cli("down", "--yes", "--json");
+    }
     writeFileSync(join(base, `${name}-down.stdout`), stopped.stdout);
     writeFileSync(join(base, `${name}-down.stderr`), stopped.stderr);
     assert.equal(stopped.status, 0, `private stack cleanup failed: ${stopped.stderr}\n${stopped.stdout}`);
