@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.161.1
+
+### Patch Changes
+
+- 5879d1c: Explain when a saved automatic-update preference has no active daemon schedule.
+  Enabling or reading the Linux preference now checks the daemon and names the service installation and status commands when needed, without installing or starting anything.
+- Updated dependencies [fa2aece]
+  - @cotal-ai/core@0.161.1
+  - @cotal-ai/workspace@0.161.1
+
 ## 0.161.0
 
 ### Patch Changes

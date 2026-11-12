@@ -1,5 +1,28 @@
 # cotal-ai
 
+## 0.161.1
+
+### Patch Changes
+
+- 5879d1c: Explain when a saved automatic-update preference has no active daemon schedule.
+  Enabling or reading the Linux preference now checks the daemon and names the service installation and status commands when needed, without installing or starting anything.
+- 522c4b7: Approved machine services reconnect after a daemon restart without a human sign-in while their stored service renewal proof remains valid.
+  Recover the original registration witness from that proof, retain the pinned account and request identities, and let the stock service authority validate renewal before serving.
+- c732226: Keep hosted Manager registration cleanup recoverable after a local space is removed. Save the original authority and instance identity without copying credentials, retain pending and unknown outcomes across restarts and uninstall, and never automatically repeat an unconfirmed removal.
+- Updated dependencies [5879d1c]
+- Updated dependencies [fa2aece]
+- Updated dependencies [c732226]
+  - @cotal-ai/cli@0.161.1
+  - @cotal-ai/core@0.161.1
+  - @cotal-ai/auth@0.161.1
+  - @cotal-ai/connector-core@0.161.1
+  - @cotal-ai/delivery@0.161.1
+  - @cotal-ai/manager@0.161.1
+  - @cotal-ai/registry@0.161.1
+  - @cotal-ai/runtime@0.161.1
+  - @cotal-ai/workspace@0.161.1
+  - @cotal-ai/seat@0.161.1
+
 ## 0.161.0
 
 ### Minor Changes

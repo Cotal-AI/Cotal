@@ -2,9 +2,9 @@
  * The daemon's own service connection to a space (A2c): its registered `ai.cotal.machine` instance,
  * connected as a stock service and accepted by the space as ready.
  *
- * - The witness comes from replaying the daemon's persisted register request unchanged
- *   (`daemonWitness`): no new key, no new registration, no changed body. Without a register request
- *   nothing is sent.
+ * - The witness comes from the stored service renewal proof, or before activation from replaying
+ *   the daemon's persisted register request unchanged (`daemonWitness`). Without a register request
+ *   nothing is sent. A human sign-in is not needed while the service proof remains current.
  * - The credentials come from the stock renewal source (`AuthProvider.serviceEndpointRenewal`) over
  *   the daemon's private store in the machine home. Only the renewal and ready records live there;
  *   the source's other reads (the space's sentinel) come from the space's own workspace store, which
@@ -166,6 +166,11 @@ function intentSpace(path: string): string | undefined {
   // The segment is derived from the name, so a record whose name does not round-trip to the
   // directory it sits in was not written for this space and is ignored rather than acted on.
   return daemonConnectIntentFile(r.space, join(path, "..", "..", "..")) === path ? r.space : undefined;
+}
+
+/** Whether this daemon already recorded a successful per-space connection. */
+export function hasDaemonConnectIntent(space: string, home: string): boolean {
+  return intentSpace(daemonConnectIntentFile(space, home)) === space;
 }
 
 export function createServiceConnections(home: string = homeCotalDir()): ServiceConnections {
@@ -387,7 +392,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
    *  short startup outages before exponential backoff. Recheck inside the per-space queue so a
    *  timer already queued when disconnect runs cannot restore a forgotten connection. */
   async function connectRemembered(space: string, delay = 1000, fastRetries = 10): Promise<ServiceConnectionResult> {
-    if (closed || intentSpace(daemonConnectIntentFile(space, home)) !== space) return result(space);
+    if (closed || !hasDaemonConnectIntent(space, home)) return result(space);
     cancelRetry(space);
     const r = await connectOnce(space);
     if (!closed && !disconnecting.has(space) && r.state === "unavailable") {
@@ -422,7 +427,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     }),
     connect: (space) => serial(space, async () => {
       cancelRetry(space);
-      const r = intentSpace(daemonConnectIntentFile(space, home)) === space ? await connectRemembered(space) : await connectOnce(space);
+      const r = hasDaemonConnectIntent(space, home) ? await connectRemembered(space) : await connectOnce(space);
       if (r.state === "connected") { try { remember(space); } catch { /* the connection is up either way */ } }
       return r;
     }),

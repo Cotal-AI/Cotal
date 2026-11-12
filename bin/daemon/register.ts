@@ -3,7 +3,7 @@
  * daemon's A2b.1 identity and reports the stock answer. It never activates, serves, holds a bearer,
  * decides, binds a name or grants a caller, and it never touches a Manager.
  *
- * It runs the A2b.1 readiness check first. Any outcome other than `ready-to-register` is returned
+ * Registration runs the A2b.1 readiness check first. Any outcome other than `ready-to-register` is returned
  * unchanged, so a space without service endpoints gets 0 POST and no identity.
  *
  * Request identity follows the stock rule (docs/embedding.mdx, "Service authority contracts"): one
@@ -14,13 +14,16 @@
  *
  * The request goes through the registered auth provider's `serviceEndpointAuthority` with no proof
  * argument, so the stock client presents the machine's signed-in IdP proof itself. The daemon never
- * reads or relays that proof.
+ * reads or relays that proof. Connection recovery reads only the witness embedded in an existing
+ * service renewal proof, leaving proof validation and credential minting to the stock authority.
  */
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { contractDigest, resolveAuthProvider, ServiceAuthorityTransportError, singleDocumentClosure, VOID_SCHEMA_DIGEST, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness } from "@cotal-ai/core";
-import { claimIdentityRecord, codeSpan, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
-import { connectCheck, DAEMON_ENDPOINT } from "./connect.js";
+import { readdirSync } from "node:fs";
+import { decodeJwt } from "jose";
+import { contractDigest, parseServiceRegistrationWitness, resolveAuthProvider, serviceWitnessDigest, ServiceAuthorityTransportError, singleDocumentClosure, VOID_SCHEMA_DIGEST, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness } from "@cotal-ai/core";
+import { claimIdentityRecord, codeSpan, findMesh, FsSecretStore, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { ACCOUNT_MISMATCH_MESSAGE, connectCheck, DAEMON_ENDPOINT, readDaemonServiceIdentity } from "./connect.js";
 import type { RegisterResult } from "./protocol.js";
 import { daemonCommandCopy } from "./guidance.js";
 
@@ -76,15 +79,80 @@ const NOT_SIGNED_IN = "this machine's sign-in was not accepted by the space's pr
 const NOT_SENT = "the daemon could not send the registration request; nothing was sent and nothing is connected";
 const UNUSABLE = "the space answered the registration with something the daemon does not use; run the same command again";
 
+const registerBody = (space: string, identity: { accountPublicKey: string; endpoint: string; instanceId: string }) => ({
+  v: 1 as const, kind: "service-endpoint-authority" as const, operation: "register" as const, space,
+  accountPublicKey: identity.accountPublicKey, endpoint: identity.endpoint, instanceId: identity.instanceId,
+  registration: DAEMON_REGISTRATION, expected: { state: "unregistered" as const },
+});
+
 export async function registerDaemon(space: string, home: string = homeCotalDir(), signal?: AbortSignal): Promise<RegisterResult> {
   const sent = await sendRegister(space, home, signal);
   return "outcome" in sent ? sent : registerAnswer(sent.result, sent.ids);
 }
 
-/** The stock witness this daemon's own registration holds in `space`, read by replaying its persisted
- *  register request unchanged: the same requestId and body, so no new key or registration. Anything
- *  but `registered` is returned as the daemon's register outcome. */
+/** Recover the witness carried by an existing renewal proof. This is only a locator, not trust:
+ *  the stock renewal source and authority still validate the proof and the serving credential.
+ *  Bind it to the original identity, request and embedded contract before sending anything. */
+async function renewalWitness(space: string, home: string): Promise<ServiceRegistrationWitness | undefined> {
+  const root = join(home, "daemon", spaceSegment(space), "service-store");
+  const prefix = `auth/${spaceSegment(space)}/service-renewal`;
+  let files: string[];
+  try { files = readdirSync(join(root, prefix)); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw e;
+  }
+  if (files.length !== 1 || !/^[0-9a-f]{64}\.json$/.test(files[0]!)) throw new Error("invalid renewal records");
+  const raw = await new FsSecretStore(root).get(`${prefix}/${files[0]}`);
+  if (raw === undefined) throw new Error("missing renewal record");
+  const record = JSON.parse(raw) as Record<string, unknown> | null;
+  if (!record || record.v !== 1 || record.kind !== "service-endpoint-renewal"
+    || record.witnessDigest !== `sha256:${files[0]!.slice(0, -".json".length)}`
+    || typeof record.activateRequestId !== "string" || !/^[0-9a-f]{32}$/.test(record.activateRequestId)
+    || typeof record.renewRequestId !== "string" || !/^[0-9a-f]{32}$/.test(record.renewRequestId)) throw new Error("invalid renewal record");
+  // An interrupted first activation has no material yet. The original register path still applies.
+  if (record.material === null) return undefined;
+  const material = record.material as { renewalProof?: unknown; renewalExpiresAt?: unknown } | undefined;
+  if (!material || typeof material.renewalProof !== "string" || typeof material.renewalExpiresAt !== "number"
+    || !Number.isSafeInteger(material.renewalExpiresAt)) throw new Error("invalid renewal material");
+  const witness = parseServiceRegistrationWitness(decodeJwt(material.renewalProof).witness);
+  const digest = serviceWitnessDigest(witness);
+  const identity = readDaemonServiceIdentity(space, home);
+  const request = claimIdentityRecord(daemonRegisterFile(space, home), "daemon register request", parseRecord(space), () => {
+    throw new Error("the daemon register request is missing");
+  });
+  const bodyDigest = contractDigest(registerBody(space, identity));
+  if (record.witnessDigest !== digest || files[0] !== `${digest.slice("sha256:".length)}.json`
+    || witness.space !== space || witness.endpoint !== identity.endpoint || witness.accountPublicKey !== identity.accountPublicKey
+    || witness.instanceId !== identity.instanceId || request.instanceId !== identity.instanceId
+    || witness.registrationRequestId !== request.requestId || request.bodyDigest !== bodyDigest) throw new Error("renewal assignment mismatch");
+  // An expired proof needs the existing signed-in registration/reactivation path, never a new id.
+  return material.renewalExpiresAt > Math.floor(Date.now() / 1000) ? witness : undefined;
+}
+
+/** Use a stored service proof before considering human sign-in. Without renewal material, replay
+ *  the persisted register request unchanged. Neither path mints a new registration request. */
 export async function daemonWitness(space: string, home: string = homeCotalDir(), signal?: AbortSignal): Promise<{ witness: ServiceRegistrationWitness } | RegisterResult> {
+  let witness: ServiceRegistrationWitness | undefined;
+  try { witness = await renewalWitness(space, home); } catch {
+    return { outcome: "local-state-error", space, message: "the daemon could not use its local service records; restore the original identity, registration and renewal records before retrying" };
+  }
+  signal?.throwIfAborted();
+  if (witness) {
+    const entry = findMesh(space);
+    if (!entry || entry.mode !== "user" || !entry.userAuth) return { outcome: "not-registered", space, message: "this space is not registered on this machine" };
+    const provider = resolveAuthProvider();
+    if (!provider.serviceEndpointInfo) return { outcome: "unsupported-by-space", space, message: "the space's auth service does not host service endpoints" };
+    try {
+      const info = await provider.serviceEndpointInfo({ store: workspaceSecretStore(entry.root), dir: userAuthStateDir(entry.root, space, { readOnly: true }), space, signal });
+      if (info.accountPublicKey !== witness.accountPublicKey) return { outcome: "account-mismatch", space,
+        pinnedAccountPublicKey: witness.accountPublicKey, observedAccountPublicKey: info.accountPublicKey,
+        message: ACCOUNT_MISMATCH_MESSAGE };
+    } catch (e) {
+      if ((e as { httpStatus?: number }).httpStatus === 404) return { outcome: "unsupported-by-space", space, message: "the space's auth service does not host service endpoints" };
+      return { outcome: "unreachable", space, message: "the space's auth service could not be reached" };
+    }
+    return { witness };
+  }
   const sent = await sendRegister(space, home, signal);
   if ("outcome" in sent) return sent;
   if (sent.result.state === "registered") return { witness: sent.result.witness };
@@ -96,11 +164,7 @@ async function sendRegister(space: string, home: string, signal?: AbortSignal): 
   signal?.throwIfAborted();
   if (ready.outcome !== "ready-to-register") return ready;
   const entry = findMesh(space)!;
-  const base = {
-    v: 1 as const, kind: "service-endpoint-authority" as const, operation: "register" as const, space,
-    accountPublicKey: ready.accountPublicKey, endpoint: ready.endpoint, instanceId: ready.instanceId,
-    registration: DAEMON_REGISTRATION, expected: { state: "unregistered" as const },
-  };
+  const base = registerBody(space, ready);
   const bodyDigest = contractDigest(base);
   let record: RegisterRecord;
   try {

@@ -10,13 +10,18 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, PermissionViolationError } from "@nats-io/transport-node";
+import { connect, PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
+import { encodeUser, fmtCreds } from "@nats-io/jwt";
+import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import type { StatusStream } from "../src/endpoint-publish-denial.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import {
   compileContract, createSpaceAuth, describeEndpoint, DEV_OWNER, EpEnvelopeError, epCall, epCast,
   epProbeInstanceInterest, invokeCommand, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig,
-  standaloneConnectOpts, unansweredRequest, type EpCaller, type ResolvedService,
+  standaloneConnectOpts, unansweredRequest, CotalEndpoint, setupSpaceStreams,
+  serviceContractTable, singleDocumentClosure, contractStoreContext, publishContractArtifact, contractArtifactCanonicalBytes,
+  parseEpSubject, deriveReplySubject, epServeFilter, epClassQueueGroup, epeSubject, goalProgressTopic,
+  type EpCaller, type ResolvedService,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -38,6 +43,8 @@ const releaseBroker = teardownOnSignal(srv);
 const IID = "i".repeat(26);
 const empty = compileContract({ root: { type: "null" } });
 const DEADLINE_MS = 800;
+const endpoints: CotalEndpoint[] = [];
+const connections: NatsConnection[] = [];
 
 const caught = async (fn: () => Promise<unknown>): Promise<{ code: string; message: string; elapsed: number; err: unknown }> => {
   const started = Date.now();
@@ -161,11 +168,136 @@ try {
   console.log(`   listeners before=${before2} after ${ROUNDS} denied casts and ${ROUNDS} denied probes=${after2}`);
   check(`${ROUNDS} denied casts and ${ROUNDS} denied probes leave the listener count where they found it`, after2 === before2, { before: before2, after: after2 });
 
+  console.log("6. permission recovery holds the entire follow setup, but not an accepted goal");
+  // Wire fixture, not a Manager: real broker-enforced caller rows, published contract artifacts,
+  // and attributed replies drive CotalEndpoint.invokeService without launching another agent.
+  const provisioner = await mintCreds(auth, newIdentity(), "provisioner");
+  await setupSpaceStreams({ servers: SERVERS, space, creds: provisioner });
+  const storeId = newIdentity();
+  const storeJwt = await encodeUser("contract-fixture", fromPublic(storeId.id), fromPublic(auth.account.pub), {
+    pub: { allow: [`cotal.${space}.epc.>`] }, sub: { allow: [`_INBOX_${storeId.id}.>`] },
+  }, { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)) });
+  const storeCreds = new TextDecoder().decode(fmtCreds(storeJwt, fromSeed(new TextEncoder().encode(storeId.seed))));
+  const storeNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: storeCreds, tls: false }) });
+  connections.push(storeNc);
+  const table = serviceContractTable(["define-persona", "goal-result"].map(name => ({ name, input: { type: "object" }, output: { type: "object" } })));
+  const doc = { urn: "ai.cotal.manager", revision: 1, attributes: [], events: [], commands: Object.entries(table.contracts).map(([name, pair]) => ({
+    name, class: "ephemeral", targeted: false, capability: "manager.call", inputDigest: pair.input.closureDigest, outputDigest: pair.output.closureDigest,
+  })) };
+  const closure = singleDocumentClosure(doc);
+  const store = await contractStoreContext(storeNc, space);
+  for (const value of [...table.artifactValues(), doc, closure.manifest]) await publishContractArtifact(store, contractArtifactCanonicalBytes(value));
+  const hostId = newIdentity();
+  const enc = new TextEncoder();
+  const hostJwt = await encodeUser("follow-fixture", fromPublic(hostId.id), fromPublic(auth.account.pub), {
+    pub: { allow: [`cotal.${space}.ep.reply.manager.${IID}.1.>`, `cotal.${space}.epe.manager.${IID}.1.>`] },
+    sub: { allow: [`${epServeFilter(space, "one", "manager")} ${epClassQueueGroup("manager")}`, `_INBOX_${hostId.id}.>`] },
+  }, { signer: fromSeed(enc.encode(auth.account.signingSeed)) });
+  const hostCreds = new TextDecoder().decode(fmtCreds(hostJwt, fromSeed(enc.encode(hostId.seed))));
+  const host = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: hostCreds, tls: false }) });
+  connections.push(host);
+  let mutations = 0;
+  let acceptHeld!: () => void;
+  const heldAccepted = new Promise<void>(resolve => { acceptHeld = resolve; });
+  let terminalCaller!: EpCaller;
+  const terminal = (goalId: string) => host.publish(epeSubject(space, "manager", IID, 1,
+    goalProgressTopic({ endpoint: "manager", caller: terminalCaller, goalId })), enc.encode(JSON.stringify({
+      goalId, phase: "terminal", state: "succeeded", data: { goalId },
+    })));
+  host.subscribe(epServeFilter(space, "one", "manager"), { queue: epClassQueueGroup("manager"), callback: (_err, msg) => {
+    const parsed = parseEpSubject(msg.subject);
+    if (!parsed || parsed.plane !== "request") return;
+    const request = msg.json<{ id: string; args?: { name?: string; goalId?: string } }>();
+    let data: unknown;
+    if (parsed.command === "describe") data = { public: true, descriptor: { endpoint: "manager", owner: DEV_OWNER, clusters: [{ digest: closure.closureDigest, commands: Object.keys(table.contracts) }] } };
+    else if (parsed.command === "goal-result") data = { goalId: request.args?.goalId };
+    else {
+      mutations++;
+      const goalId = request.args?.name ?? "flush-goal";
+      terminalCaller = parsed.caller;
+      data = { goalId };
+      if (goalId === "held-goal") acceptHeld();
+      else terminal(goalId);
+    }
+    host.publish(deriveReplySubject(space, parsed, { instanceId: IID, epoch: 1 }), enc.encode(JSON.stringify({ v: 1, id: request.id, ok: true, data })));
+  } });
+  await host.flush();
+  let callerNc!: NatsConnection;
+  let releaseFlush!: () => void, enteredFlush!: () => void;
+  const flushHeld = new Promise<void>(resolve => { releaseFlush = resolve; });
+  const flushEntered = new Promise<void>(resolve => { enteredFlush = resolve; });
+  let holdProgress = false;
+  const ep = new CotalEndpoint({ space, servers: SERVERS,
+    creds: await mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["spawn"] }), lifecycleUid: uid,
+    card: { name: "follow-caller", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+    onConnection(next) {
+      callerNc = next;
+      const subscribe = next.subscribe.bind(next), flush = next.flush.bind(next);
+      let progressSubscribed = false;
+      next.subscribe = (...args) => {
+        if (args[0].includes(".epe.manager.")) progressSubscribed = true;
+        return subscribe(...args);
+      };
+      next.flush = async () => {
+        if (holdProgress && progressSubscribed) { enteredFlush(); await flushHeld; }
+        return flush();
+      };
+    },
+  });
+  endpoints.push(ep);
+  ep.on("error", () => {});
+  await ep.start();
+  await ep.describeService("manager");
+  let rebuilds = 0;
+  ep.on("connection", ({ connected }: { connected: boolean }) => { if (connected) rebuilds++; });
+  holdProgress = true;
+  const followed = ep.invokeService("manager", "define-persona", { name: "flush-goal" }, { follow: true, deadlineMs: 4000 });
+  const followResult = followed.then(reply => reply.reply.ok, () => false);
+  let refusedResult: Promise<boolean> | undefined;
+  const watch = callerNc.status() as StatusStream;
+  const deniedDuringFlush = (async () => {
+    try {
+      for await (const event of watch) if (event.type === "error" && event.error instanceof PermissionViolationError
+        && event.error.operation === "publish" && event.error.subject.includes(".describe.")) return;
+      throw new Error("no broker refusal observed during follow setup");
+    } finally { watch.stop(); }
+  })();
+  try {
+    await Promise.race([flushEntered, followResult.then(() => { throw new Error("follow ended before observation readiness"); })]);
+    refusedResult = ep.invokeService("manager", "define-persona", {}, { instanceId: IID, deadlineMs: 4000 })
+      .then(() => false, (e: unknown) => e instanceof EpEnvelopeError && e.code === "permission-denied" && e.outcome === "not-executed");
+    await Promise.race([deniedDuringFlush, refusedResult.then(() => { throw new Error("broker refusal was not observed during readiness"); })]);
+    await wait(200);
+    check("observation readiness still holds recovery before any submission", rebuilds === 0 && mutations === 0, { rebuilds, mutations });
+    holdProgress = false;
+    releaseFlush();
+    check("the authorized follow submits once and keeps its terminal after the held flush", await followResult && mutations === 1, { mutations });
+    check("the unrelated permanent denial stands after one rebuild", await refusedResult && rebuilds === 1, { rebuilds });
+  } finally {
+    holdProgress = false; releaseFlush(); watch.stop();
+    await Promise.allSettled([followResult, refusedResult, deniedDuringFlush]);
+  }
+  const heldFollow = ep.invokeService("manager", "define-persona", { name: "held-goal" }, { follow: true, deadlineMs: 4000 });
+  const heldResult = heldFollow.then(reply => reply.reply.ok, () => false);
+  await Promise.race([heldAccepted, heldResult.then(() => { throw new Error("follow ended without acceptance"); })]);
+  try {
+    const denied = await caught(() => ep.invokeService("manager", "define-persona", {}, { instanceId: IID, deadlineMs: 2000 }));
+    check("accepted goal observation does not block a later permission recovery", denied.code === "permission-denied" && rebuilds === 2, denied);
+    terminal("held-goal");
+    await host.flush();
+    check("the accepted goal follows across recovery without resubmitting", await heldResult && mutations === 2, { mutations });
+  } finally {
+    terminal("held-goal");
+    await Promise.allSettled([heldResult]);
+  }
+
   await nc.drain().catch(() => nc.close());
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", e);
 } finally {
+  await Promise.all(endpoints.map(ep => ep.stop()));
+  await Promise.all(connections.map(nc => nc.close()));
   await killAndAwaitExit(srv, "SIGKILL");
   releaseBroker();
   if (srv.exitCode === null && srv.signalCode === null) throw new Error("broker exit unproven; storage preserved");

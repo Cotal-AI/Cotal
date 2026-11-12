@@ -60,7 +60,15 @@
 #applications-label, #dashboard-spaces-note { margin: 0 0 4px; font-size: 12px; }
 .application-chips { margin-bottom: 8px; }
 .connected-spaces-scroll { margin: 8px 0 16px; }
-.connected-spaces-scroll:has(li:nth-child(4)) { max-height: 150px; overflow-y: auto; }
+.connected-spaces-scroll:has(li:nth-child(4)) { max-height: 160px; overflow-y: auto; scroll-snap-type: y mandatory; }
+.connected-spaces-scroll:has(li:nth-child(4)) li { height: 80px; box-sizing: border-box; scroll-snap-align: start; }
+.connected-spaces-scroll:has(li:nth-child(4)) strong { width: 100%; line-height: 18px; }
+@media (max-width: 640px) {
+  .connected-spaces-scroll:has(li:nth-child(4)) { max-height: 200px; }
+  .connected-spaces-scroll:has(li:nth-child(4)) li { height: 100px; }
+}
+.connection-card:has(#connected-spaces li:nth-child(4)) #connection-icon,
+.connection-card:has(#connected-spaces li:nth-child(4)) #connection-description { display: none; }
 #connected-spaces { list-style: none; padding: 0; margin: 0; }
 #connected-spaces li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 2px solid var(--rule); }
 #connected-spaces li > span { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
@@ -75,7 +83,9 @@
 .machine { border: 2px solid var(--ink); border-radius: 999px; padding: 4px 8px; background: var(--card); }
 #machine-name { font-size: 10px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .machine { min-width: 0; max-width: 300px; gap: 6px; }
-.sidebar-footer { min-width: 0; }
+.sidebar-footer { min-width: 0; flex-wrap: wrap; }
+.sidebar { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.machine:has(#computer-name-form:not([hidden])) { max-width: none; border-radius: var(--r-md); }
 #edit-computer-name { flex-shrink: 0; margin-block: -2px; }
 #edit-computer-name, #computer-name-form button { background: var(--card); color: var(--ink); border: 1px solid var(--ink); border-radius: 999px; font: inherit; font-size: 11px; padding: 3px 6px; min-height: 32px; min-width: 32px; }
 #computer-name-form { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; max-width: 100%; }
@@ -187,7 +197,8 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 @media (prefers-reduced-motion: reduce) {
   button:not(:disabled):hover, button:not(:disabled):active { transform: none; }
 }
-.connection-card.has-running-agents { display: flex; flex-direction: column; max-height: calc(100vh - 130px); min-height: 0; flex-shrink: 1; }
+.connection-card:has(#connected-panel:not([hidden]) #connected-spaces li:nth-child(4)) { max-height: calc(100vh - 150px); overflow-y: auto; }
+.connection-card.has-running-agents { display: flex; flex-direction: column; max-height: calc(100vh - 150px); min-height: 0; flex-shrink: 1; overflow-y: auto; }
 .has-running-agents > :not(#connected-panel) { flex-shrink: 0; }
 .has-running-agents #connected-panel { display: flex; flex-direction: column; min-height: 0; }
 .has-running-agents #dashboard { align-self: flex-start; }
