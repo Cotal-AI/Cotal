@@ -2076,6 +2076,9 @@ function nextActions(r: StatusResult): Section {
   const items: { command: string; description: string }[] = [];
   const extra: string[] = [];
   const noApplication = !r.machine.connectors?.length;
+  if (!r.selected.resolved && !r.meshes.items.length && !r.meshes.unreadable.length) {
+    items.push({ command: `${cmd} login`, description: "Sign in to Cotal Cloud" });
+  }
   if (r.selected.resolved) {
     const s = r.selected;
     // A space that already resolves needs only the application to spawn into it.

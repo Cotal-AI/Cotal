@@ -68,7 +68,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         return parts(`no space is registered or prepared here for ${d.root}`, `${shellPath(d.manifest.path)} declares space ${shellPath(d.manifest.space)}; check it with \`cotal team check ${shellPath(d.manifest.path)}\`, prepare that space with \`cotal space create ${shellPath(d.manifest.space)} --root ${shellPath(d.root)}\`, then \`cotal team boot ${shellPath(d.manifest.path)}\` or \`cotal up -f ${shellPath(d.manifest.path)}\``);
       if (d.root !== undefined)
         return parts(`no space is registered or prepared here for ${d.root}`, `prepare a space with \`cotal space create <name> --root ${shellPath(d.root)}\`, or select one with \`cotal use <name>\``);
-      return parts("no mesh running", "run `cotal up` in a project, or pass `--server`");
+      return parts("no mesh running", "sign in to Cotal Cloud with `cotal login`, run `cotal up` in a project, or pass `--server`");
     case "unknown-space":
       return d.selected
         ? parts(`the selected space "${boundedValue(String(d.requested), SHOWN_VALUE_MAX)}" is not registered here`, "select one with `cotal use <name>` (`cotal space` lists them), or name one with `--space`")
