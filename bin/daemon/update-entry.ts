@@ -41,7 +41,7 @@ const composed: Command = { ...command, async run(args) {
     await updateRuntime.preflightReplacement?.();
     preflightInstalledDaemon({ state: join(homeCotalDir(), "daemon") });
   }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
-    if (process.env.COTAL_AUTO_UPDATE !== "1" || !daemonObserved) return async () => {};
+    if (!daemonObserved) return async () => {};
     const paths = daemonPaths();
     try { await managerViaDaemon({ paths }, { op: "managers-prepare-restart" }); }
     catch (error) { throw new Error(`daemon unavailable or refused update preparation: ${error instanceof Error ? error.message : String(error)}`); }
