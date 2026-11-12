@@ -38,6 +38,10 @@ for (const [name, signal, code, format, noManager] of [
   ["hangup", "SIGHUP", 129, "--json", false],
   ["plain", "SIGINT", 130, "--plain", true],
 ] as const) {
+  if (name === "early" && process.platform === "win32") {
+    console.log("SKIP early: creation-bound pause requires POSIX signals");
+    continue;
+  }
   const home = join(base, `${name}-home`), root = join(base, `${name}-root`), config = join(home, "xdg");
   for (const dir of [home, root, config]) mkdirSync(dir, { mode: 0o700 });
   const env = { ...inherited, HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: config,
