@@ -223,8 +223,11 @@ grants against. When the trusted
 spaces immediately, lists them under `Your spaces`, and names `cotal use <name>` to select one. A
 space registered from elsewhere that has not granted your account refuses with those discovered
 spaces as its remedy, because only that space's operator can grant you. On the root that holds the
-space's grant ledger, the refusal names the operator's `cotal actor grant` command instead. After a
-login, every command on that mesh works under your identity: each connect takes a fresh IdP
+space's grant ledger, the refusal names the operator's `cotal actor grant` command instead.
+Signing in as a different account at the same provider removes the previous account's discovered
+spaces and deletes their sentinel credential files; manual registrations and their files stay. A
+file that cannot be deleted is named, and the login exits 4 (`OPERATION_PARTIAL`) after signing in.
+After a login, every command on that mesh works under your identity: each connect takes a fresh IdP
 proof, exchanges it locally for a short-lived bearer, and is authorized against the actor
 ledger at connect time. A rate-limited `/token` read retries once when the IdP supplies a valid
 `Retry-After` or `X-Retry-After` hint that fits within `COTAL_IDP_TIMEOUT_MS` (30 seconds by default).

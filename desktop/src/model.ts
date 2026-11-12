@@ -61,6 +61,17 @@ export function catalogRefreshNotice(result: Record<string, unknown>, provider?:
   return failed?.length ? `Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.` : "";
 }
 
+/** The notice for a sign-in that replaced an account but could not delete some of that account's
+ *  discovered-space credential files. The daemon has already switched, so the sign-in stands and the
+ *  notice names each kept file, why it stayed, and the cleanup. Empty when every file was deleted. */
+export function keptCredentialsNotice(result: Record<string, unknown>): string {
+  const kept = (Array.isArray(result.credentialsKept) ? result.credentialsKept : []).filter((item): item is { space: string; path: string; reason: string } =>
+    typeof item === "object" && item !== null && typeof item.space === "string" && typeof item.path === "string" && typeof item.reason === "string");
+  if (!kept.length) return "";
+  const files = kept.map(item => `${item.path} (${item.space}: ${item.reason})`).join(", ");
+  return `Signed in, but ${kept.length === 1 ? "a credential file" : `${kept.length} credential files`} of the previous account's spaces could not be deleted: ${files}. Delete each file named. The previous account's spaces are already removed.`;
+}
+
 export interface AccountSpace { space: string; label: string; catalogId?: string; kind?: string; role?: string }
 
 /** Discovery selects a target, but never grants consent to connect. */

@@ -51,7 +51,8 @@
  *  H6 managed catalog refresh keeps shared registrations, sentinel files and selection unchanged,
  *     including on provider failure; default refresh still applies additions and removals. An
  *     account switch drops the old catalog cache in either home, but only the default daemon
- *     removes the old account's shared registrations and selection. Credential files stay.
+ *     removes the old account's shared registrations, their credential files and selection. A
+ *     manual registration and its credential file stay.
  *     An unrelated damaged registration stays untouched while healthy entries refresh.
  *
  * Not covered here, and still to add: register approval carry-over (needs the stock auth service
@@ -496,6 +497,9 @@ try {
       const sentinels = oldSpaces.map((m) => m.userAuth?.sentinelCredsPath).filter((p): p is string => typeof p === "string");
       check("H6 switch fixture has two discovered spaces and their sentinel files", oldSpaces.length === 2 && sentinels.length === 2 && sentinels.every((p) => existsSync(p)));
       const manual = userMesh("catalog-manual"); recordMesh(manual);
+      const manualSentinel = manual.userAuth!.sentinelCredsPath!;
+      mkdirSync(dirname(manualSentinel), { recursive: true, mode: 0o700 });
+      writeFileSync(manualSentinel, "manual-sentinel", { mode: 0o600 });
       setCurrent("catalog-kept");
       const beforeSwitch = sharedState();
       sub = "catalog-next";
@@ -512,9 +516,10 @@ try {
       const switched = await cli(["login", "--idp", idp, "--json"]);
       check("H6 default account switch removes its old catalog entry", switched.status === 0 && switched.doc.result?.previousSub === "catalog-account" && subjects(home).join() === "catalog-next", switched.doc);
       check("H6 default account switch removes its old registrations", oldSpaces.every((old) => !loadMeshes().some((m) => m.space === old.space)));
-      check("H6 account cleanup retains credential files", sentinels.every((p) => existsSync(p)));
+      check("H6 default account switch deletes its old credential files and reports none kept", sentinels.every((p) => !existsSync(p)) && switched.doc.result?.credentialsKept === undefined, switched.doc);
       check("H6 default account switch clears the removed selection", getCurrent() === undefined);
       check("H6 default account switch preserves manual registration", JSON.stringify(loadMeshes().find((m) => m.space === manual.space)) === JSON.stringify(manual));
+      check("H6 default account switch preserves the manual registration's credential file", readFileSync(manualSentinel, "utf8") === "manual-sentinel");
       slugs = ["catalog-next-space"];
       const next = await cli(["spaces", "--refresh", "--json"]);
       check("H6 refreshing the new account discovers only its own spaces", next.status === 0 && loadMeshes().filter((m) => m.origin === "catalog").map((m) => m.space).join() === "catalog-next-space", next.doc);

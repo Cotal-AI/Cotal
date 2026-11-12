@@ -13,7 +13,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { personal?: boolean; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean } = {}) {
+async function app(options: { personal?: boolean; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -61,7 +61,7 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
       if (r.op === "service-disconnect") { connected = false; return ok({ state: "disconnected" }); }
       if (r.op === "login") {
         send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: "https://example.com/device?user_code=ABCD", userCode: "ABCD", expiresAt: new Date(now + 581000).toISOString() } }, 0);
-        await new Promise<void>(resolve => { releaseLogin = resolve; }); return options.loginReason ? ok({ outcome: "failed", reason: options.loginReason, message: `Exact sign-in reason: ${options.loginReason}` }) : ok({ outcome: "signed-in" });
+        await new Promise<void>(resolve => { releaseLogin = resolve; }); return options.loginReason ? ok({ outcome: "failed", reason: options.loginReason, message: `Exact sign-in reason: ${options.loginReason}` }) : ok({ outcome: "signed-in", ...(options.switched || options.credentialsKept ? { previousSub: "previous-account" } : {}), ...(options.credentialsKept ? { credentialsKept: options.credentialsKept } : {}) });
       }
       if (r.op === "setup") {
         const metadata = [
@@ -109,6 +109,30 @@ test("another provider failure does not block successful sign-in", async () => {
     await a.click("login"); await a.login();
     assert.notEqual(a.node("connection-title").textContent, "This operation could not finish");
     assert.match(a.node("notice").textContent ?? "", /hack\.cotal\.ai/);
+  } finally { a.dom.window.close(); }
+});
+
+test("an account switch signs in without a notice when every previous credential file was deleted", async () => {
+  const a = await app({ installed: true, switched: true });
+  try {
+    await a.click("login"); await a.login();
+    assert.notEqual(a.node("connection-title").textContent, "This operation could not finish");
+    assert.equal(a.node("notice").textContent, "");
+  } finally { a.dom.window.close(); }
+});
+
+test("an account switch that kept credential files stays signed in and names each file and the cleanup", async () => {
+  const kept = [{ space: "old-team", path: "/Users/me/.cotal/catalog/abc/old-team/.cotal/auth/space.6f6c64/sentinel.creds", reason: "EACCES" }];
+  const a = await app({ installed: true, credentialsKept: kept });
+  try {
+    await a.click("login"); await a.login();
+    assert.notEqual(a.node("connection-title").textContent, "This operation could not finish", "the switched account is kept");
+    assert.equal(a.calls.filter(r => r.op === "spaces").length > 0, true, "it continues to the new account's spaces");
+    const shown = a.node("notice").textContent ?? "";
+    assert.match(shown, /could not be deleted/);
+    assert.ok(shown.includes(kept[0]!.path) && shown.includes("old-team") && shown.includes("EACCES"), shown);
+    assert.match(shown, /Delete each file named/);
+    assert.equal(a.node("notice").classList.contains("error"), true);
   } finally { a.dom.window.close(); }
 });
 
