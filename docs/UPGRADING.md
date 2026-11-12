@@ -11,11 +11,12 @@ its own, what does not, and the order of the steps.
 
 New spaces create `KV_cotal_membership_<space>` in Memory because the feed is rebuilt from the
 broker connection view and durable members registry. Existing File-backed membership stores are not
-deleted during an ordinary upgrade. Stop the stack and convert the derived feed explicitly:
+deleted during an ordinary upgrade. From that deployment's project root, explicitly name its
+recorded space when stopping the stack and converting the derived feed:
 
 ```bash
-cotal down --yes
-cotal up --recreate-membership-store
+cotal down --space <space> --yes
+cotal up --space <space> --recreate-membership-store
 ```
 
 The command uses one exact short-lived credential to inspect and delete only the membership stream,
