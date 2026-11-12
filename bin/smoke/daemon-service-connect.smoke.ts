@@ -1454,16 +1454,30 @@ try {
       let exited = capture();
       try {
         for (let i = 0; i < 100 && !existsSync(paths.socket) && child.exitCode === null; i++) await sleep(100);
-        const earlyBefore = hits.length;
         seedUnitReceipt();
         for (const op of ["connect-check", "register", "service-connect", "service-status", "setup"] as const) {
+          const earlyBefore = hits.length;
           const early = await cli([op, ...(op === "setup" ? ["--no-manager", "--wait", "0"] : []), "--space", ON]);
-          check(`C18 early IdP expiry ${op} names clocks and fails closed`, early.status === 2
+          check(`C18 ${op === "service-connect" || op === "service-status" ? "service credential" : "IdP proof"} expiry ${op} names clocks and fails closed`, early.status === 2
             && early.doc?.error?.code === "LIFECYCLE_BLOCKED" && early.doc.error?.cause?.code === "CREDENTIAL_EXPIRED"
             && /expired according to this machine's clock/.test(early.doc.error.message) && /check.*clocks/.test(early.doc.error.message), early);
+          const during = hits.slice(earlyBefore);
+          if (op === "service-connect") {
+            // A current service proof must be tried before human sign-in. The five-minute
+            // skew rejects its freshly minted access bearer, not the unrelated IdP proof.
+            check("C18 proof-first connect only reads the pinned account and renews", during.length === 2
+              && during[0]?.space === ON && during[0].method === "GET" && during[0].path === "/service-endpoint-authority" && during[0].status === 200
+              && during[1]?.space === ON && during[1].method === "POST" && during[1].operation === "renew"
+              && during[1].status === 200 && during[1].state === "credential", during);
+          } else {
+            check(`C18 early IdP expiry ${op} contacts no space authority`, during.length === 0, during);
+          }
         }
-        check("C18 early IdP expiry contacts no space authority and preserves renewal material", hits.length === earlyBefore
-          && readFileSync(target, "utf8") === original && !existsSync(intentFile(ON)));
+        check("C18 rejected proof-first credential preserves renewal material", readFileSync(target, "utf8") === original);
+        check("C18 rejected proof-first credential records no connect intent", !existsSync(intentFile(ON)));
+        let unanswered = false;
+        try { await probeMachine(); } catch (e) { unanswered = unansweredRequest(e); }
+        check("C18 rejected proof-first credential leaves no serving responder", unanswered);
         await killAndAwaitExit(child, "SIGTERM");
         await exited;
         // Isolate the original service-credential expiry path with a proof valid beyond the skew.
