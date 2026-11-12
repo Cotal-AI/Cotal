@@ -20,6 +20,12 @@ identity records refuse rather than selecting a Manager on another computer.
 macOS and Windows retain their existing Manager discovery in this release. The machine daemon
 continues to pin its hosted Managers on all supported platforms.
 
+A local legacy custody report names the space, known Manager identity, seat count, and each
+seat's continuity class, including when there are no seats. Before a cold update, obtain the
+original host's stop and start commands. The report cannot recover those commands from a Manager
+identity, which is not a saved service instance. Stop through that host, run `cotal update --self`,
+then restart with the original start command. Stopping ends the listed seats.
+
 ## Updating the installation
 
 On Linux, when `cotal update --self` finds no newer CLI version and proves the installed package closure
