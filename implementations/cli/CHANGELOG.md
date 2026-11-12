@@ -1,5 +1,24 @@
 # @cotal-ai/cli
 
+## 0.163.3
+
+### Patch Changes
+
+- ec3de95: Update refusals identify local Managers whose launch entry is missing and explain how to proceed.
+  The refusal includes the process start time, working directory and launch entry path. Missing paths remain subject to the existing ownership checks because a deleted launcher symlink may have pointed into the current installation.
+- b41c7e0: Wait for an interrupted native service startup before stopping its stack.
+  
+  The stop preview waits briefly for the same creation-bound launch to become ready, then uses its normal verified native stop policy.
+- 68a9227: A bare down after an interrupted stack redefinition adopts the journaled replacement when its instance record matches that launch, and stops it by the normal route. Missing-record recovery still refuses a replacement it cannot resolve.
+- 7c950c1: Report invalid persona inputs before resolving a space.
+  
+  Unknown local harness values and missing editors now name their input problem even in an unprepared folder. Status preserves link-removal guidance for an empty linked control directory.
+- 4cef4bb: The dashboard credential notice from `cotal up` now fits the terminal width.
+  It uses the startup output's word wrapping, keeps `service start web` together and stays on one line outside a terminal.
+- Updated dependencies [cc11f40]
+  - @cotal-ai/core@0.163.3
+  - @cotal-ai/workspace@0.163.3
+
 ## 0.163.2
 
 ### Patch Changes

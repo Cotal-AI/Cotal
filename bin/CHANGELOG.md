@@ -1,5 +1,30 @@
 # cotal-ai
 
+## 0.163.3
+
+### Patch Changes
+
+- 0d10441: The issued-profile census models the anycast records bucket and treats a publish of one key as not covering that stream. The smoke runs in the CI suite.
+- b486b50: Manual self-updates fence empty hosted Managers before replacing packages. The updater acquires the daemon's caller-owned preparation claim, refuses seats admitted after its custody report, and holds admission through reconciliation and the installed-generation handoff.
+- cc11f40: A serving endpoint can keep command dispatch across a planned credential swap. With overlapOnConnectionRenewal, the endpoint subscribes on a second connection and flushes it before reconnecting the resident connection. The daemon's machine-status serve uses this. Endpoints that do not set the option still reconnect in place.
+- Updated dependencies [ec3de95]
+- Updated dependencies [b41c7e0]
+- Updated dependencies [0d10441]
+- Updated dependencies [68a9227]
+- Updated dependencies [7c950c1]
+- Updated dependencies [cc11f40]
+- Updated dependencies [4cef4bb]
+  - @cotal-ai/cli@0.163.3
+  - @cotal-ai/auth@0.163.3
+  - @cotal-ai/core@0.163.3
+  - @cotal-ai/connector-core@0.163.3
+  - @cotal-ai/manager@0.163.3
+  - @cotal-ai/runtime@0.163.3
+  - @cotal-ai/delivery@0.163.3
+  - @cotal-ai/registry@0.163.3
+  - @cotal-ai/workspace@0.163.3
+  - @cotal-ai/seat@0.163.3
+
 ## 0.163.2
 
 ### Patch Changes
