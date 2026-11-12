@@ -34,7 +34,7 @@ import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
 import { cliVersion } from "../lib/version.js";
-import { runSeed, compareSemver, seedInstallationCurrent } from "../seed/reconcile.js";
+import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedState } from "../seed/reconcile.js";
 import { operatorInstallDiffers } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { refreshConnectorInstalls } from "./setup.js";
@@ -151,6 +151,7 @@ export const updateRuntime: UpdateRuntime = {
         .every(entry => operatorInstallDiffers(entry, cliVersion()) === undefined);
     } catch { return false; }
   },
+  preflightReplacement: async () => { assertReadableSeedState(); },
   refreshConnectors: refreshConnectorInstalls,
   reconcile: async () => {
     await runSeed({ verify: true });
