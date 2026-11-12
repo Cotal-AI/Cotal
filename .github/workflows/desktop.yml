@@ -68,7 +68,7 @@ jobs:
           '[{"os":"windows-2022","bundles":"nsis,msi"}]' ||
           '[{"os":"ubuntu-24.04","bundles":"deb,rpm"},{"os":"macos-15","bundles":"app,dmg"},{"os":"macos-26","bundles":"app,dmg","artifact_suffix":"-macos26"},{"os":"macos-15-intel","bundles":"app,dmg"},{"os":"windows-2022","bundles":"nsis,msi"}]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v6
       - name: Measure cold Windows task stages before setup or scenario
@@ -142,7 +142,7 @@ jobs:
       - name: Compare Windows task and harness execution contexts
         if: runner.os == 'Windows'
         shell: cmd
-        timeout-minutes: 65
+        timeout-minutes: 80
         run: node desktop/e2e/windows-task-context-preflight.mjs measure
       - name: Remove only the receipt-owned Windows context task
         if: always() && runner.os == 'Windows'
