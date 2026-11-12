@@ -321,6 +321,14 @@ try {
       }
       assert.deepEqual(visited, expected, `${name}: keyboard order`);
       await page.emulateMedia({ reducedMotion: "reduce" });
+      if (scenario.name === 'audit-account-refusal-agents') {
+        await page.waitForTimeout(350);
+        const viewport = page.viewportSize();
+        await page.setViewportSize({ width: viewport.width, height: Math.round(viewport.height * .7) });
+        await page.waitForTimeout(40);
+        const sizingAnimations = await page.evaluate(() => document.getAnimations().filter(a => a.playState === 'running' && a.effect?.target?.id === 'agent-list').map(a => a.transitionProperty || a.animationName));
+        assert.deepEqual(sizingAnimations, [], `${name}: delayed resize has no agent sizing motion under reduce`);
+      }
       await page.waitForTimeout(300);
       const runningAnimations = await page.evaluate(() => document.getAnimations().filter(a => a.playState === "running").map(a => ({ target: a.effect?.target?.id, name: a.animationName || a.transitionProperty })));
       assert.deepEqual(runningAnimations, [], `${name}: reduced motion`);

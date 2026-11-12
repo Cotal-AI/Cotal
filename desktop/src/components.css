@@ -234,7 +234,7 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 .has-running-agents #connected-panel > :not(#running-agents) { flex-shrink: 0; }
 .has-running-agents #running-agents { display: block; min-height: 0; flex-shrink: 0; }
 .has-running-agents #agent-list { height: auto; min-height: 0; max-height: 108px; flex-shrink: 0; }
-#agent-list { border: 0; scroll-snap-type: y mandatory; }
+#agent-list { transition: none; border: 0; scroll-snap-type: y mandatory; }
 #agent-list:empty { display: none; }
 .agent-row { scroll-snap-align: start; }
 #connected-panel .connected-spaces-scroll { margin: 8px 0 12px; }
