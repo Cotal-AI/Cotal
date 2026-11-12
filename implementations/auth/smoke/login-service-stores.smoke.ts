@@ -17,7 +17,7 @@ import { mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams, type Remot
 import { spaceKey } from "@cotal-ai/workspace";
 import { killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { Manager, remoteManagerClient as client, registerRemoteManagerAuthority, managerClusterArtifacts, type ManagerOptions } from "../../manager/dist/index.js";
-import { startAuthService, fetchIdpJwt, requireIdpSession, revokeIdpSession, IdpSessionRejectedError } from "../src/index.js";
+import { startAuthService, fetchIdpJwt, requireIdpSession, revokeIdpSession, loadIdpSession, IdpSessionRejectedError } from "../src/index.js";
 import { remoteManagerRegistrationProof } from "../src/authority-client.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 import { approveDevice } from "./_device-approval.js";
@@ -59,7 +59,8 @@ try {
   handler = toNodeHandler(auth);
   const signup = await auth.api.signUpEmail({ body: { email: "human@example.test", password: "correct-horse-battery", name: "Human" }, returnHeaders: true });
   const cookie = signup.headers.get("set-cookie")!.split(";")[0]!;
-  async function login(store?: string) {
+  let mixedLoginExit: number | null | undefined;
+  async function login(store?: string, mixed = false) {
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, "config"), COTAL_SKIP_CONNECTOR_SEED: "1" };
     delete env.COTAL_HOME;
     if (store) Object.assign(env, { COTAL_HOME: store });
@@ -78,7 +79,8 @@ try {
       const code = await new Promise<number | null>((r, reject) => { child.once("error", reject); child.once("exit", r); });
       await approval;
       assert.ok(approved, "real CLI emitted a device approval prompt");
-      assert.equal(code, 0, "real cotal login completed after real device approval");
+      if (mixed) mixedLoginExit = code;
+      else assert.equal(code, 0, "real cotal login completed after real device approval");
       return output;
     } finally { clearTimeout(deadline); await killAndAwaitExit(child, "SIGKILL"); children.delete(child); }
   }
@@ -144,10 +146,61 @@ try {
   assert.ok((await service.platformControlReadiness!(state.instanceId)).reply.ok, "real Manager status readiness");
   console.log("PASS real broker/auth-service/Manager readiness with 20s standing TTL");
   await until(() => renewed > 0, "real Manager timer renewed before revocation");
-  await revokeIdpSession(base, serviceSession.token);
+  // Seed a second real device session before adding its per-instance local override.
+  // Neither the unit nor its private store may be interpreted through that drop-in.
+  const skippedKey = spaceKey(`${a.space}-overridden`);
+  const skippedHome = join(unitDir, "cotal-service", skippedKey);
+  mkdirSync(skippedHome, { recursive: true });
+  await login(skippedHome);
+  const skippedEnv = join(skippedHome, `cotal-manager@${skippedKey}.env`);
+  writeFileSync(skippedEnv, render("pre-cut-manager-unit.env", { PATH: process.env.PATH!, SPACE: `${a.space}-overridden`, SERVER: fx.servers, STATE_DIR: skippedHome }), { mode: 0o600 });
+  const skippedService = `cotal-manager@${skippedKey}.service`;
+  writeFileSync(join(unitDir, skippedService), render("pre-cut-manager-unit.service", { MESH: `${a.space}-overridden`, ROOT: workspaceRoot, WORKING_DIRECTORY: workspaceRoot, ENVIRONMENT_FILE: skippedEnv, ENTRY: `${process.execPath} --import tsx ${resolve("bin/cotal.ts")}` }), { mode: 0o600 });
+  const dropin = join(unitDir, `${skippedService}.d`);
+  mkdirSync(dropin);
+  writeFileSync(join(dropin, "telemetry-off.conf"), "[Service]\nEnvironment=DO_NOT_TRACK=1\n", { mode: 0o600 });
+  const skippedBefore = readFileSync(join(skippedHome, "idp-sessions.json"), "utf8");
+  // The independent seed login can refresh the proven service, so revoke its
+  // current handle before testing the mixed default-home reapproval.
+  await revokeIdpSession(base, requireIdpSession(serviceHome, base).token);
   await until(() => refused > 0 && renewalErrors > 0, "real Manager timer logged refusal after service session revocation");
   const successes = renewed;
-  const receipt = await login();
+  const receipt = await login(undefined, true);
+  // Collect both real CLI outcomes before asserting, so unchanged code proves the
+  // independent logout defect even when login aborts before its complete report.
+  const mixedFailures: string[] = [];
+  const check = (ok: boolean, message: string) => { if (!ok) mixedFailures.push(message); };
+  check(mixedLoginExit === 0, "mixed-unit login exits successfully");
+  check(requireIdpSession(serviceHome, base).token === requireIdpSession(operatorStore, base).token, "proven sibling received approved session despite skipped unit");
+  check(readFileSync(join(skippedHome, "idp-sessions.json"), "utf8") === skippedBefore, "skipped service store remains byte-for-byte unchanged after login");
+  const completeLoginReport = receipt.includes("Signed in") && receipt.includes("Account") && receipt.includes("Subject") && receipt.includes("Provider") && receipt.includes("Next") && receipt.includes("cotal sync");
+  check(completeLoginReport, "mixed-unit login prints complete account and next-step report");
+  check(receipt.includes(skippedService) && /overrid|skipp/i.test(receipt) && /\blogs?\b/i.test(receipt), "mixed-unit login names skipped service and points to its own log remedy");
+  console.log(`OBSERVED mixed-unit login exit=${mixedLoginExit}; proven-refreshed=${requireIdpSession(serviceHome, base).token === requireIdpSession(operatorStore, base).token}; complete-report=${completeLoginReport}`);
+  const logoutEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, "config"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+  delete logoutEnv.COTAL_HOME;
+  // Run logout after the renewal check below, keeping the refreshed session alive meanwhile.
+  const logout = async () => {
+    const child = spawn(process.execPath, ["--import", "tsx", resolve("bin/cotal.ts"), "logout", "--idp", base, "--plain"], { env: logoutEnv, stdio: ["ignore", "pipe", "pipe"] });
+    children.add(child);
+    let output = "";
+    child.stdout!.on("data", chunk => { output += chunk.toString(); });
+    child.stderr!.on("data", chunk => { output += chunk.toString(); });
+    const deadline = setTimeout(() => child.kill("SIGTERM"), 30_000);
+    try {
+      const code = await new Promise<number | null>((r, reject) => { child.once("error", reject); child.once("exit", r); });
+      check(code === 0, "mixed-unit logout exits successfully");
+      check(!loadIdpSession(operatorStore, base), "real logout clears source operator session despite skipped unit");
+      check(!loadIdpSession(serviceHome, base), "real logout clears proven shared service session");
+      check(readFileSync(join(skippedHome, "idp-sessions.json"), "utf8") === skippedBefore, "skipped service store remains byte-for-byte unchanged after logout");
+      check(output.includes("Next"), "mixed-unit logout prints complete report");
+      check(output.includes(skippedService) && /overrid|skipp/i.test(output) && /\blogs?\b/i.test(output), "mixed-unit logout names skipped service and points to its own log remedy");
+      console.log(`OBSERVED mixed-unit logout exit=${code}; source-cleared=${!loadIdpSession(operatorStore, base)}`);
+    } finally { clearTimeout(deadline); await killAndAwaitExit(child, "SIGKILL"); children.delete(child); }
+    assert.deepEqual(mixedFailures, [], "real mixed-unit login/logout regression");
+  };
+  if (mixedFailures.length) { await logout(); }
+
   assert.ok(receipt.includes(`Signed in cotal-manager@${key}.service with the same approval.`), "login names the refreshed Manager service");
   assert.equal(receipt.includes(requireIdpSession(operatorStore, base).token), false, "receipt does not print the approved token");
   assert.notEqual(requireIdpSession(operatorStore, base).token, operatorSession.token);
@@ -164,6 +217,8 @@ try {
     assert.ok((await service.platformControlReadiness!(state.instanceId)).reply.ok, "same Manager answers real status after session refresh");
     console.log("PASS default-home approval refreshed the service store and real Manager renewal");
   }
+  await logout();
+  console.log("PASS real CLI mixed proven/per-instance-drop-in login and logout");
 } finally {
   for (const child of children) await killAndAwaitExit(child, "SIGKILL");
   try { await manager?.stop({ withAgents: true }); } finally {
