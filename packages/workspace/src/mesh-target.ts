@@ -784,7 +784,7 @@ function selectionTargetsHere(cwd: string, current: string, meshes: readonly Mes
   if (explicit) {
     if (folder && !folder.registered.includes(current) && folder.prepared !== current) {
       const names = [...folder.registered, ...(folder.prepared ? [folder.prepared] : [])];
-      if (names.length) recordOperationSpaceNote(current, `the selected space applies here; this folder's space ${names.map(s => `"${s}"`).join(", ")} is reached with --space <name> or cotal use --clear`);
+      if (names.length) recordOperationSpaceNote(current, `the selected space applies here; this folder's space ${names.map(s => `"${s}"`).join(", ")} is reached with ${names.map(space => `--space ${shellPath(space)}`).join(" or ")} or cotal use --clear`);
       else noteFolderSpaceHeld(folder, current);
     }
     return true;
