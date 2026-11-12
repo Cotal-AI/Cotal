@@ -73,6 +73,7 @@
  * Add --cancel-only for C1, C2, C15, C6c and C10; --keep-fixture retains the sandbox after shutdown.
  * Add --retirement-only for shipped disconnect/uninstall credential erasure and sign-out guidance.
  * Add --renewal-only for the two-access-lifetime service renewal observation.
+ * Add --renewal-resume-only for shipped restarts with an expired or removed human sign-in.
  * Service-only setup: --hosting-only --no-manager-only, optionally --account-only.
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Credential expiry regression only: add --credential-expiry-only (C1, C2, C7, C10, C15 and C18).
@@ -153,6 +154,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, JSON.stringify(extra ?? "")?.slice(0, 600)); }
 };
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
+  if (process.argv.includes("--renewal-resume-only") && !/^(C1 |C2 |C15 |C6d |C14 |C8 |C11 |C10 )/.test(title)) return;
   if (process.argv.includes("--renewal-only") && !/^(C1 |C2 |C15 |C12 |C10 )/.test(title)) return;
   if (process.argv.includes("--retirement-only") && !/^(C1 |C2 |C15 |C3 |C5r |C10 )/.test(title)) return;
   if (title.startsWith("C5r ") && !process.argv.includes("--retirement-only")) return;
@@ -975,6 +977,82 @@ try {
       d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
       check("C6 a restart after an explicit disconnect resumes 0 connections and has no registration", d.counters.connectionsResumed === 0 && stateOf(await statusS(ON)) === "not-requested", { counters: d.counters, state: stateOf(await statusS(ON)) });
       check("C6 instrument: connected again for the cells that follow", stateOf(await connectS(ON)) === "connected");
+    });
+
+    await cell("C6d stored renewal proof resumes the shipped daemon without human sign-in", async () => {
+      seedUnitReceipt();
+      await d.close();
+      const original = findMesh(ON)!;
+      const recordPath = filesUnder(daemonDir).find((p) => p.includes("service-renewal") && p.endsWith(".json"));
+      assert.ok(recordPath, "connected control must have a renewal record");
+      const renewalFile = join(daemonDir, recordPath);
+      const initial = JSON.parse(readFileSync(renewalFile, "utf8"));
+      const identityBytes = readFileSync(join(daemonDir, spaceSegment(ON), "service-identity.json"), "utf8");
+      const requestBytes = readFileSync(join(daemonDir, spaceSegment(ON), "register-request.json"), "utf8");
+      assert.ok(initial.material.renewalExpiresAt > Date.now() / 1000 + 3600, "control has a current service proof");
+      const probeToken = (await (await fetch(`${idpUrl}/token`, { headers: { authorization: `Bearer ${SESSION}` } })).json() as { token: string }).token;
+      const stop = async () => {
+        if (foreground) await killAndAwaitExit(foreground, "SIGTERM");
+        foreground = undefined;
+      };
+      const start = async () => {
+        foreground = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "serve"], {
+          cwd: root, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" }, stdio: "ignore",
+        });
+        for (let i = 0; i < 100; i++) {
+          try { await ask(paths.socket, { op: "status" }, 1000); return; } catch { await sleep(100); }
+        }
+        throw new Error("renewal-resume daemon did not publish its endpoint");
+      };
+      try {
+        for (const mode of ["expired at provider", "removed locally"]) {
+          idpRevoked = true;
+          if (mode === "removed locally") deleteIdpSession(home, idpUrl);
+          const before = hits.length;
+          await start();
+          const resumed = await waitState(ON, (s) => s === "connected" || s === "not-signed-in" || s === "local-state-error", 15_000);
+          check(`C6d ${mode}: automatic resume connects without sign-in`, resumed === "connected", resumed);
+          const connected = await cli(["service-connect", "--space", ON]);
+          check(`C6d ${mode}: explicit service-connect succeeds`, connected.status === 0 && connected.doc?.result?.state === "connected");
+          const posts = hits.slice(before).filter((h) => h.space === ON && h.method === "POST");
+          check(`C6d ${mode}: only service renewal and ready are posted`, posts.some((h) => h.operation === "renew") && posts.every((h) => h.operation === "renew" || h.operation === "ready"), posts);
+          check(`C6d ${mode}: an independently authorized caller reaches machine-status`, (await probeMachine(undefined, probeToken)).reply.ok);
+          const current = JSON.parse(readFileSync(renewalFile, "utf8"));
+          check(`C6d ${mode}: original request ids and assignment remain`, current.activateRequestId === initial.activateRequestId && current.renewRequestId === initial.renewRequestId
+            && readFileSync(join(daemonDir, spaceSegment(ON), "service-identity.json"), "utf8") === identityBytes
+            && readFileSync(join(daemonDir, spaceSegment(ON), "register-request.json"), "utf8") === requestBytes);
+          await stop();
+        }
+        // The same proof must never silently repin a replacement account.
+        changedAccount.set(ON, (await createSpaceAccountAuth(broker, "renewal-replacement")).account.pub);
+        const beforeMismatch = hits.length;
+        await start();
+        check("C6d account mismatch refuses without a POST", await waitState(ON, (s) => s === "account-mismatch", 10_000) === "account-mismatch"
+          && !hits.slice(beforeMismatch).some((h) => h.method === "POST"));
+        await stop();
+        changedAccount.delete(ON);
+        // Expiry is a real local deadline check, not new service authority. Missing human login
+        // must report sign-in required, leave the material untouched, and send no register/activate.
+        const current = JSON.parse(readFileSync(renewalFile, "utf8"));
+        const expired = JSON.stringify({ ...current, material: { ...current.material, renewalExpiresAt: Math.floor(Date.now() / 1000) - 1 } });
+        writeFileSync(renewalFile, expired, { mode: 0o600 });
+        const beforeExpired = hits.length;
+        await start();
+        check("C6d expired proof without login reports not-signed-in", await waitState(ON, (s) => s === "not-signed-in", 10_000) === "not-signed-in");
+        const refused = await cli(["service-connect", "--space", ON]);
+        check("C6d expired proof explicit connect needs sign-in", refused.status === 2 && refused.doc?.error?.code === "AUTH_REQUIRED");
+        check("C6d expired proof changes no records or remote authority", readFileSync(renewalFile, "utf8") === expired
+          && !hits.slice(beforeExpired).some((h) => h.method === "POST"));
+        await stop();
+        writeFileSync(renewalFile, JSON.stringify(current), { mode: 0o600 });
+      } finally {
+        await stop();
+        changedAccount.delete(ON);
+        recordMesh(original);
+        idpRevoked = false;
+        saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home });
+      }
     });
 
     await cell("C6b shipped startup retries unavailable intent and cancels pending retries", async () => {

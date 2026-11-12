@@ -1279,8 +1279,10 @@ does not send. A sign-in the provider rejects (expired or revoked) is `AUTH_REQU
 request whose outcome is unconfirmed is `OPERATION_UNKNOWN`: run the same command again
 to replay it. A changed registration for the same instance is refused `CONFLICT` and nothing is sent.
 
-`service-connect` connects the running daemon to the space as its own registered service. It replays
-the saved register request unchanged to read its registration. If the live authority answers with a
+`service-connect` connects the running daemon to the space as its own registered service. It reads
+the witness from a current stored service renewal proof before checking human sign-in. Without
+current renewal material, it replays the saved register request unchanged to read its registration.
+If the live authority answers with a
 different account than the pinned identity, it refuses `CONFLICT` (`ACCOUNT_MISMATCH`) before sending
 the registration or requesting credentials. The identity and register request stay unchanged, and
 `service-status` retains the same diagnosis. Otherwise it gets its service credential from the
@@ -1290,6 +1292,11 @@ as that service. It binds the registered
 responder before reporting ready. It succeeds, exit 0, only after the broker accepts the connection,
 the responder subscriptions are flushed and the space accepts the daemon as ready. The renewal and ready request IDs are kept in
 `<COTAL_HOME>/daemon/<space segment>/service-store/`, mode `0600`, and reused after a restart.
+A current service renewal proof lets an approved daemon resume after a restart or reconnect even
+when the human sign-in expired or was removed locally. Explicit `service-connect` for an existing
+manual connection also uses that proof without changing account intent. Catalog-managed spaces
+still require human sign-in to change the account's desired connections. Missing or expired renewal
+material requires sign-in to register or reactivate. Revoked service authority still refuses.
 
 A damaged `daemon-ready/*.json` or `auth/<space segment>/service-renewal/*.json` record in that
 store reports `CONFLICT` (`LOCAL_STATE_ERROR`) on connection or startup resume. Store read,
