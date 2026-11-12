@@ -15,7 +15,7 @@ test("Mac Settings readiness is bounded and diagnoses exact selectors without in
   assert.match(mac, /settingsControls\(\)[\s\S]*press\(back\)/);
 });
 
-test("Mac login observation reacquires the exact checkbox after a single toggle", () => {
+test("Mac login observation reacquires the exact checkbox after native input", () => {
   assert.match(mac, /func loginCheckboxState\(\)/);
   assert.match(mac, /let observation = loginCheckboxState\(\)/);
   assert.match(mac, /Open at login unchecked observation timed out/);
@@ -44,7 +44,7 @@ test("Mac observation changes preserve strict window and native input ownership"
   assert.match(login, /native login entry remains after preference change/);
 });
 
-test("Mac single-toggle diagnostics are ordered, bounded and stderr-only", () => {
+test("Mac initial delivery diagnostics are ordered, bounded and stderr-only", () => {
   const login = mac.split('case "disable-login":')[1].split('default:')[0];
   const ordered = ['let initial = loginCheckboxState()', 'loginReceipt("before-single-toggle"', 'if initial.value == 1 { press(initial.element) }', 'loginReceipt("after-single-toggle-input"', 'let observation = loginCheckboxState()', 'loginReceipt("after-single-toggle-observation"', 'guard unchecked else'];
   let previous = -1;
@@ -71,7 +71,9 @@ test("Mac single-toggle diagnostics are ordered, bounded and stderr-only", () =>
   assert.match(mac, /let loginDiagnosticInvocation = UUID\(\).uuidString/);
   assert.match(login, /"initialAXValue": initial.value/);
   assert.match(mac, /fputs\("macOS driver login diagnostic:.*stderr\)/);
-  assert.equal((login.match(/press\(/g) ?? []).length, 1);
+  assert.equal((login.match(/press\(/g) ?? []).length, 2);
+  assert.match(login, /loginDelivery = "redelivery-1"/);
+  assert.doesNotMatch(login, /redelivery-2/);
   assert.match(mac, /\[CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp\]/);
 });
 

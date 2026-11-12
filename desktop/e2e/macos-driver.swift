@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import AppKit
 import ApplicationServices
@@ -125,10 +126,70 @@ func activate() {
     guard running.activate(options: [.activateIgnoringOtherApps]) else { fail("cannot activate owned app") }
     Thread.sleep(forTimeInterval: 0.15)
 }
+var loginDelivery = "initial"
+var firstLoginPost: Int64 = 0
+var loginCursor = ""
+func receiptPolicy(_ mode: String, _ value: String, _ time: String) -> String {
+    let env = ProcessInfo.processInfo.environment
+    guard let node = env["COTAL_MAC_LOGIN_NODE"], let policy = env["COTAL_MAC_LOGIN_POLICY"] else { fail("missing receipt policy") }
+    let process = Process()
+    let pipe = Pipe()
+    process.executableURL = URL(fileURLWithPath: node)
+    process.arguments = [policy, mode, value, time]
+    process.standardOutput = pipe
+    do { try process.run() } catch { fail("cannot run receipt policy: \(error)") }
+    let deadline = Date().addingTimeInterval(2)
+    while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+    if process.isRunning {
+        process.terminate()
+        _ = Darwin.kill(process.processIdentifier, SIGKILL)
+        process.waitUntilExit()
+        fail("receipt policy timed out")
+    }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0, let result = String(data: data, encoding: .utf8) else { fail("owned receipt gate refused \(mode)") }
+    return result.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+func focusReceipt(_ phase: String, _ window: AXUIElement) -> Bool {
+    let front = NSWorkspace.shared.frontmostApplication
+    func describe(_ name: String) -> [String: Any] {
+        guard let value = attribute(app, name), CFGetTypeID(value) == AXUIElementGetTypeID() else { return ["available": false] }
+        let w = value as! AXUIElement
+        var owner: pid_t = 0
+        let result = AXUIElementGetPid(w, &owner)
+        return ["role": string(w, "AXRole"), "title": string(w, "AXTitle"), "pid": owner,
+                "owned": result == .success && owner == pid, "selected": CFEqual(w, window),
+                "AXMain": attribute(w, "AXMain") as? Bool ?? false,
+                "AXFocused": attribute(w, "AXFocused") as? Bool ?? false]
+    }
+    let focused = describe("AXFocusedWindow")
+    let main = describe("AXMainWindow")
+    loginReceipt(phase, ["pid": pid, "delivery": loginDelivery, "frontmostPID": front?.processIdentifier ?? 0,
+                         "frontmostBundleID": front?.bundleIdentifier ?? "unavailable", "isActive": running.isActive,
+                         "focusedWindow": focused, "mainWindow": main, "AppKitKeyWindow": "unavailable AXFocusedWindow is a proxy only"])
+    return running.isActive && front?.processIdentifier == pid && focused["owned"] as? Bool == true && focused["selected"] as? Bool == true && main["owned"] as? Bool == true && main["selected"] as? Bool == true
+}
+func prepareLoginWindow() -> AXUIElement {
+    let window = appWindow()
+    activate()
+    guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success,
+          AXUIElementSetAttributeValue(window, "AXMain" as CFString, kCFBooleanTrue) == .success,
+          AXUIElementSetAttributeValue(window, "AXFocused" as CFString, kCFBooleanTrue) == .success else { fail("cannot raise and focus selected owned window") }
+    let deadline = Date().addingTimeInterval(2)
+    repeat {
+        if focusReceipt("activation-observation", window) { return window }
+        Thread.sleep(forTimeInterval: 0.1)
+    } while Date() < deadline
+    fail("owned active focused window verification timed out")
+}
 func press(_ element: AXUIElement) {
     guard enabled(element), visible(element), let rect = bounds(element) else { fail("control is not actionable") }
-    activate()
-    let point = CGPoint(x: rect.midX, y: rect.midY)
+    let loginWindow: AXUIElement? = operation == "disable-login" ? prepareLoginWindow() : nil
+    if loginWindow == nil { activate() }
+    let refreshed = loginWindow == nil ? rect : bounds(loginCheckboxState().element)
+    guard let currentRect = refreshed else { fail("control bounds unavailable after activation") }
+    let point = CGPoint(x: currentRect.midX, y: currentRect.midY)
     // Refuse a stale or occluded coordinate instead of clicking another application's surface.
     var hit: AXUIElement?
     let hitResult = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hit)
@@ -147,12 +208,28 @@ func press(_ element: AXUIElement) {
     if operation == "disable-login" {
         loginReceipt("input-control", ["pid": pid, "hitRole": string(target, "AXRole"), "hitID": string(target, "AXDOMIdentifier")])
     }
+    if let window = loginWindow {
+        guard string(target, "AXDOMIdentifier") == "autostart", string(target, "AXRole") == "AXCheckBox" else { fail("hit test did not select exact autostart checkbox") }
+        guard focusReceipt("at-post", window), CFEqual(appWindow(), window), loginCheckboxState().value == 1 else { fail("login state or window changed before post") }
+        if loginDelivery == "redelivery-1" {
+            // Receipt emission is asynchronous. This is absence as of this read,
+            // not atomic proof that the first delivery cannot arrive later.
+            _ = receiptPolicy("check", loginCursor, String(firstLoginPost))
+            guard loginCheckboxState().value == 1 else { fail("login state changed at redelivery gate") }
+            _ = receiptPolicy("check", loginCursor, String(firstLoginPost))
+        } else {
+            guard let context = ProcessInfo.processInfo.environment["COTAL_DESKTOP_E2E_CONTEXT"] else { fail("missing native context") }
+            loginCursor = receiptPolicy("baseline", context, String(pid))
+            firstLoginPost = Int64(Date().timeIntervalSince1970 * 1000)
+        }
+        loginReceipt("delivery-post", ["pid": pid, "delivery": loginDelivery, "firstPostUnixMs": firstLoginPost])
+    }
     for kind in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
         guard let event = CGEvent(mouseEventSource: nil, mouseType: kind, mouseCursorPosition: point, mouseButton: .left) else { fail("cannot create mouse event") }
         event.post(tap: .cghidEventTap)
         if operation == "disable-login" {
             // CGEvent.post returns Void. This records dispatch, not delivery or a state change.
-            loginReceipt("input-dispatch", ["eventType": kind.rawValue, "result": "post-called-no-delivery-ack", "pid": pid])
+            loginReceipt("input-dispatch", ["eventType": kind.rawValue, "result": "post-called-no-delivery-ack", "pid": pid, "delivery": loginDelivery])
         }
         Thread.sleep(forTimeInterval: 0.1)
     }
@@ -405,7 +482,7 @@ case "disable-login":
     loginReceipt("before-single-toggle", loginDiagnosticContext ?? [:])
     if initial.value == 1 { press(initial.element) }
     loginReceipt("after-single-toggle-input", ["pid": pid, "initialAXValue": initial.value, "inputCount": initial.value == 1 ? 1 : 0])
-    let deadline = Date().addingTimeInterval(10)
+    var deadline = Date().addingTimeInterval(10)
     var unchecked = false
     repeat {
         // A render may replace the AX object after the one native toggle.
@@ -414,7 +491,24 @@ case "disable-login":
         if !unchecked { Thread.sleep(forTimeInterval: 0.1) }
     } while !unchecked && Date() < deadline
     loginReceipt("after-single-toggle-observation", loginDiagnosticContext ?? [:])
-    guard unchecked else { fail("Open at login unchecked observation timed out: autostart AXValue=1 after single toggle") }
+    if !unchecked {
+        _ = focusReceipt("no-change", appWindow())
+        loginReceipt("initial-delivery-failure", ["pid": pid, "AXValue": 1, "firstPostUnixMs": firstLoginPost])
+        _ = receiptPolicy("check", loginCursor, String(firstLoginPost))
+        loginDelivery = "redelivery-1"
+        let current = loginCheckboxState()
+        guard current.value == 1 else { fail("login state changed before redelivery") }
+        press(current.element)
+        deadline = Date().addingTimeInterval(10)
+        repeat {
+            let observation = loginCheckboxState()
+            unchecked = observation.value == 0
+            if !unchecked { Thread.sleep(forTimeInterval: 0.1) }
+        } while !unchecked && Date() < deadline
+        loginReceipt("after-redelivery-observation", loginDiagnosticContext ?? [:])
+        if !unchecked { _ = focusReceipt("no-change", appWindow()) }
+    }
+    guard unchecked else { fail("Open at login unchecked observation timed out after redelivery-1") }
     while sources.contains(where: { FileManager.default.fileExists(atPath: $0.path) }) && Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
     guard !sources.contains(where: { FileManager.default.fileExists(atPath: $0.path) }) else { fail("native login entry remains after preference change") }
     output(["pid": pid, "visible": windowVisible()])
