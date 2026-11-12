@@ -1202,6 +1202,7 @@ function userMeshEndpointsRefusal(door: "spawn" | "define-persona"): string {
  *  {@link Manager.provisionUserAgent} forwards it to {@link Manager.enrollUserAgent} on the
  *  hosted arm. */
 interface ProvisionUserAgentOpts {
+  eventPayloads?: boolean;
   spawner?: string;
   specOwner?: string;
   subscribe?: string[];
@@ -5334,6 +5335,7 @@ export class Manager {
         scope,
         allowSubscribe: opts.allowSubscribe,
         allowPublish: opts.allowPublish ?? [],
+        ...(opts.eventPayloads === false ? { eventPayloads: false as const } : {}),
         role: opts.role,
         parent: spawnerPr ? opts.spawner : undefined,
         label: opts.label,
@@ -7895,6 +7897,7 @@ export class Manager {
       let enrolled: ProvisionedUserAgent["enrolled"];
       if (this.userMode) {
         const prep = await this.provisionUserAgent(name, {
+          eventPayloads,
           spawner,
           specOwner: opts.owner,
           subscribe,
