@@ -643,6 +643,8 @@ CPU utilisation uses the same busy-time percentage on all three platforms. Linux
 memory includes reclaimable memory through MemAvailable; macOS and Windows report free memory.
 The home volume and the root or system volume are reported, without personal directory paths,
 network mounts, loop devices or per-user runtime mounts. The sample contains no process list or CPU model.
+The first registration does not wait for measurement. Sampling runs in the background;
+subsequent registration heartbeats attach an available cached sample. There is no extra HTTP loop.
 `cotal daemon status` prints the cached sample. JSON includes `vitals` with `sampledAt`,
 `cpu`, `memory`, `filesystems` and `uptimeSeconds`. This uptime is the computer's uptime,
 separate from the daemon's `uptimeMs`. Human status shows capacity in GiB with one decimal

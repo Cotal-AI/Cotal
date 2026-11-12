@@ -83,7 +83,11 @@ async function until(test: () => boolean, label: string) {
 try {
   await until(() => gets > 0 && daemon.status().account?.desiredRevision === 1, "registered and applied complete desired set");
   assert.ok(persistedBeforePut);
-  assert.ok(registration?.vitals, "registration carries a measured sample");
+  assert.equal(registration?.vitals, undefined, "initial registration does not wait for sampling");
+  await until(() => !!daemon.status().vitals, "background sample becomes available");
+  await promisify(execFile)(process.execPath, ["--import", "tsx", "bin/cotal.ts", "daemon", "name", "sample-ready", "--daemon-home", machineHome], { env: { ...process.env, COTAL_HOME: join(root, "cli-cotal"), XDG_RUNTIME_DIR: runtime } });
+  await until(() => !!registration?.vitals, "next registration carries cached sample");
+  assert.ok(registration);
   assert.deepEqual(registration.vitals, daemon.status().vitals, "status exposes the sent sample");
   const { stdout: humanStatus } = await promisify(execFile)(process.execPath, ["--import", "tsx", "bin/cotal.ts", "daemon", "status", "--daemon-home", machineHome], { env: { ...process.env, COTAL_HOME: join(root, "cli-cotal"), XDG_RUNTIME_DIR: runtime } });
   assert.match(humanStatus, /\d+\.\d GiB free \/ \d+\.\d GiB total \(\d+\.\d% used\)/);

@@ -51,7 +51,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
     const call = (method: "PUT" | "GET") => requestAccountMachine({ dir: home, idpUrl: account.idpUrl, machineId, method, signal: AbortSignal.any([abort.signal, context.abort.signal]),
       ...(method === "GET" ? { etag: context.etag } : { metadata: { name, platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version, managers: hosted, ...(vitals && !vitalsError ? { vitals } : {}) } }) });
     if (Date.now() - context.lastHeartbeat >= 60_000 || hostedKey !== (context.sentManagers ?? "[]")) {
-      await sample();
+      void sample();
       context.abort.signal.throwIfAborted();
       const sentName = name;
       const result = await call("PUT");
@@ -142,7 +142,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
   };
   return {
     /** Start polling and settle every account's initial attempt before saved hosting resumes. */
-    async start() { run(); await work; await Promise.all([...tasks]); if (!vitals && !vitalsError) await sample(); }, intent,
+    async start() { run(); await work; await Promise.all([...tasks]); if (!vitals && !vitalsError) void sample(); }, intent,
     vitals: () => vitals,
     vitalsError: () => vitalsError,
     name: () => name,
