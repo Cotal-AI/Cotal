@@ -1,4 +1,5 @@
 /** @module index */
+export { retainManagerAuthorityRoute } from "./provider.js";
 export { signOutIdpSession, type SignOutIdpSessionResult } from "./logout.js";
 export { mintServiceCallerPayloadObserverCreds, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
 export { deriveOwnerToken, deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
