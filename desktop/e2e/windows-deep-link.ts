@@ -77,6 +77,12 @@ try {
 } catch (error) {
   observations.outcome = "probe-error"; observations.error = String(error);
   process.exitCode = 1;
+  try {
+    await driver.screenshot(join(output, "after-failure.png"));
+    observations.failureWindow = await driver.call("POST", driver.path("execute/sync"), {
+      script: "return {title:document.title, linkContext:document.getElementById('link-context')?.textContent ?? null, linkContextVisible:document.getElementById('link-context')?.checkVisibility() ?? false};", args: [],
+    });
+  } catch { observations.failureSnapshotError = "FAILURE_SNAPSHOT_UNAVAILABLE"; }
 } finally {
   try { await driver.close(); } catch (error) { observations.sessionCleanupError = String(error); cleanupSafe = false; process.exitCode = 1; }
   if (server && server.exitCode === null && server.signalCode === null) {
