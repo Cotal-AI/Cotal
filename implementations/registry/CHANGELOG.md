@@ -1,5 +1,12 @@
 # @cotal-ai/registry
 
+## 0.160.8
+
+### Patch Changes
+
+- Updated dependencies [c7c509c]
+  - @cotal-ai/core@0.160.8
+
 ## 0.160.7
 
 ### Patch Changes
