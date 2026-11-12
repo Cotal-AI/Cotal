@@ -18,7 +18,21 @@ function snapshot(path) {
     let previous = 0;
     const rows = text.trimEnd().split('\n').map(line => {
       const r = JSON.parse(line);
-      if (!Number.isSafeInteger(r.pid) || !Number.isSafeInteger(r.atUnixMs) || r.atUnixMs < previous || typeof r.stage !== 'string' || typeof r.source !== 'string' || !['requested', 'ok', 'observed'].every(k => r[k] === null || typeof r[k] === 'boolean')) throw Error('invalid owned receipt');
+      const keys = ['pid', 'atUnixMs', 'stage', 'source', 'requested', 'ok', 'observed'];
+      if (!r || typeof r !== 'object' || Array.isArray(r) || Object.keys(r).length !== keys.length || !keys.every(k => Object.hasOwn(r, k))) throw Error('ambiguous receipt fields');
+      if (!Number.isSafeInteger(r.pid) || r.pid <= 0 || !Number.isSafeInteger(r.atUnixMs) || r.atUnixMs <= 0 || r.atUnixMs < previous || typeof r.stage !== 'string' || typeof r.source !== 'string' || !['requested', 'ok', 'observed'].every(k => r[k] === null || typeof r[k] === 'boolean')) throw Error('invalid owned receipt');
+      const nullable = value => value === null;
+      const bool = value => typeof value === 'boolean';
+      const api = r.stage === 'api-is-enabled' && ['presence-view', 'connection-observation', 'preference'].includes(r.source)
+        && (r.source === 'presence-view' ? nullable(r.requested) : bool(r.requested)) && bool(r.ok)
+        && (r.ok ? bool(r.observed) : nullable(r.observed));
+      const change = ['api-enable', 'api-disable'].includes(r.stage) && ['connection-observation', 'preference'].includes(r.source)
+        && r.requested === (r.stage === 'api-enable') && bool(r.ok) && nullable(r.observed);
+      const handler = r.source === 'preference' && bool(r.requested) && nullable(r.observed)
+        && ((r.stage === 'handler-enter' && nullable(r.ok)) || (r.stage === 'handler-return' && bool(r.ok)));
+      const input = r.stage === 'dom-change' && ['trusted-input', 'untrusted-input'].includes(r.source)
+        && bool(r.requested) && bool(r.ok) && nullable(r.observed);
+      if (!api && !change && !handler && !input) throw Error('unknown native receipt shape');
       previous = r.atUnixMs;
       return r;
     });
@@ -42,6 +56,7 @@ export function redelivery(cursor, firstPost, now = Date.now()) {
   const rows = s.rows.slice(cursor.count);
   if (rows.some(r => r.pid !== cursor.pid || r.atUnixMs <= firstPost || r.atUnixMs > now)) throw Error('ambiguous appended receipt time');
   if (rows.some(r => r.stage === 'dom-change' || r.source === 'trusted-input' || r.source === 'untrusted-input' || r.source === 'preference')) throw Error('input receipt with unchanged AXValue');
+  if (rows.some(r => r.stage !== 'api-is-enabled' || !['presence-view', 'connection-observation'].includes(r.source) || r.ok !== true || r.observed !== true || (r.source === 'connection-observation' && r.requested !== true))) throw Error('intervening input or contradictory receipt');
   const last = rows.at(-1);
   if (!last || last.stage !== 'api-is-enabled' || last.source !== 'presence-view' || last.ok !== true || last.observed !== true || now - last.atUnixMs > 2000) throw Error('no fresh unchanged owned poll');
   return true;

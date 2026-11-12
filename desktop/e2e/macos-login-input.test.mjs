@@ -19,13 +19,27 @@ test('fresh owned unchanged poll admits the single redelivery gate', t => {
   const f = fixture(t);
   appendFileSync(f.path, row(f.now));
   assert.equal(redelivery(f.cursor, f.post, f.now), true);
-  appendFileSync(f.path, row(f.now + 1, { stage: 'dom-change', source: 'trusted-input' }));
+  appendFileSync(f.path, row(f.now + 1, { stage: 'dom-change', source: 'trusted-input', requested: false, observed: null }));
   assert.throws(() => redelivery(f.cursor, f.post, f.now + 1), /input receipt/);
 });
 for (const extra of [{ stage: 'dom-change', source: 'untrusted-input' }, { source: 'trusted-input' }, { source: 'preference' }, { pid: 99 }, { observed: false }, { atUnixMs: 1 }]) {
   test(`refuses appended ${JSON.stringify(extra)}`, t => {
     const f = fixture(t);
     appendFileSync(f.path, row(f.now, extra));
+    assert.throws(() => redelivery(f.cursor, f.post, f.now));
+  });
+}
+for (const extra of [
+  { stage: 'unknown', source: 'unknown' },
+  { extra: true }, { pid: 0 }, { pid: -1 }, { atUnixMs: 0 },
+  { stage: 'handler-enter', source: 'unknown', requested: false, ok: null, observed: null },
+  { stage: 'handler-return', source: 'unknown', requested: false, observed: null },
+  { stage: 'handler-enter', source: 'preference', requested: false, ok: null, observed: null },
+  { observed: false }, { ok: false, observed: null },
+]) {
+  test(`fresh poll cannot hide earlier ${JSON.stringify(extra)}`, t => {
+    const f = fixture(t);
+    appendFileSync(f.path, row(f.now - 1, extra) + row(f.now));
     assert.throws(() => redelivery(f.cursor, f.post, f.now));
   });
 }
@@ -81,6 +95,10 @@ test('native source keeps initial unchecked as no-input and gates second deliver
   assert.match(swift, /receiptPolicy\("baseline", context/);
   assert.match(swift, /receiptPolicy\("check", loginCursor[\s\S]*loginCheckboxState\(\).value == 1[\s\S]*receiptPolicy\("check"/);
   assert.equal((swift.match(/loginDelivery = "redelivery-1"/g) ?? []).length, 1);
+  assert.ok(swift.indexOf('let finalState = loginCheckboxState()') > swift.indexOf('loginCursor = receiptPolicy("baseline"'));
+  assert.ok(swift.indexOf('focusReceipt("at-post"') > swift.lastIndexOf('_ = receiptPolicy("check"', swift.indexOf('let finalState = loginCheckboxState()')));
+  assert.match(swift, /finalRect == currentRect/);
+  assert.match(swift, /AXUIElementGetPid\(exactHit, &finalOwner\)/);
   assert.match(swift, /initial-delivery-failure/);
   assert.doesNotMatch(swift, /AXUIElementSetAttributeValue\([^\n]*AXValue/);
 });
