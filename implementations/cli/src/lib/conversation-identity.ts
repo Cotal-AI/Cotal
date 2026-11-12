@@ -73,7 +73,7 @@ export interface ConversationMaterial {
   actor: string;
   lifecycleUid: string;
   grant: ConversationGrant;
-  policy?: { events: "required" };
+  policy?: { events?: "required"; eventPayloads?: "withheld" };
   sentinelCreds: string;
   exchangeUrl: string;
   retire: { url: string };
