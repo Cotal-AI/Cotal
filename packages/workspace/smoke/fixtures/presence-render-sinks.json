@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1000,
+    "total": 1027,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 10,
-    "non-render/control": 781
+    "non-render/control": 808
   },
   "renderers": [
     {
@@ -4308,13 +4308,6 @@
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
-      "kind": "status-token",
-      "anchor": "\"offline\"",
-      "class": "non-render/control",
-      "rationale": "Anycast bookkeeping: counts the role's non-offline holders at send for the result; the status is a filter predicate, not rendered."
-    },
-    {
-      "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
       "anchor": "f\" } });\n    if (!r.ok) return r;\n    this.yieldedSincePu",
       "class": "non-render/control",
@@ -6857,13 +6850,6 @@
     {
       "path": "implementations/cli/src/commands/down-live-lease.ts",
       "kind": "derived-output",
-      "anchor": "standaloneConnectOpts(auth)",
-      "class": "non-render/control",
-      "rationale": "Live-lease down control path: builds the broker connection options from the deployer's credentials before the lease read; no rendering."
-    },
-    {
-      "path": "implementations/cli/src/commands/down-live-lease.ts",
-      "kind": "derived-output",
       "anchor": "jetstreamManager(nc)",
       "class": "non-render/control",
       "rationale": "Live-lease down control path: opens the JetStream manager for the lease read; no rendering."
@@ -6960,13 +6946,6 @@
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
       "anchor": "{pr().status === \"waiting\"}",
-      "class": "non-render/control",
-      "rationale": "App peer header: shows the waiting question only for a waiting agent; routing only."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "status-token",
-      "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "App peer header: shows the waiting question only for a waiting agent; routing only."
     },
@@ -7125,28 +7104,7 @@
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "status-token",
-      "anchor": "teSignal<Stop>({ phase: \"idle\" })\n  const [composer, s",
-      "class": "non-render/control",
-      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "status-token",
-      "anchor": "})\n    setStop({ phase: \"idle\" })\n    const chat = awa",
-      "class": "non-render/control",
-      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "status-token",
       "anchor": "== \"confirm\" ? { phase: \"idle\" } : cur)),\n    )\n  }\n  ",
-      "class": "non-render/control",
-      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
-    },
-    {
-      "path": "implementations/tui/src/app.tsx",
-      "kind": "status-token",
-      "anchor": "cur === done ? { phase: \"idle\" } : cur)), STOP_NOTICE_",
       "class": "non-render/control",
       "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
     },
@@ -7304,6 +7262,237 @@
       "anchor": "return talk",
       "class": "non-render/control",
       "rationale": "App chat session: returns the session object, whose /status method sets presence; the return renders nothing."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "status-token",
+      "anchor": "== role && p.status !== \"offline\").map((p) => ({ id: p.ca",
+      "class": "non-render/control",
+      "rationale": "Anycast bookkeeping: counts the role's non-offline holders at send for the result; the status is a filter predicate, not rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "status-token",
+      "anchor": "ilter(p => p.status !== \"offline\"), args!.name as string)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "`no agent ${JSON.stringify(args!.name)} is held in live presence`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "`agent ${JSON.stringify(peer.card.name)} reports no holding manager instance`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "assertLifecycleToken(instance, \"holding manager instance\")",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "`agent ${JSON.stringify(peer.card.name)} reports an invalid holding manager instance`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.ep.invokeService(endpoint, command, args, opts)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "`${this.ep.principal.owner}.${row.id}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "`agent ${JSON.stringify(selected.card.name)} changed lifecycle after owner resolution; no current row was accepted`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "ecuted\");\n      }\n      return reply;\n    } catch (error) {\n ",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-live-lease.ts",
+      "kind": "derived-output",
+      "anchor": "drainAndClose(nc)",
+      "class": "non-render/control",
+      "rationale": "Live-lease down control path: drains and closes the temporary broker connection after the lease read; no rendering."
+    },
+    {
+      "path": "packages/workspace/src/control/seat-presence.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "packages/workspace/src/control/seat-presence.ts",
+      "kind": "derived-output",
+      "anchor": "resolvePeer(live, address)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "packages/workspace/src/control/seat-presence.ts",
+      "kind": "derived-output",
+      "anchor": "`agent \"${peer.card.name}\" reports no holding manager instance or lifecycle`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "packages/workspace/src/control/seat-presence.ts",
+      "kind": "derived-output",
+      "anchor": "assertLifecycleToken(instance, \"holding manager instance\")",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "packages/workspace/src/control/seat-presence.ts",
+      "kind": "derived-output",
+      "anchor": "`agent \"${peer.card.name}\" reports an invalid holding manager instance or lifecycle`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": ") => void; row: { kind: \"waiting\"; agent: Presence } | { ",
+      "class": "non-render/control",
+      "rationale": "App inspector row: the row kind tag for a waiting agent item; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "teSignal<Stop>({ phase: \"idle\" })\n  const [spawns, set",
+      "class": "non-render/control",
+      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "card.id }, row: { kind: \"waiting\", agent: p } })),\n      ",
+      "class": "non-render/control",
+      "rationale": "App inspector row: the row kind tag for a waiting agent item; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "})\n    setStop({ phase: \"idle\" })\n    setSpawns([])\n  ",
+      "class": "non-render/control",
+      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "cur === done ? { phase: \"idle\" } : cur)), NOTICE_MS)\n ",
+      "class": "non-render/control",
+      "rationale": "App stop dialog: the phase token names the dialog's own idle state, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "w when={pr().status === \"waiting\"}>\n                <text",
+      "class": "non-render/control",
+      "rationale": "App peer header: shows the waiting question only for a waiting agent; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "en={p.need.row.kind === \"waiting\" && p.need.row}>{(r) => ",
+      "class": "non-render/control",
+      "rationale": "App inspector row: dispatches the waiting agent row component; routing only."
+    },
+    {
+      "path": "implementations/tui/src/app.tsx",
+      "kind": "status-token",
+      "anchor": "text.muted }\n      case \"waiting\":\n        if (st.late) r",
+      "class": "non-render/control",
+      "rationale": "App spawn notice: the phase token names a spawn waiting to join or for operator setup, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/live.ts",
+      "kind": "status-token",
+      "anchor": "ct<SpawnState, { phase: \"waiting\" }>) => {\n    f.set(wait",
+      "class": "non-render/control",
+      "rationale": "App spawn follow: the phase token names a spawn waiting to join or for operator setup, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/live.ts",
+      "kind": "status-token",
+      "anchor": "ct<SpawnState, { phase: \"waiting\" }> }> => {\n    if (!ctx",
+      "class": "non-render/control",
+      "rationale": "App spawn follow: the phase token names a spawn waiting to join or for operator setup, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/live.ts",
+      "kind": "status-token",
+      "anchor": "Id }, waiting: { phase: \"waiting\", name, late: true, sinc",
+      "class": "non-render/control",
+      "rationale": "App spawn follow: the phase token names a spawn waiting to join or for operator setup, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/live.ts",
+      "kind": "status-token",
+      "anchor": "      waiting: { phase: \"waiting\", name, late: false, sin",
+      "class": "non-render/control",
+      "rationale": "App spawn follow: the phase token names a spawn waiting to join or for operator setup, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/tui/src/live.ts",
+      "kind": "derived-output",
+      "anchor": "Array.isArray(rows)",
+      "class": "non-render/control",
+      "rationale": "App spawn setup: shapes the manager's connector and model rows for the spawn form; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/live.ts",
+      "kind": "derived-output",
+      "anchor": "applicationsOf(rows, byApp, policy?.events === \"required\")",
+      "class": "non-render/control",
+      "rationale": "App spawn setup: shapes the manager's connector and model rows for the spawn form; no status word is rendered."
+    },
+    {
+      "path": "implementations/tui/src/spawn.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "App spawn type: the phase token names a spawn waiting to join or for operator setup, not an agent's presence; routing only."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "agentCapRefusal(response.status, response.body, authority, record.requestId)",
+      "class": "non-render/control",
+      "rationale": "App user identity provisioning: maps an agent-cap HTTP refusal response into a typed CommandFailure; no presence rendering."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "legacyAgentCapRefusal(response.status, response.body)",
+      "class": "non-render/control",
+      "rationale": "App user identity provisioning: maps a legacy agent-cap HTTP refusal response into a typed CommandFailure; no presence rendering."
     }
   ]
 }
