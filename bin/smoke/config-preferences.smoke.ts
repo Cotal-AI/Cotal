@@ -352,6 +352,10 @@ const ansi = /\x1b\[/;
 
   const mark = join(home, "edited");
   const marker = (who: string) => `node -e "require('fs').writeFileSync(process.env.EDIT_MARK, '${who}')"`;
+  const none = run(["personas", "edit", "x"], {}, project);
+  check("with no editor anywhere, personas edit names both ways to set one", none.status === 2 && none.stderr.includes("set VISUAL or EDITOR, or run `cotal config set editor vim`"), shown(none));
+  const preparedEditor = run(["space", "create", "editor-catalog", "--root", project, "--json"]);
+  check("the editor fixture prepares its own persona catalog", preparedEditor.status === 0, shown(preparedEditor));
   run(["config", "set", "editor", marker("saved")]);
   rmSync(mark, { force: true });
   const edited = run(["personas", "edit", "x"], { EDIT_MARK: mark }, project);
@@ -360,9 +364,6 @@ const ansi = /\x1b\[/;
   const envEditor = run(["personas", "edit", "x"], { EDIT_MARK: mark, EDITOR: marker("env") }, project);
   check("EDITOR beats the saved editor", envEditor.status === 0 && readFileSync(mark, "utf8") === "env", shown(envEditor));
   run(["config", "unset", "editor"]);
-  const none = run(["personas", "edit", "x"], {}, project);
-  check("with no editor anywhere, personas edit names both ways to set one", none.status === 2 && none.stderr.includes("set VISUAL or EDITOR, or run `cotal config set editor vim`"), shown(none));
-
   // The detach key is read by the attach client before it connects; drive that function in-process.
   process.env.XDG_CONFIG_HOME = xdg;
   for (const k of ["COTAL_DETACH_KEY"]) delete process.env[k];
