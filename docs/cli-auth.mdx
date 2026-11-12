@@ -218,6 +218,11 @@ this standalone caller. User-auth issuance and managed static launch are not sup
 
 ## Account login [#login]
 
+If a provider refuses an expired or revoked sign-in, run `cotal login` for Cotal Cloud.
+For another provider, run `cotal login --idp <url>` with its auth base URL, then approve
+the new sign-in in your browser. Catalog reads and mesh connections report this recovery
+without replacing your cached credentials.
+
 ```bash
 cotal login [--cloud | --idp <auth base URL>] [--client-id <id>] [--no-browser] [--plain]
 cotal logout --idp <auth base URL> [--local]

@@ -17,7 +17,7 @@ import { loadManagerAuthorityRoute, managerAuthorityRouteUrl, pinManagerAuthorit
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
 import { assertDerivedOwnerToken, isCredentialTransportUrl, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
-import { assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
+import { loginRecoveryCommand, assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { AGENT_LIFECYCLE_HELD, AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, agentLifecycleHeld, type AgentLifecycleRelease, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
@@ -476,7 +476,7 @@ export const cotalAuthProvider: AuthProvider = {
       throw new Error(`space "${space}" has no user-auth material on this machine - spawns for a user-auth space run where \`cotal up --user-auth\` provisioned it`);
     const session = requireIdpSession(idpSessionDir(), idp.url);
     if (!session.sub)
-      throw new Error(`your cached login for ${idp.url} predates this build (no subject recorded) - re-run \`cotal login --idp ${idp.url}\``);
+      throw new Error(`your cached login for ${idp.url} predates this build (no subject recorded) - re-run \`${loginRecoveryCommand(idp.url)}\``);
     return deriveOwnerForIdpSubject(secret, idp.issuer, session.sub);
   },
 
@@ -511,7 +511,7 @@ export const cotalAuthProvider: AuthProvider = {
       // so nothing was provisioned. Anything else is the mesh's own word: the endpoint is the
       // deployment's, and nothing pins what its answer left behind, so it carries no code.
       if (res.status === 401)
-        throw new Error(`the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp ${idpUrl}\``);
+        throw new Error(`the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`${loginRecoveryCommand(idpUrl)}\``);
       if (res.status === 409 && agentLifecycleHeld(body)) throw heldConflict(`the mesh did not provision agent "${actor}": ${reason}`, body, actor);
       throw Object.assign(new Error(`the mesh's agent-provisioning endpoint answered HTTP ${res.status}: ${reason}; whether "${actor}" was provisioned is unknown`), { status: res.status, reason });
     }
@@ -534,7 +534,7 @@ export const cotalAuthProvider: AuthProvider = {
     const reasonOf = (r: { status: number; body: unknown }) => (r.body as { error?: unknown } | null)?.error;
     const listed = await call("GET", url);
     if (listed.status === 401)
-      throw new Error(`the mesh refused this login when listing its agents: ${String(reasonOf(listed) ?? "HTTP 401")} - your session may have expired; re-run \`cotal login --idp ${idpUrl}\``);
+      throw new Error(`the mesh refused this login when listing its agents: ${String(reasonOf(listed) ?? "HTTP 401")} - your session may have expired; re-run \`${loginRecoveryCommand(idpUrl)}\``);
     if (listed.status !== 200 || !Array.isArray((listed.body as { agents?: unknown } | null)?.agents))
       throw new Error(`the mesh's agent endpoint answered HTTP ${listed.status} when listing its agents${typeof reasonOf(listed) === "string" ? `: ${reasonOf(listed)}` : ""}`);
     // Only the registrations at this exact lifecycle, never another of the same name.

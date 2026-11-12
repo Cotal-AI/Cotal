@@ -36,7 +36,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeJwt } from "jose";
 import { isCredentialTransportUrl, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
-import { CommandFailure, acquireLock, chatNameProblem, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
+import { loginRecoveryCommand, CommandFailure, acquireLock, chatNameProblem, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
  *  opaque revocable handle, never a JWT. `expiresAt` (unix seconds) is advisory for messages;
@@ -467,7 +467,7 @@ async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: 
     }
     if (res.status === 401)
       throw new IdpSessionRejectedError(
-        `idp session: ${base} rejected the cached session (expired or revoked) - run \`cotal login --idp ${base}\` to sign in again`,
+        `idp session: ${base} rejected the cached session (expired or revoked) - run \`${loginRecoveryCommand(base)}\` to sign in again`,
       );
     if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
     const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
@@ -609,7 +609,7 @@ async function discoverAdvertisement(state: CatalogAccountState, session: IdpSes
   const result = await fetchIdpJwtResponse(state.idpUrl, session.token);
   const claims = decodeJwt(result.jwt);
   if (claims.sub !== state.sub)
-    throw new Error(`idp session: ${state.idpUrl} proved a different subject than the cached session - run \`cotal login --idp ${state.idpUrl}\` again`);
+    throw new Error(`idp session: ${state.idpUrl} proved a different subject than the cached session - run \`${loginRecoveryCommand(state.idpUrl)}\` again`);
   const catalogUrl = catalogUrlFromLink(state.idpUrl, result.response.headers.get("link"));
   return {
     ...state,
@@ -698,7 +698,7 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
   // observation. Active accounts are read again under the lock before any refresh or application.
   const initial = readCatalogPreparationState(opts.dir);
   const signedOut = () => new CommandFailure("refused", "AUTH_REQUIRED", "the requested IdP has no cached sign-in; no catalog refresh or registry application was attempted", {
-    target: { idp: requested }, remedy: `run \`cotal login --idp ${requested}\` before syncing this account`,
+    target: { idp: requested }, remedy: `run \`${loginRecoveryCommand(requested!)}\` before syncing this account`,
   });
   if (!Object.keys(initial.sessions).some((idp) => !requested || idp === requested)) {
     if (requested) throw signedOut();
@@ -719,7 +719,7 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
         const tokenResult = await fetchIdpJwtResponse(idpUrl, session.token);
         const claims = decodeJwt(tokenResult.jwt);
         if (typeof claims.sub !== "string" || !claims.sub)
-          throw new Error(`idp session: ${idpUrl} minted a user JWT without a sub - run \`cotal login --idp ${idpUrl}\` again`);
+          throw new Error(`idp session: ${idpUrl} minted a user JWT without a sub - run \`${loginRecoveryCommand(idpUrl)}\` again`);
         session = { ...session, sub: claims.sub };
         saveIdpSession(opts.dir, idpUrl, session);
         saveCatalogAdvertisement(opts.dir, idpUrl, claims.iss, claims.sub, tokenResult.response.headers.get("link"));
@@ -783,6 +783,8 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
           results.push(result);
           continue;
         }
+        if (response.status === 401)
+          throw new IdpSessionRejectedError(`idp session: ${idpUrl} rejected the cached session (expired or revoked) - run \`${loginRecoveryCommand(idpUrl)}\` to sign in again`);
         if (!response.ok) throw new Error(`${catalogUrl} failed (HTTP ${response.status})`);
         const snapshot = await idpJson<unknown>(catalogUrl, response);
         opts.validate(snapshot, accountView(state));
@@ -961,7 +963,7 @@ export function requireIdpSession(dir: string, idpUrl: string): IdpSession {
   if (!s)
     throw credentialFailure(
       "signed-out",
-      `not logged in to ${key} - this space requires a user identity and there is no anonymous fallback; run \`cotal login --idp ${key}\``,
+      `not logged in to ${key} - this space requires a user identity and there is no anonymous fallback; run \`${loginRecoveryCommand(key)}\``,
     );
   return s;
 }
