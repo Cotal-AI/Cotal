@@ -743,7 +743,19 @@ export async function prepareNativeServiceStop(definition: ServiceDefinitionSnap
   if (observeServiceProcess(selected.record.value) !== "running" || !selected.record.value.process) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native service has no live attributable process for an impact read; no completed stop was inferred from disappearance", { target: instanceProjection(selected) });
   const provider = await loadServiceAdapter(declared, value.launch.type === "adapter" ? value.launch.options : {});
   const began = Date.now();
-  const plan = ownedMetadata(serviceAdapterStopPlan(await adapterCall((signal) => provider.prepareStop!({ ...adapterContext(definition, selected.record.value), process: { ...selected.record.value.process! }, withAgents, ...(preserved ? { preserved: { ...preserved } } : {}), signal }), 15000), selected.record.value.process));
+  const plan = ownedMetadata(serviceAdapterStopPlan(await adapterCall(async (signal) => {
+    const context = { ...adapterContext(definition, selected.record.value), process: { ...selected.record.value.process! }, signal };
+    if (selected.record.value.readiness === "not-checked") {
+      const until = Date.now() + 10000;
+      while ((await provider.readiness(context)).state !== "ready") {
+        signal.throwIfAborted();
+        if (observeServiceProcess(selected.record.value) !== "running") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native service exited while its startup observation was awaited; run the stop again to settle its exact exit", { target: instanceProjection(selected) });
+        if (Date.now() >= until) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the exact native service has not completed startup; no stop was submitted", { target: instanceProjection(selected) });
+        await delay(50);
+      }
+    }
+    return provider.prepareStop!({ ...context, withAgents, ...(preserved ? { preserved: { ...preserved } } : {}) });
+  }, 15000), selected.record.value.process));
   if (plan.withAgents !== withAgents || !samePreserved(plan.preserved, preserved) || Date.parse(plan.observedAt) < began - 1000 || Date.parse(plan.observedAt) > Date.now() + 1000) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native stop preview did not establish the requested current policy");
   return plan;
 }
