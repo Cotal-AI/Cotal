@@ -95,6 +95,8 @@ export interface UpdateRuntime {
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
   /** The binary may await its daemon's replacement generation before the bound child's read. */
   waitForInstalledGeneration?(version: string): Promise<void>;
+  /** Explain whether the machine daemon can act on the saved automatic-update preference. */
+  automaticUpdateAdvice(): Promise<string | undefined>;
   extensions(): readonly InstalledExtension[];
   /** Why a first-party extension still needs its reinstall at `generation`, or undefined once it is kept. */
   verifyExtension(entry: InstalledExtension, generation: string): string | undefined;
@@ -144,6 +146,7 @@ export const updateRuntime: UpdateRuntime = {
     ] }, "rich", process.stdout)}\n`);
   },
   reportRunningManager: (target) => reportRunningManagers(target),
+  automaticUpdateAdvice: async () => "Automatic installation requires the machine daemon service. Run `cotal daemon install`, then inspect `cotal daemon status`.",
   extensions: () => loadExtensionsManifest().extensions,
   verifyExtension: verifyCurrentExtension,
   claimUpdatePass: () => claimExtensionUpdatePass(),
@@ -171,6 +174,10 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
     rt.out(`${key === "auto" ? "Automatic updates" : "Update notices"}: ${settings[key] ? "on" : "off"}${rt.env.COTAL_NO_UPDATE_CHECK === "1" ? " (disabled by COTAL_NO_UPDATE_CHECK=1)" : ""}`);
     if (key === "auto" && process.platform !== "linux") rt.out("Automatic installation is available on Linux in this release. Run `cotal update --self` here for a manual update.");
     if (key === "auto" && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) rt.out("This runtime belongs to the desktop app. Automatic npm updates have no effect here; update the desktop app with its signed platform installer.");
+    else if (key === "auto" && settings.auto && process.platform === "linux" && rt.env.COTAL_NO_UPDATE_CHECK !== "1") {
+      const advice = await rt.automaticUpdateAdvice();
+      if (advice) rt.out(advice);
+    }
     return;
   }
   if (args.values.check === true) return checkUpdate(args, rt);

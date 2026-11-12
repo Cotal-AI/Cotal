@@ -19,7 +19,20 @@ const composed: Command = { ...command, async run(args) {
   let daemonObserved = false;
   let preparedRestart = false;
   let absentRecoveryHost = false;
-  await update(args, { ...updateRuntime, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
+  await update(args, { ...updateRuntime, async automaticUpdateAdvice() {
+    try {
+      const reply = await queryDaemon({ paths: daemonPaths() });
+      if (!reply.ok) throw new Error(`machine daemon update schedule is unreadable: ${reply.error.message}`);
+      if (!reply.result.update) throw new Error("machine daemon returned no update schedule; run `cotal daemon status` to inspect it");
+      if (reply.result.update.automatic) return undefined;
+      return "The daemon is not scheduling automatic installation. Run `cotal daemon status` to inspect it. If no daemon service is installed, run `cotal daemon install`.";
+    } catch (error) {
+      if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
+        return "No daemon service is running the automatic update schedule. Run `cotal daemon install`, then inspect `cotal daemon status`.";
+      }
+      throw error;
+    }
+  }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
     if (process.env.COTAL_AUTO_UPDATE !== "1" || !daemonObserved) return async () => {};
     const paths = daemonPaths();
     try { await managerViaDaemon({ paths }, { op: "managers-prepare-restart" }); }

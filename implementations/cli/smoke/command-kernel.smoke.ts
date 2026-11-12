@@ -46,6 +46,7 @@ function updateRuntime(opts: {
     version: () => opts.version ?? "0.13.1",
     reconcile: async () => void events.push("reconcile"),
     refreshConnectors: async () => (events.push("refresh-connectors"), []),
+    automaticUpdateAdvice: async () => undefined,
     reportRunningManager: async () => {
       events.push("report-running-manager");
       return await opts.reportRunningManager?.() ?? "none";
