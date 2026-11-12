@@ -1319,8 +1319,10 @@ the responder subscriptions are flushed and the space accepts the daemon as read
 `<COTAL_HOME>/daemon/<space segment>/service-store/`, mode `0600`, and reused after a restart.
 A current service renewal proof lets an approved daemon resume after a restart or reconnect even
 when the human sign-in expired or was removed locally. Explicit `service-connect` for an existing
-manual connection also uses that proof without changing account intent. Catalog-managed spaces
-still require human sign-in to change the account's desired connections. Missing or expired renewal
+manual connection also uses that proof without changing account intent. Manual spaces without a
+connection use the service registration flow too. Their refusals name the selected daemon and the
+space's concrete registration command, and `service-status` retains that recovery step.
+Catalog-managed spaces still require human sign-in to change the account's desired connections. Missing or expired renewal
 material requires sign-in to register or reactivate. Revoked service authority still refuses.
 
 A damaged `daemon-ready/*.json` or `auth/<space segment>/service-renewal/*.json` record in that
