@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
-  BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, assertCommandToken, assertLifecycleToken, resolvePeer,
+  BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, assertCommandToken,
   epCast, invokeCommand, invokeRepairingSplit, parsePrincipalKey, resolveService, unansweredRequest,
   type CompletionResult, type EpAttributedReply, type EpVerbTarget, type FlagSpec,
-  type FlagValues, type ParsedArgs, type Presence, type ResolvedService,
+  type FlagValues, type ParsedArgs, type ResolvedService,
 } from "@cotal-ai/core";
 import { type NatsConnection } from "@nats-io/transport-node";
 import {
@@ -11,6 +11,7 @@ import {
   loadMeshes, targetFlags, type Report,
   recordOperationSpace, resolveMeshTarget,
 } from "@cotal-ai/workspace";
+import { presenceSeat, type ManagerPin } from "@cotal-ai/workspace/control";
 import { followEndpointAction, type AcceptedEndpointGoal } from "../lib/endpoint-goal.js";
 import { endpointResolution, resolveEndpointSelection, validateEndpointSelector } from "../lib/endpoint-selection.js";
 import { endpointFailure, NativeReplyError, shellWord, withPairedCallerRemedy } from "../lib/endpoint-errors.js";
@@ -122,7 +123,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
   let accepted: AcceptedEndpointGoal | undefined;
   let streamStarted = false;
   let pairedCaller = false;
-  let selectedSeat: Presence | undefined;
+  let selectedSeat: ManagerPin["expectedSeat"];
   let interrupted: "SIGINT" | "SIGTERM" | undefined;
   const follow = new AbortController();
   const onInterrupt = () => { interrupted = "SIGINT"; follow.abort(); };
@@ -137,12 +138,11 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     if (endpoint === BASELINE_LIFECYCLE_ENDPOINT && on === undefined && seatName !== undefined && values.creds === undefined &&
         resolveMeshTarget(process.cwd(), { space: selection.space, readOnly: true }).mode !== "user") {
       const roster = await rosterOf({ space: selection.space, ...(values.server === undefined ? {} : { server: String(values.server) }) });
-      const peer = resolvePeer(roster.filter(p => p.status !== "offline"), seatName);
-      if (!peer) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no agent "${seatName}" is held in live presence`, { target });
-      const instance = peer.card.meta?.["ai.cotal.manager.instance"];
-      if (typeof instance !== "string") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `agent "${seatName}" reports no holding manager instance`, { target });
-      on = assertLifecycleToken(instance, "holding manager instance");
-      selectedSeat = peer;
+      const seat = presenceSeat(roster, seatName);
+      on = seat.instanceId;
+      selectedSeat = seat.expectedSeat;
+      if (command === "inspect") input!.name = selectedSeat.name;
+      else values.name = selectedSeat.name;
       target.requestedInstanceId = on;
     }
     connection = await epConnection({ ...args.values, space: selection.space, ...(selection.credentialRef ? { creds: selection.credentialRef.path } : {}) }, values.admin ? "control-caller-admin" : "control-caller-privileged", endpoint, on);
@@ -185,7 +185,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     if (values.wait && declaration.action !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--wait belongs to a command declared as a native action; no command was submitted", { target });
     const nativeTarget = await resolveTarget(nc, space, service, values, remainingMs, selection.reference !== undefined);
     if (selectedSeat && nativeTarget && nativeTarget.mode !== "self" &&
-        (`${nativeTarget.owner}.${nativeTarget.actor}` !== selectedSeat.card.id || nativeTarget.lifecycleUid !== selectedSeat.lifecycleUid))
+        (`${nativeTarget.owner}.${nativeTarget.actor}` !== selectedSeat.id || nativeTarget.lifecycleUid !== selectedSeat.lifecycleUid))
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the seat changed lifecycle after owner resolution, so nothing was sent", { target });
     if (declaration.targeted !== (nativeTarget !== undefined) || nativeTarget && !declaration.modes.includes(nativeTarget.mode)) throw new CommandFailure("refused", "USAGE_INVALID", "the selected targeting mode does not match the endpoint's declared command", { target });
     const canonicalInput = input === undefined && !declaration.contract.input.validate(null) && declaration.contract.input.validate({}) ? {} : input ?? null;
@@ -240,7 +240,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
       if (!response.reply.ok) throw new NativeReplyError(response, "invocation");
       if (selectedSeat && command === "inspect") {
         const row = response.reply.data as { id?: string; lifecycleUid?: string };
-        if ((row.id !== selectedSeat.card.id && `${service.caller.owner}.${row.id}` !== selectedSeat.card.id) || row.lifecycleUid !== selectedSeat.lifecycleUid)
+        if ((row.id !== selectedSeat.id && `${service.caller.owner}.${row.id}` !== selectedSeat.id) || row.lifecycleUid !== selectedSeat.lifecycleUid)
           throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the seat changed lifecycle after owner resolution; no current row was accepted", { target });
       }
       result = { kind: "endpoint-reply" as const, command, requestId: response.reply.id, responder: response.responder,
