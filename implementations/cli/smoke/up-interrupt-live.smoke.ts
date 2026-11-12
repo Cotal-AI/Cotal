@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { canonicalLocalProcessPath, MANAGER_PIDFILE, readPidfile } from "@cotal-ai/workspace";
+import { assertRecordIdentity, canonicalLocalProcessPath, MANAGER_PIDFILE, readPidfile } from "@cotal-ai/workspace";
+import { serviceInstances } from "../src/lib/service-instances.js";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -31,11 +32,17 @@ const check = (name: string, action: () => void) => {
 
 for (const [name, signal, code, format, noManager] of [
   ["control", undefined, 0, "--json", false],
+  ["early-timeout", "SIGINT", 130, "--json", false],
+  ["early", "SIGINT", 130, "--json", false],
   ["interrupt", "SIGINT", 130, "--json", false],
   ["terminate", "SIGTERM", 143, "--json", true],
   ["hangup", "SIGHUP", 129, "--json", false],
   ["plain", "SIGINT", 130, "--plain", true],
 ] as const) {
+  if (name.startsWith("early") && process.platform === "win32") {
+    console.log("SKIP early: creation-bound pause requires POSIX signals");
+    continue;
+  }
   const home = join(base, `${name}-home`), root = join(base, `${name}-root`), config = join(home, "xdg");
   for (const dir of [home, root, config]) mkdirSync(dir, { mode: 0o700 });
   const env = { ...inherited, HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: config,
@@ -52,6 +59,7 @@ for (const [name, signal, code, format, noManager] of [
   assert.equal(prepared.status, 0, prepared.stderr);
   const port = await freePort();
   const child = spawn(process.execPath, ["--import", loader, entry, "up", format, "--server", `nats://127.0.0.1:${port}`, ...(noManager ? ["--no-manager"] : [])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+  let earlyProcess: { pid: number; token: string } | undefined;
   let stdout = "", stderr = "";
   child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
   child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
@@ -65,7 +73,34 @@ for (const [name, signal, code, format, noManager] of [
         assert.ok(Date.now() < until, "broker did not listen before deadline");
         await sleep(100);
       }
-      if (!noManager) {
+      if (name.startsWith("early")) {
+        const savedHome = process.env.COTAL_HOME;
+        process.env.COTAL_HOME = home;
+        try {
+          let manager: ReturnType<typeof serviceInstances>[number] | undefined;
+          while (!manager) {
+            try { manager = serviceInstances(space, "stack-manager").find((row) => row.record.value.process); }
+            catch (error) {
+              if (!(error instanceof Error) || error.message !== "the local record source changed while it was read") throw error;
+            }
+            if (manager) break;
+            assert.equal(child.exitCode, null, `up ended before creation-pinned Manager: ${stderr}`);
+            assert.ok(Date.now() < until, "Manager process was not creation-pinned");
+            await sleep(1);
+          }
+          const record = manager.record.value;
+          assert.equal(assertRecordIdentity(record.process!).kind, "match");
+          earlyProcess = record.process!;
+          process.kill(earlyProcess.pid, "SIGSTOP");
+          const state = { process: record.process, readiness: record.readiness, pidfile: existsSync(canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space })) };
+          writeFileSync(join(base, "early-at-signal.json"), JSON.stringify(state));
+          assert.equal(state.readiness, "not-checked");
+          console.log(`Observed early Manager: ${JSON.stringify(state)}`);
+        } finally {
+          if (savedHome === undefined) delete process.env.COTAL_HOME;
+          else process.env.COTAL_HOME = savedHome;
+        }
+      } else if (!noManager) {
         const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space });
         while (!existsSync(pidPath) || !readPidfile(pidPath)) {
           assert.equal(child.exitCode, null, `up ended before its Manager launch: ${stderr}`);
@@ -115,10 +150,41 @@ for (const [name, signal, code, format, noManager] of [
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     await closed;
     clearTimeout(deadline);
-    const stopped = cli("down", "--yes", "--json");
+    let stopped: { status: number | null; stdout: string; stderr: string };
+    if (earlyProcess) {
+      const pinned = earlyProcess;
+      const resume = setTimeout(() => {
+        if (assertRecordIdentity(pinned).kind === "match") process.kill(pinned.pid, "SIGCONT");
+      }, name === "early-timeout" ? 20000 : 4000);
+      try {
+        stopped = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
+          const down = spawn(process.execPath, ["--import", loader, entry, "down", "--yes", "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+          let out = "", err = "";
+          down.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+          down.stderr.on("data", (chunk: Buffer) => { err += chunk.toString(); });
+          const watchdog = setTimeout(() => down.kill("SIGKILL"), 180_000);
+          down.once("error", () => { clearTimeout(watchdog); done({ status: null, stdout: out, stderr: err }); });
+          down.once("close", (status) => { clearTimeout(watchdog); done({ status, stdout: out, stderr: err }); });
+        });
+      } finally {
+        clearTimeout(resume);
+        if (assertRecordIdentity(pinned).kind === "match") process.kill(pinned.pid, "SIGCONT");
+      }
+    } else stopped = cli("down", "--yes", "--json");
+    if (name === "early-timeout") {
+      writeFileSync(join(base, `${name}-refused.stdout`), stopped.stdout);
+      check("early-timeout: bounded refusal submits no native stop", () => {
+        assert.equal(stopped.status, 2);
+        const refusal = JSON.parse(stopped.stdout);
+        assert.equal(refusal.error.code, "LIFECYCLE_BLOCKED");
+        assert.match(refusal.error.message, /has not completed startup/);
+      });
+      await sleep(2000);
+      stopped = cli("down", "--yes", "--json");
+    }
     writeFileSync(join(base, `${name}-down.stdout`), stopped.stdout);
     writeFileSync(join(base, `${name}-down.stderr`), stopped.stderr);
-    assert.equal(stopped.status, 0, `private stack cleanup failed: ${stopped.stderr}`);
+    assert.equal(stopped.status, 0, `private stack cleanup failed: ${stopped.stderr}\n${stopped.stdout}`);
     assert.equal(await listening(port), false, "private broker still listens after down");
   }
 }
