@@ -22,13 +22,13 @@ import { createServer, type Server, type Socket } from "node:net";
 import { listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
 import { claimSocketPath, generationOf, holdLifetime, type HeldLifetime } from "./lifetime.js";
-import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
+import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
 import { homeCotalDir, isCommandFailure, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
-import { idpTimeoutMs, withIdpSessionDir } from "@cotal-ai/auth";
+import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
@@ -149,6 +149,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const counters: ServerCounters = { accepted: 0, peerRejected: 0, framesDecoded: 0, requestsRefused: 0, statusAnswered: 0, spacesAnswered: 0, loginsStarted: 0, loginsRefused: 0, cancelsAnswered: 0, connectChecksAnswered: 0, registersAnswered: 0, serviceAnswered: 0, socketsRecovered: 0, connectionsResumed: 0 };
   const machineHome = opts.sessionDir ?? homeCotalDir();
   const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
+  let loginActive = false;
+  let logoutActive = false;
   const services = createServiceConnections(machineHome);
   const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir);
   const reconciler = createAccountReconciler(machineHome, services, managers);
@@ -371,6 +373,38 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         }));
         return;
       }
+      if (req.op === "logout") {
+        if (loginActive || logoutActive) {
+          void refuse(req.id, "LOGIN_IN_PROGRESS", "an account operation is already in progress on this daemon; wait for its result");
+          return;
+        }
+        logoutActive = true;
+        replyTask(signOutIdpSession({ dir: machineHome, idp: req.idp, local: false }).then(async (result) => {
+          account.signedIn();
+          await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
+        }, async (error: unknown) => {
+          counters.requestsRefused++;
+          if (isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "OPERATION_UNKNOWN" || error.code === "OPERATION_PARTIAL" || error.code === "DEPENDENCY_UNAVAILABLE")) {
+            const changed: LogoutChange[] = [];
+            for (const change of error.changed ?? []) {
+              if (!change || typeof change !== "object" || !("idp" in change) || change.idp !== req.idp || !("kind" in change)) continue;
+              if (change.kind === "local-login" && "cleared" in change && change.cleared === true)
+                changed.push({ kind: "local-login", idp: req.idp, cleared: true });
+              else if (change.kind === "idp-session" && "revoked" in change && change.revoked === true)
+                changed.push({ kind: "idp-session", idp: req.idp, revoked: true });
+            }
+            if (changed.some(change => change.kind === "local-login")) account.signedIn();
+            await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message, remedy: error.remedy, outcome: error.outcome, ...(error.changed ? { changed } : {}) } });
+            return;
+          }
+          await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "OPERATION_UNKNOWN", outcome: "unknown", message: "the sign-out outcome could not be confirmed; no success is assumed" } });
+        }).finally(() => { logoutActive = false; }));
+        return;
+      }
+      if (logoutActive) {
+        void refuse(req.id, "LOGIN_IN_PROGRESS", "a sign-out is already in progress on this daemon; wait for its result");
+        return;
+      }
       const started = login.start({
         idp: req.idp,
         ...(req.clientId !== undefined ? { clientId: req.clientId } : {}),
@@ -386,6 +420,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         void refuse(req.id, "LOGIN_IN_PROGRESS", "a sign-in is already in progress on this daemon; cancel it or wait for its result");
         return;
       }
+      loginActive = true;
+      void started.settled.finally(() => { loginActive = false; }).catch(() => {});
       counters.loginsStarted++;
       owned.add(started.attempt);
     };
