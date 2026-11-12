@@ -1203,7 +1203,11 @@ export class MeshAgent extends EventEmitter {
         held !== undefined && held >= AUTOMATIC_QUEUE_STALL_MS && queued > 0
           ? ` Note: this session's ${queued} queued automatic ${queued === 1 ? "delivery has" : "deliveries have"} made no progress for ${Math.round(held / 60_000)} minutes. Reconnecting did not deliver ${queued === 1 ? "it" : "them"}: the connection was not what was holding ${queued === 1 ? "it" : "them"} up.`
           : "";
-      return { ok: true, message: `Reconnected ✓ (${this.config.name}@${this.config.space})${stalled}` };
+      const channelIssue = this.channelDeliveryIssue;
+      const message = channelIssue
+        ? `Transport reconnected (${this.config.name}@${this.config.space}), but this session remains degraded. ${channelIssue} Direct messages and anycast remain available. Restart this session to restore ambient channel delivery.`
+        : `Reconnected ✓ (${this.config.name}@${this.config.space})`;
+      return { ok: true, message: `${message}${stalled}` };
     } catch (e) {
       return { ok: false, message: `Reconnect failed: ${(e as Error).message || (e as Error).name}. Still retrying automatically — or run /reconnect to retry now.` };
     }

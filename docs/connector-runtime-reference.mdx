@@ -45,6 +45,10 @@ Concurrent triggers join that rebuild instead of opening parallel connections.
 A failed post-connect bind closes its partial transport before another attempt begins.
 Unacknowledged durable messages remain eligible for redelivery after the endpoint rebinds.
 `cotal_reconnect` requests this recovery manually.
+When channel drop tracking is exhausted, reconnect reports transport recovery and the
+channel degradation that remains. Ambient channel traffic stays suppressed until the
+session restarts. Direct messages and anycast remain available, and fresh mentions on
+unmuted channels wake the session to pull their buffered bodies with `cotal_inbox`.
 
 ## Reply correlation
 
