@@ -241,18 +241,19 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 #connected-panel #running-agents { margin: 0 0 12px; }
 #connected-panel #agent-list { margin: 8px 0 0; }
 #connected-panel #dashboard-spaces-note { margin-bottom: 12px; }
-#connected-panel #applications-summary { margin-top: 0; }
+#connected-panel #applications-summary { margin-top: 0; margin-bottom: 12px; }
+#connected-panel .connected-spaces-scroll:has(+ #dashboard-spaces-note:not([hidden])) { margin-bottom: 4px; }
 #connected-panel #connected-spaces { margin: 0; }
 .scroll-thumb { transition: none; position: fixed; width: 4px; border-radius: 999px; background: var(--faint); pointer-events: none; z-index: 5; }
-.connected-spaces-scroll, #agent-list { scrollbar-width: none; padding-right: 10px; }
-.connected-spaces-scroll::-webkit-scrollbar, #agent-list::-webkit-scrollbar { display: none; }
+.connected-spaces-scroll, #agent-list, #connected-panel, .settings-card { scrollbar-width: none; }
+.connected-spaces-scroll, #agent-list { padding-right: 10px; }
+.connected-spaces-scroll::-webkit-scrollbar, #agent-list::-webkit-scrollbar, #connected-panel::-webkit-scrollbar, .settings-card::-webkit-scrollbar { display: none; }
 .settings-card { scroll-padding-block: 16px; transition: none; padding-bottom: 9px; }
 .machine { padding: 4px; padding-left: 8px; }
 #edit-computer-name { margin: 0; }
 @media (max-width: 460px) {
-  .sidebar { grid-template-columns: auto minmax(0, 1fr); gap: 8px; }
-  .sidebar-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; }
-  .sidebar-footer .machine { max-width: none; grid-column: 1; grid-row: 1; }
-  .sidebar-footer .status-pill { grid-column: 1; grid-row: 2; justify-self: end; }
-  #open-settings { grid-column: 2; grid-row: 1 / 3; }
+  .sidebar { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .sidebar-footer { display: flex; flex-wrap: nowrap; width: 100%; gap: 4px; }
+  .sidebar-footer .machine { flex: 1; min-width: 0; max-width: none; }
+  .sidebar-footer .status-pill, #open-settings { flex-shrink: 0; }
 }

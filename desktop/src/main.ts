@@ -543,6 +543,7 @@ function sizeClipEdges(): void {
     const viewport = el(id);
     const rule = clipSheet.cssRules[index] as CSSStyleRule;
     rule.style.removeProperty("max-height");
+    if (id === "connected-panel") continue;
     if (!viewport.getClientRects().length || viewport.scrollHeight <= viewport.clientHeight + 1) continue;
     const box = viewport.getBoundingClientRect();
     const style = getComputedStyle(viewport);
@@ -561,17 +562,31 @@ function sizeClipEdges(): void {
     if (bottom < edge && bottom - box.top > 36) rule.style.setProperty("max-height", `${bottom - box.top}px`, "important");
   }
 }
+let listBudgetSheet: CSSStyleSheet | undefined;
 let spaceListSheet: CSSStyleSheet | undefined;
 function sizeSpaceList(): void {
-  sizeClipEdges();
-  const agents = el("agent-list");
-  updateScrollThumb(agents, "agent-list");
-  updateScrollThumb(el("connected-spaces").parentElement!, "spaces");
+  const panel = el("connected-panel");
+  if (clipSheet) (clipSheet.cssRules[1] as CSSStyleRule).style.removeProperty("max-height");
+  const agentList = el("agent-list");
+  if (panel.getClientRects().length) {
+    if (!listBudgetSheet) {
+      listBudgetSheet = new CSSStyleSheet();
+      listBudgetSheet.replaceSync('.has-running-agents #agent-list {}');
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, listBudgetSheet];
+    }
+    const rule = (listBudgetSheet.cssRules[0] as CSSStyleRule).style;
+    rule.maxHeight = '108px';
+    const actions = el("another-space");
+    const overflow = actions.getBoundingClientRect().bottom - panel.getBoundingClientRect().bottom;
+    if (overflow > 0 && agentList.children.length) {
+      const rows = Math.max(1, Math.floor((agentList.clientHeight - overflow) / 36));
+      rule.maxHeight = `${rows * 36}px`;
+    }
+  }
   const list = el("connected-spaces");
   const rows = [...list.children] as HTMLElement[];
-  if (rows.length < 4 || !list.getClientRects().length) return;
+  if (rows.length >= 4 && list.getClientRects().length) {
   let height = 0;
-  const panel = el("connected-panel");
   const viewport = list.parentElement!;
   const otherContent = panel.scrollHeight - viewport.getBoundingClientRect().height;
   const card = panel.closest<HTMLElement>(".connection-card")!;
@@ -589,11 +604,18 @@ function sizeSpaceList(): void {
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, spaceListSheet];
   }
   (spaceListSheet.cssRules[0] as CSSStyleRule).style.maxHeight = `${height}px`;
-  updateScrollThumb(viewport, "spaces");
+  }
+  sizeClipEdges();
+  updateScrollThumb(panel, "connected-panel");
+  updateScrollThumb(el("settings-panel"), "settings-panel");
+  updateScrollThumb(agentList, "agent-list");
+  updateScrollThumb(list.parentElement!, "spaces");
 }
 window.addEventListener("resize", () => requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); }));
 window.addEventListener("load", sizeSpaceList);
 document.addEventListener("scroll", () => {
+  updateScrollThumb(el("connected-panel"), "connected-panel");
+  updateScrollThumb(el("settings-panel"), "settings-panel");
   updateScrollThumb(el("agent-list"), "agent-list");
   updateScrollThumb(el("connected-spaces").parentElement!, "spaces");
 }, true);

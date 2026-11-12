@@ -196,6 +196,26 @@ try {
         }
         return failures;
       });
+      const headerRows = await page.evaluate(() => {
+        if (innerWidth > 460 || document.querySelector('#open-settings').hidden) return 0;
+        const boxes = ['.brand', '.machine', '.status-pill', '#open-settings'].map(s => document.querySelector(s).getBoundingClientRect());
+        boxes.sort((a,b) => a.top - b.top);
+        let rows = 0, bottom = -Infinity;
+        for (const box of boxes) { if (box.top >= bottom) { rows++; bottom = box.bottom; } else bottom = Math.min(bottom, box.bottom); }
+        return rows;
+      });
+      assert.ok(headerRows <= 2, `${name}: header uses at most two rows (${headerRows})`);
+      const primaryVisible = await page.evaluate(() => {
+        const panel = document.querySelector('#connected-panel');
+        const action = document.querySelector('#dashboard');
+        if (panel.hidden || !action.getClientRects().length || action.hidden) return true;
+        panel.scrollTop = 0;
+        const card = panel.closest('.connection-card').getBoundingClientRect();
+        const box = action.getBoundingClientRect();
+        const thumb = document.querySelector('[data-scroll-thumb="connected-panel"]');
+        return (box.top >= card.top && box.bottom <= card.bottom - 2) || !!(thumb && !thumb.hidden && thumb.getClientRects().length);
+      });
+      assert.ok(primaryVisible, `${name}: primary action visible at rest or panel overflow thumb visible`);
       const initialClips = await page.evaluate(() => {
         const failures = [];
         for (const card of document.querySelectorAll('.connection-card:has(#connected-panel:not([hidden])),#settings-panel:not([hidden])')) {
@@ -235,7 +255,7 @@ try {
       const layoutChecks = await page.evaluate(() => {
         const failures = { rows: [], thumbs: [], rhythm: [] };
         const visible = el => el && el.getClientRects().length && !el.closest("[hidden]");
-        for (const selector of [".connected-spaces-scroll", "#agent-list"]) {
+        for (const selector of [".connected-spaces-scroll", "#agent-list", "#connected-panel", "#settings-panel"]) {
           const list = document.querySelector(selector);
           if (!visible(list)) continue;
           const box = list.getBoundingClientRect();
@@ -256,6 +276,15 @@ try {
           const before = agents.getBoundingClientRect().top - spaces.getBoundingClientRect().bottom;
           const after = applications.getBoundingClientRect().top - agents.getBoundingClientRect().bottom;
           const note = document.querySelector("#dashboard-spaces-note");
+          if (visible(note)) {
+            const captionGap = note.getBoundingClientRect().top - spaces.getBoundingClientRect().bottom;
+            if (Math.abs(captionGap - 4) > 1) failures.rhythm.push(`caption gap ${captionGap}, expected 4`);
+          }
+          const dashboard = document.querySelector('#dashboard');
+          if (visible(dashboard) && !dashboard.hidden) {
+            const actionGap = dashboard.getBoundingClientRect().top - applications.getBoundingClientRect().bottom;
+            if (Math.abs(actionGap - 12) > 1) failures.rhythm.push(`action gap ${actionGap}, expected 12`);
+          }
           if (!visible(note) && Math.abs(before - after) > 1) failures.rhythm.push(`section gaps ${before}/${after}`);
         }
         return failures;
