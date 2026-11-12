@@ -118,8 +118,9 @@ async function rejection(call: Promise<unknown>): Promise<{ code?: string; messa
   }
 }
 
-/** A bare down run from `root`, with what it printed, the exit code it set and its refusal. */
-async function bareDownIn(root: string, values: Record<string, string | boolean> = {}) {
+/** Run owned stop fixtures with scripted consent by default. Explicit values retain refusal and
+ *  preview coverage. Capture output, exit code and refusal from the root. */
+async function bareDownIn(root: string, values: Record<string, string | boolean> = { yes: true }) {
   let out = "";
   const log = console.log, write = process.stdout.write, exitCode = process.exitCode, cwd = process.cwd();
   process.exitCode = undefined;
