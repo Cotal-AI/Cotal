@@ -84,7 +84,7 @@ const M = mgr as unknown as {
   freeSlot: (a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause) => void;
   deprovision: (a: Seat) => Promise<void>;
 };
-M.managerInstanceId = "smoke-manager-instance";
+M.managerInstanceId = "smokemanagerinstance000000";
 (mgr as unknown as { staticLifecycleEvict?: (principal: string) => Promise<unknown> }).staticLifecycleEvict = async (principal) =>
   ({ principal, kicked: 1, remaining: 0, scanComplete: true, verifiedGone: true });
 (mgr as unknown as { ep: Record<string, unknown> }).ep = {
