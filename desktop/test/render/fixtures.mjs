@@ -32,7 +32,7 @@ export function nativeStub(scenario) {
       if (request.op === "install") { state.installed = true; return ok({ installed: true }); }
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
       if (request.op === "status" && state.offline) return fail("NOT_ANSWERING", "The background service did not answer. Check the host connection before retrying.");
-      if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
       if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? ["https://cloud.cotal.ai/api/auth"] : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
       if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? "Davids-MacBook-Pro" }); }
@@ -106,6 +106,13 @@ const reachable = async page => {
 const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
 const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
 export const scenarios = [
+  { name: "header-name-editor", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#edit-computer-name"), expect: async page => {
+    assert.equal(await page.locator("#settings-panel #computer-name-form").isVisible(), true, "finished header Edit opens the Settings row editor");
+  } },
+  { name: "account-manager-starting", state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: "connected" }] } }, expect: async page => {
+    assert.equal(await page.locator('[data-space="research"] small').last().textContent(), "Starting", "a space without a ready Manager must not claim Connected");
+  } },
+
   ...["edit", "invalid", "current"].map(mode => ({
     name: `audit-settings-name-location-${mode}`, state: { installed: true, signedIn: true, connected: true, update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}) } },
     act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); if (mode === "invalid") { await page.fill("#computer-name-input", ""); await page.press("#computer-name-input", "Enter"); } },
@@ -157,6 +164,10 @@ export const scenarios = [
   { name: "audit-move-offer", state: { installed: true, relocationOffer: true }, expect: presenceOffer("move-offer") },
   { name: "audit-pin-offer", state: { installed: true, signedIn: true, connected: true, pinOffer: true }, act: page => page.click("#open-settings"), expect: presenceOffer("pin-offer") },
   { name: "audit-pin-message", state: { installed: true, signedIn: true, connected: true, pinMessage: "Cotal is pinned to your taskbar." }, act: page => page.click("#open-settings"), expect: async page => assert.equal(await page.locator("#settings-startup > #pin-availability").count(), 1) },
+  ...[1.25, 1.5].map(factor => ({ name: `audit-zoom-${factor * 100}-connected`, state: { installed: true, signedIn: true, connected: true, agents: auditAgents }, act: zoom(factor), expect: async page => {
+    await page.locator("#dashboard").scrollIntoViewIfNeeded();
+    assert.ok(await page.locator("#dashboard").evaluate(el => { const box = el.getBoundingClientRect(); const card = el.closest(".connection-card").getBoundingClientRect(); return box.top >= card.top && box.bottom <= card.bottom && box.bottom <= innerHeight; }), "dashboard stays fully reachable inside the connection card");
+  } })),
   ...[1.25, 1.5].map(factor => ({ name: `audit-zoom-${factor * 100}-settings`, state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await zoom(factor)(page); }, expect: reachable })),
 
   { name: "audit-update-banner-agents", state: { installed: true, signedIn: true, connected: true, update, agents: auditAgents } },
@@ -171,10 +182,13 @@ export const scenarios = [
   })),
   ...[12, 30].map(count => ({
     name: `connected-long-spaces-${count}`,
-    state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: count }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, desired: true, observed: "connected" })) } },
+    state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: count }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, desired: true, observed: "connected" })) } },
     expect: async page => {
       assert.equal(await page.locator("#connected-panel").isVisible(), true);
       assert.equal(await page.locator('[data-testid="connected-space-row"]').count(), count);
+      assert.ok(await page.locator("footer").evaluate(el => el.getBoundingClientRect().bottom <= innerHeight), "long-space footer stays inside the viewport");
+      assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected");
+      assert.deepEqual(await page.locator('[data-testid="connected-space-row"] > span > small:last-child').allTextContents(), Array(count).fill("Connected"));
       assert.equal(await page.locator("#settings-panel").isVisible(), false);
       const region = page.getByRole("region", { name: "Connected space list", exact: true });
       assert.equal(await region.getAttribute("tabindex"), "0");
@@ -333,7 +347,10 @@ export const scenarios = [
       else await page.press("#computer-name-input", "Enter");
     },
     expect: async page => {
-      if (mode === "invalid") assert.match(await page.locator("#computer-name-error").textContent(), /1 to 128/);
+      if (mode === "invalid") {
+        assert.match(await page.locator("#computer-name-error").textContent(), /1 to 128/);
+        assert.ok(await page.locator(".machine").evaluate(el => parseFloat(getComputedStyle(el).borderRadius) < 100), "Connect editor must not be a pill");
+      }
       if (mode === "save") assert.equal(await page.locator("#machine-name").textContent(), "My named computer");
       if (mode === "cancel") assert.equal(await page.locator("#machine-name").textContent(), "Davids-MacBook-Pro");
       if (mode === "long") assert.equal(await page.locator("#machine-name").getAttribute("title"), ("Very long computer name ".repeat(5)).trim());

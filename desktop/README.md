@@ -42,6 +42,8 @@ The equivalent terminal controls are `cotal daemon install`, `cotal daemon start
 
 Registration requires the space owner's approval and the space operator's binding for `ai.cotal.machine`. No shipped command or page provides those approval controls. Once both are complete, rerun `cotal daemon register --space <space>` until it reports `registered`, then run `cotal daemon service-connect --space <space>`. See the [daemon registration prerequisites](../docs/cli-processes.mdx#daemon) for the approval states and refusals.
 
+Space rows say Connected only after that space's Manager reports launch readiness. Until then they say Starting. Edit in the Connected header opens the computer-name editor in Settings. During Connect, the editor expands in the header rather than staying inside the name pill.
+
 ## Design
 
 The cotal.ai site design system is the visual source: cream paper, navy ink, hard offset shadows and the three-ring mark. The app uses one paper theme in either OS appearance. Bricolage Grotesque, Geist and Geist Mono are bundled as latin WOFF2 files with their SIL Open Font License texts in `dist/licenses/`. No font host is contacted. The existing same-origin CSP covers fonts through `default-src 'self'`.
