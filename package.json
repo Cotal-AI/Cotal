@@ -490,6 +490,8 @@
     "smoke:remote-standing-adoption": "tsx implementations/manager/smoke/remote-standing-adoption.smoke.ts",
     "smoke:authority-issued-serve": "tsx implementations/manager/smoke/authority-issued-serve.smoke.ts",
     "smoke:renewal-request-continuity": "tsx implementations/manager/smoke/renewal-request-continuity.smoke.ts",
+    "smoke:renewal-mint-contention": "tsx implementations/manager/smoke/renewal-mint-contention.smoke.ts",
+    "smoke:renewal-mint-contention:delayed": "tsx implementations/manager/smoke/renewal-mint-contention.smoke.ts --delayed-second-mint",
     "smoke:renewal-duty-requests": "tsx implementations/manager/smoke/renewal-duty-requests.smoke.ts",
     "smoke:renewal-retirement-bound": "tsx implementations/manager/smoke/renewal-retirement-bound.smoke.ts",
     "smoke:request-safe-reconnect": "tsx packages/core/smoke/request-safe-reconnect.smoke.ts",

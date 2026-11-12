@@ -324,6 +324,59 @@ try {
     credentialIdOf(sameSecondSiblings.s1) !== credentialIdOf(sameSecondSiblings.s2)
     && rowsWithSiblings.filter((r) => r.holderPrincipal === principalKey(DEV_OWNER, swId.id).key && r.state === "active").length === 2);
 
+  console.log("F2. serve mint retry bounds and post-contention refusals on real KV");
+  for (const fault of ["exhausted", "boundary", "generation", "observe", "ambiguous"] as const) {
+    const instanceId = mintLifecycleUid();
+    await provisionEndpointGateOpen(kv, { endpoint: ENDPOINT, instanceId, principal: principalKey(DEV_OWNER, serveId.id).key });
+    const registration = await registerServingInstance(recordsKv, {
+      space: SPACE, spec: { endpoint: ENDPOINT, owner: DEV_OWNER, clusterDigests: [dc], protocol: { v: 1 } },
+      instanceId, registrant: { owner: DEV_OWNER }, authority, readClusterArtifact,
+      barrier: endpointRegistrationBarrier(kv, SPACE, { endpoint: ENDPOINT, instanceId, opId: mintLifecycleUid() }),
+    });
+    const native = serveIssuanceGateKv(kv, SPACE, { endpoint: ENDPOINT, instanceId });
+    const credentialId = mintLifecycleUid();
+    let commits = 0, stages = 0, revokes = 0;
+    const wrapped = {
+      ...native,
+      stage: async (row: EpServeLedgerRow) => { stages++; await native.stage(row); },
+      revoke: async (row: EpServeLedgerRow) => { revokes++; await native.revoke(row); },
+      observe: async () => {
+        if (fault === "observe" && commits > 0) throw new Error("injected observation failure");
+        return native.observe();
+      },
+      commit: async (pin: number) => {
+        commits++;
+        if (fault === "boundary" && commits === 64) return native.commit(pin);
+        if (fault === "ambiguous" && commits === 2) {
+          if (!await native.commit(pin)) throw new Error("ambiguous setup CAS lost");
+          throw new Error("injected lost acknowledgement after committed touch");
+        }
+        // A real competing mint touches identical bytes, making this mint's pin stale.
+        if (!await native.commit(pin)) throw new Error("competing touch unexpectedly lost");
+        if (fault === "generation") {
+          const barrier = endpointRegistrationBarrier(kv, SPACE, { endpoint: ENDPOINT, instanceId, opId: mintLifecycleUid() });
+          const before = (await barrier.observe())!;
+          const token = await barrier.freeze(before.revision);
+          if (token === null || !await barrier.reopen(token, { generation: before.generation + 1,
+            processEpoch: before.processEpoch, registrationRevision: before.registrationRevision,
+            nameAuthorityRevision: before.nameAuthorityRevision })) throw new Error("generation barrier setup failed");
+        }
+        return native.commit(pin);
+      },
+    };
+    const issue = () => finalizeServeIssuance(wrapped, registration.grant, {
+      credentialId, credentialKey: serveId.id, holderActor: serveId.id, sourceChain: ["root"], exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    if (fault === "boundary") await issue();
+    else await rejects(`${fault}: serve mint refuses after real gate contention`, issue, fault === "generation" ? "expired" : "unavailable");
+    const expectedCalls = fault === "boundary" || fault === "exhausted" ? 64 : fault === "ambiguous" ? 2 : 1;
+    c(`${fault}: bounded commits, one stage and refusal revocation`, commits === expectedCalls && stages === 1
+      && revokes === (fault === "boundary" ? 0 : 1), { commits, stages, revokes });
+    const key = epcredRowKey(ENDPOINT, instanceId, credentialId);
+    c(`${fault}: durable row matches release outcome`, parseLedgerRow((await kv.get(key))!.value, key).state
+      === (fault === "boundary" ? "active" : "revoked"));
+  }
+
   console.log("G. bounded registration revocation drains every started write before eviction or refusal (#6279)");
   for (const fault of ["none", "async", "sync"] as const) {
     const endpoint = `batch${fault}`;

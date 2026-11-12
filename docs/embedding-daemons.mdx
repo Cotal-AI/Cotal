@@ -226,7 +226,9 @@ the same way, bounded to 5 to 300 seconds, with the five-minute `issuer` lifetim
 ### Claim recovery order
 
 The auth plane can renew a registered manager's five standing credentials from the current
-service registration. The manager binds its replacement serve connection before draining the old
+service registration. A serve mint retries contention with session or other serving mints only while
+all issuance-gate authority fields remain unchanged. A freeze or changed coordinate still refuses
+issuance, and contention retries are bounded. The manager binds its replacement serve connection before draining the old
 connection. Both use the same incarnation's queue groups, so overlap does not execute a request
 twice. The old connection has five seconds to drain in-flight handlers and flush replies before
 closing. If that deadline expires, the manager reports the unfinished drain and closes only the
