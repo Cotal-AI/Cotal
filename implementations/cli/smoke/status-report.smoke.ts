@@ -648,9 +648,9 @@ if (process.platform !== "win32") {
     });
     const runningText = running.run(["status", "--plain"]);
     const runningJson = running.run(["status", "--json"]);
-    check("a running folder space is the target, and the heading says the selection applies outside it",
-      runningJson.envelope?.target.space === "held" && runningJson.envelope.result?.meshes.current === "sel" &&
-        /^Mesh: held\n {2}this folder's space; the selected space "sel" applies outside it$/m.test(runningText.stdout), shown(runningText));
+    check("an explicit selection wins over a running folder and names its concrete override",
+      runningJson.envelope?.target.space === "sel" && runningJson.envelope.result?.meshes.current === "sel" &&
+        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or cotal use --clear$/m.test(runningText.stdout), shown(runningText));
 
     const stopped = await folderRig((project, run) => {
       check("rig: this folder's space is registered at a broker that does not answer",
@@ -658,10 +658,9 @@ if (process.platform !== "win32") {
     });
     const stoppedText = stopped.run(["status", "--plain"]);
     const stoppedJson = stopped.run(["status", "--json"]);
-    check("a stopped folder space is not the target: the selection is, with what this folder holds under it",
+    check("an explicit selection remains the target over a stopped folder and names its override",
       stoppedJson.envelope?.target.space === "sel" &&
-        /^Mesh: sel\n {2}this folder holds the stopped space "held"; restart it with `cotal up`$/m.test(stoppedText.stdout) &&
-        !/this folder's space/.test(stoppedText.stdout), shown(stoppedText));
+        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or cotal use --clear$/m.test(stoppedText.stdout), shown(stoppedText));
 
     const prepared = await folderRig((project, run) => {
       const created = run(["space", "create", "held", "--root", project]);
@@ -669,9 +668,9 @@ if (process.platform !== "win32") {
     });
     const preparedText = prepared.run(["status", "--plain"]);
     const preparedJson = prepared.run(["status", "--json"]);
-    check("a prepared folder space is not the target either, and its up is named under the selection",
+    check("an explicit selection remains the target over a prepared folder and names its override",
       preparedJson.envelope?.target.space === "sel" && preparedJson.envelope.result?.meshes.folder === null &&
-        /^Mesh: sel\n {2}this folder holds the prepared space "held"; start it with `cotal up`$/m.test(preparedText.stdout), shown(preparedText));
+        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or cotal use --clear$/m.test(preparedText.stdout), shown(preparedText));
   } finally {
     if (greeter.exitCode === null && greeter.signalCode === null) {
       const exited = once(greeter, "exit");
