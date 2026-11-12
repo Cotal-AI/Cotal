@@ -19,8 +19,22 @@ export function daemonEnvironmentKeys(source) {
   return keys;
 }
 
-export function strippedDaemonEnvironment(env, keys) {
-  const allowed = new Set(keys.map(key => key.toUpperCase()));
+export const contextVariants = Object.freeze([
+  "main-thread", "worker-thread", "worker-thread-daemon-env",
+  ...["machine-identity", "system-paths", "profile", "powershell"].map(group => `worker-thread-daemon-env-${group}`),
+]);
+export const contextVariantCount = contextVariants.length;
+
+const environmentGroups = {
+  "machine-identity": ["COMPUTERNAME", "USERNAME", "USERDOMAIN", "LOGONSERVER"],
+  "system-paths": ["SystemDrive", "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432", "ALLUSERSPROFILE", "PUBLIC"],
+  profile: ["HOMEDRIVE", "HOMEPATH"],
+  powershell: ["PSModulePath", "PSModuleAnalysisCachePath"],
+};
+
+export function strippedDaemonEnvironment(env, keys, group) {
+  assert.ok(group === undefined || Object.hasOwn(environmentGroups, group), "unknown environment group");
+  const allowed = new Set([...keys, ...(environmentGroups[group] ?? [])].map(key => key.toUpperCase()));
   const result = Object.fromEntries(Object.entries(env).filter(([key, value]) => allowed.has(key.toUpperCase()) && value !== undefined));
   result.DO_NOT_TRACK = "1";
   return result;
@@ -38,7 +52,7 @@ export function safeEnvironment(env) {
 
 /** Called inside the actual worker too, so metadata reflects that worker's environment copy. */
 export function nativeContextSample(options) {
-  const env = options.stripped ? strippedDaemonEnvironment(process.env, options.keys) : { ...process.env };
+  const env = options.stripped ? strippedDaemonEnvironment(process.env, options.keys, options.group) : { ...process.env };
   // Fixture controls are supplied after env_clear filtering, just as the task reader supplies them.
   for (const key of Object.keys(env)) if (["COTAL_DAEMON_TASK", "COTAL_DAEMON_TASK_INSTANCES"].includes(key.toUpperCase())) delete env[key];
   env.COTAL_DAEMON_TASK = options.unit;
@@ -71,7 +85,9 @@ export function nativeContextSample(options) {
 /** Resolve only after exit, draining both worker streams without retaining their content. */
 export function workerContextSample(options, boundMs = 190_000) {
   return new Promise(resolveResult => {
-    const worker = new Worker(`const {workerData,parentPort}=require('node:worker_threads'); import(workerData.module).then(m=>parentPort.postMessage({...m.nativeContextSample(workerData.options),workerEnvironment:m.safeEnvironment(process.env)})).catch(()=>{process.exitCode=1});`, { eval: true, workerData: { module: import.meta.url, options }, ...(options.stripped ? { env: strippedDaemonEnvironment(process.env, options.keys) } : {}), stdout: true, stderr: true });
+    const env = options.stripped ? strippedDaemonEnvironment(process.env, options.keys, options.group) : { ...process.env };
+    for (const key of Object.keys(env)) if (["COTAL_DAEMON_TASK", "COTAL_DAEMON_TASK_INSTANCES"].includes(key.toUpperCase())) delete env[key];
+    const worker = new Worker(`const {workerData,parentPort}=require('node:worker_threads'); import(workerData.module).then(m=>parentPort.postMessage({...m.nativeContextSample(workerData.options),workerEnvironment:m.safeEnvironment(process.env)})).catch(()=>{process.exitCode=1});`, { eval: true, workerData: { module: import.meta.url, options }, env, stdout: true, stderr: true });
     worker.stdout.resume();
     worker.stderr.resume();
     let sample = null;
@@ -105,8 +121,9 @@ export async function measureTaskContext(config, context, outputPath) {
   const rows = [];
   try {
     writeFileSync(fd, "[]\n");
-    for (const variant of ["main-thread", "worker-thread", "worker-thread-daemon-env"]) {
-      const sample = variant === "main-thread" ? nativeContextSample(options) : await workerContextSample({ ...options, stripped: variant === "worker-thread-daemon-env" });
+    for (const variant of contextVariants) {
+      const group = variant.startsWith("worker-thread-daemon-env-") ? variant.slice("worker-thread-daemon-env-".length) : undefined;
+      const sample = variant === "main-thread" ? nativeContextSample(options) : await workerContextSample({ ...options, stripped: variant.startsWith("worker-thread-daemon-env"), group });
       rows.push({ context, variant, sourceSha256, expectedTaskIdentitySha256, instancesRequested: true, nodeVersion: process.version, valid: sample.status === 0 && sample.task?.identityMatches === true && (!sample.worker || (sample.worker.exitConfirmed && sample.worker.exitCode === 0 && !sample.worker.boundExceeded && !sample.worker.failed)), ...sample });
       // Same exclusively opened file, rewritten at offset zero without reopening a possibly replaced path.
       const data = Buffer.from(JSON.stringify(rows, null, 2) + "\n");
@@ -120,7 +137,7 @@ export async function measureTaskContext(config, context, outputPath) {
 
 export function renderContextTable(rows) {
   const contexts = new Set(["harness", "scheduled-task"]);
-  const variants = new Set(["main-thread", "worker-thread", "worker-thread-daemon-env"]);
+  const variants = new Set(contextVariants);
   const number = value => Number.isFinite(value) ? String(value) : "unknown";
   const stages = ["import-module", "enumerate-all", "principal-translate", "com-create", "com-connect", "com-get-task", "com-get-instances"];
   return [
