@@ -6,6 +6,7 @@ import { validateCatalogSnapshot, type SpaceCatalogSnapshot } from "@cotal-ai/cl
 import { accountComputerId } from "./account-identity.js";
 import type { AccountComputerStatus } from "./account-state.js";
 import type { createAccountReconciler } from "./account-reconcile.js";
+import { hasDaemonConnectIntent } from "./service.js";
 
 /** Poll account intent without interpreting transport failure as an empty desired set. */
 export function createAccountComputer(home: string, version: string, reconciler: ReturnType<typeof createAccountReconciler>) {
@@ -107,6 +108,9 @@ export function createAccountComputer(home: string, version: string, reconciler:
     const entry = findMesh(space);
     if (!entry) throw new Error("Refresh your spaces before changing this computer's connection.");
     if (entry.mode !== "user") return false;
+    // Reconnecting an existing manual service does not change an account's desired spaces.
+    // Its own renewal proof, not a human session, authorizes that connection.
+    if (enabled && !entry.catalogOwner && !entry.catalogId && hasDaemonConnectIntent(space, home)) return false;
     const candidates = signedInMachineAccounts(home).filter(item => entry.catalogOwner ? item.ownerKey === entry.catalogOwner : item.idpUrl === entry.userAuth?.idp.url);
     const account = candidates.length === 1 ? candidates[0] : undefined;
     if (!account) throw new Error("Sign in again and refresh your spaces before changing this computer's connection.");
