@@ -2359,7 +2359,7 @@ export function cotalToolSpecs(
       async run(agent, config, { endpoint, instance, command, args, self, timeoutMs }: { endpoint: string; instance?: string; command: string; args?: Record<string, unknown>; self?: boolean; timeoutMs?: number }) {
         try {
           const instanceId = instance ?? (endpoint === "manager" && self && !isAuthed(config) ? config.managerInstanceId : undefined);
-          const r = await agent.ep.invokeService(endpoint, command, args, { deadlineMs: timeoutMs ?? 30_000, ...(self ? { target: { mode: "self" as const } } : {}), ...(instanceId !== undefined ? { instanceId } : {}) });
+          const r = await agent.invokeEndpoint(endpoint, command, args, { deadlineMs: timeoutMs ?? 30_000, ...(self ? { target: { mode: "self" as const } } : {}), ...(instanceId !== undefined ? { instanceId } : {}) });
           if (r.reply.ok !== true) {
             const e = r.reply.error;
             // An endpoint's error text is bounded like its data: nothing over the limit is cut, and

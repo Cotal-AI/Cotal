@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
 import {
-  BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, assertCommandToken,
+  BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, assertCommandToken, assertLifecycleToken, resolvePeer,
   epCast, invokeCommand, invokeRepairingSplit, parsePrincipalKey, resolveService, unansweredRequest,
   type CompletionResult, type EpAttributedReply, type EpVerbTarget, type FlagSpec,
-  type FlagValues, type ParsedArgs, type ResolvedService,
+  type FlagValues, type ParsedArgs, type Presence, type ResolvedService,
 } from "@cotal-ai/core";
 import { type NatsConnection } from "@nats-io/transport-node";
 import {
   CommandFailure, codeSpan, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, writeEnvelope, writeResult, writeStreamRecord,
   loadMeshes, targetFlags, type Report,
-  recordOperationSpace,
+  recordOperationSpace, resolveMeshTarget,
 } from "@cotal-ai/workspace";
 import { followEndpointAction, type AcceptedEndpointGoal } from "../lib/endpoint-goal.js";
 import { endpointResolution, resolveEndpointSelection, validateEndpointSelector } from "../lib/endpoint-selection.js";
@@ -17,6 +17,7 @@ import { endpointFailure, NativeReplyError, shellWord, withPairedCallerRemedy } 
 import { refuseUnmappedHandle } from "../lib/endpoint-capability-gates.js";
 import { invokeEndpointScatter, writeEndpointScatter } from "../lib/endpoint-scatter.js";
 import { onInstanceId, onFlag } from "../lib/control.js";
+import { rosterOf } from "../lib/manager-choice.js";
 import { openEndpointConnection as epConnection, pairedCallerCommand } from "../lib/endpoint-client.js";
 
 const endpointTargetFlags = targetFlags.map((flag) => flag.name === "creds" ? { ...flag, description: "explicit credential file; native calls require its paired standalone context and registered static root" } : flag);
@@ -111,7 +112,8 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
   const input = parsedInput(values.args);
   const requestedInstance = values.on === undefined ? undefined : onInstanceId(values.on, "cotal endpoint invoke");
   const selection = resolveEndpointSelection(selector, values, requestedInstance);
-  const { endpoint, instanceId: on } = selection;
+  const { endpoint } = selection;
+  let on = selection.instanceId;
   recordOperationSpace(selection.space);
   let connection: Awaited<ReturnType<typeof epConnection>> | undefined;
   const requestId = randomUUID();
@@ -120,6 +122,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
   let accepted: AcceptedEndpointGoal | undefined;
   let streamStarted = false;
   let pairedCaller = false;
+  let selectedSeat: Presence | undefined;
   let interrupted: "SIGINT" | "SIGTERM" | undefined;
   const follow = new AbortController();
   const onInterrupt = () => { interrupted = "SIGINT"; follow.abort(); };
@@ -127,6 +130,21 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
   let result;
   try {
     selection.check();
+    const seatName = command === "inspect" && typeof input?.name === "string" ? input.name
+      : command === "attach" ? values.name : undefined;
+    if (endpoint === BASELINE_LIFECYCLE_ENDPOINT && seatName !== undefined && (values.creds !== undefined || selection.credentialRef !== undefined))
+      throw new CommandFailure("refused", "PERMISSION_DENIED", "a named seat read requires its holding manager's instance rail; this paired caller mode carries only class-one calls, so no request was sent", { target });
+    if (endpoint === BASELINE_LIFECYCLE_ENDPOINT && on === undefined && seatName !== undefined && values.creds === undefined &&
+        resolveMeshTarget(process.cwd(), { space: selection.space, readOnly: true }).mode !== "user") {
+      const roster = await rosterOf({ space: selection.space, ...(values.server === undefined ? {} : { server: String(values.server) }) });
+      const peer = resolvePeer(roster.filter(p => p.status !== "offline"), seatName);
+      if (!peer) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no agent "${seatName}" is held in live presence`, { target });
+      const instance = peer.card.meta?.["ai.cotal.manager.instance"];
+      if (typeof instance !== "string") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `agent "${seatName}" reports no holding manager instance`, { target });
+      on = assertLifecycleToken(instance, "holding manager instance");
+      selectedSeat = peer;
+      target.requestedInstanceId = on;
+    }
     connection = await epConnection({ ...args.values, space: selection.space, ...(selection.credentialRef ? { creds: selection.credentialRef.path } : {}) }, values.admin ? "control-caller-admin" : "control-caller-privileged", endpoint, on);
     const { nc, space, auth, callerCredential } = connection;
     if (on !== undefined && auth.managerInstanceId !== undefined && on !== auth.managerInstanceId) throw new CommandFailure("refused", "CONFLICT", "the explicit pin differs from this credential's instance authority", { target });
@@ -149,6 +167,8 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     // contract is fetched with the command's.
     const commands = values.name !== undefined && endpoint === BASELINE_LIFECYCLE_ENDPOINT ? [...new Set([command, "inspect"])] : [command];
     const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: budgetMs, commands, ...(instanceId === undefined ? {} : { instanceId }) }).catch((error: unknown) => {
+      if (selectedSeat && unansweredRequest(error))
+        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `manager instance ${on} did not answer the named seat's contract read`, { target, cause: error });
       if (!(error instanceof EpEnvelopeError) || error.code !== "deadline-exceeded" || unansweredRequest(error) && values.timeout === undefined) throw error;
       if (unansweredRequest(error)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read within the ${budgetMs}ms --timeout, so nothing is serving it, none could be reached, or the deadline was too short`, {
         native: { code: error.code, outcome: error.outcome }, cause: error,
@@ -164,6 +184,9 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     if (values.cast && declaration.class !== "ephemeral") throw new CommandFailure("refused", "USAGE_INVALID", "journaled commands cannot be cast; no command was published", { target });
     if (values.wait && declaration.action !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--wait belongs to a command declared as a native action; no command was submitted", { target });
     const nativeTarget = await resolveTarget(nc, space, service, values, remainingMs, selection.reference !== undefined);
+    if (selectedSeat && nativeTarget && nativeTarget.mode !== "self" &&
+        (`${nativeTarget.owner}.${nativeTarget.actor}` !== selectedSeat.card.id || nativeTarget.lifecycleUid !== selectedSeat.lifecycleUid))
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the seat changed lifecycle after owner resolution, so nothing was sent", { target });
     if (declaration.targeted !== (nativeTarget !== undefined) || nativeTarget && !declaration.modes.includes(nativeTarget.mode)) throw new CommandFailure("refused", "USAGE_INVALID", "the selected targeting mode does not match the endpoint's declared command", { target });
     const canonicalInput = input === undefined && !declaration.contract.input.validate(null) && declaration.contract.input.validate({}) ? {} : input ?? null;
     // The fetched contract refused the body before publication, so the command did not run. An
@@ -215,6 +238,11 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
       } });
       else { beforeSubmit(); response = await invoke(nc, space, service, command, input, { ...(nativeTarget ? { target: nativeTarget } : {}), deadlineMs, id: requestId }); }
       if (!response.reply.ok) throw new NativeReplyError(response, "invocation");
+      if (selectedSeat && command === "inspect") {
+        const row = response.reply.data as { id?: string; lifecycleUid?: string };
+        if ((row.id !== selectedSeat.card.id && `${service.caller.owner}.${row.id}` !== selectedSeat.card.id) || row.lifecycleUid !== selectedSeat.lifecycleUid)
+          throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the seat changed lifecycle after owner resolution; no current row was accepted", { target });
+      }
       result = { kind: "endpoint-reply" as const, command, requestId: response.reply.id, responder: response.responder,
         resolution: endpointResolution(selection, response.responder),
         ...(callerCredential ? { callerCredential: callerCredential } : {}),

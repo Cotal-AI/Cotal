@@ -44,7 +44,10 @@ const ep = new CotalEndpoint({
     name: e.COTAL_NAME,
     role: "worker",
     kind: e.COTAL_E2E_KIND || "agent",
-    ...(e.COTAL_E2E_META_PROVIDER ? { meta: { provider: e.COTAL_E2E_META_PROVIDER } } : {}),
+    meta: {
+      ...(e.COTAL_MANAGER_INSTANCE ? { "ai.cotal.manager.instance": e.COTAL_MANAGER_INSTANCE } : {}),
+      ...(e.COTAL_E2E_META_PROVIDER ? { provider: e.COTAL_E2E_META_PROVIDER } : {}),
+    },
   },
   lifecycleUid: e.COTAL_LIFECYCLE_UID,
   channels: [],
