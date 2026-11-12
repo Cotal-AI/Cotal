@@ -29,7 +29,7 @@ import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import {
   isReachable, createSpaceAuth, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams,
   startMembershipFeed, provisionAgent, mintLifecycleUid, chatSubject, membershipBucket, membershipKey, principalKey,
-  DEV_OWNER, credsClaims, type MembershipFeedHandle,
+  DEV_OWNER, credsClaims, reconcileSpaceMemoryBuckets, type MembershipFeedHandle,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -152,6 +152,9 @@ try {
     await wait(300);
     srv = startBroker();
     await waitReachable();
+    const restored = await reconcileSpaceMemoryBuckets({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+    check("reconnect: the host restores the lost Memory membership store before observing recovery",
+      restored.some(row => row.stream === `KV_${membershipBucket(space)}` && row.recreated));
     const restarted = await join_("after-restart");
     check("reconnect: after a broker restart conn A sees a new member on the proven cred", await sees(feed, restarted, "after-restart", 15_000), logs);
     await feed.stop(); feed = undefined;

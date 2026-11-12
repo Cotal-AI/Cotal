@@ -1897,6 +1897,7 @@
   "cli:up--logfile-max-num": "current:up --logfile-max-num",
   "cli:up--max-payload": "current:up --max-payload",
   "cli:up--recreate-issued-stores": "current:up --recreate-issued-stores",
+  "cli:up--recreate-membership-store": "current:up --recreate-membership-store",
   "cli:__daemon-deliver--spaces": "internal:hidden delivery host entry serving each declared space from one process",
   "cli:deliver--spaces": "current:deliver --spaces",
   "cli:service-endpoint--to": [

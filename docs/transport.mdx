@@ -91,6 +91,9 @@ backstop copies and rechecks the current read ACL, membership interval, and life
 before handing content to a member through `dlv_<owner>-<actor>-<uid>`.
 That consumer exists only when the lifecycle's `allowSubscribe` is nonempty. A channel-less
 lifecycle still has its DM durable and any role queue, but no DLV consumer or DLV bind grants.
+`CotalEndpoint` selects this optional binding from a static credential's presented publish grants
+when no `allowSubscribe` option is supplied. Bearer compositions pass the resolved read ACL because
+the callout sentinel does not contain it. An attempted bind that the broker denies still fails.
 
 An authenticated agent binds its provisioned `dm_<owner>-<actor>-<uid>` consumer for
 DMs. Holders of a role share the `svc_<role>` consumer for queued anycast work.

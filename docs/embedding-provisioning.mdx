@@ -64,9 +64,10 @@ await setupSpaceStreams({
 The recreation credential can inspect and delete only `KV_cotal_membership_<space>`. The ordinary
 provisioner creates and verifies the empty Memory replacement. The membership feed is derived and
 stays stale until its writer finishes a complete authoritative rebuild and stamps a fresh heartbeat.
-`reconcileSpaceMemoryBuckets` recreates missing Memory presence and membership buckets on a wake or
-broker restart. It refuses a missing File delivery or manager lease bucket and does not widen any
-standing credential.
+The host must call `reconcileSpaceMemoryBuckets` with provisioner authority after a wake or broker
+restart, before treating presence or membership as ready. The call recreates their missing Memory
+buckets. A transport reconnect alone does not restore them. It refuses a missing File delivery or
+manager lease bucket and does not widen any standing credential.
 
 [SPEC §4](../SPEC.md#4-delivery-modes) requires the creation-time delivery class to be discoverable on the wire.
 A daemon-backed space records `durable`; it does not rely on a receiver's fallback policy.

@@ -412,8 +412,9 @@ export interface EndpointOptions {
    *  a call with no explicit channel rather than picking one. */
   channels?: string[];
   /** The credential's complete channel read ACL when the composition has it. An explicit empty list
-   * means provisioning omitted the DLV durable and this endpoint must not probe for it. Omitted
-   * retains the native bind probe; a denied bind refuses startup rather than implying an empty ACL. */
+   * means provisioning omitted the DLV durable. When omitted, static credentials select the optional
+   * bind from their presented publish permissions; bearer callers need the resolved ACL. A denied
+   * bind still refuses startup. */
   allowSubscribe?: string[];
   /** Presence heartbeat interval (ms). */
   heartbeatMs?: number;
@@ -7239,6 +7240,14 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.ownLifecycleUid) return; // no lifecycle uid — never provisioned for Plane-3 (its durable is lifecycle-keyed)
     if (this.allowSubscribe?.length === 0) return; // known channel-less grant: no DLV durable or bind rows exist
     const durable = dlvDurable(this.owner, this.actor, this.ownLifecycleUid);
+    if (this.allowSubscribe === undefined && !this.userMode && this.nc) {
+      // Native credential-only clients have no separate ACL option. Use the publish permissions
+      // captured when THIS connection authenticated; a callout sentinel does not carry the grant.
+      const permission = this.watchDeletePermissions.get(this.nc)?.();
+      // Only an absent allow selects no binding. A declared bind with a deny still reaches the
+      // broker and fails, so a refusal cannot masquerade as a channel-less credential.
+      if (permission && !issuedPermitsSubject({ ...permission, deny: [] }, `$JS.API.CONSUMER.INFO.${dlvStream(this.space)}.${durable}`)) return;
+    }
     let consumer;
     try { consumer = await this.js.consumers.get(dlvStream(this.space), durable); }
     catch (e) {

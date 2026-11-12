@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AckPolicy, DeliverPolicy, jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
+import { encodeUser } from "@nats-io/jwt";
+import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import {
   CotalEndpoint, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, dlvDurable, dlvStream,
   dmDurable, dmStream, isPermissionDenied, isReachable, mintCreds, mintLifecycleUid, newIdentity, permissionsFor,
-  provisionAgentDurables, serverConfig, setupSpaceStreams, standaloneConnectOpts,
+  provisionAgentDurables, serverConfig, setupSpaceStreams, standaloneConnectOpts, credsClaims, credsFromJwt,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -62,8 +64,8 @@ try {
 
   const agentId = newIdentity();
   const noReadCreds = await mintCreds(auth, agentId, "agent", { principal, lifecycleUid: uid, allowSubscribe: [], allowPublish: [] });
-  const agent = (allowSubscribe?: string[]) => {
-    const endpoint = new CotalEndpoint({ space, servers, creds: noReadCreds, lifecycleUid: uid,
+  const agent = (allowSubscribe?: string[], creds = noReadCreds) => {
+    const endpoint = new CotalEndpoint({ space, servers, creds, lifecycleUid: uid,
       channels: [], ...(allowSubscribe === undefined ? {} : { allowSubscribe }), watchChannels: false,
       watchPresence: false, registerPresence: false, card: { id: agentId.id, owner: principal.owner, actor: principal.actor, name: "worker", kind: "agent" } });
     endpoint.on("error", () => {});
@@ -74,18 +76,39 @@ try {
   await explicit.start();
   check("explicit channel-less endpoint starts with only its DM durable", true);
   await explicit.stop();
-  const unknown = agent();
+  const credentialOnly = agent();
+  let started = false;
+  try { await credentialOnly.start(); started = true; }
+  catch (error) { if (!isPermissionDenied(error)) throw error; }
+  check("a native credential without DLV grants starts without a separate ACL option", started);
+  await credentialOnly.stop();
+  const inconsistent = agent(["general"]);
   let refused = false;
-  try { await unknown.start(); }
+  try { await inconsistent.start(); }
   catch (error) { if (!isPermissionDenied(error)) throw error; refused = true; }
-  check("a denied DLV bind without an explicit empty ACL refuses instead of silently degrading", refused);
-  await unknown.stop();
+  check("an explicit nonempty ACL with denied DLV binding refuses instead of silently degrading", refused);
+  await inconsistent.stop();
 
   await provisionAgentDurables(provisioner, principal, { subscribe: [], allowSubscribe: ["general"] });
   const info = await jsm.consumers.info(dlvStream(space), dlvDurable(principal.owner, principal.actor, uid));
   check("[] to nonempty regrant creates DLV with unchanged DeliverAll and explicit ACK semantics",
     info.config.deliver_policy === DeliverPolicy.All && info.config.ack_policy === AckPolicy.Explicit,
     info.config);
+  const readCreds = await mintCreds(auth, agentId, "agent", { principal, lifecycleUid: uid, allowSubscribe: ["general"], allowPublish: [] });
+  const readable = agent(undefined, readCreds);
+  await readable.start();
+  check("a native credential with DLV grants binds without a separate ACL option", true);
+  await readable.stop();
+  const claims = credsClaims(readCreds).nats!;
+  const deniedJwt = await encodeUser("denied-delivery-bind", fromPublic(agentId.id), fromPublic(auth.account.pub), {
+    ...claims, pub: { ...claims.pub, deny: [`$JS.API.CONSUMER.INFO.${dlvStream(space)}.${dlvDurable(principal.owner, principal.actor, uid)}`] },
+  }, { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)) });
+  const denied = agent(undefined, credsFromJwt(deniedJwt, agentId));
+  let nativeRefused = false;
+  try { await denied.start(); }
+  catch (error) { if (!isPermissionDenied(error)) throw error; nativeRefused = true; }
+  check("a declared DLV bind with a native deny refuses even without an ACL option", nativeRefused);
+  await denied.stop();
   const dmInfo = await jsm.consumers.info(dmStream(space), dmDurable(principal.owner, principal.actor, uid));
   check("DM durable remains present and independently configured", dmInfo.config.ack_policy === AckPolicy.Explicit);
   await nc.close();
@@ -97,4 +120,4 @@ try {
   release();
 }
 console.log(`\nCONDITIONAL-DLV SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"} (${pass} passed, ${fail} failed)`);
-process.exit(fail === 0 && pass === 8 ? 0 : 1);
+process.exit(fail === 0 && pass === 11 ? 0 : 1);

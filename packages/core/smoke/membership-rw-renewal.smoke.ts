@@ -35,6 +35,7 @@ import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import {
   isReachable, createSpaceAuth, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig,
   setupSpaceStreams, startMembershipFeed, credsFingerprint, credsClaims, idFromCreds, membershipBucket,
+  reconcileSpaceMemoryBuckets, membershipStoreDefinition, isStreamNotFound, isPermissionDenied,
   MEMBERSHIP_FEED_KEY, type MembershipFeedHandle,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -242,8 +243,21 @@ try {
   await wait(500);
   srv = startBroker();
   await waitReachable();
-  // conn B reconnects (maxReconnectAttempts:-1) + JetStream recovers from the persisted store; a REAL
-  // heartbeat advance past `hb` proves conn B did KV work again — not just that poll() swallowed an error.
+  // The host must restore Memory stores after a broker restart, as `cotal up` does. The feed's
+  // standing credential cannot do that itself; credential renewal must not grant stream creation.
+  let missing = false;
+  try { await heartbeatAt(renewed); } catch (error) { if (!isStreamNotFound(error)) throw error; missing = true; }
+  check("a broker restart really loses the Memory membership store", missing);
+  const reader = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(renewed)), inboxPrefix: `_INBOX_${feedId.id}`, maxReconnectAttempts: 0 });
+  try {
+    const definition = membershipStoreDefinition(space);
+    const denied = await new Kvm(reader).create(definition.bucket, definition.createOptions)
+      .then(() => false, error => { if (!isPermissionDenied(error)) throw error; return true; });
+    check("the renewed membership-rw credential cannot recreate its missing stream", denied);
+  } finally { await reader.close(); }
+  const restored = await reconcileSpaceMemoryBuckets({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  check("the privileged restart reconcile restores the Memory membership store", restored.some(row => row.stream === `KV_${membershipBucket(space)}` && row.recreated));
+  // A native heartbeat advance proves the still-running feed rebuilt its view after reconciliation.
   const afterRestart = await provesLive(feed, renewed, hb);
   check("feed RECOVERS after a broker restart (incidental reconnect used the proven cache)", afterRestart > hb, { afterRestart, hb });
   check("the incidental reconnect did NOT re-read the source (authenticator reads the proven cache only)", reads === readsBeforeRestart, `${reads} vs ${readsBeforeRestart}`);
@@ -348,6 +362,8 @@ try {
   await wait(500);
   srv = startBroker();
   await waitReachable();
+  const h2restored = await reconcileSpaceMemoryBuckets({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  check("H2 restart restores the Memory store under host authority", h2restored.some(row => row.stream === `KV_${membershipBucket(space)}` && row.recreated));
   const h2after = await provesLive(feed5, boundedInit, h2hb);
   check("post-validation-failure the cache is UNCHANGED — bounded cred still presented after reconnect (H2)", h2after > h2hb, { h2after, h2hb });
   await feed5.stop();

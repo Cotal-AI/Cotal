@@ -91,7 +91,7 @@ let srv = broker("initial");
 const observations: unknown[] = [];
 try {
   await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100 });
-  const added = spawnSync(process.execPath, [cli, "meshes", "add", space, "--server", server, "--mode", "open"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+  const added = spawnSync(process.execPath, [cli, "meshes", "add", space, "--server", server, "--mode", "open", "--root", root], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
   writeFileSync(join(root, "meshes-add.log"), added.stdout + added.stderr);
   if (added.status !== 0) throw new Error(`mesh registration failed: ${added.status}`);
   const chat = open("outage-check");
