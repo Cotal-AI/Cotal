@@ -202,7 +202,7 @@ async function askManagerEp(
       }
       const row = info.reply.data as { id: string; lifecycleUid: string };
       if (selected && ((row.id !== selected.id && `${caller.owner}.${row.id}` !== selected.id) || row.lifecycleUid !== selected.lifecycleUid))
-        return { ok: false, code: "expired", error: `${name} changed lifecycle after owner resolution, so nothing was sent`, preSubmitRefusal: true };
+        return { ok: false, code: "expired", error: `${name} changed lifecycle after owner resolution, so nothing was sent`, preSubmitRefusal: true, selectedSeatChanged: true };
       if (pin?.expectedTarget && (row.id !== pin.expectedTarget.id || row.lifecycleUid !== pin.expectedTarget.lifecycleUid))
         return { ok: false, code: "not-found", error: `${name} was replaced by a new run since it was selected, so nothing was sent; refresh the agent list and try again` };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
@@ -268,7 +268,7 @@ async function askManagerEp(
     if (selected && mapped.command === "inspect") {
       const row = r.reply.data as { id?: string; lifecycleUid?: string };
       if ((row.id !== selected.id && `${caller.owner}.${row.id}` !== selected.id) || row.lifecycleUid !== selected.lifecycleUid)
-        return { ok: false, code: "expired", error: `${selected.name} changed lifecycle after owner resolution; no current row was accepted` };
+        return { ok: false, code: "expired", error: `${selected.name} changed lifecycle after owner resolution; no current row was accepted`, selectedSeatChanged: true };
     }
     // The ep `models` reply is normalized to `{catalogs}` — unwrap so call sites keep the ctl shape.
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
@@ -304,7 +304,12 @@ export interface ManagerRequestReceipt {
  *  it used to key on the message prefix, which turned an operator-facing string into a control-flow
  *  predicate in another file. `answered` marks a refusal a manager responder sent itself; one the
  *  broker or this client raised leaves it unset. */
-export type ManagerReply = ControlReply & { unanswered?: boolean; answered?: true; preSubmitRefusal?: true; managerInstanceId?: string; managerEpoch?: number; observationCause?: { code?: string; outcome?: string }; intent?: ManagerRequestIntent; request?: ManagerRequestReceipt; nativeOutcome?: "executed" | "not-executed" | "unknown" };
+export type ManagerReply = ControlReply & {
+  /** This client compared the selected seat with inspect and proved its principal/lifecycle changed.
+   *  Permanent for that selection, unlike an expired manager epoch that a fresh resolve can repair. */
+  selectedSeatChanged?: true;
+  unanswered?: boolean; answered?: true; preSubmitRefusal?: true; managerInstanceId?: string; managerEpoch?: number; observationCause?: { code?: string; outcome?: string }; intent?: ManagerRequestIntent; request?: ManagerRequestReceipt; nativeOutcome?: "executed" | "not-executed" | "unknown";
+};
 
 /** Classify only a proved pre-effect refusal as refused; a missing effect outcome is not proof.
  *  Every message names the agent when the target carries one and ends with the manager's own

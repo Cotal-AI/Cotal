@@ -27,6 +27,10 @@ The canonical name, principal and lifecycle remain pinned through that mint, the
 and any subsequent targeted action. Explicit instance pins keep the same alias resolution and
 identity checks but never redirect to another manager. Ambiguous names and invalid manager hints
 refuse before submission.
+Terminal attachment keeps its initial principal and lifecycle across reconnects, including
+with an explicit manager pin. A replacement under the same alias ends that attachment instead
+of opening the replacement's terminal or retrying the old selection indefinitely. Manager epoch
+expiry alone remains recoverable.
 An explicit class-only caller file cannot make a named read and is refused without substituting an operator credential.
 `inspect` is the manager's only read keyed by a running seat name. Persona, workflow, goal and
 durable-slot reads keep their own manager-local scopes. An explicit instance still selects only

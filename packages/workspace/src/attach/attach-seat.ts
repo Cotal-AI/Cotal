@@ -5,6 +5,7 @@ import { ConnectRefusal, userSessionAuth } from "../connect.js";
 import { resolveControlTarget, resolveSeatControlTarget } from "../control-target.js";
 import { askManager, managerFailure, type ControlClient, type ManagerPin } from "../control/manager.js";
 import { locateSeat, seatMissRefusal, seatNotFoundMessage } from "../control/seat.js";
+import { presenceSeat } from "../control/seat-presence.js";
 import { isWorkspaceTargetError } from "../mesh-target.js";
 import { CommandFailure, recordOperationSpace } from "../output.js";
 import { renderReport } from "../present.js";
@@ -190,6 +191,11 @@ async function establishAttachSession(
   const t = seat ?? await resolveControlTarget(v, "control-caller-admin", on, first ? {} : { onRefusal: "throw" });
   recordOperationSpace(t.space);
   const reach = t.auth.bearer ? "owner" : "any";
+  // The loop reuses this target. Keep the first selection even when the manager was pinned;
+  // a fresh selection on reconnect could attach another incarnation under the same alias.
+  // Picker and spawn targets already carry their own immutable principal/lifecycle fence.
+  if (!t.auth.bearer && !v.expectedSeat && !v.expectedTarget)
+    v.expectedSeat = presenceSeat(await v.control.roster({ space: t.space, server: t.server }), v.name).expectedSeat;
   // A refusal's report names the mesh in its heading, so this block names it once, in a field.
   if (first) console.error(renderReport({ sections: [{ title: "Attach", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Agent", v.name], ["Manager", on ?? t.auth.managerInstanceId ?? "native selection"]] }] }] }, "rich", process.stderr));
   const reply = await askManager(v.control, t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on, expectedTarget: v.expectedTarget, expectedSeat: v.expectedSeat });
@@ -207,7 +213,7 @@ async function establishAttachSession(
       });
     if (first && (reply.preSubmitRefusal || reply.nativeOutcome === "not-executed"))
       throw managerFailure(reply, "terminal attach", { space: t.space, agent: v.name, managerInstanceId: reply.managerInstanceId ?? on ?? null });
-    return { ok: false, kind: attachRefusal(reply.code, reply.details), message: reply.error ?? "error", fromManager: true, code: reply.code, ...(noTerminal ? { noTerminal: true } : {}) };
+    return { ok: false, kind: reply.selectedSeatChanged ? "gone" : attachRefusal(reply.code, reply.details), message: reply.error ?? "error", fromManager: true, code: reply.code, ...(noTerminal ? { noTerminal: true } : {}) };
   }
   // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
   // mesh. A static-auth mesh mints a per-session, rails-only caller cred from the resolved root's

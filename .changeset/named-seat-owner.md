@@ -9,3 +9,5 @@ Keep instance permission refusals explicit, reject changed lifecycles, and stop 
 sibling managers for a post-spawn model audit or named despawn lookup. Explicit manager pins
 retain alias canonicalization and lifecycle checks, and named status preserves the bare actor
 IDs printed by static and open manager rows.
+Terminal reconnects keep the initially selected incarnation with or without a manager pin,
+and end when that incarnation has been replaced.
