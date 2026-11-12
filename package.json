@@ -482,6 +482,7 @@
     "smoke:manager-goal-index": "tsx implementations/auth/smoke/manager-goal-index.smoke.ts",
     "smoke:manager-registration-check": "tsx implementations/auth/smoke/manager-registration-check.smoke.ts",
     "smoke:manager-admin-authorization": "tsx implementations/auth/smoke/manager-admin-authorization.smoke.ts",
+    "smoke:manager-admin-budget": "tsx implementations/auth/smoke/manager-admin-budget.smoke.ts",
     "probe:manager-goal-index-scanner": "tsx implementations/auth/smoke/manager-goal-index-scanner.native.ts",
     "probe:manager-foreground-readiness": "tsx implementations/cli/smoke/manager-foreground-readiness.native.ts",
     "probe:remote-manager-security": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm probe:manager-goal-index-scanner && pnpm probe:remote-manager-executor-authority",
