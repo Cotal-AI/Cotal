@@ -9,6 +9,12 @@ import { hardenPrivate, mkSecretDir, writeSecretFile, writeSecretFileAtomic, wri
 if (process.platform !== "win32") {
   console.log("Windows long-path ACL proof: skipped on non-Windows host");
 } else {
+  const system32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
+  const policy = execFileSync(join(system32, "reg.exe"), ["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "/v", "LongPathsEnabled"], { encoding: "utf8" });
+  const enabled = policy.match(/LongPathsEnabled\s+REG_DWORD\s+(0x[01])\b/i)?.[1];
+  assert.ok(enabled, "native registry query must expose the long-path policy");
+  console.log(JSON.stringify({ windowsRelease: (await import("node:os")).release(), longPathsEnabled: Number(enabled), node: process.version }));
+  if (process.env.COTAL_SECRET_LONG_PATH_POLICY !== undefined) assert.equal(Number(enabled), Number(process.env.COTAL_SECRET_LONG_PATH_POLICY));
   const root = mkdtempSync(join(tmpdir(), "cotal-acl-path-"));
   const icacls = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe");
   let readbacks = 0;
