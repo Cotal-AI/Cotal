@@ -9,7 +9,25 @@ test -n "$dmg"
 mount="$RUNNER_TEMP/cotal-presence-volume"
 mkdir "$mount"
 app=/Applications/Cotal.app
-test ! -e "$app"
+reuse=false
+if [ -e "$app" ]; then
+  # The E2E workflow already installed and stopped this package for its launch proof.
+  # Main's package-only workflow still requires an absent destination below.
+  node --input-type=module - "$RUNNER_TEMP/desktop-launch/result.json" <<'NODE'
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+const proof = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+assert.equal(proof.outcome, 'passed');
+assert.equal(proof.binary, '/Applications/Cotal.app/Contents/MacOS/cotal-desktop');
+assert.ok(proof.captures.some(row => row.target === 'applications'));
+assert.equal(proof.installedSha256, createHash('sha256').update(readFileSync(proof.binary)).digest('hex'));
+NODE
+  if pgrep -f '^/Applications/Cotal.app/Contents/MacOS/cotal-desktop$' > /dev/null; then
+    echo 'Prior installed launch proof left its app running'; exit 1
+  fi
+  reuse=true
+fi
 cleanup() {
   /usr/bin/osascript -e 'tell application id "ai.cotal.desktop" to quit' 2>/dev/null || true
   hdiutil detach "$mount" -quiet 2>/dev/null || true
@@ -32,7 +50,7 @@ on run argv
 end run
 APPLESCRIPT
 /usr/sbin/screencapture -x "$out/dmg-layout.png"
-/usr/bin/ditto "$mount/Cotal.app" "$app"
+if [ "$reuse" = false ]; then /usr/bin/ditto "$mount/Cotal.app" "$app"; fi
 hdiutil detach "$mount" -quiet
 /usr/bin/open "$app"
 for i in $(seq 1 40); do

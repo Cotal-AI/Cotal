@@ -4,6 +4,10 @@
 fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    if let Some((_, env)) = cotal_desktop::e2e_context() {
+        for (key, value) in env { std::env::set_var(key, value); }
+    }
     let args: Vec<_> = std::env::args_os().skip(2).collect();
     if !(args.is_empty()
         || (args.len() == 2
@@ -25,9 +29,18 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
     }
     // Task Scheduler supervises this process. It returns the one child's result without retrying.
     // It never initializes a tray/webview or enters the app's single-instance handler.
-    let status = Command::new(node)
-        .args(["--max-semi-space-size=1"])
-        .arg(entry)
+    let mut command = Command::new(node);
+    command.arg("--max-semi-space-size=1");
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    let trace_home = args.windows(2).find(|pair| pair[0] == "--daemon-home")
+        .map(|pair| std::path::PathBuf::from(&pair[1]))
+        .or_else(cotal_desktop::e2e_trace_home);
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    if let Some(home) = &trace_home {
+        let trace = home.join("windows-native-trace.mjs");
+        if trace.is_file() { command.arg(trace); }
+    }
+    command.arg(entry)
         .args(["daemon", "serve"])
         .args(args)
         .env_clear()
@@ -36,8 +49,13 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
         .creation_flags(0x08000000) // CREATE_NO_WINDOW; Node remains the unmodified signed executable.
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
+        .stderr(Stdio::null());
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    if let Some(home) = &trace_home {
+        let path = home.join("native-launcher-stderr.log");
+        command.stderr(Stdio::from(std::fs::File::create(path)?));
+    }
+    let status = command.status()?;
     Ok(status.code().unwrap_or(1))
 }
 
