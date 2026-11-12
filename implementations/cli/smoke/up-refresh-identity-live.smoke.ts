@@ -526,7 +526,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
     check("(control) the second foreground fixture answers channel set within the poll budget", railsUp);
     control.kill("SIGINT");
     const controlExit = await new Promise<number | null>((res) => control.once("exit", (code) => res(code)));
-    check("(control) SIGINT (intended stop) exits 0", controlExit === 0, controlExit);
+    check("(control) SIGINT (intended stop) exits 130", controlExit === 130, controlExit);
     check("(control) SIGINT drops the record", findMesh(space) === undefined, findMesh(space));
   } finally {
     if (control.exitCode === null) { try { control.kill("SIGKILL"); } catch { /* already gone */ } }
