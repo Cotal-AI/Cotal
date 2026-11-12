@@ -26,7 +26,8 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, codeSpan, homeCotalDir, keptCatalogCredentials, readUpdateRecovery, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
-import { IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
+import { openLoginBrowser, cloudAuthUrl } from "@cotal-ai/workspace";
+import { chooseAccount, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
@@ -45,6 +46,8 @@ import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectio
 export const daemonFlags = [
   jsonFlag,
   plainFlag,
+  { name: "cloud", type: "boolean", description: "sign in to Cotal Cloud" },
+  { name: "no-browser", type: "boolean", description: "print approval instructions without opening a browser" },
   { name: "idp", type: "string", value: "<auth base URL>", description: "the provider's auth base URL, e.g. <origin>/api/auth" },
   { name: "client-id", type: "string", value: "<id>", description: "the OAuth device-flow client id" },
   { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this directory (absolute, yours, mode 0700, not the Cotal home): its own sign-in, identity and registration, its own socket and lifetime lock. Without it, run or reach the default daemon, whose state lives in the Cotal home." },
@@ -172,9 +175,10 @@ async function status(args: ParsedArgs): Promise<void> {
 async function login(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const values = args.values as { idp?: string; "client-id"?: string };
-  if (typeof values.idp !== "string") throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon login needs --idp <auth base URL>");
+  const chosen = await chooseAccount(args, "login");
+  if (chosen === undefined) return;
   let idp: string;
-  try { idp = normalizeIdpUrl(values.idp); }
+  try { idp = normalizeIdpUrl(chosen); }
   catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
   recordOperationContext({ target: { idp } });
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
@@ -189,6 +193,7 @@ async function login(args: ParsedArgs): Promise<void> {
           { kind: "fields", rows: [["Provider", idp], ["Open", p.verificationUriComplete], ["Or open", p.verificationUri], ["Approval code", p.userCode], ["Expires", p.expiresAt]] },
           { kind: "lines", lines: [{ text: "Waiting for the provider's approval. The daemon keeps the session. Ctrl-C cancels this sign-in on this machine. Do not share the approval link or code.", tone: "hint" }] },
         ] }] }, presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);
+        openLoginBrowser(p.verificationUriComplete, args.values);
       },
     });
   } catch (e) {
@@ -370,9 +375,11 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
   const space = values.space;
   if (!space && (values["no-manager"] || values.wait !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager and --wait require --space <s>");
   if (space && !SPACE_PATTERN.test(space)) throw new CommandFailure("refused", "USAGE_INVALID", "space must be 1-64 characters of [A-Za-z0-9_-]", { native: { code: "BAD_FIELD" } });
+  if (args.values.cloud && values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
   let idp: string | undefined;
+  if (args.values.cloud === true) idp = await chooseAccount(args, "login");
   if (values.idp !== undefined) {
-    try { idp = normalizeIdpUrl(values.idp); }
+    try { idp = normalizeIdpUrl(cloudAuthUrl(values.idp)); }
     catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
   }
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
@@ -380,6 +387,16 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
   if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > 86400) throw new CommandFailure("refused", "USAGE_INVALID", "--wait takes whole seconds from 0 to 86400");
   if (values.wait !== undefined && values["no-manager"] !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--wait requires --no-manager; Manager setup never waits for machine approval");
   const { paths, home } = resolveTarget(args);
+  let newSignIn = values.idp !== undefined || args.values.cloud === true;
+  if (!space && !idp) {
+    let installed = true;
+    try { planUninstall(paths, home); } catch { installed = false; }
+    if (!installed) {
+      idp = await chooseAccount(args, "login");
+      if (idp === undefined) return;
+      newSignIn = true;
+    }
+  }
   const plain = presentation === "plain";
   // Progress goes to stderr so a --json caller still reads one document on stdout.
   const report = (line: string) => { process.stderr.write(`${line}\n`); };
@@ -396,9 +413,9 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
       if (providers.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", `The daemon is signed in to several providers (${providers.join(", ")}); pass --idp <url> to choose one`);
       idp = providers[0]!;
     }
-    const r = await runAccountSetup({ paths, daemonHome: home, peerUid, peerPid, report, version: binVersion(), idp: idp!, existingSignInOnly: values.idp === undefined,
+    const r = await runAccountSetup({ paths, daemonHome: home, peerUid, peerPid, report, version: binVersion(), idp: idp!, existingSignInOnly: !newSignIn,
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
-      onPrompt: p => { process.stderr.write(`Approve this machine\nOpen: ${p.verificationUriComplete}\nApproval code: ${p.userCode}\n`); },
+      onPrompt: p => { process.stderr.write(`Approve this machine\nOpen: ${p.verificationUriComplete}\nApproval code: ${p.userCode}\n`); openLoginBrowser(p.verificationUriComplete, args.values); },
     });
     writeResult(presentation, { command: "daemon setup", target: { idp: idp! }, result: r }, () => ({ sections: [
       { title: "Connected to your account", blocks: [{ kind: "fields", rows: [["Account", r.label || "Signed in"], ["Computer", r.computer]] },
@@ -417,6 +434,7 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
           { kind: "fields", rows: [["Provider", idp!], ["Open", p.verificationUriComplete], ["Or open", p.verificationUri], ["Approval code", p.userCode], ["Expires", p.expiresAt]] },
           { kind: "lines", lines: [{ text: "Open that link on any device with a browser. This machine needs none. Do not share the approval link or code.", tone: "hint" }] },
         ] }] }, plain ? "plain" : "rich", process.stderr)}\n`);
+        openLoginBrowser(p.verificationUriComplete, args.values);
       },
     });
   } catch (e) {
@@ -586,12 +604,12 @@ const daemonCommand: Command = {
     { name: "spaces", usage: "cotal daemon spaces [--refresh] [--daemon-home <dir>] [--json|--plain]", examples: [{ command: "cotal daemon spaces", note: "list registered spaces" }, { command: "cotal daemon spaces --refresh", note: "refresh catalogs before listing spaces" }], summary: "list registered spaces; optionally refresh catalogs using the daemon-held sign-in", flagNames: ["refresh", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "start", usage: "cotal daemon start [--daemon-home <dir>] [--json|--plain]", examples: [{ command: "cotal daemon start", note: "start the recorded daemon service" }], summary: "start the unchanged, recorded daemon service without restarting a running instance", flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "desktop", usage: "cotal daemon desktop [--daemon-home <dir>]", examples: [{ command: "cotal daemon desktop < request.json", note: "serve one desktop request from a file" }], summary: "serve one bounded JSON request from the desktop app on stdin; credentials remain in the daemon", flagNames: ["daemon-home"], prepareMeshTarget: false },
-    { name: "setup", usage: "cotal daemon setup [--idp <url>] [--space <s>] [--client-id <id>] [--no-manager [--wait <seconds>]] [--daemon-home <dir>] [--json|--plain]", summary: "connect this computer to an account, or rerun using its sole signed-in provider; with --space, host its Manager (--no-manager and --wait require --space)", examples: [{ command: "cotal daemon setup", note: "refresh apps using the sole signed-in provider" }, { command: "cotal daemon setup --idp <url>", note: "connect your account, then enable spaces in the dashboard" }, { command: "cotal daemon setup --space <space> --no-manager --wait 0", note: "report machine-service approval without hosting a Manager" }], flagNames: ["space", "idp", "client-id", "wait", "no-manager", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "setup", usage: "cotal daemon setup [--cloud | --idp <url>] [--no-browser] [--space <s>] [--client-id <id>] [--no-manager [--wait <seconds>]] [--daemon-home <dir>] [--json|--plain]", summary: "connect this computer to an account, or rerun using its sole signed-in provider; with --space, host its Manager (--no-manager and --wait require --space)", examples: [{ command: "cotal daemon setup", note: "refresh apps using the sole signed-in provider" }, { command: "cotal daemon setup --idp <url>", note: "connect your account, then enable spaces in the dashboard" }, { command: "cotal daemon setup --space <space> --no-manager --wait 0", note: "report machine-service approval without hosting a Manager" }], flagNames: ["space", "cloud", "no-browser", "idp", "client-id", "wait", "no-manager", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "status", usage: "cotal daemon status [--space <s>] [--daemon-home <dir>] [--json|--plain]", summary: "ask the running daemon for its status and hosted Managers over the local endpoint", examples: [{ command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon status --json", note: "the same as one JSON document" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "serve", usage: "cotal daemon serve [--daemon-home <dir>] [--json|--plain]", summary: "run the daemon in the foreground and serve its local endpoint (refusals honor --json)", examples: [{ command: "cotal daemon serve", note: "run the machine daemon in this terminal" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "install", usage: "cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]", summary: "install the daemon as this platform's user service; Linux also enables linger", examples: [{ command: "cotal daemon install", note: "run it as a persistent user service" }, { command: "cotal daemon install --dry-run", note: "show the unit it would write" }], flagNames: ["daemon-home", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "uninstall", usage: "cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]", summary: "stop the daemon's user service, disable autostart and remove its unit", examples: [{ command: "cotal daemon uninstall", note: "remove its login unit" }], flagNames: ["daemon-home", "yes", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
-    { name: "login", usage: "cotal daemon login --idp <auth base URL> [--client-id <id>] [--daemon-home <dir>] [--json|--plain]", summary: "sign the running daemon in to a provider with device approval; the daemon keeps the session", examples: [{ command: "cotal daemon login --idp <url>", note: "sign the daemon in with device approval" }], flagNames: ["idp", "client-id", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "login", usage: "cotal daemon login [--cloud | --idp <auth base URL>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]", summary: "sign the running daemon in to a provider with device approval; the daemon keeps the session", examples: [{ command: "cotal daemon login --idp <url>", note: "sign the daemon in with device approval" }], flagNames: ["cloud", "no-browser", "idp", "client-id", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "connect-check", usage: "cotal daemon connect-check --space <s> [--daemon-home <dir>] [--json|--plain]", summary: "ask the running daemon whether it could register with a space as its own service; registers nothing", examples: [{ command: "cotal daemon connect-check --space <space>", note: "check whether it could register" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "register", usage: "cotal daemon register --space <s> [--daemon-home <dir>] [--json|--plain]", summary: "ask the running daemon to request its own service registration with a space; the space owner must approve it, and it does not connect", examples: [{ command: "cotal daemon register --space <space>", note: "ask a space to approve it as a service" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "service-connect", usage: "cotal daemon service-connect --space <s> [--daemon-home <dir>] [--json|--plain]", summary: "connect the running daemon to a space as its own approved service; succeeds only when the broker accepts the connection and the space accepts it as ready", examples: [{ command: "cotal daemon service-connect --space <space>", note: "connect it to a space" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },

@@ -9,6 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
+    "smoke:cloud-login": "tsx packages/workspace/smoke/cloud-login.smoke.ts && tsx implementations/auth/smoke/cloud-login.smoke.ts",
     "smoke:daemon-desktop-account": "tsx bin/smoke/daemon-desktop-account.smoke.ts",
     "smoke:daemon-update-settings": "tsx bin/smoke/daemon-update-settings.smoke.ts && tsx bin/smoke/update-auto-service.smoke.ts",
     "smoke:connection-cleanup": "tsx packages/core/smoke/connection-cleanup.smoke.ts && tsx bin/smoke/connection-cleanup.smoke.ts",

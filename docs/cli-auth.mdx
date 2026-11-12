@@ -7,6 +7,17 @@ audience: operators
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
+## Sign in to Cotal Cloud
+
+Run `cotal login`. With no known provider, it signs in to Cotal Cloud in a terminal
+or a pipe. Use `cotal login --cloud` to select Cloud explicitly. Approve the printed link and code.
+A supported desktop session opens the link in your browser. Use `--no-browser` to open it
+elsewhere. Piped output does not open a browser.
+
+For another host, use `cotal login --idp <auth base URL>`. The Cotal Cloud origin
+`https://cloud.cotal.ai` is an explicit alias for `https://cloud.cotal.ai/api/auth`.
+Other provider URLs are used as written, without trying alternate auth paths.
+
 Static minting requires local signing authority. Account sign-in and actor grants are separate, and diagnostic reports state which local claims they checked.
 
 
@@ -208,7 +219,7 @@ this standalone caller. User-auth issuance and managed static launch are not sup
 ## Account login [#login]
 
 ```bash
-cotal login --idp <auth base URL> [--client-id <id>] [--plain]
+cotal login [--cloud | --idp <auth base URL>] [--client-id <id>] [--no-browser] [--plain]
 cotal logout --idp <auth base URL> [--local]
 ```
 
@@ -220,7 +231,10 @@ Plain `http://` is accepted only on a loopback IP literal such as `127.0.0.1` or
 is a name: a hosts entry would choose the IdP. It prints your IdP subject, the id the operator
 grants against. When the trusted
 `/token` response advertises a same-origin space catalog, login validates and records that account's
-spaces immediately, lists them under `Your spaces`, and names `cotal use <name>` to select one. A
+spaces immediately and lists them under `Your spaces`. If no space is already selected,
+login selects the personal space, or the only space. Several team spaces prompt in a terminal;
+otherwise use `cotal use <name>` to select one. An existing selection stays unchanged, and
+switching accounts does not select a replacement automatically. A
 space registered from elsewhere that has not granted your account refuses with those discovered
 spaces as its remedy, because only that space's operator can grant you. On the root that holds the
 space's grant ledger, the refusal names the operator's `cotal actor grant` command instead.
@@ -424,7 +438,8 @@ or creating replacement agents merely to obtain a different report.
 ## Account screens [#account-screens]
 
 Bare `login` chooses a known provider from cached account metadata or registered spaces. When
-none is known, an interactive terminal asks for the provider auth URL. `--idp` selects it directly.
+none is known, it selects Cotal Cloud and prints how to use another host. With several
+known providers, a terminal offers a choice. `--idp` selects another host directly.
 The device-approval link and code are written only to stderr. Session tokens are never printed.
 The sign-in receipt separates account identity from each space's grants. This client's device
 flow requires approval and refuses `--no-input` before requesting a device session.

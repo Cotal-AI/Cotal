@@ -349,7 +349,7 @@ async function askDestination(initial: Destination | undefined): Promise<Destina
       options: [
         { value: "local", label: "Local", hint: "this machine starts it" },
         { value: "self-hosted", label: "Self-hosted", hint: "it runs on a server and is registered here" },
-        { value: "cloud", label: "Cloud", hint: "sign in with `cotal login`, then choose Self-hosted", disabled: true },
+        { value: "cloud", label: "Cloud", hint: "sign in with `cotal login` to select your Cloud space", disabled: true },
       ],
       initialValue: initial ?? "local",
     }),
