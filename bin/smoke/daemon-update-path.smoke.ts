@@ -31,7 +31,23 @@ const usageNativeLog = join(root, "usage-native.log");
 for (const tool of ["systemctl", "loginctl", "launchctl", "schtasks"]) {
   writeFileSync(join(native, tool), `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(usageNativeLog)}, 'unexpected native call\\n'); process.exit(99);\n`, { mode: 0o700 });
 }
-for (const args of [[], ...["bad.space", "a".repeat(65), "bad space"].flatMap(space => [["--space", space], ["--no-manager", "--space", space, "--wait", "0"]])]) {
+// Bare setup is supported: it selects Cloud before checking the native service dependency.
+const bareConfig = join(root, "bare-config");
+const bareNative = join(root, "bare-native");
+mkdirSync(bareNative, { mode: 0o700 });
+writeFileSync(join(bareNative, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(' ') !== '--user show-environment') require('node:fs').appendFileSync(${JSON.stringify(usageNativeLog)}, 'unexpected native call\\n'); process.exit(99);\n`, { mode: 0o700 });
+const bare = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "setup", "--json"], {
+  cwd: root, env: { ...usageEnv, PATH: `${bareNative}:${env.PATH}`, XDG_CONFIG_HOME: bareConfig, DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(root, "absent-bus")}` }, stdio: ["ignore", "pipe", "pipe"],
+});
+let bareOut = "", bareErr = "";
+bare.stdout.on("data", chunk => bareOut += String(chunk));
+bare.stderr.on("data", chunk => bareErr += String(chunk));
+const bareCode = await new Promise(resolve => bare.once("exit", resolve));
+const bareDoc = JSON.parse(bareOut);
+if (bareCode !== 2 || bareDoc.error?.code !== "DEPENDENCY_UNAVAILABLE" || !bareErr.includes("Signing in to Cotal Cloud. For another host, use cotal login --idp <url>.")) throw new Error(`bare setup service refusal changed: ${bareOut}${bareErr}`);
+if (existsSync(join(bareConfig, "cotal", "seed")) || existsSync(join(bareConfig, "cotal", "extensions.json")) || existsSync(join(home, "daemon")) || existsSync(join(bareConfig, "systemd")) || existsSync(usageNativeLog)) throw new Error("bare setup service refusal wrote connector, daemon or native service state");
+console.log("PASS bare setup selects Cloud then refuses unavailable service without writing state");
+for (const args of ["bad.space", "a".repeat(65), "bad space"].flatMap(space => [["--space", space], ["--no-manager", "--space", space, "--wait", "0"]])) {
   const usage = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "setup", ...args, "--json"], { cwd: root, env: usageEnv, stdio: ["ignore", "pipe", "pipe"] });
   let usageOutput = "";
   usage.stdout.on("data", chunk => usageOutput += String(chunk));
