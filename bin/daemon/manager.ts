@@ -7,14 +7,15 @@ import { assertLifecycleToken, mkSecretDir, parseRemoteEndpointDeregisterResult,
 import { remoteManagerClient } from "@cotal-ai/manager";
 import { daemonArgv } from "@cotal-ai/cli/self-exec";
 import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
-import { loadIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
-import { findMesh, homeCotalDir, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { loadIdpSession, retainManagerAuthorityRoute, withIdpSessionDir } from "@cotal-ai/auth";
+import { findMesh, homeCotalDir, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore, isCommandFailure } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
 import type { HostedManager, HostedAgents } from "./protocol.js";
 import { readHostedAgents } from "./agents.js";
+import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile } from "./manager-cleanup.js";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
@@ -83,6 +84,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   });
   const refusalFile = (space: string) => join(home, "daemon", spaceSegment(space), "manager-refusal.json");
   const recordError = (space: string): string | undefined => {
+    try { readManagerCleanup(home, space); } catch { return `invalid hosted Manager cleanup record: ${managerCleanupFile(home, space)}`; }
     for (const file of [daemonManagerIntentFile(space, home), refusalFile(space)]) {
       if (!existsSync(file)) continue;
       try {
@@ -110,6 +112,13 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     const invalid = recordError(space);
     if (invalid) return { ...(current?.view ?? { space, restarts: 0 }), pid: current?.child?.pid, state: "refused", reason: invalid, lastRefusal: invalid, next: `run \`cotal daemon setup --space ${space}\` to repair its hosting records` };
     if (current) return { ...current.view, pid: current.child?.pid };
+    const cleanup = readManagerCleanup(home, space);
+    if (cleanup && cleanup.phase !== "hosted") return {
+      space, restarts: 0, instanceId: cleanup.instanceId,
+      state: cleanup.phase === "unknown" ? "refused" : "stopped", registrationCleanup: cleanup.phase,
+      reason: cleanup.phase === "unknown" ? "Manager registration removal is unconfirmed; no automatic request will be repeated" : "Manager stopped here; registration cleanup pending",
+      next: `inspect the registration, then run \`cotal endpoint deregister manager ${cleanup.instanceId} --space ${space} --yes\``,
+    };
     if (existsSync(refusalFile(space))) {
       const saved = JSON.parse(readFileSync(refusalFile(space), "utf8")) as HostedManager;
       if (saved.space === space && saved.state === "refused") return { ...saved, pid: undefined };
@@ -272,6 +281,17 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       return { ...l.view };
     }
     if (closed || generationPending || l.stopping) return l.view;
+    const savedCleanup = readManagerCleanup(home, space);
+    const storeIdentity = workspaceSecretStore(entry.root).identity;
+    if (storeIdentity.kind !== "fs") throw new Error("hosted Manager cleanup requires the original filesystem store identity");
+    if (savedCleanup) {
+      validateManagerCleanupAuthority(savedCleanup);
+      if (savedCleanup.root !== entry.root || savedCleanup.provider !== entry.userAuth.provider || JSON.stringify(savedCleanup.storeIdentity) !== JSON.stringify(storeIdentity))
+        throw new Error("the hosted Manager cleanup coordinates do not match this space's authority");
+    } else {
+      writeManagerCleanup(home, { version: 1, space, root: entry.root, provider: entry.userAuth.provider, storeIdentity, phase: "hosted" });
+    }
+    if (entry.userAuth.provider === "cotal") await retainManagerAuthorityRoute(workspaceSecretStore(entry.root), userAuthStateDir(entry.root, space, { readOnly: true }), space);
     const root = daemonManagerRoot(space, home);
     mkSecretDir(root); mkSecretDir(join(root, ".cotal"));
     writeDefaultPersonaForLaunch(root);
@@ -377,6 +397,9 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           const reply = await probe(space, selected);
           if (reply.ok && !ended && !l.stopping && !closed) {
             const path = daemonManagerIntentFile(space, home);
+            const cleanup = readManagerCleanup(home, space);
+            if (!cleanup || cleanup.instanceId !== selected) throw new Error("the answering Manager has no matching durable cleanup identity");
+            writeManagerCleanup(home, { ...cleanup, phase: "hosted" });
             writeSecretFileAtomic(path, JSON.stringify({ v: 1, space }));
             rmSync(refusalFile(space), { force: true });
             l.view = { ...l.view, state: "answering", registrationCleanup: undefined, connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
@@ -475,7 +498,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       const space = spaceFromSegment(entry);
       if (space === undefined || !lstatSync(join(home, "daemon", entry)).isDirectory()) return [];
       const intent = join(home, "daemon", entry, "manager-host.json");
-      const path = existsSync(intent) ? intent : refusals ? join(home, "daemon", entry, "manager-refusal.json") : intent;
+      const cleanup = managerCleanupFile(home, space);
+      const path = existsSync(intent) ? intent : refusals && existsSync(cleanup) ? cleanup : refusals ? join(home, "daemon", entry, "manager-refusal.json") : intent;
       if (!existsSync(path)) return [];
       return [space];
     });
@@ -618,12 +642,16 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       }
       if (!l) { l = { view: status(space), stopping: true, failures: 0 }; live.set(space, l); }
       const held = l;
-      let instanceId = held.view.instanceId;
+      let instanceId = held.view.instanceId ?? readManagerCleanup(home, space)?.instanceId;
       const remedy = () => instanceId
         ? `inspect the registration, then run \`cotal endpoint deregister manager ${instanceId} --space ${space} --yes\``
         : `inspect the recorded Manager identity for ${space}, then remove its registration with \`cotal endpoint deregister manager <instance-id> --space ${space} --yes\``;
       const incomplete = (reason: string): never => {
         refuse(held, reason, remedy());
+        if (held.view.registrationCleanup === "pending") {
+          held.view = { ...held.view, state: "stopped", pid: undefined };
+          rmSync(refusalFile(space), { force: true });
+        }
         throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", reason, command(remedy()));
       };
       if (held.view.registrationCleanup === "unknown") incomplete("Manager registration removal is unconfirmed; no automatic request was repeated");
@@ -631,27 +659,50 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       catch { incomplete("the recorded Manager identity could not be read; its registration may be left behind"); }
       if (instanceId) {
         held.view = { ...held.view, instanceId };
-        const entry = findMesh(space);
-        const provider = entry?.mode === "user" && entry.userAuth && registry.has("auth-provider", entry.userAuth.provider)
-          ? registry.resolve<AuthProvider>("auth-provider", entry.userAuth.provider) : undefined;
-        if (!entry || !provider?.deregisterEndpoint) return incomplete("Manager registration is left behind; guarded removal is unsupported for this space");
+        let cleanup = readManagerCleanup(home, space);
+        if (!cleanup) {
+          const entry = findMesh(space);
+          if (!entry || entry.mode !== "user" || !entry.userAuth) return incomplete("Manager registration is left behind; its original cleanup authority is unavailable");
+          const storeIdentity = workspaceSecretStore(entry.root).identity;
+          if (storeIdentity.kind !== "fs") return incomplete("Manager cleanup requires its original filesystem store identity");
+          cleanup = { version: 1, space, root: entry.root, provider: entry.userAuth.provider, storeIdentity, instanceId, phase: "pending" };
+        }
+        if (!cleanup) return incomplete("Manager cleanup coordinates are unavailable");
+        if (cleanup.instanceId !== instanceId) return incomplete("Manager cleanup identity differs from its recorded instance");
+        if (cleanup.phase === "unknown") return incomplete("Manager registration removal is unconfirmed; no automatic request was repeated");
+        cleanup = { ...cleanup, phase: "pending" };
+        writeManagerCleanup(home, cleanup);
+        held.view = { ...held.view, state: "stopped", registrationCleanup: "pending" };
+        try { validateManagerCleanupAuthority(cleanup); }
+        catch { return incomplete("Manager registration cleanup is pending; its original authority is unavailable or changed"); }
+        const provider = registry.has("auth-provider", cleanup.provider) ? registry.resolve<AuthProvider>("auth-provider", cleanup.provider) : undefined;
+        if (!provider?.deregisterEndpoint) return incomplete("Manager registration cleanup is pending; guarded removal is unsupported for its recorded provider");
         const deregister = provider.deregisterEndpoint.bind(provider);
         const request = { v: 1, kind: "endpoint-deregister", space, endpoint: "manager", instanceId } as const;
         // A process death or lost response after this write is an unknown outcome on restart.
+        writeManagerCleanup(home, { ...cleanup, phase: "unknown" });
         held.view = { ...held.view, registrationCleanup: "unknown" };
         refuse(held, "Manager registration removal is unconfirmed", remedy());
         let result;
         try {
           result = parseRemoteEndpointDeregisterResult(await withIdpSessionDir(home, () => deregister({
-            store: workspaceSecretStore(entry.root), dir: userAuthStateDir(entry.root, space, { readOnly: true }), request,
+            store: workspaceSecretStore(cleanup.root), dir: userAuthStateDir(cleanup.root, space, { readOnly: true }), request,
           })), request);
         } catch (error) {
-          if ((error as { outcome?: unknown }).outcome === "refused") held.view = { ...held.view, registrationCleanup: undefined };
-          return incomplete("Manager registration is left behind; guarded removal did not confirm its deletion");
+          if (isCommandFailure(error) && error.outcome === "refused") {
+            writeManagerCleanup(home, { ...cleanup, phase: "pending" });
+            held.view = { ...held.view, registrationCleanup: "pending" };
+          }
+          return incomplete(`Manager registration is left behind; guarded removal did not confirm its deletion: ${safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 400)}`);
         }
         if (result.state === "unknown") return incomplete(`Manager registration removal is unconfirmed: ${result.condition}; no automatic request will be repeated`);
+        if (result.state !== "removed" && result.condition !== "not-registered") {
+          writeManagerCleanup(home, { ...cleanup, phase: "pending" });
+          held.view = { ...held.view, registrationCleanup: "pending" };
+          incomplete(`Manager registration is left behind; guarded removal refused: ${result.condition}`);
+        }
+        rmSync(managerCleanupFile(home, space), { force: true });
         held.view = { ...held.view, registrationCleanup: undefined };
-        if (result.state !== "removed" && result.condition !== "not-registered") incomplete(`Manager registration is left behind; guarded removal refused: ${result.condition}`);
       }
       held.view = { ...held.view, state: "stopped", pid: undefined, reason: undefined, lastRefusal: undefined, next: options?.account ? "enable this space for this computer in the dashboard to host its Manager again" : `run \`cotal daemon setup --space ${space}\` to host its Manager again` };
       rmSync(refusalFile(space), { force: true });
@@ -668,6 +719,20 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         if (invalid) { recordRefusal(space, new Error(invalid)); return; }
         try { await start(space); } catch (error) { recordRefusal(space, error); }
       }));
+      for (const space of spaces(true).filter(space => !intended.includes(space))) {
+        try {
+          const cleanup = readManagerCleanup(home, space);
+          if (!cleanup) continue;
+          if (cleanup.phase === "unknown") { live.set(space, { view: status(space), stopping: true, failures: 0 }); continue; }
+          // Hosted coordinates are retained before launch succeeds and before an intent exists.
+          // Their presence alone proves neither withdrawal nor a cleanup request. Keep them
+          // for an explicit disconnect, without fencing a machine connection being restored.
+          if (cleanup.phase === "hosted") continue;
+          await this.disconnect(space);
+        } catch (error) {
+          if (!(error instanceof HostedManagerRefusal)) recordRefusal(space, error);
+        }
+      }
     },
     async close() {
       closed = true;

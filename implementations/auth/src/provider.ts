@@ -1,5 +1,6 @@
 import { exchangeRateLimit, readAuthResponseJson, type ExchangeRateLimit } from "./response-json.js";
 import { idpSessionDir, remoteExchangeRetryDeadline } from "./session-context.js";
+import { loadManagerAuthorityRoute, managerAuthorityRouteUrl, pinManagerAuthorityRoute } from "./manager-authority-route.js";
 /**
  * The core `auth-provider` extension — how a composition root gets user-mode auth WITHOUT importing
  * this package from the CLI (`bin/cotal.ts` imports `@cotal-ai/auth`; `@cotal-ai/cli` resolves the
@@ -109,10 +110,18 @@ export const cotalAuthProvider: AuthProvider = {
   name: AUTH_PROVIDER_NAME,
   async deregisterEndpoint({ store, dir, request }) {
     const parsed = parseRemoteEndpointDeregisterRequest(request);
-    const route = await managerAuthorityEndpoint(store, dir, request.space, "removing a stale manager registration");
+    let route: Awaited<ReturnType<typeof managerAuthorityEndpoint>>;
+    let idpJwt: string;
+    try {
+      route = await managerAuthorityEndpoint(store, dir, request.space, "removing a stale manager registration");
+      const session = requireIdpSession(idpSessionDir(), route.idpUrl);
+      idpJwt = await fetchIdpJwt(route.idpUrl, session.token);
+    } catch {
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "endpoint deregistration was not sent; restore the original authority and sign-in before retrying");
+    }
     const endpoint = route.endpoint.replace(/\/manager-service-authority$/, "/endpoint-deregister");
     try {
-      return parseRemoteEndpointDeregisterResult(await postManagerAuthority(endpoint, route.idpUrl, route.authorization, parsed, "endpoint deregistration"), parsed);
+      return parseRemoteEndpointDeregisterResult(await postManagerAuthority(endpoint, route.idpUrl, route.authorization, parsed, "endpoint deregistration", idpJwt), parsed);
     } catch (error) {
       if (error instanceof ManagerAuthorityRefusal && [400, 401, 403, 404, 405, 415, 429].includes(error.status))
         throw new CommandFailure("refused", error.status === 404 ? "UNSUPPORTED" : "PERMISSION_DENIED", "the governing auth service refused endpoint deregistration", {
@@ -793,28 +802,46 @@ function managerAuthorityUrl(base: string, space: string): string {
   return u.toString();
 }
 
-/** Resolve the manager-authority endpoint for one space: the local loopback service when this
- *  machine hosts the space's user-auth material, else the registry entry's pinned public exchange.
- *  `what` names the operation in a refusal so an operator reads which call could not be made. */
+/** Retain provider-owned nonsecret routing before a hosted Manager can register. */
+export async function retainManagerAuthorityRoute(store: SecretStore, dir: string, space: string): Promise<void> {
+  await managerAuthorityEndpoint(store, dir, space, "retaining hosted Manager cleanup authority");
+}
+
+/** Resolve local authority or the original pinned remote route without substituting credentials. */
 async function managerAuthorityEndpoint(
   store: SecretStore,
   dir: string,
   space: string,
   what: string,
 ): Promise<{ endpoint: string; idpUrl: string; authorization?: string }> {
-  const idp = loadPinnedIdp(dir);
-  const callout = await loadCalloutAuth(store, space);
-  if (idp && callout) {
-    const info = loadAuthServiceInfo(dir);
-    if (!info || !pidAlive(info.pid))
-      throw new Error(`the user-auth service for space "${space}" is not running - restart it with \`cotal up\` before ${what}`);
-    return { endpoint: `${info.url}/manager-service-authority`, idpUrl: idp.url, authorization: `Bearer ${info.cap}` };
-  }
+  const retained = loadManagerAuthorityRoute(store, dir, space);
   const entry = findMesh(space);
-  const ua = entry?.mode === "user" ? entry.userAuth : undefined;
-  if (ua?.remote !== true || typeof ua.endpoints?.url !== "string")
-    throw new Error(`space "${space}" has no pinned remote manager-authority endpoint - re-register it with \`cotal meshes add ${space} --from <url>\``);
-  return { endpoint: managerAuthorityUrl(ua.endpoints.url, space), idpUrl: ua.idp.url };
+  if (!retained) {
+    const idp = loadPinnedIdp(dir);
+    const callout = await loadCalloutAuth(store, space);
+    if (idp && callout) {
+      const info = loadAuthServiceInfo(dir);
+      if (!info || !pidAlive(info.pid))
+        throw new Error(`the user-auth service for space "${space}" is not running - restart it with \`cotal up\` before ${what}`);
+      return { endpoint: `${info.url}/manager-service-authority`, idpUrl: idp.url, authorization: `Bearer ${info.cap}` };
+    }
+  }
+  if (retained || entry?.mode === "user" && entry.userAuth?.remote === true) {
+    if (!entry) return retained!;
+    const ua = entry.mode === "user" ? entry.userAuth : undefined;
+    if (ua?.remote !== true || typeof ua.endpoints?.url !== "string" || ua.provider !== AUTH_PROVIDER_NAME)
+      throw new Error(`space "${space}" has a changed remote manager-authority registration or directory`);
+    pinnedExchangeUrl(ua.endpoints.url, space);
+    // Validate the raw base before managerAuthorityUrl can discard a query or fragment.
+    const route = {
+      endpoint: managerAuthorityUrl(managerAuthorityRouteUrl(ua.endpoints.url), space),
+      idpUrl: managerAuthorityRouteUrl(ua.idp.url),
+    };
+    if (retained && (retained.endpoint !== route.endpoint || retained.idpUrl !== route.idpUrl))
+      throw new Error(`space "${space}" has a changed remote manager-authority route; refusing another authority`);
+    return pinManagerAuthorityRoute(store, dir, space, route);
+  }
+  throw new Error(`space "${space}" has no pinned remote manager-authority endpoint - re-register it with \`cotal meshes add ${space} --from <url>\``);
 }
 
 /** POST one typed manager-authority request with this machine's fresh login proof. Redirects are
@@ -826,9 +853,9 @@ async function postManagerAuthority(
   authorization: string | undefined,
   request: unknown,
   what: string,
+  preparedIdpJwt?: string,
 ): Promise<unknown> {
-  const session = requireIdpSession(idpSessionDir(), idpUrl);
-  const idpJwt = await fetchIdpJwt(idpUrl, session.token);
+  const idpJwt = preparedIdpJwt ?? await fetchIdpJwt(idpUrl, requireIdpSession(idpSessionDir(), idpUrl).token);
   const response = await fetch(endpoint, {
     method: "POST",
     redirect: "manual",
