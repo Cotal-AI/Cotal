@@ -187,6 +187,13 @@ export const scenarios = [
     expect: async page => {
       assert.equal(await page.locator("#connected-panel").isVisible(), true);
       assert.equal(await page.locator('[data-testid="connected-space-row"]').count(), count);
+      const visibleRows = await page.locator(".connected-spaces-scroll").evaluate(el => {
+        const bounds = el.getBoundingClientRect();
+        return [...el.querySelectorAll("li")].map(row => { const box = row.getBoundingClientRect(); return { full: box.top >= bounds.top && box.bottom <= bounds.bottom + 1, partial: box.top < bounds.bottom && box.bottom > bounds.bottom + 1 }; });
+      });
+      assert.ok(visibleRows.filter(row => row.full).length >= (page.viewportSize().width === 880 ? 2 : 1), "space list shows whole wrapped rows");
+      assert.equal(visibleRows.some(row => row.partial), false, "space list never slices a row");
+      assert.equal(await page.locator("#spaces-heading").textContent(), `Spaces using this computer (${count})`);
       assert.ok(await page.locator("footer").evaluate(el => el.getBoundingClientRect().bottom <= innerHeight), "long-space footer stays inside the viewport");
       assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected");
       assert.deepEqual(await page.locator('[data-testid="connected-space-row"] > span > small:last-child').allTextContents(), Array(count).fill("Connected"));
