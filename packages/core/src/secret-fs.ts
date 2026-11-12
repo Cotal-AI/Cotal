@@ -24,7 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, toNamespacedPath } from "node:path";
 
 const isWin = process.platform === "win32";
 
@@ -64,8 +64,9 @@ const BROAD_SIDS = ["S-1-1-0", "S-1-5-11", "S-1-5-32-545"] as const;
  * the owner SID (`whoami /user`), SYSTEM (`S-1-5-18`), and Administrators (`S-1-5-32-544`). Removing
  * broad grants this way — rather than adding deny ACEs, which can catch the owner through group
  * membership — is the documented-safe pattern. Numeric SIDs are `*`-prefixed; the tools resolve from
- * `%SystemRoot%` and run shell-free. A directory grants `(OI)(CI)` so children inherit the private
- * ACE. FAIL-CLOSED: any `whoami`/`icacls` failure throws.
+ * `%SystemRoot%` and run shell-free. The target uses an absolute extended-length path so native
+ * hardening does not depend on the machine's long-path policy. A directory grants `(OI)(CI)` so
+ * children inherit the private ACE. FAIL-CLOSED: any `whoami`/`icacls` failure throws.
  */
 export function hardenPrivate(path: string, kind: "file" | "dir"): void {
   if (!isWin) {
@@ -80,7 +81,7 @@ export function hardenPrivate(path: string, kind: "file" | "dir"): void {
     execFileSync(
       sys32("icacls.exe"),
       [
-        path,
+        toNamespacedPath(resolve(path)),
         "/inheritance:r",
         ...removeBroad,
         ...grant(ownerSid()),

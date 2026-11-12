@@ -100,6 +100,8 @@ Use a directory prefix beginning with `cotal-`.
 The helper creates a random directory for each launch, so an old path cannot identify a later launch's files.
 Files have mode `0600` inside directories with mode `0700` on POSIX systems.
 The helper also applies private filesystem permissions on Windows.
+Windows ACL hardening uses extended-length paths, including when the machine's long-path policy is disabled.
+A native ACL failure still refuses the write.
 
 The launcher owns these files after `buildLaunch` returns.
 Keep them available for the child's entire lifetime because the child may read them again.
