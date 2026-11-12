@@ -7,7 +7,13 @@ test('probe launches one fixed synthetic native URL without service actions', ()
   assert.match(probe, /new URL\("cotal:\/\/connect"\)/);
   assert.match(probe, /link.searchParams.set\("idp", "http:\/\/127.0.0.1:9\/api\/auth"\)/);
   assert.match(probe, /link.searchParams.set\("space", "e2e-public-link"\)/);
-  assert.match(probe, /driver.open\(binary, \[link.href\]\)/);
+  assert.match(probe, /driver.openWindowsLink\(binary, link.href,/);
+  assert.match(probe, /publicProbeForm, "literal"/);
+  assert.match(probe, /publicArgument, link.href/);
+  assert.match(probe, /assert.deepEqual\(observations.pluginCurrent, \{ ok: true, value: \[link.href\] \}/);
+  assert.match(probe, /plain public link context visible/);
+  assert.match(probe, /plain delivery without link context is a product failure/);
+  assert.match(probe, /observations.outcome = "plain-delivery-pass"/);
   assert.match(probe, /plugin:deep-link\|get_current/);
   assert.match(probe, /value:value===null\?null:Array.isArray\(value\)/);
   assert.match(probe, /redacted:true,bytes:/);
@@ -18,7 +24,6 @@ test('private config has exclusive creation and exact ownership cleanup', () => 
   assert.match(probe, /mkdtempSync/);
   assert.match(probe, /flag: "wx"/);
   assert.match(probe, /if \(ownsConfig && cleanupSafe\)/);
-  assert.match(probe, /if \(launchPending && !driver.session\) cleanupSafe = false/);
   assert.match(probe, /assert.equal\(readFileSync\(context, "utf8"\), config/);
   assert.match(probe, /await driver.close\(\)/);
   assert.match(probe, /server.kill\(\)/);
