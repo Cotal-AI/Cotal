@@ -24,7 +24,7 @@
  *
  * Run: tsx bin/smoke/daemon-transport.smoke.ts
  */
-import { closeSync, mkdtempSync, openSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -210,8 +210,17 @@ try {
   console.log("  ✗ smoke crashed:", e);
 } finally {
   const cleanup = await Promise.allSettled([...ownedDaemons].map((daemon) => daemon.close()).concat([...ownedChildren].map(stop)));
-  if (cleanup.every((result) => result.status === "fulfilled")) rmSync(root, { recursive: true, force: true });
-  else { fail++; console.log(`  ✗ owned cleanup could not be verified; retained ${root}`); }
+  if (cleanup.every((result) => result.status === "fulfilled")) {
+    try {
+      rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch (error) {
+      let entries: string[] | string;
+      try { entries = readdirSync(root); } catch (listingError) { entries = `could not list leftovers: ${String(listingError)}`; }
+      check("cleanup scratch directory removed", false, { root, error, entries });
+    }
+  } else {
+    check("cleanup owned resources stopped", false, { retained: root, cleanup });
+  }
   for (const key of Object.keys(process.env)) if (!savedEnvironment.some(([name]) => name === key)) delete process.env[key];
   for (const [key, value] of savedEnvironment) process.env[key] = value;
 }
