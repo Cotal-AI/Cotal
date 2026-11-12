@@ -80,7 +80,13 @@ instead. nats-server then keeps each account's signed claim in `directory`, and 
 added at run time:
 
 ```ts
-import { createSpaceAccountAuth, pushAccountClaim, retireAccountClaim } from "@cotal-ai/core";
+import {
+  createSpaceAccountAuth,
+  hibernateAccountClaim,
+  pushAccountClaim,
+  retireAccountClaim,
+  wakeAccountClaim,
+} from "@cotal-ai/core";
 
 const space = await createSpaceAccountAuth(broker, "acme");
 // `system` is a connection as a system-account user allowed to publish $SYS.REQ.ACCOUNT.*.CLAIMS.UPDATE.
@@ -90,6 +96,25 @@ await pushAccountClaim(system, { accountJwt: space.account.jwt, expectedServerId
 const retired = await retireAccountClaim(broker, space.account.jwt, Math.floor(Date.now() / 1000));
 await pushAccountClaim(system, { accountJwt: retired, expectedServerIds: [system.info!.server_id], maxWaitMs: 5000 });
 ```
+
+A host can temporarily unload an inactive full-resolver account without classifying it as retired.
+Keep the active template in durable host state, choose an `iat` newer than that template, and push
+the hibernated claim. Wake by re-signing the saved active template at another newer `iat`.
+
+```ts
+const sleeping = await hibernateAccountClaim(broker, activeTemplateJwt, hibernateIat);
+await pushAccountClaim(system, { accountJwt: sleeping, expectedServerIds, maxWaitMs: 5000 });
+
+const awake = await wakeAccountClaim(broker, activeTemplateJwt, wakeIat);
+await pushAccountClaim(system, { accountJwt: awake, expectedServerIds, maxWaitMs: 5000 });
+```
+
+Hibernation preserves the account identity, signing keys, account authorization, and every
+per-user revocation. It removes JetStream limits, sets connection and leaf limits to zero, and
+omits the wildcard retirement revocation. The same helpers accept the dedicated auth-callout
+account even though that account has no JetStream allocation. Wake refuses a hibernated or retired
+claim as its template. Persist the active template separately and serialize claim updates per
+account.
 
 - **A stock root records the choice.** `cotal up --account-resolver full` starts the broker on the
   full resolver at `<root>/.cotal/account-jwts` and records it in `.cotal/broker-policy.json`. A host
