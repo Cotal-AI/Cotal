@@ -1723,7 +1723,7 @@ try {
     });
 
     await cell("H1 shipped setup hosts an answering Manager independently of machine approval", async () => {
-      seedUnitReceipt();
+      seedUnitReceipt(join(repo, "bin/dist/cotal.js"), true);
       await d.close();
       // D0 already activated this interactive actor. Extend its grant without replacing its lifecycle.
       const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: fixture.cliUid, scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
@@ -1988,7 +1988,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
         const servicePath = process.argv.includes("--setup-path-repro") || process.argv.includes("--account-setup-journey") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
         let recoveryRestarts = 0;
-        const launch = () => spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading && (!process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro")) ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
+        const launch = () => spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(!upgrading || !process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro") ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
         let child = launch();
         const attach = () => {
           child.stdout.on("data", chunk => { if (process.argv.includes("--rollback-busy-repro")) console.log("RB DAEMON STDOUT", String(chunk)); });
@@ -3754,7 +3754,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         const managedPaths = daemonPathsFor(managedHome, env);
         const managedUnit = `cotal-daemon-${createHash("sha256").update(managedHome).digest("hex").slice(0, 16)}.service`;
         const unitPath = join(root, "config", "systemd", "user", managedUnit);
-        const unitBytes = `[Unit]\nDescription=Owned recording fixture\n[Service]\nExecStart="${process.execPath}" "${cliEntry}" daemon serve --daemon-home "${managedHome}"\nRestart=always\n`;
+        const unitBytes = `[Unit]\nDescription=Owned recording fixture\n[Service]\nExecStart="${process.execPath}" "${cliEntry}" daemon serve --daemon-home "${managedHome}"\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1\nRestart=always\n`;
         writeFileSync(unitPath, unitBytes, { mode: 0o600 });
         writeFileSync(join(managedHome, "service-unit.json"), JSON.stringify({ v: 1, unit: managedUnit, unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString(), daemonHome: managedHome }), { mode: 0o600 });
         let managedChild = await startDaemon(managedHome);
@@ -3790,8 +3790,9 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           let removed;
           if (!process.argv.includes("--shutdown-repro")) {
             process.kill(managed.pid, "SIGSTOP");
-            const uninstalling = ask(managedPaths.socket, { op: "managers-stop" }, 15_000);
-            const ended = await Promise.race([uninstalling.then(() => true), sleep(12_000).then(() => false)]);
+            const uninstalling = ask(managedPaths.socket, { op: "managers-stop" }, 85_000);
+            // Unknown inventory permits a 10-second probe and 60-second retirement grace.
+            const ended = await Promise.race([uninstalling.then(() => true), sleep(80_000).then(() => false)]);
             console.log("  STOP REPRO bounded uninstall", ended);
             check("H8 unresponsive owned child cannot hang uninstall", ended);
             try { process.kill(managed.pid, "SIGCONT"); } catch { /* forced stop already reaped it */ }
