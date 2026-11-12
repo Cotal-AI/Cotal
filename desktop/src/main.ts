@@ -45,6 +45,7 @@ function closeNameEditor(): void {
   (settingsOpen ? el("settings-name") : el("edit-computer-name")).focus();
 }
 el("edit-computer-name").addEventListener("click", () => {
+  if (stage === "finished" && !settingsOpen) openSettings();
   nameEditing = true; el("machine-name").hidden = !settingsOpen; el("edit-computer-name").hidden = true;
   if (settingsOpen) {
     el("settings-computer").parentElement!.append(el("computer-name-form"));
