@@ -32,7 +32,7 @@ a scoped credential on the spot. Every bearer also names a **root credential** r
 space's credential ledger, proved live at each connect, so revoking that one credential
 bites at the very next connect. The operator grants access with
 `cotal actor grant <actor> --sub <their id> --full` for the full envelope (all
-channels; scope `spawn,role:default`, so it may spawn and may delegate the default role), or names
+channels; scope `spawn,run,role:default`, so it may spawn, start workflow runs where supported and delegate the default role), or names
 `--scope`, `--allow-subscribe` and `--allow-publish` for a narrow row. A grant with any of the
 three left off and no `--full` is refused.
 No ledger row, no access; there is no allow-by-default.

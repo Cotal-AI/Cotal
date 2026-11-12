@@ -7,6 +7,16 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Full actor grants include workflow scope
+
+A new `cotal actor grant --full` with no `--scope` now grants `spawn,run,role:default`.
+The added `run` scope allows workflow runs where supported and covers the shipped default persona.
+Explicit scopes, including an empty scope, still override this default.
+
+Existing actor rows keep their scope during upgrade. To add workflow permission to an existing
+row, re-grant it with the intended scope and channel permissions. A re-grant replaces the whole
+row; `--full` also widens any omitted channel permissions to `>`.
+
 ## Run listing requires the 0.149.0 auth-service grant
 
 Managers from 0.149.0 list runs through a batched records read. On a user-auth mesh, upgrade the
@@ -2804,8 +2814,8 @@ the directory leaves a state that the next start refuses.
 
 `cotal actor grant` no longer fills an omitted ACL flag with its wide default. A grant must name
 `--scope`, `--allow-subscribe`, and `--allow-publish`, or pass `--full` to give each flag it leaves
-off its wide default. The wide defaults are `spawn,role:default` for the scope, `>` for read, and
-`>` for post. The CLI refuses any other grant. The break is in the CLI on the machine that holds the
+off its wide default. In 0.59.0, the scope default included `spawn` and `role:default`; read and
+post both defaulted to `>`. Current full grants also include `run`, as described above. The CLI refuses any other grant. The break is in the CLI on the machine that holds the
 actor ledger. That is the machine that ran `cotal up --user-auth --idp <url>`. No stored row,
 credential, or wire message changes.
 
