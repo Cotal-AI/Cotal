@@ -406,7 +406,8 @@ function showStage(next: Stage, focus = false): void {
   document.querySelector(".app")!.classList.toggle("later-open", finished && !completedSetup);
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", el("notice").classList.contains("error"));
   el("link-context").hidden = !linked || next !== "welcome";
-  el("refresh").hidden = signIn || busy || finished;
+  el("refresh").hidden = signIn || busy || (finished && !pending);
+  text("refresh", pending ? "Check approval" : "Refresh status");
   el("custom-host").hidden = !customHost || loginActive;
   el("login-actions").hidden = loginActive;
   el("service-explanation").hidden = loginActive;
@@ -490,7 +491,8 @@ function showStage(next: Stage, focus = false): void {
       el("connection-icon").dataset.tone = signInRequired || refused ? "error" : starting ? "waiting" : empty ? "success" : "neutral";
       setIcon(el("connection-icon"), signInRequired ? "browser" : refused ? "warning" : starting ? "clock" : empty ? "check" : "computer");
     }
-  } else el("spaces-heading").hidden = false;
+  } else el("spaces-heading").hidden = connections.size === 0;
+  document.querySelector<HTMLElement>(".connected-spaces-scroll")!.hidden = connections.size === 0;
   el("dashboard-spaces-note").hidden = !finished || addingSpace || computerAccount?.hostSupport !== "supported" || computerAccount.mode === "sign-in-required" || computerSpaces(computerAccount).length === 0;
   el("connection-icon").hidden = addingSpace;
   document.querySelector(".connection-card")!.classList.toggle("adding-space", addingSpace);
