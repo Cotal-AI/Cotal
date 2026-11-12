@@ -24,7 +24,7 @@ const composed: Command = { ...command, async run(args) {
       const reply = await queryDaemon({ paths: daemonPaths() });
       if (!reply.ok) throw new Error(`machine daemon update schedule is unreadable: ${reply.error.message}`);
       if (!reply.result.update) throw new Error("machine daemon returned no update schedule; run `cotal daemon status` to inspect it");
-      if (reply.result.update.automatic) return undefined;
+      if (reply.result.update.automatic && typeof reply.result.update.nextAttempt === "string") return undefined;
       return "The daemon is not scheduling automatic installation. Run `cotal daemon status` to inspect it. If no daemon service is installed, run `cotal daemon install`.";
     } catch (error) {
       if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {

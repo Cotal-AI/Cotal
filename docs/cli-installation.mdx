@@ -140,8 +140,9 @@ run `cotal update --self` to install manually. Daily checks, update notices and 
 remain available on every platform. Bare `cotal update --auto` reports the saved setting and
 the platform limit. On Linux, enabling or reading an enabled setting also checks the daemon's
 schedule. If no daemon answers, it names `cotal daemon install` and `cotal daemon status`.
-An answering daemon without an active automatic schedule is reported separately. The preference
-stays saved; the command installs and starts nothing.
+An answering daemon without an active automatic schedule is reported separately, including one
+paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
+the command installs and starts nothing.
 `cotal update --notify off` silences notices independently, and `--notify on` enables them.
 `COTAL_NO_UPDATE_CHECK=1` disables both checks and automatic installation for that process.
 

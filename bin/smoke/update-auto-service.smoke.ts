@@ -114,11 +114,25 @@ try {
   assert.equal(typeof status.nextAttempt, "string");
   assert.equal(preference(["--auto", "on"]), "Automatic updates: on");
   assert.equal(preference(["--auto"]), "Automatic updates: on");
+  await stop();
+  writeFileSync(join(home, "update-attempt.json"), "{unreadable", { mode: 0o600 });
+  await start(true);
+  const paused = JSON.parse(run(["daemon", "status", "--json"]).text).result.update;
+  assert.equal(paused.automatic, true, "eligibility alone does not prove an active schedule");
+  assert.equal(paused.nextAttempt, undefined);
+  assert.equal(paused.lastResult, "automatic updates paused: unreadable attempt record");
+  for (const args of [["--auto", "on"], ["--auto"]]) {
+    const text = preference(args);
+    assert.match(text, /^Automatic updates: on\nThe daemon is not scheduling automatic installation\./);
+    assert.match(text, /cotal daemon status/);
+    assert.equal(saved().auto, true);
+  }
+  console.log("PASS unreadable attempt record retains inactive-schedule advice despite automatic eligibility");
   assert.equal(preference(["--auto", "off"]), "Automatic updates: off");
   assert.equal(saved().auto, false);
   const calls = readFileSync(nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
   assert.ok(calls.length > 0);
   assert.ok(calls.every(call => call.tool === "systemctl" && call.args.join(" ") === "--user show-environment"), "only read-only ownership observation is allowed");
-  console.log("PASS verified native schedule suppresses advisory, and no native mutation occurred");
+  console.log("PASS only an active verified native schedule suppresses advisory, and no native mutation occurred");
 } finally { await stop(); }
 emitSentinel({ passed: counted.cells(), failed: 0 });
