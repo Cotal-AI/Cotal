@@ -20,8 +20,12 @@ if (process.platform !== "win32") {
     assert.equal(lines.length, 2, "one native path and one saved DACL");
     assert.match(lines[1]!, /^D:P/, "DACL inheritance is disabled");
     assert.doesNotMatch(lines[1]!, /\(A;[^)]*;(?:WD|AU|BU|S-1-1-0|S-1-5-11|S-1-5-32-545)\)/, "no broad grant");
-    assert.equal((lines[1]!.match(/\(A;/g) ?? []).length, 3, "only the owner, SYSTEM and Administrators grants");
-    return lines[1]!;
+    const dacl = lines[1]!;
+    const aces = dacl.match(/\([^)]*\)/g) ?? [];
+    assert.equal(aces.length, 3, "only the owner, SYSTEM and Administrators grants");
+    assert.ok(aces.every(ace => ace.startsWith("(A;")), "only allow ACEs can be order-normalized");
+    // Windows may reorder equally ranked explicit allow ACEs across parent directories.
+    return dacl.slice(0, dacl.indexOf("(")) + aces.sort().join("");
   };
   const failures: string[] = [];
   const prove = (label: string, run: () => void): void => {
