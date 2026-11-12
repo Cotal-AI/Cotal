@@ -538,7 +538,7 @@ function renderConnections(): void {
     const kind = document.createElement("small"); kind.className = "application-chip"; kind.textContent = accountSpaces.get(space)?.kind ?? "Space";
     copy.append(name, kind);
     const accountRow = computerRows.get(space);
-    if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow); copy.append(detail); }
+    if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow, state === "launch-ready"); copy.append(detail); }
     else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);
