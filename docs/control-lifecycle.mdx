@@ -20,6 +20,14 @@ An unanswered owner produces `TARGET_UNAVAILABLE` naming the instance. An absent
 `not-found`. A seat that reports no manager refuses owner resolution. Presence is a routing hint,
 not a grant, and an inspect response for a different lifecycle is rejected.
 
+A manager-launched static seat with `spawn`, `run` or `admin` receives `describe` and `inspect`
+on its holding manager's instance, in addition to its existing class grants. Renewal keeps that
+same scope. This permits named inspection, a spawned helper's model-pin audit and the lookup
+before named despawn on that manager. It grants no sibling-instance access or additional writes.
+Seats without those capabilities and separately minted class-only callers remain refused.
+Respawn seats issued before this grant was added to obtain it. Renewal cannot widen an existing
+issuance's ceiling.
+
 The CLI's named status and terminal attach paths use the same presence selection on static
 and open spaces. Generic manager inspect uses it on static spaces and still requires an
 authenticated endpoint caller. The per-call operator instrument is minted for the selected instance.
