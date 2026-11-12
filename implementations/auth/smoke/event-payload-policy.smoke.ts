@@ -1,4 +1,4 @@
-import { runAuthService } from "../src/service.js";
+import { parseAuthHostManifest, runAuthService } from "../src/service.js";
 import type { ParsedArgs } from "@cotal-ai/core";
 import type { AuthServiceRuntimeOptions } from "../src/service.js";
 import assert from "node:assert/strict";
@@ -9,6 +9,10 @@ import { mintLifecycleUid } from "@cotal-ai/core";
 import { grantManagedActor, ledgerAclResolver, newActorToken } from "../src/ledger.js";
 import { calloutPermissions } from "../src/permissions.js";
 import type { ValidatedUserToken } from "../src/token.js";
+const manifest = (eventPayloads: unknown) => JSON.stringify({ version: 2, spaces: [{ space: "payload", eventPayloads }] });
+assert.equal(parseAuthHostManifest(manifest("withheld")).settings.get("payload")?.eventPayloads, "withheld");
+for (const value of [false, true, "publish", null, {}])
+  assert.throws(() => parseAuthHostManifest(manifest(value)), /eventPayloads must be/);
 const dir = mkdtempSync(join(tmpdir(), "payload-policy-"));
 for (const eventPayloadsWithheld of ["false", null, 0]) {
   let touched = false;
