@@ -1,5 +1,21 @@
 # @cotal-ai/auth
 
+## 0.162.0
+
+### Minor Changes
+
+- 1207cf2: Include workflow permission in the default scope of a full actor grant so it can delegate the shipped default persona. Explicit scopes and existing grants remain unchanged.
+
+### Patch Changes
+
+- Updated dependencies [21f573f]
+- Updated dependencies [03b2e19]
+- Updated dependencies [74e192c]
+- Updated dependencies [55a5cc8]
+  - @cotal-ai/core@0.162.0
+  - @cotal-ai/workspace@0.162.0
+  - @cotal-ai/lang@0.162.0
+
 ## 0.161.1
 
 ### Patch Changes

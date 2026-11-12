@@ -1,5 +1,12 @@
 # @cotal-ai/pi
 
+## 0.162.0
+
+### Patch Changes
+
+- a625710: Keep Pi message delivery working after an extension reload or session resume.
+  Reuse the retained authenticated runtime before reading one-shot launch material so lifecycle hooks rebind the driver and queued DMs can reach a clean terminal commit.
+
 ## 0.161.1
 
 No changes in this release.
