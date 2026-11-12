@@ -14,7 +14,7 @@ use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 use tokio::sync::Semaphore;
 
 const MAX_FRAME: usize = 64 * 1024;
-pub(crate) struct RequestSlots(Arc<Semaphore>);
+struct RequestSlots(Arc<Semaphore>);
 struct TrayStatus(MenuItem<tauri::Wry>);
 struct TrayUpdate(MenuItem<tauri::Wry>);
 struct PaintState(std::sync::Mutex<FirstPaint>);
@@ -26,11 +26,6 @@ async fn daemon_request(
     request: DesktopRequest,
     on_event: Channel<Value>,
 ) -> Result<Value, String> {
-    let _activity = app.state::<crate::app_activity::Activity>().request()?;
-    run_request(&app, &slots, request, Some(on_event)).await
-}
-
-pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: DesktopRequest, on_event: Option<Channel<Value>>) -> Result<Value, String> {
     let _permit = slots
         .0
         .clone()
@@ -48,14 +43,6 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
         .resource_dir()
         .map_err(|_| "The packaged runtime is unavailable.")?
         .join("runtime");
-    let install = runtime.parent().ok_or("The packaged installation is unavailable.")?;
-    let setup_interrupted = match crate::setup_state::interrupted(install) {
-        Ok(value) => value,
-        Err(_) => return Ok(serde_json::json!({"v":1,"event":"result","ok":false,"error":{"code":"SETUP_INTERRUPTED","message":"Run the installer again to finish updating Cotal."}})),
-    };
-    if setup_interrupted {
-        return Ok(serde_json::json!({"v":1,"event":"result","ok":false,"error":{"code":"SETUP_INTERRUPTED","message":"Run the installer again to finish updating Cotal."}}));
-    }
     let entry = runtime.join("dist").join("cotal.js");
     if !entry.is_file() {
         return Err(
@@ -74,6 +61,18 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
         .args([entry.to_string_lossy().as_ref(), "daemon", "desktop"])
         .kill_on_drop(true)
         .set_process_group(false);
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    let command = if let Some((home, env)) = crate::e2e_context() {
+        let command = command.envs(env);
+        if let Some(home) = home { command.args(["--daemon-home", &home]) } else { command }
+    } else { command };
+    #[cfg(all(feature = "e2e", debug_assertions, windows))]
+    let command = if let Some(home) = crate::e2e_trace_home() {
+        let trace = home.join("windows-bridge-trace.mjs");
+        if trace.is_file() {
+            command.env("NODE_OPTIONS", format!("--import={}", url::Url::from_file_path(trace).expect("absolute E2E trace path")))
+        } else { command }
+    } else { command };
     let (mut events, mut child) = command
         .spawn()
         .map_err(|_| "The packaged daemon client could not start.")?;
@@ -95,8 +94,29 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
                     let frame: Value = serde_json::from_slice(&line).map_err(|_| "The daemon client returned an invalid JSON frame.")?;
                     if frame.get("v").and_then(Value::as_u64) != Some(1) { return Err("The daemon client protocol is unsupported.".into()); }
                     match frame.get("event").and_then(Value::as_str) {
-                        Some("login-prompt" | "setup-progress") => on_event.as_ref().ok_or("Unexpected progress from the update preference reader.")?.send(frame).map_err(|_| "The application closed its progress view.")?,
-                        Some("result") if result.is_none() => result = Some(frame),
+                        Some("login-prompt" | "setup-progress") => {
+                            #[cfg(all(feature = "e2e", debug_assertions))]
+                            if frame["event"] == "setup-progress" {
+                                if let Some(home) = crate::e2e_trace_home() {
+                                    use std::io::Write;
+                                    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(home.join("native-setup-progress.jsonl")) {
+                                        let _ = writeln!(file, "{}", frame);
+                                    }
+                                }
+                            }
+                            on_event.send(frame).map_err(|_| "The application closed its progress view.")?
+                        },
+                        Some("result") if result.is_none() => {
+                            #[cfg(all(feature = "e2e", debug_assertions))]
+                            if let Ok(path) = std::env::var("COTAL_DESKTOP_E2E_NATIVE_LOG") {
+                                use std::io::Write;
+                                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                                    // Error metadata only, never successful results, prompts or credentials.
+                                    let _ = writeln!(file, "{}", serde_json::json!({ "request": request, "ok": frame.get("ok"), "error": frame.get("error") }));
+                                }
+                            }
+                            result = Some(frame)
+                        },
                         _ => return Err("The daemon client returned an unexpected frame.".into()),
                     }
                 }
@@ -131,6 +151,13 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
 #[tauri::command]
 fn open_browser(app: AppHandle, url: String) -> Result<(), String> {
     let url = browser_url(&url)?;
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    if let Ok(path) = std::env::var("COTAL_DESKTOP_E2E_BROWSER_LOG") {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| e.to_string())?;
+        writeln!(file, "{}", url.as_str()).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     app.opener()
         .open_url(url.as_str(), None::<&str>)
         .map_err(|_| "The browser could not be opened.".into())
@@ -180,22 +207,15 @@ fn show(app: &AppHandle) {
 }
 
 #[tauri::command]
-fn first_paint(window: tauri::WebviewWindow) -> Result<bool, String> {
+fn first_paint(window: tauri::WebviewWindow) -> Result<(), String> {
     if window.label() != "main" { return Err("Only the main window can report its first frame.".into()); }
     let app = window.app_handle();
     let action = app.state::<PaintState>().0.lock().map_err(|_| "The first frame state is unavailable.")?.painted();
     if action == ShowAction::Show { show_now(app); }
-    window.is_visible().map_err(|e| e.to_string())
+    Ok(())
 }
 
-pub(crate) fn show_now(app: &AppHandle) {
-    let activity = app.state::<crate::app_activity::Activity>();
-    if let Err(reason) = activity.show(|| show_window(app)) {
-        let _ = app.emit("desktop-presence-error", reason);
-    }
-}
-
-fn show_window(app: &AppHandle) {
+fn show_now(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let result = (|| -> tauri::Result<()> {
             #[cfg(target_os = "macos")]
@@ -203,7 +223,6 @@ fn show_window(app: &AppHandle) {
             window.show()?;
             window.unminimize()?;
             window.set_focus()?;
-            let _ = window.emit("desktop-shown", ());
             Ok(())
         })();
         if let Err(error) = result {
@@ -213,6 +232,8 @@ fn show_window(app: &AppHandle) {
 }
 
 pub fn run() {
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    crate::e2e_deep_link::receipt("process-argv", std::env::args().skip(1));
     #[cfg(windows)]
     unsafe {
         windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(windows::core::w!("ai.cotal.desktop"))
@@ -223,11 +244,12 @@ pub fn run() {
     let autostart = autostart.macos_launcher(tauri_plugin_autostart::MacosLauncher::LaunchAgent);
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            #[cfg(all(feature = "e2e", debug_assertions))]
+            crate::e2e_deep_link::receipt("single-instance", args.iter().skip(1).cloned());
             if !args.iter().any(|arg| arg == "--background") { show(app); }
         }))
         .manage(RequestSlots(Arc::new(Semaphore::new(4))))
         .manage(PaintState(std::sync::Mutex::new(FirstPaint::default())))
-        .manage(crate::app_activity::Activity::default())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
@@ -242,24 +264,38 @@ pub fn run() {
             crate::native_presence::dismiss_presence_offer,
             crate::native_presence::move_to_applications,
             set_update_notice,
-            crate::native_presence::pin_to_taskbar,
-            crate::updater::app_update_check,
-            crate::updater::app_update_download,
-            crate::updater::app_update_apply,
-            crate::updater::app_update_receipt
+            crate::native_presence::pin_to_taskbar
         ])
         .setup(|app| {
-            #[cfg(all(cotal_updater, not(target_os = "linux")))]
+            #[cfg(all(feature = "e2e", debug_assertions))]
             {
-                app.handle().plugin(tauri_plugin_updater::Builder::new()
-                    .pubkey(env!("COTAL_UPDATER_PUBLIC_KEY")).build())?;
-                app.manage(crate::updater::load(app.handle()));
+                use tauri_plugin_deep_link::DeepLinkExt;
+                use tauri::Listener;
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct LoginInput { enabled: bool, trusted: bool, busy: bool }
+                app.listen("desktop-login-input", |event| {
+                    if let Ok(input) = serde_json::from_str::<LoginInput>(event.payload()) {
+                        crate::native_presence::login_receipt("dom-change", if input.trusted { "trusted-input" } else { "untrusted-input" }, Some(input.enabled), Some(!input.busy), None);
+                    }
+                });
+                app.deep_link().on_open_url(|event| {
+                    crate::e2e_deep_link::receipt("plugin-open-url", event.urls().into_iter().map(|url| url.to_string()));
+                });
+                match app.deep_link().get_current() {
+                    Ok(urls) => crate::e2e_deep_link::receipt("plugin-current", urls.unwrap_or_default().into_iter().map(|url| url.to_string())),
+                    Err(_) => crate::e2e_deep_link::receipt("plugin-current-error", std::iter::empty()),
+                }
             }
             let window = app.get_webview_window("main").ok_or("The main window is unavailable.")?;
             window.set_background_color(Some(tauri::window::Color(255, 252, 238, 255)))?;
             #[cfg(target_os = "macos")]
             app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+            #[cfg(all(feature = "e2e", debug_assertions, windows))]
+            eprintln!("E2E native setup: app_config_dir={:?}", app.path().app_config_dir());
             app.manage(native_presence::Presence(std::sync::Mutex::new(native_presence::load(app.handle())?)));
+            #[cfg(all(feature = "e2e", debug_assertions, windows))]
+            eprintln!("E2E native setup: presence loaded");
             let status = MenuItem::with_id(app, "status", "Checking connection…", false, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let dashboard = MenuItem::with_id(app, "dashboard", "Open dashboard", true, None::<&str>)?;
@@ -273,6 +309,8 @@ pub fn run() {
             let update = MenuItem::with_id(app, "update", "No desktop update", false, None::<&str>)?;
             let menu = Menu::with_items(app, &[&status, &update, &settings, &dashboard, &quit])?;
             app.manage(TrayUpdate(update));
+            #[cfg(all(feature = "e2e", debug_assertions, windows))]
+            eprintln!("E2E native setup: menu created");
             app.manage(TrayStatus(status));
             let icon = app
                 .default_window_icon()
@@ -283,31 +321,19 @@ pub fn run() {
                 .menu(&menu)
                 .tooltip("Cotal: not connected")
                 .show_menu_on_left_click(true)
-                .on_tray_icon_event(|tray, event| {
-                    if matches!(
-                        event,
-                        tauri::tray::TrayIconEvent::Click { .. }
-                            | tauri::tray::TrayIconEvent::DoubleClick { .. }
-                    ) {
-                        let _ = tray.app_handle().emit("desktop-tray-open", ());
-                    }
-                })
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "update" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "settings" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "dashboard" => { show(app); let _ = app.emit("desktop-open-dashboard", ()); }
-                    "quit" => { if app.state::<crate::app_activity::Activity>().request_exit() { app.exit(0); } },
+                    "quit" => app.exit(0),
                     _ => {}
                 })
                 .build(app)?;
-            let open = !std::env::args().any(|arg| arg == "--background");
-            #[cfg(all(cotal_updater, not(target_os = "linux")))]
-            let open = match crate::updater::reopen(app.handle()) {
-                Ok(Some(reopen)) => reopen,
-                Ok(None) => open,
-                Err(reason) => { let _ = app.emit("desktop-presence-error", reason); open },
-            };
-            if open { show(app.handle()); }
+            #[cfg(all(feature = "e2e", debug_assertions, windows))]
+            eprintln!("E2E native setup: tray created");
+            if !std::env::args().any(|arg| arg == "--background") {
+                show(app.handle());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -328,7 +354,6 @@ pub fn run() {
                 }
                 let result = (|| -> tauri::Result<()> {
                     window.hide()?;
-                    let _ = window.emit("desktop-hidden", ());
                     #[cfg(target_os = "macos")]
                     window.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
                     Ok(())
@@ -341,9 +366,6 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Cotal could not initialize its native desktop application")
         .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = &event {
-                if !app.state::<crate::app_activity::Activity>().request_exit() { api.prevent_exit(); }
-            }
             #[cfg(target_os = "macos")]
             match event {
                 tauri::RunEvent::Reopen { .. } | tauri::RunEvent::Opened { .. } => show(app),

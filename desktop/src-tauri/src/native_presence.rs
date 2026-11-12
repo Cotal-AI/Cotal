@@ -6,6 +6,16 @@ use tauri_plugin_autostart::ManagerExt;
 
 pub struct Presence(pub Mutex<Preferences>);
 
+#[cfg(all(feature = "e2e", debug_assertions))]
+pub fn login_receipt(stage: &'static str, source: &'static str, requested: Option<bool>, ok: Option<bool>, observed: Option<bool>) {
+    use std::io::Write;
+    let Some(home) = crate::e2e_trace_home() else { return; };
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis());
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(home.join("login-preference-receipts.jsonl")) {
+        let _ = writeln!(file, "{}", serde_json::json!({ "stage": stage, "source": source, "pid": std::process::id(), "atUnixMs": at, "requested": requested, "ok": ok, "observed": observed }));
+    }
+}
+
 fn preference_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("presence.json"))
 }
@@ -33,25 +43,6 @@ fn bundle() -> Result<PathBuf, String> {
         .map(PathBuf::from).ok_or_else(|| "Run the packaged Cotal application to install it.".to_string())
 }
 
-#[cfg(all(cotal_updater, target_os = "macos"))]
-pub(crate) fn updater_location(app: &AppHandle) -> Result<PathBuf, String> {
-    let source = bundle()?;
-    if crate::presence::relocation_source(&source, &app.path().download_dir().map_err(|error| error.to_string())?) {
-        return Err("Move Cotal to Applications before updating it. Disk image and Downloads copies cannot update themselves.".into());
-    }
-    Ok(source)
-}
-
-#[cfg(all(cotal_updater, target_os = "windows"))]
-pub(crate) fn updater_location(_app: &AppHandle) -> Result<PathBuf, String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let directory = executable.parent().ok_or_else(|| "Run the installed Cotal application to update it.".to_string())?;
-    if !directory.join("uninstall.exe").is_file() || !directory.join("runtime").join("desktop-runtime.json").is_file() {
-        return Err("Run the installed Cotal application to update it.".into());
-    }
-    Ok(directory.to_path_buf())
-}
-
 fn transient(app: &AppHandle) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {
@@ -62,11 +53,16 @@ fn transient(app: &AppHandle) -> Result<bool, String> {
     { let _ = app; Ok(false) }
 }
 
-fn apply_login(app: &AppHandle, preferences: &Preferences) -> Result<(), String> {
+fn apply_login(app: &AppHandle, preferences: &Preferences, _source: &'static str) -> Result<(), String> {
     let enabled = preferences.login_enabled() && !transient(app)?;
-    if app.autolaunch().is_enabled().map_err(|e| e.to_string())? != enabled {
-        if enabled { app.autolaunch().enable() } else { app.autolaunch().disable() }
-            .map_err(|e| format!("Open at login could not be changed: {e}"))?;
+    let observed = app.autolaunch().is_enabled();
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    login_receipt("api-is-enabled", _source, Some(enabled), Some(observed.is_ok()), observed.as_ref().ok().copied());
+    if observed.map_err(|e| e.to_string())? != enabled {
+        let result = if enabled { app.autolaunch().enable() } else { app.autolaunch().disable() };
+        #[cfg(all(feature = "e2e", debug_assertions))]
+        login_receipt(if enabled { "api-enable" } else { "api-disable" }, _source, Some(enabled), Some(result.is_ok()), None);
+        result.map_err(|e| format!("Open at login could not be changed: {e}"))?;
     }
     Ok(())
 }
@@ -85,7 +81,7 @@ pub fn observe(app: &AppHandle, operation: &str, frame: &serde_json::Value) -> R
         let mut p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
         let changed = p.connected != connected;
         p.connected = connected;
-        apply_login(app, &p)?;
+        apply_login(app, &p, "connection-observation")?;
         if changed { save(app, &p)?; }
     }
     Ok(())
@@ -110,8 +106,11 @@ pub async fn desktop_presence(app: AppHandle) -> Result<PresenceView, String> {
     let (pin_offer, pin_message) = if connected && !pin_offered {
         pin_status(&app).await
     } else { (false, String::new()) };
+    let login_enabled = app.autolaunch().is_enabled();
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    login_receipt("api-is-enabled", "presence-view", None, Some(login_enabled.is_ok()), login_enabled.as_ref().ok().copied());
     Ok(PresenceView {
-        login_enabled: app.autolaunch().is_enabled().map_err(|e| e.to_string())?,
+        login_enabled: login_enabled.map_err(|e| e.to_string())?,
         relocation_offer: !relocation_declined && transient(&app)?,
         pin_offer,
         pin_message,
@@ -120,19 +119,24 @@ pub async fn desktop_presence(app: AppHandle) -> Result<PresenceView, String> {
 
 #[tauri::command]
 pub fn set_login_preference(app: AppHandle, enabled: bool) -> Result<(), String> {
-    let _activity = app.state::<crate::app_activity::Activity>().request()?;
-    let state = app.state::<Presence>();
-    let mut p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
-    if enabled && !p.connected { return Err("Connect this computer before enabling Open at login.".into()); }
-    if enabled && transient(&app)? { return Err("Move Cotal to Applications before enabling Open at login.".into()); }
-    p.login = Some(enabled);
-    apply_login(&app, &p)?;
-    save(&app, &p)
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    login_receipt("handler-enter", "preference", Some(enabled), None, None);
+    let result = (|| {
+        let state = app.state::<Presence>();
+        let mut p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
+        if enabled && !p.connected { return Err("Connect this computer before enabling Open at login.".into()); }
+        if enabled && transient(&app)? { return Err("Move Cotal to Applications before enabling Open at login.".into()); }
+        p.login = Some(enabled);
+        apply_login(&app, &p, "preference")?;
+        save(&app, &p)
+    })();
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    login_receipt("handler-return", "preference", Some(enabled), Some(result.is_ok()), None);
+    result
 }
 
 #[tauri::command]
 pub fn dismiss_presence_offer(app: AppHandle, offer: String) -> Result<(), String> {
-    let _activity = app.state::<crate::app_activity::Activity>().request()?;
     let state = app.state::<Presence>();
     let mut p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
     match offer.as_str() {
@@ -146,7 +150,6 @@ pub fn dismiss_presence_offer(app: AppHandle, offer: String) -> Result<(), Strin
 /// The source is this executable's bundle and the destination is fixed. Existing apps are never replaced.
 #[tauri::command]
 pub async fn move_to_applications(app: AppHandle) -> Result<(), String> {
-    let _activity = app.state::<crate::app_activity::Activity>().request()?;
     #[cfg(target_os = "macos")]
     {
         if !transient(&app)? { return Err("This application is not running from a disk image or Downloads.".into()); }

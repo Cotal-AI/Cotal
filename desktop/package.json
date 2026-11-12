@@ -22,14 +22,17 @@
     "@tauri-apps/plugin-deep-link": "2.6.3"
   },
   "devDependencies": {
+    "@cotal-ai/core": "workspace:*",
     "@fontsource-variable/bricolage-grotesque": "^5.2.8",
     "@fontsource-variable/geist": "^5.2.8",
     "@fontsource-variable/geist-mono": "^5.2.8",
     "@tauri-apps/cli": "2.12.4",
     "@types/node": "^22.20.0",
+    "@types/pngjs": "^6.0.5",
     "axe-core": "^4.14.0",
     "jsdom": "^29.1.1",
     "playwright-core": "1.64.1",
+    "pngjs": "^7.0.0",
     "tsx": "^4.23.0",
     "typescript": "^5.9.3",
     "vite": "8.3.5"
