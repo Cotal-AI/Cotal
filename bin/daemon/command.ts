@@ -338,7 +338,8 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
       { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Installed", r.installedAt]] },
       { kind: "lines", lines: [{ text: dry
         ? "Nothing was stopped, disabled or removed."
-        : r.mechanism === "systemd-user" ? "The daemon is stopped and will not start at login. Linger is left enabled, because other user services may rely on it." : "The owned daemon job is stopped and will not start at login. Other user services were not changed.", tone: "hint" }] },
+        : r.mechanism === "systemd-user" ? "The daemon is stopped and will not start at login. Linger is left enabled, because other user services may rely on it." : "The owned daemon job is stopped and will not start at login. Other user services were not changed.", tone: "hint" },
+        ...("removedServiceRecords" in r ? [{ text: `Removed local service credentials and identity records: ${r.removedServiceRecords.length ? r.removedServiceRecords.join(", ") : "none remained"}. Remote records may remain; remove the computer in the dashboard to revoke its authority.`, tone: "hint" as const }] : [])] },
     ] },
   ] }));
 }

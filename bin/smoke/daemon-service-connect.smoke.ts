@@ -43,8 +43,8 @@
  *      connects, `service-connect` with no register request refuses TARGET_NOT_FOUND, and
  *      `service-disconnect` answers disconnected;
  *  C12 a connection held past two 60 s access-bearer lifetimes stays connected or connecting (never
- *      unavailable or ended), is connected for at least 80% of 1 s samples and at the end, and the
- *      space still reads it ready. The sample counts are printed, so each documented reconnect is visible;
+ *      unavailable or ended), is connected for at least 80% of 1 s samples and returns to connected
+ *      within 15 s after sampling, and the space still reads it ready. Sample counts are printed;
  *  C13 (runs last, on its own space) broker loss while connected: the daemon's own broker path for
  *      this space (a TCP pass-through the suite cuts) is unreachable while the space's auth service
  *      keeps its broker; no 500 ms sample over 8 s says connected (all say connecting); after the
@@ -71,6 +71,8 @@
  * Setup progress regression only: add --setup-progress-only (uses the shipped foreground daemon).
  * Clock-behind regression only: add --clock-behind-only (C1, C2, C15, C18 and C10).
  * Add --cancel-only for C1, C2, C15, C6c and C10; --keep-fixture retains the sandbox after shutdown.
+ * Add --retirement-only for shipped disconnect/uninstall credential erasure and sign-out guidance.
+ * Add --renewal-only for the two-access-lifetime service renewal observation.
  * Service-only setup: --hosting-only --no-manager-only, optionally --account-only.
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Credential expiry regression only: add --credential-expiry-only (C1, C2, C7, C10, C15 and C18).
@@ -151,6 +153,9 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, JSON.stringify(extra ?? "")?.slice(0, 600)); }
 };
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
+  if (process.argv.includes("--renewal-only") && !/^(C1 |C2 |C15 |C12 |C10 )/.test(title)) return;
+  if (process.argv.includes("--retirement-only") && !/^(C1 |C2 |C15 |C3 |C5r |C10 )/.test(title)) return;
+  if (title.startsWith("C5r ") && !process.argv.includes("--retirement-only")) return;
   if (process.argv.includes("--clock-behind-only") && !/^(C1 |C2 |C15 |C18 |C10 )/.test(title)) return;
   if (desktopGapOnly && !/^(C1 |C2 |D0 |C10 )/.test(title)) return;
   if (setupProgressOnly && !/^(C1 |C1b |C2 |C4 |C17 |C17b |C10 )/.test(title)) return;
@@ -201,7 +206,7 @@ chmodSync(root, 0o700);
 const home = join(root, "home"), participant = join(root, "participant"), rtDir = join(root, "rt"), jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}a2b2-js-`));
 for (const d of [home, participant, rtDir]) mkdirSync(d, { mode: 0o700 });
 process.env.COTAL_HOME = home;
-if (setupProgressOnly || process.argv.includes("--account-only")) {
+{
   process.env.HOME = home;
   process.env.XDG_CONFIG_HOME = join(root, "config");
   process.env.XDG_RUNTIME_DIR = rtDir;
@@ -540,10 +545,11 @@ try {
   };
   const frames: string[] = [];
   const askLogged = async (req: Frame, ms?: number) => { const f = await ask(paths.socket, req, ms); frames.push(JSON.stringify(f)); return f; };
-  const connectS = (space: string) => askLogged({ op: "service-connect", space }, 90_000);
+  const connectS = async (space: string) => { await reenrollFixture(space); return askLogged({ op: "service-connect", space }, 90_000); };
   const statusS = (space: string) => askLogged({ op: "service-status", space });
   const disconnectS = (space: string) => askLogged({ op: "service-disconnect", space });
   const cli = async (argv: string[], format: "--plain" | "--json" = "--json", onStderr?: (text: string) => void) => {
+    if (argv[0] === "service-connect" || argv[0] === "setup") await reenrollFixture(ON);
     const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", ...argv, format], {
       cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
       stdio: ["ignore", "pipe", "pipe"], timeout: 90_000, killSignal: "SIGKILL",
@@ -580,8 +586,11 @@ try {
     return last;
   };
   const approve = async (h: typeof host, space: string, owner: string) => {
-    const bound = await h({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "name-bind", granter: operator,
-      input: { endpoint: "ai.cotal.machine", owner, expectedRevision: 0, claimReference: "connect-fixture-namespace" } } as never) as { state: string; binding?: { revision: number } };
+    const name = await h({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "name-read", granter: operator,
+      input: { endpoint: "ai.cotal.machine" } }) as { state: string; record?: { value: { revision: number } } };
+    const bound = name.state === "present" ? { state: "bound", binding: name.record!.value }
+      : await h({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "name-bind", granter: operator,
+        input: { endpoint: "ai.cotal.machine", owner, expectedRevision: 0, claimReference: "connect-fixture-namespace" } } as never) as { state: string; binding?: { revision: number } };
     const reg = await ask(paths.socket, { op: "register", space });
     const pid = resultOf(reg).proposalId as string;
     const p = await h({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "proposal-read", input: { proposalId: pid }, granter: operator } as never) as { record?: { revision: number } };
@@ -629,16 +638,49 @@ try {
   let d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
   let foreground: ChildProcess | undefined;
   let assignmentDigest = "";
+  let approvedInstance = "";
+  let callerGranted = false;
+  // Explicit disconnect destroys the service identity. Subsequent independent cells need the
+  // fixture owner to approve a NEW instance and grant its caller, never restore erased secrets.
+  async function reenrollFixture(space: string): Promise<void> {
+    if (process.argv.includes("--retirement-only") || space !== ON || !assignmentDigest || (regRecord(space) && identityOf(space)?.instanceId === approvedInstance)) return;
+    const approved = await approve(host, space, fixture.owner);
+    assert.equal(approved.decided.state, "approved");
+    assignmentDigest = approved.decided.approval!.assignment.assignmentDigest;
+    approvedInstance = identityOf(space)!.instanceId;
+    assert.equal(resultOf(await ask(paths.socket, { op: "register", space })).outcome, "registered");
+    if (callerGranted) {
+      const id = identityOf(space)!;
+      const status = await cotalAuthProvider.serviceEndpointAuthority!({ store: workspaceSecretStore(participant), dir: userAuthStateDir(participant, space, { readOnly: true }),
+        request: { v: 1, kind: "service-endpoint-authority", operation: "status", requestId: rid(), space,
+          accountPublicKey: id.accountPublicKey, endpoint: id.endpoint, instanceId: id.instanceId, target: { kind: "instance" } } });
+      assert.equal(status.result.state, "status");
+      if (status.result.state !== "status" || !("witness" in status.result.status)) throw new Error("fixture registration has no witness");
+      const grantee = { owner: fixture.owner, actor: "probe", lifecycleUid: fixture.callerUid };
+      const policy = await host({ v: 1, kind: "service-endpoint-host", operation: "caller-policy-read", requestId: rid(), granter: { kind: "owner", owner: fixture.owner }, input: { grantee, service: null } });
+      const granted = await host({ v: 1, kind: "service-endpoint-host", operation: "caller-grant", requestId: rid(), granter: { kind: "owner", owner: fixture.owner },
+        input: { grantee, service: { endpoint: id.endpoint, instanceId: id.instanceId, approvalDigest: status.result.status.witness.approvalDigest },
+          capabilities: [{ endpoint: id.endpoint, command: "machine-status", instanceId: id.instanceId, instanceOnly: true }], expectedPolicyRevision: policy.state === "present" ? policy.record.revision : 0 } });
+      assert.equal(granted.state, "granted");
+    }
+  }
+  async function pauseFixtureConnection(): Promise<void> {
+    // These cells exercise reuse of an existing registration, not explicit credential erasure.
+    // Stop the daemon and withdraw only fixture resume intent before reopening its local endpoint.
+    await d.close();
+    rmSync(intentFile(ON), { force: true });
+    d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home });
+  }
   try {
     await cell("C0 offline status without a register request is independent of connect history", async () => {
       const missing = "no-such-space";
       const beforeHits = hits.length;
       for (const phase of ["initial", "after refused connect", "after disconnect", "after restart"]) {
         if (phase === "after refused connect") {
-          const r = await cli(["service-connect", "--space", missing]);
+          const r = await cli(["service-connect", "--space", OFF]);
           check("C0 connect without a request refuses NOT_REQUESTED", r.status === 2 && r.doc?.error?.code === "TARGET_NOT_FOUND" && r.doc?.error?.cause?.code === "NOT_REQUESTED", r.doc);
         } else if (phase === "after disconnect") {
-          check("C0 disconnect remains an explicit successful operation", stateOf(await disconnectS(missing)) === "disconnected");
+          check("C0 disconnect remains an explicit successful operation", stateOf(await disconnectS(OFF)) === "disconnected");
         } else if (phase === "after restart") {
           await d.close();
           d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
@@ -737,6 +779,7 @@ try {
         && waiting.err.split("\n").filter((line) => line.startsWith("connect: connected;")).length === 1
         && waiting.err.indexOf("connect: connected;") > waiting.err.indexOf("connect: waiting up to 30s"), waiting);
       assignmentDigest = a.decided.approval?.assignment.assignmentDigest ?? "";
+      approvedInstance = identityOf(ON)!.instanceId;
       check("C2 instrument: fixture operator bound and fixture owner approved through the stock host", a.bound.state === "bound" && a.decided.state === "approved", a);
       const r = await connectS(ON);
       const spaceSays = await instanceStatus(ON);
@@ -787,6 +830,7 @@ try {
           capabilities: [{ endpoint: id.endpoint, command: "machine-status", instanceId: id.instanceId, instanceOnly: true }], expectedPolicyRevision: 0 } });
       check("C15 instrument: owner explicitly granted the exact instance and command", granted.state === "granted");
       if (granted.state !== "granted") throw new Error("fixture caller grant refused");
+      callerGranted = true;
       const reply = await probeMachine(direct);
       check("C15 exactly one granted direct invoke answers void from the registered daemon instance", probeCalls === beforeCalls + 2 && reply.reply.ok && reply.reply.data === null && reply.responder.instanceId === id.instanceId);
       const resolved = await probeMachine();
@@ -814,14 +858,99 @@ try {
       check("C4 a space without service endpoints is not connected", stateOf(off) !== "connected" && stateOf(off) !== undefined, off);
     });
 
+    await cell("C5r shipped credential retirement preserves other spaces and reports failures", async () => {
+      const otherOwner = deriveOwnerForIdpSubject((await loadOwnerSecret(ctx[2]!.store, DENY))!, idpOrigin, "machine-owner");
+      assert.equal((await approve(denyHost, DENY, otherOwner)).decided.state, "approved");
+      assert.equal(stateOf(await connectS(DENY)), "connected");
+      const instanceId = identityOf(ON)!.instanceId;
+      await d.close();
+      foreground = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "serve"], {
+        cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      foreground.stdout!.resume(); foreground.stderr!.resume();
+      try {
+        for (let i = 0; ; i++) {
+          try { await ask(paths.socket, { op: "status" }); break; }
+          catch { assert.ok(i < 100 && foreground.exitCode === null, "foreground daemon must publish its endpoint"); await sleep(100); }
+        }
+        assert.equal(await waitState(ON, s => s === "connected"), "connected");
+        assert.equal(await waitState(DENY, s => s === "connected"), "connected");
+        assert.ok((await probeMachine()).reply.ok, "positive control: shipped foreground daemon answers");
+        const store = join(daemonDir, spaceSegment(ON), "service-store");
+        const peerStore = join(daemonDir, spaceSegment(DENY), "service-store");
+        const managerFile = join(daemonDir, spaceSegment(ON), "unrelated.json");
+        writeFileSync(managerFile, "retained", { mode: 0o600 });
+        chmodSync(store, 0o500);
+        try {
+          const refused = await cli(["service-disconnect", "--space", ON]);
+          assert.equal(refused.status, 2);
+          assert.equal(refused.doc?.error?.cause?.code, "LOCAL_STATE_ERROR");
+          assert.equal(stateOf(await statusS(ON)), "local-state-error");
+          assert.ok(existsSync(store), "failed cleanup is not reported as erased");
+        } finally { chmodSync(store, 0o700); }
+        const disconnected = await cli(["service-disconnect", "--space", ON], "--plain");
+        assert.equal(disconnected.status, 0, disconnected.err);
+        assert.match(disconnected.out, /removed local service records/);
+        assert.match(disconnected.out, /dashboard/);
+        for (const name of ["service-connect.json", "register-request.json", "service-identity.json", "service-store"])
+          assert.equal(existsSync(join(daemonDir, spaceSegment(ON), name)), false, name);
+        assert.equal(readFileSync(managerFile, "utf8"), "retained");
+        assert.ok(existsSync(peerStore), "disconnect leaves the other space's proof alone");
+        assert.equal(stateOf(await statusS(DENY)), "connected");
+        let unanswered = false;
+        try { await probeMachine({ instanceId, epoch: 1 }); } catch (error) { unanswered = unansweredRequest(error); }
+        assert.ok(unanswered, "the removed service has no responder");
+        assert.equal((await cli(["service-disconnect", "--space", ON])).status, 0, "repeat cleanup is idempotent");
+        assert.equal((await cli(["service-connect", "--space", ON])).doc?.error?.cause?.code, "NOT_REQUESTED");
+
+        const logout = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "logout", "--idp", idpUrl, "--local", "--plain"], {
+          cwd: root, env: { ...process.env, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"],
+        });
+        let out = "", err = "";
+        logout.stdout.on("data", b => out += String(b)); logout.stderr.on("data", b => err += String(b));
+        assert.equal(await new Promise(resolve => logout.once("exit", resolve)), 0, err);
+        frames.push(out, err);
+        assert.match(out, /own service proof/); assert.match(out, /service-disconnect/); assert.match(out, /dashboard/);
+        assert.equal(stateOf(await statusS(DENY)), "connected", "logout does not end the existing service");
+        const signedOutDisconnect = await cli(["service-disconnect", "--space", ON]);
+        assert.equal(signedOutDisconnect.status, 0, "local credential retirement must work after logout");
+        await killAndAwaitExit(foreground, "SIGTERM"); foreground = undefined;
+
+        // Every native operation is a recorder, never the host's service manager.
+        const native = join(root, "native");
+        writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nconst args=process.argv.slice(2).join(' ');if(args==='--user show-environment')console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});else if(!['--user --no-ask-password --no-pager stop cotal-daemon.service','--user --no-ask-password --no-pager disable cotal-daemon.service','--user --no-ask-password --no-pager daemon-reload'].includes(args))process.exit(99);\n`, { mode: 0o700 });
+        const preview = await cli(["uninstall", "--dry-run"]);
+        assert.equal(preview.status, 0); assert.ok(existsSync(peerStore), "preview preserves credentials");
+        chmodSync(peerStore, 0o500);
+        try {
+          const refused = await cli(["uninstall", "--yes"]);
+          assert.notEqual(refused.status, 0);
+          assert.match(refused.doc?.error?.message, /removing local service credentials/);
+          assert.ok(existsSync(unitReceiptFile(paths)), "failed removal retains the receipt for retry");
+        } finally { chmodSync(peerStore, 0o700); }
+        const removed = await cli(["uninstall", "--yes"]);
+        assert.equal(removed.status, 0, removed.err);
+        assert.ok(removed.doc?.result?.removedServiceRecords.includes(`${spaceSegment(DENY)}/service-store`));
+        assert.equal(existsSync(peerStore), false);
+        assert.equal(existsSync(unitReceiptFile(paths)), false);
+        assert.ok(existsSync(paths.lock), "the lifetime lock inode remains");
+        assert.equal(readFileSync(managerFile, "utf8"), "retained");
+        check("C5r live retirement, failure recovery, isolation and sign-out passed", true);
+      } finally {
+        if (foreground) { await killAndAwaitExit(foreground, "SIGTERM"); foreground = undefined; }
+      }
+    });
+
     await cell("C5 explicit disconnect", async () => {
       check("C5 instrument: the connection recorded its intent before the disconnect", existsSync(intentFile(ON)));
+      const instance = identityOf(ON)!.instanceId;
       const r = await disconnectS(ON);
       check("C5 disconnected", stateOf(r) === "disconnected", r);
-      check("C5 status agrees", stateOf(await statusS(ON)) === "disconnected");
+      check("C5 status has no registration request", stateOf(await statusS(ON)) === "not-requested");
+      check("C5 service credentials and identity are gone", !existsSync(join(daemonDir, spaceSegment(ON), "service-store")) && !identityOf(ON) && !regRecord(ON));
       check("C5 the recorded connect intent is gone, so the disconnect outlives a restart", !existsSync(intentFile(ON)));
       let unanswered = false;
-      try { await probeMachine(); } catch (e) { unanswered = unansweredRequest(e); }
+      try { await probeMachine({ instanceId: instance, epoch: 1 }); } catch (e) { unanswered = unansweredRequest(e); }
       check("C5 the disconnected daemon no longer answers an authorized caller", unanswered);
     });
 
@@ -844,7 +973,7 @@ try {
       check("C6 instrument: an explicit disconnect forgets the intent", stateOf(await disconnectS(ON)) === "disconnected" && !existsSync(intentFile(ON)));
       await d.close();
       d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
-      check("C6 a restart after an explicit disconnect resumes 0 connections and is disconnected", d.counters.connectionsResumed === 0 && stateOf(await statusS(ON)) === "disconnected", { counters: d.counters, state: stateOf(await statusS(ON)) });
+      check("C6 a restart after an explicit disconnect resumes 0 connections and has no registration", d.counters.connectionsResumed === 0 && stateOf(await statusS(ON)) === "not-requested", { counters: d.counters, state: stateOf(await statusS(ON)) });
       check("C6 instrument: connected again for the cells that follow", stateOf(await connectS(ON)) === "connected");
     });
 
@@ -870,6 +999,7 @@ try {
         throw new Error("C6b shipped daemon did not publish its local endpoint");
       };
       const cli = async (mode: string) => {
+        if (mode === "service-connect") await reenrollFixture(ON);
         const proc = spawn(process.execPath, [entry, "daemon", mode, "--space", ON, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let out = "", err = "";
         proc.stdout.on("data", (b) => { out += String(b); }); proc.stderr.on("data", (b) => { err += String(b); });
@@ -985,7 +1115,7 @@ try {
             await stop("SIGTERM");
             await start();
             const status = await cli("service-status");
-            check("C6b disconnected intent stays disconnected after restart", status.code === 2 && stateOf(await statusS(ON)) === "disconnected");
+            check("C6b disconnected intent has no registration after restart", status.code === 2 && stateOf(await statusS(ON)) === "not-requested");
             check("C6b explicit connect restores intent for shutdown control", (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
             await stop("SIGKILL");
           } else check("C6b shutdown closes its socket but retains intent", !existsSync(paths.socket) && existsSync(intentFile(ON)));
@@ -1016,6 +1146,7 @@ try {
         throw new Error("C6c shipped daemon did not publish its endpoint");
       };
       const cli = async (mode: string) => {
+        if (mode === "service-connect") await reenrollFixture(ON);
         const proc = spawn(process.execPath, [entry, "daemon", mode, "--space", ON, "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let out = "", err = "";
         proc.stdout!.on("data", (b) => { out += String(b); }); proc.stderr!.on("data", (b) => { err += String(b); });
@@ -1031,6 +1162,10 @@ try {
         try { return await Promise.race([work, new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), ms); })]); }
         finally { clearTimeout(timer); }
       };
+      // The CLI starts a fresh process. Its startup is not the cancellation contract. Keep the
+      // upstream request held until settlement, with a bound below its 30-second HTTP timeout
+      // and the fixture CLI's 10-second kill timer, rather than measuring a 2.5-second startup race.
+      const cancellationDeadlineMs = 8000;
       try {
         await start();
         check("C6c healthy control connects and records intent", (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
@@ -1039,7 +1174,8 @@ try {
           for (const action of ["disconnect", "SIGTERM"]) {
             let entered!: () => void, release!: () => void, aborted!: () => void;
             const requested = new Promise<void>((resolve) => { entered = resolve; });
-            const held = new Promise<void>((resolve) => { release = resolve; });
+            let released = false;
+            const held = new Promise<void>((resolve) => { release = () => { released = true; resolve(); }; });
             const cancelled = new Promise<boolean>((resolve) => { aborted = () => resolve(true); });
             const gate = async (res: ServerResponse) => { res.once("close", aborted); entered(); await held; };
             if (phase === "token") tokenGate = gate;
@@ -1052,16 +1188,16 @@ try {
               const started = Date.now();
               if (action === "disconnect") {
                 const pending = cli("service-disconnect");
-                const reply = await within(pending, 2500);
-                check(`C6c ${phase} disconnect returns before release and forgets intent`, reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
+                const reply = await within(pending, cancellationDeadlineMs);
+                check(`C6c ${phase} disconnect returns before release and forgets intent`, !released && reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
                 // Release only after observing the bound, even on failure, then settle the child.
                 if (!reply) release();
                 await pending;
               } else {
                 const exited = new Promise<number | null>((resolve) => child!.once("exit", resolve));
                 child!.kill("SIGTERM");
-                const code = await within(exited, 2500);
-                check(`C6c ${phase} SIGTERM exits cleanly before release and retains intent`, code === 0 && !existsSync(paths.socket) && existsSync(intentFile(ON)), { code });
+                const code = await within(exited, cancellationDeadlineMs);
+                check(`C6c ${phase} SIGTERM exits cleanly before release and retains intent`, !released && code === 0 && !existsSync(paths.socket) && existsSync(intentFile(ON)), { code });
                 if (code === undefined) release();
                 await exited;
                 child = undefined;
@@ -1072,7 +1208,7 @@ try {
             await start();
             if (action === "disconnect") {
               const status = await cli("service-status");
-              check(`C6c ${phase} explicit disconnect stays disconnected after restart`, status.code === 2 && status.doc.error?.cause?.code === "DISCONNECTED", status);
+              check(`C6c ${phase} explicit disconnect has no registration after restart`, status.code === 2 && status.doc.error?.cause?.code === "NOT_REQUESTED", status);
               check(`C6c ${phase} explicit reconnect restores intent`, (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
             } else check(`C6c ${phase} healthy restart resumes and serves`, (await waitState(ON, (state) => state === "connected", 15_000)) === "connected" && (await probeMachine()).reply.ok);
             await stop();
@@ -1091,7 +1227,8 @@ try {
             if (phase !== "token") check(`C6c register ${phase} ${action} prepare: connect`, (await cli("service-connect")).code === 0);
             let entered!: () => void, release!: () => void, aborted!: () => void;
             const requested = new Promise<boolean>((resolve) => { entered = () => resolve(true); });
-            const held = new Promise<void>((resolve) => { release = resolve; });
+            let released = false;
+            const held = new Promise<void>((resolve) => { release = () => { released = true; resolve(); }; });
             const cancelled = new Promise<boolean>((resolve) => { aborted = () => resolve(true); });
             const gate = async (res: ServerResponse) => { res.once("close", aborted); entered(); await held; };
             if (phase === "token") tokenGate = gate;
@@ -1103,15 +1240,15 @@ try {
               const started = Date.now();
               if (action === "disconnect") {
                 const disconnect = cli("service-disconnect");
-                const reply = await within(disconnect, 2500);
-                check(`C6c register ${phase} disconnect settles before release`, reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
+                const reply = await within(disconnect, cancellationDeadlineMs);
+                check(`C6c register ${phase} disconnect settles before release`, !released && reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
                 if (!reply) release();
                 await disconnect;
               } else {
                 const exited = new Promise<number | null>((resolve) => child!.once("exit", resolve));
                 child!.kill("SIGTERM");
-                const code = await within(exited, 2500);
-                check(`C6c register ${phase} SIGTERM exits before release`, code === 0 && !existsSync(paths.socket), { code });
+                const code = await within(exited, cancellationDeadlineMs);
+                check(`C6c register ${phase} SIGTERM exits before release`, !released && code === 0 && !existsSync(paths.socket), { code });
                 if (code === undefined) release();
                 await exited;
                 child = undefined;
@@ -1121,6 +1258,7 @@ try {
               check(`C6c register ${phase} ${action} settles the registration client`, await within(pending.then(() => true), 2500) === true);
             } finally { tokenGate = undefined; connectGates.delete(ON); release(); await pending; }
             if (action === "SIGTERM") await start();
+            await reenrollFixture(ON);
             check(`C6c register ${phase} ${action} can register again`, (await cli("register")).doc.result?.outcome === "registered");
             check(`C6c register ${phase} ${action} can connect again`, (await cli("service-connect")).code === 0);
             await stop();
@@ -1133,7 +1271,7 @@ try {
         mkdirSync(intent, { mode: 0o700 });
         try {
           const refused = await cli("service-disconnect");
-          check("C6c intent-removal failure remains visible", refused.code === 2 && refused.doc.error?.cause?.code === "UNAVAILABLE", refused);
+          check("C6c intent-removal failure remains visible", refused.code === 2 && refused.doc.error?.cause?.code === "LOCAL_STATE_ERROR", refused);
         } finally {
           // Preserve the failed filesystem input instead of deleting evidence.
           renameSync(intent, blocked);
@@ -1151,13 +1289,17 @@ try {
     });
 
     await cell("C12 held past two access-bearer lifetimes: the space keeps it ready and connected returns after each reconnect", async () => {
+      assert.equal(await waitState(ON, state => state === "connected"), "connected", "resumed service must be connected before renewal sampling");
       const samples: string[] = [];
       const t0 = Date.now();
       while (Date.now() - t0 < 130_000) { samples.push(String(stateOf(await statusS(ON)))); await sleep(1000); }
       const connected = samples.filter((s) => s === "connected").length, other = samples.filter((s) => s !== "connected" && s !== "connecting");
       console.log(`  C12 ${samples.length} samples: ${connected} connected, ${samples.length - connected - other.length} connecting, ${other.length} other`);
       check("C12 never unavailable or ended while the space stands; only connected or connecting", other.length === 0, other.slice(0, 5));
-      check("C12 connected for most of the window and connected at the end", connected >= samples.length * 0.8 && samples.at(-1) === "connected", { connected, n: samples.length });
+      check("C12 connected for most of the window", connected >= samples.length * 0.8, { connected, n: samples.length });
+      // A credential can expire on the last sample too. The documented reconnect must finish
+      // within the same bound used for startup recovery, rather than win an arbitrary sample.
+      check("C12 connected again within fifteen seconds after the sampling window", await waitState(ON, state => state === "connected", 15_000) === "connected");
       check("C12 the space still reads the instance as ready", (await instanceStatus(ON)) === "ready");
       const reply = await probeMachine();
       check("C12 the registered command still answers after credential renewals", reply.reply.ok && reply.reply.data === null && reply.responder.instanceId === identityOf(ON)!.instanceId);
@@ -1193,7 +1335,7 @@ try {
     await cell("C7 outage: not connected while the door is gone, connected again after", async () => {
       relayDown.add(ON);
       try {
-        await disconnectS(ON);
+        await pauseFixtureConnection();
         const r = await connectS(ON);
         check("C7 while the door is unreachable the state is unavailable", stateOf(r) === "unavailable", r);
         const c = await cli(["service-connect", "--space", ON]);
@@ -1204,7 +1346,7 @@ try {
     });
 
     await cell("C18 the shipped daemon identifies locally expired credentials without claiming a network outage", async () => {
-      await disconnectS(ON);
+      await pauseFixtureConnection();
       await d.close();
       const renewalFile = filesUnder(daemonDir).find((p) => p.includes("service-renewal") && p.endsWith(".json"));
       if (!renewalFile) throw new Error("fixture has no renewal record");
@@ -1293,7 +1435,7 @@ try {
     await cell("C17 `cotal daemon setup` reaches connected in one call", async () => {
       seedUnitReceipt();
       // Start from not connected, so reaching connected is this call's own work.
-      await disconnectS(ON);
+      await pauseFixtureConnection();
       check("C17 instrument: not connected, and no resume record, before setup runs", stateOf(await statusS(ON)) === "disconnected" && !existsSync(intentFile(ON)));
       const lines: string[] = [];
       const r = await runSetup({ paths, daemonHome: undefined, noManager: true, space: ON, peerUid, peerPid, waitSeconds: 60,
@@ -1306,7 +1448,7 @@ try {
       check("C17 it names the unit and the instance", r.unit === "cotal-daemon.service" && r.instanceId === identityOf(ON)?.instanceId, { unit: r.unit, instanceId: r.instanceId });
       check("C17 it reports the final connected state once", lines.filter((l) => l.startsWith("connect: connected;")).length === 1, lines);
       for (const format of ["--plain", "--json"] as const) {
-        await disconnectS(ON);
+        await pauseFixtureConnection();
         const connected = await cli(["setup", "--no-manager", `--space=${ON}`, "--wait", "30"], format);
         check(`C17 ${format} first-poll connection succeeds`, connected.status === 0 && (format !== "--json" || connected.doc?.result?.state === "connected"), connected);
         check(`C17 ${format} reports every reached stage on stderr`, ["service", "sign-in", "register", "connect"].every((stage) => connected.err.split("\n").some((line) => line.startsWith(`${stage}: `))), connected.err);
@@ -1384,7 +1526,7 @@ try {
       const original = readFileSync(file);
       const marker = "PRIVATE_SETUP_RECORD_MARKER";
       for (const phase of ["before-registration", "before-connect"]) {
-        await disconnectS(ON);
+        await pauseFixtureConnection();
         const lines: string[] = [];
         let failure: Record<string, any> | undefined;
         try {
@@ -1404,7 +1546,7 @@ try {
     });
 
     await cell("C16 an authority without issuer identity cannot start a serving daemon", async () => {
-      await disconnectS(ON);
+      await pauseFixtureConnection();
       withoutIssuer.add(ON);
       try {
         const r = await connectS(ON);
@@ -1565,7 +1707,11 @@ try {
         const expired = await cli("connect-check", "--space", sessionSpace);
         const expiredBefore = deviceCodeRequests;
         const renewed = await cli(...setupArgs, "--idp", idpUrl);
-        check("H2 expired rejected session also signs in once and reconnects", expired.code === 2 && expired.doc.error?.code === "AUTH_REQUIRED" && renewed.code === 0 && renewed.doc.result?.state === "connected" && deviceCodeRequests === expiredBefore + 1);
+        check("H2 expired rejected session signs in once and requests new approval after disconnect", expired.code === 2 && expired.doc.error?.code === "AUTH_REQUIRED"
+          && renewed.code === 4 && renewed.doc.error?.cause?.code === "APPROVAL_PENDING" && deviceCodeRequests === expiredBefore + 1);
+        assert.equal((await approve(sessionHost, sessionSpace, sessionOwner)).decided.state, "approved");
+        const reconnected = await cli(...setupArgs, "--idp", idpUrl);
+        check("H2 fresh approval reconnects without another sign-in", reconnected.code === 0 && reconnected.doc.result?.state === "connected" && deviceCodeRequests === expiredBefore + 1);
         await cli("service-disconnect", "--space", sessionSpace);
       } finally {
         tokenFailure = undefined; idpRevoked = false; recoverOnApproval = false;
@@ -2068,6 +2214,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               if (mode !== undefined) {
                 const resumed = await ask(paths.socket, { op: "manager-start", space: ON }, 100_000);
                 assert.ok(resumed.ok && resultOf(resumed).state === "answering", "the recorded Manager can host again");
+                assert.equal((await approve(host, ON, fixture.owner)).decided.state, "approved", "a disconnected service needs new approval");
               }
               const connected = await cli("service-connect", "--space", ON);
               assert.equal(connected.code, 0, JSON.stringify(connected));
@@ -2091,7 +2238,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                   renameSync(intent, `${intent}.blocked-directory`);
                   renameSync(saved, intent);
                 }
-                check("I10 hosted intent-removal failure is reported without killing daemon", refused.code === 2 && refused.doc.error?.cause?.code === "UNAVAILABLE", refused);
+                check("I10 hosted intent-removal failure is reported without killing daemon", refused.code === 2 && refused.doc.error?.cause?.code === "LOCAL_STATE_ERROR", refused);
                 const alive = await ask(paths.socket, { op: "service-status", space: ON });
                 check("I10 daemon still answers after early disconnect rejection", alive.ok === true, alive);
                 check("I10 failed withdrawal still stops Manager gracefully", resultOf(alive).manager?.lastStop === "graceful", resultOf(alive));
@@ -2116,7 +2263,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                 check(`I8 ${mode ?? "supported"} direct withdrawal retires the live seat`, head?.mapping.state === "retired", head?.mapping);
               } finally { await observer.close(); }
               check(`I8 ${mode ?? "supported"} direct withdrawal stops Manager gracefully`, status.manager?.lastStop === "graceful", status.manager);
-              assert.equal(status.state, "disconnected", `${mode ?? "supported"} Manager cleanup must not prevent machine-service withdrawal`);
+              assert.equal(status.state, "not-requested", `${mode ?? "supported"} Manager cleanup must not prevent machine-service withdrawal`);
               assert.equal(existsSync(intentFile(ON)), false, "explicit withdrawal must forget the durable service intent");
               assert.equal(disconnected.code, mode === undefined ? 0 : 2);
               if (mode !== undefined) {
@@ -2128,7 +2275,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                 await killAndAwaitExit(child, "SIGTERM");
                 child = await startDaemon();
                 const afterRestart = resultOf(await ask(paths.socket, { op: "service-status", space: ON }));
-                assert.equal(afterRestart.state, "disconnected", "withdrawal must survive daemon restart");
+                assert.equal(afterRestart.state, "not-requested", "withdrawal must survive daemon restart");
                 assert.equal(existsSync(intentFile(ON)), false);
                 assert.equal(deregisterRequests, calls, "restart must not repeat an unconfirmed cleanup");
                 if (mode === "unknown") {
@@ -3686,7 +3833,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
     await cell("C7b account mismatch survives service connection and CLI presentation", async () => {
       check("C7b instrument: connected and independently ready before the account change",
         stateOf(await connectS(ON)) === "connected" && await instanceStatus(ON) === "ready");
-      await disconnectS(ON);
+      await pauseFixtureConnection();
       const records = ["service-identity.json", "register-request.json"].map((name) => join(home, "daemon", spaceSegment(ON), name));
       const before = records.map((path) => readFileSync(path));
       const beforePosts = posts(ON);
@@ -3716,7 +3863,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
     });
 
     await cell("C18 the shipped daemon identifies a credential issued ahead of its clock", async () => {
-      await disconnectS(ON);
+      await pauseFixtureConnection();
       await d.close();
       const clockModule = join(root, "daemon-clock.mjs");
       writeFileSync(clockModule, "const now = Date.now; Date.now = () => now() + Number(process.env.DAEMON_CLOCK_OFFSET_MS);\n", { mode: 0o600 });
@@ -3776,7 +3923,9 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               check(`C18 ${offset}s clock reaches ready and serves an authorized caller`, await instanceStatus(ON) === "ready" && (await probeMachine()).reply.ok);
             }
             check(`C18 ${offset}s clock preserves activate and renew request ids`, requestIds() === ids);
-            await cli(["service-disconnect", "--space", ON]);
+            // Compare clocks against one registration. Shutdown preserves credentials, whereas
+            // explicit service-disconnect deliberately erases the record being compared.
+            rmSync(intentFile(ON), { force: true });
           } finally {
             await killAndAwaitExit(foreground, "SIGTERM"); foreground = undefined;
             check(`C18 ${offset}s clock logs contain no bearer or session`, !daemonOutput.includes(SESSION)

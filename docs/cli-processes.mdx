@@ -611,7 +611,9 @@ To connect directly to a space, use `cotal daemon setup --space <s> [--idp <url>
 Space-specific daemon commands require an explicit `--space <s>` even when `cotal use`
 has selected a space. `daemon status` can omit it to read the daemon and all hosted Managers.
 After setup, use `cotal daemon service-status --space <s>` to read the machine connection and
-`cotal daemon service-disconnect --space <s>` to close it.
+`cotal daemon service-disconnect --space <s>` to close it and remove its local service credentials
+and identity records. The command lists the records it removed. A remote computer record may remain;
+remove the computer in the dashboard to revoke its authority there.
 Setup prints these commands with `--space=<s>` so names beginning with a hyphen also work.
 
 The daemon owns this computer's name. Read it with `cotal daemon name`, or set it with
@@ -659,9 +661,11 @@ nothing and the daemon asks again every 30 seconds.
 A host without the route reports account computers unsupported and keeps per-space behavior.
 Authentication refusal asks you to sign in again. Network failures retain existing connections.
 
-On hosts that support account computers, setup with `--space` and local connect or disconnect write the
+On hosts that support account computers, setup with `--space` and local connect write the
 computer's account intent with a fresh revision. A conflicting revision is read again and retried
-once. The daemon immediately reconciles the result, so dashboard and local changes use the same
+once. Local disconnect records removal on this computer without requiring sign-in or contacting
+the provider. A later dashboard enable must have a newer binding revision before it can reconnect.
+The daemon immediately reconciles account intent, so dashboard and local connect use the same
 space list. A local removal caused by a missing registry entry still waits for renewed consent
 for that binding. Hosts that return 404 retain per-space behavior and report it in status.
 Existing local connections outside the account list keep running.
@@ -849,9 +853,12 @@ They never reuse an earlier answering result as fresh success. Update checks a r
 pinned endpoint even when an earlier observation marked it starting.
 `observedAt` names the latest completed observation. No project folder or selected space is
 changed. `service-disconnect` stops that space's hosted Manager and removes its hosting intent.
-`uninstall` stops all hosted Managers and removes their intents from per-space directories, leaving
-the lifetime lock file and unrelated records alone. A later install has no Manager to resume from
-those removed intents. Pause and rename are not implemented.
+`uninstall` stops all hosted Managers and removes their intents from per-space directories. It also
+removes every machine-service connection's resume intent, renewal credentials, ready records,
+registration request and identity. Removal failures exit non-zero and keep the installation receipt
+for retry. The lifetime lock file and unrelated records remain. Remote records may remain until you
+remove the computer in the dashboard. A later install has no Manager or machine-service connection
+to resume from those removed intents. Pause and rename are not implemented.
 
 Setup reuses completed stages but probes an existing Manager again, pinned to its recorded instance,
 before reporting launch-readiness. If the running daemon's version or protocol differs from the
@@ -1322,12 +1329,18 @@ it does not prove approval or a connection. A registration
 awaiting approval reports `approval-pending` for the rest of that daemon process, until another
 registration or connection attempt updates it or an explicit disconnect clears it. Registration
 alone never claims a connection and does not replace a live connection's state. `service-disconnect`
-drains the responder and closes the connection, removes that space's resume record so the
-disconnect outlives a restart, and stopping the daemon closes all of them without removing a record.
+drains the responder and closes the connection, then removes that space's resume intent, renewal
+credentials, ready records, registration request and service identity. It lists the removed records
+without their contents. A later connection needs a new registration and approval. Stopping the
+daemon alone closes its connections without removing these records. The lifetime lock remains;
+its empty file is not a credential. Local cleanup does not revoke remote authority: remove the
+computer in the dashboard for that, since its remote record may remain.
 Disconnect and graceful shutdown cancel an in-flight service authority or sign-in proof request,
 including a startup resume, before waiting for the connection attempt to settle.
-This also applies to a pending `daemon register`. If removing resume intent fails, disconnect
-reports the failure. Repair the record and retry disconnect or connect without restarting the daemon.
+This also applies to a pending `daemon register`. If removing any service record fails, disconnect
+exits non-zero and status reports `local-state-error`. Some records may already have been removed.
+Repair their permissions and retry disconnect. After successful removal, status reports
+`not-requested` because no registration request remains.
 
 The service answers its existing `machine-status` command with `null`. This is a liveness response;
 it contains no vitals, hostname or machine metadata. Its stock Describe answer is explicitly public:

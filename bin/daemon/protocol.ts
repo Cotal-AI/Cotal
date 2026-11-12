@@ -191,6 +191,7 @@ export type ServiceConnectionState =
   | "not-requested" | "not-registered" | "not-signed-in" | "unsupported" | "approval-pending" | "refused" | "account-mismatch" | "conflict"
   | "connecting" | "connected" | "unavailable" | "ended" | "disconnected" | "local-state-error" | "credential-not-yet-valid" | "credential-expired";
 export interface ServiceConnectionResult {
+  readonly removedRecords?: readonly string[];
   readonly remedy?: string;
   readonly manager?: HostedManager;
   readonly space: string;
