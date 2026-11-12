@@ -34,6 +34,7 @@ try {
     const env = {
       PATH: c.noGh ? home : process.env.PATH, HOME: home, USERPROFILE: home,
       XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"),
+      XDG_RUNTIME_DIR: join(home, ".runtime"), DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(home, "no-bus")}`,
       GH_CONFIG_DIR: gh, GH_PROMPT_DISABLED: "1", GIT_TERMINAL_PROMPT: "0",
       GITHUB_REPOSITORY: "Cotal-AI/Cotal", PR_HEAD_GATE_FIXTURE: "success",
       PR_HEAD_GATE_AUTH_RESULT: resultPath, PR_HEAD_GATE_EXPECT_TOKEN: c.token ?? "none",
