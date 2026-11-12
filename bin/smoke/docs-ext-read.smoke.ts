@@ -104,7 +104,22 @@ let specBody = "";
 {
   const json = run(["docs", "--search", "allowSubscribe", "--json"]);
   const r = json.envelope?.result as { kind: string; query: string; hits: { slug: string; heading: string; text: string }[] } | undefined;
-  check("--search returns sections that hold the query, each naming its page", json.status === 0 && r?.kind === "docs-search" && r.query === "allowSubscribe" && r.hits.length > 0 && r.hits.every((h) => h.slug && h.heading && /allowsubscribe/i.test(h.text)), r && { hits: r.hits.map((h) => `${h.slug}: ${h.heading}`) });
+  const matchingSections = r?.hits.every((h) => {
+    if (!h.slug || !h.heading || !h.text) return false;
+    const page = run(["docs", h.slug, "--json"]);
+    const body = (page.envelope?.result as { body?: string } | undefined)?.body ?? "";
+    const excerpt = h.text.replace(/\n\n… \(section continues; read the full page\)$/, "");
+    const start = body.indexOf(excerpt);
+    if (page.status !== 0 || start < 0) return false;
+    // Search deliberately caps long sections. Verify the match in that same section,
+    // rather than requiring the identifier to occur before the display cap.
+    const rest = body.slice(start);
+    const heading = /^#+ /m.exec(rest);
+    const next = /^#+ /m.exec(rest.slice((heading?.index ?? 0) + (heading?.[0].length ?? 0)));
+    const end = next ? (heading?.index ?? 0) + (heading?.[0].length ?? 0) + next.index : rest.length;
+    return /allowsubscribe/i.test(rest.slice(0, end));
+  });
+  check("--search returns matching sections and excerpts from each named page", json.status === 0 && r?.kind === "docs-search" && r.query === "allowSubscribe" && r.hits.length > 0 && matchingSections === true, r && { hits: r.hits.map((h) => `${h.slug}: ${h.heading}`) });
   const plain = run(["docs", "--search", "allowSubscribe", "--plain"]);
   check("the plain search points at each hit's full page", plain.status === 0 && /read the full page: `cotal docs [^\s`]+`/.test(plain.stdout), shown(plain));
   const none = run(["docs", "--search", "zzqqxxnomatch", "--json"]);
