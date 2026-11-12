@@ -7975,6 +7975,7 @@ export class Manager {
         const creds = await this.withIssuer((i) =>
           this.withProvisioner((prov) =>
             provisionAgent(prov, this.auth!, identity, {
+              eventPayloads,
               subscribe,
               allowSubscribe,
               allowPublish,

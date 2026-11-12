@@ -652,6 +652,8 @@ export interface IssuedBinding {
 
 /** Options shaping a minted user's permissions. */
 export interface MintOpts {
+  /** Trusted issuance restriction: exclude the tool-payload publish rail when false. */
+  eventPayloads?: boolean;
   /** The owner+actor principal to mint for. Omitted ⇒ the no-login dev default (owner `"local"`, actor
    *  = the connection id) via {@link principalOf}. User mode supplies the derived owner + ledger actor. */
   principal?: { owner: string; actor: string };
@@ -1846,8 +1848,8 @@ export function permissionsFor(
   // per-instance chat durable; the durable backstop is Plane-3 (delivery-daemon fan-out → per-member DELIVER).
   const subChat = allowSubscribe.map((ch) => chatSubject(space, "*", "*", ch));
   const payloadReads = eventPayloadReadSubjects(space, pr.owner, allowSubscribe);
+  if (opts.eventPayloads !== false) pubAllow.push(eventPayloadSubject(space, pr.owner, pr.actor));
   pubAllow.push(
-    eventPayloadSubject(space, pr.owner, pr.actor),
     `$JS.API.STREAM.INFO.${PAYLOAD}`,
     ...payloadReads.map(subject => `$JS.API.CONSUMER.CREATE.${PAYLOAD}.${chatHistD}.${subject}`),
     `$JS.API.CONSUMER.INFO.${PAYLOAD}.${chatHistD}`,

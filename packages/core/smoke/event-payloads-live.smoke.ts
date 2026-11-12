@@ -27,8 +27,8 @@ try {
   await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   const owner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa", foreign = "u_bbbbbbbbbbbbbbbbbbbbbbbbbb";
   const subject = eventPayloadSubject(space, owner, "seat");
-  const native = async (who: string, actor: string, read: string[]) => {
-    const creds = await mintCreds(auth, newIdentity(), "agent", { principal: { owner: who, actor }, lifecycleUid: mintLifecycleUid(), allowSubscribe: read });
+  const native = async (who: string, actor: string, read: string[], eventPayloads = true) => {
+    const creds = await mintCreds(auth, newIdentity(), "agent", { principal: { owner: who, actor }, lifecycleUid: mintLifecycleUid(), allowSubscribe: read, eventPayloads });
     const { nativeCredsAuthenticator } = await import("../src/creds-authenticator.js");
     const nc = await connect({ servers, authenticator: nativeCredsAuthenticator(creds), reconnect: false });
     connections.push(nc);
@@ -49,7 +49,18 @@ try {
   assert.equal(b.getReceived(), 0);
   assert.equal(c.getReceived(), 1);
   assert.ok(denied.length > 0);
-  console.log("PASS real minted broker grants: own owner reads, wildcard foreign denied, explicit foreign reads");
+  const withheld = await native(owner, "withheld", [], false);
+  const withheldErrors: unknown[] = [];
+  void (async () => { for await (const s of withheld.status()) if (s.type === "error") withheldErrors.push(s); })();
+  const withheldSubject = eventPayloadSubject(space, owner, "withheld");
+  const withheldTap = own.subscribe(withheldSubject);
+  await own.flush();
+  withheld.publish(withheldSubject, new TextEncoder().encode("must-not-publish"));
+  await withheld.flush();
+  await new Promise(r => setTimeout(r, 100));
+  assert.equal(withheldTap.getReceived(), 0);
+  assert.ok(withheldErrors.length > 0);
+  console.log("PASS real minted broker grants: own owner reads, wildcard foreign denied, explicit foreign reads, withheld publisher denied");
 } finally {
   await Promise.all(connections.map(c => c.close()));
   broker.kill("SIGTERM"); await once(broker, "exit"); release();
