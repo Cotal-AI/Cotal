@@ -1,5 +1,33 @@
 # cotal-ai
 
+## 0.163.2
+
+### Patch Changes
+
+- 4e65a2a: Fresh CLI guidance points to Cotal Cloud sign-in when no space is known.
+  Correct sign-in help and empty-space guidance, avoid connector installation during login, and point status at the shipped default launch without warnings about nonexistent folder personas. Keep multiline seed refusals readable while preserving permission checks and local broker alternatives.
+- 4f19d7c: Keep concrete recovery commands when a manually registered space cannot connect this computer. Manual service requests use their registration flow without requiring account-catalog intent, preserving the selected daemon and space in JSON and plain refusals.
+- 869bc76: Keep Manager restart preparation held until every preparing caller releases it. Local requests are attributed to their authenticated process identity, so another updater cannot release a caller's admission fence.
+- 5d54679: Updates refuse unreadable seed journals and invalid installed daemon receipts before replacing packages or reconciling connectors.
+- Updated dependencies [7c965d7]
+- Updated dependencies [4e65a2a]
+- Updated dependencies [5712551]
+- Updated dependencies [5d54679]
+- Updated dependencies [7c965d7]
+- Updated dependencies [7c11c40]
+- Updated dependencies [0c372d5]
+- Updated dependencies [5d54679]
+  - @cotal-ai/auth@0.163.2
+  - @cotal-ai/cli@0.163.2
+  - @cotal-ai/workspace@0.163.2
+  - @cotal-ai/core@0.163.2
+  - @cotal-ai/connector-core@0.163.2
+  - @cotal-ai/manager@0.163.2
+  - @cotal-ai/delivery@0.163.2
+  - @cotal-ai/runtime@0.163.2
+  - @cotal-ai/registry@0.163.2
+  - @cotal-ai/seat@0.163.2
+
 ## 0.163.1
 
 ### Patch Changes

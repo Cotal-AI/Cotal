@@ -1,5 +1,16 @@
 # @cotal-ai/workspace
 
+## 0.163.2
+
+### Patch Changes
+
+- 4e65a2a: Fresh CLI guidance points to Cotal Cloud sign-in when no space is known.
+  Correct sign-in help and empty-space guidance, avoid connector installation during login, and point status at the shipped default launch without warnings about nonexistent folder personas. Keep multiline seed refusals readable while preserving permission checks and local broker alternatives.
+- 7c11c40: Refused or expired sign-ins now tell you how to sign in again, including when a space catalog refuses your session. Recovery uses `cotal login` for Cotal Cloud and names `--idp` only for another provider.
+- Updated dependencies [5712551]
+- Updated dependencies [7c965d7]
+  - @cotal-ai/core@0.163.2
+
 ## 0.163.1
 
 ### Patch Changes
