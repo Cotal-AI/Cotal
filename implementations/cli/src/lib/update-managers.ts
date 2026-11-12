@@ -22,7 +22,7 @@ export interface UpdateManager {
 }
 
 function blocked(detail: string): never {
-  throw new Error(`local Manager continuity cannot be established: ${detail}; inspect this local Manager and retry with --on <instanceId> after restoring its identity record`);
+  throw new Error(`local Manager continuity cannot be established: ${detail}; inspect the named local process and restore its identity record before retrying; no Manager instance was guessed`);
 }
 
 /** Read identity coordinates only. Unlike startup readers this never migrates or creates state. */
