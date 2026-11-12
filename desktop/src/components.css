@@ -24,7 +24,8 @@
 #account-outcome { white-space: pre-line; max-height: 120px; overflow-y: auto; }
 .settings-card.confirming-account > :not(.settings-heading):not(:has(#account-confirmation)) { display: none; }
 .confirming-account #settings-account, .confirming-account #settings-spaces, .confirming-account #account-confirmation + #account-outcome, .confirming-account .account-actions:has(#settings-signout) { display: none; }
-.settings-card { max-height: calc(100vh - 150px); overflow-y: auto; }
+.settings-card { max-height: calc(100vh - 110px); overflow-y: auto; padding: 10px 24px; }
+.settings-row { padding-block: 4px; }
 .settings-card.account-outcome-view > :not(.settings-heading):not(:has(#account-outcome)) { display: none; }
 .account-outcome-view #settings-account, .account-outcome-view #settings-spaces, .account-outcome-view .account-actions:has(#settings-signout) { display: none; }
 .account-outcome-view #account-outcome { max-height: 250px; color: var(--ink); }
@@ -35,15 +36,20 @@
 .update-banner > span { flex: 1; }
 .update-banner button { flex-shrink: 0; }
 .app.settings-open #journey { display: none; }
-.app.settings-open main { padding-top: var(--s-2); justify-content: flex-start; }
+.app.settings-open main { padding-block: 8px; justify-content: flex-start; }
+#move-offer { margin-top: 16px; padding-top: 16px; border-top: 2px solid var(--rule); }
 .header-control { border: 2px solid var(--ink); border-radius: 999px; padding: 4px 8px; min-height: 32px; background: var(--card); color: var(--ink); font: 600 11px/1.4 var(--mono); }
 #settings-startup { border-top: 2px solid var(--rule); padding-top: var(--s-1); }
 #settings-startup > h2 { font-size: var(--t-small); }
-#settings-startup .preferences { border-top: 0; }
+#settings-startup .preferences { border-top: 0; padding-block: 2px; }
+#settings-startup > h2 { margin-bottom: 4px; }
+#settings-startup > p, #pin-offer > p { margin: 4px 0; font-size: var(--t-label); }
+#pin-offer .actions { margin-top: 4px; }
+#pin-offer .button { padding-block: 6px; min-height: 32px; }
 #update-preference-row { border-top: 0; padding-top: 0; }
 #update-preference-label { font-weight: 600; }
 @media (max-width: 640px) { .sidebar-footer { gap: 4px; } .sidebar-footer .machine { max-width: 160px; } }
-@media (max-width: 640px) { .settings-card { padding: var(--s-2); } }
+@media (max-width: 640px) { .settings-card { padding: 10px 16px; } }
 
 /* Flat account-space rows share the existing chip and secondary-button styles. */
 #space-panel select { margin-bottom: 16px; }
