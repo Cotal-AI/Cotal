@@ -8,6 +8,11 @@ export function cloudAuthUrl(url: string): string {
   return url === "https://cloud.cotal.ai" || url === "https://cloud.cotal.ai/" ? COTAL_CLOUD_IDP : url;
 }
 
+/** The recovery command for a refused sign-in, without deployment details for Cloud. */
+export function loginRecoveryCommand(idpUrl: string): string {
+  return cloudAuthUrl(idpUrl.replace(/\/$/, "")) === COTAL_CLOUD_IDP ? "cotal login" : `cotal login --idp ${idpUrl}`;
+}
+
 /** Decide the native browser command without launching it, including for smoke assertions. */
 export function loginBrowserCommand(url: string, options: {
   terminal: boolean;

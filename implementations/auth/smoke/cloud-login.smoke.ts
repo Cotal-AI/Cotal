@@ -26,6 +26,7 @@ const env = { ...cleanEnv, HOME: home, COTAL_HOME: process.env.COTAL_HOME, XDG_C
 
 let handler: ReturnType<typeof toNodeHandler>;
 let sub = '';
+let revoked = false;
 let shape: 'personal' | 'sole-team' | 'personal-team' | 'teams' = 'personal';
 const catalogSpaces = () => {
   const kinds = shape === 'personal' ? ['personal'] : shape === 'sole-team' ? ['team'] : shape === 'personal-team' ? ['team', 'personal'] : ['team', 'team'];
@@ -36,6 +37,7 @@ const catalogSpaces = () => {
 };
 const server = createServer((req, res) => {
   if (req.url === '/spaces') {
+    if (revoked) { res.writeHead(401); res.end(); return; }
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ v: 1, account: { idpUrl: base, issuer: origin, sub }, spaces: catalogSpaces() }));
     return;
@@ -75,6 +77,30 @@ try {
   assert.equal(readFileSync(join(env.COTAL_HOME!, 'current-mesh'), 'utf8').trim(), 'personal');
   assert.equal(readFileSync(join(env.COTAL_HOME!, 'current-mesh.adopted'), 'utf8').trim(), 'personal');
   console.log('Real Better Auth approval through CLI selects personal space and names next commands.');
+  revoked = true;
+  const catalogPath = join(env.COTAL_HOME!, 'space-catalogs.json');
+  const cache = JSON.parse(readFileSync(catalogPath, 'utf8'));
+  for (const account of Object.values(cache.accounts) as { fetchedAt?: string }[]) account.fetchedAt = '2000-01-01T00:00:00.000Z';
+  writeFileSync(catalogPath, JSON.stringify(cache), { mode: 0o600 });
+  const sessionBefore = readFileSync(join(env.COTAL_HOME!, 'idp-sessions.json'), 'utf8');
+  for (const command of ['ps', 'spawn', 'sync', 'status']) {
+    for (const mode of ['--plain', '--json']) {
+      let refusal = '';
+      const ps = spawn('./node_modules/.bin/tsx', ['bin/cotal.ts', command, ...(command === 'spawn' ? ['-d'] : []), mode], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      ps.stdout.on('data', chunk => { refusal += chunk.toString(); });
+      ps.stderr.on('data', chunk => { refusal += chunk.toString(); });
+      const psDeadline = setTimeout(() => ps.kill('SIGTERM'), 30_000);
+      try {
+        const exit = await new Promise(resolve => ps.on('close', resolve));
+        if (command !== 'status') assert.notEqual(exit, 0, refusal);
+        assert.match(refusal, new RegExp(`cotal login --idp ${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), refusal);
+        assert.equal(readFileSync(join(env.COTAL_HOME!, 'idp-sessions.json'), 'utf8'), sessionBefore);
+        for (const session of Object.values(JSON.parse(sessionBefore).sessions) as { token: string }[]) assert.equal(refusal.includes(session.token), false);
+        console.log(`Revoked catalog session gives ${command} ${mode} the sign-in remedy.`);
+      } finally { clearTimeout(psDeadline); }
+    }
+  }
+  revoked = false;
   for (const cell of [
     { shape: 'sole-team' as const, expected: 'team_0' },
     { shape: 'personal-team' as const, expected: 'personal' },

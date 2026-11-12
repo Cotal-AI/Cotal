@@ -1,6 +1,7 @@
 import { userInfo } from "node:os";
 import { oneLine, registry, type AuthProvider, type UserAuthStatus } from "@cotal-ai/core";
 import { userAuthStateDir } from "../auth-paths.js";
+import { loginRecoveryCommand } from "../cloud-login.js";
 import { chatNameProblem } from "../chat-name.js";
 import { CLI_USER_ACTOR } from "../connect.js";
 import type { MeshTarget } from "../mesh-target.js";
@@ -50,9 +51,9 @@ async function accountName(target: Pick<MeshTarget, "space" | "root" | "userAuth
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `cannot read your sign-in for space "${space}": ${e instanceof Error ? e.message : String(e)}`, { target: { space } });
   }
   const idp = status.idpUrl;
-  const signIn = `sign in again with \`cotal login --idp ${idp}\``;
+  const signIn = `sign in again with \`${loginRecoveryCommand(idp)}\``;
   if (!status.login)
-    throw new CommandFailure("refused", "AUTH_REQUIRED", `not signed in to ${idp}; run \`cotal login --idp ${idp}\``, { target: { space }, remedy: `run \`cotal login --idp ${idp}\`` });
+    throw new CommandFailure("refused", "AUTH_REQUIRED", `not signed in to ${idp}; run \`${loginRecoveryCommand(idp)}\``, { target: { space }, remedy: `run \`${loginRecoveryCommand(idp)}\`` });
   if (!status.login.name)
     throw new CommandFailure("refused", "AUTH_REQUIRED", `your sign-in at ${idp} has no name on record that an @mention can reach, because it was made by an older cotal or the provider gave none`, {
       target: { space },
