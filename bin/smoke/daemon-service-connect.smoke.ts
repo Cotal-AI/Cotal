@@ -3968,7 +3968,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("HM005 native stop leaves actual hosted Manager and socket gone", !alive && !existsSync(paths.socket));
           seedUnitReceipt();
           child = await startDaemon();
-          check("HM005 later installation resumes no hosted Manager", (await cli("status")).doc.result?.managers?.length === 0);
+          const reinstalledStatus = await cli("status");
+          const reinstalledManagers = reinstalledStatus.doc.result?.managers as Record<string, any>[] | undefined;
+          // Durable cleanup may retain a stopped observation after the hosting intent is removed.
+          check("HM005 later installation resumes no hosted Manager", reinstalledStatus.code === 0 && Array.isArray(reinstalledManagers)
+            && reinstalledManagers.every(manager => manager.state === "stopped" && manager.pid === undefined)
+            && !existsSync(intent), { code: reinstalledStatus.code, managers: reinstalledManagers, error: reinstalledStatus.doc.error, err: reinstalledStatus.err });
         } finally { env.PATH = defaultPath; defaultControl.close(); }
       } finally {
         recordingRestart = false;
