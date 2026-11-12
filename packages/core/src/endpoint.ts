@@ -215,7 +215,30 @@ import {
   token,
   unicastSubject,
   unicastRecvFilter,
+  permissionAnswerSubject,
+  permissionBucket,
+  permissionOwnerFilter,
+  permissionServeFilter,
 } from "./subjects.js";
+import {
+  parsePermissionAnswerBody,
+  parsePermissionAnswerReply,
+  parsePermissionRecord,
+  permissionAnswerOutcome,
+  permissionKey,
+  principalId,
+  type IncomingPermissionAnswer,
+  type PermissionAnswer,
+  type PermissionAnswerBody,
+  type PermissionAnswerOutcome,
+  type PermissionAnswerReply,
+  type PermissionChange,
+  type PermissionHolderPort,
+  type PermissionRecord,
+  type PermissionRequestId,
+  type PermissionWrite,
+  type PrincipalId,
+} from "./permissions.js";
 
 import { isPermissionDenied } from "./permission-denied.js";
 export { isPermissionDenied };
@@ -633,6 +656,12 @@ type MembershipFeedWatch = {
   rejectStop?: (err: unknown) => void;
 };
 
+/** What {@link CotalEndpoint.openPermissionHolder} keeps to re-bind on every (re)connect. */
+interface PermissionHolderIntent {
+  readonly onAnswer: (answer: IncomingPermissionAnswer) => Promise<PermissionAnswerReply>;
+  sub?: Subscription;
+}
+
 export class CotalEndpoint extends EventEmitter {
   readonly card: AgentCard;
   readonly space: string;
@@ -831,6 +860,9 @@ export class CotalEndpoint extends EventEmitter {
    *  subscription on it, so a responder bound once would leave its plane to the broker's
    *  no-responders answer, which a peer grades `unbound`, while this endpoint is connected and serving. */
   private readonly livenessResponders = new Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription }>();
+  /** The permission holder {@link openPermissionHolder} opened: INTENT, re-bound on every (re)connect
+   *  as the liveness responders are. */
+  private permissionHolder?: PermissionHolderIntent;
   private readonly streamMsgs: ConsumerMessages[] = [];
   /** Per-channel native core subscriptions (SPEC v0.3) — the manager-free live read path for boot +
    *  runtime channels (there is no per-instance chat durable). Keyed by channel so leave unsubscribes
@@ -1995,6 +2027,7 @@ export class CotalEndpoint extends EventEmitter {
     // Re-bind the liveness responders on this connection, for armPlane3's reason: the rebuild closed
     // the old connection and the responders with it.
     for (const plane of this.livenessResponders.keys()) this.bindLiveness(plane);
+    this.bindPermissionHolder();
     for (const tap of this.taps) this.bindTap(tap);
 
     // Bound and live — covers initial start, manual reconnect, AND background self-heal (every
@@ -6712,6 +6745,158 @@ export class CotalEndpoint extends EventEmitter {
     // Anything else is a transport or client failure: it says something about our link, not about
     // the plane, so it is graded like a refusal rather than guessed at.
     return "refused";
+  }
+
+  /**
+   * Hold this agent's harness permission prompts (SPEC §8.2): serve the answers its owner's
+   * principals send it, and write its own prompt records. The broker admits only that owner's
+   * interactive principals to ask, so every answer's `by` is one of them.
+   *
+   * Refused on an open mesh, where any principal could answer, and without a lifecycle UID, which
+   * each record names so readers can tell a live holder from a gone one. The binding is intent,
+   * re-bound on every (re)connect. A request whose reply target is outside its own `.reply.` leaf is
+   * dropped and reported on `warning`, and a body outside the schema is answered `bad-request`.
+   * Answers are handed over as they arrive, so one awaiting its harness never delays another.
+   */
+  openPermissionHolder(onAnswer: (answer: IncomingPermissionAnswer) => Promise<PermissionAnswerReply>): PermissionHolderPort {
+    if (!this.authed) throw new Error("permission prompts are relayed only on an authenticated mesh: on an open mesh any principal could answer them");
+    const lifecycleUid = this.ownLifecycleUid;
+    if (lifecycleUid === undefined)
+      throw new Error("a permission holder needs this endpoint's lifecycleUid: its records name it so readers can tell when the holder is gone");
+    if (this.permissionHolder) throw new Error("this endpoint already holds its permission prompts");
+    const held: PermissionHolderIntent = { onAnswer };
+    this.permissionHolder = held;
+    this.bindPermissionHolder();
+    return {
+      agent: principalId(this.owner, this.actor),
+      holder: { lifecycleUid, runtimeId: processRuntime(lifecycleUid).id },
+      write: (record, step, expected) => this.writePermissionRecord(record, step, expected),
+      close: () => {
+        if (this.permissionHolder !== held) return;
+        this.permissionHolder = undefined;
+        this.dropSub(held.sub);
+      },
+    };
+  }
+
+  private dropSub(sub: Subscription | undefined): void {
+    if (!sub) return;
+    try { sub.unsubscribe(); } catch { /* dead with the old connection */ }
+    const i = this.subs.indexOf(sub);
+    if (i >= 0) this.subs.splice(i, 1);
+  }
+
+  private bindPermissionHolder(): void {
+    const held = this.permissionHolder;
+    if (!held || !this.nc) return;
+    this.dropSub(held.sub);
+    const filter = permissionServeFilter(this.space, this.owner, this.actor);
+    const sub = this.nc.subscribe(filter);
+    held.sub = sub;
+    this.subs.push(sub);
+    const senders = filter.slice(0, -1);
+    void (async () => {
+      for await (const m of sub) {
+        // The broker does not check a requester's embedded reply subject, and this holder may publish
+        // beneath any `.reply.` of its rail, so a reply aimed anywhere else is not answered.
+        if (!m.reply || !m.reply.startsWith(`${m.subject}.reply.`)) {
+          this.emitRecoverable(new Error(`rejected permission answer on ${m.subject}: reply target "${m.reply ?? "(none)"}" is not under the sender's own reply subtree`));
+          continue;
+        }
+        const actor = m.subject.slice(senders.length);
+        let body: unknown;
+        try { body = m.json(); } catch { body = undefined; }
+        const parsed = parsePermissionAnswerBody(body);
+        if (!parsePrincipalKey(`${this.owner}.${actor}`) || !parsed) {
+          try { m.respond(JSON.stringify({ v: 1, ok: false, code: "bad-request" } satisfies PermissionAnswerReply)); } catch { /* the asker is gone */ }
+          continue;
+        }
+        void held.onAnswer({ id: parsed.id, by: principalId(this.owner, actor), answer: parsed.answer })
+          .catch((): PermissionAnswerReply => ({ v: 1, ok: false, code: "busy" }))
+          .then((reply) => { try { m.respond(JSON.stringify(reply)); } catch { /* the asker is gone */ } });
+      }
+    })().catch((e) => this.emitRecoverable(new Error(`the permission holder stopped serving answers: ${(e as Error).message}`)));
+  }
+
+  private async writePermissionRecord(record: PermissionRecord, step: number, expected: number | "absent" | "retry"): Promise<PermissionWrite> {
+    const js = this.js;
+    if (!js || !this.nc) return { kind: "unavailable" };
+    try {
+      // nats-server checks the expected sequence before the msg id, so a retry of a step that landed
+      // would read as a conflict. A retry therefore carries only the msg id.
+      const ack = await js.publish(`$KV.${permissionBucket(this.space)}.${permissionKey(record.agent, record.id)}`, JSON.stringify(record), {
+        msgID: `${record.id}.${step}`,
+        ...(expected === "retry" ? {} : { expect: { lastSubjectSequence: expected === "absent" ? 0 : expected } }),
+      });
+      return { kind: "written", revision: ack.seq };
+    } catch (e) {
+      if (e instanceof JetStreamApiError && e.code === JetStreamApiCodes.StreamWrongLastSequence) return { kind: "conflict" };
+      if (this.isNoResponders(e) || isPermissionDenied(e) || e instanceof JetStreamApiError) return { kind: "refused", reason: (e as Error).message };
+      return { kind: "unavailable" };
+    }
+  }
+
+  /**
+   * Watch every permission record of this principal's owner (SPEC §8.2) through an ordered
+   * consumer: each key's last value, then every change. A value that is not a record of its key is
+   * dropped and reported on `warning`. `ready` settles once the first pass has been delivered.
+   * Rejects when the broker refuses the consumer (this principal is not interactive) or the store
+   * is missing. `onChange` must not throw.
+   */
+  async watchPermissions(onChange: (change: PermissionChange) => void): Promise<{ readonly ready: Promise<void>; stop(): Promise<void> }> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const bucket = permissionBucket(this.space);
+    const consumer = await jetstream(this.nc).consumers.getPushConsumer(`KV_${bucket}`, {
+      filter_subjects: permissionOwnerFilter(this.space, this.owner),
+      deliver_policy: DeliverPolicy.LastPerSubject,
+    });
+    const initial = (await consumer.info(true)).num_pending;
+    const messages = await consumer.consume();
+    let markReady!: () => void;
+    const ready = new Promise<void>((resolve) => (markReady = resolve));
+    if (initial === 0) markReady();
+    void (async () => {
+      for await (const m of messages) {
+        const key = m.subject.slice(`$KV.${bucket}.`.length);
+        const op = m.headers?.get("KV-Operation");
+        if (op === "DEL" || op === "PURGE") onChange({ kind: "removed", key });
+        else {
+          let value: unknown;
+          try { value = m.json(); } catch { value = undefined; }
+          const record = parsePermissionRecord(value, key);
+          if (record) onChange({ kind: "put", key, record });
+          else this.emitRecoverable(new Error(`dropped the value under permission key ${key}: it is not a record of that key`));
+        }
+        if (m.info.pending === 0) markReady();
+      }
+    })().catch((e) => this.emitRecoverable(new Error(`the permission watch stopped: ${(e as Error).message}`)));
+    return { ready, stop: async () => { await messages.close(); } };
+  }
+
+  /**
+   * Answer one of an owner's agents' permission prompts as this principal (SPEC §8.2). The request
+   * rides the answer rail with its reply beneath the request's own `.reply.` leaf and no muxed
+   * inbox, so a prompt nobody holds any more reads as the broker's no-responders status: `gone`.
+   * Throws only for an answer the rail cannot carry.
+   */
+  async answerPermission(agent: PrincipalId, id: PermissionRequestId, answer: PermissionAnswer, timeoutMs = 10_000): Promise<PermissionAnswerOutcome> {
+    const target = parsePrincipalKey(agent);
+    const note = answer.decision === "deny" && answer.note !== undefined ? { note: answer.note } : {};
+    const body: PermissionAnswerBody = { v: 1, id, decision: answer.decision, ...note };
+    if (!target || !parsePermissionAnswerBody(body)) throw new TypeError("permission answer: not an agent, prompt id and answer the rail carries");
+    if (!this.nc) return { kind: "unknown", reason: "transport" };
+    const subject = permissionAnswerSubject(this.space, target.owner, target.actor, this.owner, this.actor);
+    try {
+      const m = await this.requestBoundReply(this.nc, subject, JSON.stringify(body), `${subject}.reply.${randomUUID()}`, timeoutMs);
+      let raw: unknown;
+      try { raw = m.json(); } catch { raw = undefined; }
+      const reply = parsePermissionAnswerReply(raw);
+      return reply ? permissionAnswerOutcome(reply) : { kind: "unknown", reason: "malformed" };
+    } catch (e) {
+      if (this.isNoResponders(e)) return { kind: "gone" };
+      if (e instanceof AuthorizationError || isPermissionDenied(e)) return { kind: "refused", reason: "not-permitted" };
+      return { kind: "unknown", reason: e instanceof TimeoutError ? "timeout" : "transport" };
+    }
   }
 
   /** Serve one PRIVILEGED delivery-admin request (the D5 rail-split). The cred layer is the caller

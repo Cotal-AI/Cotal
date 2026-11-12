@@ -1,0 +1,2 @@
+# A holder writes its permission records by compare-and-set, its owner's interactive row watches and answers them, and no one else can.
+smoke:permission-rail

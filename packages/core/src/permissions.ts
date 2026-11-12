@@ -30,6 +30,12 @@ export const PERMISSION_RECORD_VERSION = 1;
 export const PERMISSION_RECORD_MAX_BYTES = 262_144;
 /** How long a record is kept: the bucket's max age. */
 export const PERMISSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+/** The longest note a denial carries. */
+export const PERMISSION_NOTE_MAX_CHARS = 2_000;
+/** Room a record keeps below {@link PERMISSION_RECORD_MAX_BYTES} for the write's headers, which the
+ *  bucket's limit counts, and for the largest state an answer can store: a denial whose note is all
+ *  control characters serializes at six bytes a character. */
+const PERMISSION_RECORD_RESERVE_BYTES = 16 * 1024;
 
 /** The process holding the prompt: the `lifecycleUid` and `runtime.id` its presence row carries. */
 export interface PermissionHolder {
@@ -258,3 +264,156 @@ export function holderLiveness(holder: PermissionHolder, seen: HolderObservation
   if (seen.runtimeId === undefined) return "unknown";
   return seen.runtimeId === holder.runtimeId ? "live" : "gone";
 }
+
+const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
+
+/** A fresh prompt id: 128 random bits as 26 lowercase base32 characters. */
+export function mintPermissionRequestId(): PermissionRequestId {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  let bits = 0, value = 0, id = "";
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) id += BASE32[(value >>> (bits -= 5)) & 31];
+  }
+  return (id + BASE32[(value << (5 - bits)) & 31]) as PermissionRequestId;
+}
+
+/** The input a new record stores: `shown` while the whole record still fits the bucket with room for
+ *  any later state, else `withheld` with the input's UTF-8 size. A withheld input is never approved
+ *  remotely, because its owner cannot read what they would approve. */
+export function permissionInput(record: Omit<PermissionRecord, "input">, value: JsonValue): PermissionInput {
+  const shown: PermissionInput = { kind: "shown", value };
+  const size = new TextEncoder().encode(JSON.stringify({ ...record, input: shown })).length;
+  return size <= PERMISSION_RECORD_MAX_BYTES - PERMISSION_RECORD_RESERVE_BYTES
+    ? shown
+    : { kind: "withheld", bytes: new TextEncoder().encode(JSON.stringify(value)).length };
+}
+
+/** An answer as the answer rail carries it. */
+export interface PermissionAnswerBody {
+  readonly v: 1;
+  readonly id: PermissionRequestId;
+  readonly decision: PermissionAnswer["decision"];
+  readonly note?: string;
+}
+
+/** The answer a request body asks for, or `undefined` for any body outside the closed schema: a note
+ *  only beside a denial, and never past {@link PERMISSION_NOTE_MAX_CHARS}. */
+export function parsePermissionAnswerBody(raw: unknown): { readonly id: PermissionRequestId; readonly answer: PermissionAnswer } | undefined {
+  const b = closed(raw, ["v", "id", "decision"], ["note"]);
+  const id = requestId(b?.id);
+  if (!b || b.v !== 1 || !id) return undefined;
+  if (b.decision === "approve") return Object.hasOwn(b, "note") ? undefined : { id, answer: { decision: "approve" } };
+  if (b.decision !== "deny") return undefined;
+  if (!Object.hasOwn(b, "note")) return { id, answer: { decision: "deny" } };
+  return typeof b.note === "string" && b.note.length <= PERMISSION_NOTE_MAX_CHARS ? { id, answer: { decision: "deny", note: b.note } } : undefined;
+}
+
+/**
+ * The holder's reply. It names the state, never the record, so the input is not echoed.
+ *  - `answered`, `expired`: the prompt was already settled; `state` says how.
+ *  - `unknown`: this holder has no open or recently settled prompt with that id.
+ *  - `busy`: the record write did not land and nothing changed; asking again is safe.
+ *  - `conflict`: something else wrote the record, so the holder gave the prompt back to the terminal.
+ *  - `withheld`: an approval of an input too large to store, which its owner could not read.
+ *  - `bad-request`: the body is outside the closed schema.
+ */
+export type PermissionAnswerReply =
+  | { readonly v: 1; readonly ok: true; readonly state: PermissionState }
+  | { readonly v: 1; readonly ok: false; readonly code: PermissionRefusal; readonly state: PermissionState }
+  | { readonly v: 1; readonly ok: false; readonly code: "unknown" | "busy" | "conflict" | "withheld" | "bad-request" };
+
+const REPLY_CODES = ["unknown", "busy", "conflict", "withheld", "bad-request"] as const;
+
+/** The holder's reply, or `undefined` for anything outside {@link PermissionAnswerReply}. */
+export function parsePermissionAnswerReply(raw: unknown): PermissionAnswerReply | undefined {
+  const r = closed(raw, ["v", "ok"], ["state", "code"]);
+  if (!r || r.v !== 1) return undefined;
+  if (r.ok === true) {
+    const s = closed(raw, ["v", "ok", "state"]) && state(r.state);
+    return s ? { v: 1, ok: true, state: s } : undefined;
+  }
+  if (r.ok !== false) return undefined;
+  if (r.code === "answered" || r.code === "expired") {
+    const s = closed(raw, ["v", "ok", "code", "state"]) && state(r.state);
+    return s ? { v: 1, ok: false, code: r.code, state: s } : undefined;
+  }
+  const code = REPLY_CODES.find((c) => c === r.code);
+  return code && closed(raw, ["v", "ok", "code"]) ? { v: 1, ok: false, code } : undefined;
+}
+
+/** What an answer achieved, as its sender reads it.
+ *  - `accepted`: the holder applied it and the harness received the verdict.
+ *  - `answered`: someone or something settled the prompt first; `state` names how.
+ *  - `gone`: nothing can apply an answer to this prompt now: no holder serves it, the holder no
+ *    longer knows it, or something else wrote its record.
+ *  - `refused`: the broker refused the request, because the sender is not an interactive principal
+ *    of the agent's owner, or the holder refused to approve an input it withheld.
+ *  - `unknown`: the effect is unknown. Read the record before asking again; the same answer from the
+ *    same sender repeats safely. */
+export type PermissionAnswerOutcome =
+  | { readonly kind: "accepted"; readonly state: PermissionState }
+  | { readonly kind: "answered"; readonly state: PermissionState }
+  | { readonly kind: "gone" }
+  | { readonly kind: "refused"; readonly reason: "not-permitted" | "input-withheld" }
+  | { readonly kind: "unknown"; readonly reason: "timeout" | "transport" | "malformed" | "busy" };
+
+/** The outcome a holder's reply means for the sender. */
+export function permissionAnswerOutcome(reply: PermissionAnswerReply): PermissionAnswerOutcome {
+  if (reply.ok) return { kind: "accepted", state: reply.state };
+  switch (reply.code) {
+    case "answered":
+    case "expired":
+      return { kind: "answered", state: reply.state };
+    case "unknown":
+    case "conflict":
+      return { kind: "gone" };
+    case "withheld":
+      return { kind: "refused", reason: "input-withheld" };
+    case "busy":
+      return { kind: "unknown", reason: "busy" };
+    case "bad-request":
+      return { kind: "unknown", reason: "malformed" };
+  }
+}
+
+/** One answer as the holder receives it. `by` is the request subject's sender, which the broker
+ *  forge-locks; the body never claims it. */
+export interface IncomingPermissionAnswer {
+  readonly id: PermissionRequestId;
+  readonly by: PrincipalId;
+  readonly answer: PermissionAnswer;
+}
+
+/** How one write of a record ended. `conflict`: the key's last revision was not the one expected.
+ *  `unavailable`: nothing is known to have landed, and the same write may be retried. `refused`: the
+ *  broker will not take it (no store, no grant, or too large), so retrying cannot help. */
+export type PermissionWrite =
+  | { readonly kind: "written"; readonly revision: number }
+  | { readonly kind: "conflict" }
+  | { readonly kind: "unavailable" }
+  | { readonly kind: "refused"; readonly reason: string };
+
+/** The holder's side of the answer rail. */
+export interface PermissionHolderPort {
+  /** The agent whose prompts these are. */
+  readonly agent: PrincipalId;
+  /** This process, as the records it writes name it. */
+  readonly holder: PermissionHolder;
+  /**
+   * Write one of this agent's records by compare-and-set: `expected` is the revision this holder
+   * last wrote, or `"absent"` for a create. `step` numbers the write within the record and makes its
+   * `Nats-Msg-Id` `<id>.<step>`. After an `unavailable` write, ask again with `"retry"`: the broker
+   * then returns the revision of a step that already landed. A retry is not compare-and-set, and
+   * the only other writer of these keys is the agent's own credential.
+   */
+  write(record: PermissionRecord, step: number, expected: number | "absent" | "retry"): Promise<PermissionWrite>;
+  /** Stop serving answers. The records stay as they are. */
+  close(): void;
+}
+
+/** One change a watcher of an owner's records sees. `removed` is a delete marker its agent wrote. */
+export type PermissionChange =
+  | { readonly kind: "put"; readonly key: string; readonly record: PermissionRecord }
+  | { readonly kind: "removed"; readonly key: string };
