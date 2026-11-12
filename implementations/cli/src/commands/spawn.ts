@@ -1502,6 +1502,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
   // roll back. The GRANT cannot be derived yet, because it is keyed on the principal and in user
   // mode the owner is resolved inside the provisioning call below.
+  const eventPayloads = target.policy?.eventPayloads !== "withheld" && !values["no-event-payloads"] && def.eventPayloads !== false;
   if (launchEvents && !connector.eventChannel) {
     console.error(c.red(eventsRequired
       ? `✗ ${policySpace} requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
@@ -1628,6 +1629,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     let eventGrant: string | undefined;
     const selected = await provisionFreshForeground(requested, values.name === undefined, true, (candidate) =>
       provisionUserForeground(target, candidate, ref, {
+        eventPayloads,
         subscribe,
         allowSubscribe,
         allowPublish,
@@ -1674,6 +1676,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         return issueTerminalSeat(seatTarget, seat, seatExpiry(values, true), (issue) => {
           acceptedToken = issue.issued.acceptedToken;
           return provisionAgent(prov, auth, identity, {
+            eventPayloads,
             subscribe,
             allowSubscribe,
             allowPublish,
@@ -1742,7 +1745,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
       resume: values.resume,
       events: launchEvents,
-      eventPayloads: target.policy?.eventPayloads === "withheld" || values["no-event-payloads"] || def.eventPayloads === false ? false : true,
+      eventPayloads,
       eventsRequired,
       mcpServers,
       mcpServersExclusive: shareTools !== undefined,
@@ -2037,7 +2040,7 @@ async function provisionUserForeground(
   target: MeshTarget,
   name: string,
   ref: string,
-  opts: { subscribe?: string[]; allowSubscribe: string[]; allowPublish?: string[]; role?: string; capabilities?: string[]; lifecycleUid: string; liveOnly?: boolean; eventChannel?: (p: { owner: string; actor: string }) => string },
+  opts: { eventPayloads?: boolean; subscribe?: string[]; allowSubscribe: string[]; allowPublish?: string[]; role?: string; capabilities?: string[]; lifecycleUid: string; liveOnly?: boolean; eventChannel?: (p: { owner: string; actor: string }) => string },
 ): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void>; eventChannel?: string }> {
   const { space, server } = target;
   const dir = userAuthStateDir(target.root, space);
@@ -2109,6 +2112,7 @@ async function provisionUserForeground(
       scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "run" || s === "admin" || /^role:[A-Za-z0-9_-]+$/.test(s)),
       allowSubscribe: opts.allowSubscribe,
       allowPublish: publish,
+      ...(opts.eventPayloads === false ? { eventPayloads: false as const } : {}),
       role: opts.role,
       parent: `${owner}.cli`,
       label: ref,
