@@ -90,6 +90,54 @@ const connect = async page => { await signIn(page); await page.click("#connect")
 const update = { channel: "desktop", current: "0.156.0", latest: "0.161.0", lastCheck: "2026-11-11T22:00:00Z", lastResult: "available", automatic: true, notify: true };
 const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
 export const scenarios = [
+  ...["edit", "invalid", "current"].map(mode => ({
+    name: `audit-settings-name-location-${mode}`, state: { installed: true, signedIn: true, connected: true, update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}) } },
+    act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); if (mode === "invalid") { await page.fill("#computer-name-input", ""); await page.press("#computer-name-input", "Enter"); } },
+    expect: async page => {
+      assert.equal(await page.locator("#settings-panel #computer-name-form").isVisible(), true);
+      assert.equal(await page.locator("#computer-name-input").evaluate(el => el === document.activeElement), true);
+      if (mode === "invalid") assert.match(await page.locator("#computer-name-error").textContent(), /1 to 128/);
+      await page.press("#computer-name-input", "Escape");
+      assert.equal(await page.locator("#computer-name-form").isVisible(), false);
+      assert.equal(await page.locator("#settings-name").evaluate(el => el === document.activeElement), true);
+      assert.equal(await page.locator("#settings-computer").isVisible(), true);
+    },
+  })),
+  ...[false, true].map(missingAsset => ({
+    name: `audit-settings-installer-outcome-${missingAsset ? "missing" : "available"}`, state: { installed: true, signedIn: true, connected: true, missingAsset, update },
+    act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); },
+    expect: async page => {
+      assert.equal(await page.locator("#settings-last-check").textContent(), missingAsset ? "No installer for this platform is on this release. Opening its release page." : "Install the downloaded version, then reopen Cotal.");
+      assert.equal(await page.locator("#settings-last-check").isVisible(), true);
+      assert.equal(await page.locator("#announcer").textContent(), await page.locator("#settings-last-check").textContent());
+    },
+  })),
+  ...["connected-label", "settings-label", "add-space", "approval-copy"].map(mode => ({
+    name: `audit-account-${mode}`,
+    state: mode === "approval-copy" ? { installed: true, signedIn: true, serviceState: "approval-pending" } : { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "starting" }] } },
+    act: async page => {
+      if (mode === "settings-label") await page.click("#open-settings");
+      if (mode === "add-space") await page.click("#another-space");
+    },
+    expect: async page => {
+      if (mode === "connected-label") assert.equal(await page.locator('[data-space="acme-team"] strong').textContent(), "Acme team");
+      if (mode === "settings-label") assert.match(await page.locator("#settings-spaces").textContent(), /Acme team/);
+      if (mode === "add-space") {
+        assert.equal(await page.locator("#space").isVisible(), true);
+        assert.deepEqual(await page.locator("#space option").evaluateAll(options => options.filter(option => option.value).map(option => ({ value: option.value, label: option.textContent }))), [{ value: "acme-team", label: "Acme team" }, { value: "research", label: "Research" }]);
+      }
+      if (mode === "approval-copy") {
+        assert.match(await page.locator("#connection-description").textContent(), /approve this computer/i);
+        assert.doesNotMatch(await page.locator("#connection-description").textContent(), /approve this machine/i);
+      }
+    },
+  })),
+  { name: "audit-settings-name-edit", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); } },
+  { name: "audit-settings-name-invalid", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); await page.fill("#computer-name-input", ""); await page.press("#computer-name-input", "Enter"); } },
+  { name: "audit-settings-current-name-edit", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: "0.156.0" } }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); } },
+  { name: "audit-settings-download-click", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); } },
+  { name: "audit-settings-missing-click", state: { installed: true, signedIn: true, connected: true, missingAsset: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); } },
+  { name: "audit-account-several-spaces", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "starting" }] } } },
   ...[12, 30].map(count => ({
     name: `connected-long-spaces-${count}`,
     state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: count }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, desired: true, observed: "connected" })) } },

@@ -32,15 +32,23 @@ el("dashboard").append(icon("external"));
 type Stage = "welcome" | "sign-in" | "connect" | "finished";
 let nameEditing = false;
 let savedComputerName = "This computer";
+const computerNameFormHome = el("computer-name-form").parentElement!;
 function renderComputerName(value: string): void {
   savedComputerName = value; text("machine-name", value); el("machine-name").title = value;
 }
 function closeNameEditor(): void {
   nameEditing = false; el("computer-name-form").hidden = true; el("machine-name").hidden = false;
-  el("edit-computer-name").hidden = !(stage === "connect" || stage === "finished"); el("edit-computer-name").focus();
+  computerNameFormHome.append(el("computer-name-form"));
+  el("settings-computer").hidden = false; el("settings-name").hidden = false;
+  el("edit-computer-name").hidden = !(stage === "connect" || stage === "finished");
+  (settingsOpen ? el("settings-name") : el("edit-computer-name")).focus();
 }
 el("edit-computer-name").addEventListener("click", () => {
-  nameEditing = true; el("machine-name").hidden = true; el("edit-computer-name").hidden = true;
+  nameEditing = true; el("machine-name").hidden = !settingsOpen; el("edit-computer-name").hidden = true;
+  if (settingsOpen) {
+    el("settings-computer").parentElement!.append(el("computer-name-form"));
+    el("settings-computer").hidden = true; el("settings-name").hidden = true;
+  }
   el("computer-name-form").hidden = false; text("computer-name-error", "");
   el<HTMLInputElement>("computer-name-input").value = savedComputerName; el("computer-name-input").focus();
 });
@@ -72,6 +80,7 @@ let releaseAssets: { name: string; url: string }[] = [];
 let releaseVersion: string | undefined;
 let releaseLoading: string | undefined;
 let releaseFailed: string | undefined;
+let installerMessage: string | undefined;
 async function loadRelease(version: string): Promise<void> {
   if (releaseVersion === version || releaseLoading === version) return;
   releaseLoading = version;
@@ -89,9 +98,10 @@ async function openInstaller(): Promise<void> {
       releaseVersion = version;
     }
     const link = installerLink(version, appPlatform, appArch, releaseAssets);
-    text("settings-message", link.available ? "Install the downloaded version, then reopen Cotal." : "No installer for this platform is on this release. Opening its release page.");
+    installerMessage = link.available ? "Install the downloaded version, then reopen Cotal." : "No installer for this platform is on this release. Opening its release page.";
+    text("settings-last-check", installerMessage); announce(installerMessage);
     await invoke("open_browser", { url: link.url });
-  } catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); notice("The release could not be checked. Try again.", true); }
+  } catch (error) { installerMessage = error instanceof Error ? error.message : String(error); text("settings-last-check", installerMessage); announce(installerMessage); notice("The release could not be checked. Try again.", true); }
 }
 let dismissedUpdate = localStorage.getItem("dismissed-update") ?? undefined;
 let trayUpdate: string | undefined;
@@ -112,8 +122,8 @@ function renderSettings(): void {
   text("settings-computer", savedComputerName);
   text("settings-versions", `App ${appVersion ?? "Unavailable"} · Service ${daemonVersion}`);
   text("settings-update-summary", updateSummary(updateStatus, appVersion ?? ""));
-  text("settings-last-check", lastChecked(updateStatus?.lastCheck));
-  text("settings-spaces", disconnectSpaces(accountProvider()).join(", ") || "No observed spaces for this provider");
+  text("settings-last-check", installerMessage ?? lastChecked(updateStatus?.lastCheck));
+  text("settings-spaces", disconnectSpaces(accountProvider()).map(space => accountSpaces.get(space)?.label ?? space).join(", ") || "No observed spaces for this provider");
   const policy = updatePolicy(updateStatus?.channel, appPlatform);
   text("update-preference-label", policy.label); text("update-policy", policy.description);
   el<HTMLInputElement>("update-preference").checked = policy.label === "Install updates automatically" ? updateStatus?.automatic === true : updateStatus?.notify !== false;
@@ -837,6 +847,7 @@ function openSettings(): void {
 async function settingsAction(body: Request): Promise<void> {
   if (busy) return;
   busy = true; refreshGeneration++;
+  installerMessage = undefined;
   el<HTMLButtonElement>("check-updates").disabled = true;
   el<HTMLInputElement>("update-preference").disabled = true;
   try {
@@ -855,8 +866,8 @@ el("update-preference").addEventListener("change", () => {
 });
 el("update-download").addEventListener("click", () => void openInstaller());
 el("settings-download").addEventListener("click", () => void openInstaller());
-el("open-settings").addEventListener("click", () => { if (busy) return; if (settingsOpen) { pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
-el("settings-back").addEventListener("click", () => { if (busy) return; pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
+el("open-settings").addEventListener("click", () => { if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
+el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
 el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });
 el("settings-signout").addEventListener("click", () => confirmAccountAction("logout"));
 el("settings-disconnect").addEventListener("click", () => confirmAccountAction("disconnect"));
