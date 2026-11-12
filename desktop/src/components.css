@@ -162,6 +162,14 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 @media (prefers-reduced-motion: reduce) {
   button:not(:disabled):hover, button:not(:disabled):active { transform: none; }
 }
+.connection-card.has-running-agents { display: flex; flex-direction: column; max-height: calc(100vh - 130px); min-height: 0; flex-shrink: 1; }
+.has-running-agents > :not(#connected-panel) { flex-shrink: 0; }
+.has-running-agents #connected-panel { display: flex; flex-direction: column; min-height: 0; }
+.has-running-agents #dashboard { align-self: flex-start; }
+.has-running-agents #connected-panel > :not(#running-agents) { flex-shrink: 0; }
+.has-running-agents #running-agents { display: flex; flex-direction: column; min-height: 60px; }
+.has-running-agents #running-agents > :not(#agent-list) { flex-shrink: 0; }
+.has-running-agents #agent-list { min-height: 36px; flex-shrink: 1; }
 #running-agents { margin: var(--s-1) 0; min-height: 66px; }
 .agent-count { color: var(--dim); font: 400 var(--t-label)/1.5 var(--font); }
 #agent-list { list-style: none; margin: var(--s-1) 0 var(--s-2); padding: 0; max-height: 216px; overflow-y: auto; scrollbar-gutter: stable; border-bottom: 1px solid var(--rule); }

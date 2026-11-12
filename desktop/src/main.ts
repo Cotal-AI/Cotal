@@ -317,9 +317,12 @@ function showStage(next: Stage, focus = false): void {
     if (addingSpace) formParent.append(el("space-panel"), el("connect-panel"));
     else el("setup-progress").before(el("space-panel"), el("connect-panel"));
   }
-  el("running-agents").hidden = addingSpace;
-  el("applications-label").hidden = addingSpace || !anyConnected || !el("connected-applications").children.length;
-  el("connected-applications").hidden = addingSpace || !anyConnected;
+  const inventoryVisible = !addingSpace && (anyConnected || el("agent-list").children.length > 0);
+  el("running-agents").hidden = !inventoryVisible;
+  const summaryVisible = inventoryVisible && el("running-agents").dataset.available === "true";
+  el("applications-summary").hidden = !summaryVisible;
+  el("applications-label").hidden = summaryVisible || addingSpace || !anyConnected || !el("connected-applications").children.length;
+  el("connected-applications").hidden = summaryVisible || addingSpace || !anyConnected;
   el("dashboard").hidden = addingSpace || !(anyConnected || computerAccount?.hostSupport === "supported");
   if (finished && pending) { el("connection-icon").dataset.tone = "waiting"; setIcon(el("connection-icon"), "clock"); }
   el("another-space").hidden = addingSpace;

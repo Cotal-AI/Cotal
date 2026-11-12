@@ -32,7 +32,7 @@ export function nativeStub(scenario) {
       if (request.op === "install") { state.installed = true; return ok({ installed: true }); }
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
       if (request.op === "status" && state.offline) return fail("NOT_ANSWERING", "The background service did not answer. Check the host connection before retrying.");
-      if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.connected ? [manager()] : [], agents: state.agents ?? [], ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
       if (request.op === "spaces") return ok({ ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : [] });
       if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? "Davids-MacBook-Pro" }); }
@@ -70,7 +70,18 @@ const link = "cotal://connect?idp=https%3A%2F%2Fcloud.cotal.ai%2Fapi%2Fauth&spac
 const signIn = async page => { await page.click("#login"); await page.locator("#connect-panel:not([hidden]), #space-panel:not([hidden]), #recovery-panel:not([hidden])").first().waitFor(); };
 const connect = async page => { await signIn(page); await page.click("#connect"); };
 const update = { channel: "desktop", current: "0.156.0", latest: "0.161.0", lastCheck: "2026-11-11T22:00:00Z", lastResult: "available", automatic: true, notify: true };
+const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
 export const scenarios = [
+  { name: "audit-update-banner-agents", state: { installed: true, signedIn: true, connected: true, update, agents: auditAgents } },
+  { name: "audit-account-spaces-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "connected" }] }, agents: auditAgents } },
+  { name: "audit-account-refusal-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "refusal", lastRefusal: "No available connector in the hosted Manager environment. Install Claude Code or Codex, then check again." }] }, agents: auditAgents } },
+  { name: "audit-agents-unavailable", state: { installed: true, signedIn: true, connected: true, omitAgents: true }, expect: async page => { assert.equal(await page.locator("#applications-summary").isVisible(), false); } },
+
+  ...["signed-out", "pending", "unconnected"].map(mode => ({
+    name: `agents-hidden-${mode}`,
+    state: { installed: true, signedIn: mode !== "signed-out", account: { mode: mode === "signed-out" ? "sign-in-required" : "account", hostSupport: "supported", spaces: mode === "unconnected" ? [] : [{ space: "acme-team", desired: true, observed: mode === "pending" ? "approval-pending" : "starting" }] } },
+    expect: async page => { assert.equal(await page.locator("#running-agents").isVisible(), false); assert.equal(await page.locator("#applications-summary").isVisible(), false); },
+  })),
   ...[12, 30].map(count => ({
     name: `connected-long-spaces-${count}`,
     state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: count }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, desired: true, observed: "connected" })) } },
