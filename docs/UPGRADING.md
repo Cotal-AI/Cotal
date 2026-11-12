@@ -15,7 +15,9 @@ Automatically adopted selections still yield to another project's running space.
 
 Old bare-name selection pointers are treated as explicit. An old pointer adopted by the first
 `up` therefore also becomes global after upgrading. Clear it to restore folder-based targeting,
-or select the space you want. New pointers record the selection's origin in the same file.
+or select the space you want. The pointer remains a bare name readable by older versions.
+A sibling `current-mesh.adopted` file records an automatic selection only while its name matches
+the pointer. Explicit selection and clear remove that marker.
 
 JSON keys are unchanged. `use`'s `folder` identifies the folder's local space, not a target
 override. `status`'s `meshes.folder` and space-list target markers no longer mark that space as

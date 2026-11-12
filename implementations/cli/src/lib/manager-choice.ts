@@ -306,7 +306,7 @@ export async function askSpawnPlace(values: { space?: unknown; server?: unknown 
   const { managers } = several;
   const prompts = await import("./prompts.js");
   if (several.unread) prompts.log.warn(prompts.logLines(several.unread, process.stderr), { output: process.stderr });
-  process.stderr.write(`Running in this terminal. Live Managers: ${managers.map(manager => `${manager.name ?? manager.instanceId} (--on ${selectorFor(manager, managers)})`).join(", ")}.\n`);
+  process.stderr.write(`Running in this terminal. To run it on one of your Managers: ${managers.map(manager => `--on ${selectorFor(manager, managers)}`).join(", ")}.\n`);
   return undefined;
 }
 

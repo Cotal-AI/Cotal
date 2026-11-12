@@ -673,7 +673,7 @@ export interface CurrentSelection {
   readonly source: "explicit" | "adopted";
 }
 
-/** Read the sole selection pointer, rejecting damaged structured records. */
+/** Read the bare-name pointer and its optional matching adoption marker. */
 export function readCurrentSelection(): CurrentSelection | undefined {
   let space: string;
   try {
@@ -683,15 +683,12 @@ export function readCurrentSelection(): CurrentSelection | undefined {
     throw new MeshRegistryError(currentFile(), `${currentFile()} could not be read: ${(e as Error).message}`, { cause: e });
   }
   if (!space) throw new MeshRegistryError(currentFile(), `${currentFile()} is empty - select a mesh with \`cotal use <space>\` or remove the file`);
-  if (!space.startsWith("{") && !space.startsWith("[")) return { space, source: "explicit" };
-  let value: unknown;
-  try { value = JSON.parse(space); } catch (cause) {
-    throw new MeshRegistryError(currentFile(), `${currentFile()} does not parse as a selection - select a space with \`cotal use <space>\` or clear it with \`cotal use --clear\``, { cause });
+  try {
+    return { space, source: readFileSync(`${currentFile()}.adopted`, "utf8").trim() === space ? "adopted" : "explicit" };
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return { space, source: "explicit" };
+    throw new MeshRegistryError(`${currentFile()}.adopted`, `the selection source could not be read: ${(cause as Error).message}`, { cause });
   }
-  const record = value as Record<string, unknown> | null;
-  if (!record || Array.isArray(record) || Object.keys(record).some(key => !["v", "space", "source"].includes(key)) || record.v !== 1 || typeof record.space !== "string" || !record.space.trim() || (record.source !== "explicit" && record.source !== "adopted"))
-    throw new MeshRegistryError(currentFile(), `${currentFile()} is not a valid selection - select a space with \`cotal use <space>\` or clear it with \`cotal use --clear\``);
-  return { space: record.space, source: record.source };
 }
 
 /** Record a selection made by the person, including promotion of an adopted selection. */
@@ -707,9 +704,12 @@ export function setAdoptedCurrent(space: string): void {
 function writeCurrentSelection(space: string, source: CurrentSelection["source"]): void {
   if (!space.trim()) throw new Error("a selection needs a space name");
   prepareCotalHomeForWrite();
-  writeSecretFile(currentFile(), JSON.stringify({ v: 1, space, source }));
+  rmSync(`${currentFile()}.adopted`, { force: true });
+  writeSecretFile(currentFile(), space);
+  if (source === "adopted") writeSecretFile(`${currentFile()}.adopted`, space);
 }
 
 export function clearCurrent(): void {
+  rmSync(`${currentFile()}.adopted`, { force: true });
   rmSync(currentFile(), { force: true });
 }
