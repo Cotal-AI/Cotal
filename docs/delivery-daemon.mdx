@@ -27,6 +27,9 @@ The daemon separates the work of retaining messages, checking access, and record
 - The trusted reader checks each stored entry before handing the authorized copy to the member's
   `dlv_<owner>-<actor>-<uid>` DELIVER consumer. The copy does not use the reply inbox. The member acknowledges the copy after surfacing or handling it. A crash before
   that acknowledgement causes redelivery.
+  A lifecycle with an empty `allowSubscribe` gets no DLV consumer or DLV bind grants. Raising its
+  ACL from empty to nonempty provisions the consumer with the normal deliver-all policy. Its DM
+  durable is independent and remains present.
 - The membership registry records who joined each durable channel or channel family, such as
   `team.>`, and the message sequence at each join and leave. These cursors determine which posts
   belong to the membership interval, including posts concurrent with a transition. A family row

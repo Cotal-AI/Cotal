@@ -45,6 +45,29 @@ const deliveryCreds = await mintCreds(auth, newIdentity(), "delivery");
 await store.put(deliveryCredsKey(space, { injected: true }), deliveryCreds);
 ```
 
+`setupSpaceStreams` creates the derived `cotal_membership_<space>` bucket in Memory. It refuses an
+existing File-backed membership bucket because changing storage requires deletion. Stop every
+membership writer and reader, mint the exact one-shot recreation credential, and opt in:
+
+```ts
+import { mintCreds, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
+
+const recreateCreds = await mintCreds(auth, newIdentity(), "membership-store-recreate");
+await setupSpaceStreams({
+	servers: brokerUrl,
+	space,
+	creds: provisionerCreds,
+	recreateFileMembership: { creds: recreateCreds },
+});
+```
+
+The recreation credential can inspect and delete only `KV_cotal_membership_<space>`. The ordinary
+provisioner creates and verifies the empty Memory replacement. The membership feed is derived and
+stays stale until its writer finishes a complete authoritative rebuild and stamps a fresh heartbeat.
+`reconcileSpaceMemoryBuckets` recreates missing Memory presence and membership buckets on a wake or
+broker restart. It refuses a missing File delivery or manager lease bucket and does not widen any
+standing credential.
+
 [SPEC §4](../SPEC.md#4-delivery-modes) requires the creation-time delivery class to be discoverable on the wire.
 A daemon-backed space records `durable`; it does not rely on a receiver's fallback policy.
 The delivery credential key is per-space. The bare `delivery.creds` kind is not its store key.

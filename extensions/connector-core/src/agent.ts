@@ -711,6 +711,7 @@ export class MeshAgent extends EventEmitter {
       tls: config.tls,
       ackWaitMs: config.ackWaitMs, // undefined → endpoint default (60s); shortened in tests to observe redelivery
       channels: config.subscribe, // the endpoint's live filter = the active read set
+      allowSubscribe: config.allowSubscribe, // the complete ACL decides whether a DLV durable exists
       channelModes: Object.fromEntries(this.channelModes), // seed presence so file defaults are visible at boot
       // A seat reads the roster when it acts (readRoster) instead of watching it: a watch delivers
       // every member's heartbeat to every member, K² per heartbeat in a space of K (SPEC §6).
