@@ -16,10 +16,10 @@ import type { AuthCalloutLimits } from "./callout.js";
 
 /** Run one callout replica for `space` until a signal or a lost connection ends it. `limits` are the
  *  full service's: the broker's timeout is one value for every member of the queue group. */
-export async function runAuthCalloutReplica(args: { space: string; server: string; root: string; limits?: AuthCalloutLimits }, store?: SecretStore): Promise<void> {
+export async function runAuthCalloutReplica(args: { space: string; server: string; root: string; eventPayloadsWithheld?: boolean; limits?: AuthCalloutLimits }, store?: SecretStore): Promise<void> {
   const { space, server, root } = args;
   const log = (l: string) => console.error(l);
-  const lane = await openCalloutLane({ space, server, root, secrets: store ?? workspaceSecretStore(root), log, ...(args.limits !== undefined ? { limits: args.limits } : {}) });
+  const lane = await openCalloutLane({ space, server, root, eventPayloadsWithheld: args.eventPayloadsWithheld, secrets: store ?? workspaceSecretStore(root), log, ...(args.limits !== undefined ? { limits: args.limits } : {}) });
 
   const ended = new Promise<number>((resolve) => {
     let stopping = false;

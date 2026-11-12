@@ -2394,8 +2394,8 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
   const root = lifecycle?.root ?? findCotalRoot();
   // A replica never reads or writes the space's one discovery file: that file names the primary.
-  if (spaces !== undefined && calloutOnly) return runCalloutHost({ manifest: spaces, server, root, ...(limits !== undefined ? { limits } : {}) }, store);
-  if (calloutOnly) return runAuthCalloutReplica({ space, server, root, ...(limits !== undefined ? { limits } : {}) }, store);
+  if (spaces !== undefined && calloutOnly) return runCalloutHost({ manifest: spaces, server, root, eventPayloadsWithheld: options.eventPayloadsWithheld, ...(limits !== undefined ? { limits } : {}) }, store);
+  if (calloutOnly) return runAuthCalloutReplica({ space, server, root, eventPayloadsWithheld: options.eventPayloadsWithheld, ...(limits !== undefined ? { limits } : {}) }, store);
   if (spaces !== undefined) {
     if (lifecycle) throw new Error("auth-service: the auth-service service preset runs one space - run --spaces from the auth-service entry or an embedder's runAuthService call");
     return runAuthServiceHost({ manifest: spaces, server, root, runtime: options, ...(limits !== undefined ? { limits } : {}) }, store);
