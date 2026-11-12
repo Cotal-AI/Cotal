@@ -497,7 +497,10 @@ export function App({
   useInput(
     (input, key) => {
       if (helpOpen) return setHelpOpen(false);
-      if (detail) return setDetail(null);
+      if (detail) {
+        if (detail.kind === "agent" && !key.escape) return;
+        return setDetail(null);
+      }
       if (search.active) return; // the Search line owns input while open
       if (input === "?") return setHelpOpen(true);
       if (input === "/") return setSearch((s) => ({ active: true, query: s.query }));
@@ -537,7 +540,7 @@ export function App({
   // terminal). App stays mounted, so the observer endpoint + MeshView survive in the background.
   if (attachTarget) return null;
   if (helpOpen) return <Help focusedId={focusedId} width={size.cols} height={size.rows} />;
-  if (detail) return <Detail target={detail} feed={mesh.feed} width={size.cols} height={size.rows} managed={managed} />;
+  if (detail) return <Detail ep={ep} target={detail} feed={mesh.feed} width={size.cols} height={size.rows} managed={managed} />;
   if (confirm)
     return (
       <Confirm target={confirm} width={size.cols} height={size.rows} onConfirm={onConfirmed} onCancel={() => setConfirm(null)} />
