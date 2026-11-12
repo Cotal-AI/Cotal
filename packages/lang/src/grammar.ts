@@ -1815,6 +1815,24 @@ export function validate(source: string, file = "program.cotal.js"): ValidateRes
     );
   }
 
+  // Comments and whitespace parse as an empty body. That is not a program: a run of it completes
+  // with no steps, which is the same outcome as an empty file. A lone `;` is an empty statement
+  // and stays a statement.
+  const body = (ast.body as AnyNode[]) ?? [];
+  if (body.length === 0) {
+    throw new LangErrors(
+      [
+        new LangError({
+          code: "L1031",
+          span: { file, line: 1, column: 1 },
+          cause: "This program has no statements. Comments and whitespace do not start a run.",
+          fix: "Write the program into this file.",
+        }),
+      ],
+      source,
+    );
+  }
+
   // The module body is an async context: a program's top level is where the workflow lives.
   walkShape(ast, v, true);
 

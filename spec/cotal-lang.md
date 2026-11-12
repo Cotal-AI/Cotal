@@ -100,6 +100,7 @@ default value, object and array patterns, template element, switch case, catch c
 | `void` | L1027 | `undefined`, or drop the expression |
 | the property name `__proto__` | L1028 | another name |
 | bigint literal (`10n`) | L1030 | a number, or a string |
+| a program with no statements | L1031 | write the program |
 | `debugger`, and any other syntax | L1029 | none |
 
 `eval`, `Function` and `Symbol` are host globals and are refused by name (L2012, §3); no module
@@ -1260,6 +1261,7 @@ time, L5xxx durability, L6xxx simulation.
 | L1028 | Forbidden property name |
 | L1029 | Syntax outside the language |
 | L1030 | Forbidden literal: bigint |
+| L1031 | Program has no statements |
 | L2001 | Unknown identifier |
 | L2002 | Shadows a builtin or a primitive |
 | L2003 | Assignment to a `const` binding |

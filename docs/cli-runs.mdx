@@ -250,7 +250,9 @@ The source must be a regular file or a symlink to one. Pipes are refused even wh
 supplied data, including process substitution paths. Save that output in a regular file first.
 `-` is a file name there, since `run` does not read a program from standard input. A run verb that reads a source
 file refuses an empty one or one that is not valid UTF-8 with `SCHEMA_INVALID`, before it checks or
-sends anything, because a run's source must not be empty and its text is never replaced. A hosted
+sends anything, because a run's source must not be empty and its text is never replaced. A file
+whose text is only comments or whitespace is not empty as bytes, and validation refuses it with
+L1031 because the program has no statements. A lone `;` is an empty statement and is still a program. A hosted
 start sends the program to the manager in one message, so a program over the broker's message limit
 (`max_payload`) is refused `UNSUPPORTED` with its size and the limit, and nothing is sent. Resume uses the host's recorded program. Hosted answers
 and amendments are attributed to the authenticated caller, never a supplied name. On a static-auth mesh that caller is one actor derived from the OS login and host, so hosted run commands from that login and host record the same actor. Each command still mints a fresh short-lived credential and lifecycle. A signed-in user keeps that user's `cli` actor, and a managed seat keeps the seat's name. Local answers and

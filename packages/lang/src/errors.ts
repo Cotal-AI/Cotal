@@ -48,6 +48,7 @@ export const CATALOG = Object.freeze({
   // interpreter's own "unsupported" fault stay unreachable from a validated program.
   L1029: "Syntax outside the language",
   L1030: "Forbidden literal: bigint",
+  L1031: "Program has no statements",
 
   // ---- L2xxx: name resolution and static rules ----------------------------------------------
   L2001: "Unknown identifier",
