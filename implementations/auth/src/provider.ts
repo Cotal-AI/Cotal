@@ -831,6 +831,7 @@ async function managerAuthorityEndpoint(
     const ua = entry.mode === "user" ? entry.userAuth : undefined;
     if (ua?.remote !== true || typeof ua.endpoints?.url !== "string" || ua.provider !== AUTH_PROVIDER_NAME)
       throw new Error(`space "${space}" has a changed remote manager-authority registration or directory`);
+    pinnedExchangeUrl(ua.endpoints.url, space);
     // Validate the raw base before managerAuthorityUrl can discard a query or fragment.
     const route = {
       endpoint: managerAuthorityUrl(managerAuthorityRouteUrl(ua.endpoints.url), space),
