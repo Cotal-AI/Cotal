@@ -15,8 +15,9 @@ This directory is generated at each release by `scripts/materialize-claude-plugi
   only to a server its configuration declares, and a plain session runs one process for both.
 - One native hooks module, which reads local wake notifications and starts a Cotal-attributed turn
   when a message arrives in a supported Code session.
-- 10 lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`,
-  `PostToolUse`, `PostToolBatch`, `Notification`, `Stop`, `StopFailure`, `SessionEnd`) running
+- 11 lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`,
+  `PostToolUse`, `PostToolBatch`, `Notification`, `SubagentStop`, `Stop`, `StopFailure`,
+  `SessionEnd`) running
   `node dist/hook.cjs`. They report the session's presence, deliver queued peer messages, and hold
   permission prompts for the agent's owner.
 

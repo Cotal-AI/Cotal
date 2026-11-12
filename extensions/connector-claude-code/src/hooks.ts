@@ -28,7 +28,7 @@ import {
 import type { AguiEmitterHolder } from "@cotal-ai/connector-core";
 import type { ClaudeEntry } from "./agui-map.js";
 import { recordCarriedFork } from "./carried.js";
-import { claudeAsk, claudeToolCalls, claudeVerdict } from "./permission-hook.js";
+import { claudeAsk, claudeScope, claudeToolCalls, claudeVerdict } from "./permission-hook.js";
 
 /**
  * The failure a `StopFailure` hook reports, or `undefined` for any other turn end.
@@ -501,7 +501,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           flushEvents(ev.transcript_path); // near-live: each tool boundary ships the turn so far
           return {};
         case "PostToolBatch":
-          deps.permissions?.()?.toolsRan(claudeToolCalls(ev));
+          deps.permissions?.()?.toolsRan(claudeToolCalls(ev), claudeScope(ev));
           // Every tool in the batch resolved, so a prompt raised during it was answered and the turn
           // went on. Left `waiting`, its Stop would be `waiting → idle`, which is no turn boundary:
           // the run turn never yields and the condition outlives the turn. `working` also clears it.
@@ -533,10 +533,17 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           await Promise.all(writes);
           return {};
         }
+        // A subagent finished, so a prompt it still holds was allowed at the terminal. Claude's own
+        // internal agents end this way too, each under its own id, so they settle nothing else.
+        case "SubagentStop": {
+          const scope = claudeScope(ev);
+          if (scope) deps.permissions?.()?.turnEnded(scope);
+          return {};
+        }
         // StopFailure: the turn died on an API error, so Stop won't fire; it resets here too.
         case "Stop":
         case "StopFailure":
-          deps.permissions?.()?.turnEnded();
+          deps.permissions?.()?.turnEnded(claudeScope(ev));
           sealAwaiting();
           turnOpen = false;
           promptOpen = false;

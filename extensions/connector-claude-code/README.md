@@ -32,9 +32,10 @@ hosted connection checks in the `PreToolUse` and `PostToolUse` rows. The presenc
 | `PreToolUse` | all | Records the pending tool so a permission wait can name it. In a Cotal session, it denies a Cotal tool from any server other than the local one. In a plain session, it denies a hosted `connection_id` that it recorded as opened by a different session. |
 | `PermissionRequest` | all | In a Cotal session on an authenticated mesh, holds the prompt until the agent's owner or the terminal answers it. See [Permission prompts](#permission-prompts). |
 | `PostToolUse` | `^mcp__.+__cotal_(connect\|disconnect)$` | Plain sessions only: records or forgets which session opened a hosted connection. |
-| `PostToolBatch` | all | Records a held permission prompt whose call ran as answered at the terminal. Sets `working` again when the main agent's batch resolves after a prompt left the seat `waiting`. A subagent's batch leaves the status as it is. |
+| `PostToolBatch` | all | Records a held permission prompt of the same agent whose call ran as answered at the terminal, one run for one prompt. Sets `working` again when the main agent's batch resolves after a prompt left the seat `waiting`. A subagent's batch leaves the status as it is. |
 | `Notification` | `permission_prompt\|agent_needs_input\|elicitation_dialog` | Sets `waiting`. `permission_prompt` adds condition `approval`, with the held prompt's id in `request`, and `agent_needs_input` adds `input`. |
-| `Stop` | all | Ends the turn: records any permission prompt still held as answered at the terminal, closes the run on the event plane, sets `idle`, and asks for a wake turn when held messages are waiting. |
+| `SubagentStop` | all | Records any permission prompt that subagent still holds as answered at the terminal. |
+| `Stop` | all | Ends the turn: records any permission prompt the main agent still holds as answered at the terminal, closes the run on the event plane, sets `idle`, and asks for a wake turn when held messages are waiting. A subagent's prompt stays held. |
 | `StopFailure` | all | Same as `Stop`, but closes the run with `RUN_ERROR` and sets a condition mapped from the error type. |
 | `SessionEnd` | all | Sets `offline`. |
 

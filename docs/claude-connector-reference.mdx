@@ -605,6 +605,27 @@ still can't drive presence or stop the agent. Claude Code's own
 plugin registers, with their matchers, are listed in the
 [adapter README](../extensions/connector-claude-code/README.md#claude-code-hooks).
 
+## Permission prompts
+
+A seat launched in a permission mode that asks holds each of Claude's prompts for the agent's
+owner ([SPEC §8.2](../SPEC.md#82-permission-requests)) on a signed-in space. The seat registers
+`PermissionRequest` with a 2147483-second timeout, the longest Claude accepts, and the hook relay
+waits on it with no deadline of its own. The seat sets no deadline on a record. Claude's dialog
+stays open meanwhile, and the first answer applies.
+
+Claude's prompt names no tool call, so the seat settles a Yes at the terminal from the hooks that
+follow it. Each of them carries Claude's `agent_id` when it fires inside a subagent or a teammate,
+and none when it fires in the main thread, and the seat keeps each prompt's scope from it:
+
+- `PostToolBatch` lists the calls a scope ran. Each run settles one prompt still held in that scope
+  for the same tool and input, the oldest first.
+- `Stop` and `StopFailure` end the main thread's turn and settle the main thread's prompts still
+  held. `SubagentStop` does the same for that subagent's prompts.
+
+A Yes at the terminal leaves the hook process running until one of these settles it. A subagent
+Claude runs in the background asks with its own `agent_id`, so its prompt stays held while the main
+thread finishes turns, and its owner can still answer it.
+
 ## Event plane
 
 A connected native session publishes a structured account of its activity: the messages a person

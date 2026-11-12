@@ -10,6 +10,7 @@
  * because the harness has already acted on it.
  */
 import {
+  PERMISSION_HANDOFF_BOUND_MS,
   canonicalJson,
   mintPermissionRequestId,
   permissionInput,
@@ -30,6 +31,8 @@ export interface PermissionAsk {
   readonly tool: string;
   readonly input: JsonValue;
   readonly cwd?: string;
+  /** The harness scope that asked, such as a subagent's id. Absent means the main thread. */
+  readonly scope?: string;
 }
 
 /** What the hook hands the harness. `release` hands it nothing, so the harness keeps, or has
@@ -48,10 +51,12 @@ export interface PermissionHold {
 export interface PermissionDesk {
   /** Hold one prompt. `hookGone` aborts when the hook's connection closes before its verdict. */
   hold(ask: PermissionAsk, hookGone: AbortSignal): PermissionHold;
-  /** The harness ran these tool calls: a prompt still held for one of them was allowed at the terminal. */
-  toolsRan(calls: readonly { readonly tool: string; readonly input: unknown }[]): void;
-  /** The turn ended: every prompt still held was allowed at the terminal. */
-  turnEnded(): void;
+  /** The harness ran these tool calls in `scope`. Each run settles one prompt still held in that scope
+   *  for the same tool and input, the oldest first, as allowed at the terminal. */
+  toolsRan(calls: readonly { readonly tool: string; readonly input: unknown }[], scope?: string): void;
+  /** `scope` ended its turn: every prompt still held in it was allowed at the terminal. Absent means
+   *  the main thread. */
+  turnEnded(scope?: string): void;
   /** The newest prompt still waiting for an answer. */
   waiting(): PermissionRequestId | undefined;
   /** Stop serving and give every held prompt back to the terminal, writing nothing: readers see
@@ -69,9 +74,6 @@ export interface PermissionDeskOptions {
   readonly warn?: (message: string) => void;
 }
 
-/** The control server confirms or refuses a handoff within 5 s; this only bounds a hook that never
- *  reports at all. */
-const HANDOFF_BOUND_MS = 10_000;
 const RETRY_MS = 1_000;
 /** Settled prompts remembered, so a late answer reads `answered` rather than `gone`. */
 const SETTLED_MEMORY = 256;
@@ -112,9 +114,12 @@ interface Held {
   chain: Promise<unknown>;
   /** waiting: the hook is connected with no verdict. gone: it closed first. answered: it has its verdict. */
   hook: "waiting" | "gone" | "answered";
+  /** The harness ran its tool, or its scope ended, and that signal is queued: no later run matches it. */
+  ran: boolean;
   /** Something else wrote the record, or the store refused it: the desk stops writing it. */
   tainted: boolean;
   readonly call: string | undefined;
+  readonly scope: string | undefined;
   readonly delivered: Promise<boolean>;
   readonly timers: ReturnType<typeof setTimeout>[];
   give(verdict: PermissionVerdict): void;
@@ -182,10 +187,18 @@ export function openPermissionDesk(ep: CotalEndpoint, opts: PermissionDeskOption
     if (await project(h, h.record)) remember(h);
   }
   const signal = (h: Held, event: PermissionEvent): void => void enqueue(h, () => apply(h, event));
+  /** The harness ran the prompt's tool. Marked now, so a second run of the same call settles another
+   *  prompt rather than this one again. */
+  const ran = (h: Held): void => {
+    h.ran = true;
+    signal(h, { kind: "tool-ran", at: Date.now() });
+  };
 
-  function answer(a: IncomingPermissionAnswer): Promise<PermissionAnswerReply> {
+  /** An answer from the rail. A prompt this desk does not hold gets no reply: an answer is addressed
+   *  to the process its record names, so silence here leaves the reply to that process. */
+  function answer(a: IncomingPermissionAnswer): Promise<PermissionAnswerReply | undefined> {
     const h = prompts.get(a.id);
-    if (!h) return Promise.resolve({ v: 1, ok: false, code: "unknown" });
+    if (!h) return Promise.resolve(undefined);
     return enqueue(h, async (): Promise<PermissionAnswerReply> => {
       if (h.tainted) return { v: 1, ok: false, code: "conflict" };
       if (a.answer.decision === "approve" && h.record.input.kind === "withheld") return { v: 1, ok: false, code: "withheld" };
@@ -196,7 +209,9 @@ export function openPermissionDesk(ep: CotalEndpoint, opts: PermissionDeskOption
       if (!(await project(h, next))) return { v: 1, ok: false, code: closed ? "unknown" : "conflict" };
       h.record = next;
       h.give(verdictFor(next.state, next.deadline));
-      const delivered = await Promise.race([h.delivered, sleep(HANDOFF_BOUND_MS).then(() => false)]);
+      // The control server confirms or refuses a handoff within 5 s; the bound only covers a hook that
+      // never reports at all. An answerer waits longer, so it reads the outcome below.
+      const delivered = await Promise.race([h.delivered, sleep(PERMISSION_HANDOFF_BOUND_MS).then(() => false)]);
       if (delivered) {
         remember(h);
         return { v: 1, ok: true, state: h.record.state };
@@ -222,8 +237,8 @@ export function openPermissionDesk(ep: CotalEndpoint, opts: PermissionDeskOption
       let confirm!: (delivered: boolean) => void;
       const delivered = new Promise<boolean>((resolve) => (confirm = resolve));
       const h: Held = {
-        record, revision: "absent", step: 0, chain: Promise.resolve(), hook: "waiting", tainted: false,
-        call: callKey(ask.tool, ask.input), delivered, timers: [],
+        record, revision: "absent", step: 0, chain: Promise.resolve(), hook: "waiting", ran: false, tainted: false,
+        call: callKey(ask.tool, ask.input), scope: ask.scope, delivered, timers: [],
         give(v) {
           if (h.hook === "answered") return;
           h.hook = "answered";
@@ -241,18 +256,26 @@ export function openPermissionDesk(ep: CotalEndpoint, opts: PermissionDeskOption
       if (record.deadline !== undefined) later(h, record.deadline - askedAt, () => signal(h, { kind: "deadline", at: Date.now() }));
       return { verdict, confirm: (d) => confirm(d) };
     },
-    toolsRan(calls) {
-      const ran = new Set(calls.map((c) => callKey(c.tool, c.input)));
-      for (const h of prompts.values())
-        if (h.hook === "waiting" && h.call !== undefined && ran.has(h.call)) signal(h, { kind: "tool-ran", at: Date.now() });
+    toolsRan(calls, scope) {
+      // The prompt names no call id, so a run matches by scope, tool and input, one run to one prompt.
+      // `prompts` keeps hold order, so the oldest matching prompt settles first.
+      for (const c of calls) {
+        const call = callKey(c.tool, c.input);
+        if (call === undefined) continue;
+        for (const h of prompts.values())
+          if (h.hook === "waiting" && !h.ran && h.scope === scope && h.call === call) {
+            ran(h);
+            break;
+          }
+      }
     },
-    turnEnded() {
-      for (const h of prompts.values()) if (h.hook === "waiting") signal(h, { kind: "tool-ran", at: Date.now() });
+    turnEnded(scope) {
+      for (const h of prompts.values()) if (h.hook === "waiting" && !h.ran && h.scope === scope) ran(h);
     },
     waiting() {
       let newest: Held | undefined;
       for (const h of prompts.values())
-        if (h.hook === "waiting" && h.record.state.kind === "pending" && (!newest || h.record.askedAt >= newest.record.askedAt)) newest = h;
+        if (h.hook === "waiting" && !h.ran && h.record.state.kind === "pending" && (!newest || h.record.askedAt >= newest.record.askedAt)) newest = h;
       return newest?.record.id;
     },
     close() {

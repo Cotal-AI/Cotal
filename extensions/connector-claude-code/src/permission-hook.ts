@@ -9,10 +9,22 @@ import type { JsonValue } from "@cotal-ai/core";
 export const isPermissionRequest = (event: unknown): boolean =>
   (event as { hook_event_name?: unknown } | null)?.hook_event_name === "PermissionRequest";
 
+/** The scope a hook fired in: the `agent_id` Claude sends from inside a subagent or teammate, or
+ *  `undefined` for the main thread. A prompt, the batch that ran its tool and the turn end that closes
+ *  it all carry the same one. */
+export function claudeScope(ev: HookEvent): string | undefined {
+  return typeof ev.agent_id === "string" && ev.agent_id ? ev.agent_id : undefined;
+}
+
 /** The prompt a `PermissionRequest` payload asks, or `undefined` for one without a tool name and input. */
 export function claudeAsk(ev: HookEvent): PermissionAsk | undefined {
   if (typeof ev.tool_name !== "string" || !ev.tool_name || ev.tool_input === undefined) return undefined;
-  return { tool: ev.tool_name, input: ev.tool_input as JsonValue, ...(typeof ev.cwd === "string" && ev.cwd ? { cwd: ev.cwd } : {}) };
+  const scope = claudeScope(ev);
+  return {
+    tool: ev.tool_name, input: ev.tool_input as JsonValue,
+    ...(typeof ev.cwd === "string" && ev.cwd ? { cwd: ev.cwd } : {}),
+    ...(scope ? { scope } : {}),
+  };
 }
 
 /** The hook output that applies a verdict. A release prints no decision, so Claude keeps its own. */
