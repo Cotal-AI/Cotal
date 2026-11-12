@@ -44,7 +44,12 @@ try {
     writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version, type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" }, scripts: { postinstall: "node hold.mjs" } }));
     writeFileSync(join(dir, "index.js"), `import { registry } from "@cotal-ai/core"; registry.register({ kind: "command", name: "interrupt-probe", summary: "fixture", run: async () => {} });\n`);
     writeFileSync(join(dir, "hold.mjs"), [
-      `import { existsSync, writeFileSync } from "node:fs";`,
+      `import { chmodSync, existsSync, readdirSync, writeFileSync } from "node:fs";`,
+      `import { dirname, join } from "node:path";`,
+      `if (${JSON.stringify(version)} === "3.0.0" && process.platform !== "win32" && process.getuid?.() !== 0) {`,
+      `  const parent = dirname(${JSON.stringify(join(xdg, "cotal", "extensions"))});`,
+      `  for (const entry of readdirSync(parent)) if (entry.startsWith(".extensions.rollback-")) chmodSync(join(parent, entry, "extensions", "read-only"), 0o555);`,
+      `}`,
       `writeFileSync(process.env.EXT_INTERRUPT_HELD, "held");`,
       `for (const end = Date.now() + 60000; !existsSync(process.env.EXT_INTERRUPT_RELEASE) && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));`,
     ].join("\n") + "\n");
@@ -83,7 +88,8 @@ try {
   check("the next add announces 2.0.0 once", again.stdout.split(`added ${name}@2.0.0`).length === 2, again.stdout);
 
   if (readOnlyCell) {
-    // The snapshot copies this directory with its mode, so removing the snapshot after the commit fails.
+    // The owned postinstall makes the actual snapshot read-only after cpSync. Node may
+    // add owner-write permission while copying, so source permissions alone do not inject failure.
     const locked = join(prefix, "read-only");
     mkdirSync(join(locked, "inner"), { recursive: true });
     writeFileSync(join(locked, "inner", "file"), "");
