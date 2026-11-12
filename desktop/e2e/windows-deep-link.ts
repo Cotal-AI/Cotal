@@ -34,11 +34,10 @@ class ProbeDriver extends WindowDriver {
     return reply.value;
   }
 }
-const driver = new ProbeDriver();
+const driver = new ProbeDriver(undefined, join(output, "webdriver-launch.jsonl"));
 let server: ReturnType<typeof spawn> | undefined;
 let ownsConfig = false;
 let cleanupSafe = true;
-let launchPending = false;
 const observations: Record<string, unknown> = { url: link.href, root, outcome: "not-started" };
 try {
   writeFileSync(context, config, { flag: "wx", mode: 0o600 }); ownsConfig = true;
@@ -50,9 +49,8 @@ try {
     if (driverError) throw new Error(driverError);
     return driver.call("GET", "/status");
   }, value => Boolean(value), 20_000);
-  launchPending = true;
-  await driver.open(binary, [link.href]);
-  launchPending = false;
+  await driver.openWindowsLink(binary, link.href, { env: { ...env, USERPROFILE: process.env.USERPROFILE, APPDATA: process.env.APPDATA,
+    LOCALAPPDATA: process.env.LOCALAPPDATA, COTAL_DESKTOP_E2E_CONTEXT: context }, cwd: env.HOME!, receipts: join(traceHome, "deep-link-receipts.jsonl") });
   observations.nativeVersion = await until("native about metadata", () => driver.text("version"), value => /^v\d/.test(value), 15_000);
   await driver.screenshot(join(output, "after-launch.png"));
   observations.window = await driver.call("POST", driver.path("execute/sync"), {
@@ -61,12 +59,22 @@ try {
   observations.pluginCurrent = await driver.call("POST", driver.path("execute/async"), {
     script: "const expected=arguments[0],done=arguments[arguments.length-1]; window.__TAURI_INTERNALS__.invoke('plugin:deep-link|get_current').then(value=>done({ok:true,value:value===null?null:Array.isArray(value)?value.map(v=>v===expected||v==='--'+expected||v==='\\\"'+expected+'\\\"'?v:{redacted:true,bytes:typeof v==='string'?v.length:null}):{unexpectedType:typeof value}}),()=>done({ok:false,error:'plugin invocation failed'}));", args: [link.href],
   });
-  observations.outcome = "observed";
+  const argv = readFileSync(join(traceHome, "deep-link-receipts.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(row => row.source === "process-argv");
+  assert.equal(argv.length, 1, "one owned diagnostic process argv receipt");
+  assert.equal(argv[0].publicProbeShapes?.length, 1);
+  assert.equal(argv[0].publicProbeShapes[0].publicProbeForm, "literal", "diagnostic proves plain public URL delivery");
+  assert.equal(argv[0].publicProbeShapes[0].publicArgument, link.href);
+  assert.deepEqual(observations.pluginCurrent, { ok: true, value: [link.href] }, "plain URL must reach the deep-link plugin");
+  await until("plain public link context visible", () => driver.displayed("link-context"), Boolean, 15_000);
+  observations.window = await driver.call("POST", driver.path("execute/sync"), {
+    script: "return {title:document.title, linkContext:document.getElementById('link-context')?.textContent ?? null, linkContextVisible:document.getElementById('link-context')?.checkVisibility() ?? false};", args: [],
+  });
+  assert.equal((observations.window as { linkContextVisible: boolean }).linkContextVisible, true, "plain delivery without link context is a product failure");
+  observations.outcome = "plain-delivery-pass";
 } catch (error) {
   observations.outcome = "probe-error"; observations.error = String(error);
   process.exitCode = 1;
 } finally {
-  if (launchPending && !driver.session) cleanupSafe = false;
   try { await driver.close(); } catch (error) { observations.sessionCleanupError = String(error); cleanupSafe = false; process.exitCode = 1; }
   if (server && server.exitCode === null && server.signalCode === null) {
     server.kill();

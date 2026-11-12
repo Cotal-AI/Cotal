@@ -201,7 +201,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     }
   };
   const browserUrls = () => existsSync(browserLog) ? readFileSync(browserLog, "utf8").trim().split("\n").filter(Boolean) : [];
-  const driver = process.platform === "darwin" ? new MacWindowDriver(env) : new WindowDriver();
+  const driver = process.platform === "darwin" ? new MacWindowDriver(env) : new WindowDriver(undefined, process.platform === "win32" ? join(output, "webdriver-launch.jsonl") : undefined);
   const lifecycle = async (action: LifecycleAction): Promise<NativeObservation> => {
     let observation: NativeObservation;
     if (driver instanceof MacWindowDriver) {
@@ -288,7 +288,9 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     server.stderr?.on("data", b => writeFileSync(join(output, "driver.log"), b, { flag: "a" }));
     server.on("error", error => { failure = String(error); });
     await until("native driver listening", () => driver.call("GET", "/status"), Boolean, 30_000);
-    await driver.open(binary, args);
+    if (process.platform === "win32" && args.length === 1 && args[0].startsWith("cotal://")) {
+      await driver.openWindowsLink(binary, args[0], { env: guiEnv, cwd: home, receipts: join(daemonHome, "deep-link-receipts.jsonl") });
+    } else await driver.open(binary, args);
     if (!args.includes("--background")) await until("native app metadata", () => driver.text("version"), value => value.startsWith("v"));
     if (process.platform === "win32") await driver.call("POST", driver.path("execute/sync"), { script: `
       const callbacks = window.__TAURI_INTERNALS__?.callbacks;
@@ -534,6 +536,12 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     await open([link.href]);
     phase("url-launch-opened");
     await until("deep link visible", () => driver.displayed("link-context"), Boolean);
+    if (process.platform === "win32" && driver instanceof WindowDriver) {
+      const exactLink = await driver.call("POST", driver.path("execute/async"), {
+        script: "const expected=arguments[0],done=arguments[arguments.length-1]; window.__TAURI_INTERNALS__.invoke('plugin:deep-link|get_current').then(value=>done(Array.isArray(value)&&value.length===1&&value[0]===expected),()=>done(false));", args: [link.href],
+      });
+      check("Windows deep-link plugin retains the intended public URL", exactLink === true);
+    }
     phase("url-renderer-prefilled");
     check("deep link prefills public coordinates without approval or connect", fixture.requests() === before && !(await status()).managers.some((m: any) => m.state === "answering"));
     await shot("07-deep-link");
