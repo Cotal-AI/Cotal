@@ -248,6 +248,19 @@ try {
   let missing = false;
   try { await heartbeatAt(renewed); } catch (error) { if (!isStreamNotFound(error)) throw error; missing = true; }
   check("a broker restart really loses the Memory membership store", missing);
+  const recoveryCommand = `cotal up --space ${space}`;
+  const runningFeed = feed;
+  check("the running feed names the missing store and its privileged recovery command", await until(async () => {
+    await runningFeed.poll();
+    return feedLog.some(line => line.includes(`KV_${membershipBucket(space)}`) && line.includes(recoveryCommand));
+  }, 7_000, 200));
+  let missingStartup = "";
+  try {
+    const unexpected = await startMembershipFeed({ servers: SERVERS, space, accountId, observerCreds,
+      rwCreds: await mintCreds(auth, newIdentity(), "membership-rw"), log: () => {} });
+    await unexpected.stop();
+  } catch (error) { missingStartup = (error as Error).message; }
+  check("a new feed refuses missing storage with the same recovery command", missingStartup.includes(`KV_${membershipBucket(space)}`) && missingStartup.includes(recoveryCommand), missingStartup);
   const reader = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(renewed)), inboxPrefix: `_INBOX_${feedId.id}`, maxReconnectAttempts: 0 });
   try {
     const definition = membershipStoreDefinition(space);

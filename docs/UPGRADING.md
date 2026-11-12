@@ -25,10 +25,13 @@ manager lease buckets remain File-backed. A missing File lease bucket refuses ra
 treated as empty state. The membership display remains stale until its writer completes a full
 authoritative rebuild and stamps a fresh heartbeat.
 
-A broker restart drops both Memory presence and membership stores. From the deployment's project
-root, run `cotal up --space <space>` to recreate them with provisioner authority. A reconnect alone
-does not recreate either stream. Embedded hosts must call `reconcileSpaceMemoryBuckets` on restart
-or wake before treating these views as ready; standing membership credentials cannot create streams.
+A broker restart drops both Memory presence and membership stores. No background component restores
+them after a broker-only systemd/Docker restart or reboot. From the deployment's project root, run
+`cotal up --space <space>` to recreate them with provisioner authority. A reconnect alone does not
+recreate either stream. A new membership feed refuses missing storage and names that command; an
+already-running feed logs the same repair and its view stays stale. Embedded platforms must invoke
+`reconcileSpaceMemoryBuckets` after their broker restart or wake before treating these views as
+ready; standing membership credentials cannot create streams.
 
 ## Explicit space selections apply in every folder
 

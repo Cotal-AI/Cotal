@@ -48,6 +48,7 @@ import { openMembersRegistry, listMembers } from "./members.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { withDeadline } from "./deadline.js";
+import { isStreamNotFound } from "./jetstream-missing.js";
 import type { ChannelMembership } from "./types.js";
 
 /** Whether a feed record's `durable` list covers `channel`: the channel's own row, or a family row
@@ -111,6 +112,17 @@ export interface MembershipFeedHandle {
 }
 
 const enc = (s: string) => new TextEncoder().encode(s);
+
+function missingFeedStore(space: string, cause: unknown): Error {
+  return new Error(`membership store KV_${membershipBucket(space)} is missing; the feed cannot rebuild until the host restores it. ` +
+    `From the deployment's project root, run \`cotal up --space ${space}\`. ` +
+    "Embedded hosts must call reconcileSpaceMemoryBuckets with provisioner authority after broker restart or wake; membership-rw cannot create streams.", { cause });
+}
+
+async function requireFeedStore(kv: KV, space: string): Promise<void> {
+  try { await kv.status(); }
+  catch (error) { if (isStreamNotFound(error)) throw missingFeedStore(space, error); throw error; }
+}
 
 /** The disposable-preflight connect bound for the rw-cred adoption proof — mirrors the endpoint's: a
  *  rogue/unreachable candidate must resolve fast, well under the manager's delivery-admin request bound. */
@@ -293,6 +305,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
 
   const kvm = new Kvm(connB);
   let feedKv: KV = await kvm.open(membershipBucket(space));
+  await requireFeedStore(feedKv, space); // Bind is lazy; refuse missing storage before arming timers.
   let membersKv: KV = await openMembersRegistry(connB, space);
 
   // ---- conn B standing renewal (D5 class-2): the 75% timer + the explicit reload, both proven ----
@@ -380,6 +393,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     try {
       const nextKvm = new Kvm(next);
       const nextFeed = await nextKvm.open(membershipBucket(space));
+      await requireFeedStore(nextFeed, space);
       const nextMembers = await openMembersRegistry(next, space);
       connB = next;
       feedKv = nextFeed;
@@ -614,7 +628,11 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     // quiet poll bumps no revision and wakes no watcher. Feed-wide freshness rides the heartbeat key below.
     const existing = new Set<string>();
     const current = new Map<string, ChannelMembership>();
-    for (const e of await liveKvEntries(feedKv)) {
+    const entries = await liveKvEntries(feedKv).catch(error => {
+      if (isStreamNotFound(error)) throw missingFeedStore(space, error);
+      throw error;
+    });
+    for (const e of entries) {
       if (e.key === MEMBERSHIP_FEED_KEY) continue;
       existing.add(e.key);
       try {
