@@ -63,6 +63,7 @@ export function requestManagedLaunch<R>(request: ManagedLaunchRequest, start: Ma
     allowSubscribe: request.allowSubscribe,
     allowPublish: request.allowPublish,
     events: request.events,
+    eventPayloads: request.eventPayloads,
     ...(request.runtime !== undefined ? { runtime: request.runtime } : {}),
   });
 }

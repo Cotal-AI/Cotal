@@ -274,7 +274,7 @@ Claude and Jcode publish mapped tool arguments and results by default on the sep
 payload rail. Upgrading can therefore expose local file content and command output to payload
 readers. On authenticated spaces, these are the owner, admins and holders of a concrete foreign
 event-channel read grant, not holders of chat wildcards alone. Open brokers provide no isolation.
-Use `--no-event-payloads` or persona `eventPayloads: false` to retain names and times only.
+Use `--no-event-payloads` or persona `eventPayloads: false` to retain names and times only. Both foreground and detached spawns carry this restriction into the seat's launch material and credential grant.
 A registration's `policy: { eventPayloads: "withheld" }` cannot be weakened by a seat.
 Other event connectors carry the safety controls, but their payload mappings and native acceptance
 remain deferred. See the [payload rules](claude-connector-reference.mdx#event-plane) for exclusions,
