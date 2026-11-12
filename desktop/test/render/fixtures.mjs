@@ -107,6 +107,30 @@ const reachable = async page => {
 const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
 const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
 export const scenarios = [
+  { name: "connected-short-spaces-padding", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: 6 }, (_, i) => ({ space: `team-${i + 1}`, desired: true, observed: "connected" })) } } },
+  { name: "connected-short-spaces-6", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: 6 }, (_, i) => ({ space: `team-${i + 1}`, desired: true, observed: "connected" })) } }, expect: async page => {
+    const inline = await page.locator('[data-testid="connected-space-row"] > span').evaluateAll(copies => copies.every(copy => {
+      const boxes = [...copy.children].map(child => child.getBoundingClientRect());
+      return Math.max(...boxes.map(box => box.top)) < Math.min(...boxes.map(box => box.bottom));
+    }));
+    assert.ok(inline, "short names, pills and statuses share one line");
+    const heights = await page.locator('[data-testid="connected-space-row"]').evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height));
+    assert.ok(heights.every(height => height < 70), "short names retain natural compact row heights");
+    const fit = await page.locator(".connected-spaces-scroll").evaluate(el => {
+      const rows = [...el.querySelectorAll("li")].map(row => row.getBoundingClientRect().height);
+      const height = el.getBoundingClientRect().height;
+      let used = 0;
+      let count = 0;
+      for (const row of rows) { if (used + row > height + 1) break; used += row; count++; }
+      const panel = el.closest("#connected-panel");
+      const card = el.closest(".connection-card");
+      const capacity = Math.min(220, panel.clientHeight + parseFloat(getComputedStyle(card).maxHeight) - card.getBoundingClientRect().height - (panel.scrollHeight - height));
+      return { height, used, count, next: rows[count] ?? 0, capacity };
+    });
+    if (page.viewportSize().width === 880) assert.ok(fit.count >= 4, "wide short-name list shows at least four whole rows");
+    assert.ok(Math.abs(fit.height - fit.used) <= 1, "list ends on a whole row");
+    assert.ok(fit.count === heights.length || fit.used + fit.next > fit.capacity - 1, "list shows every complete row that fits its budget");
+  } },
   { name: "header-name-editor", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#edit-computer-name"), expect: async page => {
     assert.equal(await page.locator("#settings-panel #computer-name-form").isVisible(), true, "finished header Edit opens the Settings row editor");
   } },

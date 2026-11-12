@@ -314,6 +314,27 @@ jobs:
           name: changeset-pack
           path: ${{ runner.temp }}/packed
           if-no-files-found: error
+      - name: Wait for the packed artifact to be listed
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.packed.outputs.artifact-id }}
+        run: |
+          if [[ ! "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo 'The pack upload did not return a valid artifact id.' >&2
+            exit 1
+          fi
+          for attempt in {1..30}; do
+            listed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+              --jq ".artifacts[] | select(.id == $ARTIFACT_ID and .name == \"changeset-pack\" and .expired == false) | .id")
+            if [[ "$listed" == "$ARTIFACT_ID" ]]; then
+              echo "Packed artifact $ARTIFACT_ID is listed in run $GITHUB_RUN_ID."
+              exit 0
+            fi
+            if (( attempt < 30 )); then sleep 2; fi
+          done
+          echo "Packed artifact $ARTIFACT_ID was not listed in run $GITHUB_RUN_ID after 30 attempts." >&2
+          exit 1
       - name: Validate the packed closure and promotion order
         if: needs.release.outputs.staged == 'true'
         run: node scripts/stage-release-plan.mjs check "$RUNNER_TEMP/packed/publish-plan.json" > "$RUNNER_TEMP/promote-specs.txt"

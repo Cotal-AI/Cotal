@@ -528,6 +528,33 @@ function showStage(next: Stage, focus = false): void {
   el("tray-indicator").classList.toggle("in-flight", busy);
   buttons();
 }
+let spaceListSheet: CSSStyleSheet | undefined;
+function sizeSpaceList(): void {
+  const list = el("connected-spaces");
+  const rows = [...list.children] as HTMLElement[];
+  if (rows.length < 4 || !list.getClientRects().length) return;
+  let height = 0;
+  const panel = el("connected-panel");
+  const viewport = list.parentElement!;
+  const otherContent = panel.scrollHeight - viewport.getBoundingClientRect().height;
+  const card = panel.closest<HTMLElement>(".connection-card")!;
+  const cardStyle = getComputedStyle(card);
+  const extraCapacity = parseFloat(cardStyle.maxHeight) - card.getBoundingClientRect().height;
+  const budget = Math.min(220, panel.clientHeight + extraCapacity - otherContent);
+  for (const row of rows) {
+    const next = row.getBoundingClientRect().height;
+    if (height && height + next > budget) break;
+    height += next;
+  }
+  if (!spaceListSheet) {
+    spaceListSheet = new CSSStyleSheet();
+    spaceListSheet.replaceSync(".connected-spaces-scroll:has(li:nth-child(4)) { max-height: 160px; }");
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, spaceListSheet];
+  }
+  (spaceListSheet.cssRules[0] as CSSStyleRule).style.maxHeight = `${height}px`;
+}
+window.addEventListener("resize", sizeSpaceList);
+window.addEventListener("load", sizeSpaceList);
 function renderConnections(): void {
   const list = el("connected-spaces");
   text("spaces-heading", `Spaces using this computer (${connections.size})`);
@@ -535,6 +562,7 @@ function renderConnections(): void {
   const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), busy]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;
+  requestAnimationFrame(sizeSpaceList);
   list.replaceChildren(...[...connections].map(([space, state]) => {
     const row = document.createElement("li"); row.dataset.testid = "connected-space-row"; row.dataset.space = space;
     const copy = document.createElement("span");

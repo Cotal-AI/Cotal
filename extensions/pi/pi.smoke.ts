@@ -1090,6 +1090,8 @@ for (const assistant of [
     "COTAL_CONTROL_SOCKET",
     "COTAL_CONTROL_TOKEN",
     "COTAL_LAUNCH_MATERIAL",
+    "COTAL_SPACE",
+    "COTAL_ID",
   ] as const;
   const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
@@ -1108,6 +1110,40 @@ for (const assistant of [
   } as unknown as ExtensionAPI;
   await assert.rejects(() => cotalMesh(compatibleApi), /COTAL_CONTROL_SOCKET is set but no control token could be resolved/);
   checks++;
+
+  // Managed reload has already consumed its launch material. It must bind the existing
+  // authenticated runtime, not parse the now deliberately incomplete launch environment.
+  const symbol = Symbol.for("cotal.pi.runtimes");
+  const root = globalThis as typeof globalThis & { [symbol]?: Map<string, unknown> };
+  const previous = root[symbol];
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let starts = 0;
+  const runtime = {
+    config: { name: "partial-control", space: "reload-fixture", id: "reload-actor", subscribe: [], allowSubscribe: [], allowPublish: [] },
+    mesh: {},
+    driver: {
+      bind(): void {},
+      onSessionStart(): void { starts++; },
+    },
+    personaCleaned: true,
+  };
+  root[symbol] = new Map([["reload-fixture\0reload-actor", runtime]]);
+  process.env.COTAL_SPACE = "reload-fixture";
+  process.env.COTAL_ID = "reload-actor";
+  try {
+    await cotalMesh({ ...compatibleApi, on(name: string, handler: (...args: unknown[]) => unknown): void {
+      handlers.set(name, handler);
+    } } as unknown as ExtensionAPI);
+    await handlers.get("session_start")?.({ reason: "reload" }, {
+      sessionManager: { getSessionId: () => "reloaded-session", getSessionFile: () => undefined },
+    });
+    ok(starts === 1, "managed reload rebinds the cached driver after launch material was scrubbed");
+  } finally {
+    if (previous) root[symbol] = previous;
+    else delete root[symbol];
+    delete process.env.COTAL_SPACE;
+    delete process.env.COTAL_ID;
+  }
   for (const key of keys) {
     const value = saved[key];
     if (value === undefined) delete process.env[key];
