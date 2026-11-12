@@ -1,5 +1,28 @@
 # @cotal-ai/cli
 
+## 0.163.0
+
+### Minor Changes
+
+- 94985e3: Selections made with `cotal use` now apply in every folder, overriding the folder's running space.
+  
+  Automatically adopted selections preserve running-project targeting. Older selection pointers are treated as explicit until cleared. Native foreground spawn prints its target and uses this terminal without asking again, while detached launches still require a Manager choice when no default exists.
+
+### Patch Changes
+
+- 2040519: Explain conversation agent limits with safe usage, plan comparison and agent-management links. Stop native approval polling on permanent refusals, distinguish them from a person's denial, and recover stuck unissued requests only after a request-bound terminal refusal.
+- 85a09e4: The daemon lease check in `cotal down` passes an explicit object literal to `standaloneConnectOpts`. The resolved `creds` and `tls` bindings are passed directly at the call site so the required-argument seam reader can verify the `tls` decision statically.
+- 4c53a5c: `cotal down` now names a logged store write failure when the manager's stop gets no answer, instead of failing with a bare timeout.
+  When the broker's store cannot take the stop credential's issuance record and JetStream stays enabled, as under a file-size limit, `down` refuses `DEPENDENCY_UNAVAILABLE` (exit 2), stops no member, and gives the way out: `kill -TERM` the manager on its host, run `cotal down`, fix the logged cause and run `cotal up`.
+- f8801fc: Sign in to Cotal Cloud from the terminal without knowing its provider URL.
+  
+  Default fresh sign-in to Cotal Cloud, add the same --cloud shorthand to account and daemon sign-in, select a personal or sole space after approval, and open approval in a browser when a desktop terminal supports it. Keep custom providers and printed approval instructions available.
+- Updated dependencies [ef6651a]
+- Updated dependencies [f8801fc]
+- Updated dependencies [94985e3]
+  - @cotal-ai/workspace@0.163.0
+  - @cotal-ai/core@0.163.0
+
 ## 0.162.0
 
 ### Minor Changes

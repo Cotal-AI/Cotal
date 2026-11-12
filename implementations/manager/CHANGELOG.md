@@ -1,5 +1,18 @@
 # @cotal-ai/manager
 
+## 0.163.0
+
+### Patch Changes
+
+- 4d2d755: Released seat adoption checks orphaned custody through the shared runtime reap guard. `adoptReleasedSeat` calls `requireRuntimeReap` so an absent custody record is refused before reaching the caller.
+- 9da8da8: Remote managers recover from stalled standing credential renewals within a bounded wait. Authority requests, candidate broker preflights and adoption waits share a ten-second budget. Late candidates cannot replace current credentials, and closed serving connections use a bounded recovery attempt without replaying requests.
+- Updated dependencies [ef6651a]
+- Updated dependencies [f8801fc]
+- Updated dependencies [94985e3]
+  - @cotal-ai/workspace@0.163.0
+  - @cotal-ai/core@0.163.0
+  - @cotal-ai/seat@0.163.0
+
 ## 0.162.0
 
 ### Minor Changes
