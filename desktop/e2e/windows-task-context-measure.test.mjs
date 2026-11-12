@@ -60,6 +60,11 @@ test("real eval workers report their chosen environment and confirmed exit", asy
       assert.equal(result.worker.exitCode, 0);
       assert.equal(result.worker.boundExceeded, false);
       assert.equal(result.environment.names.includes("COTAL_CONTEXT_TEST_SECRET"), !stripped);
+      assert.equal(result.workerEnvironment.names.includes("COTAL_CONTEXT_TEST_SECRET"), !stripped);
+      if (stripped) {
+        assert.ok(result.workerEnvironment.names.includes("DO_NOT_TRACK"));
+        assert.ok(!result.workerEnvironment.names.includes("COTAL_DAEMON_TASK"));
+      }
       assert.ok(!JSON.stringify(result).includes("do-not-retain-this-value"));
       if (stripped) assert.ok(result.environment.names.includes("DO_NOT_TRACK"));
     }
@@ -77,6 +82,13 @@ test("table renders only bounded labels and numeric fields", () => {
   const table = renderContextTable([{ context: "secret", variant: "secret", elapsedMs: "secret", status: "secret", valid: false }]);
   assert.ok(!table.includes("secret"));
   assert.ok(table.includes("unknown"));
+});
+
+test("table includes fixed stage durations in order with unknown for unsafe values", () => {
+  const table = renderContextTable([{ context: "harness", variant: "worker-thread", elapsedMs: 99, approximateStartupMs: 4, status: 0, valid: true, durations: [{ stage: "import-module", elapsedMs: 12 }, { stage: "enumerate-all", elapsedMs: 23 }, { stage: "principal-translate", elapsedMs: "secret" }, { stage: "com-create", elapsedMs: Infinity }, { stage: "com-connect", elapsedMs: 34 }, { stage: "com-get-task", elapsedMs: 45 }, { stage: "com-get-instances", elapsedMs: 56 }, { stage: "private-stage", elapsedMs: "private-value" }] }]);
+  assert.ok(table.includes("| 99 | 4 | 12 | 23 | unknown | unknown | 34 | 45 | 56 | 0 | yes |"));
+  for (const stage of ["import-module", "enumerate-all", "principal-translate", "com-create", "com-connect", "com-get-task", "com-get-instances"]) assert.ok(table.includes(`${stage} ms`));
+  assert.ok(!/secret|private-stage|private-value|Infinity/.test(table));
 });
 
 test("native measurement is gated on Windows", { skip: process.platform === "win32" }, async () => {

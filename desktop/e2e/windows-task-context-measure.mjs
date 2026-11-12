@@ -71,7 +71,7 @@ export function nativeContextSample(options) {
 /** Resolve only after exit, draining both worker streams without retaining their content. */
 export function workerContextSample(options, boundMs = 190_000) {
   return new Promise(resolveResult => {
-    const worker = new Worker(`const {workerData,parentPort}=require('node:worker_threads'); import(workerData.module).then(m=>parentPort.postMessage(m.nativeContextSample(workerData.options))).catch(()=>{process.exitCode=1});`, { eval: true, workerData: { module: import.meta.url, options }, stdout: true, stderr: true });
+    const worker = new Worker(`const {workerData,parentPort}=require('node:worker_threads'); import(workerData.module).then(m=>parentPort.postMessage({...m.nativeContextSample(workerData.options),workerEnvironment:m.safeEnvironment(process.env)})).catch(()=>{process.exitCode=1});`, { eval: true, workerData: { module: import.meta.url, options }, ...(options.stripped ? { env: strippedDaemonEnvironment(process.env, options.keys) } : {}), stdout: true, stderr: true });
     worker.stdout.resume();
     worker.stderr.resume();
     let sample = null;
@@ -122,7 +122,16 @@ export function renderContextTable(rows) {
   const contexts = new Set(["harness", "scheduled-task"]);
   const variants = new Set(["main-thread", "worker-thread", "worker-thread-daemon-env"]);
   const number = value => Number.isFinite(value) ? String(value) : "unknown";
-  return ["| Context | Variant | Elapsed ms | Startup ms | Status | Valid |", "| --- | --- | --- | --- | --- | --- |", ...rows.map(row => `| ${contexts.has(row.context) ? row.context : "unknown"} | ${variants.has(row.variant) ? row.variant : "unknown"} | ${number(row.elapsedMs)} | ${number(row.approximateStartupMs)} | ${number(row.status)} | ${row.valid === true ? "yes" : "no"} |`), ""].join("\n");
+  const stages = ["import-module", "enumerate-all", "principal-translate", "com-create", "com-connect", "com-get-task", "com-get-instances"];
+  return [
+    `| Context | Variant | Elapsed ms | Startup ms | ${stages.map(stage => `${stage} ms`).join(" | ")} | Status | Valid |`,
+    `| ${Array(6 + stages.length).fill("---").join(" | ")} |`,
+    ...rows.map(row => {
+      const durations = stages.map(stage => number(Array.isArray(row.durations) ? row.durations.find(duration => duration?.stage === stage)?.elapsedMs : undefined));
+      return `| ${contexts.has(row.context) ? row.context : "unknown"} | ${variants.has(row.variant) ? row.variant : "unknown"} | ${number(row.elapsedMs)} | ${number(row.approximateStartupMs)} | ${durations.join(" | ")} | ${number(row.status)} | ${row.valid === true ? "yes" : "no"} |`;
+    }),
+    "",
+  ].join("\n");
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
