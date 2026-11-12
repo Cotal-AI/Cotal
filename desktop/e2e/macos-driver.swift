@@ -137,7 +137,8 @@ func receiptPolicy(_ mode: String, _ value: String, _ time: String) -> String {
     process.executableURL = URL(fileURLWithPath: node)
     process.arguments = [policy, mode, value, time]
     process.standardOutput = pipe
-    do { try process.run() } catch { fail("cannot run receipt policy: \(error)") }
+    process.standardError = FileHandle.nullDevice
+    do { try process.run() } catch { fail("cannot run owned receipt policy") }
     let deadline = Date().addingTimeInterval(2)
     while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
     if process.isRunning {
@@ -173,9 +174,15 @@ func focusReceipt(_ phase: String, _ window: AXUIElement) -> Bool {
 func prepareLoginWindow() -> AXUIElement {
     let window = appWindow()
     activate()
-    guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success,
-          AXUIElementSetAttributeValue(window, "AXMain" as CFString, kCFBooleanTrue) == .success,
-          AXUIElementSetAttributeValue(window, "AXFocused" as CFString, kCFBooleanTrue) == .success else { fail("cannot raise and focus selected owned window") }
+    guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success else { fail("cannot raise selected owned window") }
+    for name in ["AXMain", "AXFocused"] {
+        if attribute(window, name) as? Bool == true { continue }
+        var settable: DarwinBoolean = false
+        let admission = AXUIElementIsAttributeSettable(window, name as CFString, &settable)
+        loginReceipt("focus-write-admission", ["pid": pid, "attribute": name, "error": admission.rawValue, "settable": settable.boolValue])
+        guard admission == .success, settable.boolValue else { fail("selected owned window attribute is not settable: \(name)") }
+        guard AXUIElementSetAttributeValue(window, name as CFString, kCFBooleanTrue) == .success else { fail("cannot set selected owned window attribute: \(name)") }
+    }
     let deadline = Date().addingTimeInterval(2)
     repeat {
         if focusReceipt("activation-observation", window) { return window }
