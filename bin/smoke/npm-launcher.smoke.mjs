@@ -74,6 +74,18 @@ await new Promise(r => setTimeout(r, 300));
 writeFileSync(entry, saved);
 healthy(await syntaxRetry.result);
 console.log("PASS partially extracted JavaScript is retried before the command begins");
+// npm writes package.json in place, so a command can start while the manifest is half written.
+const manifestPath = join(pkg, "package.json");
+const manifestBytes = readFileSync(manifestPath);
+writeFileSync(manifestPath, '{"name":"cotal-ai",');
+const manifestRetry = run();
+let manifestDone = false;
+void manifestRetry.result.then(() => { manifestDone = true; });
+await new Promise(r => setTimeout(r, 800));
+assert.equal(manifestDone, false, "a command waits while package.json is half written");
+writeFileSync(manifestPath, manifestBytes);
+healthy(await manifestRetry.result);
+console.log("PASS a partially written package manifest is retried before the command begins");
 renameSync(pkg, retired);
 const cancelled = run();
 await new Promise(r => setTimeout(r, 300));

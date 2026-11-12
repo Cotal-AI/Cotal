@@ -16,7 +16,7 @@ process.argv[1] = entry;
 const started = Date.now();
 const signals = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
 let child;
-let interrupted = false;
+let interrupted;
 
 // Only the recovery path adds a supervising process. Ordinary launches keep their PID, terminal,
 // IPC channel and signal behavior. A fresh process avoids reusing a failed ESM module cache.
@@ -29,7 +29,7 @@ function retry() {
     try { await import(${JSON.stringify(pathToFileURL(entry).href)}); }
     catch (error) {
       if (!globalThis[Symbol.for('cotal.command-started')] &&
-          (error instanceof SyntaxError || ['ERR_MODULE_NOT_FOUND', 'MODULE_NOT_FOUND', 'ENOENT'].includes(error?.code))) {
+          (error instanceof SyntaxError || ['ERR_MODULE_NOT_FOUND', 'MODULE_NOT_FOUND', 'ENOENT', 'ERR_INVALID_PACKAGE_CONFIG'].includes(error?.code))) {
         writeSync(3, 'retry');
         process.exit(75);
       }
@@ -50,7 +50,12 @@ function retry() {
   child.once("close", (code, signal) => {
     child = undefined;
     // An ordinary command's exit 75 or missing-module exception is never a retry receipt.
-    if (!interrupted && code === 75 && receipt === "retry") { scheduleRetry(); return; }
+    if (code === 75 && receipt === "retry") {
+      // A signal that lands while the attempt is already exiting must still end with the signal's status.
+      if (interrupted) process.exit(signals[interrupted]);
+      scheduleRetry();
+      return;
+    }
     process.exit(code ?? signals[signal] ?? 1);
   });
 }
@@ -63,9 +68,9 @@ function scheduleRetry() {
 
 import(pathToFileURL(entry).href).catch((error) => {
   if (globalThis[Symbol.for("cotal.command-started")] ||
-      !(error instanceof SyntaxError || ["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND", "ENOENT"].includes(error?.code))) throw error;
+      !(error instanceof SyntaxError || ["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND", "ENOENT", "ERR_INVALID_PACKAGE_CONFIG"].includes(error?.code))) throw error;
   for (const [signal, code] of Object.entries(signals)) process.on(signal, () => {
-    interrupted = true;
+    interrupted = signal;
     if (child) child.kill(signal);
     else process.exit(code);
   });
