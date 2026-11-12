@@ -724,10 +724,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           const cleanup = readManagerCleanup(home, space);
           if (!cleanup) continue;
           if (cleanup.phase === "unknown") { live.set(space, { view: status(space), stopping: true, failures: 0 }); continue; }
-          if (cleanup.phase === "hosted") {
-            recordRefusal(space, new Error("Manager hosting was withdrawn before local exit was durably confirmed; inspect its original instance before registration cleanup"));
-            continue;
-          }
+          // Hosted coordinates are retained before launch succeeds and before an intent exists.
+          // Their presence alone proves neither withdrawal nor a cleanup request. Keep them
+          // for an explicit disconnect, without fencing a machine connection being restored.
+          if (cleanup.phase === "hosted") continue;
           await this.disconnect(space);
         } catch (error) {
           if (!(error instanceof HostedManagerRefusal)) recordRefusal(space, error);
