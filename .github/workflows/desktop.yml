@@ -42,7 +42,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Verify passive native diagnostic wiring
-        run: node --test desktop/e2e/diagnostic-wiring.test.mjs desktop/e2e/receipt-mirror.test.mjs desktop/e2e/windows-task-stage-script.test.mjs
+        run: node --test desktop/e2e/diagnostic-wiring.test.mjs desktop/e2e/receipt-mirror.test.mjs desktop/e2e/windows-task-stage-script.test.mjs desktop/e2e/windows-task-context-measure.test.mjs desktop/e2e/windows-task-context-preflight.test.mjs
       - run: pnpm --dir desktop exec playwright-core install --with-deps chromium
       - run: pnpm --dir desktop test:render
       - name: Verify desktop motion
@@ -137,6 +137,24 @@ jobs:
         with:
           name: desktop-windows-task-stage-cleanup
           path: ${{ runner.temp }}/desktop-windows-task-stages/cleanup.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Compare Windows task and harness execution contexts
+        if: runner.os == 'Windows'
+        shell: cmd
+        timeout-minutes: 40
+        run: node desktop/e2e/windows-task-context-preflight.mjs measure
+      - name: Remove only the receipt-owned Windows context task
+        if: always() && runner.os == 'Windows'
+        shell: cmd
+        timeout-minutes: 4
+        run: node desktop/e2e/windows-task-context-preflight.mjs cleanup
+      - name: Upload Windows task context comparison
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-task-context
+          path: ${{ runner.temp }}/desktop-windows-task-context/
           if-no-files-found: error
           retention-days: 7
       - run: pnpm smoke:daemon-transport
