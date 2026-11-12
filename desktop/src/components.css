@@ -60,7 +60,7 @@
 #applications-label, #dashboard-spaces-note { margin: 0 0 4px; font-size: 12px; }
 .application-chips { margin-bottom: 8px; }
 .connected-spaces-scroll { margin: 8px 0 16px; }
-.connected-spaces-scroll:has(li:nth-child(4)) { max-height: 150px; overflow-y: auto; }
+.connected-spaces-scroll:has(li:nth-child(4)) { max-height: 80px; overflow-y: auto; }
 #connected-spaces { list-style: none; padding: 0; margin: 0; }
 #connected-spaces li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 2px solid var(--rule); }
 #connected-spaces li > span { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
