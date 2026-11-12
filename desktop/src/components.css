@@ -62,11 +62,10 @@
 .connected-spaces-scroll { margin: 8px 0 16px; }
 .connected-spaces-scroll:has(li:nth-child(4)) { max-height: var(--space-list-height, 160px); overflow-y: auto; scroll-snap-type: y mandatory; }
 .connected-spaces-scroll:has(li:nth-child(4)) li { scroll-snap-align: start; }
-.connected-spaces-scroll:has(li:nth-child(4)) strong { width: 100%; line-height: 18px; }
 .connection-card:has(#connected-spaces li:nth-child(2)) #connection-icon,
 .connection-card:has(#connected-spaces li:nth-child(2)) #connection-description { display: none; }
 #connected-spaces { list-style: none; padding: 0; margin: 0; }
-#connected-spaces li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 2px solid var(--rule); }
+#connected-spaces li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 2px 0; border-bottom: 2px solid var(--rule); }
 #connected-spaces li > span { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
 #connected-spaces strong { overflow-wrap: anywhere; }
 #connected-spaces [data-testid=approval-pending] { color: var(--gold-ink); }
@@ -195,7 +194,9 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 @media (prefers-reduced-motion: reduce) {
   button:not(:disabled):hover, button:not(:disabled):active { transform: none; }
 }
-.connection-card:has(#connected-panel:not([hidden]) #connected-spaces li:nth-child(4)) { max-height: calc(100vh - 150px); overflow-y: auto; }
+.connection-card:has(#connected-panel:not([hidden])) { display: flex; flex-direction: column; max-height: calc(100vh - 150px); overflow: hidden; }
+.connection-card:has(#connected-panel:not([hidden])) > :not(#connected-panel) { flex-shrink: 0; }
+.connection-card #connected-panel { min-height: 0; overflow-y: auto; }
 .connection-card.has-running-agents { display: flex; flex-direction: column; max-height: calc(100vh - 150px); min-height: 0; flex-shrink: 1; overflow-y: auto; }
 .has-running-agents > :not(#connected-panel) { flex-shrink: 0; }
 .has-running-agents #connected-panel { display: flex; flex-direction: column; min-height: 0; }

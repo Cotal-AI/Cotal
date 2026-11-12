@@ -196,6 +196,21 @@ try {
         }
         return failures;
       });
+      if (await page.locator("#connected-panel").isVisible()) {
+        const padding = await page.locator(".connection-card").evaluate(card => {
+          const panel = card.querySelector("#connected-panel");
+          const controls = [...panel.querySelectorAll("button,input,select,summary")].filter(el => el.getClientRects().length);
+          const last = controls.at(-1);
+          if (!last) return null;
+          const style = getComputedStyle(card);
+          const before = panel.scrollTop;
+          panel.scrollTop = panel.scrollHeight;
+          const remaining = card.getBoundingClientRect().bottom - parseFloat(style.borderBottomWidth) - last.getBoundingClientRect().bottom;
+          panel.scrollTop = before;
+          return { remaining, required: parseFloat(style.paddingBottom) };
+        });
+        assert.ok(!padding || padding.remaining >= padding.required - 1, `${name}: connected last control keeps card bottom padding ${JSON.stringify(padding)}`);
+      }
       assert.ok(await page.locator("footer").evaluate(el => { const box = el.getBoundingClientRect(); return box.top >= 0 && box.bottom <= innerHeight; }), `${name}: footer inside viewport`);
       assert.deepEqual(geometry, [], `${name}: geometry`);
       await page.addScriptTag({ url: `${address}/axe.js` });
