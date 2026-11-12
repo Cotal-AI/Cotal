@@ -124,6 +124,7 @@ const openWithKeys = (el: HTMLElement) => {
   for (const choice of ["Dark", "Light", "System"]) {
     if (menu() === null) await m.run(() => openWithKeys(settings()));
     await m.run(() => items().find((i) => textOf(i) === choice)!.click());
+    await m.run(tick);
     cycle.push([choice, root.className, localStorage.getItem("cotal.theme") ?? "", String(menu() === null), String(document.activeElement === settings())]);
   }
   same("1.6 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings",
