@@ -44,7 +44,7 @@ the seat stays up until you stop it with `cotal stop` once every run sharing it 
 migration handed to a later spawn follows that spawn's policy, and it stays up if any spawn that held
 it was marked `onFork: "adopt"`, because a fork taken before the migration may still share it. In a
 space with several managers, a despawn counts a seat as already gone only when the manager that
-allocated it says so. An unanswered despawn is retried up to three times, always for the same
+allocated it says so. A seat release gets at most three unanswered attempts, always for the same
 lifecycle. Completion attempts every owned seat even if an earlier release fails. A release that
 still cannot be confirmed is named in the host log for inspection with `cotal ps` and manual
 cleanup with `cotal stop`; the finished program keeps its `completed` outcome. Cancellation
