@@ -43,8 +43,8 @@
  *      connects, `service-connect` with no register request refuses TARGET_NOT_FOUND, and
  *      `service-disconnect` answers disconnected;
  *  C12 a connection held past two 60 s access-bearer lifetimes stays connected or connecting (never
- *      unavailable or ended), is connected for at least 80% of 1 s samples and at the end, and the
- *      space still reads it ready. The sample counts are printed, so each documented reconnect is visible;
+ *      unavailable or ended), is connected for at least 80% of 1 s samples and returns to connected
+ *      within 15 s after sampling, and the space still reads it ready. Sample counts are printed;
  *  C13 (runs last, on its own space) broker loss while connected: the daemon's own broker path for
  *      this space (a TCP pass-through the suite cuts) is unreachable while the space's auth service
  *      keeps its broker; no 500 ms sample over 8 s says connected (all say connecting); after the
@@ -1162,6 +1162,10 @@ try {
         try { return await Promise.race([work, new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), ms); })]); }
         finally { clearTimeout(timer); }
       };
+      // The CLI starts a fresh process. Its startup is not the cancellation contract. Keep the
+      // upstream request held until settlement, with a bound below its 30-second HTTP timeout
+      // and the fixture CLI's 10-second kill timer, rather than measuring a 2.5-second startup race.
+      const cancellationDeadlineMs = 8000;
       try {
         await start();
         check("C6c healthy control connects and records intent", (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
@@ -1170,7 +1174,8 @@ try {
           for (const action of ["disconnect", "SIGTERM"]) {
             let entered!: () => void, release!: () => void, aborted!: () => void;
             const requested = new Promise<void>((resolve) => { entered = resolve; });
-            const held = new Promise<void>((resolve) => { release = resolve; });
+            let released = false;
+            const held = new Promise<void>((resolve) => { release = () => { released = true; resolve(); }; });
             const cancelled = new Promise<boolean>((resolve) => { aborted = () => resolve(true); });
             const gate = async (res: ServerResponse) => { res.once("close", aborted); entered(); await held; };
             if (phase === "token") tokenGate = gate;
@@ -1183,16 +1188,16 @@ try {
               const started = Date.now();
               if (action === "disconnect") {
                 const pending = cli("service-disconnect");
-                const reply = await within(pending, 2500);
-                check(`C6c ${phase} disconnect returns before release and forgets intent`, reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
+                const reply = await within(pending, cancellationDeadlineMs);
+                check(`C6c ${phase} disconnect returns before release and forgets intent`, !released && reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
                 // Release only after observing the bound, even on failure, then settle the child.
                 if (!reply) release();
                 await pending;
               } else {
                 const exited = new Promise<number | null>((resolve) => child!.once("exit", resolve));
                 child!.kill("SIGTERM");
-                const code = await within(exited, 2500);
-                check(`C6c ${phase} SIGTERM exits cleanly before release and retains intent`, code === 0 && !existsSync(paths.socket) && existsSync(intentFile(ON)), { code });
+                const code = await within(exited, cancellationDeadlineMs);
+                check(`C6c ${phase} SIGTERM exits cleanly before release and retains intent`, !released && code === 0 && !existsSync(paths.socket) && existsSync(intentFile(ON)), { code });
                 if (code === undefined) release();
                 await exited;
                 child = undefined;
@@ -1222,7 +1227,8 @@ try {
             if (phase !== "token") check(`C6c register ${phase} ${action} prepare: connect`, (await cli("service-connect")).code === 0);
             let entered!: () => void, release!: () => void, aborted!: () => void;
             const requested = new Promise<boolean>((resolve) => { entered = () => resolve(true); });
-            const held = new Promise<void>((resolve) => { release = resolve; });
+            let released = false;
+            const held = new Promise<void>((resolve) => { release = () => { released = true; resolve(); }; });
             const cancelled = new Promise<boolean>((resolve) => { aborted = () => resolve(true); });
             const gate = async (res: ServerResponse) => { res.once("close", aborted); entered(); await held; };
             if (phase === "token") tokenGate = gate;
@@ -1234,15 +1240,15 @@ try {
               const started = Date.now();
               if (action === "disconnect") {
                 const disconnect = cli("service-disconnect");
-                const reply = await within(disconnect, 2500);
-                check(`C6c register ${phase} disconnect settles before release`, reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
+                const reply = await within(disconnect, cancellationDeadlineMs);
+                check(`C6c register ${phase} disconnect settles before release`, !released && reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
                 if (!reply) release();
                 await disconnect;
               } else {
                 const exited = new Promise<number | null>((resolve) => child!.once("exit", resolve));
                 child!.kill("SIGTERM");
-                const code = await within(exited, 2500);
-                check(`C6c register ${phase} SIGTERM exits before release`, code === 0 && !existsSync(paths.socket), { code });
+                const code = await within(exited, cancellationDeadlineMs);
+                check(`C6c register ${phase} SIGTERM exits before release`, !released && code === 0 && !existsSync(paths.socket), { code });
                 if (code === undefined) release();
                 await exited;
                 child = undefined;
@@ -1290,7 +1296,10 @@ try {
       const connected = samples.filter((s) => s === "connected").length, other = samples.filter((s) => s !== "connected" && s !== "connecting");
       console.log(`  C12 ${samples.length} samples: ${connected} connected, ${samples.length - connected - other.length} connecting, ${other.length} other`);
       check("C12 never unavailable or ended while the space stands; only connected or connecting", other.length === 0, other.slice(0, 5));
-      check("C12 connected for most of the window and connected at the end", connected >= samples.length * 0.8 && samples.at(-1) === "connected", { connected, n: samples.length });
+      check("C12 connected for most of the window", connected >= samples.length * 0.8, { connected, n: samples.length });
+      // A credential can expire on the last sample too. The documented reconnect must finish
+      // within the same bound used for startup recovery, rather than win an arbitrary sample.
+      check("C12 connected again within fifteen seconds after the sampling window", await waitState(ON, state => state === "connected", 15_000) === "connected");
       check("C12 the space still reads the instance as ready", (await instanceStatus(ON)) === "ready");
       const reply = await probeMachine();
       check("C12 the registered command still answers after credential renewals", reply.reply.ok && reply.reply.data === null && reply.responder.instanceId === identityOf(ON)!.instanceId);
