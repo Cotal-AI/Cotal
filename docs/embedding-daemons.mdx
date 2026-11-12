@@ -226,7 +226,20 @@ the same way, bounded to 5 to 300 seconds, with the five-minute `issuer` lifetim
 ### Claim recovery order
 
 The auth plane can renew a registered manager's five standing credentials from the current
-service registration. Run-driver renewal reads the hosted run attempt and checks its active
+service registration. A serve mint retries contention with session or other serving mints only while
+all issuance-gate authority fields remain unchanged. A freeze or changed coordinate still refuses
+issuance, and contention retries are bounded. The manager binds its replacement serve connection before draining the old
+connection. Both use the same incarnation's queue groups, so overlap does not execute a request
+twice. The old connection has five seconds to drain in-flight handlers and flush replies before
+closing. If that deadline expires, the manager reports the unfinished drain and closes only the
+retired transport. An unfinished request's outcome is unknown and must not be retried blindly.
+The supervisor, goal writer and session ledger retain their connections during planned renewal.
+They wait up to five seconds for outgoing requests to finish before requesting a native reconnect.
+If requests stay busy, the manager reports the deferred refresh and retries after one second.
+Credential adoption releases scoped maintenance before the retired serve connection drains, so an
+admitted session handler does not wait for its own completion. Broker failures and credential
+expiry can still interrupt requests. The manager never replays a mutation after a lost reply.
+Run-driver renewal reads the hosted run attempt and checks its active
 fence as well as the manager's open issuance gate and process epoch. A moved gate or run
 fence refuses issuance. These primitives do not establish a complete pooled deployment.
 A fresh auth plane can initialize without a delivery-admin responder. Reclaiming a held claim from a dead predecessor needs the delivery

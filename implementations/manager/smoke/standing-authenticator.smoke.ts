@@ -32,7 +32,11 @@ for (const method of ["dialServeConnection", "dialGoalWriter", "dialSessionLedge
       remoteAuthority: mode === "remote" ? {} : undefined,
       dial: async (options: Record<string, unknown>) => { observed.push(options); throw boundary; },
     };
-    try { await methods[method].call(receiver, state, identity); check(false, "dial must stop at boundary"); }
+    try {
+      if (method === "dialServeConnection") await methods[method].call(receiver, state);
+      else await methods[method].call(receiver, state, identity);
+      check(false, "dial must stop at boundary");
+    }
     catch (error) { check(error === boundary, "actual dial method reached transport"); }
     check(observed.length === 1, "one dial");
     const options = observed[0]!;

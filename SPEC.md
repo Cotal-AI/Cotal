@@ -2712,6 +2712,8 @@ per mode, zero to three pinned target tokens between the command and the caller:
 | Reply | `cotal.<space>.ep.reply.<endpoint>.<instanceId>.<epoch>.<owner>.<actor>.<uid>.<nonce>` | 11 |
 | Versioned rail (§13.15) | every form above with `ep.v1` in place of `ep` and `<generation>` inserted between `<uid>` and `<nonce>` | 12-17 |
 
+A responder MAY distribute its scatter and instance rails within a queue group named for its own incarnation; distinct instances MUST use distinct groups so scatter still reaches each instance.
+
 **The versioned rail.** An **issued** caller (§13.15) rides `cotal.<space>.ep.v1.…`: the same
 forms, one more token, the caller's issued `<generation>` (32 lowercase hex characters), placed
 between `<uid>` and `<nonce>` on every request and reply form. The legacy `ep.` rail and the
@@ -7349,6 +7351,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-12 | **Incarnation-scoped responder queues (§13.2), clarification.** Scatter and instance responders may use a queue group per incarnation to overlap serving connections during renewal. Distinct instances use distinct groups so scatter still reaches each instance. Credential grants are unchanged. |
 | 2026-11-10 | **A spawn-scoped `manager-caller` view lists its own agents (§9, §10), additive.** A person who may spawn on their own Manager could not list the agents they launched there. `ps` was not in the view unless the actor held `admin`, so `cotal ps` and `cotal status <agent>` were refused by the broker. A view whose actor holds `spawn` now carries `ps` on its one pinned instance, beside `status`, `models` and `resolve-cwd`. The Manager answers it with the caller's own owner's agents only, unless the caller holds `admin`. `slots` stays with `admin`, no class, scatter or other-instance row is added, and the standing `spawn` set is unchanged. |
 | 2026-11-09 | **A spawner hands on endpoint commands it holds (§13.7, §13.15, §14.8).** A persona's `endpoints` list names `{ endpoint, commands, instanceId? }` entries on the inline `spawn` record, on `define-persona` and in a catalog file. On a static space each command lowers to an untargeted caller capability, on the class rail or, with `instanceId`, on that instance's rail alone plus that instance's `describe`; the delegation bound measures it against the spawner's issued evidence (a run's spawn against its admission's ceiling), and the helper's mint and renewals grant it. A static agent mint refuses a targeted or journaled endpoint capability, because the static terminal has no obligation drain, and a copied static credential's reach until expiry is named as a known gap. A single-label endpoint and a reserved command are refused. A user-auth manager refuses the field, `[]` included. Manager cluster revision 47. |
 | 2026-11-09 | **A spawn result says when its seat is not woken by mesh traffic (§13.6 item 6), additive.** A connector MAY declare that an idle seat is woken only after a confirmed startup. A plain spawn of such a seat whose startup watch ended `ready` succeeds, and its result's `startupNotice` carries the connector's clause; the seat's `ps` row carries the same field. A `once` spawn of such a seat is refused as before. A reader that does not read `startupNotice` sees an ordinary success. |

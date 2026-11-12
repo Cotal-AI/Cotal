@@ -2257,16 +2257,33 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
     try { await gate.revoke(row); return undefined; }
     catch (err) { return (err as Error)?.message ?? String(err); }
   };
-  let won: boolean;
-  try {
-    won = await gate.commit(obs.revision);
-  } catch (err) {
-    const revokeFailed = await revokeStaged();
-    throw new EpEnvelopeError("unavailable", `the issuance-gate CAS failed; refusing to release a serve credential (SPEC 13.1): ${(err as Error)?.message ?? String(err)}${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+  // Session siblings and standing serve mints touch the same gate without changing its authority.
+  // A revision loss alone is contention, not a takeover. Compare the whole original observation
+  // before retrying, so a freeze/reopen or any changed coordinate still refuses the staged mint.
+  const withoutRevision = (g: EpGateState): string =>
+    JSON.stringify(Object.entries(g).filter(([key]) => key !== "revision").sort(([a], [b]) => (a < b ? -1 : 1)));
+  const pinnedTo = withoutRevision(obs);
+  let pin = obs.revision;
+  let won = false;
+  for (let attempt = 0; attempt < 64; attempt++) {
+    let current: EpGateState | null;
+    try {
+      won = await gate.commit(pin);
+      if (won) break;
+      current = await gate.observe();
+    } catch (err) {
+      const revokeFailed = await revokeStaged();
+      throw new EpEnvelopeError("unavailable", `the issuance-gate CAS failed; refusing to release a serve credential (SPEC 13.1): ${(err as Error)?.message ?? String(err)}${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+    }
+    if (current === null || withoutRevision(current) !== pinnedTo) {
+      const revokeFailed = await revokeStaged();
+      throw new EpEnvelopeError("expired", `the issuance gate advanced during mint (a takeover, re-registration, or name transfer won the serialization on ${snap.endpoint}/${snap.instanceId}); this mint released nothing (SPEC 13.1)${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+    }
+    pin = current.revision;
   }
   if (!won) {
     const revokeFailed = await revokeStaged();
-    throw new EpEnvelopeError("expired", `the issuance gate advanced during mint (a takeover, re-registration, or name transfer won the serialization on ${snap.endpoint}/${snap.instanceId}); this mint released nothing (SPEC 13.1)${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+    throw new EpEnvelopeError("unavailable", `the issuance gate stayed contended across every retry; this mint released nothing (SPEC 13.1)${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
   }
   if (obs.authorityFamily === "service") {
     try { await gate.verifyServiceIssuance!(row, obs); }
