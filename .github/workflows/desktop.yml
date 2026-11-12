@@ -42,7 +42,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Verify passive native diagnostic wiring
-        run: node --test desktop/e2e/diagnostic-wiring.test.mjs desktop/e2e/receipt-mirror.test.mjs
+        run: node --test desktop/e2e/diagnostic-wiring.test.mjs desktop/e2e/receipt-mirror.test.mjs desktop/e2e/windows-task-stage-script.test.mjs
       - run: pnpm --dir desktop exec playwright-core install --with-deps chromium
       - run: pnpm --dir desktop test:render
       - name: Verify desktop motion
@@ -71,6 +71,19 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
+      - name: Measure cold Windows task stages before setup or scenario
+        if: runner.os == 'Windows'
+        shell: cmd
+        timeout-minutes: 21
+        run: node desktop/e2e/windows-task-stage-preflight.mjs measure
+      - name: Upload Windows task stage samples
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-task-stages
+          path: ${{ runner.temp }}/desktop-windows-task-stages/
+          if-no-files-found: error
+          retention-days: 7
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
@@ -113,6 +126,19 @@ jobs:
           if errorlevel 1 exit /b 1
           node packages/seat/scripts/build-native.mjs --host
           if errorlevel 1 exit /b 1
+      - name: Remove only the receipt-owned Windows diagnostic task
+        if: always() && runner.os == 'Windows'
+        shell: cmd
+        timeout-minutes: 4
+        run: node desktop/e2e/windows-task-stage-preflight.mjs cleanup
+      - name: Upload Windows task stage cleanup
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-task-stage-cleanup
+          path: ${{ runner.temp }}/desktop-windows-task-stages/cleanup.json
+          if-no-files-found: error
+          retention-days: 7
       - run: pnpm smoke:daemon-transport
       - run: pnpm --dir desktop test
       - run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --no-default-features --lib
