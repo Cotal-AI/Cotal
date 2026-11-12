@@ -4,7 +4,7 @@ import { deleteIdpSession, deleteIdpSpaceCatalog, loadIdpSession, revokeIdpSessi
 
 export type SignOutIdpSessionResult =
   | { kind: "logout"; localLogin: "absent"; serverRevoked: null }
-  | { kind: "logout"; serverRevoked: boolean; localLoginCleared: true; removedRegistrations: string[] };
+  | { kind: "logout"; serverRevoked: boolean; localLoginCleared: true; removedRegistrations: string[]; skippedServices: string[] };
 
 /** Revoke or locally forget one provider session and remove its discovered spaces. */
 export async function signOutIdpSession({ dir, idp, local }: {
@@ -21,7 +21,8 @@ export async function signOutIdpSession({ dir, idp, local }: {
     try { await revokeIdpSession(idp, session.token); }
     catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: `retry logout for this provider, or revoke the session at the provider; to forget the login on this machine only, run \`cotal logout --idp ${idp} --local\`` }); }
   }
-  clearSharedServiceSessions(dir, idp, session);
+  const skippedServices: string[] = [];
+  clearSharedServiceSessions(dir, idp, session, skippedServices);
   let localCleared = false;
   let removed: string[] = [];
   try {
@@ -37,5 +38,5 @@ export async function signOutIdpSession({ dir, idp, local }: {
     if (local) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the cached login was cleared, but discovered-space cleanup was not confirmed; the provider was not contacted", { target: { idp }, changed: [{ kind: "local-login", idp, cleared: true }] });
     throw new CommandFailure("partial", "OPERATION_PARTIAL", localCleared ? "the server session was revoked and the cached login cleared, but discovered-space cleanup was not confirmed" : "the server session was revoked, but local cleanup was not confirmed", { target: { idp }, changed: [{ kind: "idp-session", idp, revoked: true }, ...(localCleared ? [{ kind: "local-login", idp, cleared: true }] : [])] });
   }
-  return { kind: "logout", serverRevoked: !local, localLoginCleared: true, removedRegistrations: removed };
+  return { kind: "logout", serverRevoked: !local, localLoginCleared: true, removedRegistrations: removed, skippedServices };
 }

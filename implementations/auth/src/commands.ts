@@ -188,7 +188,8 @@ async function runLogin(args: ParsedArgs): Promise<void> {
         throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${error.message}; no session was cached`, { target: { idp }, remedy: "check --idp <auth base URL>; it must serve <base>/device/code" });
       throw error;
     });
-    const refreshedServices = refreshServiceSessions(homeCotalDir(), idp, session);
+    const skippedServices: string[] = [];
+    const refreshedServices = refreshServiceSessions(homeCotalDir(), idp, session, skippedServices);
     const provider = resolveAuthProvider();
     let credentialsKept: ReturnType<typeof removeCatalogAccount>["credentialsKept"] = [];
     if (previousSub) {
@@ -228,6 +229,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
         ] },
       ] },
       ...(refreshedServices.length ? [{ title: "Manager services signed in", blocks: [{ kind: "lines" as const, lines: refreshedServices.map(service => `Signed in ${oneLine(service)} with the same approval.`) }] }] : []),
+      ...(skippedServices.length ? [{ title: "Manager services skipped", blocks: [{ kind: "lines" as const, lines: skippedServices }] }] : []),
       ...(discovered.length ? [{ title: "Your spaces", blocks: [{ kind: "fields" as const, rows: discovered.map((m): [string, string] => [m.space, [m.catalogName ?? m.space, m.catalogRole].filter(Boolean).join(" · ")]) }] }] : []),
       ...(selected ? [{ title: "Selected space", blocks: [{ kind: "lines" as const, lines: [`Selected ${oneLine(selected)}. Change it with cotal use <name>.`] }] }] : []),
       { title: "Next", blocks: [{ kind: "commands", items: selected
@@ -262,6 +264,7 @@ async function runLogout(args: ParsedArgs): Promise<void> {
   }
   writeResult(presentation, { command: "logout", target: { idp }, result: { ...result, daemonNotice: DAEMON_SIGN_OUT_NOTICE } }, (result) => ({ sections: [
     { title: local ? "Signed out on this machine" : "Signed out", blocks: [{ kind: "fields", rows: [["Provider", idp], ["Provider session", local ? { text: "not contacted; it stays valid until it expires or is revoked at the provider", tone: "waiting" } : { text: "revoked", tone: "ok" }], ["Local login", "cleared"], ["Discovered spaces removed", String(result.removedRegistrations.length)]] }, { kind: "lines", lines: [{ text: "This does not claim that independently running agents or other provider sessions were stopped.", tone: "hint" }, { text: result.daemonNotice, tone: "hint" }] }] },
+    ...(result.skippedServices.length ? [{ title: "Manager services skipped", blocks: [{ kind: "lines" as const, lines: result.skippedServices }] }] : []),
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal login", description: "Sign in deliberately when needed" }] }] },
   ] }));
 }

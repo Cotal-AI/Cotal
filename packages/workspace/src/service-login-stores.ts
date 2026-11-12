@@ -12,6 +12,15 @@ export interface ServiceLoginStore {
   readonly directory: string;
   readonly unitPath: string;
 }
+export interface SkippedServiceLoginStore {
+  readonly service?: string;
+  readonly reason: "local-overrides" | "unproven";
+}
+export interface ServiceLoginStoresReport {
+  readonly stores: ServiceLoginStore[];
+  readonly skipped: SkippedServiceLoginStore[];
+}
+class LocalOverrides extends Error {}
 const proofs = new WeakMap<ServiceLoginStore, () => void>();
 const cap = 128 * 1024;
 function refuse(): never { throw new Error("Manager service sign-in discovery refused an ambiguous or unprotected unit/store; use an explicit protected COTAL_HOME after inspecting the service configuration"); }
@@ -85,7 +94,7 @@ function inspect(unitPath: string, service: string, roots: string[]): ServiceLog
   const noDropins: string[] = [];
   for (const root of roots) {
     for (const name of ["service.d", `${service}.d`, ...(service.includes("@") ? [`${service.split("@")[0]}@.service.d`] : []), ...service.slice(0, -8).split("-").slice(0, -1).map((_, i, a) => `${a.slice(0, i + 1).join("-")}-.service.d`)]) {
-      const p = join(root, name); if (!absent(p)) refuse(); noDropins.push(p);
+      const p = join(root, name); if (!absent(p)) throw new LocalOverrides(); noDropins.push(p);
     }
   }
   let section = "";
@@ -133,24 +142,51 @@ function inspect(unitPath: string, service: string, roots: string[]): ServiceLog
   return store;
 }
 
-/** Discover only explicit Manager stores in this user's standard unit directories. Never reads sessions. */
-export function serviceLoginStores(): ServiceLoginStore[] {
-  if (process.platform !== "linux") return [];
+/** Discover proven stores independently, reporting optional units that could not be proved. Never reads sessions. */
+export function serviceLoginStoresReport(): ServiceLoginStoresReport {
+  if (process.platform !== "linux") return { stores: [], skipped: [] };
   const roots = [...new Set([join(homedir(), ".config/systemd/user"), ...(process.env.XDG_CONFIG_HOME ? [join(process.env.XDG_CONFIG_HOME, "systemd/user")] : [])])];
   const stores: ServiceLoginStore[] = [];
+  const skipped: SkippedServiceLoginStore[] = [];
   const names = new Set<string>();
-  for (const root of roots) {
-    if (absent(root)) continue;
-    const entries = physical(root, true, (fd) => readdirSync(`/proc/self/fd/${fd}`));
-    if (entries.length > 1024) refuse();
+  const candidates: { root: string; entries: string[] }[] = [];
+  try {
+    for (const root of roots) {
+      if (absent(root)) continue;
+      const entries = physical(root, true, (fd) => readdirSync(`/proc/self/fd/${fd}`));
+      if (entries.length > 1024) refuse();
+      candidates.push({ root, entries });
+    }
+  } catch {
+    // An unreadable search root could conceal an override of any candidate.
+    return { stores: [], skipped: [{ reason: "unproven" }] };
+  }
+  for (const { root, entries } of candidates) {
     for (const service of entries.sort()) {
       if (!/^cotal-manager@[a-f0-9]+\.service$/.test(service)) continue;
-      const store = inspect(join(root, service), service, roots);
-      if (!store) continue;
-      if (names.has(service)) refuse(); names.add(service); stores.push(store);
+      if (names.has(service)) {
+        const previous = stores.findIndex(store => store.service === service);
+        if (previous !== -1) stores.splice(previous, 1);
+        skipped.push({ service, reason: "unproven" });
+        continue;
+      }
+      names.add(service);
+      try {
+        const store = inspect(join(root, service), service, roots);
+        if (store) stores.push(store);
+      } catch (error) {
+        skipped.push({ service, reason: error instanceof LocalOverrides ? "local-overrides" : "unproven" });
+      }
     }
   }
-  return stores;
+  return { stores, skipped };
+}
+
+/** Strict discovery refuses if any candidate or search root cannot be proved. */
+export function serviceLoginStores(): ServiceLoginStore[] {
+  const report = serviceLoginStoresReport();
+  if (report.skipped.length) refuse();
+  return report.stores;
 }
 
 /** Revalidate this exact discovery result immediately before writing an auth session. */
@@ -173,7 +209,7 @@ export function serviceLoginRecovery(idp: string, directory?: string, manager = 
   const command = loginRecoveryCommand(idp);
   if (directory === undefined) return `run \`${command}\` to sign in again`;
   try {
-    const store = serviceLoginStores().find((s) => s.directory === directory);
+    const store = serviceLoginStoresReport().stores.find((s) => s.directory === directory);
     if (store) { assertServiceLoginStore(store); return `Manager service ${JSON.stringify(store.service)} uses a separate sign-in store; run \`${command}\``; }
   } catch { /* Unproven service names must not appear in recovery advice. */ }
   return manager && directory !== userCotalDir() ? `Manager sign-in store ${JSON.stringify(directory)}: run \`COTAL_HOME='${directory.replaceAll("'", "'\\''")}' ${command}\` to sign in again` : `run \`${command}\` to sign in again`;

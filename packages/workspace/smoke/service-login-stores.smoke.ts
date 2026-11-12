@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, sy
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spaceKey } from "../src/auth-paths.js";
-import { serviceLoginStores, assertServiceLoginStore, serviceLoginRecovery } from "../src/service-login-stores.js";
+import { serviceLoginStores, serviceLoginStoresReport, assertServiceLoginStore, serviceLoginRecovery } from "../src/service-login-stores.js";
 
 if (process.platform === "linux") {
   const root = mkdtempSync(join(tmpdir(), "service-login-stores-"));
@@ -45,6 +45,34 @@ if (process.platform === "linux") {
     writeFileSync(unit, source.replace("EnvironmentFile=", "Environment=COTAL_HOME=/ambiguous\nEnvironmentFile="));
     assert.throws(serviceLoginStores);
     writeFileSync(unit, source.replace("EnvironmentFile=", "EnvironmentFile=-")); assert.throws(serviceLoginStores);
+    writeFileSync(unit, source);
+    const siblingName = `cotal-manager@${spaceKey("sibling")}.service`;
+    const sibling = join(units, siblingName);
+    writeFileSync(sibling, source.replace("# cotal-mesh: fixture", "# cotal-mesh: sibling"), { mode: 0o600 });
+    mkdirSync(`${sibling}.d`, { mode: 0o700 });
+    writeFileSync(join(`${sibling}.d`, "telemetry-off.conf"), "[Service]\nEnvironment=DO_NOT_TRACK=1\n", { mode: 0o600 });
+    const mixed = serviceLoginStoresReport();
+    assert.deepEqual(mixed.stores.map(s => s.unitPath), [unit]);
+    assert.deepEqual(mixed.skipped, [{ service: siblingName, reason: "local-overrides" }]);
+    assertServiceLoginStore(mixed.stores[0]!);
+    assert.throws(serviceLoginStores);
+    assert.ok(serviceLoginRecovery("https://idp.test", store).includes(`cotal-manager@${spaceKey("fixture")}.service`));
+    rmSync(`${sibling}.d`, { recursive: true });
+    const template = join(units, "cotal-manager@.service.d");
+    mkdirSync(template, { mode: 0o700 });
+    writeFileSync(join(template, "telemetry-off.conf"), "[Service]\nEnvironment=DO_NOT_TRACK=1\n", { mode: 0o600 });
+    const overridden = serviceLoginStoresReport();
+    assert.equal(overridden.stores.length, 0);
+    assert.equal(overridden.skipped.length, 2);
+    assert.ok(overridden.skipped.every(s => s.reason === "local-overrides"));
+    assert.throws(serviceLoginStores);
+    rmSync(template, { recursive: true });
+    writeFileSync(join(customUnits, siblingName), source.replace("# cotal-mesh: fixture", "# cotal-mesh: sibling"), { mode: 0o600 });
+    const duplicate = serviceLoginStoresReport();
+    assert.deepEqual(duplicate.stores.map(s => s.unitPath), [unit]);
+    assert.deepEqual(duplicate.skipped, [{ service: siblingName, reason: "unproven" }]);
+    assert.throws(serviceLoginStores);
+    console.log("PASS tolerant discovery: mixed units, template overrides, proven recovery and duplicate invalidation");
     console.log("PASS service login discovery: legacy product unit, custom unit excluded, source/store pins, physical paths and parser refusals");
   } finally {
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
