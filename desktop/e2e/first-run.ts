@@ -6,6 +6,7 @@ import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { WindowDriver, until } from "./webdriver.js";
+import { collectUrlDiagnostic, publicDiagnosticLink } from "./url-diagnostic.mjs";
 import { MacWindowDriver } from "./macos-driver.js";
 import { nativeLifecycle, type LifecycleAction, type NativeObservation } from "./native-lifecycle.js";
 import { startCleanupTrace } from "./windows-cleanup-trace.mjs";
@@ -535,6 +536,11 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     phase("url-launch-start");
     await open([link.href]);
     phase("url-launch-opened");
+    if (driver instanceof WindowDriver) {
+      const diagnostic = await collectUrlDiagnostic((script: string, args: string[]) =>
+        driver.call("POST", driver.path("execute/sync"), { script, args }), publicDiagnosticLink);
+      writeFileSync(join(output, "url-diagnostic.json"), JSON.stringify(diagnostic, null, 2));
+    }
     await until("deep link visible", () => driver.displayed("link-context"), Boolean);
     if (process.platform === "win32" && driver instanceof WindowDriver) {
       const exactLink = await driver.call("POST", driver.path("execute/async"), {

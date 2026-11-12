@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WindowDriver, until } from "./webdriver.js";
+import { collectUrlDiagnostic } from "./url-diagnostic.mjs";
 
 assert.equal(process.platform, "win32", "Windows diagnostic requires native Windows");
 assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted", "probe requires a disposable runner");
@@ -52,6 +53,8 @@ try {
   await driver.openWindowsLink(binary, link.href, { env: { ...env, USERPROFILE: process.env.USERPROFILE, APPDATA: process.env.APPDATA,
     LOCALAPPDATA: process.env.LOCALAPPDATA, COTAL_DESKTOP_E2E_CONTEXT: context }, cwd: env.HOME!, receipts: join(traceHome, "deep-link-receipts.jsonl") });
   observations.nativeVersion = await until("native about metadata", () => driver.text("version"), value => /^v\d/.test(value), 15_000);
+  observations.urlDiagnostic = await collectUrlDiagnostic((script: string, args: string[]) =>
+    driver.call("POST", driver.path("execute/sync"), { script, args }), link.href);
   await driver.screenshot(join(output, "after-launch.png"));
   observations.window = await driver.call("POST", driver.path("execute/sync"), {
     script: "return {title:document.title, linkContext:document.getElementById('link-context')?.textContent ?? null, linkContextVisible:document.getElementById('link-context')?.checkVisibility() ?? false};", args: [],
@@ -65,7 +68,7 @@ try {
   assert.equal(argv[0].publicProbeShapes[0].publicProbeForm, "literal", "diagnostic proves plain public URL delivery");
   assert.equal(argv[0].publicProbeShapes[0].publicArgument, link.href);
   assert.deepEqual(observations.pluginCurrent, { ok: true, value: [link.href] }, "plain URL must reach the deep-link plugin");
-  await until("plain public link context visible", () => driver.displayed("link-context"), Boolean, 15_000);
+  await until("plain public link context visible", () => driver.displayed("link-context"), Boolean);
   observations.window = await driver.call("POST", driver.path("execute/sync"), {
     script: "return {title:document.title, linkContext:document.getElementById('link-context')?.textContent ?? null, linkContextVisible:document.getElementById('link-context')?.checkVisibility() ?? false};", args: [],
   });
