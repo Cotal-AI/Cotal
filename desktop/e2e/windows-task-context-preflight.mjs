@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { taskStageScript } from "./windows-task-stage-script.mjs";
-import { contextVariantCount, contextVariants, renderContextTable } from "./windows-task-context-measure.mjs";
+import { contextVariantCountFor, contextVariantsFor, renderContextTable, renderCacheTable } from "./windows-task-context-measure.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
 const xml = value => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -110,11 +110,11 @@ async function main() {
     if (existsSync(taskOutput)) {
       try { rows = JSON.parse(readFileSync(taskOutput, "utf8")); } catch { /* A partial incremental write is not completion. */ }
       if (Array.isArray(rows)) writeFileSync(join(output, "scheduled-task.json"), JSON.stringify(rows, null, 2));
-      if (Array.isArray(rows) && rows.length === contextVariantCount) break;
+      if (Array.isArray(rows) && rows.length === contextVariantCountFor("scheduled-task")) break;
     }
     await delay(500);
   }
-  assert.ok(Array.isArray(rows) && rows.length === contextVariantCount, "scheduled task measurements did not complete; cleanup remains receipt-guarded");
+  assert.ok(Array.isArray(rows) && rows.length === contextVariantCountFor("scheduled-task"), "scheduled task measurements did not complete; cleanup remains receipt-guarded");
   validateOwner(owner);
   let idle = false;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -123,7 +123,7 @@ async function main() {
   }
   assert.ok(idle, "scheduled diagnostic process exit must be confirmed before comparison");
   try {
-    native(process.execPath, ["--max-semi-space-size=1", modulePath, "run", configPath, "harness", harnessOutput], process.env, 25 * 60_000);
+    native(process.execPath, ["--max-semi-space-size=1", modulePath, "run", configPath, "harness", harnessOutput], process.env, 40 * 60_000);
   } finally {
     if (existsSync(harnessOutput)) {
       let partial;
@@ -132,11 +132,14 @@ async function main() {
     }
   }
   const harnessRows = JSON.parse(readFileSync(harnessOutput, "utf8"));
-  assert.equal(harnessRows.length, contextVariantCount);
+  assert.equal(harnessRows.length, contextVariantCountFor("harness"));
   const table = renderContextTable([...rows, ...harnessRows]);
   writeFileSync(join(output, "comparison.md"), table, { flag: "wx" });
   console.log(table);
-  writeFileSync(join(output, "scope.json"), JSON.stringify({ principal: "same current SID / InteractiveToken / LeastPrivilege as shipped task", order: "scheduled-task seven variants, then harness seven variants; warmed, not cold-controlled", variants: contextVariants, strippedEnvironment: "shipped desktop daemon_env_key allowlist plus DO_NOT_TRACK=1; each group variant separately restores only its named group from the current context; not a claim to reproduce PATH refresh, native launcher or all daemon initialization", interpretation: "group comparison does not identify an individual variable; no product timeout or environment changes", bounds: "180s per native read, 25min per context, PT26M task limit", ownership: "own receipt and exact source/action/principal before Run; stock guarded uninstall afterward", output: "environment names and only USERPROFILE/LOCALAPPDATA/TEMP/PSModulePath values" }, null, 2));
+  const cacheTable = renderCacheTable(harnessRows);
+  writeFileSync(join(output, "cache-comparison.md"), cacheTable, { flag: "wx" });
+  console.log(cacheTable);
+  writeFileSync(join(output, "scope.json"), JSON.stringify({ principal: "same current SID / InteractiveToken / LeastPrivilege as shipped task", order: "scheduled-task seven unchanged variants, then harness twelve variants; warmed, not cold-controlled", variants: { scheduledTask: contextVariantsFor("scheduled-task"), harness: contextVariantsFor("harness") }, strippedEnvironment: "shipped desktop daemon_env_key allowlist plus DO_NOT_TRACK=1; each group variant separately restores only its named group from the current context; not a claim to reproduce PATH refresh, native launcher or all daemon initialization", interpretation: "individual PowerShell variable and Utility import comparisons are diagnostic candidates only; com-create labels the first New-Object statement, not isolated COM activation; repeat cache observations do not clear or inspect cache contents; owner-machine report remains unexplained; no product changes", bounds: "180s per native read, 25min task context, 40min harness context, PT26M task limit", ownership: "own receipt and exact source/action/principal before Run; stock guarded uninstall afterward", output: "environment names and only USERPROFILE/LOCALAPPDATA/TEMP/PSModulePath values" }, null, 2));
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

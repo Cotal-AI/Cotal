@@ -34,9 +34,11 @@ test("receipt guard and cleanup precede the unchanged native scenario", () => {
   assert.ok(!preflight.includes('["/Delete"') && !preflight.includes('["/End"'));
   assert.ok(preflight.includes('"daemon", "uninstall", "--daemon-home", owner.daemonHome, "--yes", "--json"'));
   assert.ok(!preflight.includes("env: owner.env"));
-  assert.ok(preflight.includes("rows.length === contextVariantCount"));
-  assert.ok(preflight.includes("assert.equal(harnessRows.length, contextVariantCount)"));
+  assert.ok(preflight.includes('rows.length === contextVariantCountFor("scheduled-task")'));
+  assert.ok(preflight.includes('assert.equal(harnessRows.length, contextVariantCountFor("harness"))'));
   assert.ok(preflight.includes("25 * 60_000"));
-  assert.ok(workflow.includes("timeout-minutes: 65"));
-  assert.ok(workflow.includes("timeout-minutes: 120"));
+  assert.ok(preflight.includes("40 * 60_000"));
+  assert.ok(preflight.includes('"cache-comparison.md"'));
+  assert.ok(workflow.includes("timeout-minutes: 80"));
+  assert.ok(workflow.includes("timeout-minutes: 150"));
 });
