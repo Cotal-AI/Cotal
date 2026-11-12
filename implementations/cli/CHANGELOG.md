@@ -1,5 +1,23 @@
 # @cotal-ai/cli
 
+## 0.163.2
+
+### Patch Changes
+
+- 4e65a2a: Fresh CLI guidance points to Cotal Cloud sign-in when no space is known.
+  Correct sign-in help and empty-space guidance, avoid connector installation during login, and point status at the shipped default launch without warnings about nonexistent folder personas. Keep multiline seed refusals readable while preserving permission checks and local broker alternatives.
+- 5d54679: Legacy Manager update reports now name the Manager, space, and seat count without guessing lifecycle commands.
+  
+  The cold update guidance names `cotal update --self` and asks operators to recover the original host's stop and start commands before stopping a Manager.
+- 0c372d5: `cotal update` on Linux no longer needs `ps` on PATH. Since 0.163.1 the update listed local Managers with `ps` and refused with "the process table could not be listed" where it was missing, as in slim container images or a narrow service PATH. It now reads `/proc` directly.
+- 5d54679: Updates refuse unreadable seed journals and invalid installed daemon receipts before replacing packages or reconciling connectors.
+- Updated dependencies [4e65a2a]
+- Updated dependencies [5712551]
+- Updated dependencies [7c965d7]
+- Updated dependencies [7c11c40]
+  - @cotal-ai/workspace@0.163.2
+  - @cotal-ai/core@0.163.2
+
 ## 0.163.1
 
 ### Patch Changes

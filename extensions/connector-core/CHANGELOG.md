@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.163.2
+
+### Patch Changes
+
+- 5712551: Block the event plane when a fresh state root reuses a principal with retained transcript frames and no local acknowledged frontier. The launch refuses only on a space that requires events; elsewhere the seat starts and the connection status keeps the reason. OpenCode waits for the mesh join before announcing its managed session. Existing append expectations and broker permissions are preserved.
+
 ## 0.163.1
 
 No changes in this release.

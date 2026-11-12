@@ -1,5 +1,12 @@
 # @cotal-ai/core
 
+## 0.163.2
+
+### Patch Changes
+
+- 5712551: Block the event plane when a fresh state root reuses a principal with retained transcript frames and no local acknowledged frontier. The launch refuses only on a space that requires events; elsewhere the seat starts and the connection status keeps the reason. OpenCode waits for the mesh join before announcing its managed session. Existing append expectations and broker permissions are preserved.
+- 7c965d7: Hosts can hibernate inactive data and auth-callout accounts on a full-resolver broker, then wake them without changing account identity or authority. The stock claim helpers preserve signing keys and per-user revocations, distinguish hibernation from retirement, and reject invalid transition templates.
+
 ## 0.163.1
 
 No changes in this release.
