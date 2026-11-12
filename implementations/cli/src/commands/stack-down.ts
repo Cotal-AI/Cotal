@@ -302,6 +302,25 @@ function planView(journal: StackJournal, members: readonly Member[], withAgents:
   ] }] };
 }
 
+/** The retired instance id is gone because a later up replaced it. Missing-record recovery
+ *  refuses every journaled replacement, so it must not run when the replacement's own record
+ *  matches this operation. The normal stop adopts that record. A record that does not match,
+ *  or another missing member, stays on the recovery route. */
+function recordedReplacementSupersedesLostRecords(snapshot: StackJournalSnapshot): boolean {
+  const pending = snapshot.journal.members.filter((row) => row.replacement !== undefined && row.instanceId !== null);
+  if (pending.length === 0) return false;
+  let adopted: StackJournal;
+  try { adopted = withSettledMembers(snapshot.journal, undefined); }
+  catch (error) { if (isCommandFailure(error)) return false; throw error; }
+  const store = serviceInstanceStore(snapshot.journal.space);
+  for (const row of pending) {
+    const next = adopted.members.find((member) => member.role === row.role);
+    if (!next || next.instanceId === null || next.instanceId === row.instanceId) return false;
+    if (store.read(next.instanceId) === undefined) return false;
+  }
+  return !stackRecordsLost({ ...snapshot, journal: adopted });
+}
+
 export async function stackDown(rootInput: string, values: ParsedArgs["values"]): Promise<void> {
   // It refuses --preserve-state on a controller root, so only a bare stop continues.
   validateStackDownArguments(rootInput, values);
@@ -309,7 +328,7 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
   const withAgents = values["with-agents"] === true;
   const root = canonicalRoot(rootInput);
   const recorded = readStackJournal(root);
-  if (recorded && stackRecordsLost(recorded)) return lostRecordsStackDown(root, values);
+  if (recorded && stackRecordsLost(recorded) && !recordedReplacementSupersedesLostRecords(recorded)) return lostRecordsStackDown(root, values);
   // The preview reads without the lock and writes nothing. The real stop holds the root's
   // maintenance lock from its first read to its last write, so no other whole-stack operation runs.
   if (values["dry-run"] === true) return await previewStackStop(root, values, presentation, withAgents);
