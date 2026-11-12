@@ -670,7 +670,8 @@ and its `cotal endpoint deregister manager <instance-id> --space <space> --yes` 
 The daemon saves the original participant authority and Manager identity before registration,
 without copying credentials. Removing the local space does not remove these cleanup coordinates.
 Status reports registration cleanup as `pending` after local stop, or `unknown` when removal may
-have run. Pending cleanup resumes after restart using the original authority, without restoring
+have run. Missing sign-in or authority failures before the removal request leave cleanup pending.
+Pending cleanup resumes after restart using the original authority, without restoring
 the space or starting a Manager. Service uninstall preserves these records.
 An unconfirmed removal stays visible across restarts and is not automatically repeated. Inspect
 that registration before another request. Cleanup never starts a Manager for the removed space.

@@ -110,10 +110,18 @@ export const cotalAuthProvider: AuthProvider = {
   name: AUTH_PROVIDER_NAME,
   async deregisterEndpoint({ store, dir, request }) {
     const parsed = parseRemoteEndpointDeregisterRequest(request);
-    const route = await managerAuthorityEndpoint(store, dir, request.space, "removing a stale manager registration");
+    let route: Awaited<ReturnType<typeof managerAuthorityEndpoint>>;
+    let idpJwt: string;
+    try {
+      route = await managerAuthorityEndpoint(store, dir, request.space, "removing a stale manager registration");
+      const session = requireIdpSession(idpSessionDir(), route.idpUrl);
+      idpJwt = await fetchIdpJwt(route.idpUrl, session.token);
+    } catch {
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "endpoint deregistration was not sent; restore the original authority and sign-in before retrying");
+    }
     const endpoint = route.endpoint.replace(/\/manager-service-authority$/, "/endpoint-deregister");
     try {
-      return parseRemoteEndpointDeregisterResult(await postManagerAuthority(endpoint, route.idpUrl, route.authorization, parsed, "endpoint deregistration"), parsed);
+      return parseRemoteEndpointDeregisterResult(await postManagerAuthority(endpoint, route.idpUrl, route.authorization, parsed, "endpoint deregistration", idpJwt), parsed);
     } catch (error) {
       if (error instanceof ManagerAuthorityRefusal && [400, 401, 403, 404, 405, 415, 429].includes(error.status))
         throw new CommandFailure("refused", error.status === 404 ? "UNSUPPORTED" : "PERMISSION_DENIED", "the governing auth service refused endpoint deregistration", {
@@ -844,9 +852,9 @@ async function postManagerAuthority(
   authorization: string | undefined,
   request: unknown,
   what: string,
+  preparedIdpJwt?: string,
 ): Promise<unknown> {
-  const session = requireIdpSession(idpSessionDir(), idpUrl);
-  const idpJwt = await fetchIdpJwt(idpUrl, session.token);
+  const idpJwt = preparedIdpJwt ?? await fetchIdpJwt(idpUrl, requireIdpSession(idpSessionDir(), idpUrl).token);
   const response = await fetch(endpoint, {
     method: "POST",
     redirect: "manual",

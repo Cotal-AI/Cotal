@@ -2060,6 +2060,24 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                 check("I10 repaired intent can be removed", repaired.code === 0 && !existsSync(intent), repaired);
                 return;
               }
+              if (process.argv.includes("--cleanup-preflight-repro")) {
+                const before = deregisterRequests;
+                const sessionFile = join(home, "idp-sessions.json");
+                const heldSessionFile = `${sessionFile}.preflight-held`;
+                renameSync(sessionFile, heldSessionFile);
+                let withdrawal;
+                try { withdrawal = await ask(paths.socket, { op: "managers-stop" }, 100_000); }
+                finally { renameSync(heldSessionFile, sessionFile); }
+                const view = resultOf(await ask(paths.socket, { op: "service-status", space: ON }));
+                console.log("  cleanup preflight", JSON.stringify({ before, after: deregisterRequests, withdrawal, manager: view.manager }));
+                assert.equal(deregisterRequests, before, "rejected login sends no deregistration POST");
+                assert.equal(view.manager?.registrationCleanup, "pending", "pre-send login rejection remains retryable");
+                await killAndAwaitExit(child, "SIGTERM");
+                child = await startDaemon();
+                for (let i = 0; i < 40 && deregisterRequests === before; i++) await sleep(100);
+                assert.equal(deregisterRequests, before + 1, "restored login permits one cleanup retry");
+                return;
+              }
               deregisterMode = mode;
               const disconnected = await cli("service-disconnect", "--space", ON);
               const status = resultOf(await ask(paths.socket, { op: "service-status", space: ON }));
