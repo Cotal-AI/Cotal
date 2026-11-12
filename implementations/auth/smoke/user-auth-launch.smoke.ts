@@ -90,7 +90,7 @@ childEnv.COTAL_ID = "cli_send";
 const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
 const { jetstreamManager } = await import("@nats-io/jetstream");
 const { channelBucket, chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity, presenceBucket } = await import("@cotal-ai/core");
-const { authDir, loadSoleSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, loadLaunchPersonaFile, loadSoleSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo, loadIdpSession } = await import("../src/index.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
@@ -291,15 +291,38 @@ try {
   const wrongUidBody = await retireWrongUid.json().catch(() => undefined) as { outcome?: unknown } | undefined;
   check("interactive lifecycle retirement refuses a UID other than the current actor row",
     retireWrongUid.status === 409 && wrongUidBody?.outcome === "not-executed", wrongUidBody);
-  // The --full grant is the whole envelope: all channels + spawn + the stock role (the golden path —
-  // login, grant --full, spawn just works; narrowing is the operator's explicit act).
-  check("--full grant takes the full envelope, scope spawn and role:default",
-    field(grant.out, "May read", ">") && field(grant.out, "May post", ">") && field(grant.out, "Capabilities", "spawn, role:default"), grant.out);
+  // The --full grant covers the persona that up actually wrote; an explicit scope still narrows it.
+  check("--full grant takes the full envelope, scope spawn, run and role:default",
+    field(grant.out, "May read", ">") && field(grant.out, "May post", ">") && field(grant.out, "Capabilities", "spawn, run, role:default"), grant.out);
+  const shippedDefault = loadLaunchPersonaFile(join(root, ".cotal", "agents", "default.md"));
+  const defaultIdentity = newIdentity();
+  const defaultLifecycle = mintLifecycleUid();
+  let defaultGranted = false;
+  try {
+    await cotalAuthProvider.grantAgent({
+      store: workspaceSecretStore(root), dir: stateDir, space: SPACE,
+      owner: cliRow!.owner, actor: defaultIdentity.id, lifecycleUid: defaultLifecycle,
+      scope: shippedDefault.capabilities ?? [], role: shippedDefault.role,
+      allowSubscribe: shippedDefault.allowSubscribe ?? [], allowPublish: shippedDefault.allowPublish ?? [],
+      parent: `${cliRow!.owner}.cli`, custody: { kind: "foreground" }, fresh: true,
+    });
+    defaultGranted = true;
+    check("full grant delegates the actual shipped default persona",
+      loadActorLedger(stateDir).some(row => row.actor === defaultIdentity.id && row.scope.includes("run")));
+  } catch (error) {
+    check("full grant delegates the actual shipped default persona", false, String(error));
+  } finally {
+    if (defaultGranted) await cotalAuthProvider.revokeAgent({ dir: stateDir, owner: cliRow!.owner, actor: defaultIdentity.id, lifecycleUid: defaultLifecycle });
+  }
+  const explicitScope = await cotal(["actor", "grant", "explicit-scope-probe", "--sub", sub, "--full", "--scope", "spawn"]);
+  check("explicit scope overrides the full default without gaining run", explicitScope.status === 0 &&
+    loadActorLedger(stateDir).some(row => row.actor === "explicit-scope-probe" && row.scope.join(",") === "spawn"), explicitScope.out);
+  await cotal(["actor", "revoke", "explicit-scope-probe", "--sub", sub]);
 
   // The ENVELOPE rule on the foreground CLI spawn path: NARROW the cli grant explicitly, then an
   // over-ask beyond it is refused at the grant write — before any broker footprint — and the
-  // refusal names the exact widening re-grant for the operator. (`up` seeds no persona, so the
-  // pin brings its own role-less probe — the refusal must be purely the read over-ask.)
+  // refusal names the exact widening re-grant for the operator. Use a role-less probe here so
+  // this refusal isolates the read over-ask rather than the shipped persona's capabilities.
   const narrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
   check("explicit narrow re-grant (upsert) succeeds", narrow.status === 0 && field(narrow.out, "May read", "general"), narrow.out);
   // The MECHANISM, executed rather than described: the upsert replaces the WHOLE row, so a re-grant
