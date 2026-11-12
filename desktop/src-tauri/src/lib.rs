@@ -16,6 +16,17 @@ pub const NODE_SIDECAR: &str = if cfg!(windows) { "node" } else { "cotal-node" }
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "op", deny_unknown_fields)]
 pub enum DesktopRequest {
+    #[serde(rename = "update-check")]
+    UpdateCheck {},
+    #[serde(rename = "update-release")]
+    UpdateRelease { version: String },
+    #[serde(rename = "update-settings")]
+    UpdateSettings {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        auto: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        notify: Option<bool>,
+    },
     #[serde(rename = "about")]
     About {},
     #[serde(rename = "status")]
@@ -53,6 +64,12 @@ pub enum DesktopRequest {
 impl DesktopRequest {
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::UpdateRelease { version } => {
+                let parts: Vec<_> = version.split('.').collect();
+                if parts.len() != 3 || parts.iter().any(|part| part.is_empty() || !part.bytes().all(|c| c.is_ascii_digit())) || version.len() > 64 {
+                    return Err("Invalid release version.".into());
+                }
+            }
             Self::Login { idp } | Self::Setup { idp, .. } => {
                 let u = browser_url(idp)?;
                 if u.query().is_some() || u.fragment().is_some() {
@@ -191,6 +208,11 @@ mod tests {
         }
         .validate()
         .is_err());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"update-settings","auto":false,"notify":true}"#).is_ok());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"update-settings","notify":"on"}"#).is_err());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"update-check","force":true}"#).is_err());
+        assert!(DesktopRequest::UpdateRelease { version: "0.160.5".into() }.validate().is_ok());
+        assert!(DesktopRequest::UpdateRelease { version: "../latest".into() }.validate().is_err());
         // Names are stdin JSON values, never concatenated into argv or interpreted by a shell.
     }
     #[test]

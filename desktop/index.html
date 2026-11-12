@@ -5,7 +5,7 @@
   <div class="app loading">
     <aside class="sidebar">
       <div class="brand"><img class="brand-mark" src="/src/brand.svg" alt=""><strong>cotal</strong></div>
-      <div class="sidebar-footer"><div class="machine"><p id="machine-name" title="This computer">This computer</p><button id="edit-computer-name" type="button" aria-label="Edit computer name" hidden>Edit</button><form id="computer-name-form" hidden><label class="sr-only" for="computer-name-input">Computer name</label><input id="computer-name-input" autocomplete="off" aria-describedby="computer-name-error"><button type="submit">Save</button><button id="cancel-computer-name" type="button">Cancel</button><span id="computer-name-error" role="alert"></span></form><p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span></div><span class="status-pill"><span id="tray-indicator" class="dot"></span><span id="tray-label">Checking connection</span></span></div>
+      <div class="sidebar-footer"><div class="machine"><p id="machine-name" title="This computer">This computer</p><button id="edit-computer-name" type="button" aria-label="Edit computer name" hidden>Edit</button><form id="computer-name-form" hidden><label class="sr-only" for="computer-name-input">Computer name</label><input id="computer-name-input" autocomplete="off" aria-describedby="computer-name-error"><button type="submit">Save</button><button id="cancel-computer-name" type="button">Cancel</button><span id="computer-name-error" role="alert"></span></form><p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span></div><span class="status-pill"><span id="tray-indicator" class="dot"></span><span id="tray-label">Checking connection</span></span><button id="open-settings" class="header-control" type="button" hidden>Settings</button></div>
     </aside>
     <main>
       <ol id="journey" aria-label="Connection steps">
@@ -14,6 +14,18 @@
         <li data-stage="connect"><span class="step-marker">3</span><span>Connect</span></li>
         <li data-stage="finished"><span class="step-marker">4</span><span>Ready</span></li>
       </ol>
+      <section id="update-banner" class="update-banner" aria-label="Desktop update" hidden><span id="update-banner-copy"></span><button id="update-download" class="text-button" type="button">Open release page</button><button id="update-later" class="text-button" type="button">Later</button></section>
+      <section id="settings-panel" class="settings-card" aria-labelledby="settings-title" hidden>
+        <div class="settings-heading"><h1 id="settings-title" tabindex="-1">Settings</h1><button id="settings-back" class="text-button" type="button" hidden>Back</button></div>
+        <section class="settings-row"><div><h2>This computer</h2><p id="settings-computer"></p><p class="muted">The dashboard uses this name.</p></div><button id="settings-name" class="text-button" type="button">Edit name</button></section>
+        <section class="settings-row"><div><h2>Updates</h2><p id="settings-update-summary">Update information is unavailable.</p><p id="settings-last-check" class="muted">Not checked yet</p></div><button id="check-updates" class="text-button" type="button">Check now</button></section>
+        <div id="settings-download-row" class="settings-row" hidden><p id="settings-download-copy"></p><button id="settings-download" class="text-button" type="button">Open release page</button></div>
+        <section id="update-preference-row" class="settings-row"><div><p id="update-preference-label">Notify me about updates</p><p id="update-policy" class="muted"></p></div><label class="switch"><input id="update-preference" type="checkbox" aria-labelledby="update-preference-label"><span></span></label></section>
+        <div id="settings-startup"><h2>Startup</h2></div>
+        <section class="settings-row"><div><h2>Account</h2><p id="settings-account">No account information available</p><p id="settings-spaces" class="muted"></p></div></section>
+        <section class="settings-row"><div><h2>About</h2><p id="settings-versions"></p></div><button id="release-notes" class="text-button" type="button">Release notes</button></section>
+        <p id="settings-message" class="muted" role="status"></p>
+      </section>
       <section class="connection-card" aria-labelledby="connection-title">
         <h1 id="loading-title" data-testid="loading-title"><span id="loading-icon" aria-hidden="true"></span>Checking this computer…</h1>
         <span id="connection-icon" class="connection-icon" aria-hidden="true"></span>

@@ -1,4 +1,35 @@
 /* Desktop composition of the site's card, pill, button and terminal components. */
+.settings-card { background: var(--card); border: var(--bw) solid var(--ink); border-radius: var(--r-lg); padding: var(--s-2) var(--s-3); box-shadow: var(--e2); }
+.settings-heading, .settings-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
+.settings-heading h1 { margin: 0; }
+.settings-row { border-top: 2px solid var(--rule); padding: var(--s-1) 0; }
+.settings-heading { margin-bottom: var(--s-1); }
+#settings-download-row { border-top: 0; padding-top: 0; }
+#settings-download { padding-left: 0; }
+#settings-download-copy { display: none; }
+.settings-row { padding-block: 6px; }
+.settings-row > div, .settings-row > p { min-width: 0; }
+.settings-row p { margin: 0; font-size: var(--t-label); overflow-wrap: anywhere; }
+.settings-row h2 { font-size: var(--t-small); }
+.settings-row button { flex-shrink: 0; max-width: 44%; }
+.settings-card .preferences { margin-top: 0; padding-top: var(--s-1); padding-bottom: var(--s-1); }
+.settings-card #settings-message:empty { display: none; }
+.settings-card #settings-message { margin: var(--s-1) 0 0; }
+.update-banner { display: flex; align-items: center; gap: var(--s-1); background: var(--t-gold); color: var(--gold-ink); border: 2px solid var(--ink); border-radius: var(--r-md); padding: var(--s-1) var(--s-2); margin-bottom: var(--s-2); font-size: var(--t-label); }
+.connection-card:has(#update-banner:not([hidden])) #connection-icon { display: none; }
+.update-banner > span { flex: 1; }
+.update-banner button { flex-shrink: 0; }
+.app.settings-open #journey { display: none; }
+.app.settings-open main { padding-top: var(--s-2); justify-content: flex-start; }
+.header-control { border: 2px solid var(--ink); border-radius: 999px; padding: 4px 8px; min-height: 32px; background: var(--card); color: var(--ink); font: 600 11px/1.4 var(--mono); }
+#settings-startup { border-top: 2px solid var(--rule); padding-top: var(--s-1); }
+#settings-startup > h2 { font-size: var(--t-small); }
+#settings-startup .preferences { border-top: 0; }
+#update-preference-row { border-top: 0; padding-top: 0; }
+#update-preference-label { font-weight: 600; }
+@media (max-width: 640px) { .sidebar-footer { gap: 4px; } .sidebar-footer .machine { max-width: 160px; } }
+@media (max-width: 640px) { .settings-card { padding: var(--s-2); } }
+
 /* Flat account-space rows share the existing chip and secondary-button styles. */
 #space-panel select { margin-bottom: 16px; }
 #space-panel .actions { margin-top: 0; }

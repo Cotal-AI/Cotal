@@ -216,7 +216,10 @@ test("later open shows connection and secondary controls, never sign-in or space
   const a = await app({ installed: true, connected: true, count: 2 });
   try {
     assert.equal(a.node("connection-title").textContent, "This computer is connected");
-    assert.equal(a.node("connected-panel").hidden, false); assert.equal(a.node("preferences").hidden, false);
+    assert.equal(a.node("connected-panel").hidden, false); assert.equal(a.node("preferences").hidden, true);
+    await a.click("open-settings");
+    assert.equal(a.node("settings-panel").hidden, false); assert.equal(a.node("preferences").hidden, false);
+    await a.click("open-settings"); assert.equal(a.node("preferences").hidden, true);
     assert.equal(a.node("sign-in-panel").hidden, true); assert.equal(a.node("space-panel").hidden, true);
     assert.ok(a.doc.querySelector(".app.later-open"));
     await a.click("another-space"); assert.equal(a.node("space-panel").hidden, false);

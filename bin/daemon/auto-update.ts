@@ -16,7 +16,7 @@ interface UpdateHost {
 }
 
 /** Schedule only the existing updater. Manager preparation holds its native empty-seat admission fence. */
-export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStatus; updating(): boolean; close(): Promise<void> } {
+export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStatus; check(): Promise<DaemonUpdateStatus>; updating(): boolean; close(): Promise<void> } {
   const desktop = existsSync(fileURLToPath(new URL("../../desktop-runtime.json", import.meta.url)));
   const file = join(homeCotalDir(), "update-attempt.json");
   let state: Attempt = { failures: 0, result: "not checked", next: Date.now() + Math.random() * UPDATE_HOUR_MS };
@@ -38,15 +38,17 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       } catch { /* The last validated state remains visible if a read fails. */ }
     }
     const cached = readUpdateCheck();
-    let automatic = false, reason = state.result;
+    let automatic = false, notify = false, reason = state.result;
     try {
-      automatic = process.platform === "linux" && !desktop && readUpdateSettings().auto && process.env.COTAL_NO_UPDATE_CHECK !== "1" && host.eligible();
+      const settings = readUpdateSettings();
+      notify = settings.notify;
+      automatic = process.platform === "linux" && !desktop && settings.auto && process.env.COTAL_NO_UPDATE_CHECK !== "1" && host.eligible();
       const recovery = readUpdateRecovery();
       if (recovery) { automatic = false; reason = `automatic updates paused: installed ${recovery.installed}; ${recovery.reason}; run \`cotal update --self\``; }
     } catch (error) { automatic = false; reason = `automatic updates paused: ${String(error)}`; }
     if (process.platform !== "linux") reason = `${reason}. Automatic installation is available on Linux in this release. Run \`cotal update --self\` here`;
     if (desktop) reason = "update the desktop app with its signed platform installer";
-    return { channel: desktop ? "desktop" : "npm", current: host.version, latest: cached?.latest, lastCheck: cached?.checkedAt ? new Date(cached.checkedAt).toISOString() : undefined, automatic, failures: state.failures, lastResult: reason, ...(state.next < Number.MAX_SAFE_INTEGER ? { nextAttempt: new Date(state.next).toISOString() } : {}) };
+    return { channel: desktop ? "desktop" : "npm", current: host.version, latest: cached?.latest, lastCheck: cached?.checkedAt ? new Date(cached.checkedAt).toISOString() : undefined, automatic, notify, failures: state.failures, lastResult: reason, ...(state.next < Number.MAX_SAFE_INTEGER ? { nextAttempt: new Date(state.next).toISOString() } : {}) };
   };
   const tick = async (): Promise<void> => {
     if (closed) return;
@@ -92,7 +94,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     busy = tick().catch(error => { host.report(`automatic update: ${String(error)}`); }).finally(() => { busy = undefined; });
   }, 30_000);
   timer.unref();
-  return { status, updating: () => child !== undefined, async close() {
+  return { status, async check() { await checkForUpdate(); return status(); }, updating: () => child !== undefined, async close() {
     closed = true; clearInterval(timer);
     if (child) {
       child.stdout?.destroy(); child.stderr?.destroy(); child.unref();
