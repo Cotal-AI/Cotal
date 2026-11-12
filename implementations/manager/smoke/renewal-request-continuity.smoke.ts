@@ -202,6 +202,22 @@ try {
       if (nc) observeConnection(nc, duty);
   };
   instrument();
+  // Fixture-only observation of the installed client's actual dispatch boundary.
+  // Preserve the original callback, receiver and message without delaying or retrying it.
+  const observedServe = m.serviceServe!.nc as unknown as { protocol: { subscriptions: { all(): { subject: string; callback(error: Error | null, message: { data: Uint8Array; subject: string }): void }[] } } };
+  for (const subscription of observedServe.protocol.subscriptions.all()) {
+    if (!subscription.subject.includes(".ep.")) continue;
+    const callback = subscription.callback;
+    subscription.callback = function (error, message) {
+      if (!error) {
+        try {
+          const body = JSON.parse(new TextDecoder().decode(message.data));
+          if (byId.has(String(body.id))) record("request-dispatch", { id: body.id, subject: message.subject });
+        } catch { /* Only fixture request envelope ids are observed. */ }
+      }
+      return callback.call(this, error, message);
+    };
+  }
   // start() installs subscriptions synchronously, but their SUB frames may still be buffered.
   // Establish broker-side interest before the first measured caller on another connection.
   assert.ok(m.serviceServe, "SETUP: Manager must install the real service");
