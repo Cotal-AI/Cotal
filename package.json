@@ -954,6 +954,7 @@
     "smoke:runtime-contract": "tsx packages/core/smoke/runtime-contract.smoke.ts",
     "smoke:update-seed-preflight": "tsx implementations/cli/smoke/update-seed-preflight.smoke.ts",
     "smoke:update-current": "tsx implementations/cli/smoke/update-current.smoke.ts",
+    "smoke:deleted-manager-entry": "tsx bin/smoke/deleted-manager-entry.smoke.ts",
     "smoke:update-local-managers": "tsx implementations/cli/smoke/update-local-managers.smoke.ts",
     "smoke:update-remote-custody": "tsx implementations/cli/smoke/update-remote-custody.smoke.ts",
     "smoke:update-refusal": "tsx implementations/cli/smoke/update-refusal.smoke.ts",
