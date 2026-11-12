@@ -539,7 +539,14 @@ const SEAMS: Seam[] = [
   // 402/316 -> 414/326: connection-cleanup adds four smoke calls, daemon-service-connect
   // three, and remote-registration-close/expiry/maintenance one each. endpoint-deregister
   // adds two authority calls. All twelve explicitly state `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 414, untypecheckedSites: 326 },
+  // 414/326 -> 432/344: credential renewal and request continuity (#6455, 55a5cc880) add twelve
+  // smoke calls across authority-issued-serve (1), renewal-duty-requests (5),
+  // renewal-mint-contention (1), renewal-request-continuity (4) and request-safe-reconnect (1);
+  // renewal retirement bound (6acb10958) adds three in renewal-retirement-bound; late caller grant
+  // recovery (21f573f44) adds two in endpoint-publish-denial; and named read owner resolution
+  // (#6474, 03b2e195c) adds one in named-read-owner. All eighteen dial their suite's plaintext
+  // loopback broker and state `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 432, untypecheckedSites: 344 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
