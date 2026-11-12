@@ -75,6 +75,7 @@
  * Add --renewal-only for the two-access-lifetime service renewal observation.
  * Add --renewal-resume-only for shipped restarts with an expired or removed human sign-in.
  * Service-only setup: --hosting-only --no-manager-only, optionally --account-only.
+ * Add --hosting-only --updater-ownership-repro for two living updater clients' restart admission ownership.
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Credential expiry regression only: add --credential-expiry-only (C1, C2, C7, C10, C15 and C18).
  */
@@ -3149,6 +3150,103 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           let after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 5000));
           for (let i = 0; i < 80 && after.state !== "answering"; i++) { await sleep(250); after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 5000)); }
           check("3A authority outage never restarts a healthy IPC-responsive hosted Manager", after.state === "answering" && after.pid === manager.pid && after.restarts === manager.restarts, after);
+          return;
+        }
+        if (process.argv.includes("--updater-ownership-repro")) {
+          // Each updater is an independent, living Node process using the real daemon socket.
+          const updaterSource = `
+            const { connect } = require('node:net');
+            process.on('message', ({ socket, request }) => {
+              const client = connect(socket);
+              let buffer = '';
+              const timer = setTimeout(() => { client.destroy(); process.send({ failure: 'socket reply timeout' }); }, 30000);
+              client.setEncoding('utf8');
+              client.once('connect', () => client.write(JSON.stringify({ v: 1, id: 'updater-' + process.pid, ...request }) + '\\n'));
+              client.on('data', chunk => {
+                buffer += chunk;
+                const end = buffer.indexOf('\\n');
+                if (end < 0) return;
+                clearTimeout(timer);
+                client.destroy();
+                process.send({ reply: JSON.parse(buffer.slice(0, end)), pid: process.pid });
+              });
+              client.once('error', error => { clearTimeout(timer); process.send({ failure: error.message }); });
+            });
+          `;
+          const updaters: ChildProcess[] = [];
+          const request = (child: ChildProcess, op: string) => new Promise<Frame>((resolve, reject) => {
+            const timeout = setTimeout(() => finish(new Error(`updater ${child.pid} timed out`)), 35_000);
+            const onExit = () => finish(new Error(`updater ${child.pid} exited before reply`));
+            const onMessage = (message: any) => finish(message.failure ? new Error(message.failure) : undefined, message.reply);
+            const finish = (error?: Error, reply?: Frame) => {
+              clearTimeout(timeout);
+              child.off("exit", onExit);
+              child.off("message", onMessage);
+              if (error) reject(error); else resolve(reply!);
+            };
+            child.once("exit", onExit);
+            child.once("message", onMessage);
+            child.send({ socket: paths.socket, request: { op } });
+          });
+          try {
+            for (let i = 0; i < 2; i++) updaters.push(spawn(process.execPath, ["-e", updaterSource], { cwd: root, env: { ...process.env }, stdio: ["ignore", "inherit", "inherit", "ipc"] }));
+            const [a, b] = updaters;
+            check("Ownership independent updater processes", a.pid !== b.pid && !!a.pid && !!b.pid, { a: a.pid, b: b.pid });
+            const preparedA = await request(a, "managers-prepare-restart");
+            check("Ownership A prepares real hosted Manager", preparedA.ok === true, preparedA);
+            assert.equal(preparedA.ok, true);
+            const initial = await ask(paths.socket, { op: "manager-start", space: ON });
+            check("Ownership A fence refuses admission with GENERATION_PENDING", initial.ok === false && errorOf(initial).code === "GENERATION_PENDING", initial);
+            assert.equal(errorOf(initial).code, "GENERATION_PENDING");
+            const unownedAbortB = await request(b, "managers-abort-restart");
+            check("Ownership B abort before prepare succeeds without ownership", unownedAbortB.ok === true, unownedAbortB);
+            assert.equal(unownedAbortB.ok, true);
+            const afterUnownedAbort = await ask(paths.socket, { op: "manager-start", space: ON });
+            check("Ownership B abort before prepare preserves A fence", afterUnownedAbort.ok === false && errorOf(afterUnownedAbort).code === "GENERATION_PENDING", afterUnownedAbort);
+            assert.equal(errorOf(afterUnownedAbort).code, "GENERATION_PENDING");
+            const duplicateA = await request(a, "managers-prepare-restart");
+            check("Ownership duplicate A prepare is idempotent", duplicateA.ok === true, duplicateA);
+            assert.equal(duplicateA.ok, true);
+            const preparedB = await request(b, "managers-prepare-restart");
+            check("Ownership B independently prepares", preparedB.ok === true, preparedB);
+            assert.equal(preparedB.ok, true);
+            const abortedB = await request(b, "managers-abort-restart");
+            check("Ownership B aborts its preparation", abortedB.ok === true, abortedB);
+            assert.equal(abortedB.ok, true);
+            const aliveA = a.exitCode === null && a.signalCode === null && !!a.pid && process.kill(a.pid, 0);
+            const afterB = await ask(paths.socket, { op: "manager-start", space: ON });
+            console.log("  Ownership exact admission result", JSON.stringify({ updaterA: a.pid, updaterB: b.pid, aliveA, initial, preparedB, abortedB, afterB }));
+            check("Ownership A remains alive after B abort", aliveA === true);
+            check("Ownership B abort must preserve A GENERATION_PENDING admission fence", aliveA === true && afterB.ok === false && errorOf(afterB).code === "GENERATION_PENDING", afterB);
+            const reacquiredB = await request(b, "managers-prepare-restart");
+            check("Ownership B reacquires preparation", reacquiredB.ok === true, reacquiredB);
+            assert.equal(reacquiredB.ok, true);
+            const abortedA = await request(a, "managers-abort-restart");
+            check("Ownership A aborts its duplicate preparation once", abortedA.ok === true, abortedA);
+            assert.equal(abortedA.ok, true);
+            const afterA = await ask(paths.socket, { op: "manager-start", space: ON });
+            check("Ownership A abort preserves reacquired B fence", afterA.ok === false && errorOf(afterA).code === "GENERATION_PENDING", afterA);
+            assert.equal(errorOf(afterA).code, "GENERATION_PENDING");
+            const releasedB = await request(b, "managers-abort-restart");
+            check("Ownership last owner B aborts", releasedB.ok === true, releasedB);
+            assert.equal(releasedB.ok, true);
+            const released = await ask(paths.socket, { op: "manager-start", space: ON });
+            const resumed = resultOf(released);
+            check("Ownership final B abort permits admission to same Manager", released.ok === true && resumed.state === "answering" && resumed.instanceId === manager.instanceId && resumed.pid === manager.pid, released);
+          } finally {
+            try {
+              const aborts = await Promise.allSettled(updaters.map(child => request(child, "managers-abort-restart")));
+              for (const [index, aborted] of aborts.entries()) {
+                check("Ownership finally explicitly aborts its own preparation", aborted.status === "fulfilled" && aborted.value.ok === true,
+                  { pid: updaters[index]?.pid, ...(aborted.status === "fulfilled" ? { reply: aborted.value } : { failure: String(aborted.reason) }) });
+              }
+            } finally {
+              await Promise.all(updaters.map(async (child) => { await killAndAwaitExit(child, "SIGKILL"); }));
+              console.log("  Ownership updater children reaped", JSON.stringify(updaters.map(child => ({ pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode }))));
+            }
+            const after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 30_000));
+            check("Ownership cleanup retains same answering Manager", after.state === "answering" && after.instanceId === manager.instanceId && after.pid === manager.pid, after);
+          }
           return;
         }
         if (process.argv.includes("--prepare-observation-repro")) {

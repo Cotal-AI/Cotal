@@ -59,7 +59,15 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   let closed = false;
   let generationPending = false;
   let generationPrepared = false;
-  let generationTask: Promise<void> | undefined;
+  let generationTask = Promise.resolve();
+  const generationOwners = new Set<string>();
+  const generationReleases = new Set<string>();
+  let generationAcquisitions = 0;
+  const queueGeneration = (operation: () => Promise<void>): Promise<void> => {
+    const task = generationTask.then(operation);
+    generationTask = task.catch(() => {});
+    return task;
+  };
   const generationAttempts = new Map<ChildProcess, string>();
   const generationCall = (child: ChildProcess, attemptId: string, op: "inspect" | "prepare" | "abort") => new Promise<number | undefined>((resolve, reject) => {
     if (child.exitCode !== null || child.signalCode !== null) { resolve(undefined); return; }
@@ -543,11 +551,12 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         return { space: l.view.space, seats };
       }));
     },
-    prepareGenerationRestart(): Promise<void> {
-      if (generationTask) return generationTask.then(() => { if (!generationPrepared) throw new Error("generation preparation was rolled back; retry the transition"); });
-      if (generationPrepared) return Promise.resolve();
-      const task = (async () => {
+    prepareGenerationRestart(owner: string): Promise<void> {
       generationPending = true;
+      generationAcquisitions++;
+      return queueGeneration(async () => {
+      generationAcquisitions--;
+      if (generationPrepared) { generationOwners.add(owner); return; }
       try {
         await Promise.all([...live.values()].map((l) => l.healthTask));
         // A timed-out prepare can still have landed. Roll back every retained attempt before retrying.
@@ -589,42 +598,40 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         }
         // Keep empty-manager admission fences held through the caller's close.
         generationPrepared = true;
+        generationOwners.add(owner);
+        generationReleases.clear();
       } catch (error) {
         for (const [child, attemptId] of generationAttempts) {
           try { await generationCall(child, attemptId, "abort"); generationAttempts.delete(child); }
           catch { /* Retain the exact attempt for rollback on the next automatic retry. */ }
         }
-        generationPending = generationAttempts.size !== 0;
+        generationPending = generationAttempts.size !== 0 || generationAcquisitions !== 0;
         if (!generationPending) for (const l of live.values()) {
           if (!l.child && !l.starting && !l.timer && l.view.state === "restarting") schedule(l);
           else if (l.child) observe(l);
         }
         throw error;
       }
-      })();
-      const held = task.finally(() => { if (generationTask === held) generationTask = undefined; });
-      generationTask = held;
-      return held;
+      });
     },
-    abortGenerationRestart(): Promise<void> {
-      const previous = generationTask;
-      generationPrepared = false;
-      const task = (async () => {
-        await previous?.catch(() => {});
+    abortGenerationRestart(owner: string): Promise<void> {
+      return queueGeneration(async () => {
+        if (!generationOwners.delete(owner) && !generationReleases.has(owner)) return;
+        if (generationOwners.size !== 0) return;
+        // Keep release authority and exact child attempts if an abort is unconfirmed.
+        generationReleases.add(owner);
         generationPrepared = false;
         for (const [child, attemptId] of generationAttempts) {
           await generationCall(child, attemptId, "abort");
           generationAttempts.delete(child);
         }
-        generationPending = false;
-        for (const l of live.values()) {
+        generationReleases.clear();
+        generationPending = generationAcquisitions !== 0;
+        if (!generationPending) for (const l of live.values()) {
           if (!l.child && !l.starting && !l.timer && l.view.state === "restarting") schedule(l);
           else if (l.child) observe(l);
         }
-      })();
-      const held = task.finally(() => { if (generationTask === held) generationTask = undefined; });
-      generationTask = held;
-      return held;
+      });
     },
     all: () => [...new Set([...spaces(true), ...live.keys()])].map(status),
     async disconnect(space: string, options?: { account?: boolean }) {
