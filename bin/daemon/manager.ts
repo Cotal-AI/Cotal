@@ -4,7 +4,6 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assertLifecycleToken, mkSecretDir, parseRemoteEndpointDeregisterResult, registry, writeSecretFileAtomic, type AuthProvider } from "@cotal-ai/core";
-import { remoteManagerClient } from "@cotal-ai/manager";
 import { daemonArgv } from "@cotal-ai/cli/self-exec";
 import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
 import { loadIdpSession, retainManagerAuthorityRoute, withIdpSessionDir } from "@cotal-ai/auth";
@@ -655,7 +654,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", reason, command(remedy()));
       };
       if (held.view.registrationCleanup === "unknown") incomplete("Manager registration removal is unconfirmed; no automatic request was repeated");
-      try { instanceId = remoteManagerClient.loadRemoteManagerInstanceId(daemonManagerRoot(space, home), space) ?? instanceId; }
+      try {
+        const { remoteManagerClient } = await import("@cotal-ai/manager");
+        instanceId = remoteManagerClient.loadRemoteManagerInstanceId(daemonManagerRoot(space, home), space) ?? instanceId;
+      }
       catch { incomplete("the recorded Manager identity could not be read; its registration may be left behind"); }
       if (instanceId) {
         held.view = { ...held.view, instanceId };
