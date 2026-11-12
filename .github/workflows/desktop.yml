@@ -275,7 +275,7 @@ jobs:
           path: desktop/src-tauri/target/release/bundle/
           if-no-files-found: error
           retention-days: 7
-      - name: Verify installed macOS Dock presence and reopen
+      - name: Verify macOS window-scoped Dock presence, focus and reopen
         if: runner.os == 'macOS'
         run: bash desktop/scripts/check-presence-macos.sh
       - name: Verify installed Windows shortcuts and taskbar presence
