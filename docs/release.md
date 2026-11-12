@@ -48,6 +48,11 @@ pack. Nothing is built after the command. A merge of the version PR by any other
 the same way. A run that finds unpublished versions on `main` but no pack for its tree fails and
 publishes nothing.
 
+Before publishing in either release mode, the job polls the current run's artifact listing for
+the new pack's upload id, name and unexpired state. It tries up to 30 times, two seconds apart,
+within a two-minute step limit. An API failure or a pack that stays absent fails the job before
+the publish action runs.
+
 The command prints one UTC line for each step: `command`, `ready`, `merged`, `run`, `published`,
 `visible`, and `run rc`. The budget is ten minutes from `command` to `visible`. `visible` is the
 moment that `npm view cotal-ai@<version> version` answers. The upload ends about two minutes after
