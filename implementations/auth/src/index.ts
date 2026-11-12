@@ -1,4 +1,5 @@
 /** @module index */
+export { retainManagerAuthorityRoute } from "./provider.js";
 export { mintServiceCallerPayloadObserverCreds, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
 export { deriveOwnerToken, deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 export { parsePlatformControlAuthorityRequest, type ManagerAuthorityHolder } from "./platform-control.js";

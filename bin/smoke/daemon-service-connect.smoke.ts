@@ -2075,7 +2075,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               assert.equal(existsSync(intentFile(ON)), false, "explicit withdrawal must forget the durable service intent");
               assert.equal(disconnected.code, mode === undefined ? 0 : 2);
               if (mode !== undefined) {
-                assert.equal(status.manager?.state, "refused");
+                assert.equal(status.manager?.state, mode === "unknown" ? "refused" : "stopped");
+                assert.equal(status.manager?.registrationCleanup, mode === "unknown" ? "unknown" : "pending");
                 assert.ok(status.manager.next.includes(`endpoint deregister manager ${instanceId}`), "cleanup refusal remains actionable");
                 const human = await plainCommand("status");
                 assert.ok(human.out.includes(`endpoint deregister manager ${instanceId}`));
@@ -2085,7 +2086,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                 const afterRestart = resultOf(await ask(paths.socket, { op: "service-status", space: ON }));
                 assert.equal(afterRestart.state, "disconnected", "withdrawal must survive daemon restart");
                 assert.equal(existsSync(intentFile(ON)), false);
-                assert.equal(deregisterRequests, calls, "restart must not repeat an unconfirmed cleanup");
+                if (mode === "unknown") assert.equal(deregisterRequests, calls, "restart must not repeat an unconfirmed cleanup");
+                else {
+                  for (let i = 0; i < 40 && deregisterRequests === calls; i++) await sleep(100);
+                  assert.equal(deregisterRequests, calls + 1, "restart resumes pending cleanup once using its original authority");
+                }
                 if (mode === "unknown") {
                   assert.equal(afterRestart.manager?.registrationCleanup, "unknown");
                   idpRevoked = true;
@@ -2343,15 +2348,23 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("A2a CLI human status names account computer and desired revision", humanStatus.code === 0 && humanStatus.out.includes("Account computer") && humanStatus.out.includes("Desired revision") && humanStatus.out.includes(ON), humanStatus);
           const jsonStatus = await cli("status");
           check("A2b CLI status JSON includes account desired and observed fields", jsonStatus.doc.result?.account?.spaces?.some((r: any) => r.space === ON && r.desired && r.observed === "connected"), jsonStatus);
+          const cleanupPath = join(home, "daemon", spaceSegment(ON), "manager-cleanup.json");
+          const retainedCleanup = JSON.parse(readFileSync(cleanupPath, "utf8"));
+          check("A2f Manager cleanup retains only original nonsecret coordinates before removal",
+            retainedCleanup.space === ON && retainedCleanup.phase === "hosted" && typeof retainedCleanup.instanceId === "string"
+            && retainedCleanup.storeIdentity?.kind === "fs"
+            && Object.keys(retainedCleanup).sort().join(",") === "instanceId,phase,provider,root,space,storeIdentity,version"
+            && (process.platform === "win32" || (statSync(cleanupPath).mode & 0o777) === 0o600));
           removeMesh(ON);
           await sleep(6000);
           let removedStatus: Record<string, any> = {};
           for (let i = 0; i < 60; i++) {
             removedStatus = await observed();
-            if (removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer") && removedStatus.managers?.every((row: any) => row.space !== ON || row.state === "stopped")) break;
+            if (removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer") && removedStatus.managers?.every((row: any) => row.space !== ON || row.state === "stopped") && !existsSync(cleanupPath)) break;
             await sleep(500);
           }
-          check("A2g local registry removal stops the Manager and marks local veto", removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer") && removedStatus.managers?.every((row: any) => row.space !== ON || row.state === "stopped"), removedStatus);
+          check("A2g local registry removal stops the Manager and marks local veto", removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer") && removedStatus.managers?.every((row: any) => row.space !== ON || row.state === "stopped"), { account: removedStatus.account?.spaces?.find((row: any) => row.space === ON), manager: removedStatus.managers?.find((row: any) => row.space === ON) });
+          check("A2g confirmed registration cleanup removes its durable record", !existsSync(cleanupPath));
           accountBindingRevision = ++accountRevision;
           await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A2h dashboard rebind restores locally removed registration");
           removeMesh(ON);

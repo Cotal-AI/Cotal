@@ -98,8 +98,8 @@ export interface HostedManager {
   readonly space: string;
   readonly state: "starting" | "answering" | "restarting" | "refused" | "stopping" | "stopped";
   readonly instanceId?: string;
-  /** A guarded registration removal may have run. Inspect it before another request. */
-  readonly registrationCleanup?: "unknown";
+  /** Registration cleanup is pending, or may have run and must be inspected before another request. */
+  readonly registrationCleanup?: "pending" | "unknown";
   readonly pid?: number;
   readonly restarts: number;
   readonly reason?: string;
