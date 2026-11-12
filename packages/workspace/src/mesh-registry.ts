@@ -664,6 +664,17 @@ export function getCurrent(): string | undefined {
  *  as unset. {@link setCurrent} writes a name and {@link clearCurrent} removes the file, so an empty
  *  pointer is damage, not a cleared selection. */
 export function readCurrent(): string | undefined {
+  return readCurrentSelection()?.space;
+}
+
+/** How the current space was selected. Legacy bare-name pointers record explicit intent. */
+export interface CurrentSelection {
+  readonly space: string;
+  readonly source: "explicit" | "adopted";
+}
+
+/** Read the bare-name pointer and its optional matching adoption marker. */
+export function readCurrentSelection(): CurrentSelection | undefined {
   let space: string;
   try {
     space = readFileSync(currentFile(), "utf8").trim();
@@ -672,14 +683,33 @@ export function readCurrent(): string | undefined {
     throw new MeshRegistryError(currentFile(), `${currentFile()} could not be read: ${(e as Error).message}`, { cause: e });
   }
   if (!space) throw new MeshRegistryError(currentFile(), `${currentFile()} is empty - select a mesh with \`cotal use <space>\` or remove the file`);
-  return space;
+  try {
+    return { space, source: readFileSync(`${currentFile()}.adopted`, "utf8").trim() === space ? "adopted" : "explicit" };
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return { space, source: "explicit" };
+    throw new MeshRegistryError(`${currentFile()}.adopted`, `the selection source could not be read: ${(cause as Error).message}`, { cause });
+  }
 }
 
+/** Record a selection made by the person, including promotion of an adopted selection. */
 export function setCurrent(space: string): void {
+  writeCurrentSelection(space, "explicit");
+}
+
+/** Record an automatic selection, which does not override another project's running space. */
+export function setAdoptedCurrent(space: string): void {
+  writeCurrentSelection(space, "adopted");
+}
+
+function writeCurrentSelection(space: string, source: CurrentSelection["source"]): void {
+  if (!space.trim()) throw new Error("a selection needs a space name");
   prepareCotalHomeForWrite();
+  rmSync(`${currentFile()}.adopted`, { force: true });
   writeSecretFile(currentFile(), space);
+  if (source === "adopted") writeSecretFile(`${currentFile()}.adopted`, space);
 }
 
 export function clearCurrent(): void {
+  rmSync(`${currentFile()}.adopted`, { force: true });
   rmSync(currentFile(), { force: true });
 }

@@ -140,7 +140,7 @@ import {
   meshesForRoot,
   removeMesh,
   rotateSystemCreds,
-  setCurrent,
+  setAdoptedCurrent,
   staleSystemCreds,
   SYSTEM_CREDS_FILES,
   userAuthStateDir,
@@ -4663,7 +4663,7 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   recordMesh(provenance === "refresh" ? { ...prior, ...m, origin } : { ...m, origin });
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
-    setCurrent(m.space);
+    setAdoptedCurrent(m.space);
     if (!quietBoot) for (const line of hang("", selectedOnUp(m.space), terminalWidth(process.stdout), c.dim)) console.log(line);
     return;
   }

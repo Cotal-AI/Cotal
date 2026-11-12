@@ -11,6 +11,7 @@ import {
   canonicalRoot,
   findMesh,
   getCurrent,
+  readCurrentSelection,
   homeCotalDir,
   loadMeshes,
   pruneMesh,
@@ -778,7 +779,16 @@ function recordsRunElsewhere(folder: { root: string; registered: readonly string
  * before the command acts, with the `--space` that targets one of them instead.
  */
 function selectionTargetsHere(cwd: string, current: string, meshes: readonly MeshEntry[], offline: ReadonlySet<string>): boolean {
+  const explicit = readCurrentSelection()?.source === "explicit";
   const folder = folderSpaces(cwd, meshes);
+  if (explicit) {
+    if (folder && !folder.registered.includes(current) && folder.prepared !== current) {
+      const names = [...folder.registered, ...(folder.prepared ? [folder.prepared] : [])];
+      if (names.length) recordOperationSpaceNote(current, `the selected space applies here; this folder's space ${names.map(s => `"${s}"`).join(", ")} is reached with ${names.map(space => `--space ${shellPath(space)}`).join(" or ")} or cotal use --clear`);
+      else noteFolderSpaceHeld(folder, current);
+    }
+    return true;
+  }
   if (!folder || folder.registered.includes(current) || folder.prepared === current) return true;
   const running = folder.registered.filter((space) => !offline.has(space));
   if (running.length === 0) {
@@ -919,7 +929,7 @@ export function folderSpace(cwd: string): string | undefined {
  *  no broker passes none. Undefined with nothing selected, outside a project, and where the selection
  *  is the target. */
 export function folderSpaceOverSelection(cwd: string, current: string | null, offline: readonly string[] = []): string | undefined {
-  if (current === null) return undefined;
+  if (current === null || readCurrentSelection()?.source === "explicit") return undefined;
   const folder = folderSpace(cwd);
   return folder !== undefined && folder !== current && !offline.includes(folder) ? folder : undefined;
 }
@@ -972,6 +982,7 @@ export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boo
   const meshes = loadMeshes();
   const current = getCurrent();
   if (current) {
+    if (readCurrentSelection()?.source === "explicit") return false;
     // With a selection, liveness answers one question: does a space this folder has registered still
     // run, and so capture the command instead of the selection? A folder that registers the
     // selection itself resolves without it.

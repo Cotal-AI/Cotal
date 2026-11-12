@@ -42,7 +42,8 @@ They do not require a source checkout or pnpm. PATH invocations keep `cotal`, np
 `npx cotal-ai`, and checkout invocations keep `pnpm cotal`.
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
-the space this folder has registered, else the selected space, else, with nothing selected, the space
+the explicit `cotal use` selection first, else the space this folder has registered, else an
+automatically adopted selection, else, with nothing selected, the space
 this folder prepared, and lists common commands. It reads no
 broker. When this folder's own records show the stack of its registered space stopped, as after
 `cotal down` there, and another space is selected, it names the selected space, which the commands

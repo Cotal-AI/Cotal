@@ -28,7 +28,7 @@ import { findInteractiveActor, findManagedActor, loadActorLedger, withManagedGra
 import { INTERACTIVE_RETIRE_PATH, runAuthService } from "./service.js";
 import { loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp } from "./store.js";
 
-import { COTAL_CLOUD_IDP, cloudAuthUrl, openLoginBrowser, readCurrent, setCurrent } from "@cotal-ai/workspace";
+import { COTAL_CLOUD_IDP, cloudAuthUrl, openLoginBrowser, readCurrent, setAdoptedCurrent } from "@cotal-ai/workspace";
 
 const DEFAULT_CLIENT_ID = "cotal-cli";
 
@@ -210,7 +210,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
         const answer = await untilInputEnds(signal => prompts.select({ message: "Choose a space", options: discovered.map(mesh => ({ value: mesh.space, label: oneLine(mesh.catalogName ?? mesh.space) })), signal }));
         if (!prompts.isCancel(answer)) choice = answer;
       }
-      if (choice && !readCurrent()) { setCurrent(choice); selected = choice; }
+      if (choice && !readCurrent()) { setAdoptedCurrent(choice); selected = choice; }
     }
     const saved = resolvePreference("name").value;
     // WHO signed in must be human-readable (per-user auth exists for operator-visible identity):
