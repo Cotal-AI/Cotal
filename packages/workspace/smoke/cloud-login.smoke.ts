@@ -17,7 +17,7 @@ assert.equal(loginBrowserCommand(url, { ...options, noBrowser: true }), undefine
 assert.equal(loginBrowserCommand(url, { ...options, env: {} }), undefined);
 assert.deepEqual(loginBrowserCommand(url, { ...options, env: { WAYLAND_DISPLAY: "wayland-0" } }), { command: "xdg-open", args: [url] });
 assert.deepEqual(loginBrowserCommand(url, { ...options, platform: "darwin" }), { command: "open", args: [url] });
-assert.deepEqual(loginBrowserCommand(url, { ...options, platform: "win32" }), { command: "cmd.exe", args: ["/d", "/s", "/c", `start "" "${url}"`] });
+assert.deepEqual(loginBrowserCommand(url, { ...options, platform: "win32" }), { command: "rundll32.exe", args: ["url.dll,FileProtocolHandler", url] });
 assert.throws(() => loginBrowserCommand("javascript:alert(1)", options));
 assert.throws(() => loginBrowserCommand("https://user:pass@example.test", options));
 assert.throws(() => loginBrowserCommand("https://example.test/%PATH%", { ...options, platform: "win32" }));

@@ -25,10 +25,9 @@ export function loginBrowserCommand(url: string, options: {
     return { command: "xdg-open", args: [url] };
   }
   if (options.platform === "darwin") return { command: "open", args: [url] };
-  // start is a cmd builtin. Refuse expansion and command metacharacters.
   if (options.platform === "win32") {
     if (/[\r\n"%!^&|<>]/.test(url)) throw new Error("the approval link contains unsupported browser command characters");
-    return { command: "cmd.exe", args: ["/d", "/s", "/c", `start "" "${url}"`] };
+    return { command: "rundll32.exe", args: ["url.dll,FileProtocolHandler", url] };
   }
   return undefined;
 }

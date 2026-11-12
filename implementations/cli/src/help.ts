@@ -232,7 +232,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     ...(outside ? [{ text: `this folder's space while it runs; the selected space "${outside}" applies outside it and while it is stopped`, tone: "hint" } as const] : []),
     ...(folderHeld ? [{ text: folderHeld, tone: "hint" } as const] : []),
     ...(elsewhere ? [{ text: elsewhere, tone: "hint" } as const] : [])] }] });
-  else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: manifest ? `${manifest.path} declares space "${manifest.space}".` : anySpace ? "Select one with `cotal use <name>`; `cotal space` lists them." : "Sign in to Cotal Cloud with `cotal login --cloud`, set up a local space, or connect to a self-hosted one.", tone: "hint" },
+  else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: manifest ? `${manifest.path} declares space "${manifest.space}".` : anySpace ? "Select one with `cotal use <name>`; `cotal space` lists them." : "Sign in to Cotal Cloud with `cotal login`, set up a local space, or connect to a self-hosted one.", tone: "hint" },
     ...(elsewhere ? [{ text: elsewhere, tone: "hint" } as const] : [])] }] });
   sections.push({ title: "Usage", blocks: [{ kind: "lines", lines: [{ text: "cotal <command> [options]", tone: "command" }] }] });
   sections.push(actions("Start here", space ? [
