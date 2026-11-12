@@ -52,13 +52,14 @@ const ep = new CotalEndpoint({space:o.space,servers:o.servers,creds:readFileSync
  registerPresence:true,watchPresence:false,card:{id:o.id,name:o.name,kind:'agent'}});
 ep.on('error',e=>console.error(e)); await ep.start(); setInterval(()=>{},1<<30);
 `;
-registry.register({ kind: "connector", name: "managed-payload-probe", requires: ["node"], eventChannel,
+const connector: Connector = { kind: "connector", name: "managed-payload-probe", requires: ["node"], eventChannel,
   buildLaunch: (o: LaunchOpts) => {
     launches.set(o.name, o);
     return { command: process.execPath, args: ["--input-type=module", "-e", child],
       env: { ...launchEnv(), SMOKE_CORE: corePath, SMOKE_LAUNCH: JSON.stringify(o) } };
   },
-} satisfies Connector);
+};
+registry.register(connector);
 let passed = 0, failed = 0;
 const check = (label: string, ok: boolean, detail?: unknown) => {
   if (ok) passed++; else failed++;
