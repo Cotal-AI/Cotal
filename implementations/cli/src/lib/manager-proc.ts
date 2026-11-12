@@ -192,7 +192,7 @@ function supervisorLoadedEntry(command: string, entry: string): boolean {
 
 /** Whether `path` is a CLI entry file: `cotal.js` under a package declaring that bin, or `cotal.ts`
  *  under the checkout package that ships `bin/cotal.ts`. A node binary and a loader are neither. */
-function isCliEntry(path: string): boolean {
+export function isCliEntry(path: string): boolean {
   const name = basename(path);
   if (name !== "cotal.js" && name !== "cotal.ts") return false;
   for (let dir = dirname(path); ; dir = dirname(dir)) {
@@ -203,7 +203,11 @@ function isCliEntry(path: string): boolean {
       if (dirname(dir) === dir) return false;
       continue;
     }
-    if (name === "cotal.ts") return pkg.name === "cotal-monorepo";
+    if (name === "cotal.ts") {
+      if (pkg.name === "cotal-monorepo" && path === join(dir, "bin", "cotal.ts")) return true;
+      if (dirname(dir) === dir) return false;
+      continue;
+    }
     const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.cotal;
     return typeof bin === "string" && basename(bin) === name;
   }

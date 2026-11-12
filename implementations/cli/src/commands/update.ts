@@ -34,7 +34,7 @@ import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
 import { cliVersion } from "../lib/version.js";
-import { runSeed, compareSemver } from "../seed/reconcile.js";
+import { runSeed, compareSemver, seedInstallationCurrent } from "../seed/reconcile.js";
 import { operatorInstallDiffers } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { refreshConnectorInstalls } from "./setup.js";
@@ -60,6 +60,10 @@ import { legacyManagerReport, type LegacyManagerReport } from "../lib/legacy-man
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl, onFlag } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
+import { localUpdateManagers, type UpdateManager } from "../lib/update-managers.js";
+export { localUpdateManagers } from "../lib/update-managers.js";
+export { managerPin as updateManagerPin } from "../lib/manager-choice.js";
+import { assertRecordIdentity, brokerAddressKey } from "@cotal-ai/workspace";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
 const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
@@ -87,6 +91,8 @@ export interface UpdateRuntime {
   readonly parentPid: number;
   readonly nodePath: string;
   version(): string;
+  /** Read package consistency only, without refreshing external harness integrations. */
+  isCurrent?(): boolean;
   reconcile(): Promise<void>;
   /** Preserve native custody of an authenticated automatic update child before reconciliation. */
   adoptUpdateChild?(): Promise<void>;
@@ -134,6 +140,15 @@ export const updateRuntime: UpdateRuntime = {
   parentPid: process.ppid,
   nodePath: process.execPath,
   version: cliVersion,
+  isCurrent: () => {
+    if (process.platform !== "linux") return false;
+    if (!seedInstallationCurrent()) return false;
+    try {
+      const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg));
+      return updateRuntime.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg))
+        .every(entry => operatorInstallDiffers(entry, cliVersion()) === undefined);
+    } catch { return false; }
+  },
   refreshConnectors: refreshConnectorInstalls,
   reconcile: async () => {
     await runSeed({ verify: true });
@@ -339,6 +354,19 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
   if (self) {
     const latest = latestVersion(rt);
     if (latest.ok && compareSemver(latest.version, current) > 0) return upgradeAndReconcile(latest.version, current, rt, target);
+    if (latest.ok && rt.isCurrent?.()) {
+      try {
+        const custody = await rt.reportRunningManager(target);
+        rt.out("No newer CLI version; installed package closure is current. No connector reconciliation was run.");
+        if (custody === "legacy") rt.out("A later update will require stopping the agents listed above before replacing packages.");
+        rt.out("Run `cotal update` to repair connector integrations.");
+        reportVersion(current, latest.version, rt, false);
+        return 0;
+      } catch (error) {
+        rt.err(c.red(`✗ running manager continuity check: ${refusal(error)}`));
+        return 1;
+      }
+    }
 
     return reconcileCurrent(current, rt, target, (reconciled) => {
       if (!latest.ok) {
@@ -559,7 +587,26 @@ function runningSpaces(e: unknown): string[] | undefined {
 export async function reportRunningManagers(
   flags: Record<string, unknown>,
   readOne: (flags: Record<string, unknown>) => Promise<"none" | "legacy"> = readManagerContinuity,
+  census: (flags: Record<string, unknown>) => readonly UpdateManager[] = localUpdateManagers,
 ): Promise<"none" | "legacy"> {
+  // Raw credentials are an explicit off-registry target, not an install-wide discovery request.
+  if (typeof flags.creds === "string") return readOne(flags);
+  const on = typeof flags.on === "string" ? await managerPin(flags, "cotal update") : undefined;
+  const local = process.platform === "linux" ? census({ ...flags, on }) : [];
+  const selected = local.filter(manager =>
+    (typeof flags.space !== "string" || manager.space === flags.space) &&
+    (typeof flags.server !== "string" || brokerAddressKey(manager.server) === brokerAddressKey(flags.server)) &&
+    (on === undefined || manager.instanceId === on));
+  if (selected.length) {
+    let verdict: "none" | "legacy" = "none";
+    for (const manager of selected) {
+      if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before its continuity read`);
+      console.log(c.dim(`  ${manager.space}: reading local Manager ${manager.instanceId} (pid ${manager.pid})`));
+      if (await readOne({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") verdict = "legacy";
+    }
+    return verdict;
+  }
+  if (on !== undefined && local.length) throw new Error(`--on ${on} does not name a local Manager sharing this installation`);
   try {
     return await readOne(flags);
   } catch (e) {
@@ -647,7 +694,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       ...(typeof flags.server === "string" ? { server: flags.server } : {}),
       ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
       offline,
-    }, "control-caller-admin", on, { onRefusal: "throw" });
+    }, "control-caller-admin", on, { onRefusal: "throw", readOnly: true });
   } catch (e) {
     // No running manager means no custody to preserve and nothing this update could interrupt. Only
     // the "no mesh running" refusal reads as "none": no recorded mesh, or every recorded mesh down
