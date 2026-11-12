@@ -428,7 +428,7 @@ const spaces = ["on", "off", "deny", "brk", "session"].map((s) => `${setupHintsO
 const accounts = await Promise.all(spaces.map((s) => createSpaceAccountAuth(broker, s)));
 const handles: AuthServiceHandle[] = [];
 let nats: ChildProcess | undefined, release: (() => void) | undefined;
-const fixture = { owner: "", callerUid: "", sentinelCreds: "" };
+const fixture = { owner: "", cliUid: "", callerUid: "", sentinelCreds: "" };
 
 try {
   const ctx = await Promise.all(spaces.map(async (space, i) => {
@@ -452,9 +452,10 @@ try {
   // The owner's interactive row, derived exactly as the stock service derives it.
   for (const c of ctx) {
     const owner = deriveOwnerForIdpSubject((await loadOwnerSecret(c.store, c.space))!, idpOrigin, "machine-owner");
-    grantActor(c.stateDir, { owner, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
+    const seededCli = grantActor(c.stateDir, { owner, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
     if (c === ctx[0]) {
       fixture.owner = owner;
+      fixture.cliUid = seededCli.lifecycleUid!;
       fixture.callerUid = grantActor(c.stateDir, { owner, actor: "probe", scope: [], allowSubscribe: [], allowPublish: [] }).lifecycleUid!;
     }
   }
@@ -1724,7 +1725,8 @@ try {
     await cell("H1 shipped setup hosts an answering Manager independently of machine approval", async () => {
       seedUnitReceipt();
       await d.close();
-      const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
+      // D0 already activated this interactive actor. Extend its grant without replacing its lifecycle.
+      const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: fixture.cliUid, scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
       const original = findMesh(ON)!;
       const published = await (await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as { server: string; tlsRequired?: boolean; userAuth: NonNullable<MeshEntry["userAuth"]> };
       if (process.argv.includes("--cold-restart-repro") || process.argv.includes("--slow-status-repro") || process.argv.includes("--hosted-latency")) published.server = brokerPathUrl;
@@ -3710,10 +3712,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         if (launch.ok) await askManager(client, ON, servers, "stop", { name: "daemon_smoke_seat" }, target.auth, "owner", 10_000, { instanceId: manager.instanceId });
         const intent = join(home, "daemon", `space.${Buffer.from(ON).toString("hex")}`, "manager-host.json");
         check("H1 hosting intent recorded after status", existsSync(intent));
-        process.kill(manager.pid, "SIGKILL");
+        const killTarget = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+        assert.ok(killTarget.state === "answering" && killTarget.instanceId === manager.instanceId && Number.isInteger(killTarget.pid), "kill the currently supervised answering Manager, not the snapshot from before the suspension test");
+        process.kill(killTarget.pid, "SIGKILL");
         let replacement: Record<string, any> = {};
-        for (let i = 0; i < 200; i++) { replacement = resultOf(await ask(paths.socket, { op: "manager-status", space: ON })); if (replacement.state === "answering" && replacement.pid !== manager.pid) break; await sleep(250); }
-        check("H2 killed Manager restarts and answers without a command", replacement.state === "answering" && replacement.pid !== manager.pid, replacement);
+        for (let i = 0; i < 200; i++) { replacement = resultOf(await ask(paths.socket, { op: "manager-status", space: ON })); if (replacement.state === "answering" && replacement.pid !== killTarget.pid) break; await sleep(250); }
+        check("H2 killed Manager restarts and answers without a command", replacement.state === "answering" && replacement.pid !== killTarget.pid, replacement);
         check("H2 unexpected child exit retains its native signal", String(replacement.lastExit).includes("SIGKILL"));
         const predecessorManager = replacement.pid;
         await killAndAwaitExit(child, "SIGKILL");
