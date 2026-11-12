@@ -62,3 +62,36 @@ test("presence configuration narrows renderer grants and keeps platform identity
   assert.match(wix, /CustomAction Id="RemoveCotalLogin"[^>]*ExeCommand="--remove-login"/);
   assert.match(wix, /Before="RemoveFiles">REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE/);
 });
+
+test("presence events report close explanation, presence errors and taskbar pin status", async () => {
+  const output = await build({ logLevel: "silent", configFile: false, build: { write: false, lib: { entry: fileURLToPath(new URL("../src/presence.ts", import.meta.url)), formats: ["iife"], name: "presence" } } });
+  const result = Array.isArray(output) ? output[0] : output;
+  assert.ok("output" in result);
+  const chunk = result.output.find(file => file.type === "chunk"); assert.ok(chunk && "code" in chunk);
+  const dom = new JSDOM('<main><div class="connection-card"></div><div id="settings-startup"></div><section id="preferences"><input id="autostart" type="checkbox"></section></main>', { runScripts: "outside-only", url: "http://localhost" });
+  const doc = dom.window.document as Document;
+  const callbacks = new Map<number, (event: { event: string; payload: string }) => void>(); let next = 0;
+  const listeners = new Map<string, number>();
+  const notices: { message: string; error: boolean }[] = [];
+  dom.window.__TAURI_INTERNALS__ = {
+    transformCallback(fn: (event: { event: string; payload: string }) => void) { callbacks.set(++next, fn); return next; },
+    async invoke(cmd: string, args: { event?: string; handler?: number } = {}) {
+      if (cmd === "plugin:event|listen") { listeners.set(args.event!, args.handler!); return ++next; }
+      if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "Cotal is pinned to your taskbar." };
+      throw new Error(`Unexpected command ${cmd}`);
+    },
+  };
+  try {
+    dom.window.eval(chunk.code + ";globalThis.presence = presence;");
+    const api = dom.window.presence;
+    await api.startPresence((message: string, error = false) => notices.push({ message, error }));
+    callbacks.get(listeners.get("desktop-close-explained")!)!({ event: "desktop-close-explained", payload: "Cotal stays in your system tray." });
+    callbacks.get(listeners.get("desktop-presence-error")!)!({ event: "desktop-presence-error", payload: "Login item could not be updated." });
+    assert.deepEqual(notices, [
+      { message: "Cotal stays in your system tray.", error: false },
+      { message: "Login item could not be updated.", error: true },
+    ]);
+    await api.refreshPresence(true);
+    assert.equal(doc.querySelector("#pin-availability")?.textContent, "Cotal is pinned to your taskbar.");
+  } finally { dom.window.close(); }
+});

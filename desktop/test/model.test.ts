@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { initialSpace, approvalUrl, connectionView, requireResult, onboardingLink, launchReady, machinesUrl } from "../src/model.ts";
+import { initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl } from "../src/model.ts";
 
 test("account targeting prefers the link, personal space, only space, then asks", () => {
   const personal = { space: "mine", catalogId: "sp_mine", label: "Mine", kind: "personal" };
@@ -43,4 +43,19 @@ test("a prompt, malformed version or refusal is never a successful operation", (
 test("dashboard links prefill only public coordinates and reject secrets or duplicate keys", () => {
   assert.deepEqual(onboardingLink("cotal://connect?idp=https%3A%2F%2Fexample.com%2Fauth&space=team"), { idp: "https://example.com/auth", space: "team" });
   for (const value of ["cotal://connect?idp=https://example.com/auth&token=secret", "cotal://connect?idp=https://example.com&idp=https://other.example", "cotal://exec?idp=https://example.com", "cotal://connect?idp=file:///tmp/auth", "cotal://connect?idp=https://example.com&space=bad%20space"]) assert.throws(() => onboardingLink(value));
+});
+
+test("expired credentials and pending approval refusals map to their recovery actions", () => {
+  assert.deepEqual(refusalView("CREDENTIAL_EXPIRED"), {
+    title: "Sign in again",
+    description: "Your saved sign-in has expired. Approve this computer in your browser to reconnect.",
+    action: "login",
+    label: "Sign in again",
+  });
+  assert.deepEqual(refusalView("APPROVAL_PENDING"), {
+    title: "Waiting for owner approval",
+    description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.",
+    action: "refresh",
+    label: "Check approval",
+  });
 });
