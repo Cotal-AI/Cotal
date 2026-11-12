@@ -332,6 +332,7 @@ export class AguiEmitter<T> {
   private brackets: AguiBrackets;
   private payloadFrontier?: SubjectFrontier;
   private payloadLimit?: number;
+  private withholdPayloads = false;
   private halted: AguiEmitterHalted | undefined;
   /** True once THIS process has fed an event through the bracket machine. It is the half of the
    *  restart diagnosis that keeps a genuine mid-stream violation from being blamed on a restart. */
@@ -391,6 +392,7 @@ export class AguiEmitter<T> {
    */
   static async start<T>(opts: {
     endpoint: EmitterEndpoint;
+    withholdPayloads?: boolean;
     /** Already open, so the caller owns `space`, the WAL path, and the `subjectMayExist` judgement
      *  — none of which the emitter can make honestly on the caller's behalf. */
     wal: EventWal;
@@ -446,7 +448,10 @@ export class AguiEmitter<T> {
     await wal.bindSubjectFrontier(opts.subjectFrontier);
 
     const em = new AguiEmitter<T>(endpoint, wal, opts.source, opts.map, channel, wal.threadId, opts.onUnreadable);
-    if (endpoint.eventPayloadLimit && endpoint.publishEventPayload) {
+    em.withholdPayloads = opts.withholdPayloads === true;
+    if (em.withholdPayloads && wal.pending?.payload)
+      throw new Error("payload withholding refuses a previously frozen sibling publication; settle it under the prior policy before changing policy");
+    if (!em.withholdPayloads && endpoint.eventPayloadLimit && endpoint.publishEventPayload) {
       em.payloadLimit = await endpoint.eventPayloadLimit();
       em.payloadFrontier = await FileSubjectFrontier.open(join(dirname(dirname(wal.path)), "payload-subject.json"), { space: wal.space, principal: live });
     }
@@ -582,7 +587,7 @@ export class AguiEmitter<T> {
         if (event.type === AGUI_EVENT_TYPE.TOOL_CALL_START) payloadCalls[event.toolCallId] = !isCotalPayloadExcludedTool(event.toolCallName);
         if (event.type === AGUI_EVENT_TYPE.TOOL_CALL_ARGS || event.type === AGUI_EVENT_TYPE.TOOL_CALL_RESULT) {
           if (payloadCalls[event.toolCallId] === undefined) throw new Error(`tool payload ${event.toolCallId} has no persisted start classification`);
-          if (payloadCalls[event.toolCallId]) payloadEvents.push(event);
+          if (payloadCalls[event.toolCallId] && !this.withholdPayloads) payloadEvents.push(event);
           if (event.type === AGUI_EVENT_TYPE.TOOL_CALL_RESULT) delete payloadCalls[event.toolCallId];
         }
       }
