@@ -181,7 +181,7 @@ export function renderContextTable(rows) {
   const contexts = new Set(["harness", "scheduled-task"]);
   const variants = new Set(harnessVariants);
   const number = value => Number.isFinite(value) ? String(value) : "unknown";
-  const stages = ["import-module", "enumerate-all", "principal-translate", "com-create", "com-connect", "com-get-task", "com-get-instances"];
+  const stages = ["import-module", "import-utility", "enumerate-all", "principal-translate", "com-create", "com-connect", "com-get-task", "com-get-instances"];
   return [
     `| Context | Variant | Elapsed ms | Startup ms | ${stages.map(stage => `${stage} ms`).join(" | ")} | Status | Valid |`,
     `| ${Array(6 + stages.length).fill("---").join(" | ")} |`,

@@ -9,7 +9,11 @@ test("instrumentation preserves every shipped statement in order", () => {
   const original = JSON.parse(/const READ_TASK = (\[[\s\S]*?\])\.join\("\\n"\);/.exec(source)[1].replace(/,\s*\]$/, "]")).join("\n");
   assert.equal(result.script.split("\n").filter(line => !line.startsWith("[Console]::Error.WriteLine('COTAL_STAGE ") && !line.startsWith("[Console]::Error.WriteLine('COTAL_PRINCIPAL_SID ") && !line.startsWith("$cotalStageClock=")).join("\n"), original);
   assert.match(result.sourceSha256, /^[a-f0-9]{64}$/);
-  for (const stage of ["import-module", "enumerate-all", "principal-translate", "com-connect", "com-get-task", "com-get-instances"]) assert.ok(result.script.includes(`COTAL_STAGE ${stage} end`));
+  for (const stage of ["import-module", "import-utility", "enumerate-all", "principal-translate", "com-connect", "com-get-task", "com-get-instances"]) assert.ok(result.script.includes(`COTAL_STAGE ${stage} end`));
+  assert.ok(result.script.indexOf("COTAL_STAGE import-module end") < result.script.indexOf("COTAL_STAGE import-utility start"));
+  assert.ok(result.script.indexOf("COTAL_STAGE import-utility start") < result.script.indexOf("Import-Module Microsoft.PowerShell.Utility"));
+  assert.ok(result.script.indexOf("Import-Module Microsoft.PowerShell.Utility") < result.script.indexOf("COTAL_STAGE import-utility end"));
+  assert.ok(result.script.indexOf("COTAL_PRINCIPAL_SID") < result.script.indexOf("COTAL_STAGE principal-translate start"));
   assert.ok(result.comparison.includes("Get-ScheduledTask -TaskName $env:COTAL_DAEMON_TASK -TaskPath '\\'"));
   assert.ok(!result.script.includes("-TaskName"), "named comparison never replaces enumeration");
 });

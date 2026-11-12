@@ -65,7 +65,7 @@ if (process.argv[2] === "cleanup") {
   assert.equal(hash(readFileSync(unitPath)), hash(bytes), "owned fixture source unchanged before disable");
   native("schtasks.exe", ["/Change", "/TN", unit, "/DISABLE"], env);
   const disabled = measureTaskStages({ sourcePath, receiptPath, output: join(output, "disabled.json"), phase: "disabled", env, expected });
-  const stages = ["import-module", "enumerate-all", "principal-translate", "com-create", "com-connect", "com-get-task", "com-get-instances", "query-named"];
+  const stages = ["import-module", "import-utility", "enumerate-all", "principal-translate", "com-create", "com-connect", "com-get-task", "com-get-instances", "query-named"];
   const rows = [...enabled, ...disabled].map(row => `| ${row.phase} ${row.sample} | ${row.temperature} | ${row.approximateStartupMs ?? "unknown"} | ${stages.map(stage => stage === "principal-translate" && row.principalTranslate !== "completed" ? row.principalTranslate : row.durations.find(d => d.stage === stage)?.elapsedMs ?? "incomplete").join(" | ")} | ${row.code ?? row.status ?? "unknown"} |`);
   const table = ["# Standalone READ_TASK stages", "", "Milliseconds per stage. Startup is a wall-clock estimate. Named comparison is warmed and shares each sample's 180s bound.", "", `| Sample | Temperature | Startup | ${stages.join(" | ")} | Exit/code |`, `| ${Array(stages.length + 4).fill("---").join(" | ")} |`, ...rows, ""].join("\n");
   writeFileSync(join(output, "stages.md"), table);

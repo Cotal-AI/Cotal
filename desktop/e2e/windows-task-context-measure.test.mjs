@@ -88,9 +88,9 @@ test("table renders only bounded labels and numeric fields", () => {
 });
 
 test("table includes fixed stage durations in order with unknown for unsafe values", () => {
-  const table = renderContextTable([{ context: "harness", variant: "worker-thread", elapsedMs: 99, approximateStartupMs: 4, status: 0, valid: true, durations: [{ stage: "import-module", elapsedMs: 12 }, { stage: "enumerate-all", elapsedMs: 23 }, { stage: "principal-translate", elapsedMs: "secret" }, { stage: "com-create", elapsedMs: Infinity }, { stage: "com-connect", elapsedMs: 34 }, { stage: "com-get-task", elapsedMs: 45 }, { stage: "com-get-instances", elapsedMs: 56 }, { stage: "private-stage", elapsedMs: "private-value" }] }]);
-  assert.ok(table.includes("| 99 | 4 | 12 | 23 | unknown | unknown | 34 | 45 | 56 | 0 | yes |"));
-  for (const stage of ["import-module", "enumerate-all", "principal-translate", "com-create", "com-connect", "com-get-task", "com-get-instances"]) assert.ok(table.includes(`${stage} ms`));
+  const table = renderContextTable([{ context: "harness", variant: "worker-thread", elapsedMs: 99, approximateStartupMs: 4, status: 0, valid: true, durations: [{ stage: "import-module", elapsedMs: 12 }, { stage: "import-utility", elapsedMs: 13 }, { stage: "enumerate-all", elapsedMs: 23 }, { stage: "principal-translate", elapsedMs: "secret" }, { stage: "com-create", elapsedMs: Infinity }, { stage: "com-connect", elapsedMs: 34 }, { stage: "com-get-task", elapsedMs: 45 }, { stage: "com-get-instances", elapsedMs: 56 }, { stage: "private-stage", elapsedMs: "private-value" }] }]);
+  assert.ok(table.includes("| 99 | 4 | 12 | 13 | 23 | unknown | unknown | 34 | 45 | 56 | 0 | yes |"));
+  for (const stage of ["import-module", "import-utility", "enumerate-all", "principal-translate", "com-create", "com-connect", "com-get-task", "com-get-instances"]) assert.ok(table.includes(`${stage} ms`));
   assert.ok(!/secret|private-stage|private-value|Infinity/.test(table));
 });
 
