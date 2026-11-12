@@ -24,7 +24,9 @@ The CLI's named status and terminal attach paths use the same presence selection
 and open spaces. Generic manager inspect uses it on static spaces and still requires an
 authenticated endpoint caller. The per-call operator instrument is minted for the selected instance.
 The canonical name, principal and lifecycle remain pinned through that mint, the inspect response
-and any subsequent targeted action. Ambiguous names and invalid manager hints refuse before submission.
+and any subsequent targeted action. Explicit instance pins keep the same alias resolution and
+identity checks but never redirect to another manager. Ambiguous names and invalid manager hints
+refuse before submission.
 An explicit class-only caller file cannot make a named read and is refused without substituting an operator credential.
 `inspect` is the manager's only read keyed by a running seat name. Persona, workflow, goal and
 durable-slot reads keep their own manager-local scopes. An explicit instance still selects only

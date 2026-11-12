@@ -67,9 +67,16 @@ try {
   const iid = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
   const ps = await cli(["ps"]);
   check("positive control: raw-open ps sees the held seat", ps.code === 0 && ps.out.includes("raw-seat"), ps);
+  const row = (JSON.parse(ps.out).result.items as { name: string; id: string }[]).find(p => p.name === "raw-seat")!;
   for (const pin of [[], ["--on", iid]]) {
     const status = await cli(["status", "raw-seat", ...pin]);
     check(`raw-open named status ${pin.length ? "with" : "without"} explicit owner`, status.code === 0 && status.out.includes("raw-seat") && status.out.includes("raw-pin") && status.out.includes(iid), status);
+  }
+  for (const alias of ["RAW-SEAT", `local.${row.id}`, row.id]) {
+    for (const pin of [[], ["--on", iid]]) {
+      const status = await cli(["status", alias, ...pin]);
+      check(`raw-open status resolves ${alias} ${pin.length ? "with" : "without"} explicit owner`, status.code === 0 && status.out.includes('"name":"raw-seat"') && status.out.includes("raw-pin") && status.out.includes(iid), status);
+    }
   }
   const absent = await cli(["status", "absent-seat"]);
   check("raw-open absent name is TARGET_NOT_FOUND", absent.code === 2 && absent.out.includes("TARGET_NOT_FOUND"), absent);

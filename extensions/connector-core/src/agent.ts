@@ -2776,14 +2776,14 @@ export class MeshAgent extends EventEmitter {
     const seatRead = endpoint === BASELINE_LIFECYCLE_ENDPOINT && !this.config.userAuth &&
       command === "inspect" && typeof args?.name === "string";
     let selected: Presence | undefined;
-    if (seatRead && ownerInstance === undefined) {
+    if (seatRead) {
       const roster = await this.ep.readPresence();
       const peer = resolvePeerInRoster(roster.filter(p => p.status !== "offline"), args!.name as string);
       if (!peer) throw new EpEnvelopeError("not-found", `no agent ${JSON.stringify(args!.name)} is held in live presence`, undefined, "not-executed");
       const instance = peer.card.meta?.["ai.cotal.manager.instance"];
       if (typeof instance !== "string")
         throw new EpEnvelopeError("failed-precondition", `agent ${JSON.stringify(peer.card.name)} reports no holding manager instance`, undefined, "not-executed");
-      try { ownerInstance = assertLifecycleToken(instance, "holding manager instance"); }
+      try { const holdingInstance = assertLifecycleToken(instance, "holding manager instance"); ownerInstance ??= holdingInstance; }
       catch { throw new EpEnvelopeError("failed-precondition", `agent ${JSON.stringify(peer.card.name)} reports an invalid holding manager instance`, undefined, "not-executed"); }
       selected = peer;
       opts = { ...opts, instanceId: ownerInstance };

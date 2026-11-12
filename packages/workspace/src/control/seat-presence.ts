@@ -1,4 +1,4 @@
-import { AmbiguousPeerError, assertLifecycleToken, resolvePeer, type Presence } from "@cotal-ai/core";
+import { AmbiguousPeerError, DEV_OWNER, assertLifecycleToken, resolvePeer, type Presence } from "@cotal-ai/core";
 import { CommandFailure } from "../output.js";
 import type { ManagerPin } from "./manager.js";
 
@@ -6,8 +6,11 @@ import type { ManagerPin } from "./manager.js";
  * authority. Keep its canonical name and incarnation with the instance selected for the mint. */
 export function presenceSeat(roster: readonly Presence[], name: string): { instanceId: string; expectedSeat: NonNullable<ManagerPin["expectedSeat"]> } {
   const target = { agent: name };
+  const live = roster.filter(p => p.status !== "offline");
+  // Static/open manager rows expose the bare actor, while presence keys include its owner.
+  const address = live.some(p => p.card.id === `${DEV_OWNER}.${name}`) ? `${DEV_OWNER}.${name}` : name;
   let peer: Presence | undefined;
-  try { peer = resolvePeer(roster.filter(p => p.status !== "offline"), name); }
+  try { peer = resolvePeer(live, address); }
   catch (error) {
     if (error instanceof AmbiguousPeerError) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", error.message, { target });
     throw new CommandFailure("refused", "USAGE_INVALID", error instanceof Error ? error.message : String(error), { target });

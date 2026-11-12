@@ -143,12 +143,12 @@ async function askManagerEp(
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
   // No class-queue read may stand in for the manager that presence says holds this seat.
-  if (instanceId === undefined && !auth.bearer && (mapped.command === "inspect" || mapped.targeted)) {
+  if (!selected && !auth.bearer && (mapped.command === "inspect" || mapped.targeted)) {
     const name = String(args?.name ?? "").trim();
     if (!name) return { ok: false, code: "bad-request", error: `${op} requires a name` };
     try {
       const seat = presenceSeat(await client.roster({ space, server }), name);
-      instanceId = seat.instanceId;
+      instanceId ??= seat.instanceId;
       selected = seat.expectedSeat;
     } catch (error) {
       if (!isCommandFailure(error)) throw error;

@@ -73,9 +73,10 @@ let prov: InstanceType<typeof CotalEndpoint> | undefined;
 const callers: InstanceType<typeof MeshAgent>[] = [];
 const connections: NatsConnection[] = [];
 let checks = 0;
+const failures: string[] = [];
 const check = (label: string, condition: unknown, detail?: unknown) => {
-  assert.ok(condition, `${label}: ${JSON.stringify(detail)}`);
-  console.log(`  ✓ ${label}`);
+  if (!condition) failures.push(`${label}: ${JSON.stringify(detail)}`);
+  console.log(`  ${condition ? "✓" : "✗"} ${label}`);
   checks++;
 };
 try {
@@ -187,11 +188,11 @@ try {
   check("generic CLI unpinned attach reaches the holding manager", cliAttach.code === 0 && cliAttach.out.includes(iid1), cliAttach);
   const cliAbsent = await cli("inspect", { args: JSON.stringify({ name: "absent" }) });
   check("generic CLI absent name is TARGET_NOT_FOUND without a manager read", cliAbsent.code !== 0 && cliAbsent.err.includes("TARGET_NOT_FOUND"), cliAbsent);
-  const cliAgent = async (command: "agentStatus" | "stop" | "input" | "attachSeat", name: string, stale = false) => {
+  const cliAgent = async (command: "agentStatus" | "stop" | "input" | "attachSeat", name: string, stale = false, on?: string) => {
     const module = pathToFileURL(resolve(here, "../../cli/dist/commands/agents.js")).href;
     const workspace = pathToFileURL(resolve(repo, "packages/workspace/dist/index.js")).href;
     const cliControlModule = pathToFileURL(resolve(here, "../../cli/dist/lib/control.js")).href;
-    const values = { space, json: true, ...(command === "input" ? { text: "never submitted" } : {}) };
+    const values = { space, json: true, ...(on === undefined ? {} : { on }), ...(command === "input" ? { text: "never submitted" } : {}) };
     const script = `const { ${command}: run } = await import(${JSON.stringify(module)});
       const { isCommandFailure, failureEnvelope, exitCode } = await import(${JSON.stringify(workspace)});
       ${stale ? `const { cliControl } = await import(${JSON.stringify(cliControlModule)});
@@ -219,7 +220,28 @@ try {
     check("public workspace control retains canonical located name", workspaceRead.ok && workspaceRead.managerInstanceId === iid1, workspaceRead);
     const status = await cliAgent("agentStatus", alias);
     check("actual CLI named status uses one owner and canonical identity", status.code === 0 && status.out.includes('"scope":"agent"') && status.out.includes(iid1) && status.out.includes('"name":"first"'), status);
+    const pinnedTool = await invoke(granted.tool, alias, iid1);
+    check("explicit-owner connector inspect canonicalizes aliases", !pinnedTool.isError && pinnedTool.text.includes("pinned-one") && pinnedTool.text.includes(iid1), pinnedTool);
+    const pinnedRead = await cli("inspect", { args: JSON.stringify({ name: alias }), on: iid1 });
+    check("explicit-owner generic CLI inspect canonicalizes aliases", pinnedRead.code === 0 && pinnedRead.out.includes("pinned-one") && pinnedRead.out.includes(iid1), pinnedRead);
+    const pinnedAttach = await cli("attach", { name: alias, admin: true, on: iid1 });
+    check("explicit-owner generic CLI attach canonicalizes aliases", pinnedAttach.code === 0 && pinnedAttach.out.includes(iid1), pinnedAttach);
+    const pinnedWorkspace = await askManager(client, space, servers, "status", { name: alias }, { creds: granted.creds, epCaller: granted.epCaller }, "owner", undefined, { instanceId: iid1 });
+    check("explicit-owner workspace inspect canonicalizes aliases", pinnedWorkspace.ok && pinnedWorkspace.managerInstanceId === iid1, pinnedWorkspace);
+    const pinnedStatus = await cliAgent("agentStatus", alias, false, iid1);
+    check("explicit-owner CLI named status canonicalizes aliases", pinnedStatus.code === 0 && pinnedStatus.out.includes('"name":"first"') && pinnedStatus.out.includes(iid1), pinnedStatus);
   }
+  const bareId = firstPeer.card.id.slice("local.".length);
+  for (const on of [undefined, iid1]) {
+    const status = await cliAgent("agentStatus", bareId, false, on);
+    check(`static-auth status preserves bare row ID ${on ? "with" : "without"} explicit owner`, status.code === 0 && status.out.includes('"name":"first"') && status.out.includes(iid1), status);
+  }
+  const stalePinned = await askManager(staleClient, space, servers, "status", { name: "SECOND" }, { creds: granted.creds, epCaller: granted.epCaller }, "owner", undefined, { instanceId: iid2 });
+  check("explicit-owner workspace read keeps its lifecycle fence", !stalePinned.ok && stalePinned.code === "expired", stalePinned);
+  const staleStatusPinned = await cliAgent("agentStatus", "SECOND", true, iid2);
+  check("explicit-owner CLI named status keeps its lifecycle fence", staleStatusPinned.code === 2 && staleStatusPinned.out.includes("LIFECYCLE_BLOCKED"), staleStatusPinned);
+  const wrongOwner = await cliAgent("agentStatus", "FIRST", false, iid2);
+  check("explicit sibling pin is not replaced by the presence owner", wrongOwner.code !== 0 && wrongOwner.out.includes("belongs to manager instance") && JSON.parse(wrongOwner.out).target.managerInstanceId === iid2, wrongOwner);
   const staleControl = await control(staleClient, ctx, "status", { name: "second" });
   check("public workspace control rejects stale location pins", !staleControl.ok && staleControl.code === "expired", staleControl);
   for (const command of ["agentStatus", "stop", "input", "attachSeat"] as const) {
@@ -283,6 +305,7 @@ try {
   check("actual CLI named status does not depend on an unrelated silent manager", statusOther.code === 0 && statusOther.out.includes(iid2) && !statusOther.out.includes(iid1), statusOther);
   const other = await invoke(granted.tool, "second");
   check("sibling still answers its own seat while first owner is unavailable", !other.isError && other.text.includes(iid2), other);
+  assert.deepEqual(failures, []);
   console.log(`NAMED READ OWNER SMOKE OK (${checks} passed)`);
 } finally {
   for (const agent of callers.reverse()) await agent.stop();

@@ -128,13 +128,15 @@ no-manager startup choices or imperative planning.
 
 `cotal status <agent>` separates Identity, Execution, Mesh and Last reported activity.
 On a static or open space it resolves the live peer, then reads its holding manager's
-`inspect` command. Case-insensitive names and exact peer principal IDs use the resolved
-canonical name. The selected principal and lifecycle stay pinned through the read.
+`inspect` command. Case-insensitive names, exact peer principal IDs and the bare actor IDs
+printed by static/open manager rows use the resolved canonical name, including with `--on`.
+The selected principal and lifecycle stay pinned through the read.
 On a user-auth space it keeps the authorized manager census. An explicit `--server` and
 unregistered `--space` retain the raw open-broker connection, with or without `--on`.
 JSON has `identity`, `execution`, `mesh` and `activity` fields; missing optional observations
 are null with source annotations.
-`--on <manager-instance>` restricts the read. It takes no `--all` or `--components`.
+`--on <manager-instance>` restricts the read and never redirects to a different owner.
+It takes no `--all` or `--components`.
 `cotal status manager` keeps its manager diagnostic census. When a manager answers but runs
 no agent named `manager`, the refusal names the manager and points to `cotal status` and
 `cotal endpoint describe manager`.

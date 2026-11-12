@@ -135,11 +135,11 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
       : command === "attach" ? values.name : undefined;
     if (endpoint === BASELINE_LIFECYCLE_ENDPOINT && seatName !== undefined && (values.creds !== undefined || selection.credentialRef !== undefined))
       throw new CommandFailure("refused", "PERMISSION_DENIED", "a named seat read requires its holding manager's instance rail; this paired caller mode carries only class-one calls, so no request was sent", { target });
-    if (endpoint === BASELINE_LIFECYCLE_ENDPOINT && on === undefined && seatName !== undefined && values.creds === undefined &&
+    if (endpoint === BASELINE_LIFECYCLE_ENDPOINT && seatName !== undefined && values.creds === undefined &&
         resolveMeshTarget(process.cwd(), { space: selection.space, readOnly: true }).mode !== "user") {
       const roster = await rosterOf({ space: selection.space, ...(values.server === undefined ? {} : { server: String(values.server) }) });
       const seat = presenceSeat(roster, seatName);
-      on = seat.instanceId;
+      on ??= seat.instanceId;
       selectedSeat = seat.expectedSeat;
       if (command === "inspect") input!.name = selectedSeat.name;
       else values.name = selectedSeat.name;
