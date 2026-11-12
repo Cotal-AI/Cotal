@@ -57,6 +57,13 @@ tells the conversation to finish the connection, or that you denied it or let it
 Desktop chat, which runs no native module, ask Claude to retry the connection. Confirm the resulting
 connection with `cotal_orientation` and check that its space is the one you intended.
 
+If the space refuses a connection after approval, the native plugin reports the refusal and stops
+polling. This is separate from your denial. The conversation reads the saved reason without sending
+another connection request. An agent limit includes enrolled identities, including offline ones that
+can resume. The refusal can link to agent management and plan comparison; it never starts a purchase.
+A terminal refusal permits a fresh request after capacity changes. An unconfirmed outcome keeps its
+recovery record, so replacing a name cannot abandon an identity that may already exist.
+
 If Claude displays a success notification but its connector settings still offer Connect or report
 unfinished setup, do not treat the notification as proof of a working connection. Reopen the
 connector details and check whether its tools are available. If the conflict remains, report it as

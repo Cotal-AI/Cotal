@@ -309,6 +309,19 @@ hooks still report lifecycle status and activity; the native module owns incomin
 
 A signed-in identity keeps its request and secret in private local recovery state. A lost create
 response retries the same request without rotating its secret or allocating another identity.
+A permanent HTTP request failure stops automatic approval polling but keeps that recovery state.
+The native host reports a policy refusal separately from a person's denial, then serves its saved
+explanation through the same name and `approval_id` without another provision call.
+
+An authority can return a terminal agent-limit refusal with HTTP 409, `v: 1`, the saved `requestId`,
+`status: "refused"`, `error: "agent-cap"` and `cap: "agents"`.
+Its `current` and `limit` are safe integers with `current >= limit >= 1`.
+`agentsUrl` and a non-null `upgradeUrl` must be canonical HTTPS URLs on the pinned authority's origin.
+`upgradeUrl: null` offers no plan change. Server `message` and `tier` text are not displayed.
+The authority must persist this refusal so replaying that request can never issue an identity.
+Only a matching terminal answer lets the client remove an unissued request and start a fresh one.
+An older unversioned cap sentence can explain the limit but cannot release recovery state.
+Already-issued identities keep their lifecycle record even if a later response claims a cap refusal.
 Retiring a request that is still pending drops it, and no identity is issued for it. An identity
 issued before connection approval keeps working, and its recovery stays exact. Another plugin server reuses that identity only after the process that held it no longer exists.
 `cotal_disconnect`, session end and a signal request retirement of that lifecycle only. Other

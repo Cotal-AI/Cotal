@@ -17,6 +17,7 @@ const issued: Reply = { ok: true, env: { COTAL_NAME: "approval_probe" }, retire:
 const denied: Reply = { ok: false, refused: "denied", error: "the person denied this connection; no identity was issued" };
 const expired: Reply = { ok: false, refused: "expired", error: "the approval expired before this connection was issued; no identity was issued. Connect again to ask again" };
 const crash: Reply = { crash: true };
+const capped: Reply = { ok: false, refused: "refused", error: "You have reached the per-person limit of 50 agents. Upgrade: https://authority.example/billing" };
 
 const SESSION = "native-approval-session";
 const PROVISION = ["app-identity", "provision", "--require-approval", "--name", "approval_probe", "--session", SESSION, "--events"];
@@ -122,6 +123,38 @@ await cell("a denial tells the session and stops the replay", async () => {
     await new Promise((resolve) => setTimeout(resolve, WATCH.pollMs * 4));
     assert.equal(s.provisions().length, 2, "a decided request is not replayed");
     assert.equal(s.retirements().length, 0, "nothing was issued, so nothing is retired");
+  } finally { await s.close(); }
+});
+
+for (const reply of [capped, { ok: false, retryable: false, error: "conversation identity creation answered HTTP 409; its original request was retained" }]) {
+  await cell("a policy refusal is reported once without blaming the person or replaying the request", async () => {
+    const s = scenario([pending(), reply]);
+    try {
+      await s.bind();
+      await s.expectPending();
+      await until("the session receives the refusal", () => s.notices.length === 1);
+      assert.equal(s.notices[0]!.notice.status, "refused");
+      await new Promise((resolve) => setTimeout(resolve, WATCH.pollMs * 4));
+      assert.equal(s.provisions().length, 2);
+      await assert.rejects(s.host.open("local", "approval_probe", SESSION, undefined, ID), (error: unknown) =>
+        error instanceof Error && error.message === reply.error);
+      await assert.rejects(s.host.open("local", "other", SESSION, undefined, ID), /approval_id/);
+      await assert.rejects(s.host.open("local", "approval_probe", SESSION, undefined, "c".repeat(26)), /approval_id/);
+      assert.equal(s.provisions().length, 2, "reading or mismatching the refusal never provisions again");
+      assert.equal(s.retirements().length, 0);
+    } finally { await s.close(); }
+  });
+}
+
+await cell("a permanent error read directly by the conversation stops its existing watcher", async () => {
+  const s = scenario([pending(), { ok: false, retryable: false, error: "permanent request failure" }]);
+  try {
+    await s.bind();
+    await s.expectPending();
+    await assert.rejects(s.host.open("local", "approval_probe", SESSION), /permanent request failure/);
+    await new Promise((r) => setTimeout(r, WATCH.pollMs * 4));
+    assert.equal(s.provisions().length, 2);
+    assert.equal(s.notices.length, 0, "the direct tool result already reported the error");
   } finally { await s.close(); }
 });
 
@@ -233,5 +266,5 @@ await cell("an approved but unclaimed request is retired before asking for a dif
   } finally { await s.close(); }
 });
 
-assert.deepEqual(failures, [], `AGENT-305 approval resume cells red=${failures.length}/12:\n${failures.join("\n")}`);
-console.log("APP APPROVAL RESUME TESTS PASSED (12/12)");
+assert.deepEqual(failures, [], `AGENT-305 approval resume cells red=${failures.length}/15:\n${failures.join("\n")}`);
+console.log("APP APPROVAL RESUME TESTS PASSED (15/15)");
