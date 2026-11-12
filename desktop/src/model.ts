@@ -21,9 +21,9 @@ export function machinesUrl(provider: string, spaceId: string, instanceId: strin
 }
 
 export interface ComputerSpace { space: string; desired: boolean; observed: string; lastRefusal?: string }
-export function computerSpaceState(row: ComputerSpace): string {
+export function computerSpaceState(row: ComputerSpace, ready = false): string {
   if (row.lastRefusal) return row.lastRefusal;
-  if (row.observed === "connected") return "Connected";
+  if (row.observed === "connected") return ready ? "Connected" : "Starting";
   if (row.observed === "approval-pending") return "Waiting for owner approval";
   if (row.observed === "removed on this computer") return "Removed on this computer";
   return "Starting";

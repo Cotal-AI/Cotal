@@ -658,6 +658,16 @@ try {
     read17.text.slice(0, 300),
   );
   check("17b and clears the post", !slow.agent.peekInbox().some((i) => i.text.startsWith("channel post")));
+  check("17d an unanswered take is reported while its native request still waits",
+    read17.text.includes("1 role request is held and not shown") && slow.agent.heldTakes().count === 1,
+    { held: slow.agent.heldTakes(), reply: read17.text.slice(0, 300) });
+  check("17e an in-flight take does not wake another empty read",
+    slow.agent.pendingWake() === 0 && slow.agent.inboxWake() === 0,
+    { pending: slow.agent.pendingWake(), wake: slow.agent.inboxWake() });
+  const wait17 = await slowCall("cotal_wait", { seconds: 1 });
+  check("17f a wait during an unanswered take waits for new showable work",
+    wait17.ms >= 800 && wait17.text === "No new messages in 1 second. Call cotal_wait again to keep listening.",
+    { ms: wait17.ms, text: wait17.text });
   // A role request that fits a reply, whose take nothing answers, with one too big for any reply
   // behind it whose take the read never asks for.
   const behind = await holderOf("behind_holder", "behindrole");

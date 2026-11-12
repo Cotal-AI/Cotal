@@ -73,6 +73,7 @@
  * Add --cancel-only for C1, C2, C15, C6c and C10; --keep-fixture retains the sandbox after shutdown.
  * Add --retirement-only for shipped disconnect/uninstall credential erasure and sign-out guidance.
  * Add --renewal-only for the two-access-lifetime service renewal observation.
+ * Add --renewal-resume-only for shipped restarts with an expired or removed human sign-in.
  * Service-only setup: --hosting-only --no-manager-only, optionally --account-only.
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Credential expiry regression only: add --credential-expiry-only (C1, C2, C7, C10, C15 and C18).
@@ -153,6 +154,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, JSON.stringify(extra ?? "")?.slice(0, 600)); }
 };
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
+  if (process.argv.includes("--renewal-resume-only") && !/^(C1 |C2 |C15 |C6d |C14 |C8 |C11 |C10 )/.test(title)) return;
   if (process.argv.includes("--renewal-only") && !/^(C1 |C2 |C15 |C12 |C10 )/.test(title)) return;
   if (process.argv.includes("--retirement-only") && !/^(C1 |C2 |C15 |C3 |C5r |C10 )/.test(title)) return;
   if (title.startsWith("C5r ") && !process.argv.includes("--retirement-only")) return;
@@ -428,7 +430,7 @@ const spaces = ["on", "off", "deny", "brk", "session"].map((s) => `${setupHintsO
 const accounts = await Promise.all(spaces.map((s) => createSpaceAccountAuth(broker, s)));
 const handles: AuthServiceHandle[] = [];
 let nats: ChildProcess | undefined, release: (() => void) | undefined;
-const fixture = { owner: "", callerUid: "", sentinelCreds: "" };
+const fixture = { owner: "", cliUid: "", callerUid: "", sentinelCreds: "" };
 
 try {
   const ctx = await Promise.all(spaces.map(async (space, i) => {
@@ -452,9 +454,10 @@ try {
   // The owner's interactive row, derived exactly as the stock service derives it.
   for (const c of ctx) {
     const owner = deriveOwnerForIdpSubject((await loadOwnerSecret(c.store, c.space))!, idpOrigin, "machine-owner");
-    grantActor(c.stateDir, { owner, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
+    const seededCli = grantActor(c.stateDir, { owner, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
     if (c === ctx[0]) {
       fixture.owner = owner;
+      fixture.cliUid = seededCli.lifecycleUid!;
       fixture.callerUid = grantActor(c.stateDir, { owner, actor: "probe", scope: [], allowSubscribe: [], allowPublish: [] }).lifecycleUid!;
     }
   }
@@ -977,6 +980,82 @@ try {
       check("C6 instrument: connected again for the cells that follow", stateOf(await connectS(ON)) === "connected");
     });
 
+    await cell("C6d stored renewal proof resumes the shipped daemon without human sign-in", async () => {
+      seedUnitReceipt();
+      await d.close();
+      const original = findMesh(ON)!;
+      const recordPath = filesUnder(daemonDir).find((p) => p.includes("service-renewal") && p.endsWith(".json"));
+      assert.ok(recordPath, "connected control must have a renewal record");
+      const renewalFile = join(daemonDir, recordPath);
+      const initial = JSON.parse(readFileSync(renewalFile, "utf8"));
+      const identityBytes = readFileSync(join(daemonDir, spaceSegment(ON), "service-identity.json"), "utf8");
+      const requestBytes = readFileSync(join(daemonDir, spaceSegment(ON), "register-request.json"), "utf8");
+      assert.ok(initial.material.renewalExpiresAt > Date.now() / 1000 + 3600, "control has a current service proof");
+      const probeToken = (await (await fetch(`${idpUrl}/token`, { headers: { authorization: `Bearer ${SESSION}` } })).json() as { token: string }).token;
+      const stop = async () => {
+        if (foreground) await killAndAwaitExit(foreground, "SIGTERM");
+        foreground = undefined;
+      };
+      const start = async () => {
+        foreground = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "serve"], {
+          cwd: root, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" }, stdio: "ignore",
+        });
+        for (let i = 0; i < 100; i++) {
+          try { await ask(paths.socket, { op: "status" }, 1000); return; } catch { await sleep(100); }
+        }
+        throw new Error("renewal-resume daemon did not publish its endpoint");
+      };
+      try {
+        for (const mode of ["expired at provider", "removed locally"]) {
+          idpRevoked = true;
+          if (mode === "removed locally") deleteIdpSession(home, idpUrl);
+          const before = hits.length;
+          await start();
+          const resumed = await waitState(ON, (s) => s === "connected" || s === "not-signed-in" || s === "local-state-error", 15_000);
+          check(`C6d ${mode}: automatic resume connects without sign-in`, resumed === "connected", resumed);
+          const connected = await cli(["service-connect", "--space", ON]);
+          check(`C6d ${mode}: explicit service-connect succeeds`, connected.status === 0 && connected.doc?.result?.state === "connected");
+          const posts = hits.slice(before).filter((h) => h.space === ON && h.method === "POST");
+          check(`C6d ${mode}: only service renewal and ready are posted`, posts.some((h) => h.operation === "renew") && posts.every((h) => h.operation === "renew" || h.operation === "ready"), posts);
+          check(`C6d ${mode}: an independently authorized caller reaches machine-status`, (await probeMachine(undefined, probeToken)).reply.ok);
+          const current = JSON.parse(readFileSync(renewalFile, "utf8"));
+          check(`C6d ${mode}: original request ids and assignment remain`, current.activateRequestId === initial.activateRequestId && current.renewRequestId === initial.renewRequestId
+            && readFileSync(join(daemonDir, spaceSegment(ON), "service-identity.json"), "utf8") === identityBytes
+            && readFileSync(join(daemonDir, spaceSegment(ON), "register-request.json"), "utf8") === requestBytes);
+          await stop();
+        }
+        // The same proof must never silently repin a replacement account.
+        changedAccount.set(ON, (await createSpaceAccountAuth(broker, "renewal-replacement")).account.pub);
+        const beforeMismatch = hits.length;
+        await start();
+        check("C6d account mismatch refuses without a POST", await waitState(ON, (s) => s === "account-mismatch", 10_000) === "account-mismatch"
+          && !hits.slice(beforeMismatch).some((h) => h.method === "POST"));
+        await stop();
+        changedAccount.delete(ON);
+        // Expiry is a real local deadline check, not new service authority. Missing human login
+        // must report sign-in required, leave the material untouched, and send no register/activate.
+        const current = JSON.parse(readFileSync(renewalFile, "utf8"));
+        const expired = JSON.stringify({ ...current, material: { ...current.material, renewalExpiresAt: Math.floor(Date.now() / 1000) - 1 } });
+        writeFileSync(renewalFile, expired, { mode: 0o600 });
+        const beforeExpired = hits.length;
+        await start();
+        check("C6d expired proof without login reports not-signed-in", await waitState(ON, (s) => s === "not-signed-in", 10_000) === "not-signed-in");
+        const refused = await cli(["service-connect", "--space", ON]);
+        check("C6d expired proof explicit connect needs sign-in", refused.status === 2 && refused.doc?.error?.code === "AUTH_REQUIRED");
+        check("C6d expired proof changes no records or remote authority", readFileSync(renewalFile, "utf8") === expired
+          && !hits.slice(beforeExpired).some((h) => h.method === "POST"));
+        await stop();
+        writeFileSync(renewalFile, JSON.stringify(current), { mode: 0o600 });
+      } finally {
+        await stop();
+        changedAccount.delete(ON);
+        recordMesh(original);
+        idpRevoked = false;
+        saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+        d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home });
+      }
+    });
+
     await cell("C6b shipped startup retries unavailable intent and cancels pending retries", async () => {
       seedUnitReceipt();
       await d.close();
@@ -1170,8 +1249,26 @@ try {
         await start();
         check("C6c healthy control connects and records intent", (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
         await stop();
-        for (const phase of ["token", "info", "register", "renew", "ready"]) {
+        // Current service proofs skip human sign-in and registration. Missing or locally expired
+        // material takes the signed-in path instead. Hold only requests each path actually makes.
+        const recoveryPaths = [
+          { material: "current", phases: ["info", "renew", "ready"] },
+          { material: "missing", phases: ["token", "info", "register", "activate", "ready"] },
+          { material: "expired", phases: ["token", "info", "register", "activate", "ready"] },
+        ];
+        for (const recovery of recoveryPaths) for (const phase of recovery.phases) {
           for (const action of ["disconnect", "SIGTERM"]) {
+            const label = `${recovery.material} ${phase}`;
+            const renewalFiles = filesUnder(daemonDir).filter((p) => p.includes("service-renewal") && p.endsWith(".json"));
+            assert.equal(renewalFiles.length, 1, "startup cancellation needs one connected renewal record");
+            const renewalFile = join(daemonDir, renewalFiles[0]!);
+            const record = JSON.parse(readFileSync(renewalFile, "utf8"));
+            assert.ok(record.material?.renewalExpiresAt > Date.now() / 1000, "control has a current renewal proof");
+            const ids = [record.activateRequestId, record.renewRequestId];
+            if (recovery.material !== "current") writeFileSync(renewalFile, JSON.stringify({ ...record,
+              material: recovery.material === "missing" ? null : { ...record.material, renewalExpiresAt: Math.floor(Date.now() / 1000) - 1 },
+            }), { mode: 0o600 });
+            const before = hits.length, tokensBefore = jwtsIssued.length;
             let entered!: () => void, release!: () => void, aborted!: () => void;
             const requested = new Promise<void>((resolve) => { entered = resolve; });
             let released = false;
@@ -1182,14 +1279,16 @@ try {
             else connectGates.set(ON, async (operation, res) => { if (operation === phase) await gate(res); });
             try {
               await start();
-              if (await within(requested.then(() => true), 15_000) !== true) throw new Error(`C6c startup did not reach ${phase}`);
+              if (await within(requested.then(() => true), 15_000) !== true) throw new Error(`C6c ${recovery.material} startup did not reach ${phase}`);
               const status = await cli("service-status");
-              check(`C6c ${phase} ${action} instrument: startup is connecting`, status.code === 2 && status.doc.error?.cause?.code === "CONNECTING", status);
+              check(`C6c ${label} ${action} instrument: startup is connecting`, status.code === 2 && status.doc.error?.cause?.code === "CONNECTING", status);
+              if (recovery.material === "current") check(`C6c ${label} startup uses no human proof or register request`, jwtsIssued.length === tokensBefore
+                && hits.slice(before).every((hit) => hit.space === ON && (hit.method === "GET" || hit.operation === "renew" || hit.operation === "ready")));
               const started = Date.now();
               if (action === "disconnect") {
                 const pending = cli("service-disconnect");
                 const reply = await within(pending, cancellationDeadlineMs);
-                check(`C6c ${phase} disconnect returns before release and forgets intent`, !released && reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
+                check(`C6c ${label} disconnect returns before release and forgets intent`, !released && reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
                 // Release only after observing the bound, even on failure, then settle the child.
                 if (!reply) release();
                 await pending;
@@ -1197,20 +1296,24 @@ try {
                 const exited = new Promise<number | null>((resolve) => child!.once("exit", resolve));
                 child!.kill("SIGTERM");
                 const code = await within(exited, cancellationDeadlineMs);
-                check(`C6c ${phase} SIGTERM exits cleanly before release and retains intent`, !released && code === 0 && !existsSync(paths.socket) && existsSync(intentFile(ON)), { code });
+                check(`C6c ${label} SIGTERM exits cleanly before release and retains intent`, !released && code === 0 && !existsSync(paths.socket) && existsSync(intentFile(ON)), { code });
                 if (code === undefined) release();
                 await exited;
                 child = undefined;
               }
-              console.log(`  C6c ${phase} ${action} elapsed ms: ${Date.now() - started}`);
-              check(`C6c ${phase} ${action} closes the held HTTP request`, await within(cancelled, 1000) === true);
+              console.log(`  C6c ${label} ${action} elapsed ms: ${Date.now() - started}`);
+              check(`C6c ${label} ${action} closes the held HTTP request`, await within(cancelled, 1000) === true);
             } finally { tokenGate = undefined; connectGates.delete(ON); release(); await stop(); }
             await start();
             if (action === "disconnect") {
               const status = await cli("service-status");
-              check(`C6c ${phase} explicit disconnect has no registration after restart`, status.code === 2 && status.doc.error?.cause?.code === "NOT_REQUESTED", status);
-              check(`C6c ${phase} explicit reconnect restores intent`, (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
-            } else check(`C6c ${phase} healthy restart resumes and serves`, (await waitState(ON, (state) => state === "connected", 15_000)) === "connected" && (await probeMachine()).reply.ok);
+              check(`C6c ${label} explicit disconnect has no registration after restart`, status.code === 2 && status.doc.error?.cause?.code === "NOT_REQUESTED", status);
+              check(`C6c ${label} explicit reconnect restores intent`, (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
+            } else {
+              check(`C6c ${label} healthy restart resumes and serves`, (await waitState(ON, (state) => state === "connected", 15_000)) === "connected" && (await probeMachine()).reply.ok);
+              const after = JSON.parse(readFileSync(renewalFile, "utf8"));
+              check(`C6c ${label} healthy restart reuses activate and renew ids`, after.activateRequestId === ids[0] && after.renewRequestId === ids[1]);
+            }
             await stop();
           }
         }
@@ -1376,16 +1479,30 @@ try {
       let exited = capture();
       try {
         for (let i = 0; i < 100 && !existsSync(paths.socket) && child.exitCode === null; i++) await sleep(100);
-        const earlyBefore = hits.length;
         seedUnitReceipt();
         for (const op of ["connect-check", "register", "service-connect", "service-status", "setup"] as const) {
+          const earlyBefore = hits.length;
           const early = await cli([op, ...(op === "setup" ? ["--no-manager", "--wait", "0"] : []), "--space", ON]);
-          check(`C18 early IdP expiry ${op} names clocks and fails closed`, early.status === 2
+          check(`C18 ${op === "service-connect" || op === "service-status" ? "service credential" : "IdP proof"} expiry ${op} names clocks and fails closed`, early.status === 2
             && early.doc?.error?.code === "LIFECYCLE_BLOCKED" && early.doc.error?.cause?.code === "CREDENTIAL_EXPIRED"
             && /expired according to this machine's clock/.test(early.doc.error.message) && /check.*clocks/.test(early.doc.error.message), early);
+          const during = hits.slice(earlyBefore);
+          if (op === "service-connect") {
+            // A current service proof must be tried before human sign-in. The five-minute
+            // skew rejects its freshly minted access bearer, not the unrelated IdP proof.
+            check("C18 proof-first connect only reads the pinned account and renews", during.length === 2
+              && during[0]?.space === ON && during[0].method === "GET" && during[0].path === "/service-endpoint-authority" && during[0].status === 200
+              && during[1]?.space === ON && during[1].method === "POST" && during[1].operation === "renew"
+              && during[1].status === 200 && during[1].state === "credential", during);
+          } else {
+            check(`C18 early IdP expiry ${op} contacts no space authority`, during.length === 0, during);
+          }
         }
-        check("C18 early IdP expiry contacts no space authority and preserves renewal material", hits.length === earlyBefore
-          && readFileSync(target, "utf8") === original && !existsSync(intentFile(ON)));
+        check("C18 rejected proof-first credential preserves renewal material", readFileSync(target, "utf8") === original);
+        check("C18 rejected proof-first credential records no connect intent", !existsSync(intentFile(ON)));
+        let unanswered = false;
+        try { await probeMachine(); } catch (e) { unanswered = unansweredRequest(e); }
+        check("C18 rejected proof-first credential leaves no serving responder", unanswered);
         await killAndAwaitExit(child, "SIGTERM");
         await exited;
         // Isolate the original service-credential expiry path with a proof valid beyond the skew.
@@ -1722,9 +1839,10 @@ try {
     });
 
     await cell("H1 shipped setup hosts an answering Manager independently of machine approval", async () => {
-      seedUnitReceipt();
+      seedUnitReceipt(join(repo, "bin/dist/cotal.js"), true);
       await d.close();
-      const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
+      // D0 already activated this interactive actor. Extend its grant without replacing its lifecycle.
+      const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: fixture.cliUid, scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
       const original = findMesh(ON)!;
       const published = await (await fetch(`${svc[0]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as { server: string; tlsRequired?: boolean; userAuth: NonNullable<MeshEntry["userAuth"]> };
       if (process.argv.includes("--cold-restart-repro") || process.argv.includes("--slow-status-repro") || process.argv.includes("--hosted-latency")) published.server = brokerPathUrl;
@@ -1986,7 +2104,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
         const servicePath = process.argv.includes("--setup-path-repro") || process.argv.includes("--account-setup-journey") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
         let recoveryRestarts = 0;
-        const launch = () => spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(upgrading && (!process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro")) ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
+        const launch = () => spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(!upgrading || !process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro") ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
         let child = launch();
         const attach = () => {
           child.stdout.on("data", chunk => { if (process.argv.includes("--rollback-busy-repro")) console.log("RB DAEMON STDOUT", String(chunk)); });
@@ -2252,6 +2370,24 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                 check("I10 repaired intent can be removed", repaired.code === 0 && !existsSync(intent), repaired);
                 return;
               }
+              if (process.argv.includes("--cleanup-preflight-repro")) {
+                const before = deregisterRequests;
+                const sessionFile = join(home, "idp-sessions.json");
+                const heldSessionFile = `${sessionFile}.preflight-held`;
+                renameSync(sessionFile, heldSessionFile);
+                let withdrawal;
+                try { withdrawal = await ask(paths.socket, { op: "managers-stop" }, 100_000); }
+                finally { renameSync(heldSessionFile, sessionFile); }
+                const view = resultOf(await ask(paths.socket, { op: "service-status", space: ON }));
+                console.log("  cleanup preflight", JSON.stringify({ before, after: deregisterRequests, withdrawal, manager: view.manager }));
+                assert.equal(deregisterRequests, before, "rejected login sends no deregistration POST");
+                assert.equal(view.manager?.registrationCleanup, "pending", "pre-send login rejection remains retryable");
+                await killAndAwaitExit(child, "SIGTERM");
+                child = await startDaemon();
+                for (let i = 0; i < 40 && deregisterRequests === before; i++) await sleep(100);
+                assert.equal(deregisterRequests, before + 1, "restored login permits one cleanup retry");
+                return;
+              }
               deregisterMode = mode;
               const disconnected = await cli("service-disconnect", "--space", ON);
               const status = resultOf(await ask(paths.socket, { op: "service-status", space: ON }));
@@ -2267,7 +2403,8 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               assert.equal(existsSync(intentFile(ON)), false, "explicit withdrawal must forget the durable service intent");
               assert.equal(disconnected.code, mode === undefined ? 0 : 2);
               if (mode !== undefined) {
-                assert.equal(status.manager?.state, "refused");
+                assert.equal(status.manager?.state, mode === "unknown" ? "refused" : "stopped");
+                assert.equal(status.manager?.registrationCleanup, mode === "unknown" ? "unknown" : "pending");
                 assert.ok(status.manager.next.includes(`endpoint deregister manager ${instanceId}`), "cleanup refusal remains actionable");
                 const human = await plainCommand("status");
                 assert.ok(human.out.includes(`endpoint deregister manager ${instanceId}`));
@@ -2277,7 +2414,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                 const afterRestart = resultOf(await ask(paths.socket, { op: "service-status", space: ON }));
                 assert.equal(afterRestart.state, "not-requested", "withdrawal must survive daemon restart");
                 assert.equal(existsSync(intentFile(ON)), false);
-                assert.equal(deregisterRequests, calls, "restart must not repeat an unconfirmed cleanup");
+                if (mode === "unknown") assert.equal(deregisterRequests, calls, "restart must not repeat an unconfirmed cleanup");
+                else {
+                  for (let i = 0; i < 40 && deregisterRequests === calls; i++) await sleep(100);
+                  assert.equal(deregisterRequests, calls + 1, "restart resumes pending cleanup once using its original authority");
+                }
                 if (mode === "unknown") {
                   assert.equal(afterRestart.manager?.registrationCleanup, "unknown");
                   idpRevoked = true;
@@ -2445,7 +2586,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             accountDesired = false; accountRevision++;
             deregisterMode = "unsupported";
             child = await startDaemon();
-            await waitAccount(s => s.managers.some((row: any) => row.space === ON && row.state === "refused" && row.next?.includes(`endpoint deregister manager ${initialManager.instanceId}`)), "A9 unsupported removal names the recorded instance and recovery command");
+            await waitAccount(s => s.managers.some((row: any) => row.space === ON && row.state === "stopped" && row.registrationCleanup === "pending" && row.next?.includes(`endpoint deregister manager ${initialManager.instanceId}`)), "A9 unsupported removal names the recorded instance and recovery command");
             const unsupported = await plainCommand("status");
             check("A9 human status reports the registration left behind", unsupported.out.includes("registration is left behind") && unsupported.out.includes(`endpoint deregister manager ${initialManager.instanceId}`), unsupported);
             check("A9 unsupported cleanup keeps the registration visible", (await participantPs(4)).managers.some((row: any) => row.instanceId === initialManager.instanceId && row.state === "silent"));
@@ -2542,15 +2683,23 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("A2a CLI human status names account computer and desired revision", humanStatus.code === 0 && humanStatus.out.includes("Account computer") && humanStatus.out.includes("Desired revision") && humanStatus.out.includes(ON), humanStatus);
           const jsonStatus = await cli("status");
           check("A2b CLI status JSON includes account desired and observed fields", jsonStatus.doc.result?.account?.spaces?.some((r: any) => r.space === ON && r.desired && r.observed === "connected"), jsonStatus);
+          const cleanupPath = join(home, "daemon", spaceSegment(ON), "manager-cleanup.json");
+          const retainedCleanup = JSON.parse(readFileSync(cleanupPath, "utf8"));
+          check("A2f Manager cleanup retains only original nonsecret coordinates before removal",
+            retainedCleanup.space === ON && retainedCleanup.phase === "hosted" && typeof retainedCleanup.instanceId === "string"
+            && retainedCleanup.storeIdentity?.kind === "fs"
+            && Object.keys(retainedCleanup).sort().join(",") === "instanceId,phase,provider,root,space,storeIdentity,version"
+            && (process.platform === "win32" || (statSync(cleanupPath).mode & 0o777) === 0o600));
           removeMesh(ON);
           await sleep(6000);
           let removedStatus: Record<string, any> = {};
           for (let i = 0; i < 60; i++) {
             removedStatus = await observed();
-            if (removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer") && removedStatus.managers?.every((row: any) => row.space !== ON || row.state === "stopped")) break;
+            if (removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer") && removedStatus.managers?.every((row: any) => row.space !== ON || row.state === "stopped") && !existsSync(cleanupPath)) break;
             await sleep(500);
           }
-          check("A2g local registry removal stops the Manager and marks local veto", removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer") && removedStatus.managers?.every((row: any) => row.space !== ON || row.state === "stopped"), removedStatus);
+          check("A2g local registry removal stops the Manager and marks local veto", removedStatus.account?.spaces?.some((row: any) => row.space === ON && row.observed === "removed on this computer") && removedStatus.managers?.every((row: any) => row.space !== ON || row.state === "stopped"), { account: removedStatus.account?.spaces?.find((row: any) => row.space === ON), manager: removedStatus.managers?.find((row: any) => row.space === ON) });
+          check("A2g confirmed registration cleanup removes its durable record", !existsSync(cleanupPath));
           accountBindingRevision = ++accountRevision;
           await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected"), "A2h dashboard rebind restores locally removed registration");
           removeMesh(ON);
@@ -3679,10 +3828,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         if (launch.ok) await askManager(client, ON, servers, "stop", { name: "daemon_smoke_seat" }, target.auth, "owner", 10_000, { instanceId: manager.instanceId });
         const intent = join(home, "daemon", `space.${Buffer.from(ON).toString("hex")}`, "manager-host.json");
         check("H1 hosting intent recorded after status", existsSync(intent));
-        process.kill(manager.pid, "SIGKILL");
+        const killTarget = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+        assert.ok(killTarget.state === "answering" && killTarget.instanceId === manager.instanceId && Number.isInteger(killTarget.pid), "kill the currently supervised answering Manager, not the snapshot from before the suspension test");
+        process.kill(killTarget.pid, "SIGKILL");
         let replacement: Record<string, any> = {};
-        for (let i = 0; i < 200; i++) { replacement = resultOf(await ask(paths.socket, { op: "manager-status", space: ON })); if (replacement.state === "answering" && replacement.pid !== manager.pid) break; await sleep(250); }
-        check("H2 killed Manager restarts and answers without a command", replacement.state === "answering" && replacement.pid !== manager.pid, replacement);
+        for (let i = 0; i < 200; i++) { replacement = resultOf(await ask(paths.socket, { op: "manager-status", space: ON })); if (replacement.state === "answering" && replacement.pid !== killTarget.pid) break; await sleep(250); }
+        check("H2 killed Manager restarts and answers without a command", replacement.state === "answering" && replacement.pid !== killTarget.pid, replacement);
         check("H2 unexpected child exit retains its native signal", String(replacement.lastExit).includes("SIGKILL"));
         const predecessorManager = replacement.pid;
         await killAndAwaitExit(child, "SIGKILL");
@@ -3703,9 +3854,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         const after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
         check("H5 missing supervise scope refuses with native cause and remedy", refused.code === 2 && /supervise|scope/i.test(refused.doc.error?.message ?? "") && /supervise/.test(refused.doc.error?.remedy ?? ""), refused);
         check("H5 one permanent refusal, no child restart loop or intent", before.state === "refused" && after.state === "refused" && before.restarts === after.restarts && !existsSync(intent), { before, after });
-        await cli("service-disconnect", "--space", ON);
-        await cli("setup", "--no-manager", "--space", ON, "--wait", "0");
-        check("H6 --no-manager starts no child or hosting intent", resultOf(await ask(paths.socket, { op: "manager-status", space: ON })).state === "stopped" && !existsSync(intent));
+        grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: cliLifecycle, scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
+        const h6Disconnect = await cli("service-disconnect", "--space", ON);
+        const h6Setup = await cli("setup", "--no-manager", "--space", ON, "--wait", "0");
+        const h6Status = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+        check("H6 --no-manager starts no child or hosting intent", h6Status.state === "stopped" && !existsSync(intent), { disconnect: h6Disconnect, setup: h6Setup, status: h6Status, intentExists: existsSync(intent) });
         grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: cliLifecycle, scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
         idpRevoked = true;
         try {
@@ -3719,7 +3872,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         const managedPaths = daemonPathsFor(managedHome, env);
         const managedUnit = `cotal-daemon-${createHash("sha256").update(managedHome).digest("hex").slice(0, 16)}.service`;
         const unitPath = join(root, "config", "systemd", "user", managedUnit);
-        const unitBytes = `[Unit]\nDescription=Owned recording fixture\n[Service]\nExecStart="${process.execPath}" "${cliEntry}" daemon serve --daemon-home "${managedHome}"\nRestart=always\n`;
+        const unitBytes = `[Unit]\nDescription=Owned recording fixture\n[Service]\nExecStart="${process.execPath}" "${cliEntry}" daemon serve --daemon-home "${managedHome}"\nEnvironment=COTAL_DAEMON_NATIVE_SERVICE=1\nRestart=always\n`;
         writeFileSync(unitPath, unitBytes, { mode: 0o600 });
         writeFileSync(join(managedHome, "service-unit.json"), JSON.stringify({ v: 1, unit: managedUnit, unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString(), daemonHome: managedHome }), { mode: 0o600 });
         let managedChild = await startDaemon(managedHome);
@@ -3755,8 +3908,9 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           let removed;
           if (!process.argv.includes("--shutdown-repro")) {
             process.kill(managed.pid, "SIGSTOP");
-            const uninstalling = ask(managedPaths.socket, { op: "managers-stop" }, 15_000);
-            const ended = await Promise.race([uninstalling.then(() => true), sleep(12_000).then(() => false)]);
+            const uninstalling = ask(managedPaths.socket, { op: "managers-stop" }, 85_000);
+            // Unknown inventory permits a 10-second probe and 60-second retirement grace.
+            const ended = await Promise.race([uninstalling.then(() => true), sleep(80_000).then(() => false)]);
             console.log("  STOP REPRO bounded uninstall", ended);
             check("H8 unresponsive owned child cannot hang uninstall", ended);
             try { process.kill(managed.pid, "SIGCONT"); } catch { /* forced stop already reaped it */ }
@@ -3814,7 +3968,12 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("HM005 native stop leaves actual hosted Manager and socket gone", !alive && !existsSync(paths.socket));
           seedUnitReceipt();
           child = await startDaemon();
-          check("HM005 later installation resumes no hosted Manager", (await cli("status")).doc.result?.managers?.length === 0);
+          const reinstalledStatus = await cli("status");
+          const reinstalledManagers = reinstalledStatus.doc.result?.managers as Record<string, any>[] | undefined;
+          // Durable cleanup may retain a stopped observation after the hosting intent is removed.
+          check("HM005 later installation resumes no hosted Manager", reinstalledStatus.code === 0 && Array.isArray(reinstalledManagers)
+            && reinstalledManagers.every(manager => manager.state === "stopped" && manager.pid === undefined)
+            && !existsSync(intent), { code: reinstalledStatus.code, managers: reinstalledManagers, error: reinstalledStatus.doc.error, err: reinstalledStatus.err });
         } finally { env.PATH = defaultPath; defaultControl.close(); }
       } finally {
         recordingRestart = false;

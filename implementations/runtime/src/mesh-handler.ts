@@ -672,8 +672,18 @@ export class MeshHandler {
    */
   async release(entries: readonly JournalEntry[]): Promise<void> {
     const owed = this.services ? await this.services.authority.releaseEntries() : entries;
-    for (const e of owed)
-      if (e.kind === "spawn" && e.requestId !== undefined) await this.dischargeSpawn(e);
+    for (const e of owed) {
+      if (e.kind !== "spawn" || e.requestId === undefined) continue;
+      try {
+        await this.dischargeSpawn(e);
+      } catch (err) {
+        // The program finished. A cleanup failure neither changes its outcome nor excuses
+        // skipping the remaining seats. Cancellation discharge still throws and stays owed.
+        const handle = (e.result as Partial<AgentHandleValue> | undefined)?.agent;
+        const seat = typeof handle === "string" ? handle : e.external?.name ?? journalEntryKeyString(e);
+        console.error(`run ${this.binding.runId}: completion could not confirm release of ${seat} (spawn goal "${e.external?.goalId ?? e.requestId}"): ${String(err)}; inspect it with \`cotal ps\` and stop any remaining seat with \`cotal stop\``);
+      }
+    }
   }
 
   /**
@@ -827,11 +837,23 @@ export class MeshHandler {
     // class rail, and so is a split refusal `invokeManager` gave up repairing, since it states that
     // nothing ran. A bounded run of them leaves the discharge open rather than claiming it gone.
     const allocator = fact.committer?.instanceId;
+    let unanswered = 0;
     for (let attempt = 0; ; attempt += 1) {
-      const reply = await this.invokeManager(await this.manager("despawn"), "despawn", { graceful: true }, {
-        target: { mode: "owner", ...target },
-        deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
-      });
+      let reply: EpAttributedReply;
+      try {
+        reply = await this.invokeManager(await this.manager("despawn"), "despawn", { graceful: true }, {
+          target: { mode: "owner", ...target },
+          deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
+        });
+      } catch (err) {
+        // Silence leaves the outcome unknown. Repeating this despawn is safe only because every
+        // attempt pins the same lifecycle, including when the first one already retired it.
+        if (!unansweredRequest(err) || ++unanswered >= SPAWN_DISCHARGE_UNANSWERED_ATTEMPTS
+          || attempt === MANAGER_ROUTE_ATTEMPTS) throw err;
+        this.managerServices.delete("despawn");
+        await delay(GOAL_POLL_MS);
+        continue;
+      }
       // Tolerated refusals are the two "already gone" shapes: `not-found` (no such agent), and
       // `expired` (the target's lifecycle mapping is gone or rotated — this despawn pins one
       // incarnation, and an incarnation the mapping no longer names is not running).
@@ -2975,6 +2997,8 @@ const GOAL_POLL_MS = 2_000;
  *  side (the manager replies at identity mint, before any provision), so this bounds a lost
  *  broker, not the spawn itself — the spawn's own outcome rides the goal terminal. */
 const SPAWN_ACCEPT_DEADLINE_MS = 30_000;
+/** Total unanswered attempts per seat. Separate from class routing so an outage is bounded. */
+const SPAWN_DISCHARGE_UNANSWERED_ATTEMPTS = 3;
 /** Bound on the manager's synchronous `turn` ACCEPT reply (the relay registration, not the yield). */
 const TURN_ACCEPT_DEADLINE_MS = 30_000;
 /** How many class-rail calls a despawn, a relay withdrawal or a lapse's inspect sends before it stops

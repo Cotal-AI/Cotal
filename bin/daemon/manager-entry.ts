@@ -3,6 +3,7 @@ import { registry, resolveAuthProvider, type Command } from "@cotal-ai/core";
 import { IdpSessionRejectedError, withIdpSessionDir } from "@cotal-ai/auth";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { checkDir } from "./endpoint.js";
+import { bindManagerCleanup } from "./manager-cleanup.js";
 
 // Reports are observational. Teardown still obtains authority directly after its parent leaves.
 function report(frame: object): void {
@@ -32,6 +33,7 @@ const command: Command = {
     const authority = provider.managerServiceAuthority;
     if (!authority) throw new CommandFailure("refused", "UNSUPPORTED", "the auth provider does not support hosted Manager authority");
     provider.managerServiceAuthority = async (request) => {
+      bindManagerCleanup(home, request.request.space, request.request.instanceId);
       report({ kind: "manager-instance", instanceId: request.request.instanceId });
       try { return await authority.call(provider, request); }
       catch (error) {

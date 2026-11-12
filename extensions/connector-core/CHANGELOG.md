@@ -1,5 +1,26 @@
 # @cotal-ai/connector-core
 
+## 0.162.0
+
+### Minor Changes
+
+- 03b2e19: Resolve named seat reads and terminal attachment to the manager reported by live presence.
+  Keep instance permission refusals explicit, reject changed lifecycles, and stop retrying
+  sibling managers for a post-spawn model audit or named despawn lookup. Explicit manager pins
+  retain alias canonicalization and lifecycle checks, and named status preserves the bare actor
+  IDs printed by static and open manager rows. Ambiguous live aliases keep their typed refusal
+  for pinned status, stop and input before any Manager command is submitted.
+  Terminal reconnects keep the initially selected incarnation with or without a manager pin,
+  and end when that incarnation has been replaced.
+
+### Patch Changes
+
+- 967dfb7: Report role requests whose take is still unanswered as held, and avoid waking empty reads while that take is in flight. Late successful takes still wake the reader, and other messages remain readable.
+
+## 0.161.1
+
+No changes in this release.
+
 ## 0.161.0
 
 No changes in this release.

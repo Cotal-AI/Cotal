@@ -149,6 +149,11 @@ chmodSync(root, 0o700);
  *  whoever runs this suite. Its session stays in its own `home`. */
 const cliHome = join(root, "cli-home");
 let n = 0;
+/** What a sign-in attempt left in the session directory. The daemon writes its computer name
+ *  record there when it starts, whatever the sign-in does, so that one file is not counted. */
+const persisted = (home: string): string[] => !existsSync(home) ? [] : (readdirSync(home, { recursive: true }) as string[])
+  .map((entry) => entry.split("\\").join("/"))
+  .filter((entry) => entry !== "daemon" && entry !== "daemon/computer-name.json");
 const fresh = () => {
   const rt = join(root, `rt${++n}`);
   const home = join(root, `home${n}`);
@@ -268,7 +273,7 @@ try {
       await decide(String(p.userCode), "deny");
       const r = resultOf(await w.next(isResult, 15000));
       check("L2 one login-result failed with reason denied", r.outcome === "failed" && r.reason === "denied", r);
-      check("L2 nothing persisted", !existsSync(home) || readdirSync(home).length === 0, existsSync(home) ? readdirSync(home) : []);
+      check("L2 nothing persisted", persisted(home).length === 0, persisted(home));
       w.end();
     } finally { await d.close(); }
   });
@@ -323,7 +328,7 @@ try {
       check("L4 the ack follows settlement: the start stream's result was already delivered", resultWrittenBeforeAck, a.frames);
       await sleep(1500);
       check("L4 0 polls after the cancel", polls() === pollsAtAck, { pollsAtAck, now: polls() });
-      check("L4 nothing persisted", !existsSync(home) || readdirSync(home).length === 0);
+      check("L4 nothing persisted", persisted(home).length === 0, persisted(home));
       a.end(); c.end();
     } finally { await d.close(); }
   });
@@ -349,7 +354,7 @@ try {
       const ack = await c.next((f) => f.id === cid);
       check("L5 cancel after approval, before persistence, reports cancelled", resultOf(ack).outcome === "cancelled", ack);
       check("L5 the start stream ends cancelled", resultOf(await a.next(isResult)).outcome === "cancelled");
-      check("L5 nothing persisted: no session file, no catalog file", !existsSync(home) || readdirSync(home).length === 0, existsSync(home) ? readdirSync(home) : []);
+      check("L5 nothing persisted: no session file, no catalog file", persisted(home).length === 0, persisted(home));
       a.end(); c.end();
     } finally { await d.close(); }
   });
@@ -407,7 +412,7 @@ try {
       const pollsAfter = polls();
       await sleep(1500);
       check("L8 0 polls after the requester disconnected", polls() === pollsAfter, { pollsAfter, now: polls() });
-      check("L8 nothing persisted", !existsSync(home) || readdirSync(home).length === 0);
+      check("L8 nothing persisted", persisted(home).length === 0, persisted(home));
       const b = await wire(paths.socket);
       b.send({ v: 1, id: rid(), op: "login-start", idp: sBase });
       check("L8 the daemon accepts the next login-start", isPrompt(await b.next((f) => isPrompt(f) || f.ok === false)));

@@ -60,6 +60,7 @@ import {
   readRunRecord,
   newTakeoverId,
   EpEnvelopeError,
+  BIND_SPLIT_REISSUES,
   type EpCommandDef,
   type ResolvedService,
   type EpServeContext,
@@ -102,11 +103,9 @@ const preparedRoot = join(sd, "prepared-writer");
 const makeRepo = (dir: string, marker: string): string => {
   mkdirSync(dir);
   execFileSync("git", ["init", "-q"], { cwd: dir });
-  execFileSync("git", ["config", "user.email", "mesh-spawn@example.invalid"], { cwd: dir });
-  execFileSync("git", ["config", "user.name", "mesh-spawn smoke"], { cwd: dir });
   writeFileSync(join(dir, "marker"), marker);
   execFileSync("git", ["add", "marker"], { cwd: dir });
-  execFileSync("git", ["commit", "-qm", marker], { cwd: dir });
+  execFileSync("git", ["-c", "user.email=mesh-spawn@example.invalid", "-c", "user.name=mesh-spawn smoke", "commit", "-qm", marker], { cwd: dir });
   return execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
 };
 const managerHead = makeRepo(managerRoot, "manager");
@@ -573,6 +572,81 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
     bound?.external?.goalId === bound?.requestId && bound?.external?.name === alloc?.name
       && bound?.external?.actor === alloc?.actor && bound?.external?.uid === alloc?.uid,
     JSON.stringify(bound?.external));
+}
+
+// Drop actual request or reply frames without changing endpoint timeout behavior. The normal
+// manager-shaped endpoint and stock run driver still execute every other part of these runs.
+{
+  console.log("• completion release survives unanswered despawns");
+  const publish = nc.publish;
+  const report = console.error;
+  for (const fault of ["first-reply", "first-request", "all-first-seat-requests"] as const) {
+    const calls: Array<{ target: unknown; id: string }> = [];
+    const notices: string[] = [];
+    let firstTarget: string | undefined;
+    let lostReply: string | undefined;
+    let dropped = 0;
+    const runId = `sp-release-${fault}`;
+    try {
+      console.error = (...args: unknown[]) => { notices.push(args.map(String).join(" ")); };
+      nc.publish = (subject, data, opts) => {
+        if (subject.includes(".one.manager.despawn.")) {
+          const request = JSON.parse(typeof data === "string" ? data : new TextDecoder().decode(data)) as { target: unknown; id: string };
+          calls.push(request);
+          firstTarget ??= JSON.stringify(request.target);
+          if (fault === "first-reply" && calls.length === 1) lostReply = request.id;
+          if ((fault === "first-request" && calls.length === 1)
+            || (fault === "all-first-seat-requests" && JSON.stringify(request.target) === firstTarget)) {
+            dropped += 1;
+            return;
+          }
+        }
+        if (lostReply !== undefined && subject.includes(".reply.manager.")) {
+          const reply = JSON.parse(typeof data === "string" ? data : new TextDecoder().decode(data)) as { id: string };
+          if (reply.id === lostReply) {
+            lostReply = undefined;
+            dropped += 1;
+            return;
+          }
+        }
+        publish.call(nc, subject, data, opts);
+      };
+      const before = allocations.length;
+      const out = await driven({
+        space: SPACE, endpoint: EP, kv, runId, lease: lease(),
+        source: 'await spawn("builder"); await spawn("builder");', handler: mk(runId),
+      });
+      const seats = allocations.slice(before);
+      const exhausted = fault === "all-first-seat-requests";
+      c(`${fault}: the driver and recorded run keep completed`, out.status === "completed"
+        && (await readRunRecord(kv, EP, runId))?.status?.value.state === "completed", out);
+      // After a lost reply the retired target has no mapping. The shared class-rail repair
+      // first exhausts its routing bound before returning the allocator's already-gone reply.
+      const expectedCalls = fault === "first-reply" ? BIND_SPLIT_REISSUES + 3 : exhausted ? 4 : 3;
+      c(`${fault}: unanswered calls have a bounded retry count`, dropped === (exhausted ? 3 : 1)
+        && calls.length === expectedCalls, { dropped, calls: calls.length, expectedCalls });
+      c(`${fault}: every retry pins the original lifecycle`, calls.slice(0, -1)
+        .every((call) => JSON.stringify(call.target) === firstTarget), calls);
+      c(`${fault}: later seats are released and only an unconfirmed seat remains`, seats.length === 2
+        && gone.has(seats[1]!.uid) && gone.has(seats[0]!.uid) === !exhausted, seats);
+      c(`${fault}: only exhaustion names the seat, run and operator remedy`, exhausted
+        ? notices.some((line) => line.includes(runId) && line.includes(`${seats[0]!.name}#${seats[0]!.uid}`)
+          && line.includes("cotal ps") && line.includes("cotal stop"))
+        : notices.length === 0, notices);
+      if (exhausted) {
+        // Completion diagnostics must not turn cancellation debt into a successful discharge.
+        const entry = (await journalEntries(runId, "spawn")).find((e) => e.state === "settled");
+        if (entry === undefined) throw new Error("the run recorded no spawn to discharge");
+        const start = calls.length;
+        const error = await mk(runId).discharge([entry]).then(() => undefined, (err: unknown) => err);
+        c("cancellation still throws after bounded unanswered despawns", error instanceof EpEnvelopeError
+          && error.code === "deadline-exceeded" && calls.length - start === 3, error);
+      }
+    } finally {
+      nc.publish = publish;
+      console.error = report;
+    }
+  }
 }
 
 // ── 1b) an inline persona travels whole and is journalled with its digest ─────────────────────
@@ -1420,7 +1494,7 @@ log("winner", out.index);
 await serve2.stop();
 await Promise.allSettled(terminals);
 await nc.drain().catch(() => undefined);
-const EXPECTED_CELLS = 90;
+const EXPECTED_CELLS = 106;
 const ran = ok + fail;
 console.log(`mesh-spawn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

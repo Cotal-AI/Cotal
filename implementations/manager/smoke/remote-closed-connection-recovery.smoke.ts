@@ -18,7 +18,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { NatsConnection } from "@nats-io/transport-node";
+import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
   createSpaceAuth, credsClaims, inspectCredHealth, isReachable, mintCreds, mintLifecycleUid, newIdentity, remoteManagerActors, serverConfig,
   type Identity, type SpaceAuth,
@@ -68,6 +68,8 @@ const family = async (ttl: number) =>
   Object.fromEntries(await Promise.all(names.map(async (n) => [n, await sign(auth, n, ttl)]))) as Record<Name, string>;
 
 type Internals = {
+  dial(opts: object): Promise<NatsConnection>;
+  dialServeConnection(state: unknown, readCreds: () => string): Promise<{ nc: NatsConnection; handle: { stop(): Promise<void> } }>;
   dialSessionLedgerConnection(sw: { nc: NatsConnection; creds?: string }, identity: Identity): Promise<void>;
   sessionLedgerIdentity?: Identity;
   sessionLedgerConn?: { nc: NatsConnection; creds?: string };
@@ -125,7 +127,15 @@ try {
   m.sessionLedgerCreds = initial.sessionLedger;
   m.sessionLedgerIdentity = held.sessionLedger;
   m.ep = { reconnect: async () => {} };
-  m.serviceServe = { nc: { reconnect: async () => {} } as never, identity: held.serve, grant: { epoch: 7 }, creds: initial.serve };
+  // Only session-ledger recovery is native here. Serve replacement is a transport seam,
+  // not an authorization or dispatch test. Native serve continuity has its own live suite.
+  m.serviceServe = { nc: { flush: async () => {}, close: async () => {} } as never, identity: held.serve, grant: { epoch: 7 }, creds: initial.serve };
+  Object.assign(m.serviceServe, { handle: { stop: async () => {} } });
+  m.dialServeConnection = async (_state, readCreds) => {
+    const nc = await m.dial({ authenticator: (nonce?: string) => credsAuthenticator(new TextEncoder().encode(readCreds()))(nonce), maxReconnectAttempts: -1 });
+    await nc.flush();
+    return { nc, handle: { stop: async () => {} } };
+  };
   const sw: { nc: NatsConnection; creds?: string } = { nc: undefined as never, creds: initial.sessionLedger };
   m.sessionLedgerConn = sw;
   await m.dialSessionLedgerConnection(sw, held.sessionLedger);
@@ -176,6 +186,7 @@ try {
   console.error = origError;
   if (m) m.leaseStopping = true;
   await m?.sessionLedgerConn?.nc?.close().catch(() => {});
+  await m?.serviceServe?.nc?.close().catch(() => {});
   releaseBroker();
   await killAndAwaitExit(srv);
 }

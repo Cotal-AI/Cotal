@@ -12,6 +12,61 @@ import { releaseManifests, stageReleasePlan, STAGING_TAG } from "./stage-release
 
 const root = join(import.meta.dirname, "..");
 
+test("publisher waits for its uploaded pack in both modes and refuses an unreadable artifact", () => {
+  const workflow = YAML.parse(readFileSync(join(root, ".github/workflows/changesets.yml"), "utf8"));
+  const { steps, permissions } = workflow.jobs.publish;
+  const upload = steps.find((step) => step.id === "packed");
+  const ready = steps.find((step) => step.name === "Wait for the packed artifact to be listed");
+  const publish = steps.find((step) => step.id === "publish");
+  assert(ready, "fresh upload must be listed before the publisher consumes it");
+  assert(steps.indexOf(upload) < steps.indexOf(ready) && steps.indexOf(ready) < steps.indexOf(publish));
+  assert.equal(ready.if, undefined, "both direct and staged publication need the guard");
+  assert.equal(ready["timeout-minutes"], 2);
+  assert.equal(permissions.actions, "read");
+  assert.equal(ready.env.GH_TOKEN, "${{ github.token }}");
+  assert.equal(ready.env.ARTIFACT_ID, "${{ steps.packed.outputs.artifact-id }}");
+  assert.equal(publish.with["pack-dir-artifact-id"], ready.env.ARTIFACT_ID);
+
+  const scratch = mkdtempSync(join(tmpdir(), "release-artifact-ready-"));
+  try {
+    const bin = join(scratch, "bin"), calls = join(scratch, "calls"), sleeps = join(scratch, "sleeps");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "gh"), `#!${process.execPath}
+const fs = require("node:fs"), { execFileSync } = require("node:child_process");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.CALLS, JSON.stringify(args) + "\\n");
+const attempt = fs.readFileSync(process.env.CALLS, "utf8").trim().split("\\n").length;
+if (process.env.CASE === "api-error") process.exit(42);
+if (process.env.CASE === "malformed") { console.error("invalid API response"); process.exit(1); }
+const artifact = { id: 13915728551, name: "changeset-pack", expired: false };
+if (process.env.CASE === "expired") artifact.expired = true;
+if (process.env.CASE === "wrong-name") artifact.name = "other-pack";
+if (process.env.CASE === "wrong-id") artifact.id--;
+const visible = process.env.CASE !== "absent" && (process.env.CASE !== "delayed" || attempt >= 3);
+// Feed two pages through the workflow's actual jq filter, including unrelated artifacts.
+const pages = JSON.stringify({ artifacts: [{ ...artifact, id: 1 }] }) + "\\n" + JSON.stringify({ artifacts: visible ? [artifact] : [] });
+process.stdout.write(execFileSync("jq", ["-r", args[args.indexOf("--jq") + 1]], { input: pages }));
+`, { mode: 0o755 });
+    writeFileSync(join(bin, "sleep"), `#!${process.execPath}\nrequire("node:fs").appendFileSync(process.env.SLEEPS, process.argv.slice(2).join(" ") + "\\n");\n`, { mode: 0o755 });
+    for (const [kind, expected, attempts] of [["immediate", 0, 1], ["delayed", 0, 3], ["absent", 1, 30], ["expired", 1, 30], ["wrong-name", 1, 30], ["wrong-id", 1, 30], ["api-error", 42, 1], ["malformed", 1, 1], ["invalid-id", 1, 0]]) {
+      writeFileSync(calls, "");
+      writeFileSync(sleeps, "");
+      const env = { PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: scratch, GH_CONFIG_DIR: scratch, GITHUB_REPOSITORY: "owner/repository", GITHUB_RUN_ID: "123", ARTIFACT_ID: kind === "invalid-id" ? "" : "13915728551", CASE: kind, CALLS: calls, SLEEPS: sleeps };
+      // A subshell stands in for the step so exit 0 cannot skip the following publisher.
+      const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", `(\n${ready.run}\n)\nprintf 'publisher reached\\n'`], { env, encoding: "utf8", timeout: 15_000 });
+      assert.equal(result.status, expected, `${kind}: ${result.stderr}`);
+      assert.equal(result.stdout.includes("publisher reached"), expected === 0, kind);
+      const requests = readFileSync(calls, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+      assert.equal(requests.length, attempts, kind);
+      for (const args of requests) assert.deepEqual(args.slice(0, 4), ["api", "--paginate", "repos/owner/repository/actions/runs/123/artifacts?per_page=100", "--jq"]);
+      const waits = readFileSync(sleeps, "utf8").trim().split("\n").filter(Boolean);
+      assert.equal(waits.length, Math.max(0, attempts - 1), kind);
+      assert(waits.every((seconds) => seconds === "2"));
+      if (["absent", "expired", "wrong-name", "wrong-id"].includes(kind)) assert.match(result.stderr, /not listed in run 123 after 30 attempts/);
+    }
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
 test("direct install verification stays outside publisher concurrency while staged verification stays inside", () => {
   const workflow = YAML.parse(readFileSync(join(root, ".github/workflows/changesets.yml"), "utf8"));
   const inside = workflow.jobs.publish.steps.find((step) => step.run?.includes("verify-release-installable.mjs"));

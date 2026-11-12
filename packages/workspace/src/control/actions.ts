@@ -82,21 +82,21 @@ export interface ManagedRow {
 export async function control(client: ControlClient, ctx: ControlCtx, op: ControlOp, args?: Record<string, unknown>, opts: Pick<ManagerPin, "expectedTarget"> = {}): Promise<ManagerReply> {
   const spec = OPS[op];
   try {
-    let on: string | undefined;
+    let pin: ManagerPin = {};
     if (spec.targeted) {
       const name = String(args?.name ?? "").trim();
       if (!name) return { ok: false, error: `${op} requires a name` };
       const loc = await locateSeat(client, ctx, name, { onRefusal: "throw" });
       if (loc.kind === "absent") return { ok: false, error: seatNotFoundMessage(loc, name) };
       if (loc.kind === "several") return { ok: false, error: seatMissRefusal(name, `cotal ${op}`, loc) };
-      if (loc.kind === "pin") on = loc.instanceId;
+      if (loc.kind === "pin") pin = { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat };
     }
-    const t = await resolveControlTarget(ctx, spec.profile, on, { onRefusal: "throw" });
+    const t = await resolveControlTarget(ctx, spec.profile, pin.instanceId, { onRefusal: "throw" });
     const reach = t.auth.bearer ? "owner" : "any";
     const timeoutMs = "timeoutMs" in spec ? spec.timeoutMs : undefined;
     // `args` goes through as given: a void-input command is refused by the manager's schema when it
     // is handed `{}` instead of nothing, so no default is filled in here.
-    return await askManager(client, t.space, t.server, op, args, t.auth, reach, timeoutMs, spec.targeted ? { instanceId: on, expectedTarget: opts.expectedTarget } : undefined);
+    return await askManager(client, t.space, t.server, op, args, t.auth, reach, timeoutMs, spec.targeted ? { ...pin, expectedTarget: opts.expectedTarget } : undefined);
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }

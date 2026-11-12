@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/auth",
   "description": "Cotal per-user auth bridge: opaque owner-token derivation and strict user-token validation for the NATS auth-callout cutover (Plane 1 \u2194 Plane 2).",
-  "version": "0.161.0",
+  "version": "0.162.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -24,7 +24,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/auth-response-json.smoke.ts && tsx smoke/backup-continuity.smoke.ts && tsx smoke/retained-manager-validation.smoke.ts && tsx smoke/manager-admin-authorization.smoke.ts && tsx smoke/views.smoke.ts && tsx smoke/chat-session-row.smoke.ts && tsx smoke/managed-grant-transaction.smoke.ts && tsx smoke/chat-session-authority.smoke.ts",
+    "test": "tsx smoke/auth-response-json.smoke.ts && tsx smoke/backup-continuity.smoke.ts && tsx smoke/retained-manager-validation.smoke.ts && tsx smoke/manager-admin-authorization.smoke.ts && tsx smoke/manager-admin-budget.smoke.ts && tsx smoke/views.smoke.ts && tsx smoke/chat-session-row.smoke.ts && tsx smoke/managed-grant-transaction.smoke.ts && tsx smoke/chat-session-authority.smoke.ts",
     "smoke:chat-session-authority": "tsx smoke/chat-session-authority.smoke.ts",
     "smoke:chat-session-row": "tsx smoke/chat-session-row.smoke.ts",
     "smoke:callout-load": "tsx smoke/callout-load.smoke.ts",

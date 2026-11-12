@@ -156,7 +156,7 @@ try {
     writeFileSync(credsPath, creds, { mode: 0o600 });
     const child = spawn(process.execPath, [fileURLToPath(new URL("../dist/cotal.js", import.meta.url)), "channel", "--space", space, "--server", link.servers, "--creds", credsPath, "--json"], {
       cwd: dir,
-      env: { ...process.env, HOME: join(dir, "home"), XDG_CONFIG_HOME: join(dir, "config"), XDG_RUNTIME_DIR: join(dir, "runtime"), COTAL_HOME: join(dir, "cotal"), COTAL_TELEMETRY: "off" },
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: join(dir, "home"), XDG_CONFIG_HOME: join(dir, "config"), XDG_RUNTIME_DIR: join(dir, "runtime"), COTAL_HOME: join(dir, "cotal"), COTAL_TELEMETRY: "off" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";

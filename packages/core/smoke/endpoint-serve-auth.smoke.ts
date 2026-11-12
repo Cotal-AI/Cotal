@@ -35,14 +35,14 @@ import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/trans
 import type { KV } from "@nats-io/kv";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
-  isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, EpEnvelopeError,
+  isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, EpEnvelopeError, mintGeneration,
   serveEndpoint, compileContract, contractDigest, registerServiceInstance, authorizeServeGrant,
   completeFrozenRegistrationFromSpec,
   finalizeServeIssuance, credentialIdOf,
   epRequestSubject, epCallerReplyFilter, epServeFilter, epClassQueueGroup, spacePrefix,
   type EpCaller, type EndpointReply, type EpCommandDef,
   type DescribeAnswer, type ServiceNameAuthority, type EpServeGrant,
-  type EpIssuanceGate, type EpIssuanceBarrier,
+  type EpIssuanceGate, type EpIssuanceBarrier, type IssuedStore,
 } from "../src/index.js";
 import { makeIssuanceGate, type IssuanceGateInit } from "./_issuance-gate.js";
 
@@ -741,6 +741,15 @@ try {
     ],
   });
 
+  for (const rail of ["ep", "ep.v1"]) {
+    for (const route of ["all.manager.status", `inst.manager.${IID}.status`]) {
+      c(`unqualified serve grant permits native queue subscription: ${rail}.${route}`,
+        (await probe(serveCreds, serveId.id, (nc) => {
+          nc.subscribe(`${spacePrefix(space)}.${rail}.${route}.>`, { queue: `manager.${IID}.${EPOCH}`, callback: () => {} });
+        })) === "allowed");
+    }
+  }
+
   // ---- POSITIVE: the instance serves and the caller calls, both through restricted creds.
   // The serve connection is WATCHED: a granted-rows serve loop must produce zero async
   // permission violations (a silent denial here would fake the positive path).
@@ -800,7 +809,65 @@ try {
     rDesc?.ok === true && (rDesc.data as DescribeAnswer).public === true
     && (rDesc.data as DescribeAnswer).descriptor.clusters[0].commands.includes("status"),
     JSON.stringify(rDesc));
+  // Renewal overlap: two connections for A and one distinct instance B.
+  const overlapConnections: NatsConnection[] = [];
+  const overlapHandles: ReturnType<typeof serveEndpoint>[] = [];
+  const dispatched = { a: 0, b: 0 };
+  const startOverlap = async (creds: string, grant: EpServeGrant, which: "a" | "b") => {
+    const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(creds)) });
+    overlapConnections.push(nc);
+    void (async () => {
+      for await (const s of nc.status()) {
+        if (/permission|authorization/i.test(JSON.stringify(s))) serveViolations.push(JSON.stringify(s));
+      }
+    })().catch(() => {});
+    overlapHandles.push(serveEndpoint(nc, space, grant, [{ ...statusDef, handler: () => {
+      dispatched[which]++;
+      return { n: 1 };
+    } }], { public: true }));
+    await nc.flush();
+  };
   await handle.stop();
+  await startOverlap(serveCreds, serveGrant, "a");
+  await startOverlap(serveCreds, serveGrant, "a");
+  const bRegGate = makeGate({ endpoint: "manager", lifecycleUid: IID_B, generation: 0, processEpoch: EPOCH, registrationRevision: 0, nameAuthorityRevision: NAR });
+  const bReg = await regSvc(kv, { space, spec: svcSpec, instanceId: IID_B, registrant: { owner: "u_op" }, authority, barrier: bRegGate.barrier });
+  const bGrant = await authorizeServeGrant(kv, { space, endpoint: "manager", instanceId: IID_B, epoch: EPOCH, holder: { owner: "u_op" }, authority, readProcessEpoch: () => EPOCH, readClusterArtifact });
+  const bGate = makeGate({ endpoint: "manager", lifecycleUid: IID_B, generation: 1, processEpoch: EPOCH, registrationRevision: bReg.registrationRevision, nameAuthorityRevision: NAR });
+  const bCreds = await mintCreds(auth, newIdentity(), "endpoint-serve", { principal: { owner: "u_op", actor: "mgr" }, endpointServe: bGrant, serveIssuance: bGate.seam });
+  await startOverlap(bCreds, bGrant, "b");
+  // The trusted issuance seam is fixture-local, like the registry above. Broker permissions
+  // still come from the actual agent profile, with no manually widened rows.
+  const generation = mintGeneration(Math.floor(Date.now() / 1000) + 3600);
+  const issuedCreds = await mintCreds(auth, newIdentity(), "agent", {
+    principal: { owner: caller.owner, actor: caller.actor }, lifecycleUid: UID,
+    expiresInSeconds: 600,
+    endpointCapabilities: [{ endpoint: "manager", command: "status", routes: ["one", "all"], instanceId: IID }],
+    issued: { generation, acceptedToken: "2".repeat(32) },
+    issuance: { mode: "renew", store: { confirm: async () => {} } as unknown as IssuedStore, accepted: memKv(), sources: [] },
+  });
+  const fixturePublisher = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(issuedCreds)) });
+  try {
+  for (const versioned of [false, true]) {
+  for (const mode of ["all", "inst", "one"] as const) {
+    dispatched.a = 0;
+    dispatched.b = 0;
+    const requestCaller = versioned ? { ...caller, generation } : caller;
+    const publisher = versioned ? fixturePublisher : callerNc;
+    publisher.publish(epRequestSubject(space, { route: mode === "inst" ? { mode, instanceId: IID } : { mode }, endpoint: "manager", command: "status", caller: requestCaller, nonce: nonce() }), new TextEncoder().encode(statusReq()));
+    await publisher.flush();
+    await wait(300);
+    c(`overlap ${versioned ? "v1" : "legacy"} ${mode}: native distribution dispatch counts ${JSON.stringify(dispatched)}`,
+      mode === "all" ? dispatched.a === 1 && dispatched.b === 1
+        : mode === "inst" ? dispatched.a === 1 && dispatched.b === 0
+          : dispatched.a + dispatched.b === 1, JSON.stringify(dispatched));
+  }
+  }
+  } finally {
+    await fixturePublisher.close();
+    for (const h of overlapHandles) await h.stop();
+    for (const nc of overlapConnections) await nc.close();
+  }
   await wait(200);
   c("the positive serve connection observed ZERO async permission violations",
     serveViolations.length === 0, serveViolations[0]);

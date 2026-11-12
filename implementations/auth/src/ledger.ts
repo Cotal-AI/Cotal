@@ -82,7 +82,7 @@ export interface ActorRow {
    *  LAYERS ABOVE DO, and that is the part a reader of this line will get wrong. Two of them:
    *
    *   - `runActor` (`commands.ts`), behind `cotal actor grant --full`, fills every flag the
-   *     operator omits with the WIDEST value: `>` read, `>` post, `spawn,role:default` scope.
+   *     operator omits with the WIDEST value: `>` read, `>` post, `spawn,run,role:default` scope.
    *     Without `--full` it refuses an omitted flag, because a grant is an upsert of the whole row
    *     and a dropped flag would widen a narrow row rather than leave it alone.
    *   - the spawn paths (`manager.ts`, the CLI's `spawn.ts`) fall back to `[]` for BOTH sets: an

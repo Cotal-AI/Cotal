@@ -1,5 +1,31 @@
 # @cotal-ai/auth
 
+## 0.162.0
+
+### Minor Changes
+
+- 1207cf2: Include workflow permission in the default scope of a full actor grant so it can delegate the shipped default persona. Explicit scopes and existing grants remain unchanged.
+
+### Patch Changes
+
+- Updated dependencies [21f573f]
+- Updated dependencies [03b2e19]
+- Updated dependencies [74e192c]
+- Updated dependencies [55a5cc8]
+  - @cotal-ai/core@0.162.0
+  - @cotal-ai/workspace@0.162.0
+  - @cotal-ai/lang@0.162.0
+
+## 0.161.1
+
+### Patch Changes
+
+- c732226: Keep hosted Manager registration cleanup recoverable after a local space is removed. Save the original authority and instance identity without copying credentials, retain pending and unknown outcomes across restarts and uninstall, and never automatically repeat an unconfirmed removal.
+- Updated dependencies [fa2aece]
+  - @cotal-ai/core@0.161.1
+  - @cotal-ai/workspace@0.161.1
+  - @cotal-ai/lang@0.161.1
+
 ## 0.161.0
 
 ### Patch Changes

@@ -1,5 +1,37 @@
 # @cotal-ai/cli
 
+## 0.162.0
+
+### Minor Changes
+
+- 03b2e19: Resolve named seat reads and terminal attachment to the manager reported by live presence.
+  Keep instance permission refusals explicit, reject changed lifecycles, and stop retrying
+  sibling managers for a post-spawn model audit or named despawn lookup. Explicit manager pins
+  retain alias canonicalization and lifecycle checks, and named status preserves the bare actor
+  IDs printed by static and open manager rows. Ambiguous live aliases keep their typed refusal
+  for pinned status, stop and input before any Manager command is submitted.
+  Terminal reconnects keep the initially selected incarnation with or without a manager pin,
+  and end when that incarnation has been replaced.
+
+### Patch Changes
+
+- Updated dependencies [21f573f]
+- Updated dependencies [03b2e19]
+- Updated dependencies [74e192c]
+- Updated dependencies [55a5cc8]
+  - @cotal-ai/core@0.162.0
+  - @cotal-ai/workspace@0.162.0
+
+## 0.161.1
+
+### Patch Changes
+
+- 5879d1c: Explain when a saved automatic-update preference has no active daemon schedule.
+  Enabling or reading the Linux preference now checks the daemon and names the service installation and status commands when needed, without installing or starting anything.
+- Updated dependencies [fa2aece]
+  - @cotal-ai/core@0.161.1
+  - @cotal-ai/workspace@0.161.1
+
 ## 0.161.0
 
 ### Patch Changes

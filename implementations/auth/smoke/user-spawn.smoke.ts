@@ -1561,9 +1561,9 @@ try {
   // around them: the static half named a profile that ignores `--allow-subscribe`, and this half
   // named a bare `cotal actor grant`. A bare grant is not a narrow one. `runActor` fills every
   // omitted flag from `csv(values.x, dflt)` with the WIDE default (`>` read, `>` post,
-  // `spawn,role:default` scope), and it says so in its own comment, so an operator following this
+  // `spawn,run,role:default` scope), and it says so in its own comment, so an operator following this
   // refusal to the letter in order to grant a READER would have written a row that reads and posts
-  // everywhere and can spawn. That is a worse outcome than the spawn the refusal blocked, and it
+  // everywhere and can spawn and start workflows. That is a worse outcome than the spawn the refusal blocked, and it
   // arrives carrying the manager's authority.
   //
   // Two cells, because the text and the effect are different claims. The first is that the command
@@ -1584,11 +1584,11 @@ try {
   // A THIRD claim, and the one no cell read until now: the RATIONALE. The two cells above grade the
   // printed command and the row it writes; both stay green while the sentence explaining WHY every
   // field must be spelled out understates how wide the default is. It said `spawn` scope when
-  // `runActor` omitting `--scope` writes `spawn,role:default` - dropping a DELEGATION capability
+  // `runActor` omitting `--scope` writes `spawn,run,role:default` - dropping a DELEGATION capability
   // from a sentence whose only job is calibration. An operator auditing a past omitted-scope grant
   // by that sentence concludes it "only got spawn" and closes a question that is open.
-  check("the user-mesh remedy states the omitted-scope default in FULL, both capabilities, and not the narrower one",
-    /spawn,role:default/.test(remedyText) && !/`spawn` scope/.test(remedyText), remedyText);
+  check("the user-mesh remedy states the omitted-scope default in FULL, including workflow and role delegation",
+    /spawn,run,role:default/.test(remedyText) && !/`spawn` scope/.test(remedyText), remedyText);
   const READER = "evtreader";
   grantActor(dir, {
     owner: ownerFlag ?? "",

@@ -3,7 +3,8 @@ import { isConnectRefusal, type ConnectFlags } from "../connect.js";
 import { resolveControlTarget } from "../control-target.js";
 import { DEFAULT_MANAGER_NAME } from "../manager-name.js";
 import { CommandFailure, isCommandFailure } from "../output.js";
-import { askManager, readFailure, scatterManager, type ControlClient, type ManagerReply, type ScatterInstanceReply } from "./manager.js";
+import { askManager, readFailure, type ControlClient, type ManagerPin, type ManagerReply, type ScatterInstanceReply } from "./manager.js";
+import { presenceSeat } from "./seat-presence.js";
 
 /** The exchange's refusal of an unpinned manager-caller selection while several of the caller's own
  *  managers are live: their count, the owner and the instance ids. */
@@ -85,25 +86,16 @@ export async function severalLive(failure: CommandFailure, readRoster: () => Pro
  * HOSTING the seat, and the class queue does not know which one that is — so without this the verb
  * is answered by whichever instance wins the race and fails on a seat that plainly exists.
  *
- * This is a POSITIVE lookup, not a retry after a miss, and that is forced by measurement: a manager
- * asked about a seat it does not host answers `not-found: no agent "<n>"` — the SAME code and the
- * same message it gives for a name that exists nowhere. "Hosted elsewhere" and "does not exist" are
- * indistinguishable from a single manager's answer, so a caller that retried on a miss would scatter
- * for a typo and, worse, could only ever report the ambiguous message. Asking every instance is the
- * only construction that can tell the two apart — which is also what lets the error finally say
- * which case it is.
- *
- * Costs a second one-shot instrument. The scatter's freeze read belongs to the PRIVILEGED tier;
- * `stop`/`attach` mint ADMIN, which is denied that read deliberately ("the admin tier never
- * scatters"). Rather than widen admin for convenience, the lookup runs as its own privileged
- * instrument and the admin instrument is then minted pinned to the answer.
+ * Static and open callers read the seat's live presence routing hint before making a manager
+ * request. A missing hint refuses. No class-queue answer or durable slot replaces that lookup.
+ * The selected instance still requires the caller's own grant and checks its live seat mapping.
  *
  * On a user-auth mesh there is no scatter: the exchange refuses an unpinned selection while several
  * of your managers are live, and names them, so each is read as `ps` reads them. `managers` is that
  * set, as presence shows it.
  */
 export type SeatLocation =
-  | { kind: "pin"; instanceId: string }
+  | { kind: "pin"; instanceId: string; expectedSeat?: ManagerPin["expectedSeat"] }
   | { kind: "unpinned" } // one instance, or a mode that cannot scatter — no ambiguity to resolve
   /** The registry lists no live manager, so no instance can host the seat or be asked for it. */
   | { kind: "no-manager"; space: string; native: { code?: string; detail: string } }
@@ -151,11 +143,12 @@ export async function locateSeat(
   }
   if (probe.auth.managerInstanceId !== undefined) return { kind: "pin", instanceId: probe.auth.managerInstanceId };
   if (probe.auth.bearer) return { kind: "unpinned" };
-  const scatter = await scatterManager(client, probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
-  if (!scatter.ok && scatter.noLiveManager) return { kind: "no-manager", space: probe.space, native: { code: scatter.code, detail: scatter.error } };
-  if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
-  const loc = locateSeatIn(scatter.instances, name);
-  return loc.kind === "several" || loc.kind === "absent" || loc.kind === "unknown" ? { ...loc, space: probe.space } : loc;
+  const roster = await client.roster({ space: probe.space, server: probe.server });
+  try { return { kind: "pin", ...presenceSeat(roster, name) }; }
+  catch (error) {
+    if (isCommandFailure(error) && error.code === "TARGET_NOT_FOUND") return { kind: "absent", checked: 0, instances: [], space: probe.space };
+    throw error;
+  }
 }
 
 /**
@@ -189,7 +182,8 @@ export function locateSeatIn(instances: readonly ScatterInstanceReply[], name: s
  *  hold a proved `absent`, so this stays the narrow shape their call sites guarantee. */
 export function seatNotFoundMessage(loc: { checked: number }, name: string, verb?: string): string {
   const remedy = verb ? ` To address it directly: \`${verb} --on <instance>\` (the whole id, as printed).` : "";
-  return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${remedy}`;
+  return loc.checked === 0 ? `no managed agent "${name}" in live presence for this space.${remedy}`
+    : `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${remedy}`;
 }
 
 /**
@@ -221,7 +215,8 @@ export function seatMissRefusal(
   if (loc.kind === "several")
     return `"${name}" is held on each of ${loc.instances.length} manager instances (${loc.instances.join(", ")}), so this command does not pick one. ${address}`;
   if (loc.kind === "absent")
-    return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space (${loc.instances.join(", ")}).`;
+    return loc.checked === 0 ? seatNotFoundMessage(loc, name)
+      : `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space (${loc.instances.join(", ")}).`;
   const silent = loc.silent.length
     ? ` ${loc.silent.length} registered manager instance(s) gave no answer within the deadline (${loc.silent.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it.`
     : "";

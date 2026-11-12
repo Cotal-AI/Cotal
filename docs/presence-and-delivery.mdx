@@ -87,6 +87,8 @@ A connector that shows only part of its inbox takes only the requests it shows, 
 A request taken just before the connection drops, or still being taken when it drops, is taken again before it is shown.
 While the connection is down the connector takes nothing, and once it is back it tells the agent about the requests it holds.
 A request waiting for its take keeps its place in the order messages arrived, so the agent sees it where it arrived.
+If an inbox read stops waiting before the take answers, it reports the request as held and still shows messages that need no take.
+That in-flight take does not repeatedly wake empty reads. A late successful take announces the request again when it can be shown; an undecided take follows the existing retry wait.
 When more is waiting than one pi turn holds, pi fits role requests into the turn before channel posts ([pi delivery](pi-connector-reference.mdx#delivery-confirmation)).
 The daemon then sends the sender a notice naming that holder, and a second notice if the holder's ack wait ran out and another holder took the request.
 The sender can read the request's status by the seq its send returned, and can cancel it until a holder takes it. After that the cancel is refused and names the taker.
