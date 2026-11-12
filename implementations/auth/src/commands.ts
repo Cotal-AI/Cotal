@@ -263,7 +263,7 @@ async function resolveGrantOwner(
 
 /** The two explicit shapes of a grant in either spelling, printed by its usage refusal. */
 const grantForms = (command: "auth" | "actor"): string =>
-  `cotal ${command} grant <actor> --sub <IdP subject> --full   (all channels, scope spawn,role:default; a named flag still overrides its field), or cotal ${command} grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b   ('' = none, e.g. --scope '' --allow-subscribe general --allow-publish ''). [--role r] [--label l]`;
+  `cotal ${command} grant <actor> --sub <IdP subject> --full   (all channels, scope spawn,run,role:default; a named flag still overrides its field), or cotal ${command} grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b   ('' = none, e.g. --scope '' --allow-subscribe general --allow-publish ''). [--role r] [--label l]`;
 
 /** The grant verbs of each spelling. */
 const grantUsage = (command: "auth" | "actor"): string =>
@@ -385,7 +385,7 @@ async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | 
       const grantRow = {
         owner,
         actor,
-        scope: csv(values.scope, ["spawn", "role:default"]),
+        scope: csv(values.scope, ["spawn", "run", "role:default"]),
         allowSubscribe: csv(values["allow-subscribe"], [">"]),
         allowPublish: csv(values["allow-publish"], [">"]),
         ...(values.role ? { role: values.role } : {}),
@@ -506,8 +506,8 @@ const authCommands: Command[] = [
       { name: "space", type: "string", value: "<s>", description: "space whose ledger to manage (default: the resolved mesh, as for auth grants)" },
       { name: "sub", type: "string", value: "<subject>", description: "the IdP subject (shown by `cotal login`) the actor belongs to; with list, only that subject's rows" },
       { name: "owner", type: "string", value: "<u_…>", description: "the derived owner token (alternative to --sub)" },
-      { name: "full", type: "boolean", description: "grant: the full row - every ACL flag left off takes its wide default (all channels; scope spawn,role:default). Without it, grant needs --scope, --allow-subscribe and --allow-publish" },
-      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer, from admin, run, spawn, supervise and role:<r> (with --full: default spawn,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
+      { name: "full", type: "boolean", description: "grant: the full row - every ACL flag left off takes its wide default (all channels; scope spawn,run,role:default). Without it, grant needs --scope, --allow-subscribe and --allow-publish" },
+      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer, from admin, run, spawn, supervise and role:<r> (with --full: default spawn,run,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
       { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (with --full: default > = all channels) - the user's envelope: their agents can never read beyond it" },
       { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (with --full: default > = all channels) - also the envelope for their agents' posting" },
       { name: "role", type: "string", value: "<r>", description: "role (scopes the task-queue consumer)" },
@@ -657,7 +657,7 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
   const values = flags as { owner?: string; sub?: string; role?: string; parent?: string; scope?: string; full?: boolean; "allow-subscribe"?: string; "allow-publish"?: string };
   const problems: string[] = [];
   const omitted = mode === "grant" && !values.full ? (["scope", "allow-subscribe", "allow-publish"] as const).filter((flag) => values[flag] === undefined) : [];
-  if (omitted.length) problems.push(`with ${omitted.map((flag) => `--${flag}`).join(", ")} left off: an omitted flag would be the WIDE default (scope spawn,role:default, read '>', post '>')`);
+  if (omitted.length) problems.push(`with ${omitted.map((flag) => `--${flag}`).join(", ")} left off: an omitted flag would be the WIDE default (scope spawn,run,role:default, read '>', post '>')`);
   if (values.owner === undefined && values.sub === undefined) problems.push("with no --sub <IdP subject> (shown by `cotal login`) or --owner <u_…> to say whose actor it is");
   else if (values.owner !== undefined && values.sub !== undefined) problems.push("with both --sub and --owner: choose one explicit authority target");
   else if (values.owner === "" || values.sub === "") problems.push("with an empty --sub or --owner");
