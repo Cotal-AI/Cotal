@@ -47,7 +47,11 @@
  *     `history clear` makes room it starts the daemon. A store that refused a
  *     write for permission makes the broker disable JetStream: `down`, `service stop stack-manager`
  *     and `up` refuse `DEPENDENCY_UNAVAILABLE` naming the logged failure and the manager's SIGTERM on
- *     its host, `status` leads with that SIGTERM, and once it ends the manager `down` and `up` work. Damage the broker
+ *     its host, `status` leads with that SIGTERM, and once it ends the manager `down` and `up` work.
+ *     A write refused for size under the file-size limit the stack started with leaves JetStream
+ *     enabled: once the credential issuance stream cannot grow, `down` refuses
+ *     `DEPENDENCY_UNAVAILABLE` naming the unanswered stop, the logged failure and the manager's
+ *     SIGTERM instead of a bare timeout, and once that SIGTERM ends the manager `down` works. Damage the broker
  *     logged in a stored file since it started makes `history` and `up` warn `STORE_DAMAGE_LOGGED` in its
  *     words, and the history read stays complete. A project folder renamed while its stack runs: the broker names
  *     its store relative to the root, so it does not create the old path again; `send`, `up` and
@@ -769,6 +773,37 @@ try {
     const kept = await channelMessages(root, space, "general");
     check("every message stored before the failure is kept", stored !== undefined && stored >= 1 && kept !== undefined && kept >= stored, { stored, kept });
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
+  // 3h2. A store write refused for size under the file-size limit the stack started with. nats-server
+  // keeps JetStream enabled, so once the credential issuance stream cannot grow, the manager's stop
+  // waits out its request deadline. down names the logged failure and the way out, not a bare timeout.
+  {
+    const space = "sizecapped";
+    const root = prepare(space);
+    // 200 blocks of 512 bytes leave room for every stream up creates and a few issuance records.
+    const limited = spawnSync("/bin/sh", ["-c", 'ulimit -f 200 && exec "$@"', "sh", process.execPath, "--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json"], { cwd: root, env, encoding: "utf8", timeout: 180_000 });
+    track(space);
+    check(`${space}: up under ulimit -f 200 starts the stack`, limited.status === 0, { status: limited.status, stderr: limited.stderr.slice(-1500) });
+    // Each ps takes a control credential whose issuance record the broker stores.
+    let filled: Run | undefined;
+    for (let i = 0; i < 80 && filled === undefined; i++) { const ps = cli(root, "ps", "--json"); if (ps.status !== 0) filled = ps; }
+    const store = cli(root, "status", "--json").env?.result?.store as { state?: string; cause?: string; jetStreamDisabled?: boolean } | undefined;
+    check("rig: the issuance stream reached the file-size limit and the broker kept JetStream enabled",
+      filled !== undefined && store?.state === "write-failed" && store.jetStreamDisabled === false && (store.cause ?? "").includes(`KV_cotal_issued_${space}`) && /file too large$/.test(store.cause ?? ""),
+      { filled: filled && shown(filled), store });
+    const managerPid = pidOf(space, "stack-manager");
+    const down = cli(root, "down", "--yes", "--json");
+    check("down --yes refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the unanswered stop, the logged failure and the manager's SIGTERM, and stops nothing",
+      down.status === 2 && down.env?.error?.code === "DEPENDENCY_UNAVAILABLE"
+        && /^the manager's stop got no answer \(timeout\), and the broker logged a store write failure at .+: file too large; no member was stopped$/.test(down.env.error.message)
+        && down.env.error.message.includes(`KV_cotal_issued_${space}`) && down.env.error.cause?.detail === "timeout"
+        && (down.env.error.remedy ?? "").startsWith(`end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run \`cotal down\`; `)
+        && managerPid !== null && alive(managerPid) && !gone(space, "stack-delivery") && !gone(space, "stack-broker"), shown(down));
+    if (managerPid !== null) process.kill(managerPid, "SIGTERM");
+    check("rig: the manager exits on SIGTERM", managerPid !== null && await until(() => !alive(managerPid), 30_000), managerPid);
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("down --yes then stops the other members", stopped.status === 0 && gone(space, "stack-delivery") && gone(space, "stack-broker"), shown(stopped));
   }
 
   // 3e. A journal removed after `down` dropped the registration, as the way out of a damaged one

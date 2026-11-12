@@ -152,6 +152,14 @@ refusal as a warning. Each names the way out: end the manager on the stack's hos
 `kill -TERM <pid>`, which stops every agent it runs by its default policy, then run `cotal down`,
 fix the logged cause, and run `cotal up`. Fixing the cause alone does not bring JetStream back.
 
+Other store write failures, such as a file-size limit, leave JetStream enabled, and the broker
+refuses each later write to the stream that failed. When that stream holds credential issuance
+records, the manager's stop waits out its request deadline. `down` then refuses
+`DEPENDENCY_UNAVAILABLE`, exit 2, names the unanswered stop and the failure the broker logged, and
+stops no member. It names the same way out: `kill -TERM <pid>` for the manager on the stack's host,
+then `cotal down`, then fix the logged cause and run `cotal up`. A dry run cannot predict this
+refusal, because a failure logged for another stream leaves the stop working.
+
 Controller roots refuse
 preservation and manifest flags rather than switching to the legacy launcher. Outside a terminal,
 a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that

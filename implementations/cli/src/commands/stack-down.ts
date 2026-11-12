@@ -15,7 +15,7 @@ import {
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
-import { fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite } from "../lib/broker-store-health.js";
+import { brokerStoreWrite, fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite, storeWriteFailedRefusal } from "../lib/broker-store-health.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { releaseDeadForegroundHold } from "../lib/foreground-hold.js";
@@ -149,6 +149,13 @@ async function managerImpact(journal: StackJournal, members: readonly Member[], 
     // Nothing was submitted: the stop's credential could not be recorded on a broker without JetStream.
     const disabled = jetStreamDisabled(journal.root, journal.space);
     if (disabled && !(isCommandFailure(caught) && caught.outcome !== "unknown")) throw disabledJetStreamStop(journal, manager, disabled);
+    // Most write failures leave JetStream enabled. The stop's issuance record then waits out its request
+    // deadline on a stream that cannot grow, so a stop with no answer names the failure the broker logged.
+    if ((caught as { name?: unknown } | undefined)?.name === "TimeoutError" || (isCommandFailure(caught) && caught.outcome === "unknown")) {
+      const write = brokerStoreWrite(journal.root, journal.space);
+      if (write.state === "write-failed")
+        throw storeWriteFailedRefusal(write, journal.root, journal.space, "the manager's stop", caught, "no member was stopped", { root: journal.root, space: journal.space, manager: manager.instance.name }, manager.instance.record.value.process?.pid);
+    }
     // The read connects through the broker, so a gone broker surfaces as the connect refusal.
     const error = isConnectRefusal(caught) ? caught.failure() : caught;
     const broker = members.find((member) => member.role === "broker" && member.live);
