@@ -219,7 +219,7 @@ this standalone caller. User-auth issuance and managed static launch are not sup
 ## Account login [#login]
 
 ```bash
-cotal login --idp <auth base URL> [--client-id <id>] [--plain]
+cotal login [--cloud | --idp <auth base URL>] [--client-id <id>] [--no-browser] [--plain]
 cotal logout --idp <auth base URL> [--local]
 ```
 
@@ -231,7 +231,10 @@ Plain `http://` is accepted only on a loopback IP literal such as `127.0.0.1` or
 is a name: a hosts entry would choose the IdP. It prints your IdP subject, the id the operator
 grants against. When the trusted
 `/token` response advertises a same-origin space catalog, login validates and records that account's
-spaces immediately, lists them under `Your spaces`, and names `cotal use <name>` to select one. A
+spaces immediately and lists them under `Your spaces`. If no space is already selected,
+login selects the personal space, or the only space. Several team spaces prompt in a terminal;
+otherwise use `cotal use <name>` to select one. An existing selection stays unchanged, and
+switching accounts does not select a replacement automatically. A
 space registered from elsewhere that has not granted your account refuses with those discovered
 spaces as its remedy, because only that space's operator can grant you. On the root that holds the
 space's grant ledger, the refusal names the operator's `cotal actor grant` command instead.
