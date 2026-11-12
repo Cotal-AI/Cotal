@@ -1004,6 +1004,7 @@
     "smoke:claude-local:live": "tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
     "smoke:claude-desktop-config": "tsx extensions/connector-claude-code/smoke/desktop-config.smoke.ts",
     "smoke:claude-hook-weight": "tsx extensions/connector-claude-code/smoke/hook-weight.smoke.ts",
+    "smoke:claude-permission-requests:live": "tsx extensions/connector-claude-code/smoke/permission-requests-live.smoke.ts",
     "smoke:claude-plugin-refresh:live": "pnpm --filter @cotal-ai/connector-claude-code... build && tsx extensions/connector-claude-code/smoke/plugin-refresh-live.smoke.ts && tsx extensions/connector-claude-code/smoke/plugin-refresh-concurrent-live.smoke.ts",
     "smoke:claude-registration-home:live": "pnpm build && tsx extensions/connector-claude-code/smoke/registration-home-live.smoke.ts",
     "smoke:mint-provision:auth": "tsx implementations/cli/smoke/mint-provision.smoke.ts",

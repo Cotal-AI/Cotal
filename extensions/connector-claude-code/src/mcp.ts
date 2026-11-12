@@ -32,6 +32,8 @@ import {
   serveGatewayStdio,
   DOCS_VERSION,
   registerOnceExit,
+  openPermissionDesk,
+  type PermissionDesk,
 } from "@cotal-ai/connector-core";
 import { homedir } from "node:os";
 import { dirname, parse } from "node:path";
@@ -228,6 +230,8 @@ async function startSession(
 
   /** The `claude/channel` push side — set below once the MCP server exists. */
   let wake: WakePolicy | undefined;
+  /** This seat's permission desk, opened once the agent exists. */
+  let desk: PermissionDesk | undefined;
 
   /** Claude Code lifecycle events → presence + (on inject-capable events) queued peer messages.
    *  Read `events` and `wake` lazily: they are assigned after this handler is built. `onReply` is
@@ -238,6 +242,7 @@ async function startSession(
     surfaced: (items) => wake?.surfaced(items),
     // Read lazily too: `agent` and `config` are built below. Unbound, there is no card to hand over yet.
     orientation: async () => (agent.connected ? orientationCard(agent, config, "claude-code", env) : undefined),
+    permissions: () => desk,
   });
 
   const config = configFromEnv(env);
@@ -250,6 +255,12 @@ async function startSession(
   const agent = new MeshAgent(config, env, { withholdProcessCwd: true, onceClaimBound: true });
   const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;
   events = plane?.events;
+  const warn = (message: string): void => void process.stderr.write(`[cotal-connector] ${message}\n`);
+  try {
+    desk = openPermissionDesk(agent.ep, { warn });
+  } catch (e) {
+    warn(`permission prompts stay with the terminal: ${(e as Error).message}`);
+  }
 
   // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
   // cooperative shutdown. The SOCKET PATH comes from the launch env; the first-frame TOKEN comes
@@ -285,6 +296,7 @@ async function startSession(
         /* ignore */
       }
       wake?.stop();
+      desk?.close();
       try {
         await events?.close();
         await agent.stop();
