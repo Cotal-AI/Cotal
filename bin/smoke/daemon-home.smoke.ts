@@ -149,10 +149,10 @@ function track(child: ChildProcess): ChildProcess {
 
 type Doc = { command?: string; target?: { space?: string; idp?: string } | null; outcome?: string; result?: Record<string, any>; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
 /** One CLI invocation to completion. A command string exercises copied guidance through the built CLI. */
-async function cli(args: string[] | string, timeoutMs = 30_000): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
+async function cli(args: string[] | string, timeoutMs = 30_000, env: NodeJS.ProcessEnv = childEnv): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
   const child = track(typeof args === "string"
-    ? spawn("/bin/sh", ["-c", `cotal() { exec "$DAEMON_COPY_NODE" "$DAEMON_COPY_ENTRY" "$@"; }\n${args} --json`], { cwd: root, env: { ...childEnv, DAEMON_COPY_NODE: process.execPath, DAEMON_COPY_ENTRY: join(repo, "bin", "dist", "cotal.js") }, stdio: ["ignore", "pipe", "pipe"] })
-    : spawn(process.execPath, daemonArgv(args), { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] }));
+    ? spawn("/bin/sh", ["-c", `cotal() { exec "$DAEMON_COPY_NODE" "$DAEMON_COPY_ENTRY" "$@"; }\n${args} --json`], { cwd: root, env: { ...env, DAEMON_COPY_NODE: process.execPath, DAEMON_COPY_ENTRY: join(repo, "bin", "dist", "cotal.js") }, stdio: ["ignore", "pipe", "pipe"] })
+    : spawn(process.execPath, daemonArgv(args), { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] }));
   let out = "", err = "";
   child.stdout!.on("data", (b) => { out += String(b); });
   child.stderr!.on("data", (b) => { err += String(b); });
@@ -235,15 +235,15 @@ try {
     }
     const setupHelp = await cli(["setup", "--help"]);
     check("G0 setup permits account-only setup and describes its scoped space flags", setupHelp.status === 0 && setupHelp.out.includes("[--space <s>]") && setupHelp.out.includes("--no-manager and --wait require --space") && !setupHelp.out.includes("the resolved mesh"), setupHelp.out);
-    const missingProvider = await cli(["setup", "--json"]);
-    check("G0 account-only setup without an installed daemon asks for its provider", missingProvider.status === 1 && missingProvider.doc.error?.code === "USAGE_INVALID" && missingProvider.doc.error.message === "No daemon is installed; pass --idp <url> to connect an account", missingProvider.doc);
+    const missingProvider = await cli(["setup", "--json"], 30_000, { ...childEnv, DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(root, "absent-bus")}` });
+    check("G0 fresh account-only setup selects Cloud before the unavailable service manager", missingProvider.status === 2 && missingProvider.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && missingProvider.err.includes("Signing in to Cotal Cloud. For another host, use cotal login --idp <url>.") && !missingProvider.out.includes("pass --idp"), missingProvider.doc);
     for (const flags of [["--no-manager"], ["--wait", "0"]]) {
       const scoped = await cli(["setup", ...flags, "--json"]);
       check(`G0 setup ${flags[0]} still requires an explicit space`, scoped.status === 1 && scoped.doc.error?.code === "USAGE_INVALID" && scoped.doc.error.message === "--no-manager and --wait require --space <s>", scoped.doc);
     }
     check("G0 setup provider options do not claim to be login-only", !setupHelp.out.includes("login:") && setupHelp.out.includes("--idp <auth base URL>") && setupHelp.out.includes("--client-id <id>"), setupHelp.out);
     const loginHelp = await cli(["login", "--help"]);
-    check("G0 login usage requires a provider", loginHelp.status === 0 && loginHelp.out.includes("cotal daemon login --idp <auth base URL>"), loginHelp.out);
+    check("G0 login usage permits Cloud or another provider", loginHelp.status === 0 && loginHelp.out.includes("cotal daemon login [--cloud | --idp <auth base URL>]"), loginHelp.out);
     const statusHelp = await cli(["status", "--help"]);
     check("G0 local status keeps its optional space selector", statusHelp.status === 0 && statusHelp.out.includes("cotal daemon status [--space <s>]"), statusHelp.out);
     for (const mode of ["spaces", "start", "desktop"]) {

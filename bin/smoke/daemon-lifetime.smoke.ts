@@ -517,8 +517,8 @@ try {
   });
   await cell("L8 setup validates before it changes anything", async () => {
     const receipt = join(home, "daemon", "service-unit.json");
-    const noSpace = await cli("setup", "--json");
-    check("L8 bare account setup without an installed daemon requires --idp, exit 1", noSpace.status === 1 && noSpace.doc.error?.code === "USAGE_INVALID" && noSpace.doc.error?.message === "No daemon is installed; pass --idp <url> to connect an account", { status: noSpace.status, out: noSpace.out.slice(0, 250) });
+    const noSpace = await cliEnv({ DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(root, "absent-bus")}` }, "setup", "--json");
+    check("L8 bare account setup selects Cloud before the unavailable service manager", noSpace.status === 2 && noSpace.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && noSpace.err.includes("Signing in to Cotal Cloud. For another host, use cotal login --idp <url>.") && !noSpace.out.includes("pass --idp"), { status: noSpace.status, out: noSpace.out.slice(0, 250) });
     for (const flags of [["--no-manager"], ["--wait", "1"]]) {
       const r = await cli("setup", ...flags, "--json");
       check(`L8 ${flags.join(" ")} without --space refuses USAGE_INVALID naming it, exit 1`, r.status === 1 && r.doc.error?.code === "USAGE_INVALID" && r.doc.error?.message === "--no-manager and --wait require --space <s>", { status: r.status, out: r.out.slice(0, 250) });
