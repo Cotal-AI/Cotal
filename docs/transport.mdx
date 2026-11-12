@@ -89,8 +89,6 @@ core-NATS subscription bounded by `sub.allow`. That live copy has no acknowledge
 For a durable channel, the [delivery daemon](delivery-daemon.mdx) writes per-member
 backstop copies and rechecks the current read ACL, membership interval, and lifecycle
 before handing content to a member through `dlv_<owner>-<actor>-<uid>`.
-That consumer exists only when the lifecycle's `allowSubscribe` is nonempty. A channel-less
-lifecycle still has its DM durable and any role queue, but no DLV consumer or DLV bind grants.
 
 An authenticated agent binds its provisioned `dm_<owner>-<actor>-<uid>` consumer for
 DMs. Holders of a role share the `svc_<role>` consumer for queued anycast work.
@@ -118,10 +116,6 @@ Cotal publishes heartbeats and derives offline state from record deletion or sta
 liveness. KV supplies the records and watches.
 The derived `cotal_membership_<space>` feed combines observed live subscriptions and
 durable membership for display. That feed is not delivery or authorization authority.
-It is Memory-backed and rebuilt from the broker connection view plus the File-backed
-members registry before its heartbeat is stamped. `cotal_presence_<space>` is also
-Memory-backed. Delivery and manager lease buckets stay File-backed because their KV
-sequences fence lease holders across restarts. A missing File lease bucket is refused.
 The broker's subscribe ACL and the privileged membership registry remain authoritative.
 See [SPEC §6](../SPEC.md#6-presence-and-discovery) and
 [§8](../SPEC.md#8-nats--jetstream-binding).

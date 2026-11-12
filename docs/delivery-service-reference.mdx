@@ -32,9 +32,6 @@ audience: integrators
   best effort; a failure is a warning, and the next entry retries it. An entry whose owner has no ACL row at all is
   retried, then given up after ten redeliveries, and kept, because a missing row does not prove the
   owner is gone.
-  A lifecycle with an empty `allowSubscribe` has no authorized channel copy, so provisioning omits
-  its DLV consumer and its three bind grants. An empty-to-nonempty regrant creates the consumer with
-  the normal deliver-all policy. DM provisioning and the `dm-reader` surface do not change.
 - **Membership registry.** A privileged-written record of who is a durable member of each
   channel, carrying per-member join and leave cursors so a post concurrent with a join or leave
   orders deterministically ([SPEC §7](../SPEC.md#7-channels)). It is broker-known truth, not

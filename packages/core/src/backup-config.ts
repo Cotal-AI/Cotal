@@ -113,10 +113,10 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
 /** Reject a missing, foreign, or additional stream before selecting artifact components.
  *
  * `atRest` is for a STOPPED store reopened on a fresh broker, which is what backup reads. The
- * presence and derived membership buckets are memory-backed, and a memory stream does not survive
- * the broker stop that makes a cut, so those streams may be absent there. A bucket an older Cotal
- * created file-backed is still on disk and is accepted too. Every other stream stays exact. A live
- * space, such as a restore after it recreates its infrastructure, requires both Memory streams. */
+ * presence bucket is memory-backed (#1356), and a memory stream does not survive the broker stop that
+ * makes a cut, so a transient stream may be absent there. One an older cotal created file-backed is
+ * still on disk and is accepted too. Every other stream stays exact. A live space, such as a restore
+ * after it recreates its infrastructure, is validated without `atRest`, and presence is required. */
 export function validateSpaceBackupInventory(
   space: string,
   actualNames: readonly string[],
@@ -129,7 +129,7 @@ export function validateSpaceBackupInventory(
   const inventory = { ...fixed, excluded: [...fixed.excluded, ...transfers.map((name) => ({ name, class: "transfer" as const }))] };
   const actual = [...actualNames].sort();
   const optional = new Set(
-    options.atRest ? inventory.excluded.filter((s) => s.class === "transient" || s.class === "derived").map((s) => s.name) : [],
+    options.atRest ? inventory.excluded.filter((s) => s.class === "transient").map((s) => s.name) : [],
   );
   const expected = [...inventory.full, ...inventory.excluded.map((s) => s.name)]
     .filter((name) => !optional.has(name) || actual.includes(name))
