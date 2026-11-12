@@ -443,6 +443,8 @@ async function supervisorGeneration(session: IssuerSession, space: string, owner
 /** Trusted composition policy for unpinned interactive manager-caller requests. No request or CLI
  *  flag sets it. The local-primary policy refuses an unavailable local Manager without substitution. */
 export interface AuthServiceRuntimeOptions {
+  /** Trusted space restriction applied to every native payload publish grant. */
+  eventPayloadsWithheld?: boolean;
   interactiveManagerSelection?: "local-primary";
   /** Process-lifetime cancellation custody quotas. No eviction or automatic restart on exhaustion. */
   runCancelLimits?: RunCancelLimits;
@@ -456,6 +458,8 @@ function runtimeSelection(options: AuthServiceRuntimeOptions): AuthServiceRuntim
   if (!options || typeof options !== "object" || Array.isArray(options))
     throw new Error("auth-service runtime options must be an object");
   const selection = options.interactiveManagerSelection;
+  if (options.eventPayloadsWithheld !== undefined && typeof options.eventPayloadsWithheld !== "boolean")
+    throw new Error("eventPayloadsWithheld must be a boolean when present");
   if (selection !== undefined && selection !== "local-primary")
     throw new Error('interactiveManagerSelection must be "local-primary" when present');
   return selection;
@@ -1777,7 +1781,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             scope: t.capabilities ?? [],
             allowSubscribe,
             allowPublish: t.allowPublish ?? [],
-            ...(t.eventPayloads === false ? { eventPayloads: false as const } : {}),
+            ...(t.eventPayloads === false || opts.eventPayloadsWithheld === true ? { eventPayloads: false as const } : {}),
             ...(t.role !== undefined ? { role: t.role } : {}),
             ...(t.label !== undefined ? { label: t.label } : {}),
             parent: spawner.parent,
@@ -2433,6 +2437,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
     // The CLI composition's local manager is this workspace root's persisted instance, re-read per
     // selection exactly as before. A hosted context passes no local manager at all.
     localManager: () => loadManagerInstanceIdentity(root, space),
+    eventPayloadsWithheld: options.eventPayloadsWithheld,
     ...(interactiveManagerSelection !== undefined ? { interactiveManagerSelection } : {}),
     ...(options.runCancelLimits !== undefined ? { runCancelLimits: options.runCancelLimits } : {}),
     ...(registry !== undefined ? { registry } : {}),
@@ -2605,6 +2610,7 @@ async function openAuthServiceLane(o: {
     ...(o.publicFace !== null ? { publicFace: o.publicFace } : {}),
     ...(endpoints.option !== undefined ? { serviceEndpoints: endpoints.option } : {}),
     localManager: () => loadManagerInstanceIdentity(root, space),
+    eventPayloadsWithheld: o.runtime.eventPayloadsWithheld,
     ...(selection !== undefined ? { interactiveManagerSelection: selection } : {}),
     ...(o.runtime.runCancelLimits !== undefined ? { runCancelLimits: o.runtime.runCancelLimits } : {}),
     ...(registry !== undefined ? { registry, ...(o.runtime.registryCredentialTtlSeconds !== undefined ? { registryCredentialTtlSeconds: o.runtime.registryCredentialTtlSeconds } : {}) } : {}),
@@ -2937,6 +2943,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
     log,
     localManager: o.localManager,
+    eventPayloadsWithheld: o.eventPayloadsWithheld,
     ...(o.interactiveManagerSelection !== undefined ? { interactiveManagerSelection: o.interactiveManagerSelection } : {}),
     ...(o.runCancelLimits !== undefined ? { runCancelLimits: o.runCancelLimits } : {}),
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
@@ -2972,6 +2979,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     // fresh bearer too.
     const connectLimiter = new ConnectLimiter(o.connectLimits);
     serveCallout(nc as never, {
+      eventPayloadsWithheld: o.eventPayloadsWithheld,
       space,
       dir,
       callout,
