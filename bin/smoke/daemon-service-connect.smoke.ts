@@ -3738,9 +3738,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         const after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
         check("H5 missing supervise scope refuses with native cause and remedy", refused.code === 2 && /supervise|scope/i.test(refused.doc.error?.message ?? "") && /supervise/.test(refused.doc.error?.remedy ?? ""), refused);
         check("H5 one permanent refusal, no child restart loop or intent", before.state === "refused" && after.state === "refused" && before.restarts === after.restarts && !existsSync(intent), { before, after });
-        await cli("service-disconnect", "--space", ON);
-        await cli("setup", "--no-manager", "--space", ON, "--wait", "0");
-        check("H6 --no-manager starts no child or hosting intent", resultOf(await ask(paths.socket, { op: "manager-status", space: ON })).state === "stopped" && !existsSync(intent));
+        grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: cliLifecycle, scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
+        const h6Disconnect = await cli("service-disconnect", "--space", ON);
+        const h6Setup = await cli("setup", "--no-manager", "--space", ON, "--wait", "0");
+        const h6Status = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }));
+        check("H6 --no-manager starts no child or hosting intent", h6Status.state === "stopped" && !existsSync(intent), { disconnect: h6Disconnect, setup: h6Setup, status: h6Status, intentExists: existsSync(intent) });
         grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: cliLifecycle, scope: ["supervise", "spawn"], allowSubscribe: [], allowPublish: [] });
         idpRevoked = true;
         try {
