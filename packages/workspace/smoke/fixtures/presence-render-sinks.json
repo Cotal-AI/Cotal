@@ -6023,9 +6023,9 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "printLegacyReport(report, target.space, remote ? `cotal manager stop --space ${target.space}` : `cotal down --space ${target.space}`)",
+      "anchor": "printLegacyReport(report, target.space, undefined, console.log, on)",
       "class": "non-render/control",
-      "rationale": "Update legacy report: prints the legacy manager inventory of the space and the command that stops it; it reports install state, not any peer's presence."
+      "rationale": "Update legacy report: prints the legacy manager inventory and cold update guidance; it reports install state, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
