@@ -146,6 +146,27 @@ try {
   }
   assert.equal(namedCount, 83);
   console.log("public named parallel immediate/microtask/timer/resolved arrivals: 80/80 replies, 80 deliveries");
+
+  const pausedClient = await open();
+  broker.kill("SIGSTOP");
+  try {
+    const refresh = requestSafeReconnect(pausedClient);
+    const refreshOutcome = refresh.then(() => ({ ok: true }), (error: unknown) => ({ error }));
+    const started = Date.now();
+    await assert.rejects(pausedClient.request("race", "expired-before-send", { timeout: 150 }));
+    assert.ok(Date.now() - started < 500, "initial-send gate must preserve the request deadline");
+    const outcome = await refreshOutcome;
+    assert.ok("error" in outcome, "paused broker must exceed native readiness bound");
+    assert.equal(counts.get("expired-before-send") ?? 0, 0);
+    console.log("paused broker: 150ms request expires unsent, readiness reports bounded failure");
+  } finally {
+    broker.kill("SIGCONT");
+  }
+  await wait(1000);
+  assert.equal(counts.get("expired-before-send") ?? 0, 0, "expired request must never send after resume");
+  assert.equal((await pausedClient.request("race", "after-resume", { timeout: 3000 })).string(), "after-resume");
+  assert.equal(counts.get("after-resume"), 1);
+  console.log("resumed broker: expired request stays unsent, subsequent native request replies once");
 } finally {
   await endpoint?.stop();
   await Promise.all(connections.map((nc) => nc.close()));
