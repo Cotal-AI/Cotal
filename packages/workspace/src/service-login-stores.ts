@@ -169,12 +169,12 @@ export function withServiceLoginStore<T>(store: ServiceLoginStore, run: (directo
 }
 
 /** Recovery text names a service only when its current protected unit proves the store. */
-export function serviceLoginRecovery(idp: string, directory?: string): string {
+export function serviceLoginRecovery(idp: string, directory?: string, manager = process.argv.includes("supervise")): string {
   const command = loginRecoveryCommand(idp);
   if (directory === undefined) return `run \`${command}\` to sign in again`;
   try {
     const store = serviceLoginStores().find((s) => s.directory === directory);
     if (store) { assertServiceLoginStore(store); return `Manager service ${JSON.stringify(store.service)} uses a separate sign-in store; run \`${command}\``; }
   } catch { /* Unproven service names must not appear in recovery advice. */ }
-  return directory !== userCotalDir() ? `Manager sign-in store ${JSON.stringify(directory)}: run \`COTAL_HOME='${directory.replaceAll("'", "'\\''")}' ${command}\` to sign in again` : `run \`${command}\` to sign in again`;
+  return manager && directory !== userCotalDir() ? `Manager sign-in store ${JSON.stringify(directory)}: run \`COTAL_HOME='${directory.replaceAll("'", "'\\''")}' ${command}\` to sign in again` : `run \`${command}\` to sign in again`;
 }

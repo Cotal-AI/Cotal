@@ -154,7 +154,8 @@ try {
   assert.equal(createHash("sha256").update(bytes(custom)).digest("hex"), customBefore, "hand-made custom service must not receive automatic refresh");
   clearSharedServiceSessions(operator, idp, prior);
   assert.equal(createHash("sha256").update(bytes(custom)).digest("hex"), customBefore, "hand-made custom service must not receive automatic cleanup");
-  const recovery = serviceLoginRecovery(idp, custom);
+  assert.equal(serviceLoginRecovery(idp, custom, false), `run \`cotal login --idp ${idp}\` to sign in again`, "plain custom-home CLI retains ordinary recovery");
+  const recovery = serviceLoginRecovery(idp, custom, true);
   assert.ok(recovery.includes(custom) && recovery.includes("COTAL_HOME=") && recovery.includes(`cotal login --idp ${idp}`), "custom recovery names explicit store and login command");
   publicOnly(recovery);
   console.log("PASS hand-made custom unit excluded from auto writes with explicit-store login recovery");
