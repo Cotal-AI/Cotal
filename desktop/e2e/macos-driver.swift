@@ -217,7 +217,7 @@ func press(_ element: AXUIElement) {
     }
     if let window = loginWindow {
         guard string(target, "AXDOMIdentifier") == "autostart", string(target, "AXRole") == "AXCheckBox" else { fail("hit test did not select exact autostart checkbox") }
-        guard focusReceipt("at-post", window), CFEqual(appWindow(), window), loginCheckboxState().value == 1 else { fail("login state or window changed before post") }
+        guard focusReceipt("pre-gate", window), CFEqual(appWindow(), window), loginCheckboxState().value == 1 else { fail("login state or window changed before post") }
         if loginDelivery == "redelivery-1" {
             // Receipt emission is asynchronous. This is absence as of this read,
             // not atomic proof that the first delivery cannot arrive later.
@@ -229,6 +229,15 @@ func press(_ element: AXUIElement) {
             loginCursor = receiptPolicy("baseline", context, String(pid))
             firstLoginPost = Int64(Date().timeIntervalSince1970 * 1000)
         }
+        let finalState = loginCheckboxState()
+        guard finalState.value == 1, enabled(finalState.element), let finalRect = bounds(finalState.element),
+              finalRect == currentRect, CFEqual(appWindow(), window), focusReceipt("at-post", window) else { fail("native login target changed after receipt gate") }
+        var finalHit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &finalHit) == .success,
+              let exactHit = finalHit else { fail("cannot revalidate login hit after receipt gate") }
+        var finalOwner: pid_t = 0
+        guard AXUIElementGetPid(exactHit, &finalOwner) == .success, finalOwner == pid,
+              string(exactHit, "AXDOMIdentifier") == "autostart", string(exactHit, "AXRole") == "AXCheckBox" else { fail("login hit changed after receipt gate") }
         loginReceipt("delivery-post", ["pid": pid, "delivery": loginDelivery, "firstPostUnixMs": firstLoginPost])
     }
     for kind in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
