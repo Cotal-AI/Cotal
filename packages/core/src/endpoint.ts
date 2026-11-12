@@ -8925,11 +8925,14 @@ function kvWatchConsumer(iter: Awaited<ReturnType<KV["watch"]>>): PushConsumer {
   return consumer;
 }
 
-/** A membership-watch delete that leaves nothing to retry: the consumer is already gone, or the broker
- *  refused the delete because the reading profile holds no stream-wide CONSUMER.DELETE (#691) and
- *  reaps the consumer at its inactive threshold. */
+/** A membership-watch delete that leaves nothing to retry: the consumer or its stream is already
+ *  gone, or the broker refused the delete because the reading profile holds no stream-wide
+ *  CONSUMER.DELETE (#691) and reaps the consumer at its inactive threshold. */
 function membershipConsumerReleased(err: unknown): boolean {
-  return (err as { code?: number }).code === 404 || /(consumer|stream) not found/i.test((err as Error).message) || isPublishPermissionDenied(err);
+  return (
+    isJetStreamMissing(err, JetStreamApiCodes.ConsumerNotFound, JetStreamApiCodes.StreamNotFound)
+    || isPublishPermissionDenied(err)
+  );
 }
 
 /** The signal's exact abort reason, or the platform-standard AbortError when none was supplied. */
