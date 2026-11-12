@@ -4,13 +4,18 @@
  * verdict this machine did not observe.
  * Run: pnpm smoke:update-remote-custody
  */
-import assert from "node:assert/strict";
+import rawAssert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
+
+const counted = countedAssert(rawAssert);
+const assert: typeof rawAssert = counted.assert;
+const cells = counted.cells;
 
 const root = mkdtempSync(join(tmpdir(), "cotal-update-remote-custody-"));
 const home = join(root, "home"), config = join(root, "config"), project = join(root, "project");
@@ -117,6 +122,7 @@ try {
     decoy = undefined;
   }
   console.log(`update-remote-custody: ok (${outcome.slice(0, 160)})`);
+  emitSentinel({ passed: cells(), failed: 0 });
 } finally {
   decoy?.kill("SIGKILL");
   other?.kill("SIGKILL");

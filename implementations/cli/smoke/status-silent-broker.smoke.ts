@@ -1,5 +1,6 @@
 /** Silent listeners stay distinct from refused ports across the shipped CLI's space reports. */
 import assert from "node:assert/strict";
+import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
@@ -10,10 +11,12 @@ const bin = join(import.meta.dirname, "../../../bin/dist/cotal.js");
 process.umask(0o077);
 const root = mkdtempSync(join(tmpdir(), "cotal-silent-broker-"));
 const hostEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+let passed = 0;
 const failures: string[] = [];
 function check(name: string, condition: boolean): void {
   console.log(`${condition ? "PASS" : "FAIL"}: ${name}`);
-  if (!condition) failures.push(name);
+  if (condition) passed++;
+  else failures.push(name);
 }
 async function listen(server: Server): Promise<number> {
   await new Promise<void>((resolve, reject) => {
@@ -111,3 +114,4 @@ await close(refused);
 await scenario("refused", port, () => 0);
 console.log(`Retained sandbox: ${root}`);
 assert.deepEqual(failures, [], "silent broker regression failures");
+emitSentinel({ passed, failed: failures.length });
