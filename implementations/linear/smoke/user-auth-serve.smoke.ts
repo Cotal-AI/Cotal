@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { EventEmitter, once } from "node:events";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, tokenAuthenticator, PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import {
   CotalEndpoint, EpEnvelopeError, contractDigest, invokeCommand, mintCreds, newIdentity, parseServiceAuthorityRequest, resolveService,
   setupSpaceStreams, type AuthProvider, type ServiceAuthorityRequest,
@@ -67,11 +67,14 @@ let running: Promise<void> | undefined;
 let ctl = new AbortController();
 let closedUpstreams = 0, toolCalls = 0;
 let slowStarted: (() => void) | undefined;
+const heldTools = new Map<string, { started(): void; released: Promise<void> }>();
 const upstream = () => ({
   inventory: async () => ({ endpoint: "ai.cotal.linear", digest: "fixture-inventory", fetchedAt: new Date().toISOString(),
     mode: "readonly", server: {}, capabilities: {}, unsupported: [], pages: 1, bytes: 0, tools: [] }),
   callTool: async (input: { name: string }) => {
     toolCalls++;
+    const held = heldTools.get(input.name);
+    if (held) { held.started(); await held.released; }
     if (input.name === "executed-denial" || input.name === "unknown-denial" || input.name === "not-executed-denial")
       throw new EpEnvelopeError("permission-denied", "fixture responder refusal", undefined,
         input.name === "executed-denial" ? "executed" : input.name === "unknown-denial" ? "unknown" : "not-executed");
@@ -162,8 +165,9 @@ try {
   };
   // A caller connected before its grant keeps the permissions it authenticated with (#5668).
   const early = await dial("caller");
-  const openCaller = async (actor = "caller", lifecycleUid = caller.lifecycleUid!) => {
+  const openCaller = async (actor = "caller", lifecycleUid = caller.lifecycleUid!, onConnection?: (nc: NatsConnection) => void) => {
     const ep = new CotalEndpoint({ space: a.space, servers: fx.servers, bearer: () => bearer(actor),
+      onConnection,
       sentinelCreds: a.sentinelCreds, lifecycleUid, channels: [], consume: false,
       watchPresence: false, registerPresence: false, watchChannels: false,
       card: { owner, actor, name: actor, kind: "agent" } });
@@ -219,6 +223,76 @@ try {
   slowStarted = undefined;
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(reconnects, 1, "a repair that outlives its caller never reconnects later");
+  // A later call must join the live drain, not be cut off when the original snapshot settles.
+  let raceNc!: NatsConnection;
+  const raceCaller = await openCaller("caller", caller.lifecycleUid!, nc => { raceNc = nc; });
+  const hold = (name: string) => {
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    heldTools.set(name, { started: entered, released });
+    return { started, release };
+  };
+  const firstGate = hold("snapshot-first"), lateGate = hold("snapshot-late");
+  let raceReconnects = 0;
+  let duringRebuild: Promise<boolean> | undefined;
+  let cancelledAdmission: Promise<boolean> | undefined, expiredAdmission: Promise<boolean> | undefined;
+  raceCaller.on("connection", ({ connected }: { connected: boolean }) => {
+    if (connected) raceReconnects++;
+    else {
+      duringRebuild = raceCaller.invokeService(endpoint, "inventory", {}, { deadlineMs: 3000 }).then(reply => reply.reply.ok, () => false);
+      const cancelled = new AbortController();
+      const reason = new Error("cancelled rebuild admission");
+      cancelledAdmission = raceCaller.invokeService(endpoint, "call-tool", toolArgs("must-not-run"), { signal: cancelled.signal })
+        .then(() => false, (e: unknown) => e === reason);
+      cancelled.abort(reason);
+      expiredAdmission = raceCaller.invokeService(endpoint, "call-tool", toolArgs("must-not-run"), { deadlineMs: 0 })
+        .then(() => false, (e: unknown) => e instanceof EpEnvelopeError && e.code === "deadline-exceeded" && e.outcome === "not-executed");
+    }
+  });
+  const status = raceNc.status() as ReturnType<NatsConnection["status"]> & { stop(): void };
+  const refusedPublish = (async () => {
+    const events = status[Symbol.asyncIterator]();
+    try {
+      for (;;) {
+        const { value: event, done } = await events.next();
+        if (done) throw new Error("permission observation ended before the refusal");
+        if (event.type === "error" && event.error instanceof PermissionViolationError
+          && event.error.operation === "publish" && event.error.subject.includes(".describe.")) return;
+      }
+    } finally { status.stop(); }
+  })();
+  const beforeRace: number = toolCalls;
+  const firstCall = raceCaller.invokeService(endpoint, "call-tool", toolArgs("snapshot-first"), { deadlineMs: 3000 });
+  const firstResult = firstCall.then(reply => reply.reply.ok, () => false);
+  let lateCall: Promise<boolean> | undefined;
+  let refusedResult: Promise<boolean> | undefined;
+  try {
+    await firstGate.started;
+    const refusal = raceCaller.invokeService(endpoint, "inventory", {}, { instanceId: rid(), deadlineMs: 3000 });
+    refusedResult = refusal.then(() => false, (e: unknown) => e instanceof EpEnvelopeError && e.code === "permission-denied" && e.outcome === "not-executed");
+    await refusedPublish;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    lateCall = raceCaller.invokeService(endpoint, "call-tool", toolArgs("snapshot-late"), { deadlineMs: 3000 })
+      .then(reply => reply.reply.ok, () => false);
+    await lateGate.started;
+    firstGate.release();
+    assert.equal(await firstResult, true, "the original drain request keeps its successful reply");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(raceReconnects, 0, "recovery does not close over a request admitted after its first snapshot");
+    lateGate.release();
+    assert.equal(await lateCall, true, "the later mutation keeps its reply and is never replayed");
+    assert.equal(await refusedResult, true, "the unrelated permanent denial still stands after recovery");
+    assert.equal(await duringRebuild, true, "a call arriving at disconnect waits for rebuild before publication");
+    assert.equal(await cancelledAdmission, true, "a waiting admission preserves cancellation without publishing");
+    assert.equal(await expiredAdmission, true, "a waiting admission spends its own deadline and runs nothing");
+    assert.equal(raceReconnects, 1, "the live drain still completes one bounded rebuild");
+    assert.equal(toolCalls, beforeRace + 2, "both held mutations execute once");
+  } finally {
+    firstGate.release(); lateGate.release(); status.stop();
+    await Promise.allSettled([firstResult, lateCall, refusedResult, refusedPublish, duringRebuild, cancelledAdmission, expiredAdmission]);
+    heldTools.clear();
+  }
   const beforeAbort = toolCalls;
   const aborted = new AbortController();
   aborted.abort(new Error("fixture cancellation"));

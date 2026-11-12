@@ -3046,6 +3046,22 @@ export class CotalEndpoint extends EventEmitter {
     finally { pending.delete(request); }
   }
 
+  private async waitServiceRecovery(recovery: Promise<void>, deadline: number, signal: AbortSignal | undefined, timeout: () => Error): Promise<void> {
+    let onAbort: (() => void) | undefined;
+    const cancelled = new Promise<never>((_, reject) => {
+      onAbort = () => reject(signal?.reason);
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      await withDeadline(Promise.race([recovery, cancelled]), deadline - Date.now(), timeout);
+    } finally {
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+    }
+    signal?.throwIfAborted();
+    if (deadline <= Date.now()) throw timeout();
+  }
+
   /** The resolved, digest-verified command surface of `endpoint` as this connection's caller sees
    *  it. Unpinned calls cache the complete discovery surface, and `refresh` drops both the full
    *  handle and any command-specific invocation handles. `instanceId` selects one instance without
@@ -3137,11 +3153,17 @@ export class CotalEndpoint extends EventEmitter {
     args?: Record<string, unknown>,
     opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string; classInstanceId?: string } = {},
   ): Promise<EpAttributedReply> {
+    const deadline = Date.now() + (opts.deadlineMs ?? 10_000);
+    const rebuilding = this.rebuildPromise;
+    if (rebuilding) {
+      await this.waitServiceRecovery(rebuilding, deadline, opts.signal,
+        () => new EpEnvelopeError("deadline-exceeded", "the invocation deadline elapsed waiting for connection recovery", undefined, "not-executed"));
+      opts = { ...opts, deadlineMs: deadline - Date.now() };
+    }
     const nc = this.nc;
     if (!nc) throw new Error(this.notLiveMsg());
-    const deadline = Date.now() + (opts.deadlineMs ?? 10_000);
     try {
-      return await this.invokeServiceOnce(endpoint, command, args, opts);
+      return await this.invokeServiceOnce(endpoint, command, args, opts, rebuilding ? deadline : undefined);
     } catch (e) {
       if (!(e instanceof EpEnvelopeError) || e.code !== "permission-denied" || e.outcome !== "not-executed"
         || deadline <= Date.now()) throw e;
@@ -3151,25 +3173,19 @@ export class CotalEndpoint extends EventEmitter {
       const recovery = (async () => {
         // Closing on the first denial can discard a concurrent call's still-arriving denial,
         // leaving that call with an unknown timeout. Let the old attempts settle first.
-        await Promise.allSettled([...(this.serviceInvocations.get(nc) ?? [])]);
-        opts.signal?.throwIfAborted();
-        if (deadline <= Date.now()) throw e;
+        // Calls may enter while an earlier batch settles. Re-read the live set until it is
+        // empty, then start the rebuild without yielding. New calls wait for that rebuild.
+        for (;;) {
+          opts.signal?.throwIfAborted();
+          if (deadline <= Date.now()) throw e;
+          const pending = this.serviceInvocations.get(nc);
+          if (!pending?.size) break;
+          await Promise.allSettled([...pending]);
+        }
         if (this.nc === nc) await this.reconnect();
         else await this.rebuildPromise;
       })();
-      let onAbort: (() => void) | undefined;
-      const cancelled = new Promise<never>((_, reject) => {
-        onAbort = () => reject(opts.signal?.reason);
-        if (opts.signal?.aborted) onAbort();
-        else opts.signal?.addEventListener("abort", onAbort, { once: true });
-      });
-      try {
-        await withDeadline(Promise.race([recovery, cancelled]), deadline - Date.now(), () => e);
-      } finally {
-        if (onAbort) opts.signal?.removeEventListener("abort", onAbort);
-      }
-      opts.signal?.throwIfAborted();
-      if (deadline <= Date.now()) throw e;
+      await this.waitServiceRecovery(recovery, deadline, opts.signal, () => e);
       this.clearResolvedService(endpoint);
       return this.invokeServiceOnce(endpoint, command, args, { ...opts, deadlineMs: deadline - Date.now() }, deadline);
     }

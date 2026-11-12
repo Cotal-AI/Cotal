@@ -22,8 +22,10 @@ the instance that answered its describe, so a granted caller reaches the service
 The `CotalEndpoint.invokeService` method also rebuilds its connection and retries once after a broker
 `permission-denied` refusal marked `not-executed`. This makes a grant issued while the caller was
 connected usable without a manual reconnect. Recovery shares concurrent rebuilds and spends the
-original invocation deadline. A second refusal stands. Responder refusals and calls whose outcome
-is `executed` or `unknown` do not trigger this recovery. Low-level `invokeCommand` callers own
+original invocation deadline. It waits for active calls, including calls admitted while earlier
+ones finish, before replacing the connection. Calls arriving during the rebuild wait within their
+own deadline and can be cancelled before publication. A second refusal stands. Responder refusals
+and calls whose outcome is `executed` or `unknown` do not trigger this recovery. Low-level `invokeCommand` callers own
 their connection and must reconnect themselves after a late grant.
 The callout rechecks grantee lifecycle, named ancestor grants, current name, assignment, root, activation,
 approval and ceiling, then checks the policy evidence again after signing and native-key recording.
