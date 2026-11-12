@@ -17,8 +17,11 @@ import {
   pushAccountClaim,
   serverConfig,
   wakeAccountClaim,
+  type SecretStore,
 } from "@cotal-ai/core";
-import { createCalloutAuth } from "../src/callout.js";
+import { createCalloutAuth, type CalloutAuth } from "../src/callout.js";
+import { authCalloutKey, renewCalloutCredentials, saveCalloutAccountJwt } from "../src/store.js";
+import { STORE_VER } from "../src/store-file.js";
 import {
   awaitBrokerReady,
   emitSentinel,
@@ -34,6 +37,13 @@ const dir = await mkdtemp(join(tmpdir(), SMOKE_BROKER_TOKEN + "callout-claim-hib
 const releasePath = teardownPathOnSignal(dir);
 const clients: NatsConnection[] = [], children: ChildProcess[] = [], releases: Array<() => void> = [];
 const enc = (value: string) => new TextEncoder().encode(value);
+class MemoryStore implements SecretStore {
+  readonly values = new Map<string, string>();
+  async get(key: string) { return this.values.get(key); }
+  async put(key: string, value: string) { this.values.set(key, value); }
+  async create(key: string, value: string) { if (this.values.has(key)) return false; this.values.set(key, value); return true; }
+  async delete(key: string) { this.values.delete(key); }
+}
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 const nextSecond = async () => {
   const start = nowSeconds();
@@ -50,6 +60,8 @@ try {
   const broker = await createBrokerAuth("callout-claim-hibernation-fixture");
   const space = await createSpaceAccountAuth(broker, "callout-claim-hibernation");
   const callout = await createCalloutAuth({ space: space.space, operatorSeed: broker.operator.seed, accountPub: space.account.pub });
+  const calloutStore = new MemoryStore();
+  calloutStore.values.set(authCalloutKey(space.space), JSON.stringify({ ver: STORE_VER, callout }, null, 2));
   const storeDir = join(dir, "js"), resolverDir = join(dir, "account-jwts"), configFile = join(dir, "server.conf");
   const port = await freePort(), servers = `nats://127.0.0.1:${port}`;
   await writeFile(configFile, serverConfig(broker, [space], {
@@ -89,8 +101,8 @@ try {
     const nc = await connect({ servers, authenticator: credsAuthenticator(enc(user.creds)), inboxPrefix: `_INBOX_${user.id}`, reconnect: false, timeout: 3000 });
     clients.push(nc); await nc.flush(); return nc;
   };
-  const dialCallout = async () => {
-    const nc = await connect({ servers, authenticator: credsAuthenticator(enc(callout.calloutCreds)), reconnect: false, timeout: 3000 });
+  const dialCallout = async (auth: CalloutAuth = callout) => {
+    const nc = await connect({ servers, authenticator: credsAuthenticator(enc(auth.calloutCreds)), reconnect: false, timeout: 3000 });
     clients.push(nc); await nc.flush(); return nc;
   };
 
@@ -114,6 +126,7 @@ try {
   });
   await cell("pushing hibernation fences the dedicated auth-callout account's live and later connections", async () => {
     await push(sleeping);
+    await saveCalloutAccountJwt(calloutStore, space.space, sleeping);
     await Promise.race([calloutNc.closed(), new Promise((_, reject) => setTimeout(() => reject(new Error("the hibernated callout connection stayed open")), 3000).unref())]);
     const refusal = await dialCallout().then(() => undefined, (error: unknown) => error);
     assert.ok(refusal !== undefined, "a hibernated callout credential connected");
@@ -123,11 +136,18 @@ try {
   const woken = await wakeAccountClaim(broker, callout.account.jwt, nowSeconds());
   await cell("wake reopens the dedicated auth-callout account with its stock credential and authority intact", async () => {
     await push(woken);
+    await saveCalloutAccountJwt(calloutStore, space.space, woken);
     calloutNc = await dialCallout();
     assert.equal(calloutNc.isClosed(), false);
     const before = decode<Account>(callout.account.jwt), after = decode<Account>(woken);
     assert.deepEqual(after.nats.authorization, before.nats.authorization);
     assert.deepEqual(after.nats.signing_keys, before.nats.signing_keys);
+  });
+
+  await cell("renewed same-key callout credentials connect after wake", async () => {
+    const renewed = await renewCalloutCredentials(calloutStore, space.space, 60);
+    calloutNc = await dialCallout(renewed);
+    assert.equal(calloutNc.isClosed(), false);
   });
 
   await stop(running);

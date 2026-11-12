@@ -232,6 +232,8 @@ the subject-token sanitizer. Endpoint names still use the separate DNS-label gra
 | `deriveOwnerToken`, `validateUserToken` | owner derivation; strict bearer validation. |
 | `cotalAuthProvider` | the self-registering `auth-provider` extension. |
 | `ensureCalloutAuth`/`loadCalloutAuth`, `ensureIssuer`/`loadIssuer`, `ensureOwnerSecret`/`loadOwnerSecret` | read/write the auth secret kinds through a `SecretStore`. Each `ensure*` writes its first value with `create`, so concurrent first calls on one space return the one value the store holds. |
+| `saveCalloutAccountJwt(store, space, accountJwt)` | atomically persist a newer hibernated or active claim for the existing auth-callout account. It refuses identity, issuer, signing-key, authorization, or other authority changes. |
+| `renewCalloutCredentials(store, space, expiresInSeconds?)` | re-sign the stored callout and sentinel credentials for their existing user nkeys, preserve their stock permissions, and atomically persist both bounded generations. The default lifetime is 24 hours. |
 | `PLANE_CLAIM_REFUSED`, `planeClaimRefusal`, `PlaneClaimRefusal` *(type)* | every plane-claim refusal carries a `PLANE_CLAIM_REFUSED` detail, and `planeClaimRefusal(err)` reads its `reason`: `corrupt`, `live-peer`, `unknown`, `concurrent`, `fenced`, `released` or `lost`. Only `unknown`, an inconclusive liveness observation, is coded `unavailable`. A host can retry contention and stop on a corrupt row without matching message text. |
 
 `startAuthCallout` processes up to 32 connections concurrently. Its hooks must support overlapping

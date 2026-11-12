@@ -29,7 +29,20 @@
  */
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { mkSecretDir, writeSecretFileCreateOnly, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
+import {
+  STANDING_RENEWABLE_TTL_SEC,
+  canonicalJson,
+  credsFromJwt,
+  identityFromCreds,
+  isAccountNkey,
+  jwtFromCreds,
+  mkSecretDir,
+  writeSecretFileCreateOnly,
+  type SecretStore,
+  type SpaceAuth,
+} from "@cotal-ai/core";
+import { decode, encodeUser, Types, type Account, type ClaimsData, type User } from "@nats-io/jwt";
+import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { identityOf, loadAuthInstanceIdentity, removeAuthInstanceIdentity, spaceSegment, type AuthInstanceIdentity } from "@cotal-ai/workspace";
 import { createCalloutAuth, type CalloutAuth, type CalloutProvisionInput } from "./callout.js";
 import { normalizeIdpUrl } from "./login.js";
@@ -124,6 +137,95 @@ export async function ensureCalloutAuth(store: SecretStore, input: CalloutProvis
     const callout = await createCalloutAuth(input);
     return { value: callout, doc: JSON.stringify({ ver: STORE_VER, callout } satisfies CalloutFile, null, 2) };
   });
+}
+
+type AccountClaim = ClaimsData<Account>;
+
+function decodedAccount(jwt: string, where: string): AccountClaim {
+  try {
+    const claim = decode<Account>(jwt);
+    if (claim.nats?.type !== Types.Account || !isAccountNkey(claim.sub)) throw new Error();
+    return claim;
+  } catch {
+    throw new Error(`${where}: replacement is not a valid signed NATS account JWT`);
+  }
+}
+
+function calloutAuthority(claim: AccountClaim): string {
+  const { limits: _limits, revocations: _revocations, ...authority } = claim.nats;
+  return canonicalJson({
+    aud: claim.aud,
+    name: claim.name,
+    sub: claim.sub,
+    iss: claim.iss,
+    exp: claim.exp ?? null,
+    nbf: claim.nbf ?? null,
+    nats: authority,
+  });
+}
+
+/** Atomically persist a newly signed claim for the existing dedicated auth-callout account.
+ * Only limits, revocations, issue time and JTI may change. Account identity, issuer, signing keys,
+ * external authorization and every other authority-bearing field must match the stored claim. */
+export async function saveCalloutAccountJwt(
+  store: SecretStore,
+  space: string,
+  accountJwt: string,
+): Promise<CalloutAuth> {
+  const key = authCalloutKey(space);
+  const callout = await loadCalloutAuth(store, space);
+  if (!callout) throw new Error(`${key}: no callout account exists to update`);
+  const current = decodedAccount(callout.account.jwt, key), replacement = decodedAccount(accountJwt, key);
+  if (replacement.sub !== callout.account.pub || replacement.iss !== current.iss ||
+      !Number.isSafeInteger(replacement.iat) || replacement.iat <= current.iat ||
+      calloutAuthority(replacement) !== calloutAuthority(current))
+    throw new Error(`${key}: replacement callout account JWT changes identity or authority, or is not newer - refusing to persist it`);
+  const updated: CalloutAuth = { ...callout, account: { ...callout.account, jwt: accountJwt } };
+  await store.put(key, JSON.stringify({ ver: STORE_VER, callout: updated } satisfies CalloutFile, null, 2));
+  return updated;
+}
+
+async function renewUserCredential(
+  creds: string,
+  name: "callout" | "sentinel",
+  account: CalloutAuth["account"],
+  exp: number,
+): Promise<string> {
+  const identity = identityFromCreds(creds);
+  const jwt = jwtFromCreds(creds);
+  if (!jwt) throw new Error(`renewCalloutCredentials: stored ${name} credential has no user JWT`);
+  const claim = decode<User>(jwt);
+  if (claim.nats?.type !== Types.User || claim.name !== name || claim.sub !== identity.id ||
+      claim.iss !== account.signingPub || claim.nats.issuer_account !== account.pub)
+    throw new Error(`renewCalloutCredentials: stored ${name} credential does not match the callout account authority`);
+  const subject = fromPublic(identity.id), issuer = fromPublic(account.pub), signer = fromSeed(new TextEncoder().encode(account.signingSeed));
+  try {
+    const renewed = await encodeUser(name, subject, issuer, claim.nats, { signer, exp });
+    return credsFromJwt(renewed, identity);
+  } finally {
+    subject.clear(); issuer.clear(); signer.clear();
+  }
+}
+
+/** Re-sign the stored callout service and sentinel credentials for their existing user nkeys, then
+ * atomically persist both generations. The default lifetime is the stock 24-hour standing window. */
+export async function renewCalloutCredentials(
+  store: SecretStore,
+  space: string,
+  expiresInSeconds = STANDING_RENEWABLE_TTL_SEC,
+): Promise<CalloutAuth> {
+  if (!Number.isSafeInteger(expiresInSeconds) || expiresInSeconds < 60 || expiresInSeconds > STANDING_RENEWABLE_TTL_SEC)
+    throw new Error(`renewCalloutCredentials: expiresInSeconds must be a whole number from 60 to ${STANDING_RENEWABLE_TTL_SEC}`);
+  const key = authCalloutKey(space), callout = await loadCalloutAuth(store, space);
+  if (!callout) throw new Error(`${key}: no callout account exists to renew`);
+  const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
+  const updated: CalloutAuth = {
+    ...callout,
+    calloutCreds: await renewUserCredential(callout.calloutCreds, "callout", callout.account, exp),
+    sentinelCreds: await renewUserCredential(callout.sentinelCreds, "sentinel", callout.account, exp),
+  };
+  await store.put(key, JSON.stringify({ ver: STORE_VER, callout: updated } satisfies CalloutFile, null, 2));
+  return updated;
 }
 
 // ---- the user-bearer issuer signing keys ----

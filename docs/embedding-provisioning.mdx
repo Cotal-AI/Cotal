@@ -116,6 +116,13 @@ account even though that account has no JetStream allocation. Wake refuses a hib
 claim as its template. Persist the active template separately and serialize claim updates per
 account.
 
+For a dedicated auth-callout account, persist each pushed transition with
+`saveCalloutAccountJwt(store, space, accountJwt)`. This updates the versioned callout document
+without making the host restate its private JSON shape. Before restarting a callout service after a
+long sleep, `renewCalloutCredentials(store, space)` re-signs the callout and sentinel credentials
+for their existing user nkeys and stores both bounded generations together. It does not rotate the
+account identity, signing key, xkey, or user identities.
+
 - **A stock root records the choice.** `cotal up --account-resolver full` starts the broker on the
   full resolver at `<root>/.cotal/account-jwts` and records it in `.cotal/broker-policy.json`. A host
   that renders the same broker passes `brokerAccountResolver(root, readBrokerPolicy(root)?.accountResolver)`
