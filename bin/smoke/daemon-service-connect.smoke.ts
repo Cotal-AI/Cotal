@@ -1248,8 +1248,26 @@ try {
         await start();
         check("C6c healthy control connects and records intent", (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
         await stop();
-        for (const phase of ["token", "info", "register", "renew", "ready"]) {
+        // Current service proofs skip human sign-in and registration. Missing or locally expired
+        // material takes the signed-in path instead. Hold only requests each path actually makes.
+        const recoveryPaths = [
+          { material: "current", phases: ["info", "renew", "ready"] },
+          { material: "missing", phases: ["token", "info", "register", "activate", "ready"] },
+          { material: "expired", phases: ["token", "info", "register", "activate", "ready"] },
+        ];
+        for (const recovery of recoveryPaths) for (const phase of recovery.phases) {
           for (const action of ["disconnect", "SIGTERM"]) {
+            const label = `${recovery.material} ${phase}`;
+            const renewalFiles = filesUnder(daemonDir).filter((p) => p.includes("service-renewal") && p.endsWith(".json"));
+            assert.equal(renewalFiles.length, 1, "startup cancellation needs one connected renewal record");
+            const renewalFile = join(daemonDir, renewalFiles[0]!);
+            const record = JSON.parse(readFileSync(renewalFile, "utf8"));
+            assert.ok(record.material?.renewalExpiresAt > Date.now() / 1000, "control has a current renewal proof");
+            const ids = [record.activateRequestId, record.renewRequestId];
+            if (recovery.material !== "current") writeFileSync(renewalFile, JSON.stringify({ ...record,
+              material: recovery.material === "missing" ? null : { ...record.material, renewalExpiresAt: Math.floor(Date.now() / 1000) - 1 },
+            }), { mode: 0o600 });
+            const before = hits.length, tokensBefore = jwtsIssued.length;
             let entered!: () => void, release!: () => void, aborted!: () => void;
             const requested = new Promise<void>((resolve) => { entered = resolve; });
             let released = false;
@@ -1260,14 +1278,16 @@ try {
             else connectGates.set(ON, async (operation, res) => { if (operation === phase) await gate(res); });
             try {
               await start();
-              if (await within(requested.then(() => true), 15_000) !== true) throw new Error(`C6c startup did not reach ${phase}`);
+              if (await within(requested.then(() => true), 15_000) !== true) throw new Error(`C6c ${recovery.material} startup did not reach ${phase}`);
               const status = await cli("service-status");
-              check(`C6c ${phase} ${action} instrument: startup is connecting`, status.code === 2 && status.doc.error?.cause?.code === "CONNECTING", status);
+              check(`C6c ${label} ${action} instrument: startup is connecting`, status.code === 2 && status.doc.error?.cause?.code === "CONNECTING", status);
+              if (recovery.material === "current") check(`C6c ${label} startup uses no human proof or register request`, jwtsIssued.length === tokensBefore
+                && hits.slice(before).every((hit) => hit.space === ON && (hit.method === "GET" || hit.operation === "renew" || hit.operation === "ready")));
               const started = Date.now();
               if (action === "disconnect") {
                 const pending = cli("service-disconnect");
                 const reply = await within(pending, cancellationDeadlineMs);
-                check(`C6c ${phase} disconnect returns before release and forgets intent`, !released && reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
+                check(`C6c ${label} disconnect returns before release and forgets intent`, !released && reply?.code === 0 && reply.doc.result?.state === "disconnected" && !existsSync(intentFile(ON)), reply);
                 // Release only after observing the bound, even on failure, then settle the child.
                 if (!reply) release();
                 await pending;
@@ -1275,20 +1295,24 @@ try {
                 const exited = new Promise<number | null>((resolve) => child!.once("exit", resolve));
                 child!.kill("SIGTERM");
                 const code = await within(exited, cancellationDeadlineMs);
-                check(`C6c ${phase} SIGTERM exits cleanly before release and retains intent`, !released && code === 0 && !existsSync(paths.socket) && existsSync(intentFile(ON)), { code });
+                check(`C6c ${label} SIGTERM exits cleanly before release and retains intent`, !released && code === 0 && !existsSync(paths.socket) && existsSync(intentFile(ON)), { code });
                 if (code === undefined) release();
                 await exited;
                 child = undefined;
               }
-              console.log(`  C6c ${phase} ${action} elapsed ms: ${Date.now() - started}`);
-              check(`C6c ${phase} ${action} closes the held HTTP request`, await within(cancelled, 1000) === true);
+              console.log(`  C6c ${label} ${action} elapsed ms: ${Date.now() - started}`);
+              check(`C6c ${label} ${action} closes the held HTTP request`, await within(cancelled, 1000) === true);
             } finally { tokenGate = undefined; connectGates.delete(ON); release(); await stop(); }
             await start();
             if (action === "disconnect") {
               const status = await cli("service-status");
-              check(`C6c ${phase} explicit disconnect has no registration after restart`, status.code === 2 && status.doc.error?.cause?.code === "NOT_REQUESTED", status);
-              check(`C6c ${phase} explicit reconnect restores intent`, (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
-            } else check(`C6c ${phase} healthy restart resumes and serves`, (await waitState(ON, (state) => state === "connected", 15_000)) === "connected" && (await probeMachine()).reply.ok);
+              check(`C6c ${label} explicit disconnect has no registration after restart`, status.code === 2 && status.doc.error?.cause?.code === "NOT_REQUESTED", status);
+              check(`C6c ${label} explicit reconnect restores intent`, (await cli("service-connect")).code === 0 && existsSync(intentFile(ON)));
+            } else {
+              check(`C6c ${label} healthy restart resumes and serves`, (await waitState(ON, (state) => state === "connected", 15_000)) === "connected" && (await probeMachine()).reply.ok);
+              const after = JSON.parse(readFileSync(renewalFile, "utf8"));
+              check(`C6c ${label} healthy restart reuses activate and renew ids`, after.activateRequestId === ids[0] && after.renewRequestId === ids[1]);
+            }
             await stop();
           }
         }
