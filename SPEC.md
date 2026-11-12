@@ -1016,6 +1016,24 @@ seats outside its host MUST refuse it with `failed-precondition` before any file
 The refusal MUST be independent of the requested path's existence, type and symlink target,
 and MUST NOT return a host name or canonical path. Such a runtime cannot use a manager-host cwd.
 
+The `list-dir` command is an untargeted ephemeral `manager.spawn` launch read. It MUST be
+minted alongside `resolve-cwd` in operator instruments and spawn-scoped instance-pinned
+manager-caller views, but MUST NOT be added to standing agent spawn or workflow placement grants.
+Its closed input is `{path?: string, includeHidden?: boolean, limit?: integer}`. An absent path
+selects the Manager user's home directory; a supplied path MUST be absolute. The limit defaults
+to 200 and MUST be between 1 and 1000. Hidden means dot-prefixed names and defaults to excluded.
+Its closed output is `{path: string, parent: string | null, directories: {name: string,
+symlink: boolean}[], truncated: boolean, roots: string[]}`. Path MUST be canonical, parent MUST
+be null at a filesystem root, and directories MUST contain only child directories sorted by
+locale-independent string order and bounded by limit. Truncated MUST state whether further
+matching entries exist. The response MUST NOT contain file names, contents, sizes or timestamps.
+Directory symlinks MUST be marked; explicitly navigating one MUST return its canonical target
+path. Broken and non-directory symlinks MUST be omitted. Roots MUST list existing drive roots on
+Windows (a root whose inspection fails MUST be omitted), `/` and `/Volumes` on macOS, and `/` on other hosts. Invalid or inaccessible directories
+MUST refuse with `failed-precondition`. Delegated execution MUST refuse before any filesystem
+lookup with the same execution-mode refusal as `resolve-cwd`; NONE MUST refuse with `unimplemented`.
+The Manager cluster revision is 48.
+
 On such a runtime, a caller-supplied persona `config` override MUST be refused before resolving,
 checking or reading its host path. Every path shape MUST receive `failed-precondition` and the
 same message: `delegated execution cannot use a manager-host persona config path; select a named persona`.

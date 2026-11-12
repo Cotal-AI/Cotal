@@ -17,11 +17,13 @@ import type { AccountComputerStatus } from "./account-state.js";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
-export const DAEMON_OPS = ["name", "daemon-stop", "space-intent", "status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+export const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-intent", "status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
 export type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
 const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readonly optional: readonly string[] }> = {
+  "update-settings": { required: [], optional: ["auto", "notify"] },
+  "update-check": { required: [], optional: [] },
   "daemon-stop": { required: [], optional: ["commit"] },
   "space-intent": { required: ["space", "enabled"], optional: [] },
   name: { required: [], optional: ["name"] },
@@ -42,6 +44,8 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
 };
 
 export type DaemonRequest =
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-check" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "name"; readonly name?: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "daemon-stop"; readonly commit?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
@@ -73,6 +77,7 @@ export interface DaemonUpdateStatus {
   readonly lastResult: string;
   readonly nextAttempt?: string;
   readonly automatic: boolean;
+  readonly notify?: boolean;
   readonly failures: number;
 }
 
@@ -224,6 +229,11 @@ export function parseRequest(line: string): ParsedRequest {
   if (id === null) return { ok: false, id: null, code: "BAD_ID", message: "request id must be 1-64 characters of [A-Za-z0-9_-]" };
   if (!op) return { ok: false, id, code: "UNKNOWN_OP", message: `unknown op ${JSON.stringify(obj.op)}` };
   const v = DAEMON_PROTOCOL_VERSION;
+  if (op === "update-settings") {
+    if ([obj.auto, obj.notify].some(value => value !== undefined && typeof value !== "boolean")) return bad(id, "auto and notify must be booleans");
+    return { ok: true, request: { v, id, op, ...(obj.auto !== undefined ? { auto: obj.auto as boolean } : {}), ...(obj.notify !== undefined ? { notify: obj.notify as boolean } : {}) } };
+  }
+  if (op === "update-check") return { ok: true, request: { v, id, op } };
   if (op === "name") {
     try { return { ok: true, request: { v, id, op, ...(obj.name !== undefined ? { name: computerName(obj.name) } : {}) } }; }
     catch (error) { return bad(id, error instanceof Error ? error.message : "invalid computer name"); }
