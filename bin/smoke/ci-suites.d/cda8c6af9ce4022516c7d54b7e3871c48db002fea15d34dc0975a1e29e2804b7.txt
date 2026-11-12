@@ -1,0 +1,2 @@
+# Only an agent writes its own permission records, and only its owner's interactive rows read them and answer its prompts.
+smoke:permission-grants:auth

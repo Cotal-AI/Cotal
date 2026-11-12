@@ -871,12 +871,41 @@ export function livenessServeFilter(space: string, plane: string): string {
 export function livenessReplyGrant(space: string, plane: string): string {
   return `${spacePrefix(space)}.${LIVENESS_ROUTE}.${routeToken(plane)}.*.*.reply.>`;
 }
+
 // The AUTH service's rail is NO LONGER a `ctl` control service. §13.11 retires the v0 ctl rail in
 // full and "MUST NOT be handled"; the auth-admin rows that served on it were spec defects written
 // onto a deleted rail, and they are rewritten onto the v0.4 endpoint surface (Cotal #350). The
 // generic "retire a lifecycle" op now rides `ep.one.auth.retire-lifecycle.handle.…` — see
 // `AUTH_ENDPOINT` / `EP_CMD_RETIRE_LIFECYCLE` in `endpoint-subjects.ts`. No `CONTROL_AUTH_ADMIN`
 // token survives: a vocabulary constant is how a retired rail gets re-minted by the next lane.
+
+// ---- the permission answer rail ----
+
+/** The route token of the PERMISSION ANSWER rail: `perm.<agentOwner>.<agentActor>.<owner>.<actor>`.
+ *  An owner's interactive principal asks the connector holding one of its agents' permission prompts
+ *  to apply an answer, and the holder replies beneath `<request>.reply.`. Not a delivery:
+ *  {@link parseSubject} recovers no sender from it. */
+export const PERMISSION_ROUTE = "perm" as const;
+
+/** The answer REQUEST subject: the agent whose prompt it answers, then the answering principal, which
+ *  a publish grant forge-locks as it does a {@link unicastSubject} sender. Identity slots accept `*`
+ *  for grant rules. */
+export function permissionAnswerSubject(space: string, agentOwner: string, agentActor: string, owner: string, actor: string): string {
+  return `${spacePrefix(space)}.${PERMISSION_ROUTE}.${ownerToken(agentOwner)}.${ownerToken(agentActor)}.${ownerToken(owner)}.${ownerToken(actor)}`;
+}
+
+/** The serve filter of the connector holding one agent's prompts: answers from any principal of the
+ *  agent's own owner, and from no other owner. */
+export function permissionServeFilter(space: string, owner: string, actor: string): string {
+  return permissionAnswerSubject(space, owner, actor, owner, "*");
+}
+
+/** The holder's reply-PUBLISH grant, bounded to the `.reply.` leaf beneath an answer addressed to its
+ *  agent, the shape of {@link livenessReplyGrant}. It cannot express a request subject, so no agent
+ *  can answer its own prompt or a sibling's. */
+export function permissionReplyGrant(space: string, owner: string, actor: string): string {
+  return `${permissionServeFilter(space, owner, actor)}.reply.>`;
+}
 
 export function traceSubject(space: string, agentId: string): string {
   return `${spacePrefix(space)}.trace.${token(agentId)}`;
@@ -1211,6 +1240,12 @@ export function anycastBucket(space: string): string {
  *  owner's interactive principals read them. */
 export function permissionBucket(space: string): string {
   return `cotal_permissions_${token(space)}`;
+}
+
+/** `$KV.cotal_permissions_<space>.<owner>.>`: every record of one owner's agents, the one filter its
+ *  interactive principals may read through. */
+export function permissionOwnerFilter(space: string, owner: string): string {
+  return `$KV.${permissionBucket(space)}.${ownerToken(owner)}.>`;
 }
 
 /** KV key for one shard's delivery lease/readiness (N=1 → `lease.0`). */
