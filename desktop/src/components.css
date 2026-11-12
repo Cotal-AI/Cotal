@@ -60,15 +60,11 @@
 #applications-label, #dashboard-spaces-note { margin: 0 0 4px; font-size: 12px; }
 .application-chips { margin-bottom: 8px; }
 .connected-spaces-scroll { margin: 8px 0 16px; }
-.connected-spaces-scroll:has(li:nth-child(4)) { max-height: 160px; overflow-y: auto; scroll-snap-type: y mandatory; }
-.connected-spaces-scroll:has(li:nth-child(4)) li { height: 80px; box-sizing: border-box; scroll-snap-align: start; }
+.connected-spaces-scroll:has(li:nth-child(4)) { max-height: var(--space-list-height, 160px); overflow-y: auto; scroll-snap-type: y mandatory; }
+.connected-spaces-scroll:has(li:nth-child(4)) li { scroll-snap-align: start; }
 .connected-spaces-scroll:has(li:nth-child(4)) strong { width: 100%; line-height: 18px; }
-@media (max-width: 640px) {
-  .connected-spaces-scroll:has(li:nth-child(4)) { max-height: 200px; }
-  .connected-spaces-scroll:has(li:nth-child(4)) li { height: 100px; }
-}
-.connection-card:has(#connected-spaces li:nth-child(4)) #connection-icon,
-.connection-card:has(#connected-spaces li:nth-child(4)) #connection-description { display: none; }
+.connection-card:has(#connected-spaces li:nth-child(2)) #connection-icon,
+.connection-card:has(#connected-spaces li:nth-child(2)) #connection-description { display: none; }
 #connected-spaces { list-style: none; padding: 0; margin: 0; }
 #connected-spaces li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 2px solid var(--rule); }
 #connected-spaces li > span { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
@@ -174,7 +170,9 @@ footer { gap: 16px; margin: 16px 8px 0; }
 }
 .app { height: 100vh; min-height: 0; padding: 0; overflow-y: auto; }
 .sidebar { max-width: none; padding: 16px 32px; border-bottom: var(--bw) solid var(--ink); background: var(--paper); }
-main { flex: 1; display: flex; flex-direction: column; justify-content: safe center; max-width: 648px; padding: 16px 24px; min-height: min-content; }
+main { flex: 1; display: flex; flex-direction: column; justify-content: safe center; max-width: 648px; padding: 16px 24px; min-height: 0; }
+.connection-card { max-height: calc(100dvh - 150px); overflow-y: auto; }
+@media (max-width: 640px) { .connection-card { max-height: calc(100dvh - 130px); } }
 #journey { margin: 0 0 24px; flex-shrink: 0; }
 .connection-card { flex-shrink: 0; }
 footer { flex-shrink: 0; }
