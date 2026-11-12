@@ -534,7 +534,13 @@ function sizeSpaceList(): void {
   const rows = [...list.children] as HTMLElement[];
   if (rows.length < 4 || !list.getClientRects().length) return;
   let height = 0;
-  const budget = 220;
+  const panel = el("connected-panel");
+  const viewport = list.parentElement!;
+  const otherContent = panel.scrollHeight - viewport.getBoundingClientRect().height;
+  const card = panel.closest<HTMLElement>(".connection-card")!;
+  const cardStyle = getComputedStyle(card);
+  const extraCapacity = parseFloat(cardStyle.maxHeight) - card.getBoundingClientRect().height;
+  const budget = Math.min(220, panel.clientHeight + extraCapacity - otherContent);
   for (const row of rows) {
     const next = row.getBoundingClientRect().height;
     if (height && height + next > budget) break;

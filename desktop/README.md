@@ -42,7 +42,7 @@ The equivalent terminal controls are `cotal daemon install`, `cotal daemon start
 
 Registration requires the space owner's approval and the space operator's binding for `ai.cotal.machine`. No shipped command or page provides those approval controls. Once both are complete, rerun `cotal daemon register --space <space>` until it reports `registered`, then run `cotal daemon service-connect --space <space>`. See the [daemon registration prerequisites](../docs/cli-processes.mdx#daemon) for the approval states and refusals.
 
-Space rows say Connected only after that space's Manager reports launch readiness. Until then they say Starting. The space heading includes the total count. Long lists keep natural row heights and size their scroll region to whole rows. The footer stays outside the card's scroll region. Edit in the Connected header opens the computer-name editor in Settings. During Connect, the editor expands in the header rather than staying inside the name pill.
+Space rows say Connected only after that space's Manager reports launch readiness. Until then they say Starting. The space heading includes the total count. Long lists keep natural row heights and size their scroll region to whole rows while reserving room for the actions. Short names share a line with their pill and status. Connected content scrolls inside the card's padding. The footer stays outside the card's scroll region. Edit in the Connected header opens the computer-name editor in Settings. During Connect, the editor expands in the header rather than staying inside the name pill.
 
 ## Design
 
