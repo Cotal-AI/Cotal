@@ -853,6 +853,11 @@ Missing `supervise` scope refuses with the Manager's reason and next step.
 The daemon supervises each Manager as a separate child, restarts it with bounded backoff after a
 crash, and resumes recorded hosting intents after its own restart. A child that exits while a
 generation fence is pending is marked restarting with its exit cause, then rescheduled after rollback.
+Restart preparation belongs to the authenticated caller's process identity across local connections.
+Another caller's abort cannot release that preparation. The daemon releases the shared Manager fence
+only after every owner has aborted and the Managers have acknowledged release. Closing a connection
+does not abort preparation. A caller that exits without aborting leaves admission blocked until the
+daemon restarts. This process ownership does not establish installer completion or crash recovery.
 It records intent only after
 status answers. During startup, status names initialization and registration as the pending work.
 The Manager logs remote authority, contract publication and activation stages. Contract artifacts
