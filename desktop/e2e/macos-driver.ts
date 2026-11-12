@@ -26,7 +26,9 @@ export class MacOSDriver {
     let stderr = "";
     try {
       const result = await execute("/usr/bin/swift", [helper, String(pid), operation, ...args], {
-        env: this.launchEnv, timeout: 30_000, maxBuffer: 4 * 1024 * 1024,
+        env: { ...this.launchEnv, COTAL_MAC_LOGIN_NODE: process.execPath,
+          COTAL_MAC_LOGIN_POLICY: fileURLToPath(new URL('./macos-login-input.mjs', import.meta.url)) },
+        timeout: operation === "disable-login" ? 45_000 : 30_000, maxBuffer: 4 * 1024 * 1024,
       });
       stderr = result.stderr;
       if (operation !== "quit") this.alive();
