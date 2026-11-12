@@ -1,5 +1,17 @@
 # @cotal-ai/auth
 
+## 0.160.8
+
+### Patch Changes
+
+- 68a9ac5: Add confirmed sign-out and disconnect controls to desktop Settings.
+  
+  Sign-out shares the CLI's provider-session revocation and local sign-in cleanup while leaving existing computer connections running. Disconnect uses the existing per-space operations and reports incomplete outcomes without claiming credential erasure or remote revocation.
+- Updated dependencies [c7c509c]
+  - @cotal-ai/core@0.160.8
+  - @cotal-ai/workspace@0.160.8
+  - @cotal-ai/lang@0.160.8
+
 ## 0.160.7
 
 ### Patch Changes
