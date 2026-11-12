@@ -45,6 +45,29 @@ const deliveryCreds = await mintCreds(auth, newIdentity(), "delivery");
 await store.put(deliveryCredsKey(space, { injected: true }), deliveryCreds);
 ```
 
+`setupSpaceStreams` creates the derived `cotal_membership_<space>` bucket in Memory. It refuses an
+existing File-backed membership bucket because changing storage requires deletion. Stop every
+membership writer and reader, mint the exact one-shot recreation credential, and opt in:
+
+```ts
+import { mintCreds, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
+
+const recreateCreds = await mintCreds(auth, newIdentity(), "membership-store-recreate");
+await setupSpaceStreams({
+	servers: brokerUrl,
+	space,
+	creds: provisionerCreds,
+	recreateFileMembership: { creds: recreateCreds },
+});
+```
+
+The recreation credential can inspect and delete only `KV_cotal_membership_<space>`. The ordinary
+provisioner creates and verifies the empty Memory replacement. The membership feed is derived and
+stays stale until its writer finishes a complete authoritative rebuild and stamps a fresh heartbeat.
+`reconcileSpaceMemoryBuckets` recreates missing Memory presence and membership buckets on a wake or
+broker restart. It refuses a missing File delivery or manager lease bucket and does not widen any
+standing credential.
+
 [SPEC §4](../SPEC.md#4-delivery-modes) requires the creation-time delivery class to be discoverable on the wire.
 A daemon-backed space records `durable`; it does not rely on a receiver's fallback policy.
 The delivery credential key is per-space. The bare `delivery.creds` kind is not its store key.
@@ -55,6 +78,13 @@ The host must provision auth material and its IdP pin and ledger before starting
 
 `maxFileStore` is an optional positive integer cap in bytes.
 Other values throw.
+
+For channel-less agents, `provisionAgentDurables` creates DM but omits DLV when the resolved
+`allowSubscribe` is empty. Pass that full resolved ACL to `CotalEndpoint` as `allowSubscribe`;
+active `channels: []` alone does not establish an empty read ACL. An explicit empty ACL skips the
+DLV bind. A denied bind without that evidence refuses startup. Re-granting channel reads creates
+DLV with its existing `DeliverPolicy.All` policy; the new endpoint uses the updated resolved ACL.
+The auth service applies the same conditional DLV readback when admitting chat sessions.
 
 ### Multiple spaces on a broker
 

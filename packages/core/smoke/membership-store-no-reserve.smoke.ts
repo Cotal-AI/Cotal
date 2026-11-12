@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstreamManager, StorageType } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { connect } from "@nats-io/transport-node";
 import {
@@ -21,6 +21,8 @@ import {
   isReachable,
   LEGACY_MEMBERSHIP_MAX_BYTES,
   membershipBucket,
+  deliveryBucket,
+  managerBucket,
   MEMBERSHIP_MAX_VALUE_SIZE,
   mintCreds,
   newIdentity,
@@ -114,7 +116,17 @@ try {
     maxValueSize: firstInfo.config.max_msg_size,
   };
   check("the membership stream is bounded by history 1 and a native value ceiling, not max_bytes",
-    limits.maxBytes === -1 && limits.history === 1 && limits.maxValueSize === MEMBERSHIP_MAX_VALUE_SIZE, limits);
+    limits.maxBytes === -1 && limits.history === 1 && limits.maxValueSize === MEMBERSHIP_MAX_VALUE_SIZE &&
+      firstInfo.config.storage === StorageType.Memory, { ...limits, storage: firstInfo.config.storage });
+  const inspectorCreds = await mintCreds(firstAuth, newIdentity(), "provisioner");
+  const inspector = await connect({ servers, ...standaloneConnectOpts({ creds: inspectorCreds, tls: false }) });
+  const inspectorJsm = await jetstreamManager(inspector);
+  const deliveryInfo = await inspectorJsm.streams.info(`KV_${deliveryBucket(first.space)}`);
+  const managerInfo = await inspectorJsm.streams.info(`KV_${managerBucket(first.space)}`);
+  await inspector.drain();
+  check("delivery and manager lease buckets remain File-backed",
+    deliveryInfo.config.storage === StorageType.File && managerInfo.config.storage === StorageType.File,
+    { delivery: deliveryInfo.config.storage, manager: managerInfo.config.storage });
   let oversized = "";
   try { await (await new Kvm(writer).open(membershipBucket(first.space))).put("oversized.agent", new Uint8Array(MEMBERSHIP_MAX_VALUE_SIZE + 1)); }
   catch (error) { oversized = (error as Error).message; }
@@ -142,11 +154,28 @@ try {
 
   const legacyCreds = await plant(LEGACY_SPACE, LEGACY_MEMBERSHIP_MAX_BYTES);
   const beforeLegacy = (await (await fetch(`http://127.0.0.1:${monitor}/jsz`)).json() as Jsz).reserved_storage;
-  await setupSpaceStreams({ servers, space: LEGACY_SPACE, creds: legacyCreds });
+  let implicit = "";
+  try { await setupSpaceStreams({ servers, space: LEGACY_SPACE, creds: legacyCreds }); }
+  catch (error) { implicit = (error as Error).message; }
+  check("setup refuses to silently delete a legacy File-backed membership store",
+    implicit.includes("storage is file") && implicit.includes("explicit recreateFileMembership authority"), implicit);
+  const legacyAuth = composeSpaceAuth(brokerAuth, byName(LEGACY_SPACE));
+  const recreateCreds = await mintCreds(legacyAuth, newIdentity(), "membership-store-recreate");
+  await setupSpaceStreams({
+    servers,
+    space: LEGACY_SPACE,
+    creds: legacyCreds,
+    recreateFileMembership: { creds: recreateCreds },
+  });
   const afterLegacy = (await (await fetch(`http://127.0.0.1:${monitor}/jsz`)).json() as Jsz).reserved_storage;
-  check("setup reconciles exactly the legacy 64 MiB membership cap to -1",
-    await maxBytes(LEGACY_SPACE, legacyCreds) === -1, await maxBytes(LEGACY_SPACE, legacyCreds));
-  check("/jsz shows that the legacy reconcile released its 64 MiB reservation",
+  const legacyNc = await connect({ servers, ...standaloneConnectOpts({ creds: legacyCreds, tls: false }) });
+  const legacyInfo = await (await jetstreamManager(legacyNc)).streams.info(`KV_${membershipBucket(LEGACY_SPACE)}`);
+  await legacyNc.drain();
+  check("explicit setup conversion recreates legacy membership as canonical Memory storage",
+    legacyInfo.config.storage === StorageType.Memory && legacyInfo.config.max_bytes === -1 &&
+      legacyInfo.config.max_msgs_per_subject === 1 && legacyInfo.config.max_msg_size === MEMBERSHIP_MAX_VALUE_SIZE,
+    legacyInfo.config);
+  check("/jsz shows that the explicit conversion released its 64 MiB reservation",
     beforeLegacy === LEGACY_MEMBERSHIP_MAX_BYTES && afterLegacy === 0, { beforeLegacy, afterLegacy });
 
   const driftCreds = await plant(DRIFT_SPACE, DRIFT_CAP);

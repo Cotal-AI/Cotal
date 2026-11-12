@@ -7,6 +7,24 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Memory-backed derived membership after 0.163.0
+
+New spaces create `KV_cotal_membership_<space>` in Memory because the feed is rebuilt from the
+broker connection view and durable members registry. Existing File-backed membership stores are not
+deleted during an ordinary upgrade. From that deployment's project root, explicitly name its
+recorded space when stopping the stack and converting the derived feed:
+
+```bash
+cotal down --space <space> --yes
+cotal up --space <space> --recreate-membership-store
+```
+
+The command uses one exact short-lived credential to inspect and delete only the membership stream,
+then the ordinary provisioner creates and verifies the empty Memory replacement. Delivery and
+manager lease buckets remain File-backed. A missing File lease bucket refuses rather than being
+treated as empty state. The membership display remains stale until its writer completes a full
+authoritative rebuild and stamps a fresh heartbeat.
+
 ## Explicit space selections apply in every folder
 
 `cotal use <space>` now wins over a project's running space until another selection or
