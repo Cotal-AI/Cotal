@@ -1,7 +1,7 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
+import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
-import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot } from "./auth-paths.js";
+import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot, userAuthStateDir } from "./auth-paths.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
 
@@ -442,6 +442,63 @@ export function removeCatalogMeshes(ownerKey: string): string[] {
   const removed = loadMeshes().filter((m) => m.origin === "catalog" && m.catalogOwner === ownerKey).map((m) => m.space);
   removeMeshesReleasingCurrent(removed);
   return removed.sort();
+}
+
+/** A discovered space's sentinel credential file that {@link removeCatalogAccount} did not delete. */
+export interface KeptCatalogCredential {
+  readonly space: string;
+  readonly path: string;
+  /** Why the file stays: an errno code such as `EACCES`, or what was found at the path instead. */
+  readonly reason: string;
+}
+
+/** {@link removeCatalogMeshes} for an account switch at the same provider: each discovered entry's
+ *  sentinel credential file is deleted with its registration. Files are deleted before any
+ *  registration is removed, so an interrupted switch never leaves a credential that no record names.
+ *  Only a regular file inside the entry's catalog custody folder, where catalog application wrote it,
+ *  is deleted, so a record cannot name another file for removal. A file that cannot be deleted is
+ *  returned for the caller to report. Its registration is removed regardless: the switched-away
+ *  account no longer refreshes it and `space forget` refuses a catalog entry. Manual and local
+ *  entries and their credentials are never touched. */
+export function removeCatalogAccount(ownerKey: string): { removed: string[]; credentialsKept: KeptCatalogCredential[] } {
+  const owned = loadMeshes().filter((m) => m.origin === "catalog" && m.catalogOwner === ownerKey);
+  const credentialsKept = owned.flatMap((m) => {
+    const kept = removeCatalogCredential(m);
+    return kept ? [kept] : [];
+  });
+  const removed = owned.map((m) => m.space);
+  removeMeshesReleasingCurrent(removed);
+  return { removed: removed.sort(), credentialsKept };
+}
+
+/** The partial outcome of a sign-in that replaced an account but could not delete some of that
+ *  account's discovered-space credential files. The session and the registrations are already
+ *  switched, so only the named files are left to remove. */
+export function keptCatalogCredentials(kept: readonly KeptCatalogCredential[]): { message: string; remedy: string } {
+  const files = kept.map((k) => `${k.path} (${k.space}: ${k.reason})`).join(", ");
+  return {
+    message: `signed in, but ${kept.length === 1 ? "a credential file" : `${kept.length} credential files`} of the previous account's discovered spaces could not be deleted: ${files}`,
+    remedy: "delete each file named; the previous account's registrations are already removed",
+  };
+}
+
+/** Delete one discovered entry's sentinel credential file, or say why it stays. An absent file is
+ *  already gone. */
+function removeCatalogCredential(entry: MeshEntry): KeptCatalogCredential | undefined {
+  const path = entry.userAuth?.sentinelCredsPath;
+  if (path === undefined) return undefined;
+  const kept = (reason: string): KeptCatalogCredential => ({ space: entry.space, path, reason });
+  try {
+    const custody = userAuthStateDir(entry.catalogRoot ?? entry.root, entry.space, { readOnly: true });
+    if (!resolve(path).startsWith(resolve(custody) + sep)) return kept("it is outside the space's catalog credential folder");
+    const stat = lstatSync(path, { throwIfNoEntry: false });
+    if (!stat) return undefined;
+    if (!stat.isFile()) return kept(stat.isSymbolicLink() ? "it is a symbolic link" : "it is not a regular file");
+    rmSync(path);
+    return undefined;
+  } catch (e) {
+    return kept((e as NodeJS.ErrnoException).code ?? (e as Error).message);
+  }
 }
 
 /** Validate one parsed registry document as a {@link MeshEntry} a consumer can actually use, or

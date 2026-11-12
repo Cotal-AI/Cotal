@@ -18,7 +18,7 @@
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { deleteIdpSpaceCatalog, establishIdpSession, IdpDeviceAuthorizationRefusedError, IdpLoginCancelled, IdpUnreachableError } from "@cotal-ai/auth";
-import { homeCotalDir, isCommandFailure, removeCatalogMeshes } from "@cotal-ai/workspace";
+import { homeCotalDir, isCommandFailure, removeCatalogAccount, type KeptCatalogCredential } from "@cotal-ai/workspace";
 import type { CancelResult, LoginPrompt, LoginResult } from "./protocol.js";
 
 /** The client id stock `cotal login` presents by default. */
@@ -86,12 +86,13 @@ export function createLoginCoordinator(opts: { readonly sessionDir: string; read
           expiresAt: new Date(Date.now() + p.expiresInSec * 1000).toISOString(),
         }),
       });
+      let credentialsKept: KeptCatalogCredential[] = [];
       if (r.previousSub) {
         const owner = deleteIdpSpaceCatalog(opts.sessionDir, req.idp, r.previousSub);
         // A separate daemon owns its catalog cache, not the shared registry or its credentials.
-        if (resolve(opts.sessionDir) === resolve(homeCotalDir())) removeCatalogMeshes(owner);
+        if (resolve(opts.sessionDir) === resolve(homeCotalDir())) ({ credentialsKept } = removeCatalogAccount(owner));
       }
-      return { outcome: "signed-in", idp: req.idp, sub: r.sub, ...(r.label ? { label: r.label } : {}), ...(r.previousSub ? { previousSub: r.previousSub } : {}) };
+      return { outcome: "signed-in", idp: req.idp, sub: r.sub, ...(r.label ? { label: r.label } : {}), ...(r.previousSub ? { previousSub: r.previousSub } : {}), ...(credentialsKept.length ? { credentialsKept } : {}) };
     } catch (e) {
       if (e instanceof IdpLoginCancelled) return { outcome: "cancelled" };
       if (e instanceof IdpUnreachableError) return failed("unreachable");

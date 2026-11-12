@@ -11,7 +11,7 @@ import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-h
  */
 import * as prompts from "@clack/prompts";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CommandFailure, resolvePreference, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, writeResult, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, resolvePreference, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, writeResult, findCotalRoot, getSpaceAuth, homeCotalDir, keptCatalogCredentials, loadMeshes, removeCatalogAccount, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
 import {
   deleteIdpSpaceCatalog,
   establishIdpSession,
@@ -168,10 +168,12 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       throw error;
     });
     const provider = resolveAuthProvider();
+    let credentialsKept: ReturnType<typeof removeCatalogAccount>["credentialsKept"] = [];
     if (previousSub) {
-      const removed = removeCatalogMeshes(deleteIdpSpaceCatalog(homeCotalDir(), idp, previousSub));
-      if (removed.length)
-        console.log(`Removed the previous account's discovered spaces: ${removed.join(", ")}. No replacement was selected automatically.`);
+      const switched = removeCatalogAccount(deleteIdpSpaceCatalog(homeCotalDir(), idp, previousSub));
+      credentialsKept = switched.credentialsKept;
+      if (switched.removed.length)
+        console.log(`Removed the previous account's discovered spaces: ${switched.removed.join(", ")}. No replacement was selected automatically.`);
     }
     let discovered: MeshEntry[] = [];
     if (provider.hasSpaceCatalog?.({ dir: homeCotalDir(), idpUrl: idp, sub })) {
@@ -198,6 +200,11 @@ async function runLogin(args: ParsedArgs): Promise<void> {
         ? [{ command: "cotal use <name>", description: "Select one of your spaces for the commands that follow" }, { command: "cotal space", description: "See every registered space" }]
         : [{ command: "cotal space", description: "See registered spaces and choose one" }, { command: "cotal sync", description: "Refresh spaces the provider makes available to this account" }] }] },
     ] }, presentation === "plain" ? "plain" : "rich", process.stdout));
+    // The switch is done; a credential file it could not delete leaves the run partial.
+    if (credentialsKept.length) {
+      const { message, remedy } = keptCatalogCredentials(credentialsKept);
+      throw new CommandFailure("partial", "OPERATION_PARTIAL", message, { target: { idp }, remedy });
+    }
   });
 }
 

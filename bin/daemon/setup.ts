@@ -14,7 +14,7 @@ import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
  * It composes the existing commands and adds no new authority. Pausing, renaming and disconnecting
  * stay separate commands; this one does not absorb them.
  */
-import { codeSpan, CommandFailure, resolveOnPath } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import type { DaemonPaths } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
@@ -22,7 +22,7 @@ import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
 import { exchangeDesktopRequest } from "./desktop.js";
 import type { PeerPid, PeerUid } from "./endpoint.js";
-import type { HostedManager, LoginPrompt, RegisterResult, ServiceConnectionState } from "./protocol.js";
+import type { HostedManager, LoginPrompt, LoginResult, RegisterResult, ServiceConnectionState } from "./protocol.js";
 import { applyInstall, installedDaemonIdentity, planUninstall, planInstalledPathRefresh, startInstalled, restartInstalled } from "./install.js";
 import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
@@ -209,6 +209,14 @@ async function refreshApplications(opts: InstallOptions, steps: SetupStep[]): Pr
   return true;
 }
 
+/** A sign-in that replaced an account but could not delete some of that account's discovered-space
+ *  credential files stops setup as partial. The session is already switched, so a rerun continues. */
+function credentialsRemoved(r: LoginResult): void {
+  if (r.outcome !== "signed-in" || !r.credentialsKept?.length) return;
+  const { message, remedy } = keptCatalogCredentials(r.credentialsKept);
+  throw new CommandFailure("partial", "OPERATION_PARTIAL", message, { remedy: `${remedy}, then run this setup again` });
+}
+
 /** Connect this computer to an account without changing any space intent. */
 export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSeconds"> & { idp: string; existingSignInOnly?: boolean }) {
   const steps: SetupStep[] = [];
@@ -224,6 +232,7 @@ export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSe
     const signed = await loginFromCli(opts);
     if (!signed.ok) throw new CommandFailure("refused", "AUTH_REQUIRED", signed.message, { native: { code: signed.code } });
     if (signed.result.outcome === "failed") throw new CommandFailure("refused", "AUTH_REQUIRED", signed.result.message);
+    credentialsRemoved(signed.result);
     steps.push({ step: "sign-in", outcome: "signed-in", detail: `signed in as ${signed.result.label || signed.result.sub}` });
   } else steps.push({ step: "sign-in", outcome: "already-signed-in", detail: "already signed in; no approval was needed" });
   opts.report(`sign-in: ${steps.at(-1)!.detail}`, steps.at(-1));
@@ -299,6 +308,7 @@ async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<R
     if (r.reason === "denied" || r.reason === "expired") throw new CommandFailure("refused", "PERMISSION_DENIED", `${r.message}; no session was saved and nothing was registered`, native);
     throw new CommandFailure("failed", "OPERATION_FAILED", `${r.message}; a session may have been saved before the failure, so run this again`, native);
   }
+  credentialsRemoved(r);
   steps.push({ step: "sign-in", outcome: "signed-in", detail: `signed in as ${r.label || r.sub}` });
   opts.report(`sign-in: signed in as ${r.label || r.sub}`, steps.at(-1));
 }
@@ -379,6 +389,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
         if (failed.reason === "local-state-error") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", failed.message, { native: { code: failed.reason.toUpperCase() }, remedy: failed.remedy });
         throw new CommandFailure("refused", failed.reason === "unreachable" || failed.reason === "authorization-refused" ? "DEPENDENCY_UNAVAILABLE" : "PERMISSION_DENIED", failed.message, { native: { code: failed.reason.toUpperCase().replaceAll("-", "_") }, remedy: `run ${codeSpan(daemonCommandCopy("login", opts.daemonHome, [["--idp", opts.idp]]))}` });
       }
+      credentialsRemoved(signed.result);
       steps.push({ step: "sign-in", outcome: "signed-in", detail: `signed in as ${signed.result.label || signed.result.sub}` });
       opts.report(`sign-in: signed in as ${signed.result.label || signed.result.sub}`, steps.at(-1));
       discoveredSignIn = true;

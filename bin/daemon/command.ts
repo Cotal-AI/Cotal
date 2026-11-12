@@ -25,7 +25,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, codeSpan, homeCotalDir, readUpdateRecovery, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, codeSpan, homeCotalDir, keptCatalogCredentials, readUpdateRecovery, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
@@ -209,7 +209,9 @@ async function login(args: ParsedArgs): Promise<void> {
     if (r.reason === "denied" || r.reason === "expired") throw new CommandFailure("refused", "PERMISSION_DENIED", `${r.message}; no session was saved`, native);
     throw new CommandFailure("failed", "OPERATION_FAILED", `${r.message}; a session may have been saved before the failure, so sign in again`, native);
   }
-  writeResult(presentation, { command: "daemon login", target: { idp }, result: { attempt: reply.attempt, ...r } }, () => ({ sections: [
+  // The switch is done; a credential file it could not delete leaves the run partial.
+  const partial = r.credentialsKept?.length ? keptCatalogCredentials(r.credentialsKept) : undefined;
+  writeResult(presentation, { command: "daemon login", target: { idp }, result: { attempt: reply.attempt, ...r }, ...(partial ? { partial } : {}) }, () => ({ sections: [
     { title: "Signed in", blocks: [{ kind: "fields", rows: [["Account", r.label || r.sub], ["Subject", r.sub], ["Provider", r.idp]] }, { kind: "lines", lines: [...(r.previousSub ? [`Replaced account: ${r.previousSub}`] : []), { text: "The daemon holds this session in the machine's Cotal home. No session token is printed. Each space's grants decide access separately.", tone: "hint" }] }] },
   ] }));
 }
