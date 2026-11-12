@@ -121,7 +121,7 @@ try {
       }
       await page.waitForTimeout(300);
       await page.screenshot({ path: `${output}/${name}.png`, fullPage: true });
-      if (scenario.expect) await scenario.expect(page);
+      if (scenario.expect) { await scenario.expect(page); await page.waitForTimeout(300); }
       assert.equal(await page.evaluate(() => window.__renderState.paintReports), 1, `${name}: first paint reported once, including while daemon status waits`);
       assert.deepEqual(errors, [], `${name}: browser errors`);
       assert.ok(requests.every(url => new URL(url).origin === address), `${name}: same-origin requests only`);
@@ -196,6 +196,71 @@ try {
         }
         return failures;
       });
+      const initialClips = await page.evaluate(() => {
+        const failures = [];
+        for (const card of document.querySelectorAll('.connection-card:has(#connected-panel:not([hidden])),#settings-panel:not([hidden])')) {
+          const edge = card.getBoundingClientRect();
+          for (const item of card.querySelectorAll('button,.switch,.agent-row,.settings-row p')) {
+            if (!item.getClientRects().length || item.closest('[hidden]')) continue;
+            const box = item.getBoundingClientRect();
+            let top = box.top, bottom = box.bottom;
+            for (let parent = item.parentElement; parent && parent !== card; parent = parent.parentElement) {
+              if (['auto','scroll','hidden','clip'].includes(getComputedStyle(parent).overflowY)) { const bounds = parent.getBoundingClientRect(); top = Math.max(top, bounds.top); bottom = Math.min(bottom, bounds.bottom); }
+            }
+            if (bottom <= top) continue;
+            if (top < edge.bottom - 2 && bottom > edge.bottom - 2 && top >= edge.top) failures.push(`${item.id || item.className || item.tagName}: ${JSON.stringify({top,bottom,edge:edge.bottom,scroll:card.scrollTop,height:card.clientHeight,max:getComputedStyle(card).maxHeight,rules:document.adoptedStyleSheets.flatMap(s=>[...s.cssRules].map(r=>r.cssText)),parent:item.parentElement.outerHTML.slice(0,350)})}`);
+          }
+        }
+        return failures;
+      });
+      assert.deepEqual(initialClips, [], `${name}: G initial card edge never slices content`);
+      const reachability = await page.evaluate(() => {
+        const failures = [];
+        for (const card of document.querySelectorAll('.connection-card:has(#connected-panel:not([hidden])), #settings-panel:not([hidden])')) {
+          for (const control of card.querySelectorAll('button,input,select,.switch,.settings-row p')) {
+            if (!control.getClientRects().length || control.closest('[hidden]')) continue;
+            control.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+            const box = control.getBoundingClientRect();
+            for (let parent = control.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+              if (!['auto','scroll','hidden','clip'].includes(getComputedStyle(parent).overflowY)) continue;
+              const clip = parent.getBoundingClientRect();
+              if (box.top < clip.top - 1 || box.bottom > clip.bottom + 1) failures.push(`${control.id || control.tagName} clipped by ${parent.id || parent.className} ${JSON.stringify({top:box.top,bottom:box.bottom,clipTop:clip.top,clipBottom:clip.bottom,scroll:parent.scrollTop,height:parent.clientHeight})}`);
+            }
+          }
+          for (const scroller of [card, ...card.querySelectorAll('*')]) if (scroller.scrollTop) scroller.scrollTop = 0;
+        }
+        return failures;
+      });
+      assert.deepEqual(reachability, [], `${name}: G reachable controls and Settings text`);
+      const layoutChecks = await page.evaluate(() => {
+        const failures = { rows: [], thumbs: [], rhythm: [] };
+        const visible = el => el && el.getClientRects().length && !el.closest("[hidden]");
+        for (const selector of [".connected-spaces-scroll", "#agent-list"]) {
+          const list = document.querySelector(selector);
+          if (!visible(list)) continue;
+          const box = list.getBoundingClientRect();
+          const scrolling = list.scrollHeight > list.clientHeight + 1;
+          const thumb = document.querySelector(`[data-scroll-thumb="${list.id || 'spaces'}"]`);
+          if (scrolling !== !!visible(thumb)) failures.thumbs.push(`${selector}: scrolling=${scrolling}, thumb=${!!visible(thumb)}`);
+          if (selector === "#agent-list" && list.children.length) {
+            const height = list.clientHeight;
+            if (Math.abs(height / 36 - Math.round(height / 36)) > .03) failures.rows.push(`agent list height ${height} is not whole rows`);
+          }
+          if (!list.children.length && parseFloat(getComputedStyle(list).borderBottomWidth)) failures.rhythm.push(`${selector}: empty list has rule`);
+          if (box.height < 0) failures.rows.push(selector);
+        }
+        const spaces = document.querySelector(".connected-spaces-scroll");
+        const agents = document.querySelector("#running-agents");
+        const applications = document.querySelector("#applications-summary");
+        if (visible(spaces) && visible(agents) && visible(applications) && applications.textContent.trim()) {
+          const before = agents.getBoundingClientRect().top - spaces.getBoundingClientRect().bottom;
+          const after = applications.getBoundingClientRect().top - agents.getBoundingClientRect().bottom;
+          const note = document.querySelector("#dashboard-spaces-note");
+          if (!visible(note) && Math.abs(before - after) > 1) failures.rhythm.push(`section gaps ${before}/${after}`);
+        }
+        return failures;
+      });
+      for (const [check, failures] of Object.entries(layoutChecks)) assert.deepEqual(failures, [], `${name}: G ${check}`);
       if (await page.locator("#connected-panel").isVisible()) {
         const padding = await page.locator(".connection-card").evaluate(card => {
           const panel = card.querySelector("#connected-panel");
@@ -228,7 +293,8 @@ try {
       assert.deepEqual(visited, expected, `${name}: keyboard order`);
       await page.emulateMedia({ reducedMotion: "reduce" });
       await page.waitForTimeout(300);
-      assert.equal(await page.evaluate(() => document.getAnimations().filter(a => a.playState === "running").length), 0, `${name}: reduced motion`);
+      const runningAnimations = await page.evaluate(() => document.getAnimations().filter(a => a.playState === "running").map(a => ({ target: a.effect?.target?.id, name: a.animationName || a.transitionProperty })));
+      assert.deepEqual(runningAnimations, [], `${name}: reduced motion`);
       count++;
       console.log(`PASS ${name}`);
     } finally { await context.close(); }
