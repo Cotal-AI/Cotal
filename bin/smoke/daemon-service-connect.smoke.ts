@@ -58,6 +58,7 @@
  *      not an unreachable space; synchronized clocks recover with the same renewal request ids.
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
+ * Hosted empty legacy update: --hosting-only --hosted-zero-update-repro.
  * Running-seat shutdown: --hosting-only --account-only --stop-seat-only, optionally --three-seats
  * and --account-hosted (without service endpoints).
  * Account startup intent: --hosting-only --account-only --account-restart-repro, optionally
@@ -3372,6 +3373,38 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         const daemonStatus = await cli("status", "--space", ON);
         console.log("  H1 status JSON", JSON.stringify(daemonStatus.doc));
         check("H1 per-space status carries the same Manager instance", daemonStatus.doc.result?.managers?.[0]?.instanceId === manager.instanceId);
+        if (process.argv.includes("--hosted-zero-update-repro")) {
+          const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+          const status = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, servers, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
+          assert.equal(status.ok, true);
+          assert.equal((status.data as { custody?: string }).custody, "legacy");
+          assert.equal((status.data as { agentCount?: number }).agentCount, 0);
+          const npmBin = join(root, "blocked-npm");
+          mkdirSync(npmBin, { mode: 0o700 });
+          const npmLog = join(root, "blocked-npm.log");
+          writeFileSync(join(npmBin, "npm"), `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(npmLog)}, JSON.stringify(process.argv.slice(2))+'\\n'); if(process.argv[2]==='view' && process.argv[3]==='cotal-ai@latest'){console.log(JSON.stringify('999.0.0'));process.exit(0)} process.exit(91);\n`, { mode: 0o700 });
+          const updater = spawn(process.execPath, [`--import=${join(repo, "node_modules/tsx/dist/loader.mjs")}`, join(repo, "bin/cotal.ts"), "update", "--self"], { cwd: root, env: { ...env, PATH: `${npmBin}:${env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+          let output = "";
+          updater.stdout.on("data", chunk => output += String(chunk));
+          updater.stderr.on("data", chunk => output += String(chunk));
+          const code = await new Promise<number | null>((resolve, reject) => { updater.once("error", reject); updater.once("exit", resolve); });
+          assert.equal(code, 1, output);
+          assert.ok(output.includes(manager.instanceId) && output.includes("legacy custody with 0 seats"), output);
+          assert.ok(output.includes(`cotal daemon service-disconnect --space ${ON}`) && output.includes("cotal update --self") && output.includes(`cotal daemon setup --space ${ON}`), output);
+          const npmCalls = readFileSync(npmLog, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+          assert.equal(npmCalls.length, 1, output);
+          assert.deepEqual(npmCalls[0]!.slice(0, 4), ["view", "cotal-ai@latest", "version", "--json"]);
+          const disconnected = await cli("service-disconnect", "--space", ON);
+          assert.equal(disconnected.code, 0, JSON.stringify(disconnected));
+          const stopped = await cli("status", "--space", ON);
+          assert.ok(!(stopped.doc.result?.managers ?? []).some((row: { pid?: number }) => row.pid !== undefined));
+          const restarted = await cli("setup", "--space", ON);
+          assert.equal(restarted.code, 0, JSON.stringify(restarted));
+          assert.equal(restarted.doc.result?.manager?.state, "answering");
+          assert.notEqual(restarted.doc.result?.manager?.pid, manager.pid);
+          console.log("PASS real hosted legacy zero-seat update refuses before archive work; disconnect and setup restore hosting");
+          return;
+        }
         if (!upgrading) {
           const prepared = await ask(paths.socket, { op: "managers-prepare-restart" });
           const fenced = await ask(paths.socket, { op: "manager-start", space: ON });
@@ -3612,7 +3645,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
                 && stderr.includes("upgrade_custody") && stderr.includes("requires admin scope")
                 && stderr.includes(`cotal ps --on ${second.instanceId} --space ${OFF}`)
                 && stderr.includes(`cotal stop <name> --on ${second.instanceId} --space ${OFF}`)
-                && stderr.includes("rerun the same update command")
+                && stderr.includes("cotal daemon service-disconnect --space")
                 && !stdout.includes("cotal update --self") && !stdout.includes("installing cotal-ai@"), { code, stdout, stderr });
             }
             await askManager(secondCaller, OFF, secondTarget.server, "stop", { name: "upgrade_custody" }, secondTarget.auth, "owner", 10_000, { instanceId: second.instanceId });

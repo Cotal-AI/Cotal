@@ -1,0 +1,1 @@
+smoke:daemon-hosted-zero-update

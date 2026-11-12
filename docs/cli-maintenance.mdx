@@ -26,6 +26,11 @@ original host's stop and start commands. The report cannot recover those command
 identity, which is not a saved service instance. Stop through that host, run `cotal update --self`,
 then restart with the original start command. Stopping ends the listed seats.
 
+A daemon-hosted legacy Manager also blocks replacement when it has no seats. Save any work,
+then run `cotal daemon service-disconnect --space <space>` for each reported hosted space.
+Disconnect ends its remaining seats. Run `cotal update --self`, then restore hosting with
+`cotal daemon setup --space <space>` for each disconnected space.
+
 ## Updating the installation
 
 On Linux, when `cotal update --self` finds no newer CLI version and proves the installed package closure
