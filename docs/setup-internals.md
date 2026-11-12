@@ -302,6 +302,8 @@ The web dashboard ships inside `cotal-ai` as the `@cotal-ai/web` extension. The 
 seeds it automatically, on the same durable, version-locked path as the built-in connectors
 (`SEEDED_EXTENSIONS`). It always matches the CLI version and needs no separate install. A static
 `up` also mints the dashboard's read-only credential, the space's `web.creds`, when it is absent.
+The provisioning notice wraps to stdout's terminal width with indented continuation lines and
+keeps `service start web` together. Outside a terminal it stays on one line.
 
 `cotal service start web` saves the dashboard's service definition from the preset's defaults, with
 that credential unless `--creds` names another. The native child owns its PID claim and its private

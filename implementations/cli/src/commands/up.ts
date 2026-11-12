@@ -5824,7 +5824,7 @@ async function provisionWebCreds(auth: SpaceAuth, root: string, space: string, q
     const key = webCredsKey(space, { injected: false, root });
     if ((await store.get(key)) !== undefined) return;
     await store.put(key, await mintCreds(auth, newIdentity(), "observer"));
-    if (!quietBoot) console.log(c.dim(`• web: provisioned ${WEB_CREDS_KIND} - the dashboard's read-only credential, the \`service start web\` default`));
+    if (!quietBoot) for (const line of hang("• ", `web: provisioned ${WEB_CREDS_KIND} - the dashboard's read-only credential, the \`service start web\` default`, terminalWidth(process.stdout))) console.log(c.dim(line));
   } catch (e) {
     console.error(c.dim(`• web dashboard credential not provisioned: ${(e as Error).message}`));
   }
