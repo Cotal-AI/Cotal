@@ -121,6 +121,12 @@ export function seedInstallationCurrent(): boolean {
   }
 }
 
+/** Validate persisted seed journals without repairing them or rejecting valid recovery obligations. */
+export function assertReadableSeedState(): void {
+  readCursor();
+  readRecovery();
+}
+
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
 export async function runSeed(flags: SeedFlags): Promise<void> {
   const mode: Mode = flags.reset ? "reset" : flags.repair ? "repair" : flags.force ? "force" : flags.verify ? "verify" : "auto";
