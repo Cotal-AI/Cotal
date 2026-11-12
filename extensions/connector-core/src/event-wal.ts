@@ -517,6 +517,9 @@ export class EventWal {
   ) {}
 
   get epoch(): string { return this.doc.epoch; }
+  /** The validated space this log belongs to. */
+  get space(): string { return this.doc.space; }
+
   /** The principal this WAL was loaded FOR — exposed so a consumer can prove it is holding its own.
    *  `open()` already refuses a document whose stored principal disagrees, but that check protects
    *  the FILE, not the caller: an emitter handed the wrong WAL object entirely would sail past it. */

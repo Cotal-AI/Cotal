@@ -11,8 +11,8 @@
  * not folded, and that no third state is ever reported as success.
  */
 
-import { randomUUID } from "node:crypto";
-import { dirname } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
 import { isAguiFramePart, isCasLoss, principalKey, type Part } from "@cotal-ai/core";
 import {
   AguiBrackets,
@@ -25,6 +25,7 @@ import {
   AGUI_EVENT_TYPE,
   runError,
   runFinished,
+  parseAguiFrame,
   type AguiEvent,
   type AguiFrame,
   type CotalMeta,
@@ -32,7 +33,7 @@ import {
 import type { DurableSource, SourceGap, SourceRead } from "./durable-source.js";
 import type { EventWal } from "./event-wal.js";
 import { eventChannelForSession } from "./launch.js";
-import type { SubjectFrontier } from "./subject-frontier.js";
+import { FileSubjectFrontier, type SubjectFrontier } from "./subject-frontier.js";
 
 /**
  * The endpoint surface the emitter needs, declared STRUCTURALLY rather than as `CotalEndpoint`.
@@ -46,6 +47,8 @@ import type { SubjectFrontier } from "./subject-frontier.js";
 export interface EmitterEndpoint {
   readonly principal: { owner: string; actor: string };
   readonly actorIsEphemeral: boolean;
+  eventPayloadLimit?(): Promise<number>;
+  publishEventPayload?(o: { parts: Part[]; id: string; expectedLastSubjectSeq: number }): Promise<{ ack: { seq: number; duplicate: boolean } }>;
   /** The broker's live `max_payload`. Throws when not connected — never guesses a default. */
   readonly maxPayload: number;
   /** The single-replica preflight. The emitter calls this at startup, before anything can publish. */
@@ -72,6 +75,7 @@ export interface EmitUnit {
    *  mixed across runs in one frame. */
   runId: string;
   events: AguiEvent[];
+  payloadEvents?: AguiEvent[];
   cursor: string;
   /** The turns the source began at or just before this unit, and by the dropped records whose
    *  cursor folded onto it after, in source order: the run each one opened, or `null` for a turn
@@ -324,6 +328,8 @@ export class AguiEmitter<T> {
    * batch up front would freeze a state describing events that had not been sent.
    */
   private brackets: AguiBrackets;
+  private payloadFrontier?: SubjectFrontier;
+  private payloadLimit?: number;
   private halted: AguiEmitterHalted | undefined;
   /** True once THIS process has fed an event through the bracket machine. It is the half of the
    *  restart diagnosis that keeps a genuine mid-stream violation from being blamed on a restart. */
@@ -438,6 +444,10 @@ export class AguiEmitter<T> {
     await wal.bindSubjectFrontier(opts.subjectFrontier);
 
     const em = new AguiEmitter<T>(endpoint, wal, opts.source, opts.map, channel, wal.threadId, opts.onUnreadable);
+    if (endpoint.eventPayloadLimit && endpoint.publishEventPayload) {
+      em.payloadLimit = await endpoint.eventPayloadLimit();
+      em.payloadFrontier = await FileSubjectFrontier.open(join(dirname(dirname(wal.path)), "payload-subject.json"), { space: wal.space, principal: live });
+    }
     await em.recover();
     // The run the wire has open once the pending frame is settled, which is the last turn the log
     // can name: a terminal reported before any record the first pump reads is that run's.
@@ -563,13 +573,22 @@ export class AguiEmitter<T> {
       // WRITE-PATH POLICY, before packing and therefore before beginSend. Disk and wire then agree.
       // A record that mapped only to forbidden kinds becomes a drop: its cursor folds forward like
       // any other drop, and packUnits never sees an empty unit.
-      const events = applyAguiEgressPolicy(owedUnit ? owedUnit.rest : m.events);
+      const raw = owedUnit ? owedUnit.rest : m.events;
+      const payloadEvents = raw.filter(e => e.type === AGUI_EVENT_TYPE.TOOL_CALL_ARGS || e.type === AGUI_EVENT_TYPE.TOOL_CALL_RESULT);
+      if (payloadEvents.length && !this.payloadFrontier) throw new Error("tool payload publication requires a sibling event rail");
+      const events = applyAguiEgressPolicy(raw);
       for (const e of m.events) if (e.type === AGUI_EVENT_TYPE.RUN_STARTED) turns.push(e.runId);
       if (events.length === 0) {
+        if (payloadEvents.length) {
+          const previous = units[units.length - 1];
+          if (!previous || previous.runId !== m.runId)
+            throw new Error("a payload-only source observation requires a preceding public unit of the same run");
+          (previous.payloadEvents ??= []).push(...payloadEvents);
+        }
         fold(rec);
         continue;
       }
-      units.push({ runId: m.runId, events, cursor: rec.cursor, ...(turns.length > 0 ? { turns } : {}) });
+      units.push({ runId: m.runId, events, ...(payloadEvents.length ? { payloadEvents } : {}), cursor: rec.cursor, ...(turns.length > 0 ? { turns } : {}) });
       turns = [];
     }
 
@@ -624,7 +643,7 @@ export class AguiEmitter<T> {
     for (let k = 0; k < frames.length; k++) {
       const { frame, cursor, unitFrom } = frames[k]!;
       const to = k + 1 < frames.length ? frames[k + 1]!.unitFrom : units.length;
-      await this.publish(frame, cursor, () => this.committed(units.slice(unitFrom, to), []));
+      await this.publish(frame, cursor, () => this.committed(units.slice(unitFrom, to), []), units.slice(unitFrom, to).flatMap(u => u.payloadEvents ?? []));
       events += frame.events.length;
     }
 
@@ -1011,9 +1030,28 @@ export class AguiEmitter<T> {
     });
   }
 
+  /** Preserve whole payloads or replace the whole value with a digest-bearing cut marker. */
+  private preparePayload(frame: AguiFrame, events: AguiEvent[]) {
+    const frontier = this.payloadFrontier;
+    const limit = this.payloadLimit;
+    if (!frontier || limit === undefined) throw new Error("sibling payload rail is unavailable");
+    const sibling = { ...frame, events };
+    const measure = () => this.ep.encodedSize({ channel: this.channel, parts: [sibling as unknown as Part], id: SIZING_ID, expectedLastSubjectSeq: SIZING_EXPECTATION });
+    if (measure() > limit) {
+      sibling.events = events.map(event => {
+        if (event.type !== AGUI_EVENT_TYPE.TOOL_CALL_ARGS && event.type !== AGUI_EVENT_TYPE.TOOL_CALL_RESULT) return event;
+        const field = event.type === AGUI_EVENT_TYPE.TOOL_CALL_ARGS ? "delta" : "content";
+        const content = String((event as unknown as Record<string, unknown>)[field]);
+        return { ...event, [field]: JSON.stringify({ cotalPayloadCut: true, originalBytes: Buffer.byteLength(content), sha256: createHash("sha256").update(content).digest("hex") }) } as AguiEvent;
+      });
+    }
+    if (measure() > limit) throw new Error("sibling payload metadata exceeds the live broker or stream limit");
+    return { id: randomUUID(), E: frontier.tip, body: [sibling as unknown as Part] };
+  }
+
   /** Transition 1 then the first network attempt. `frozen` runs once the frame is frozen on disk,
    *  before the wire is tried: the commit of what the frame carries, for state the frame settles. */
-  private async publish(frame: AguiFrame, cursor: string, frozen: () => void): Promise<void> {
+  private async publish(frame: AguiFrame, cursor: string, frozen: () => void, payloadEvents: AguiEvent[] = []): Promise<void> {
     // Advance a copy of the machine by exactly this frame. It cannot throw: the identical sequence
     // was already accepted by a clone starting from this same state, in this same order. It is not
     // wrapped in a diagnosis for that reason — a throw here would be a bug in this file, not a
@@ -1034,7 +1072,8 @@ export class AguiEmitter<T> {
     const body: Part[] = [frame as unknown as Part];
     // Durable BEFORE the wire. The order is the whole state machine: a crash between this line and
     // the next is recoverable precisely because the id and `E` are already frozen on disk.
-    await this.wal.beginSend({ id, E, seq: frame.seq, sourceCursor: cursor, body, brackets });
+    const payload = payloadEvents.length ? this.preparePayload(frame, payloadEvents) : undefined;
+    await this.wal.beginSend({ id, E, seq: frame.seq, sourceCursor: cursor, body, brackets, ...(payload ? { payload } : {}) });
     this.brackets = next;
     frozen();
     await this.attempt({ id, E, body, retry: false });
@@ -1058,6 +1097,30 @@ export class AguiEmitter<T> {
    * the state that means "we do not know", and the next boot retries the same frozen frame.
    */
   private async attempt(o: { id: string; E: number; body: Part[]; retry: boolean }): Promise<void> {
+    const payload = this.wal.pending?.payload;
+    if (payload) {
+      const frontier = this.payloadFrontier;
+      const publish = this.ep.publishEventPayload?.bind(this.ep);
+      if (!frontier || !publish || this.payloadLimit === undefined)
+        throw new Error("event payload recovery requires the sibling rail");
+      for (const part of payload.body) {
+        if (!isAguiFramePart(part)) throw new Error("sibling payload WAL contains a non-frame part");
+        const frame = parseAguiFrame(part);
+        if (frame.threadId !== this.threadId || frame.epoch !== this.wal.epoch || frame.seq !== this.wal.pending?.seq ||
+            frame.events.some(e => e.type !== AGUI_EVENT_TYPE.TOOL_CALL_ARGS && e.type !== AGUI_EVENT_TYPE.TOOL_CALL_RESULT))
+          throw new Error("sibling payload WAL frame does not match its public transaction");
+      }
+      const bytes = this.ep.encodedSize({ channel: this.channel, parts: payload.body, id: payload.id, expectedLastSubjectSeq: payload.E });
+      if (bytes > this.payloadLimit) throw new Error("frozen sibling payload exceeds current broker or stream limit");
+      if (payload.ackSeq === undefined) {
+        const { ack } = await publish({ parts: payload.body, id: payload.id, expectedLastSubjectSeq: payload.E });
+        if (ack.duplicate) throw this.halt("duplicate-ack", "event payload duplicate ack cannot advance the cursor");
+        await this.wal.recordPayloadAck(ack.seq);
+        await frontier.advance(ack.seq);
+      } else if (frontier.tip < payload.ackSeq) {
+        await frontier.advance(payload.ackSeq);
+      }
+    }
     const egress = frozenBodyEgressVerdict(o.body);
     if (egress === "forbidden-kind") {
       throw this.halt(
