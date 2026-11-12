@@ -32,6 +32,12 @@ original host's stop and start commands. The report cannot recover those command
 identity, which is not a saved service instance. Stop through that host, run `cotal update --self`,
 then restart with the original start command. Stopping ends the listed seats.
 
+For empty Managers hosted by the machine daemon, `cotal update --self` acquires a caller-owned
+admission fence before replacing packages. A seat started after the custody report refuses
+replacement. The fence stays held through reconciliation and the installed-generation handoff.
+A failed update releases its claim so the unchanged Manager can accept work again. Hosted legacy
+Managers with running seats still require stopping those seats before replacement.
+
 ## Updating the installation
 
 On Linux, when `cotal update --self` finds no newer CLI version and proves the installed package closure
