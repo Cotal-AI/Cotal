@@ -4,6 +4,11 @@
    later rule wins a tie as in the mock. The v3 root rule is the body rule below.
    Type rules: no uppercase, no positive letter-spacing, mono only for code, commands, ids and model names. */
 
+.ox-call { min-width: 0; }
+.ox-payloads { margin: 4px 0 10px 24px; min-width: 0; font-size: 12px; }
+.ox-payload summary { cursor: pointer; padding: 3px 0; }
+.ox-payload pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; padding: 8px; border: 1px solid currentColor; border-radius: 6px; }
+
 /* Element resets sit in the base layer, so a Tailwind utility on a copied shadcn part (an outline
    button's border, say) wins over them. Every class rule below stays unlayered and wins over both. */
 @layer base {

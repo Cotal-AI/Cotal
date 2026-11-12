@@ -9,9 +9,9 @@
 // stream draws nothing, and a stream with no END still shows, marked cut, where the renderers add a
 // trailing " …". The deliberate differences are listed in `smoke/agui-render-parity.smoke.ts`.
 //
-// It draws only what the wire says. A tool call is a name, a start and, when the connector publishes
-// the `cotal.toolResult` marker, an end and whether it returned an error; never its arguments or
-// result, which the plane drops. Counts are of calls, never of files. A duration is only ever
+// It draws only what the wire says. A tool call has a name and start, optional input and result,
+// and, when the connector publishes the `cotal.toolResult` marker, an end and error status.
+// Counts are of calls, never of files. A duration is only ever
 // between a call's start and its marker, or between a turn's RUN_STARTED and its RUN_FINISHED or
 // RUN_ERROR. A turn that ended is not a turn that succeeded. A run error carries no reason here:
 // presence is where a reason comes from, and the view asks presence. A post is the agent's own
@@ -48,6 +48,8 @@ export interface ToolCall {
   /** Its marker's isError. */
   failed?: boolean;
   live: boolean;
+  input?: string;
+  result?: string;
 }
 
 /** One step inside a turn, or loose before the first RUN_STARTED the window holds. A `post` is a
@@ -211,6 +213,7 @@ function flatten(frames: readonly SessionFrame[]): { flat: Flat[]; marked: boole
   const text = new Map<string, Stream>();
   const reasoning = new Map<string, Stream>();
   const calls = new Map<string, ToolCall>();
+  const pendingPayloads = new Map<string, { input?: string; result?: string; live: boolean }>();
   let marked = false;
 
   const touch = (map: Map<string, Stream>, id: string, key: string, at: number | undefined, live: boolean): Stream => {
@@ -310,15 +313,35 @@ function flatten(frames: readonly SessionFrame[]): { flat: Flat[]; marked: boole
           const name = toolShortName(full);
           const call: ToolCall = { key, id: str(e.toolCallId) ?? "", name, full, kind: toolKind(name), ...(at !== undefined ? { ts: at } : {}), live };
           // A call with no id can never be named by a marker, so it is never indexed for one.
-          if (call.id !== "") calls.set(call.id, call);
+          if (call.id !== "") {
+            calls.set(call.id, call);
+            const pending = pendingPayloads.get(call.id);
+            if (pending) {
+              call.input = pending.input;
+              call.result = pending.result;
+              call.live = call.live && pending.live;
+              pendingPayloads.delete(call.id);
+            }
+          }
           flat.push({ call, at, live });
           break;
         }
-        // The plane drops a call's arguments and result, and its END says nothing new: none is drawn.
         case "TOOL_CALL_END":
-        case "TOOL_CALL_ARGS":
-        case "TOOL_CALL_RESULT":
           break;
+        case "TOOL_CALL_ARGS":
+        case "TOOL_CALL_RESULT": {
+          const id = str(e.toolCallId) ?? "";
+          const call = calls.get(id);
+          const value = str(type === "TOOL_CALL_ARGS" ? e.delta : e.content);
+          if (value !== undefined && id !== "") {
+            const target = call ?? pendingPayloads.get(id) ?? { live };
+            if (type === "TOOL_CALL_ARGS") target.input = (target.input ?? "") + value;
+            else target.result = value;
+            target.live = target.live && live;
+            if (!call) pendingPayloads.set(id, target);
+          }
+          break;
+        }
 
         case "CUSTOM": {
           // A well-formed tool result marker adds no step: a call is drawn where it starts, and the
