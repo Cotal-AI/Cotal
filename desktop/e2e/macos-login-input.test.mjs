@@ -69,6 +69,11 @@ test('native source keeps initial unchecked as no-input and gates second deliver
   assert.match(swift, /if initial.value == 1 \{ press\(initial.element\) \}/);
   assert.match(swift, /native login entry remains after preference change/);
   assert.match(swift, /prepareLoginWindow\(\)/);
+  assert.match(swift, /AXUIElementIsAttributeSettable/);
+  assert.match(swift, /if attribute\(window, name\) as\? Bool == true \{ continue \}/);
+  assert.match(swift, /process.standardError = FileHandle.nullDevice/);
+  assert.match(swift, /Darwin.kill\(process.processIdentifier, SIGKILL\)/);
+  assert.match(swift, /receipt policy timed out/);
   assert.match(swift, /kAXRaiseAction/);
   assert.match(swift, /AXFocusedWindow/);
   assert.match(swift, /frontmostPID/);
