@@ -113,6 +113,8 @@ export {
   ensurePinnedIdp,
   loadAuthServiceInfo,
   loadCalloutAuth,
+  renewCalloutCredentials,
+  saveCalloutAccountJwt,
   loadIssuer,
   loadOwnerSecret,
   loadPinnedIdp,

@@ -1,6 +1,135 @@
 import type { NatsConnection } from "@nats-io/transport-node";
-import { decode } from "@nats-io/jwt";
-import { isAccountNkey } from "./identity.js";
+import { decode, encodeAccount, Types, type Account, type ClaimsData } from "@nats-io/jwt";
+import { fromPublic } from "@nats-io/nkeys";
+import { isAccountNkey, isUserNkey } from "./identity.js";
+import { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
+import type { BrokerAuth } from "./provision.js";
+
+const WILDCARD_FENCE_RETENTION_SECONDS = 86_410;
+
+type AccountClaim = ClaimsData<Account>;
+
+function accountTemplate(
+  operation: "hibernateAccountClaim" | "wakeAccountClaim",
+  broker: BrokerAuth,
+  accountJwt: string,
+  iat: number,
+): { claims: AccountClaim; signer: ReturnType<typeof nativeNkeySigner> } {
+  if (!broker.operator.seed)
+    throw new Error(`${operation}: the broker operator seed is required - a stripped broker cannot re-sign the account`);
+  if (!Number.isSafeInteger(iat) || iat <= 0)
+    throw new Error(`${operation}: iat must be a positive whole number of Unix seconds`);
+  let signer: ReturnType<typeof nativeNkeySigner>;
+  try {
+    signer = nativeNkeySigner(new TextEncoder().encode(broker.operator.seed));
+  } catch {
+    throw new Error(`${operation}: the broker operator seed is not valid`);
+  }
+  try {
+    const claims = decodeNatsJwt<AccountClaim>(accountJwt);
+    const now = Math.floor(Date.now() / 1000);
+    if (claims.iss !== signer.getPublicKey() || claims.nats?.type !== Types.Account ||
+        !isAccountNkey(claims.sub ?? ""))
+      throw new Error("the account was not signed by this broker's operator");
+    if (claims.aud !== "NATS" || typeof claims.name !== "string" || claims.name.length === 0 ||
+        !Number.isSafeInteger(claims.iat) || claims.iat < 0 ||
+        (claims.exp !== undefined && (!Number.isSafeInteger(claims.exp) || claims.exp <= now)) ||
+        (claims.nbf !== undefined && (!Number.isSafeInteger(claims.nbf) || claims.nbf > now)))
+      throw new Error("the account template is not currently valid");
+    if (iat <= claims.iat)
+      throw new Error(`iat ${iat} must be newer than the template iat ${claims.iat}`);
+    const limits = claims.nats.limits;
+    const tiered = Object.values(limits?.tiered_limits ?? {});
+    const hasJetStreamLimits = limits !== undefined &&
+      ((limits.mem_storage !== undefined && limits.mem_storage !== 0) ||
+       (limits.disk_storage !== undefined && limits.disk_storage !== 0) ||
+       tiered.some((tier) => (tier.mem_storage !== undefined && tier.mem_storage !== 0) ||
+         (tier.disk_storage !== undefined && tier.disk_storage !== 0)));
+    const authorization = claims.nats.authorization;
+    const isCalloutAccount = authorization !== undefined &&
+      Array.isArray(authorization.auth_users) && authorization.auth_users.length > 0 &&
+      authorization.auth_users.every((key) => isUserNkey(key)) &&
+      new Set(authorization.auth_users).size === authorization.auth_users.length &&
+      Array.isArray(authorization.allowed_accounts) && authorization.allowed_accounts.length > 0 &&
+      authorization.allowed_accounts.every((key) => isAccountNkey(key)) &&
+      new Set(authorization.allowed_accounts).size === authorization.allowed_accounts.length &&
+      typeof authorization.xkey === "string" && /^X[A-Z2-7]{55}$/.test(authorization.xkey);
+    if ((!hasJetStreamLimits && !isCalloutAccount) || limits?.conn === 0)
+      throw new Error("the account template is not an active data or auth-callout account claim");
+    for (const [key, revokedAt] of Object.entries(claims.nats.revocations ?? {})) {
+      if ((key !== "*" && !isUserNkey(key)) || !Number.isSafeInteger(revokedAt) || revokedAt <= 0)
+        throw new Error("the account template has an invalid revocation map");
+    }
+    return { claims, signer };
+  } catch (error) {
+    signer.clear();
+    if (error instanceof Error && error.message.startsWith(`${operation}:`)) throw error;
+    throw new Error(`${operation}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function signAccountClaim(
+  operation: "hibernateAccountClaim" | "wakeAccountClaim",
+  claims: AccountClaim,
+  signer: ReturnType<typeof nativeNkeySigner>,
+  nats: Partial<Account>,
+  iat: number,
+): Promise<string> {
+  const account = fromPublic(claims.sub);
+  try {
+    if (Math.floor(Date.now() / 1000) !== iat)
+      throw new Error(`${operation}: iat must equal the current Unix second when the claim is signed`);
+    const jwt = await encodeAccount(claims.name, account, nats, {
+      signer,
+      ...(claims.exp === undefined ? {} : { exp: claims.exp }),
+      ...(claims.nbf === undefined ? {} : { nbf: claims.nbf }),
+      ...(claims.aud === "NATS" ? {} : { aud: claims.aud }),
+    });
+    if (decodeNatsJwt<AccountClaim>(jwt).iat !== iat)
+      throw new Error(`${operation}: the Unix second changed while the claim was signed; retry with a newer iat`);
+    return jwt;
+  } finally {
+    account.clear();
+    signer.clear();
+  }
+}
+
+/** Re-sign an active account claim so no connection is admitted and nats-server unloads its
+ * JetStream account. Account identity, signing keys and every per-user revocation are retained.
+ * The retirement wildcard is omitted so hibernation cannot be classified as retirement. */
+export async function hibernateAccountClaim(
+  broker: BrokerAuth,
+  currentOrTemplateJwt: string,
+  iat: number,
+): Promise<string> {
+  const { claims, signer } = accountTemplate("hibernateAccountClaim", broker, currentOrTemplateJwt, iat);
+  const revocations = Object.fromEntries(
+    Object.entries(claims.nats.revocations ?? {}).filter(([key]) => key !== "*"),
+  );
+  return signAccountClaim("hibernateAccountClaim", claims, signer, {
+    ...claims.nats,
+    limits: { conn: 0, leaf: 0 },
+    ...(Object.keys(revocations).length === 0 ? { revocations: undefined } : { revocations }),
+  }, iat);
+}
+
+/** Re-sign a saved active account template so nats-server reloads its JetStream account. The
+ * template's identity, limits, signing keys and per-user revocations are retained. A temporary
+ * wildcard migration fence is retained through its 24-hour grace period, then omitted. */
+export async function wakeAccountClaim(
+  broker: BrokerAuth,
+  activeTemplateJwt: string,
+  iat: number,
+): Promise<string> {
+  const { claims, signer } = accountTemplate("wakeAccountClaim", broker, activeTemplateJwt, iat);
+  const revocations = { ...claims.nats.revocations };
+  const fence = revocations["*"];
+  if (fence !== undefined && iat > fence + WILDCARD_FENCE_RETENTION_SECONDS) delete revocations["*"];
+  return signAccountClaim("wakeAccountClaim", claims, signer, {
+    ...claims.nats,
+    ...(Object.keys(revocations).length === 0 ? { revocations: undefined } : { revocations }),
+  }, iat);
+}
 
 /** Push one operator-signed account JWT over a system-account connection and wait until every
  *  server in `expectedServerIds` has accepted it. On a broker rendered with the `full` account
