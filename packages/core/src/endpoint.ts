@@ -413,7 +413,7 @@ export interface EndpointOptions {
   channels?: string[];
   /** The credential's complete channel read ACL when the composition has it. An explicit empty list
    * means provisioning omitted the DLV durable and this endpoint must not probe for it. Omitted
-   * preserves compatibility for generic wire clients that know only their active subscriptions. */
+   * retains the native bind probe; a denied bind refuses startup rather than implying an empty ACL. */
   allowSubscribe?: string[];
   /** Presence heartbeat interval (ms). */
   heartbeatMs?: number;
@@ -7243,12 +7243,7 @@ export class CotalEndpoint extends EventEmitter {
     try { consumer = await this.js.consumers.get(dlvStream(this.space), durable); }
     catch (e) {
       if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) return;
-      // A generic wire client can know only its active subscriptions and omit allowSubscribe. For a
-      // channel-less credential, the broker denial is the only available read-back of the conditional
-      // DLV grant. A composition that supplies a nonempty ACL has asserted the durable should exist,
-      // so its denial remains a loud provisioning/grant mismatch.
-      if (this.allowSubscribe === undefined && isPermissionDenied(e)) return;
-      throw e;
+      throw e; // a denied bind is not evidence that the read ACL is empty or the durable is absent
     }
     const lease = await this.readDeliveryLease(0);
     const liveDeliveryPlane = lease?.ready === true;

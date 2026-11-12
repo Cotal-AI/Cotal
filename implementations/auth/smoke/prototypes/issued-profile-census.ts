@@ -60,6 +60,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     delivery: () => one("delivery"), "membership-rw": () => one("membership-rw"),
     probe: () => one("probe"), "channel-writer": () => one("channel-writer"), "channel-purger": () => one("channel-purger"),
     teardown: () => one("teardown"), "issued-store-recreate": () => one("issued-store-recreate"),
+    "membership-store-recreate": () => one("membership-store-recreate"),
     "control-caller-privileged": () => one("control-caller-privileged"),
     "control-caller-admin": () => one("control-caller-admin"),
     deployer() { one("deployer"); one("deployer", { controlTier: "privileged" }, "privileged-tier"); },
