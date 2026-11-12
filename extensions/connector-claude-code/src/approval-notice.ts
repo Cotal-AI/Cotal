@@ -6,7 +6,7 @@
 import type { ApprovalNotice } from "./app-host.js";
 
 export const APPROVAL_ID = /^[a-z2-7]{26}$/;
-const STATUSES = new Set<ApprovalNotice["status"]>(["approved", "denied", "expired"]);
+const STATUSES = new Set<ApprovalNotice["status"]>(["approved", "denied", "expired", "refused"]);
 
 /** The frame the host writes to the feed for a decided request, or nothing for any other shape. */
 export function approvalFrame(frame: unknown): ApprovalNotice | undefined {
@@ -27,6 +27,8 @@ export function approvalEvent(n: ApprovalNotice): string {
       return `Cotal: the person approved connection ${name}. Finish it: call cotal_connect with name ${name} and approval_id ${JSON.stringify(n.id)}.`;
     case "denied":
       return `Cotal: the person denied connection ${name}. Nothing was connected. Do not ask again unless the person asks you to.`;
+    case "refused":
+      return `Cotal: the mesh refused connection ${name}. Read the refusal: call cotal_connect with name ${name} and approval_id ${JSON.stringify(n.id)}. Do not retry the connection automatically.`;
     case "expired":
       return `Cotal: the approval for connection ${name} expired before the person decided. Nothing was connected. Call cotal_connect with name ${name} again to ask again.`;
   }

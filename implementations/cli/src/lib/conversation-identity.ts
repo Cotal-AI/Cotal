@@ -156,6 +156,42 @@ export function selectionRefusal(status: number, value: unknown): string | undef
   return `the selection exceeds your own access: ${items.join(", ")}${more > 0 ? ` and ${more} more` : ""}`;
 }
 
+/** A request-bound, terminal agent-cap refusal. Only this versioned answer proves that a replay
+ *  cannot issue later. Display our explanation and pinned action URLs, never server prose. */
+export function agentCapRefusal(status: number, value: unknown, authority: ConversationAuthority, requestId: string): string | undefined {
+  if (status !== 409 || !value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const body = value as Record<string, unknown>;
+  const known = ["v", "requestId", "status", "error", "message", "cap", "tier", "limit", "current", "upgradeUrl", "agentsUrl"];
+  if (Object.keys(body).some((key) => !known.includes(key)) || body.v !== 1 || body.requestId !== requestId ||
+      body.status !== "refused" || body.error !== "agent-cap" || body.cap !== "agents" ||
+      !Number.isSafeInteger(body.limit) || (body.limit as number) < 1 ||
+      !Number.isSafeInteger(body.current) || (body.current as number) < (body.limit as number)) return undefined;
+  const action = (value: unknown): string | undefined => {
+    if (typeof value !== "string" || value.length > 2048 || /[\s\x00-\x1f\x7f]/.test(value)) return undefined;
+    try {
+      const url = secureUrl(value);
+      return url.origin === new URL(authority.url).origin ? url.href : undefined;
+    } catch { return undefined; }
+  };
+  const agents = action(body.agentsUrl);
+  const upgrade = body.upgradeUrl === null ? null : action(body.upgradeUrl);
+  if (!agents || upgrade === undefined) return undefined;
+  return `You have ${body.current} enrolled agents in this space; the per-person limit is ${body.limit}. No identity was issued. ` +
+    `Manage or revoke agents you no longer need: ${agents}. Offline agents may still be resumable; do not revoke them just because they are offline.` +
+    (upgrade ? ` Compare plans or upgrade for a higher limit: ${upgrade}.` : "") +
+    " After changing capacity, connect again to start a new approval request.";
+}
+
+/** Older authorities supplied only this fixed cap sentence. Explain it without printing arbitrary
+ *  error text, but do not treat it as proof of a terminal request or discard recovery state. */
+export function legacyAgentCapRefusal(status: number, value: unknown): string | undefined {
+  if (status !== 409 || !value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const body = value as Record<string, unknown>;
+  if (Object.keys(body).length !== 1 || typeof body.error !== "string") return undefined;
+  const match = /^you already have ([1-9][0-9]{0,8}) agents enrolled, which is the per-person limit in this space\. Revoke one you are not using and try again\.$/.exec(body.error);
+  return match ? `This space's per-person limit of ${match[1]} enrolled agents has been reached. Manage unused agents or compare plans at this space's website; the original request was retained because this authority did not confirm a terminal refusal` : undefined;
+}
+
 /** The phase a retirement reached, `terminal` once it is complete. Pending, malformed and unconfirmed
  *  retirement all keep the saved identity for an exact retry. */
 export function conversationRetirementPhase(status: number, value: unknown, material: ConversationMaterial): string {

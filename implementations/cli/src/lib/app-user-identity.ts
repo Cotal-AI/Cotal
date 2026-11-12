@@ -9,7 +9,7 @@ import {
 } from "@cotal-ai/core";
 import { getSpaceAuth, homeCotalDir, resolveTargetOrThrow, userAuthStateDir, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
 import {
-  checkConversationMaterial, conversationRetirementPhase, discoverConversationAuthority, selectionRefusal, signedInSpace,
+  agentCapRefusal, checkConversationMaterial, conversationRetirementPhase, discoverConversationAuthority, legacyAgentCapRefusal, selectionRefusal, signedInSpace,
   type ConversationAuthority, type ConversationMaterial,
 } from "./conversation-identity.js";
 import { withProvisioner } from "./provisioner.js";
@@ -115,14 +115,25 @@ export class ConversationRefusal extends Error {
   }
 }
 
-/** What one creation answer proves. A selection refusal, a recorded denial or expiry, and a pending
- *  approval each prove that nothing was issued. Any other answer than an exact issued identity
+/** An HTTP failure with an unknown issuance outcome. Automatic polling stops for permanent request
+ *  failures, but the saved request and secret remain available for exact recovery. */
+export class ConversationRequestError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
+    super(message);
+    this.name = "ConversationRequestError";
+  }
+}
+
+/** What one creation answer proves. A selection refusal, a recorded denial, expiry or cap refusal,
+ *  and a pending approval each prove that nothing was issued. Any other answer than an exact issued identity
  *  leaves the outcome unknown, so it throws and the request stays saved. */
 function creationOutcome(
   record: SavedIdentity, authority: ConversationAuthority, response: { status: number; body: unknown }, what: "creation" | "recovery",
 ): { refused: string; decision: ConversationRefusal["decision"] } | { pending: ConversationPending } | { material: ConversationMaterial } {
   const remote = record.remote!;
   if (!remote.material) {
+    const cap = agentCapRefusal(response.status, response.body, authority, record.requestId);
+    if (cap) return { refused: cap, decision: "refused" };
     const refusal = selectionRefusal(response.status, response.body);
     if (refusal) return { refused: `${refusal}; no identity was issued`, decision: "refused" };
     const decided = conversationApprovalRefusal(response.status, response.body);
@@ -137,7 +148,9 @@ function creationOutcome(
     }
   }
   if (response.status !== 200 && response.status !== 201)
-    throw new Error(`conversation identity ${what} answered HTTP ${response.status}; its original request was retained`);
+    throw new ConversationRequestError(legacyAgentCapRefusal(response.status, response.body) ??
+      `conversation identity ${what} answered HTTP ${response.status}; its original request was retained`,
+      response.status >= 500 || [408, 425, 429].includes(response.status));
   return { material: checkConversationMaterial(response.body, authority, record.requestId, record.selection, approvalExpectation(remote)) };
 }
 
@@ -226,7 +239,10 @@ async function provisionOnSpace(
   // retirement can release this session key for a new request and a new secret.
   if (existsSync(join(dir, RECORD)) && read(dir).state === "retiring") {
     try { await retireUserApp(dir); }
-    catch (error) { throw new Error(`this conversation's previous identity is still retiring: ${(error as Error).message}. Connect again to retry it`); }
+    catch (error) {
+      const message = `this conversation's previous identity is still retiring: ${(error as Error).message}. Connect again to retry it`;
+      throw error instanceof ConversationRequestError ? new ConversationRequestError(message, error.retryable) : new Error(message);
+    }
   }
   const lock = acquireLock(`${dir}.lock`, { waitMs: 0 });
   try {

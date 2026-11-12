@@ -5,6 +5,7 @@ const INLINE = /^Cotal: inline messages for connection_id ([A-Za-z0-9_-]{1,128})
 // (src/approval-notice.ts). Names are JSON strings; nothing else about the line is free text.
 const QUOTED = '"((?:[^"\\\\\\x00-\\x1f]|\\\\.){1,512})"';
 const APPROVED = new RegExp(`^Cotal: the person approved connection ${QUOTED}\\. Finish it: call cotal_connect with name ${QUOTED} and approval_id "([a-z2-7]{26})"\\.$`);
+const REFUSED = new RegExp(`^Cotal: the mesh refused connection ${QUOTED}\\. Read the refusal: call cotal_connect with name ${QUOTED} and approval_id "([a-z2-7]{26})"\\. Do not retry the connection automatically\\.$`);
 const DENIED = new RegExp(`^Cotal: the person denied connection ${QUOTED}\\. Nothing was connected\\. Do not ask again unless the person asks you to\\.$`);
 const EXPIRED = new RegExp(`^Cotal: the approval for connection ${QUOTED} expired before the person decided\\. Nothing was connected\\. Call cotal_connect with name ${QUOTED} again to ask again\\.$`);
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -24,7 +25,7 @@ let readerSession;
 let nativeBinding;
 
 function approvalLine(line) {
-  const match = APPROVED.exec(line) || DENIED.exec(line) || EXPIRED.exec(line);
+  const match = APPROVED.exec(line) || DENIED.exec(line) || EXPIRED.exec(line) || REFUSED.exec(line);
   if (!match) return false;
   try {
     const name = JSON.parse(`"${match[1]}"`);
