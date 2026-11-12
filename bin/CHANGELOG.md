@@ -1,5 +1,33 @@
 # cotal-ai
 
+## 0.161.0
+
+### Minor Changes
+
+- b003fb5: Disconnecting or uninstalling the daemon now removes its local service credentials and identity records.
+  
+  Disconnect removes the selected connection's resume intent, private service store, registration request and identity after closing the responder and renewal source. Uninstall removes those records for every space under lifetime exclusion. Removal failures exit non-zero and keep the installation receipt for retry. These commands do not revoke remote authority, and their output names dashboard removal for that action.
+  
+  Sign-out output now explains that an already connected daemon continues on its own service proof and names local disconnect and dashboard removal as the ways to end it. Reconnecting after explicit disconnect requires a new registration and approval.
+
+### Patch Changes
+
+- a8373df: Computers report CPU, memory, home-volume storage and uptime through the daemon's account heartbeat and local status.
+- Updated dependencies [b003fb5]
+- Updated dependencies [c24b2e8]
+- Updated dependencies [29810d2]
+- Updated dependencies [a8373df]
+  - @cotal-ai/auth@0.161.0
+  - @cotal-ai/cli@0.161.0
+  - @cotal-ai/manager@0.161.0
+  - @cotal-ai/connector-core@0.161.0
+  - @cotal-ai/delivery@0.161.0
+  - @cotal-ai/registry@0.161.0
+  - @cotal-ai/runtime@0.161.0
+  - @cotal-ai/core@0.161.0
+  - @cotal-ai/seat@0.161.0
+  - @cotal-ai/workspace@0.161.0
+
 ## 0.160.8
 
 ### Patch Changes

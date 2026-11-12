@@ -1,5 +1,22 @@
 # @cotal-ai/auth
 
+## 0.161.0
+
+### Patch Changes
+
+- b003fb5: Disconnecting or uninstalling the daemon now removes its local service credentials and identity records.
+  
+  Disconnect removes the selected connection's resume intent, private service store, registration request and identity after closing the responder and renewal source. Uninstall removes those records for every space under lifetime exclusion. Removal failures exit non-zero and keep the installation receipt for retry. These commands do not revoke remote authority, and their output names dashboard removal for that action.
+  
+  Sign-out output now explains that an already connected daemon continues on its own service proof and names local disconnect and dashboard removal as the ways to end it. Reconnecting after explicit disconnect requires a new registration and approval.
+- c24b2e8: Token reads that remain rate-limited now expose the provider's retry timing in a typed error.
+  `IdpRateLimitedError` carries HTTP status 429 and an optional `retryAfterSeconds` from the final
+  response, without adding retries or inventing a delay when neither retry header is usable.
+- a8373df: Computers report CPU, memory, home-volume storage and uptime through the daemon's account heartbeat and local status.
+- @cotal-ai/core@0.161.0
+  - @cotal-ai/lang@0.161.0
+  - @cotal-ai/workspace@0.161.0
+
 ## 0.160.8
 
 ### Patch Changes
