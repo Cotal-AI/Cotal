@@ -1129,7 +1129,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     if (missed.length > 0)
       throw new Error(`membership inventory incomplete (${missed.join("; ")}); rows on channels outside the grant stay for uid ${lifecycleUid}`);
   };
-  // A chat session's footprint (admission a7): its own bind-only DM and DELIVER durables and the
+  // A chat session's footprint (admission a7): its DM durable, a DELIVER durable when readable, and the
   // read-ACL row the delivery daemon authorizes its history and durable joins from, written by a
   // short-lived provisioner and read back on that same connection (part of a8).
   const provisionChatFootprint = async ({ owner, actor, lifecycleUid, read }: { owner: string; actor: string; lifecycleUid: string; read: string[] }): Promise<void> => {
@@ -1149,11 +1149,12 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     });
     await provisioner.start();
     try {
-      await provisionAgentDurables(provisioner, { owner, actor, lifecycleUid }, { subscribe: [], allowSubscribe: read });
+      const resolvedRead = await provisionAgentDurables(provisioner, { owner, actor, lifecycleUid }, { subscribe: [], allowSubscribe: read });
       if (conn === undefined) throw new EpEnvelopeError("unavailable", "the chat provisioner connection is unavailable for the read-back", undefined, "unknown");
       const jsm = await jetstreamManager(conn);
       await jsm.consumers.info(dmStream(space), dmDurable(owner, actor, lifecycleUid));
-      await jsm.consumers.info(dlvStream(space), dlvDurable(owner, actor, lifecycleUid));
+      if (resolvedRead.length > 0)
+        await jsm.consumers.info(dlvStream(space), dlvDurable(owner, actor, lifecycleUid));
       const acl = await provisioner.aclForOwner(principalKey(owner, actor).key, lifecycleUid);
       if (acl === undefined || JSON.stringify(acl) !== JSON.stringify(read))
         throw new EpEnvelopeError("unavailable", `the chat session's read-ACL row did not read back for ${lifecycleUid}`, undefined, "unknown");
