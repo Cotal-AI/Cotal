@@ -1,7 +1,10 @@
 import { once } from "node:events";
-import assert from "node:assert/strict";
+import strictAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { reportRunningManagers } from "../src/commands/update.js";
 
+const counted = countedAssert(strictAssert);
+const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 const seen: Record<string, unknown>[] = [];
 // The selected mesh must not decide which local Managers share the installation.
 const report = reportRunningManagers as unknown as (
@@ -60,4 +63,4 @@ if (process.platform === "linux") {
     rmSync(fixture, { recursive: true, force: true });
   }
 }
-console.log("local Manager continuity census passed");
+emitSentinel({ passed: counted.cells(), failed: 0 });

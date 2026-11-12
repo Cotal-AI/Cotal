@@ -62,6 +62,7 @@ function option(argv: readonly string[], key: string): string | undefined {
 
 /** Install-wide candidates, independent of the selected mesh. Records supply roots, not liveness. */
 export function localUpdateManagers(flags: { space?: unknown; server?: unknown; on?: unknown } = {}): UpdateManager[] {
+  if (process.platform !== "linux") throw new Error("install-wide Manager process census is supported only on Linux");
   const registry = readMeshRegistry();
   if (registry.unusable.length) throw registry.unusable[0];
   const entries = registry.entries;
