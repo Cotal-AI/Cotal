@@ -24,7 +24,7 @@ import {
   type Tone,
   recordOperationSpace,
   resolveControlTarget,
-  resolveMeshTarget,
+  connectOrThrow,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -621,7 +621,7 @@ function startManagerNext(root: string | undefined, space: string, named: boolea
 /** Read one named seat from its presence-selected owner. User-auth keeps its authorized census. */
 async function readNamedSeat(values: FlagValues<typeof psFlags>, name: string): Promise<SeatCensus> {
   const on = await managerPin(values, "cotal status");
-  if (name === "manager" || resolveMeshTarget(process.cwd(), { space: values.space, readOnly: true }).mode === "user")
+  if (name === "manager" || (await connectOrThrow(values, "observer", { readOnly: true })).mode === "user")
     return readSeats(values, "ps", on);
   const pin = on === undefined ? await pinForTarget({ ...values, name } as never, "cotal status") : { instanceId: on };
   const t = await resolveControlTarget(values, "control-caller-privileged", pin.instanceId, { onRefusal: "throw" });

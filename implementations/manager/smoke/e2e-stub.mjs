@@ -35,7 +35,7 @@ if (e.COTAL_E2E_SURVIVE_DISCONNECT === "1") {
 const ep = new CotalEndpoint({
   space: e.COTAL_SPACE,
   servers: e.COTAL_SERVERS,
-  creds: readFileSync(e.COTAL_CREDS, "utf8"),
+  ...(e.COTAL_CREDS ? { creds: readFileSync(e.COTAL_CREDS, "utf8") } : {}),
   // COTAL_E2E_KIND lets the authority-bypass probe claim kind:"endpoint" (client-authored
   // metadata) to skip the library register-only proof — the manager readiness lifecycle fence
   // must still reject it. Defaults to a real agent.

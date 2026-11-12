@@ -769,7 +769,7 @@
     "smoke:manager-on-route": "tsx implementations/manager/smoke/manager-on-route.smoke.ts",
     "smoke:manager-scatter": "tsx implementations/manager/smoke/manager-scatter.smoke.ts",
     "smoke:manager-multi-live": "tsx implementations/manager/smoke/manager-multi-live.smoke.ts",
-    "smoke:named-read-owner": "pnpm --filter @cotal-ai/manager... --filter @cotal-ai/cli... build && tsx implementations/manager/smoke/named-read-owner.smoke.ts",
+    "smoke:named-read-owner": "pnpm --filter @cotal-ai/manager... --filter @cotal-ai/cli... build && tsx implementations/manager/smoke/named-read-owner.smoke.ts && tsx implementations/manager/smoke/named-read-open.smoke.ts",
     "smoke:manager-deregister": "tsx implementations/manager/smoke/manager-deregister.smoke.ts",
     "smoke:user-endpoint-deregister": "tsx implementations/auth/smoke/endpoint-deregister.smoke.ts",
     "smoke:governance-slot-orphan": "pnpm --filter @cotal-ai/core build && tsx implementations/manager/smoke/governance-slot-orphan.smoke.ts",
