@@ -951,6 +951,7 @@
     "smoke:legacy-manager-report": "tsx implementations/cli/smoke/legacy-manager-report.smoke.ts",
     "smoke:legacy-packaged-manager": "tsx implementations/cli/smoke/legacy-packaged-manager.smoke.ts",
     "smoke:runtime-contract": "tsx packages/core/smoke/runtime-contract.smoke.ts",
+    "smoke:update-local-managers": "tsx implementations/cli/smoke/update-local-managers.smoke.ts",
     "smoke:update-remote-custody": "tsx implementations/cli/smoke/update-remote-custody.smoke.ts",
     "smoke:update-refusal": "tsx implementations/cli/smoke/update-refusal.smoke.ts",
     "smoke:update-custody": "tsx packages/workspace/smoke/update-custody.smoke.ts",
