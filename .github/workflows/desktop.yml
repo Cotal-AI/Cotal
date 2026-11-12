@@ -363,6 +363,26 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-updater-*
+          path: updater-assets
+      - name: Validate complete signed updater inventory
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./bin/package.json').version")
+          node desktop/scripts/merge-updater-inventories.mjs updater-assets "$version" "$TAG" updater-assets/inventory.json \
+            desktop-updater-Linux-X64/inventory.json \
+            desktop-updater-Windows-X64/inventory.json \
+            desktop-updater-macOS-ARM64/inventory.json \
+            desktop-updater-macOS-X64/inventory.json
+          node desktop/scripts/generate-updater-manifest.mjs updater-assets/inventory.json desktop-latest.json
       - uses: actions/download-artifact@v4
         with:
           pattern: desktop-release-*
