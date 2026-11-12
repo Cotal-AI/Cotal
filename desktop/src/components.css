@@ -227,3 +227,33 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 #agents-empty, #agents-unavailable { margin: var(--s-1) 0; }
 @keyframes agent-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { .agent-row { animation: none; } }
+
+/* Scroll content independently of the card's padded frame. */
+.connection-card.has-running-agents { overflow: hidden; }
+.has-running-agents #connected-panel { display: flex; flex-direction: column; overflow-y: auto; }
+.has-running-agents #connected-panel > :not(#running-agents) { flex-shrink: 0; }
+.has-running-agents #running-agents { display: block; min-height: 0; flex-shrink: 0; }
+.has-running-agents #agent-list { height: auto; min-height: 0; max-height: 108px; flex-shrink: 0; }
+#agent-list { transition: none; border: 0; scroll-snap-type: y mandatory; }
+#agent-list:empty { display: none; }
+.agent-row { scroll-snap-align: start; }
+#connected-panel .connected-spaces-scroll { margin: 8px 0 12px; }
+#connected-panel #running-agents { margin: 0 0 12px; }
+#connected-panel #agent-list { margin: 8px 0 0; }
+#connected-panel #dashboard-spaces-note { margin-bottom: 12px; }
+#connected-panel #applications-summary { margin-top: 0; margin-bottom: 12px; }
+#connected-panel .connected-spaces-scroll:has(+ #dashboard-spaces-note:not([hidden])) { margin-bottom: 4px; }
+#connected-panel #connected-spaces { margin: 0; }
+.scroll-thumb { transition: none; position: fixed; width: 4px; border-radius: 999px; background: var(--faint); pointer-events: none; z-index: 5; }
+.connected-spaces-scroll, #agent-list, #connected-panel, .settings-card { scrollbar-width: none; }
+.connected-spaces-scroll, #agent-list { padding-right: 10px; }
+.connected-spaces-scroll::-webkit-scrollbar, #agent-list::-webkit-scrollbar, #connected-panel::-webkit-scrollbar, .settings-card::-webkit-scrollbar { display: none; }
+.settings-card { scroll-padding-block: 16px; transition: none; padding-bottom: 9px; }
+.machine { padding: 4px; padding-left: 8px; }
+#edit-computer-name { margin: 0; }
+@media (max-width: 460px) {
+  .sidebar { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .sidebar-footer { display: flex; flex-wrap: nowrap; width: 100%; gap: 4px; }
+  .sidebar-footer .machine { flex: 1; min-width: 0; max-width: none; }
+  .sidebar-footer .status-pill, #open-settings { flex-shrink: 0; }
+}

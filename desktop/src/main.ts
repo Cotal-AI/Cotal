@@ -1,4 +1,5 @@
 import { renderAgents } from "./agents";
+import { updateScrollThumb } from "./scrollbars";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
@@ -110,6 +111,7 @@ let trayUpdate: string | undefined;
 const preferencesHome = el("preferences").parentElement!;
 preferencesHome.insertBefore(el("update-banner"), el("connection-icon"));
 function renderSettings(): void {
+  requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
   const configured = stage === "finished" && !setupActive;
   el("open-settings").hidden = !configured;
   text("open-settings", settingsOpen ? "Back" : "Settings");
@@ -392,6 +394,7 @@ function resizeCard(previous: number): void {
   resizeRule.style.height = `${target}px`;
 }
 function showStage(next: Stage, focus = false): void {
+  requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
   const previousHeight = document.querySelector(".connection-card")!.getBoundingClientRect().height;
   stage = next;
   renderSettings();
@@ -528,13 +531,62 @@ function showStage(next: Stage, focus = false): void {
   el("tray-indicator").classList.toggle("in-flight", busy);
   buttons();
 }
+let clipSheet: CSSStyleSheet | undefined;
+function sizeClipEdges(): void {
+  if (!clipSheet) {
+    clipSheet = new CSSStyleSheet(); clipSheet.replaceSync('#settings-panel {} #connected-panel {}'); document.adoptedStyleSheets = [...document.adoptedStyleSheets, clipSheet];
+    const observer = new ResizeObserver(() => sizeSpaceList());
+    observer.observe(el("settings-panel")); observer.observe(el("connected-panel"));
+    for (const row of document.querySelectorAll('#settings-panel > *, #connected-panel > *')) observer.observe(row);
+  }
+  for (const [index, id] of ["settings-panel", "connected-panel"].entries()) {
+    const viewport = el(id);
+    const rule = clipSheet.cssRules[index] as CSSStyleRule;
+    rule.style.removeProperty("max-height");
+    if (id === "connected-panel") continue;
+    if (!viewport.getClientRects().length || viewport.scrollHeight <= viewport.clientHeight + 1) continue;
+    const box = viewport.getBoundingClientRect();
+    const style = getComputedStyle(viewport);
+    const edge = box.bottom - parseFloat(style.borderBottomWidth);
+    let bottom = edge;
+    const items = id === "settings-panel" ? viewport.querySelectorAll<HTMLElement>('.settings-row, #settings-startup .preferences, #settings-startup label, #settings-startup button') : viewport.querySelectorAll<HTMLElement>('button,.switch,.agent-row');
+    for (let pass = 0; pass < items.length; pass++) for (const item of items) {
+      if (!item.getClientRects().length || item.closest('[hidden]')) continue;
+      const bounds = item.getBoundingClientRect();
+      const top = bounds.top + viewport.scrollTop, end = bounds.bottom + viewport.scrollTop;
+      if (top < bottom && end > bottom) {
+        const row = id === "settings-panel" ? item.closest(".settings-row")?.getBoundingClientRect() : undefined;
+        bottom = Math.min(bottom, (row ? row.top + viewport.scrollTop : top));
+      }
+    }
+    if (bottom < edge && bottom - box.top > 36) rule.style.setProperty("max-height", `${bottom - box.top}px`, "important");
+  }
+}
+let listBudgetSheet: CSSStyleSheet | undefined;
 let spaceListSheet: CSSStyleSheet | undefined;
 function sizeSpaceList(): void {
+  const panel = el("connected-panel");
+  if (clipSheet) (clipSheet.cssRules[1] as CSSStyleRule).style.removeProperty("max-height");
+  const agentList = el("agent-list");
+  if (panel.getClientRects().length) {
+    if (!listBudgetSheet) {
+      listBudgetSheet = new CSSStyleSheet();
+      listBudgetSheet.replaceSync('.has-running-agents #agent-list {}');
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, listBudgetSheet];
+    }
+    const rule = (listBudgetSheet.cssRules[0] as CSSStyleRule).style;
+    rule.maxHeight = '108px';
+    const actions = el("another-space");
+    const overflow = actions.getBoundingClientRect().bottom - panel.getBoundingClientRect().bottom;
+    if (overflow > 0 && agentList.children.length) {
+      const rows = Math.max(1, Math.floor((agentList.clientHeight - overflow) / 36));
+      rule.maxHeight = `${rows * 36}px`;
+    }
+  }
   const list = el("connected-spaces");
   const rows = [...list.children] as HTMLElement[];
-  if (rows.length < 4 || !list.getClientRects().length) return;
+  if (rows.length >= 4 && list.getClientRects().length) {
   let height = 0;
-  const panel = el("connected-panel");
   const viewport = list.parentElement!;
   const otherContent = panel.scrollHeight - viewport.getBoundingClientRect().height;
   const card = panel.closest<HTMLElement>(".connection-card")!;
@@ -552,9 +604,22 @@ function sizeSpaceList(): void {
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, spaceListSheet];
   }
   (spaceListSheet.cssRules[0] as CSSStyleRule).style.maxHeight = `${height}px`;
+  }
+  sizeClipEdges();
+  updateScrollThumb(panel, "connected-panel");
+  updateScrollThumb(el("settings-panel"), "settings-panel");
+  updateScrollThumb(agentList, "agent-list");
+  updateScrollThumb(list.parentElement!, "spaces");
 }
-window.addEventListener("resize", sizeSpaceList);
+window.addEventListener("resize", () => requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); }));
 window.addEventListener("load", sizeSpaceList);
+document.addEventListener("scroll", () => {
+  updateScrollThumb(el("connected-panel"), "connected-panel");
+  updateScrollThumb(el("settings-panel"), "settings-panel");
+  updateScrollThumb(el("agent-list"), "agent-list");
+  updateScrollThumb(el("connected-spaces").parentElement!, "spaces");
+}, true);
+document.addEventListener("transitionend", sizeSpaceList);
 function renderConnections(): void {
   const list = el("connected-spaces");
   text("spaces-heading", `Spaces using this computer (${connections.size})`);
@@ -562,7 +627,7 @@ function renderConnections(): void {
   const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), busy]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;
-  requestAnimationFrame(sizeSpaceList);
+  requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
   list.replaceChildren(...[...connections].map(([space, state]) => {
     const row = document.createElement("li"); row.dataset.testid = "connected-space-row"; row.dataset.space = space;
     const copy = document.createElement("span");
@@ -683,6 +748,7 @@ async function refresh(): Promise<void> {
     if (!current()) return;
     ready = status.state === "ready";
     renderAgents(status, el("running-agents"));
+    requestAnimationFrame(sizeSpaceList);
     daemonVersion = String(status.version);
     updateStatus = status.update as UpdateStatus | undefined;
     renderSettings();
