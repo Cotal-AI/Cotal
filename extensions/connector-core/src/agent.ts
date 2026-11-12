@@ -1674,9 +1674,14 @@ export class MeshAgent extends EventEmitter {
     return chosen.flatMap((i) => showable.get(i.recvKey) ?? []);
   }
 
-  /** How many role requests are held because their take could not be decided, and why. */
+  /** How many role requests are held because their take is pending or could not be decided, and why. */
   heldTakes(): { count: number; detail?: string } {
     const count = this.gated.filter((p) => p.taking === undefined).length;
+    const waiting = this.gated.filter((p) => p.taking !== undefined && p.takingDrops === this.transportDrops).length;
+    if (waiting) return {
+      count: waiting + (this.heldTake ? count : 0),
+      detail: "the delivery daemon has not answered the take yet",
+    };
     return count && this.heldTake ? { count, detail: this.heldTake.detail } : { count };
   }
 
@@ -2150,10 +2155,12 @@ export class MeshAgent extends EventEmitter {
   inboxWake(skip?: (item: InboxItem) => boolean): number {
     // A role request held for its take wakes when a read could take it: the read the wake leads to
     // takes it. While the link is down, or a take nobody could decide is waited out, none wakes, and
-    // each is announced again when the link is back or the wait ends (see runTake). A copy whose ack
-    // wait ran out is dropped first, as a read drops it.
+    // each is announced again when the link is back or the wait ends (see runTake). An in-flight take
+    // already owns its next announcement; an old-link take must not block a new read after reconnect.
+    // A copy whose ack wait ran out is dropped first, as a read drops it.
     this.dropLapsedTakes();
-    const held = this.mayAskTakes() ? this.gated.filter((p) => !skip?.(p.item)).length : 0;
+    const held = this.mayAskTakes() ? this.gated.filter((p) =>
+      (p.taking === undefined || p.takingDrops !== this.transportDrops) && !skip?.(p.item)).length : 0;
     return held + this.inbox.filter((p) => {
       const it = p.item;
       if (p.pullOnly || (it.kind === "channel" && it.historical) || skip?.(it)) return false;
