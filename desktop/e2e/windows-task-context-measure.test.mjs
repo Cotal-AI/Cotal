@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, mkdirSync, rmSync, statSync } from "node:fs";
 import test from "node:test";
-import { contextVariants, contextVariantCount, daemonEnvironmentKeys, strippedDaemonEnvironment, safeEnvironment, nativeContextSample, workerContextSample, measureTaskContext, renderContextTable } from "./windows-task-context-measure.mjs";
+import { tmpdir } from "node:os";
+import { join, win32 } from "node:path";
+import { createHash } from "node:crypto";
+import { contextVariants, contextVariantCount, contextVariantsFor, contextVariantCountFor, utilityImportCandidate, moduleAnalysisCacheMetadata, daemonEnvironmentKeys, strippedDaemonEnvironment, safeEnvironment, nativeContextSample, workerContextSample, measureTaskContext, renderContextTable, renderCacheTable } from "./windows-task-context-measure.mjs";
 import { taskStageScript } from "./windows-task-stage-script.mjs";
 
 const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
@@ -100,6 +103,8 @@ const groups = {
   "system-paths": ["SystemDrive", "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432", "ALLUSERSPROFILE", "PUBLIC"],
   profile: ["HOMEDRIVE", "HOMEPATH"],
   powershell: ["PSModulePath", "PSModuleAnalysisCachePath"],
+  "module-path-only": ["PSModulePath"],
+  "analysis-cache-path-only": ["PSModuleAnalysisCachePath"],
 };
 
 test("groups restore only exact OS keys case insensitively and independently", () => {
@@ -117,9 +122,12 @@ test("actual Worker and native child retain each selected group without leaking 
   const names = [...Object.values(groups).flat(), "ProgramFilesSecret", "COTAL_CONTEXT_TEST_SECRET", "COTAL_DAEMON_TASK", "COTAL_DAEMON_TASK_INSTANCES"];
   const saved = { ...process.env };
   try {
-    for (const name of names) process.env[name] = `private-value-${name}`;
+    for (const name of names) {
+      for (const key of Object.keys(process.env)) if (key.toUpperCase() === name.toUpperCase()) delete process.env[key];
+      process.env[name.toLowerCase()] = `private-value-${name}`;
+    }
     for (const [group, keys] of Object.entries(groups)) {
-      const checks = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+      const checks = Object.fromEntries(keys.map(key => [key, process.env[key.toLowerCase()]]));
       const args = ["-e", `const expected=${JSON.stringify(checks)};const env=Object.fromEntries(Object.entries(process.env).map(([k,v])=>[k.toUpperCase(),v]));process.exitCode=Object.entries(expected).every(([k,v])=>env[k.toUpperCase()]===v)&&env.COTAL_DAEMON_TASK==='cotal-daemon-test'&&env.COTAL_DAEMON_TASK_INSTANCES==='1'?7:9`];
       const result = await workerContextSample({ ...childOptions, args, stripped: true, group });
       assert.equal(result.status, 7);
@@ -133,7 +141,7 @@ test("actual Worker and native child retain each selected group without leaking 
       assert.ok(!result.workerEnvironment.names.includes("COTAL_DAEMON_TASK"));
       const sanitized = JSON.stringify(result);
       for (const key of names.filter(key => key !== "PSModulePath")) assert.ok(!sanitized.includes(`private-value-${key}`));
-      assert.equal(result.environment.paths.PSModulePath.present, group === "powershell");
+      assert.equal(result.environment.paths.PSModulePath.present, keys.includes("PSModulePath"));
       assert.equal(result.timeoutMs, 180_000);
       assert.equal(result.worker.boundMs, 190_000);
     }
@@ -143,14 +151,90 @@ test("actual Worker and native child retain each selected group without leaking 
   }
 });
 
-test("seven fixed variants render fourteen context rows and retain incremental bounded execution", () => {
+test("seven scheduled and twelve harness variants render nineteen rows in fixed order", () => {
+  assert.equal(contextVariantCountFor("scheduled-task"), 7);
+  assert.equal(contextVariantCountFor("harness"), 12);
+  assert.deepEqual(contextVariantsFor("harness").slice(0, 7), contextVariants);
+  assert.deepEqual(contextVariantsFor("harness").slice(7), ["module-path-only", "analysis-cache-path-only", "utility-import-candidate", "cache-repeat-1", "cache-repeat-2"].map(suffix => `worker-thread-daemon-env-${suffix}`));
+  assert.throws(() => contextVariantsFor("unknown"));
   assert.equal(contextVariantCount, 7);
-  assert.deepEqual(contextVariants, ["main-thread", "worker-thread", "worker-thread-daemon-env", ...Object.keys(groups).map(group => `worker-thread-daemon-env-${group}`)]);
-  const rows = ["scheduled-task", "harness"].flatMap(context => contextVariants.map(variant => ({ context, variant })));
+  assert.deepEqual(contextVariants, ["main-thread", "worker-thread", "worker-thread-daemon-env", ...Object.keys(groups).slice(0, 4).map(group => `worker-thread-daemon-env-${group}`)]);
+  const rows = ["scheduled-task", "harness"].flatMap(context => contextVariantsFor(context).map(variant => ({ context, variant })));
   const table = renderContextTable(rows);
-  assert.equal(table.trim().split("\n").length, 16);
+  assert.equal(table.trim().split("\n").length, 21);
   for (const { context, variant } of rows) assert.ok(table.includes(`| ${context} | ${variant} |`));
   const implementation = readFileSync(new URL("./windows-task-context-measure.mjs", import.meta.url), "utf8");
-  assert.match(implementation, /for \(const variant of contextVariants\)/);
+  assert.match(implementation, /for \(const variant of contextVariantsFor\(context\)\)/);
   assert.match(implementation, /rows\.push\([\s\S]*?writeSync\(fd, data, offset, data\.length - offset, offset\)/);
+});
+
+test("utility import candidate copies arguments and retains the entire staged shipped script", () => {
+  const generated = taskStageScript(source);
+  const options = { ...childOptions, args: ["-NoProfile", "-EncodedCommand", Buffer.from(generated.script, "utf16le").toString("base64")] };
+  const before = structuredClone(options);
+  const candidate = utilityImportCandidate(options);
+  assert.deepEqual(options, before);
+  assert.notEqual(candidate.args, options.args);
+  const decoded = Buffer.from(candidate.args.at(-1), "base64").toString("utf16le");
+  assert.equal(decoded, "Import-Module Microsoft.PowerShell.Utility\n" + generated.script);
+  assert.equal(candidate.candidateOnly, true);
+  assert.equal(candidate.candidateSha256, createHash("sha256").update(decoded).digest("hex"));
+  assert.equal(taskStageScript(source).sourceSha256, generated.sourceSha256);
+  assert.throws(() => utilityImportCandidate(childOptions));
+  const measured = nativeContextSample({ ...childOptions, candidateOnly: true, candidateSha256: candidate.candidateSha256 });
+  assert.equal(measured.candidateOnly, true);
+  assert.equal(measured.candidateStartupIncludesUtilityImport, true);
+  assert.equal(measured.candidatePrefix, "Import-Module Microsoft.PowerShell.Utility");
+  assert.equal(measured.candidateSha256, candidate.candidateSha256);
+  assert.ok(measured.candidateWholeScriptElapsedMs >= 0);
+  assert.equal(Object.hasOwn(measured, "cacheMetadata"), false);
+});
+
+test("cache table renders only repeat rows and bounded metadata values", () => {
+  const row = { context: "harness", variant: "worker-thread-daemon-env-cache-repeat-1", cacheRepeat: 1, cacheMetadata: { before: { observed: true, exists: true, size: 14, mtime: "2026-11-12T22:00:00.000Z", error: null }, after: { observed: false, exists: "private", size: "private", mtime: "private", error: "private" } } };
+  const table = renderCacheTable([row, { ...row, variant: "private" }, { ...row, context: "scheduled-task" }]);
+  assert.equal(table.trim().split("\n").length, 4);
+  assert.ok(table.includes("| before | yes | yes | 14 | 2026-11-12T22:00:00.000Z | none |"));
+  assert.ok(table.includes("| after | no | unknown | unknown | unknown | unknown |"));
+  assert.ok(!table.includes("private"));
+});
+
+test("cache metadata observes actual worker LOCALAPPDATA and never exposes cache contents or paths", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cotal-cache-metadata-"));
+  // On POSIX a win32 path is a literal filename. Keep that fixture inside its owned root.
+  const local = process.platform === "win32" ? root : join(root, "local");
+  const cache = win32.join(local, "Microsoft", "Windows", "PowerShell", "ModuleAnalysisCache");
+  const ownedCache = process.platform === "win32" ? cache : join(root, cache);
+  const saved = { ...process.env };
+  try {
+    if (process.platform === "win32") mkdirSync(win32.dirname(cache), { recursive: true });
+    writeFileSync(ownedCache, "private-cache-content");
+    const stat = statSync(ownedCache);
+    // POSIX resolves the win32 filename relative to cwd. The child cwd must not affect this observation.
+    if (process.platform !== "win32") process.chdir(root);
+    for (const key of Object.keys(process.env)) if (key.toUpperCase() === "LOCALAPPDATA") delete process.env[key];
+    process.env.localappdata = local;
+    const observations = [];
+    for (const cacheRepeat of [1, 2]) observations.push(await workerContextSample({ ...childOptions, stripped: true, keys: [...childOptions.keys, "LOCALAPPDATA"], cacheRepeat }));
+    for (const [index, row] of observations.entries()) {
+      assert.equal(row.cacheRepeat, index + 1);
+      assert.equal(row.cacheObservationOrder, "after-existing-seven-and-harness-candidates-no-cache-clear");
+      assert.equal(row.worker.exitConfirmed, true);
+      assert.equal(row.worker.exitCode, 0);
+      assert.deepEqual(row.cacheMetadata.before, { observed: true, exists: true, size: stat.size, mtime: stat.mtime.toISOString(), error: null });
+      assert.deepEqual(row.cacheMetadata.after, row.cacheMetadata.before);
+      assert.equal(row.workerEnvironment.paths.LOCALAPPDATA.value, local);
+      assert.ok(!JSON.stringify(row.cacheMetadata).includes(root));
+      assert.ok(!JSON.stringify(row).includes("private-cache-content"));
+    }
+    assert.deepEqual(observations[0].workerEnvironment, observations[1].workerEnvironment);
+    assert.equal(Object.hasOwn(await workerContextSample({ ...childOptions, stripped: true }), "cacheMetadata"), false);
+    assert.deepEqual(moduleAnalysisCacheMetadata({}), { observed: false, exists: null, size: null, mtime: null, error: "LOCALAPPDATA_UNAVAILABLE" });
+    assert.deepEqual(moduleAnalysisCacheMetadata({ LOCALAPPDATA: "missing-owned-cache" }), { observed: true, exists: false, size: null, mtime: null, error: null });
+  } finally {
+    process.chdir(childOptions.cwd);
+    for (const key of Object.keys(process.env)) if (!Object.hasOwn(saved, key)) delete process.env[key];
+    Object.assign(process.env, saved);
+    rmSync(root, { recursive: true, force: true });
+  }
 });
