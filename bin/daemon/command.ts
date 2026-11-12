@@ -175,6 +175,10 @@ async function status(args: ParsedArgs): Promise<void> {
 async function login(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const values = args.values as { idp?: string; "client-id"?: string };
+  if (values.idp !== undefined) {
+    try { normalizeIdpUrl(cloudAuthUrl(values.idp)); }
+    catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
+  }
   const chosen = await chooseAccount(args, "login");
   if (chosen === undefined) return;
   let idp: string;
