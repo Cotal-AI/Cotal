@@ -122,6 +122,7 @@ try {
     manager = undefined;
     const released = start(process.execPath, [join(updater, "dist/cotal.js"), "update"], home, `${name}-released`);
     await finish(released);
+    assert.ok(released.text().includes("Built-in connectors"), released.text());
     assert.ok(!released.text().includes("local Manager continuity cannot be established"), released.text());
   }
   console.log(`PASS real Manager deleted-entry diagnostics. Retained fixture: ${root}`);
