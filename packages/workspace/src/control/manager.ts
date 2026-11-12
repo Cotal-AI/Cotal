@@ -31,6 +31,8 @@ import {
   newIdentity,
   dialerFor,
   resolveService,
+  resolvePeer,
+  assertLifecycleToken,
   standaloneConnectOpts,
   type ControlReply,
   type EpCaller,
@@ -137,9 +139,23 @@ async function askManagerEp(
 ): Promise<ManagerReply> {
   if (pin?.instanceId !== undefined && auth.managerInstanceId !== undefined && pin.instanceId !== auth.managerInstanceId)
     return { ok: false, error: "the manager pin differs from this credential's instance authority", code: "permission-denied" };
-  const instanceId = pin?.instanceId ?? auth.managerInstanceId;
+  let instanceId = pin?.instanceId ?? auth.managerInstanceId;
+  let selected: Presence | undefined;
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
+  // No class-queue read may stand in for the manager that presence says holds this seat.
+  if (instanceId === undefined && !auth.bearer && (mapped.command === "inspect" || mapped.targeted)) {
+    const name = String(args?.name ?? "").trim();
+    if (!name) return { ok: false, code: "bad-request", error: `${op} requires a name` };
+    const roster = await client.roster({ space, server });
+    const peer = resolvePeer(roster.filter(p => p.status !== "offline"), name);
+    if (!peer) return { ok: false, code: "not-found", error: `no agent "${name}" is held in live presence` };
+    const instance = peer.card.meta?.["ai.cotal.manager.instance"];
+    if (typeof instance !== "string") return { ok: false, code: "failed-precondition", error: `agent "${name}" reports no holding manager instance` };
+    instanceId = assertLifecycleToken(instance, "holding manager instance");
+    selected = peer;
+    args = { ...args, name: peer.card.name };
+  }
   // Each attempt is a new connection, so a user bearer's connection nonce is minted afresh with it.
   let connectOpts: Record<string, unknown> = {};
   const nc = await dialWithRetry(() => {
@@ -184,6 +200,8 @@ async function askManagerEp(
         return { ...refused, preSubmitRefusal: true, managerInstanceId: info.responder.instanceId, managerEpoch: info.responder.epoch, error: `could not resolve "${name}": ${refused.error}` };
       }
       const row = info.reply.data as { id: string; lifecycleUid: string };
+      if (selected && ((row.id !== selected.card.id && `${caller.owner}.${row.id}` !== selected.card.id) || row.lifecycleUid !== selected.lifecycleUid))
+        return { ok: false, code: "expired", error: `${name} changed lifecycle after owner resolution, so nothing was sent`, preSubmitRefusal: true };
       if (pin?.expectedTarget && (row.id !== pin.expectedTarget.id || row.lifecycleUid !== pin.expectedTarget.lifecycleUid))
         return { ok: false, code: "not-found", error: `${name} was replaced by a new run since it was selected, so nothing was sent; refresh the agent list and try again` };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
@@ -246,6 +264,11 @@ async function askManagerEp(
       })
       : await submit();
     if (r.reply.ok !== true) return { ...controlReplyFrom(r.reply), answered: true, managerInstanceId: r.responder.instanceId, managerEpoch: r.responder.epoch, ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request } : {}), ...(r.reply.error?.outcome ? { nativeOutcome: r.reply.error.outcome } : {}) };
+    if (selected && mapped.command === "inspect") {
+      const row = r.reply.data as { id?: string; lifecycleUid?: string };
+      if ((row.id !== selected.card.id && `${caller.owner}.${row.id}` !== selected.card.id) || row.lifecycleUid !== selected.lifecycleUid)
+        return { ok: false, code: "expired", error: `${selected.card.name} changed lifecycle after owner resolution; no current row was accepted` };
+    }
     // The ep `models` reply is normalized to `{catalogs}` — unwrap so call sites keep the ctl shape.
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, managerInstanceId: r.responder.instanceId, managerEpoch: r.responder.epoch, ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request } : {}), ...(data !== undefined ? { data } : {}) };

@@ -61,6 +61,9 @@ function record(agent: MeshAgent, inspectModel?: string): Recorded[] {
     },
     principal: { owner: "local", actor: "caller" },
   };
+  // This suite grades spawn/audit composition. Owner resolution is exercised on the live broker
+  // by named-read-owner, so the constructed command boundary does not invent a presence roster.
+  agent.invokeEndpoint = agent.ep.invokeService.bind(agent.ep);
   (agent as unknown as { _connected: boolean })._connected = true;
   return calls;
 }
@@ -272,6 +275,7 @@ function auditFails(agent: MeshAgent, failure: unknown, spawned: Record<string, 
       : Promise.resolve({ reply: spawned, responder: { endpoint, instanceId: MANAGER, epoch: 0 } }),
     principal: { owner: "local", actor: "caller" },
   };
+  agent.invokeEndpoint = agent.ep.invokeService.bind(agent.ep);
   (agent as unknown as { _connected: boolean })._connected = true;
   return agent;
 }
