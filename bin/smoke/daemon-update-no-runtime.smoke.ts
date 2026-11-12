@@ -39,7 +39,8 @@ try {
     finally { clearTimeout(timer); }
     if (kind !== "absent") {
       assert.equal(code, 1, output);
-      assert.match(output, /installed daemon preflight.*XDG_RUNTIME_DIR is not set/);
+      assert.match(output, /installed daemon preflight.*no installed unit recorded/);
+      assert.doesNotMatch(output, /XDG_RUNTIME_DIR is not set/);
       assert.doesNotMatch(output, /Built-in connectors|wrote operator-global seed store payload/);
       assert.equal(existsSync(join(directory, "config/cotal/seed")), false, output);
       assert.equal(existsSync(join(directory, "config/cotal/extensions.json")), false, output);

@@ -101,7 +101,7 @@ for (const self of [true, false]) {
   const state = join(root, "receipts");
   mkdirSync(state, { mode: 0o700 });
   const paths = { state, lock: join(state, "lock"), socket: join(state, "socket") };
-  assert.doesNotThrow(() => preflightInstalledDaemon(paths));
+  assert.equal(preflightInstalledDaemon({ state }), false);
   writeFileSync(unitReceiptFile(paths), "not json");
   assert.throws(() => preflightInstalledDaemon(paths), /no installed unit recorded/);
   if (process.platform === "linux") {
@@ -120,7 +120,7 @@ for (const self of [true, false]) {
       const receipt = { v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(source).digest("hex"), installedAt: "2026-11-12" };
       writeFileSync(unitReceiptFile(paths), JSON.stringify(receipt));
       assert.equal(installedDaemonIdentity(paths).same, false);
-      assert.doesNotThrow(() => preflightInstalledDaemon(paths));
+      assert.equal(preflightInstalledDaemon({ state }), true);
       writeFileSync(unitReceiptFile(paths), JSON.stringify({ ...receipt, unitPath: join(state, "outside.service") }));
       writeFileSync(join(state, "outside.service"), source, { mode: 0o600 });
       assert.throws(() => preflightInstalledDaemon(paths), (error: Error & { remedy?: string }) => {

@@ -39,8 +39,8 @@ those integrations. If the package closure needs repair, the usual continuity gu
 `cotal update --self` also checks it before replacing the global package. A missing receipt
 leaves an unrecorded service alone. A valid receipt for another installation does not block
 this check. A malformed receipt, missing source, or ownership mismatch refuses before those
-package and connector changes. On Linux, a recorded receipt, including a dangling receipt symlink,
-also refuses when `XDG_RUNTIME_DIR` is unset, before connector reconciliation.
+package and connector changes. These receipt checks do not need `XDG_RUNTIME_DIR`. A valid
+receipt can proceed without it. A dangling receipt symlink still refuses.
 
 Read the receipt and source paths named by the refusal. If the receipt is stale, remove only
 that receipt to forget it, then run `cotal daemon install`. For an owned installation, run

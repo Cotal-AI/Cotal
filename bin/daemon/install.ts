@@ -79,7 +79,7 @@ export function daemonUnitName(daemonHome: string | undefined): string {
   return `cotal-daemon-${createHash("sha256").update(daemonHome).digest("hex").slice(0, 16)}.service`;
 }
 
-function readReceipt(paths: DaemonPaths): UnitReceipt | undefined {
+function readReceipt(paths: Pick<DaemonPaths, "state">): UnitReceipt | undefined {
   let o: unknown;
   try { o = JSON.parse(readFileSync(unitReceiptFile(paths), "utf8")); } catch { return undefined; }
   if (!o || typeof o !== "object") return undefined;
@@ -370,7 +370,7 @@ export interface UninstallPlan {
 }
 
 /** The recorded unit, refused unless this OS runs its mechanism and its source and job are unchanged. */
-function recordedUnit(paths: DaemonPaths, daemonHome: string | undefined): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined } {
+function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined } {
   const service = nativeService();
   const receipt = readReceipt(paths);
   if (!receipt) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this daemon has no installed unit recorded by `cotal daemon install`; nothing was removed");
@@ -439,15 +439,16 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
   return plan;
 }
 
-/** Validate a present service receipt without changing the service or treating invalid state as absent. */
-export function preflightInstalledDaemon(paths: DaemonPaths, daemonHome?: string): void {
+/** Validate a present service receipt from persistent state without runtime discovery. Return false only when absent. */
+export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daemonHome?: string): boolean {
   try { lstatSync(unitReceiptFile(paths)); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
   installedDaemonIdentity(paths, daemonHome);
+  return true;
 }
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
-export function installedDaemonIdentity(paths: DaemonPaths, daemonHome?: string): { same: boolean; installed: string; current: string } {
+export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string): { same: boolean; installed: string; current: string } {
   return recordedDaemonIdentity(recordedUnit(paths, daemonHome));
 }
 
