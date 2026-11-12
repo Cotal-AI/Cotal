@@ -94,7 +94,7 @@ const shown = (r: { status: number | null; stdout: string; stderr: string }) => 
 
 /** One command under a real terminal: its output with escape sequences removed, and its exit code. */
 function terminal(args: string[]) {
-  const pty = cotalPty(args, { cwd: work, env });
+  const pty = cotalPty(args, { cwd: work, env, cols: 120 });
   ptys.push(pty);
   const s = { raw: "", code: undefined as number | undefined, text: () => clean(s.raw) };
   pty.onData((d) => (s.raw += d));
@@ -163,6 +163,11 @@ const QUESTION = "Which one?";
   check("explicit selection explains its target under Mesh once", /Mesh: alpha/.test(explicitNote.stdout + explicitNote.stderr) && /selected space applies here/.test(explicitNote.stdout + explicitNote.stderr), shown(explicitNote));
   const explicitWrite = run(["history", "clear", "--dry-run", "--json"], join(home, "beta"));
   check("a write preview names the explicit selected space, not the folder", envelope(explicitWrite)?.target?.space === "alpha", shown(explicitWrite));
+  const selectedSpawnTerminal = terminal(["spawn", "--dry-run"]);
+  check("spawn on a 120-column terminal follows the explicit selection without a space question",
+    await until(() => selectedSpawnTerminal.s.code !== undefined) && selectedSpawnTerminal.s.code === 0 &&
+      /Mesh: alpha/.test(selectedSpawnTerminal.s.text()) && !selectedSpawnTerminal.s.text().includes(QUESTION),
+    { code: selectedSpawnTerminal.s.code, out: selectedSpawnTerminal.s.text().slice(-1600) });
   const explicitSpawn = run(["spawn", "--dry-run", "--json"], join(home, "beta"));
   check("spawn preview follows explicit selection without a space question", envelope(explicitSpawn)?.target?.space === "alpha" && !explicitSpawn.stderr.includes(QUESTION), shown(explicitSpawn));
   const cleared = run(["use", "--clear"], join(home, "beta"));
