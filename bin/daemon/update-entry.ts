@@ -104,9 +104,13 @@ const composed: Command = { ...command, async run(args) {
       });
       if (!reply.ok) throw new Error(reply.error ?? "hosted Manager status did not answer");
       const status = reply.data as { agentCount?: number; custody?: string; stopImpact?: { agents: { name: string }[] } };
-      if (status.custody === "legacy" && status.agentCount !== 0) {
+      if (!currentPackages && status.custody === "legacy" && status.agentCount !== 0) {
         const names = status.stopImpact?.agents.map((agent) => agent.name);
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager ${manager.instanceId} cannot preserve running agents on this computer during update${names?.length ? ` (${names.join(", ")})` : ""}; restarting it would end them`, { remedy: `save their work; stop each with \`cotal stop <name> --on ${manager.instanceId} --space ${shellPath(manager.space)}\`, then rerun the same update command. To list agents, use \`cotal ps --on ${manager.instanceId} --space ${shellPath(manager.space)}\` (requires admin scope)` });
+      }
+      if (currentPackages && status.custody === "legacy" && status.agentCount !== 0) {
+        const names = status.stopImpact?.agents.map(agent => agent.name);
+        console.log(`hosted Manager ${manager.instanceId}: a later update will require stopping its agents${names?.length ? ` (${names.join(", ")})` : ""}`);
       }
       console.log(`hosted Manager ${manager.space}: instance ${manager.instanceId} answered; ${status.agentCount ?? "unknown"} seat(s)`);
     }

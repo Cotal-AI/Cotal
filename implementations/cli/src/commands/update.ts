@@ -141,6 +141,7 @@ export const updateRuntime: UpdateRuntime = {
   nodePath: process.execPath,
   version: cliVersion,
   isCurrent: () => {
+    if (process.platform !== "linux") return false;
     if (!seedInstallationCurrent()) return false;
     try {
       const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg));
