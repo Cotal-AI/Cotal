@@ -104,7 +104,7 @@ try {
   const stop = async (mgr: Manager): Promise<{ stopMs: number; error?: string }> => {
     const t0 = Date.now();
     let error: string | undefined;
-    await mgr.stop().catch((e: unknown) => { error = e instanceof Error ? e.message : String(e); });
+    await mgr.stop({ withAgents: true }).catch((e: unknown) => { error = e instanceof Error ? e.message : String(e); });
     live.splice(live.indexOf(mgr), 1);
     return { stopMs: Date.now() - t0, error };
   };

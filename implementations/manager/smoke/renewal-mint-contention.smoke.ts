@@ -22,7 +22,7 @@ import { registerRemoteManagerAuthority } from "../src/remote-register.js";
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; };
-const version = execFileSync("nats-server", ["-v"], { encoding: "utf8" }).trim();
+const version = execFileSync("nats-server", ["--version"], { encoding: "utf8" }).trim();
 const evidence = mkdtempSync(join(tmpdir(), "renewal-mint-contention-evidence-"));
 console.log(`contention evidence: ${evidence}`);
 const record = (kind: string, data: Record<string, unknown> = {}) => {
@@ -145,7 +145,7 @@ try {
   release.resolve();
   try {
     await Promise.race([
-      manager?.stop(),
+      manager?.stop({ withAgents: true }),
       wait(8000).then(() => { throw new Error("Manager cleanup exceeded 8000ms"); }),
     ]);
   } finally {

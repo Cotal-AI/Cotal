@@ -134,10 +134,12 @@ const getJson = async (w: Web, path: string): Promise<unknown> => (await call(w,
 /** The text parts of a message, joined. */
 const textOf = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
 
-async function startBroker(args: (store: string) => string[], server: string, creds?: string): Promise<void> {
+async function startBroker(confOf: (store: string) => string, server: string, creds?: string): Promise<void> {
   const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+  const conf = join(store, "server.conf");
+  writeFileSync(conf, confOf(store));
   stores.push(store);
-  const broker = spawn("nats-server", args(store), { stdio: "ignore" });
+  const broker = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
   kids.push(broker);
   releases.push(teardownOnSignal(broker, store));
   for (let i = 0; i < 80; i++) {
@@ -186,7 +188,7 @@ try {
   console.log("2. an open mesh");
   const openPort = await freePort();
   const OPEN = `nats://127.0.0.1:${openPort}`;
-  await startBroker((s) => ["-p", String(openPort), "-js", "-sd", s, "-a", "127.0.0.1"], OPEN);
+  await startBroker((s) => `port: ${openPort}\nhost: 127.0.0.1\njetstream { store_dir: ${JSON.stringify(s)} }\n`, OPEN);
   await setupSpaceStreams({ servers: OPEN, space: "sendopen" });
   const openGot: CotalMessage[] = [];
   const openBot = new CotalEndpoint({ space: "sendopen", servers: OPEN, card: { name: "bot", kind: "agent" }, channels: ["review"], heartbeatMs: 500, ttlMs: 5000 });
@@ -232,11 +234,11 @@ try {
   const staticPort = await freePort();
   const STATIC = `nats://127.0.0.1:${staticPort}`;
   const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner");
-  await startBroker((s) => {
-    const conf = join(s, "server.conf");
-    writeFileSync(conf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: staticPort, storeDir: s, host: "127.0.0.1" }));
-    return ["-c", conf];
-  }, STATIC, provisionerCreds);
+  await startBroker(
+    (s) => serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: staticPort, storeDir: s, host: "127.0.0.1" }),
+    STATIC,
+    provisionerCreds,
+  );
   await setupSpaceStreams({ servers: STATIC, space: SPACE, creds: provisionerCreds });
   await seedChannelRegistry({ servers: STATIC, space: SPACE, creds: provisionerCreds, file: { channels: { review: {} } } });
   recordMesh({ space: SPACE, server: STATIC, root, mode: "auth", ts: new Date().toISOString() });
