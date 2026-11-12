@@ -26,7 +26,7 @@ The output schemas below describe successful command results, not the protocol e
 
 ## manager
 
-Cluster `ai.cotal.manager`, revision 48. 44 commands.
+Cluster `ai.cotal.manager`, revision 49. 44 commands.
 
 | Command                                                   | Capability          | Class     | Target modes |
 | --------------------------------------------------------- | ------------------- | --------- | ------------ |
@@ -209,7 +209,7 @@ Registered declaration:
   "targeted": false,
   "capability": "manager.read",
   "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
-  "outputDigest": "sha256:20fcd4978ef14fa010b0da9c704fc0289d9cc8b4ee290ac388d47cb09db81362"
+  "outputDigest": "sha256:9128d5f82ab92228d791adfcd33a5651af0fce9a5ab448719633a7493248b67e"
 }
 ```
 
@@ -295,7 +295,8 @@ Output schema:
           "agent",
           "state",
           "binaries",
-          "eventPlane"
+          "eventPlane",
+          "permissionRequests"
         ],
         "properties": {
           "agent": {
@@ -314,6 +315,9 @@ Output schema:
             }
           },
           "eventPlane": {
+            "type": "boolean"
+          },
+          "permissionRequests": {
             "type": "boolean"
           },
           "reason": {
