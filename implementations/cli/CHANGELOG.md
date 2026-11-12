@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.161.0
+
+### Patch Changes
+
+- 29810d2: Report the running controller broker in status JSON instead of a stopped legacy process.
+  The nats row keeps its legacy PID-file observation, adds the owned-service process observation,
+  and names which source supplies its summary state and PID.
+- @cotal-ai/core@0.161.0
+  - @cotal-ai/workspace@0.161.0
+
 ## 0.160.8
 
 ### Patch Changes
