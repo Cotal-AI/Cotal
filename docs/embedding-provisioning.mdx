@@ -68,6 +68,9 @@ The host must call `reconcileSpaceMemoryBuckets` with provisioner authority afte
 restart, before treating presence or membership as ready. The call recreates their missing Memory
 buckets. A transport reconnect alone does not restore them. It refuses a missing File delivery or
 manager lease bucket and does not widen any standing credential.
+`startMembershipFeed` requires this host provisioning before startup; it cannot create stores with
+its scoped writer credential. Starting it against a missing membership store refuses with the
+privileged recovery command and API named in the error.
 
 [SPEC §4](../SPEC.md#4-delivery-modes) requires the creation-time delivery class to be discoverable on the wire.
 A daemon-backed space records `durable`; it does not rely on a receiver's fallback policy.
