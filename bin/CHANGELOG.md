@@ -1,5 +1,28 @@
 # cotal-ai
 
+## 0.163.1
+
+### Patch Changes
+
+- ed58f6f: The daemon update smoke suite covers fresh Cloud setup before exercising updates.
+  Separate supported bare setup from invalid usage and verify service refusal writes no connector or daemon state.
+- 7d4973c: Linux self-updates check every local Manager sharing the installation before replacing packages.
+  
+  Continuity reads use each local instance identity and no longer follow only the selected space or ask the authority to choose a Manager on another computer. When no newer version exists and the installed package closure is current, Linux self-updates report custody without repairing connector integrations or restarting the daemon. Plain `cotal update` still repairs integrations. macOS and Windows keep their existing behavior.
+- Updated dependencies [18905f9]
+- Updated dependencies [3b0377e]
+- Updated dependencies [7d4973c]
+  - @cotal-ai/cli@0.163.1
+  - @cotal-ai/connector-core@0.163.1
+  - @cotal-ai/auth@0.163.1
+  - @cotal-ai/delivery@0.163.1
+  - @cotal-ai/manager@0.163.1
+  - @cotal-ai/registry@0.163.1
+  - @cotal-ai/runtime@0.163.1
+  - @cotal-ai/core@0.163.1
+  - @cotal-ai/seat@0.163.1
+  - @cotal-ai/workspace@0.163.1
+
 ## 0.163.0
 
 ### Patch Changes
