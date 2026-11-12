@@ -47,3 +47,30 @@ for (const [self, latest] of [[false, "0.13.2"], [true, "0.13.2"], [true, "0.13.
   }
 }
 console.log("update-refusal.smoke: classified, unclassified, legacy and successful reports passed");
+
+// The real bound-child entry must adopt before any reconcile effects, and cannot hide denial.
+for (const denied of [false, true]) {
+  const effects: string[] = [], errors: string[] = [];
+  const rt: UpdateRuntime = {
+    ...updateRuntime,
+    env: { COTAL_UPDATE_TARGET_VERSION: "0.13.1", COTAL_UPDATE_PARENT: "123", COTAL_AUTO_UPDATE: "1" },
+    parentPid: 123,
+    version: () => "0.13.1",
+    adoptUpdateChild: async () => { effects.push("adopt"); if (denied) throw new Error("scope denied"); },
+    reconcile: async () => { effects.push("reconcile"); },
+    reportRunningManager: async () => "none",
+    refreshConnectors: async () => [],
+    extensions: () => [],
+    claimUpdatePass: () => () => {},
+    waitForInstalledGeneration: async () => { effects.push("wait"); },
+    npm: () => { throw new Error("unexpected npm call"); },
+    out: () => {},
+    err: text => { errors.push(text); },
+  };
+  assert.equal(await executeUpdate(false, rt), denied ? 1 : 0);
+  assert.equal(effects[0], "adopt");
+  if (denied) {
+    assert.deepEqual(effects, ["adopt"]);
+    assert.match(errors.join("\n"), /scope denied.*package replacement already occurred.*parent may retry or restore/);
+  } else assert.ok(effects.includes("reconcile"));
+}

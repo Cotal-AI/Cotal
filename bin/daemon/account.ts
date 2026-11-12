@@ -60,6 +60,8 @@ export function createAccountComputer(home: string, version: string, reconciler:
     context.abort.signal.throwIfAborted();
     if (result.status === 304) {
       if (context.snapshot && context.revision !== undefined) await withIdpSessionDir(home, () => reconciler.apply(account, context.snapshot!, context.revision!, context.bindingRevisions!, false, context.abort.signal));
+      // The host answered and nothing changed, so an earlier failed request no longer describes this computer.
+      delete state.message;
       return;
     }
     if (result.status === 401 || result.status === 403) { state.mode = "sign-in-required"; state.message = "sign in again"; return; }
