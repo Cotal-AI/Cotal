@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { daemonEnvironmentKeys, strippedDaemonEnvironment, safeEnvironment, nativeContextSample, workerContextSample, measureTaskContext, renderContextTable } from "./windows-task-context-measure.mjs";
+import { contextVariants, contextVariantCount, daemonEnvironmentKeys, strippedDaemonEnvironment, safeEnvironment, nativeContextSample, workerContextSample, measureTaskContext, renderContextTable } from "./windows-task-context-measure.mjs";
 import { taskStageScript } from "./windows-task-stage-script.mjs";
 
 const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
@@ -93,4 +93,64 @@ test("table includes fixed stage durations in order with unknown for unsafe valu
 
 test("native measurement is gated on Windows", { skip: process.platform === "win32" }, async () => {
   await assert.rejects(measureTaskContext({}, "harness", "not-created.json"), /require Windows/);
+});
+
+const groups = {
+  "machine-identity": ["COMPUTERNAME", "USERNAME", "USERDOMAIN", "LOGONSERVER"],
+  "system-paths": ["SystemDrive", "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432", "ALLUSERSPROFILE", "PUBLIC"],
+  profile: ["HOMEDRIVE", "HOMEPATH"],
+  powershell: ["PSModulePath", "PSModuleAnalysisCachePath"],
+};
+
+test("groups restore only exact OS keys case insensitively and independently", () => {
+  const env = Object.fromEntries(Object.values(groups).flat().map(key => [key.toLowerCase(), `private-${key}`]));
+  Object.assign(env, { Path: "base", ProgramFilesSecret: "secret", CommonProgramFilesToken: "secret", PSModulePathSecret: "secret", COTAL_DAEMON_TASK: "secret" });
+  for (const [group, keys] of Object.entries(groups)) {
+    const restored = strippedDaemonEnvironment(env, ["PATH"], group);
+    assert.deepEqual(Object.keys(restored).sort(), [...keys.map(key => key.toLowerCase()), "Path", "DO_NOT_TRACK"].sort());
+    for (const key of keys) assert.equal(restored[key.toLowerCase()], env[key.toLowerCase()]);
+  }
+  assert.throws(() => strippedDaemonEnvironment(env, [], "unknown"));
+});
+
+test("actual Worker and native child retain each selected group without leaking private values", async () => {
+  const names = [...Object.values(groups).flat(), "ProgramFilesSecret", "COTAL_CONTEXT_TEST_SECRET", "COTAL_DAEMON_TASK", "COTAL_DAEMON_TASK_INSTANCES"];
+  const saved = { ...process.env };
+  try {
+    for (const name of names) process.env[name] = `private-value-${name}`;
+    for (const [group, keys] of Object.entries(groups)) {
+      const checks = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+      const args = ["-e", `const expected=${JSON.stringify(checks)};const env=Object.fromEntries(Object.entries(process.env).map(([k,v])=>[k.toUpperCase(),v]));process.exitCode=Object.entries(expected).every(([k,v])=>env[k.toUpperCase()]===v)&&env.COTAL_DAEMON_TASK==='cotal-daemon-test'&&env.COTAL_DAEMON_TASK_INSTANCES==='1'?7:9`];
+      const result = await workerContextSample({ ...childOptions, args, stripped: true, group });
+      assert.equal(result.status, 7);
+      assert.equal(result.worker.exitCode, 0);
+      for (const field of ["environment", "workerEnvironment"]) {
+        const actual = result[field].names.map(key => key.toUpperCase());
+        for (const key of Object.values(groups).flat()) assert.equal(actual.includes(key.toUpperCase()), keys.includes(key), `${group}: ${field}: ${key}`);
+        assert.ok(!actual.includes("PROGRAMFILESSECRET"));
+        assert.ok(!actual.includes("COTAL_CONTEXT_TEST_SECRET"));
+      }
+      assert.ok(!result.workerEnvironment.names.includes("COTAL_DAEMON_TASK"));
+      const sanitized = JSON.stringify(result);
+      for (const key of names.filter(key => key !== "PSModulePath")) assert.ok(!sanitized.includes(`private-value-${key}`));
+      assert.equal(result.environment.paths.PSModulePath.present, group === "powershell");
+      assert.equal(result.timeoutMs, 180_000);
+      assert.equal(result.worker.boundMs, 190_000);
+    }
+  } finally {
+    for (const key of Object.keys(process.env)) if (!Object.hasOwn(saved, key)) delete process.env[key];
+    for (const [key, value] of Object.entries(saved)) process.env[key] = value;
+  }
+});
+
+test("seven fixed variants render fourteen context rows and retain incremental bounded execution", () => {
+  assert.equal(contextVariantCount, 7);
+  assert.deepEqual(contextVariants, ["main-thread", "worker-thread", "worker-thread-daemon-env", ...Object.keys(groups).map(group => `worker-thread-daemon-env-${group}`)]);
+  const rows = ["scheduled-task", "harness"].flatMap(context => contextVariants.map(variant => ({ context, variant })));
+  const table = renderContextTable(rows);
+  assert.equal(table.trim().split("\n").length, 16);
+  for (const { context, variant } of rows) assert.ok(table.includes(`| ${context} | ${variant} |`));
+  const implementation = readFileSync(new URL("./windows-task-context-measure.mjs", import.meta.url), "utf8");
+  assert.match(implementation, /for \(const variant of contextVariants\)/);
+  assert.match(implementation, /rows\.push\([\s\S]*?writeSync\(fd, data, offset, data\.length - offset, offset\)/);
 });
