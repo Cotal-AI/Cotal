@@ -153,7 +153,10 @@ async function askManagerEp(
     } catch (error) {
       if (!isCommandFailure(error)) throw error;
       const code = error.code === "TARGET_NOT_FOUND" ? "not-found" : error.code === "TARGET_AMBIGUOUS" ? "failed-precondition" : "unavailable";
-      return { ok: false, code, error: error.message, preSubmitRefusal: true, nativeOutcome: "not-executed" };
+      const targetRefusal = error.code === "TARGET_AMBIGUOUS" ? "TARGET_AMBIGUOUS"
+        : error.code === "TARGET_NOT_FOUND" ? "TARGET_NOT_FOUND"
+        : error.code === "USAGE_INVALID" ? "USAGE_INVALID" : "TARGET_UNAVAILABLE";
+      return { ok: false, code, error: error.message, preSubmitRefusal: true, nativeOutcome: "not-executed", targetRefusal };
     }
   }
   if (selected) args = { ...args, name: selected.name };
@@ -308,6 +311,8 @@ export type ManagerReply = ControlReply & {
   /** This client compared the selected seat with inspect and proved its principal/lifecycle changed.
    *  Permanent for that selection, unlike an expired manager epoch that a fresh resolve can repair. */
   selectedSeatChanged?: true;
+  /** Typed local target resolution refusal, never a Manager's native reply code. */
+  targetRefusal?: RefusalCode;
   unanswered?: boolean; answered?: true; preSubmitRefusal?: true; managerInstanceId?: string; managerEpoch?: number; observationCause?: { code?: string; outcome?: string }; intent?: ManagerRequestIntent; request?: ManagerRequestReceipt; nativeOutcome?: "executed" | "not-executed" | "unknown";
 };
 
@@ -316,7 +321,7 @@ export type ManagerReply = ControlReply & {
  *  reason, kept to one line. */
 export function managerFailure(reply: ManagerReply, operation: string, target: unknown): CommandFailure {
   const native = { code: reply.code, outcome: reply.nativeOutcome, ...(reply.preSubmitRefusal ? { detail: { phase: "target-resolution", actionSubmitted: false } } : reply.request || reply.intent ? { detail: { request: reply.request ?? null, intent: reply.intent ?? null, observation: reply.observationCause ?? null } } : {}) };
-  const code = nativeEndpointRefusal(reply.code);
+  const code = reply.preSubmitRefusal ? reply.targetRefusal ?? nativeEndpointRefusal(reply.code) : nativeEndpointRefusal(reply.code);
   const agent = (target as { agent?: unknown } | null)?.agent;
   const what = typeof agent === "string" ? `${operation} for agent "${oneLine(agent)}"` : operation;
   const reason = reply.error ? `: ${oneLine(reply.error)}` : "";
@@ -961,11 +966,11 @@ const READ_REFUSALS: Readonly<Record<string, RefusalCode>> = {
 /** A manager read that did not answer, as the classified failure a structured command reports: the
  *  same sentence, the endpoint's own code under `error.cause`, and the stale-store hint as its remedy
  *  when one applies. A request nobody answered carries `deadline-exceeded`, an unavailable target. */
-export function readFailure(reply: { error?: string; code?: string; details?: unknown }, target?: unknown): CommandFailure {
+export function readFailure(reply: { error?: string; code?: string; details?: unknown; preSubmitRefusal?: true; targetRefusal?: RefusalCode }, target?: unknown): CommandFailure {
   const message = reply.error ?? "the manager refused the read";
   const remedy = staleStoreHint(message);
   const native = reply.code === undefined && reply.details === undefined ? undefined : { ...(reply.code === undefined ? {} : { code: reply.code }), ...(reply.details === undefined ? {} : { detail: reply.details }) };
   const opts = { target, ...(remedy ? { remedy } : {}), ...(native ? { native } : {}) };
-  const code = reply.code === undefined ? undefined : READ_REFUSALS[reply.code];
+  const code = reply.preSubmitRefusal && reply.targetRefusal ? reply.targetRefusal : reply.code === undefined ? undefined : READ_REFUSALS[reply.code];
   return code ? new CommandFailure("refused", code, message, opts) : new CommandFailure("failed", "OPERATION_FAILED", message, opts);
 }

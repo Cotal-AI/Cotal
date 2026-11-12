@@ -11,6 +11,7 @@ import type { Connector, LaunchSpec } from "@cotal-ai/core";
 
 const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}attach-identity-`));
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+process.env.COTAL_HOME = join(dir, "COTAL_HOME");
 for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "COTAL_HOME"]) {
   process.env[key] = join(dir, key);
   mkdirSync(process.env[key]!, { recursive: true, mode: 0o700 });

@@ -150,7 +150,9 @@ stays in a separate name-match field. A waiting observation is not a measured
 blocked duration, and a work event is not task completion. Attach and stop
 hints retain the answering manager's instance when it is a valid native id.
 
-Several live peers with the same name refuse as ambiguous. A missing or invalid holding-manager
+Several live peers with the same name refuse as ambiguous. Status, stop and input return
+`TARGET_AMBIGUOUS` before submission, including with an explicit `--on` Manager pin.
+A missing or invalid holding-manager
 hint refuses before submission. If the selected manager does not answer, status refuses
 `TARGET_UNAVAILABLE` and names that instance. An unrelated silent manager does not make this
 read partial. On a user-auth space, an unanswered manager still leaves the authorized census

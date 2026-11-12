@@ -10,11 +10,12 @@ import type { Connector, LaunchSpec } from "@cotal-ai/core";
 
 const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}named-open-`));
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+process.env.COTAL_HOME = join(dir, "cotal");
 for (const [key, value] of Object.entries({ HOME: join(dir, "home"), XDG_CONFIG_HOME: join(dir, "config"), XDG_RUNTIME_DIR: join(dir, "run"), COTAL_HOME: join(dir, "cotal") })) {
   process.env[key] = value;
   mkdirSync(value, { recursive: true, mode: 0o700 });
 }
-const { registry, isReachable, setupSpaceStreams } = await import("@cotal-ai/core");
+const { CotalEndpoint, registry, isReachable, setupSpaceStreams } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { Manager } = await import("../dist/index.js");
 const repo = resolve(import.meta.dirname, "../../..");
@@ -35,6 +36,7 @@ writeFileSync(join(root, ".cotal", "agents", "raw-seat.md"), "---\nname: raw-sea
 const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", join(dir, "js")], { stdio: "ignore" });
 const release = teardownOnSignal(broker, dir);
 let manager: InstanceType<typeof Manager> | undefined;
+let duplicate: InstanceType<typeof CotalEndpoint> | undefined;
 let checks = 0;
 const failures: string[] = [];
 const check = (label: string, condition: boolean, detail: unknown) => {
@@ -78,6 +80,19 @@ try {
       check(`raw-open status resolves ${alias} ${pin.length ? "with" : "without"} explicit owner`, status.code === 0 && status.out.includes('"name":"raw-seat"') && status.out.includes("raw-pin") && status.out.includes(iid), status);
     }
   }
+  duplicate = new CotalEndpoint({ space, servers: server, card: { id: "duplicate_seat", name: "raw-seat", kind: "endpoint", meta: { "ai.cotal.manager.instance": iid } }, lifecycleUid: randomUUID().replaceAll("-", ""), channels: [], consume: false, registerPresence: true });
+  await duplicate.start();
+  for (const action of [["status", "RAW-SEAT"], ["stop", "RAW-SEAT"], ["input", "RAW-SEAT", "unchanged"]]) {
+    for (const pin of [[], ["--on", iid]]) {
+      const result = await cli([...action, ...pin]);
+      check(`ambiguous ${action[0]} ${pin.length ? "pinned" : "unpinned"} preserves typed refusal`, result.code === 2 && result.out.includes('"code":"TARGET_AMBIGUOUS"'), result);
+      console.log("AMBIGUITY_OBSERVATION", JSON.stringify({ action: action[0], pinned: pin.length > 0, ...result }));
+    }
+  }
+  await duplicate.stop();
+  duplicate = undefined;
+  const restored = await cli(["status", "RAW-SEAT", "--on", iid]);
+  check("removing duplicate restores pinned uppercase status on original seat", restored.code === 0 && restored.out.includes("raw-pin"), restored);
   const absent = await cli(["status", "absent-seat"]);
   check("raw-open absent name is TARGET_NOT_FOUND", absent.code === 2 && absent.out.includes("TARGET_NOT_FOUND"), absent);
   recordMesh({ space, server, root, mode: "open", ts: new Date().toISOString() });
@@ -90,6 +105,7 @@ try {
   assert.deepEqual(failures, []);
   console.log(`NAMED READ OPEN SMOKE OK (${checks} passed)`);
 } finally {
+  await duplicate?.stop();
   await manager?.stop({ withAgents: true });
   await killAndAwaitExit(broker);
   release();
