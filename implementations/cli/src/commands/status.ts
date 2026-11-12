@@ -1935,7 +1935,7 @@ function spacesOverview(r: StatusResult, wide: boolean): Section {
     detail: cell(signsInText(entry, wide), "hint"),
   });
   const columns = [{ key: "space", label: "Space" }, { key: "state", label: "Connection" }, { key: "detail", label: "Signs in" }];
-  if (!r.meshes.items.length && !r.meshes.unreadable.length) blocks.push({ kind: "lines", lines: [cell("No spaces registered", "hint")] });
+  if (!r.meshes.items.length && !r.meshes.unreadable.length) blocks.push({ kind: "lines", lines: [cell("No spaces registered", "hint"), cell("Sign in to Cotal Cloud with `cotal login --cloud`.", "hint")] });
   else if (wide) {
     const groups = new Map<string, StatusResult["meshes"]["items"]>();
     for (const entry of r.meshes.items) {

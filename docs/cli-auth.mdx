@@ -7,6 +7,17 @@ audience: operators
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
+## Sign in to Cotal Cloud
+
+Run `cotal login` in a terminal and choose **Cotal Cloud (cloud.cotal.ai)**, or run
+`cotal login --cloud` to select it without a prompt. Approve the printed link and code.
+A supported desktop session opens the link in your browser. Use `--no-browser` to open it
+elsewhere. Piped output does not open a browser.
+
+For another host, use `cotal login --idp <auth base URL>`. The Cotal Cloud origin
+`https://cloud.cotal.ai` is an explicit alias for `https://cloud.cotal.ai/api/auth`.
+Other provider URLs are used as written, without trying alternate auth paths.
+
 Static minting requires local signing authority. Account sign-in and actor grants are separate, and diagnostic reports state which local claims they checked.
 
 

@@ -28,6 +28,8 @@ import { findInteractiveActor, findManagedActor, loadActorLedger, withManagedGra
 import { INTERACTIVE_RETIRE_PATH, runAuthService } from "./service.js";
 import { loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp } from "./store.js";
 
+import { COTAL_CLOUD_IDP, cloudAuthUrl, openLoginBrowser } from "@cotal-ai/workspace";
+
 const DEFAULT_CLIENT_ID = "cotal-cli";
 
 /** Every operational failure in these commands is a deliberately-legible thrown sentence
@@ -110,6 +112,7 @@ function canChooseAccount(): boolean {
 
 function validateAccountArguments(args: ParsedArgs, mode: "login" | "logout"): void {
   presentationOf(args.values);
+  if (args.values.cloud && args.values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
   if (args.values.idp !== undefined) {
     try { normalizeIdpUrl(String(args.values.idp)); }
     catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
@@ -119,18 +122,29 @@ function validateAccountArguments(args: ParsedArgs, mode: "login" | "logout"): v
   if (mode === "login" && inputDisabledByFlag()) throw new CommandFailure("refused", "UNSUPPORTED", "this provider login uses device approval and has no noninteractive grant in this client", { remedy: "sign in from an interactive terminal" });
 }
 
-async function chooseAccount(args: ParsedArgs, mode: "login" | "logout"): Promise<string | undefined> {
-  if (typeof args.values.idp === "string") return normalizeIdpUrl(args.values.idp);
+export async function chooseAccount(args: ParsedArgs, mode: "login" | "logout"): Promise<string | undefined> {
+  if (args.values.cloud && args.values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
+  if (mode === "login" && args.values.cloud === true) return COTAL_CLOUD_IDP;
+  if (typeof args.values.idp === "string") return normalizeIdpUrl(mode === "login" ? cloudAuthUrl(args.values.idp) : args.values.idp);
   let cached: ReturnType<typeof listIdpAccounts>;
   try { cached = listIdpAccounts(homeCotalDir()); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "cached account metadata could not be read; it was not reset"); }
   const providers = new Map(cached.map((item) => [item.idp, item.sub]));
   if (mode === "login") for (const mesh of loadMeshes()) if (mesh.userAuth?.idp.url) providers.set(normalizeIdpUrl(mesh.userAuth.idp.url), providers.get(normalizeIdpUrl(mesh.userAuth.idp.url)));
-  if (providers.size === 1) return providers.keys().next().value;
+  if (providers.size === 1 && (mode === "logout" || providers.has(COTAL_CLOUD_IDP) || !canChooseAccount())) return providers.keys().next().value;
   if (mode === "logout" && providers.size === 0) return undefined;
-  if (!canChooseAccount() || presentationOf(args.values) === "json") throw new CommandFailure("refused", "USAGE_INVALID", "select the provider explicitly with --idp outside an interactive terminal");
-  if (providers.size) {
-    const chosen = await untilInputEnds((signal) => prompts.select({ message: mode === "login" ? "Choose a sign-in provider" : "Choose the account to sign out", options: [...providers].map(([idp, sub]) => ({ value: idp, label: oneLine(idp), ...(sub ? { hint: oneLine(sub) } : {}) })), signal }));
+  if (!canChooseAccount() || presentationOf(args.values) === "json") throw new CommandFailure("refused", "USAGE_INVALID", "select Cotal Cloud with --cloud or another provider with --idp outside an interactive terminal");
+  if (mode === "login") {
+    const chosen = await untilInputEnds(signal => prompts.select({ message: "Choose a sign-in provider", initialValue: COTAL_CLOUD_IDP, options: [
+      { value: COTAL_CLOUD_IDP, label: "Cotal Cloud (cloud.cotal.ai)" },
+      ...[...providers].filter(([idp]) => idp !== COTAL_CLOUD_IDP).map(([idp, sub]) => ({ value: idp, label: oneLine(idp), ...(sub ? { hint: oneLine(sub) } : {}) })),
+      { value: "custom", label: "Another host" },
+    ], signal }));
+    if (prompts.isCancel(chosen)) return undefined;
+    if (chosen !== "custom") return chosen;
+  }
+  if (mode === "logout" && providers.size) {
+    const chosen = await untilInputEnds((signal) => prompts.select({ message: "Choose the account to sign out", options: [...providers].map(([idp, sub]) => ({ value: idp, label: oneLine(idp), ...(sub ? { hint: oneLine(sub) } : {}) })), signal }));
     return prompts.isCancel(chosen) ? undefined : chosen;
   }
   const answer = await untilInputEnds((signal) => prompts.text({ message: "Sign-in provider auth URL", placeholder: "https://example.org/api/auth", signal, validate: (value) => {
@@ -161,6 +175,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
           { kind: "fields", rows: [["Provider", idp], ["Open", p.verificationUriComplete], ["Or open", p.verificationUri], ["Approval code", p.userCode], ["Expires", `in ${Math.ceil(p.expiresInSec / 60)} minutes`]] },
           { kind: "lines", lines: [{ text: "Waiting for the provider's approval. Ctrl-C aborts this request. Do not share the approval link or code.", tone: "hint" }] },
         ] }] }, presentation === "plain" ? "plain" : "rich", process.stderr));
+        openLoginBrowser(p.verificationUriComplete, args.values);
       },
     }).catch((error: unknown) => {
       if (error instanceof IdpUnreachableError)
@@ -556,14 +571,16 @@ const authCommands: Command[] = [
     kind: "command",
     name: "login",
     group: "Identity",
-    summary: "sign in to a space's IdP (device code) and cache the session --idp <auth base URL> [--client-id <id>]",
+    summary: "sign in to Cotal Cloud or another host with device approval",
     examples: [{ command: "cotal login", note: "choose a provider and approve sign-in" }, { command: "cotal login --idp <url>", note: "sign in to one provider" }],
-    usage: "cotal login [--idp <auth base URL>] [--client-id <id>] [--plain]",
+    usage: "cotal login [--cloud | --idp <auth base URL>] [--client-id <id>] [--no-browser] [--plain]",
     prepareMeshTarget: false,
     outputs: ["plain"],
     validate: (args) => validateAccountArguments(args, "login"),
     flags: [
       plainFlag,
+      { name: "cloud", type: "boolean", description: "Sign in to Cotal Cloud" },
+      { name: "no-browser", type: "boolean", description: "Print approval instructions without opening a browser" },
       { name: "idp", type: "string", value: "<auth base URL>", description: "Auth base URL, e.g. <origin>/api/auth" },
       { name: "client-id", type: "string", value: "<id>", description: "OAuth device-flow client id" },
     ],

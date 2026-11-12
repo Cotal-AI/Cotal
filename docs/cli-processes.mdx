@@ -573,14 +573,14 @@ The desktop's confirmed disconnect action uses `service-disconnect` for each nam
 It reports incomplete outcomes per space and does not claim credential erasure or remote revocation.
 
 ```bash
-cotal daemon setup [--idp <url>] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
+cotal daemon setup [--cloud | --idp <url>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon setup --space <s> [--idp <auth base URL>] [--client-id <id>] [--no-manager] [--wait <seconds>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]
 cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]
 cotal daemon start [--daemon-home <dir>] [--json|--plain]
 cotal daemon serve [--daemon-home <dir>] [--json|--plain]
 cotal daemon status [--space <s>] [--daemon-home <dir>] [--json|--plain]
-cotal daemon login --idp <auth base URL> [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
+cotal daemon login [--cloud | --idp <auth base URL>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon name [<name>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon spaces [--refresh] [--daemon-home <dir>] [--json|--plain]
 cotal daemon desktop [--daemon-home <dir>]
@@ -591,16 +591,20 @@ cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plai
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
-Connect this computer once with `cotal daemon setup --idp <url>`. It installs or uses the
+Connect this computer to Cotal Cloud with `cotal daemon setup --cloud`, or use
+`cotal daemon setup --idp <url>` for another host. A fresh terminal's bare
+`cotal daemon setup` offers Cotal Cloud first. `--no-browser` keeps approval in the terminal.
+It installs or uses the
 recorded daemon service, asks for one device approval when needed, and registers the computer
 with your account without turning on a space. The result names your account and computer.
 Turn on the spaces that can use it in the provider's dashboard.
 
 Run `cotal daemon setup` from a terminal that finds newly installed agent applications to
 refresh the service's PATH when the daemon is signed in to one provider. The provider comes
-from the daemon's reply; the CLI does not open the sign-in. With no installed daemon, no
-sign-in or several signed-in providers, pass `--idp <url>`; the several-provider refusal lists
-the choices. An explicit `--idp` keeps the installation and sign-in flow. The result lists
+from the daemon's reply; the CLI does not open the sign-in. With no installed daemon,
+choose a provider in the terminal or pass `--cloud` or `--idp <url>`. With no sign-in or
+several signed-in providers, pass an explicit provider; the several-provider refusal lists
+the choices. An explicit provider keeps the installation and sign-in flow. The result lists
 spaces already turned on for this computer, or asks you to turn them on in the dashboard.
 Hosted Managers pick up newly installed applications after the guarded service restart.
 Active seats block that restart until they stop. When a desired space has no available
