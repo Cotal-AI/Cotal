@@ -166,6 +166,15 @@ export class IdpDeviceAuthorizationRefusedError extends Error {}
 /** The IdP answered 401 to a cached session: it expired or was revoked there. */
 export class IdpSessionRejectedError extends Error {}
 
+/** A token read still answered 429. The provider's minimum delay is in seconds, without the
+ *  client's retry floor, or undefined when neither retry header is usable. */
+export class IdpRateLimitedError extends Error {
+  readonly status = 429;
+  constructor(message: string, readonly retryAfterSeconds?: number) {
+    super(message);
+  }
+}
+
 /** A sign-in stopped by the caller's AbortSignal. It stops this local operation only: nothing
  *  is revoked at the IdP, and an approval already given there is left as it is. */
 export class IdpLoginCancelled extends Error {}
@@ -439,18 +448,22 @@ async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: 
     throwIfCancelled(cancel);
     if (remaining <= 0) throw new IdpUnreachableError(`idp request to ${base}/token timed out before the retry`);
     const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } }, cancel, remaining);
-    if (res.status === 429 && attempt === 0) {
+    if (res.status === 429) {
       const delays = ["retry-after", "x-retry-after"].map((name) => {
         const value = res.headers.get(name)?.trim();
         return value && /^\d+$/.test(value) ? Number(value) * 1000
           : value && name === "retry-after" ? Date.parse(value) - Date.now() : NaN;
       }).filter(Number.isFinite);
       const wait = Math.max(1000, ...delays);
-      if (delays.length && wait < deadline - Date.now()) {
+      if (attempt === 0 && delays.length && wait < deadline - Date.now()) {
         await res.body?.cancel();
         await sleepUnlessCancelled(wait, cancel);
         continue;
       }
+      throw new IdpRateLimitedError(
+        `idp session: ${base}/token failed (HTTP 429)`,
+        delays.length ? Math.max(0, ...delays) / 1000 : undefined,
+      );
     }
     if (res.status === 401)
       throw new IdpSessionRejectedError(

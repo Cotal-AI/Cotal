@@ -230,6 +230,10 @@ ledger at connect time. A rate-limited `/token` read retries once when the IdP s
 `Retry-After` or `X-Retry-After` hint that fits within `COTAL_IDP_TIMEOUT_MS` (30 seconds by default).
 When both hints are valid, the later minimum wins. Both reads and the wait share that deadline;
 cancellation stops the wait. Missing hints, a second refusal and other HTTP errors are not retried.
+An unresolved 429 throws `IdpRateLimitedError` from `@cotal-ai/auth`, with `status: 429` and
+`retryAfterSeconds` from that response's later valid hint. The delay is zero for a past date or a
+zero hint, and undefined when neither hint is usable. It does not include the client's one-second
+retry floor.
 The exchange or Manager operation that consumes the proof is never replayed by this retry.
 A provider that cannot be reached, or that stops answering, refuses with
 `DEPENDENCY_UNAVAILABLE` (exit 2) and caches no session. `logout` revokes the IdP session, clears
