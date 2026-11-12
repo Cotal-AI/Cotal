@@ -33,6 +33,7 @@ import {
 import type { DurableSource, SourceGap, SourceRead } from "./durable-source.js";
 import type { EventWal } from "./event-wal.js";
 import { eventChannelForSession } from "./launch.js";
+import { isCotalPayloadExcludedTool } from "./event-payload-policy.js";
 import { FileSubjectFrontier, type SubjectFrontier } from "./subject-frontier.js";
 
 /**
@@ -76,6 +77,7 @@ export interface EmitUnit {
   runId: string;
   events: AguiEvent[];
   payloadEvents?: AguiEvent[];
+  payloadCalls?: Record<string, boolean>;
   cursor: string;
   /** The turns the source began at or just before this unit, and by the dropped records whose
    *  cursor folded onto it after, in source order: the run each one opened, or `null` for a turn
@@ -541,6 +543,7 @@ export class AguiEmitter<T> {
     // turns begun since fold onto that unit with it: they are committed by the freeze that
     // consumes the record, as its cursor is.
     let turns: (string | null)[] = [];
+    const payloadCalls = this.wal.payloadCalls;
     const fold = (rec: SourceRead<T>["records"][number]) => {
       const last = units[units.length - 1];
       if (!last) return;
@@ -574,7 +577,15 @@ export class AguiEmitter<T> {
       // A record that mapped only to forbidden kinds becomes a drop: its cursor folds forward like
       // any other drop, and packUnits never sees an empty unit.
       const raw = owedUnit ? owedUnit.rest : m.events;
-      const payloadEvents = raw.filter(e => e.type === AGUI_EVENT_TYPE.TOOL_CALL_ARGS || e.type === AGUI_EVENT_TYPE.TOOL_CALL_RESULT);
+      const payloadEvents: AguiEvent[] = [];
+      for (const event of raw) {
+        if (event.type === AGUI_EVENT_TYPE.TOOL_CALL_START) payloadCalls[event.toolCallId] = !isCotalPayloadExcludedTool(event.toolCallName);
+        if (event.type === AGUI_EVENT_TYPE.TOOL_CALL_ARGS || event.type === AGUI_EVENT_TYPE.TOOL_CALL_RESULT) {
+          if (payloadCalls[event.toolCallId] === undefined) throw new Error(`tool payload ${event.toolCallId} has no persisted start classification`);
+          if (payloadCalls[event.toolCallId]) payloadEvents.push(event);
+          if (event.type === AGUI_EVENT_TYPE.TOOL_CALL_RESULT) delete payloadCalls[event.toolCallId];
+        }
+      }
       if (payloadEvents.length && !this.payloadFrontier) throw new Error("tool payload publication requires a sibling event rail");
       const events = applyAguiEgressPolicy(raw);
       for (const e of m.events) if (e.type === AGUI_EVENT_TYPE.RUN_STARTED) turns.push(e.runId);
@@ -584,11 +595,12 @@ export class AguiEmitter<T> {
           if (!previous || previous.runId !== m.runId)
             throw new Error("a payload-only source observation requires a preceding public unit of the same run");
           (previous.payloadEvents ??= []).push(...payloadEvents);
+          previous.payloadCalls = { ...payloadCalls };
         }
         fold(rec);
         continue;
       }
-      units.push({ runId: m.runId, events, ...(payloadEvents.length ? { payloadEvents } : {}), cursor: rec.cursor, ...(turns.length > 0 ? { turns } : {}) });
+      units.push({ runId: m.runId, events, payloadCalls: { ...payloadCalls }, ...(payloadEvents.length ? { payloadEvents } : {}), cursor: rec.cursor, ...(turns.length > 0 ? { turns } : {}) });
       turns = [];
     }
 
@@ -643,7 +655,7 @@ export class AguiEmitter<T> {
     for (let k = 0; k < frames.length; k++) {
       const { frame, cursor, unitFrom } = frames[k]!;
       const to = k + 1 < frames.length ? frames[k + 1]!.unitFrom : units.length;
-      await this.publish(frame, cursor, () => this.committed(units.slice(unitFrom, to), []), units.slice(unitFrom, to).flatMap(u => u.payloadEvents ?? []));
+      await this.publish(frame, cursor, () => this.committed(units.slice(unitFrom, to), []), units.slice(unitFrom, to).flatMap(u => u.payloadEvents ?? []), units[to - 1]?.payloadCalls);
       events += frame.events.length;
     }
 
@@ -1051,7 +1063,7 @@ export class AguiEmitter<T> {
 
   /** Transition 1 then the first network attempt. `frozen` runs once the frame is frozen on disk,
    *  before the wire is tried: the commit of what the frame carries, for state the frame settles. */
-  private async publish(frame: AguiFrame, cursor: string, frozen: () => void, payloadEvents: AguiEvent[] = []): Promise<void> {
+  private async publish(frame: AguiFrame, cursor: string, frozen: () => void, payloadEvents: AguiEvent[] = [], payloadCalls?: Record<string, boolean>): Promise<void> {
     // Advance a copy of the machine by exactly this frame. It cannot throw: the identical sequence
     // was already accepted by a clone starting from this same state, in this same order. It is not
     // wrapped in a diagnosis for that reason — a throw here would be a bug in this file, not a
@@ -1073,7 +1085,7 @@ export class AguiEmitter<T> {
     // Durable BEFORE the wire. The order is the whole state machine: a crash between this line and
     // the next is recoverable precisely because the id and `E` are already frozen on disk.
     const payload = payloadEvents.length ? this.preparePayload(frame, payloadEvents) : undefined;
-    await this.wal.beginSend({ id, E, seq: frame.seq, sourceCursor: cursor, body, brackets, ...(payload ? { payload } : {}) });
+    await this.wal.beginSend({ id, E, seq: frame.seq, sourceCursor: cursor, body, brackets, ...(payloadCalls ? { payloadCalls } : {}), ...(payload ? { payload } : {}) });
     this.brackets = next;
     frozen();
     await this.attempt({ id, E, body, retry: false });

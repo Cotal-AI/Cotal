@@ -72,6 +72,7 @@ export interface WalPayload {
 export interface WalPending {
   /** v4 freezes the sibling publication before either rail can advance. */
   payload?: WalPayload;
+  payloadCalls?: Record<string, boolean>;
   state: "sent_unacked" | "acked";
   /** Frozen at transition 1 and NEVER re-minted — a retry must carry the same id. */
   id: string;
@@ -106,6 +107,7 @@ export interface WalPending {
 }
 
 export interface WalDoc {
+  payloadCalls?: Record<string, boolean>;
   v: number;
   /**
    * How many durable replaces this document has been through (v3).
@@ -320,6 +322,14 @@ function parseBrackets(path: string, field: string, v: unknown, nullable: boolea
   return { run: b.run, text: b.text as string[], reasoning: b.reasoning as string[], tools: b.tools as string[] };
 }
 
+function parsePayloadCalls(path: string, value: unknown): Record<string, boolean> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length > 4096 ||
+      Object.entries(value).some(([id, allowed]) => !id || typeof allowed !== "boolean"))
+    throw new WalCorruptError(path, "payloadCalls is a bounded boolean record", "invalid call classification");
+  return { ...value } as Record<string, boolean>;
+}
+
 function parseDoc(path: string, raw: string, space: string, threadId: string, principal: string): WalDoc {
   let d: unknown;
   try {
@@ -460,6 +470,7 @@ function parseDoc(path: string, raw: string, space: string, threadId: string, pr
         throw new WalCorruptError(path, "pending payload is a v4 frozen publication", JSON.stringify(payload));
       assertIdToken(payload.id, "event WAL payload id");
     }
+    p.payloadCalls = parsePayloadCalls(path, p.payloadCalls);
     pending = p as WalPending;
     assertPendingVintage(path, pending, f as WalFrontier);
   }
@@ -480,6 +491,7 @@ function parseDoc(path: string, raw: string, space: string, threadId: string, pr
     principal,
     frontier: f as WalFrontier,
     pending,
+    payloadCalls: parsePayloadCalls(path, doc.payloadCalls),
     brackets,
   };
 }
@@ -516,6 +528,7 @@ export class EventWal {
     private doc: WalDoc,
   ) {}
 
+  get payloadCalls(): Record<string, boolean> { return { ...(this.doc.pending?.payloadCalls ?? this.doc.payloadCalls ?? {}) }; }
   get epoch(): string { return this.doc.epoch; }
   /** The validated space this log belongs to. */
   get space(): string { return this.doc.space; }
@@ -656,6 +669,7 @@ export class EventWal {
 
   /** Transition 1 — record the frame, with `id` and `E` frozen, BEFORE any publish. */
   async beginSend(frame: {
+    payloadCalls?: Record<string, boolean>;
     payload?: WalPayload;
     id: string;
     E: number;
@@ -681,6 +695,7 @@ export class EventWal {
     // guard and as `multicastExpecting`: non-empty array.
     if (!Array.isArray(frame.body) || frame.body.length === 0)
       throw new Error(`event WAL ${this.path}: a frame body must be a non-empty array of parts`);
+    parsePayloadCalls(this.path, frame.payloadCalls);
     if (frame.payload) {
       assertIdToken(frame.payload.id, "event WAL payload id");
       if (!isSafeNonNegInt(frame.payload.E) || !Array.isArray(frame.payload.body) || frame.payload.body.length === 0 || frame.payload.ackSeq !== undefined)
@@ -770,6 +785,7 @@ export class EventWal {
       // The frame's frozen state becomes the document's, so `brackets` always describes exactly the
       // events that are PUBLISHED AND FOLDED — never a batch that was validated and not yet sent.
       brackets: p.brackets,
+      payloadCalls: p.payloadCalls ?? this.doc.payloadCalls,
     });
     });
   }
