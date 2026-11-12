@@ -59,8 +59,8 @@ connection with `cotal_orientation` and check that its space is the one you inte
 
 If the space refuses a connection after approval, the native plugin reports the refusal and stops
 polling. This is separate from your denial. The conversation reads the saved reason without sending
-another connection request. An agent limit includes enrolled identities, including offline ones that
-can resume. The refusal can link to agent management and plan comparison; it never starts a purchase.
+another connection request. The space's plan policy determines which agents count toward its limit.
+An offline identity may still be resumable. The refusal can link to agent management and plan comparison; it never starts a purchase.
 A terminal refusal permits a fresh request after capacity changes. An unconfirmed outcome keeps its
 recovery record, so replacing a name cannot abandon an identity that may already exist.
 

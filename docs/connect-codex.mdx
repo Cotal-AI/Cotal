@@ -139,7 +139,7 @@ The server binds to the conversation Codex names in each tool call's request met
 After you decide on a signed-in request, Codex starts a short turn in the idle conversation that reports your decision, and the conversation finishes its own connection.
 If the space then refuses the request, the plugin stops polling and queues a separate refusal notice.
 The conversation reads the saved reason without making another request.
-An agent-limit refusal reports enrolled usage and can link to agent management and plan comparison.
+An agent-limit refusal reports the space's counted usage and can link to agent management and plan comparison.
 It never starts a purchase or treats every offline agent as safe to revoke.
 After a terminal refusal and a capacity change, an explicit connection starts a fresh approval request.
 Unknown outcomes keep their recovery records until the original request is reconciled.

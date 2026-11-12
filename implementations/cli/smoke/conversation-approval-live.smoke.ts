@@ -418,7 +418,7 @@ try {
     tamper = "";
     assert.equal(r.code, 1);
     assert.equal(r.reply.refused, "refused");
-    assert.match(r.reply.error, /75 enrolled agents.*per-person limit is 50/);
+    assert.match(r.reply.error, /75 agents counted.*per-person limit is 50/);
     assert(r.reply.error.includes(`${base}/pricing`));
     assert(r.reply.error.includes(`${base}/agents?space=fixture-id&status=offline`));
     assert.match(r.reply.error, /Offline agents may still be resumable/);

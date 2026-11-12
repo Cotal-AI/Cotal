@@ -176,7 +176,7 @@ export function agentCapRefusal(status: number, value: unknown, authority: Conve
   const agents = action(body.agentsUrl);
   const upgrade = body.upgradeUrl === null ? null : action(body.upgradeUrl);
   if (!agents || upgrade === undefined) return undefined;
-  return `You have ${body.current} enrolled agents in this space; the per-person limit is ${body.limit}. No identity was issued. ` +
+  return `You have ${body.current} agents counted in this space; the per-person limit is ${body.limit}. No identity was issued. ` +
     `Manage or revoke agents you no longer need: ${agents}. Offline agents may still be resumable; do not revoke them just because they are offline.` +
     (upgrade ? ` Compare plans or upgrade for a higher limit: ${upgrade}.` : "") +
     " After changing capacity, connect again to start a new approval request.";
