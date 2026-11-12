@@ -735,6 +735,7 @@ export async function launchManagedPersona(
     // policy still forces the plane on (the manager refuses a non-admin caller on such a space
     // anyway, so the operator must hold the admin tier for the spawn to succeed at all).
     events: eventsRequired ? true : events,
+    ...(values["no-event-payloads"] ? { eventPayloads: false } : {}),
     ...(values.runtime !== undefined ? { runtime: values.runtime.trim() } : {}),
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
@@ -1741,6 +1742,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
       resume: values.resume,
       events: launchEvents,
+      eventPayloads: target.policy?.eventPayloads === "withheld" || values["no-event-payloads"] || def.eventPayloads === false ? false : true,
       eventsRequired,
       mcpServers,
       mcpServersExclusive: shareTools !== undefined,

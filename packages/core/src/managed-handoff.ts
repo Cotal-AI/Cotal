@@ -31,7 +31,7 @@ export interface ManagedLifecycleHandoff extends ManagedLifecycleTarget {
   readonly subscribe: readonly string[];
   readonly allowSubscribe: readonly string[];
   readonly allowPublish: readonly string[];
-  readonly policy?: { readonly events: "required" };
+  readonly policy?: { readonly events?: "required"; readonly eventPayloads?: "withheld" };
 }
 
 const TARGET_FIELDS = ["space", "owner", "actor", "lifecycleUid"] as const;
@@ -76,8 +76,11 @@ export function parseManagedLifecycleHandoff(text: string, expected: ManagedLife
       throw new Error(`the managed handoff's ${k} is not an array of strings`);
   const policy = doc.policy as Record<string, unknown> | undefined | null;
   if (policy !== undefined &&
-      (policy === null || typeof policy !== "object" || Array.isArray(policy) || Object.keys(policy).length !== 1 || policy.events !== "required"))
-    throw new Error('the managed handoff\'s policy is not exactly { events: "required" }');
+      (policy === null || typeof policy !== "object" || Array.isArray(policy) || Object.keys(policy).length === 0 ||
+       Object.keys(policy).some((key) => key !== "events" && key !== "eventPayloads") ||
+       ("events" in policy && policy.events !== "required") ||
+       ("eventPayloads" in policy && policy.eventPayloads !== "withheld")))
+    throw new Error("the managed handoff's policy has invalid restrictions");
   return doc as unknown as ManagedLifecycleHandoff;
 }
 

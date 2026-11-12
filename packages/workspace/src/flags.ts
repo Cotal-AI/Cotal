@@ -52,6 +52,7 @@ export const launchFlags = [
   { name: "resume", type: "string", value: "<id>", description: "fork an existing session id into the mesh (only where the connector declares resume support; detached: pair with --cwd)" },
   { name: "events", type: "boolean", description: "force the session's AG-UI event plane on (already the default where supported)" },
   { name: "no-events", type: "boolean", description: "opt out of the session's AG-UI event plane" },
+  { name: "no-event-payloads", type: "boolean", description: "withhold tool arguments and results, keeping event names and times" },
   { name: "share-tools", type: "string", value: "<sel>", description: "share named operator MCP servers with the agent" },
   { name: "subscribe", type: "string", value: "<a,b>", description: "channel read set override" },
   { name: "allow-subscribe", type: "string", value: "<a,b>", description: "read ACL override" },
