@@ -469,7 +469,9 @@ export async function runJcodeHost(): Promise<void> {
   scrubLaunchMaterial();
   for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
-  const agent = new MeshAgent(config);
+  // The card is built from the process environment. That environment no longer has COTAL_EVENTS,
+  // so the decision read above is what the card reports.
+  const agent = new MeshAgent(config, undefined, { eventsArmed });
   const relayServer = await startRelay(agent, config, relay);
   writeMcpConfig(home, relay, config);
 
