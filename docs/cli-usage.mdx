@@ -14,6 +14,8 @@ fragments and TCP paths refuse with `USAGE_INVALID` before connecting. WebSocket
 for proxy routes. Commands using the shared target connection, including `send`, `history` and
 `who`, require TLS for `tls://` and `wss://`, including with an unregistered space or explicit
 `--creds`. Registry-resolved connections also keep the registered space's TLS requirement.
+For `up -f`, a comma-separated list is checked entry by entry, then refused with the instruction
+to pass one URL for the new broker to listen on. The refusal does not repeat the addresses.
 
 
 ## Invocation [#running-it]
