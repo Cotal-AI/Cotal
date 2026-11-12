@@ -98,6 +98,7 @@ const fixtureJwt = () => [JSON.stringify({ alg: "EdDSA" }), JSON.stringify({ sub
 let idpAnswer: Answer | "accepted" = "accepted";
 let tokenRequests = 0;
 const hits: Array<{ method: string; path: string }> = [];
+const accountAnnouncements: string[] = [];
 const authority = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   for await (const _ of req) { /* drain */ }
   if (req.url === "/api/auth/token") {
@@ -109,7 +110,14 @@ const authority = createHttpServer(async (req: IncomingMessage, res: ServerRespo
     res.end(JSON.stringify(a.body ?? {}));
     return;
   }
-  hits.push({ method: req.method ?? "", path: new URL(req.url!, "http://x").pathname });
+  const path = new URL(req.url!, "http://x").pathname;
+  // Account discovery starts with the daemon, independently of connect-check. This fixture
+  // supports only per-space authority, so decline that exact account operation explicitly.
+  if (req.method === "PUT" && /^\/api\/cli\/machines\/[0-9a-f-]+$/.test(path)) {
+    accountAnnouncements.push(path);
+    res.writeHead(404); res.end(); return;
+  }
+  hits.push({ method: req.method ?? "", path });
   const a = answer;
   if (a === "hang") return;
   res.writeHead(a.status, { "content-type": "application/json", ...(a.headers ?? {}) });
@@ -119,7 +127,7 @@ await new Promise<void>((r) => authority.listen(0, "127.0.0.1", r));
 const base = `http://127.0.0.1:${(authority.address() as AddressInfo).port}`;
 const gets = () => hits.filter((h) => h.method === "GET").length;
 const posts = () => hits.filter((h) => h.method !== "GET").length;
-const resetHits = () => { hits.length = 0; };
+const resetHits = () => { hits.length = 0; accountAnnouncements.length = 0; };
 
 // A dead loopback port for the unreachable cell.
 const dead = createHttpServer();
@@ -349,6 +357,7 @@ try {
       check("C13 the new daemon answers ready-to-register with the first daemon's instance id and account", resultOf(r).outcome === "ready-to-register" && resultOf(r).instanceId === firstInstance && resultOf(r).accountPublicKey === ACCOUNT_A, r);
       check("C13 the identity record is byte-identical and still the only one; 1 GET, 0 POST", identityFiles().length === 1 && readFileSync(join(daemonStateDir, identityFiles()[0]!), "utf8") === recordBefore && gets() === 1 && posts() === 0, { ids: identityFiles(), hits });
     } finally { await d2.close(); }
+    check("C13 startup discovers account support once through a separate machine PUT", accountAnnouncements.length === 1, accountAnnouncements);
   });
 
   // C14: concurrent first checks for one space create exactly one identity.
@@ -367,6 +376,7 @@ try {
       check("C14 exactly one new identity record for the space", identityFiles().length === before + 1, identityFiles());
       check(`C14 ${N} GETs reached the space and 0 POST`, gets() === N && posts() === 0, hits);
     } finally { await d3.close(); }
+    check("C14 concurrent checks share one startup account-support discovery", accountAnnouncements.length === 1, accountAnnouncements);
   });
 } catch (e) {
   fail++;
