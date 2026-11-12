@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { emitSentinel, freePort } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const exec = promisify(execFile);
 const root = mkdtempSync(join(tmpdir(), "cotal-run-check-"));
@@ -20,10 +20,13 @@ Object.assign(env, {
 });
 for (const path of [join(project, ".cotal"), env.HOME!, env.COTAL_HOME!, env.XDG_CONFIG_HOME!, env.TMPDIR!])
   mkdirSync(path, { recursive: true, mode: 0o700 });
+const anchor = recordSmokeSandbox({ root: project, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! });
 const cli = resolve("bin/dist/cotal.js");
 const call = async (...args: string[]) => {
   try {
-    const out = await exec(process.execPath, [cli, ...args], { cwd: project, env, timeout: 60_000 });
+    const options = { cwd: project, env, timeout: 60_000 };
+    assertSmokeSandboxDown(anchor, args, options);
+    const out = await exec(process.execPath, [cli, ...args], options);
     return { code: 0, text: out.stdout + out.stderr };
   } catch (error) {
     const out = error as Error & { code?: number | string; stdout?: string; stderr?: string };
