@@ -89,7 +89,7 @@ import {
   anycastBucket,
   permissionBucket,
   permissionAnswerSubject,
-  permissionOwnerFilter,
+  permissionReaderDurable,
   permissionReplyGrant,
   permissionServeFilter,
 } from "./subjects.js";
@@ -813,7 +813,7 @@ export interface MintOpts {
   listingSeam?: ListingSeam;
   /** `agent` profile only: the principal is an INTERACTIVE ledger row, a person's own CLI or browser
    *  actor. It may then read its owner's permission records and answer its owner's agents' prompts.
-   *  Set only by a mint that read the row's kind from the ledger; absent, no such row is minted. */
+   *  Only the auth callout sets it, from the row's kind in the ledger. A static mint refuses it. */
   interactive?: true;
   /** The durable half of an issuance, REQUIRED beside {@link MintOpts.issued} on {@link mintCreds}:
    *  the credential is built first, then its evidence is staged create-only, the existing
@@ -1349,6 +1349,10 @@ export function permissionsFor(
     throw new Error("permissionsFor: an issued credential lists under its own generation; a listing generation beside it is refused (SPEC 13.15)");
   if (opts.interactive && profile !== "agent")
     throw new Error(`permissionsFor: interactive marks an agent-profile mint of an interactive ledger row, not "${profile}"`);
+  // Only the auth callout reads a row's kind from the ledger, and only the callout sets a
+  // connection's reader id. A static mint, whose connection is its own nkey, is never interactive.
+  if (opts.interactive && pr.readerId === undefined)
+    throw new Error("permissionsFor: a static mint is never interactive; only the auth callout marks a mint interactive, from the ledger row's kind (SPEC 8.2)");
   if (isEnvironmentManagerProfile(profile)) return environmentManagerPermissions(profile, space, pr, opts.environmentManager);
   if (opts.environmentManager) throw new Error(`permissionsFor: environmentManager pins cannot ride ${profile}`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
@@ -1746,19 +1750,18 @@ export function permissionsFor(
       );
     }
   }
-  // An INTERACTIVE row answers its owner's agents' prompts as itself and reads its owner's records
-  // through an ordered consumer. The filter rides the create subject, which nats-server binds to
-  // the request body. No STREAM.INFO, which would list every key in the space, and no point reads.
-  const answerAsMe = permissionAnswerSubject(space, pr.owner, "*", pr.owner, pr.actor);
+  // An INTERACTIVE row answers its owner's agents' prompts as itself, and reads its owner's records
+  // through its own lifecycle's reader, which trusted infra creates and it only binds (SPEC §8.2). It
+  // holds no consumer create on the bucket: a create body's durable name and push target are fields
+  // no subject grant confines (nats-server#8274). No STREAM.INFO, which would list every key in the
+  // space, and no point reads.
+  const PERMKV = `KV_${permissionBucket(space)}`;
+  const answerAsMe = permissionAnswerSubject(space, pr.owner, "*", "*", pr.owner, pr.actor);
   if (opts.interactive) {
-    const PERMKV = `KV_${permissionBucket(space)}`;
-    pubAllow.push(
-      answerAsMe,
-      `$JS.API.CONSUMER.CREATE.${PERMKV}.*.${permissionOwnerFilter(space, pr.owner)}`,
-      `$JS.API.CONSUMER.INFO.${PERMKV}.*`,
-    );
+    const reader = permissionReaderDurable(pr.owner, pr.actor, uid);
+    pubAllow.push(answerAsMe, `$JS.API.CONSUMER.INFO.${PERMKV}.${reader}`, `$JS.API.CONSUMER.MSG.NEXT.${PERMKV}.${reader}`);
   }
-  const permissionSub = [permissionServeFilter(space, pr.owner, pr.actor), ...(opts.interactive ? [`${answerAsMe}.reply.*`] : [])];
+  const permissionSub = [permissionServeFilter(space, pr.owner, pr.actor, "*"), ...(opts.interactive ? [`${answerAsMe}.reply.*`] : [])];
   // Spawn / admin capability control reach rides the v0.4 ep rows below (the manager `ctl` rail is
   // deleted) — the spawn set (owner-mode manager lifecycle) and the admin instrument set
   // (any-mode + manager.admin family) are added to the ep caller rows, not a ctl subject.
@@ -1843,6 +1846,10 @@ export function permissionsFor(
     `$JS.API.CONSUMER.CREATE.${DLV}`,
     `$JS.API.CONSUMER.CREATE.${DLV}.>`,
     `$JS.API.CONSUMER.DURABLE.CREATE.${DLV}.>`,
+    // Permission records: bind-only, like DM. Trusted infra creates each interactive row's reader.
+    `$JS.API.CONSUMER.CREATE.${PERMKV}`,
+    `$JS.API.CONSUMER.CREATE.${PERMKV}.>`,
+    `$JS.API.CONSUMER.DURABLE.CREATE.${PERMKV}.>`,
   ];
   // CHAT live read boundary (SPEC v0.3 §9 / Appendix B): mint the read ACL as a native `sub.allow`
   // over cotal.<space>.chat.*.<channel> — one per allowSubscribe channel, wildcards passed through
@@ -2660,6 +2667,12 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
         ...streamReconcile,
         ...ttlCanaries,
         ...consumerCreate,
+        // Opening a permission reader (SPEC §8.2): CREATE under one owner's records, because the
+        // extended create subject binds the body's filter; INFO to read it back; and DELETE, which the
+        // open runs first, since a delete is the only thing that ends a pull left parked on a reader.
+        `$JS.API.CONSUMER.CREATE.KV_${permissionBucket(space)}.*.$KV.${permissionBucket(space)}.*.>`,
+        `$JS.API.CONSUMER.INFO.KV_${permissionBucket(space)}.*`,
+        `$JS.API.CONSUMER.DELETE.KV_${permissionBucket(space)}.*`,
         // KV value-writes — exactly the two registries provisioning writes: the agent read-ACL registry
         // (`commitAcl` at provision) and the channel registry (seed defaults at `cotal up`, channel admin).
         // NO presence/members/membership/delivery writes (the agent's own key, the delivery cred, and the

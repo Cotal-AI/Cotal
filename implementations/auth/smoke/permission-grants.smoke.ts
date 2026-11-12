@@ -7,9 +7,13 @@
  * interactive rows, and bob also connects through an admin view.
  *
  *  - An agent writes records only under its own `<owner>.<actor>` prefix.
- *  - Only an interactive row reads records, only its own owner's, and only through an ordered
- *    consumer whose filter rides the create subject. A teammate, a space admin and every agent are
+ *  - Only an interactive row reads records, only its own owner's, and only by binding its own
+ *    lifecycle's reader, which the provisioner opens. A teammate, a space admin and every agent are
  *    refused, and so is any point read.
+ *  - No principal creates a consumer on the bucket, whatever its body: a durable or push consumer
+ *    aimed at an agent's inbox would export every later prompt. A pull asks for at most 4 records and
+ *    30 s, one at a time, so a pull parked for an accomplice moves at most 4 records, and the owner's
+ *    next open ends it.
  *  - Only an interactive row asks an agent to apply an answer, and the agent replies on the request's
  *    own `.reply.` leaf. No agent can ask on its own prompt or a sibling's, and no other owner or
  *    admin can ask or listen.
@@ -25,13 +29,14 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, PermissionViolationError, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import {
-  createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, parsePermissionRecord, permissionAnswerSubject,
-  permissionBucket, permissionOwnerFilter, permissionServeFilter, serverConfig, setupSpaceStreams, spacePrefix,
+  CotalEndpoint, PERMISSION_READER_BATCH, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, parsePermissionRecord,
+  permissionAnswerSubject, permissionBucket, permissionOwnerFilter, permissionReaderDurable, permissionServeFilter, serverConfig,
+  setupSpaceStreams, spacePrefix,
 } from "@cotal-ai/core";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER, type AclResolver } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -91,6 +96,7 @@ async function bearer(w: Who): Promise<string> {
 
 interface Seat { nc: NatsConnection; nonce: string; refused: { operation: string; subject: string }[] }
 const raws: NatsConnection[] = [];
+const endpoints: CotalEndpoint[] = [];
 async function seat(w: Who): Promise<Seat> {
   const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
   const nc = await connect({
@@ -125,18 +131,21 @@ const record = (owner: string, actor: string, id: string) => JSON.stringify({
 const write = (s: Seat, owner: string, actor: string, id: string) =>
   jetstream(s.nc).publish(`$KV.${BUCKET}.${owner}.${actor}.${id}`, enc(record(owner, actor, id))).then(() => "landed", messageOf);
 
-/** Read every record under `filter` through an ordered consumer, as the dashboard's reader will. */
-async function read(s: Seat, filter: string): Promise<{ keys: string[]; parsed: number } | string> {
+const readerOf = (w: Who) => permissionReaderDurable(w.owner, w.actor, w.uid);
+/** Read every record through `reader`'s consumer, as the dashboard's watch does: bind it, then pull
+ *  until nothing is pending. Every pull runs to its end, so none is left waiting on the broker. */
+async function read(s: Seat, reader: Who): Promise<{ keys: string[]; parsed: number } | string> {
   try {
-    const consumer = await jetstream(s.nc).consumers.getPushConsumer(STREAM, { filter_subjects: filter, deliver_policy: DeliverPolicy.LastPerSubject });
+    const consumer = await jetstream(s.nc).consumers.get(STREAM, readerOf(reader));
+    let pending = (await consumer.info(true)).num_pending;
     const keys: string[] = [];
     let parsed = 0;
-    if ((await consumer.info(true)).num_pending > 0)
-      for await (const m of await consumer.consume()) {
+    for (let pulls = 0; pending > 0 && pulls < 20; pulls++)
+      for await (const m of await consumer.fetch({ max_messages: PERMISSION_READER_BATCH, expires: 2000 })) {
         const key = m.subject.slice(`$KV.${BUCKET}.`.length);
         keys.push(key);
         if (parsePermissionRecord(m.json(), key)) parsed++;
-        if (m.info.pending === 0) break;
+        pending = m.info.pending;
       }
     return { keys: keys.sort(), parsed };
   } catch (e) {
@@ -148,7 +157,15 @@ try {
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(SERVERS); if (!up) await wait(200); }
   if (!up) throw new Error(`nats-server did not come up on ${PORT}`);
-  await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner");
+  await setupSpaceStreams({ servers: SERVERS, space, creds: provisionerCreds });
+  // The trusted side: a provisioner endpoint opens each reader, as Cloud's backend does.
+  const provisioner = new CotalEndpoint({ space, servers: SERVERS, creds: provisionerCreds, card: { name: "provisioner", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false });
+  provisioner.on("error", () => {});
+  await provisioner.start();
+  endpoints.push(provisioner);
+  const opened = new Set<string>();
+  const open = async (w: Who) => { await provisioner.openPermissionReader({ owner: w.owner, actor: w.actor, lifecycleUid: w.uid }); opened.add(readerOf(w)); };
 
   const calloutNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(callout.calloutCreds)) });
   raws.push(calloutNc);
@@ -200,29 +217,32 @@ try {
   check(`no principal writes under another agent's prefix (${crossing.length - crossed.length} of ${crossing.length} refused)`, crossed.length === 0, crossed);
   check("...so the store holds exactly the four own-prefix records", (await state()).messages === 4, await state());
 
-  // ── Reads: only an interactive row, only its own owner's, only through an ordered consumer ──
-  const aliceReads = await read(web, permissionOwnerFilter(space, ALICE));
-  check("the owner's interactive row reads its owner's three records through an ordered consumer, each a record",
+  // ── Reads: only an interactive row, only its own owner's, only through its own reader ─────────
+  await open(W.web);
+  await open(W.teammate);
+  const aliceReads = await read(web, W.web);
+  check("the owner's interactive row reads its owner's three records by binding the reader the provisioner opened, each a record",
     typeof aliceReads === "object" && aliceReads.parsed === 3 &&
       aliceReads.keys.join() === [`${ALICE}.coder.${A}`, `${ALICE}.coder.${B}`, `${ALICE}.helper.${C}`].join(), aliceReads);
-  const bobReads = await read(teammate, permissionOwnerFilter(space, BOB));
+  const bobReads = await read(teammate, W.teammate);
   check("a teammate's interactive row reads only its own owner's one record",
     typeof bobReads === "object" && bobReads.keys.join() === `${BOB}.builder.${D}`, bobReads);
 
-  const consumersBefore = (await state()).consumer_count;
-  const readers: [string, Seat, string][] = [
-    ["a teammate", teammate, permissionOwnerFilter(space, ALICE)],
-    ["a space admin", admin, permissionOwnerFilter(space, ALICE)],
-    ["the agent itself, over its owner's records", coder, permissionOwnerFilter(space, ALICE)],
-    ["the agent itself, over its own records", coder, `$KV.${BUCKET}.${ALICE}.coder.>`],
-    ["a sibling agent", helper, permissionOwnerFilter(space, ALICE)],
+  await open(W.coder);
+  const readers: [string, Seat, Who][] = [
+    ["a teammate, through alice's reader", teammate, W.web],
+    ["a space admin, through alice's reader", admin, W.web],
+    ["the agent, through its owner's reader", coder, W.web],
+    ["a sibling agent, through its owner's reader", helper, W.web],
+    ["alice's row, through the teammate's reader", web, W.teammate],
+    ["the agent, through a reader opened under its own name", coder, W.coder],
   ];
   const leaked = [];
-  for (const [name, s, filter] of readers) {
-    const outcome = await read(s, filter);
+  for (const [name, s, reader] of readers) {
+    const outcome = await read(s, reader);
     if (typeof outcome !== "string" || !/permission/i.test(outcome)) leaked.push({ name, outcome });
   }
-  check(`no agent, teammate or admin reads alice's records (${readers.length - leaked.length} of ${readers.length} refused)`, leaked.length === 0, leaked);
+  check(`no principal binds a reader that is not its own interactive lifecycle's (${readers.length - leaked.length} of ${readers.length} refused)`, leaked.length === 0, leaked);
 
   const lastOfCoder = { last_by_subj: `$KV.${BUCKET}.${ALICE}.coder.${A}` };
   const pointReads: [string, () => Promise<unknown>][] = [
@@ -239,35 +259,132 @@ try {
   }
   check(`no point read reaches the store (${pointReads.length - pointLeaks.length} of ${pointReads.length} refused)`, pointLeaks.length === 0, pointLeaks);
 
-  // The read grant names the filter in the create subject; the broker must hold the body to it.
-  const bodies: [string, Record<string, unknown>][] = [
-    ["another owner's filter in the body", { filter_subject: permissionOwnerFilter(space, ALICE) }],
-    ["another owner's filter as a filter list", { filter_subjects: [permissionOwnerFilter(space, ALICE)] }],
-    ["no filter in the body", {}],
+  // ── The reviewer's exporter: a durable or push consumer aimed at the agent's inbox ───────────
+  const exporterSeat = await seat(W.web);
+  const coderInbox = `_INBOX_${coder.nonce}.exporter`;
+  const exported: string[] = [];
+  // A JetStream delivery keeps its stored subject, so count everything this subscription receives.
+  coder.nc.subscribe(coderInbox, { callback: (err, m) => { if (!err) exported.push(m.subject); } });
+  await coder.nc.flush();
+  const aliceFilter = permissionOwnerFilter(space, ALICE);
+  const exporterCreates: [string, string, Record<string, unknown>][] = [
+    ["a durable push consumer delivering to the agent's inbox", `$JS.API.CONSUMER.CREATE.${STREAM}.exporter_a.${aliceFilter}`,
+      { durable_name: "exporter_a", deliver_subject: coderInbox, ack_policy: "none", filter_subject: aliceFilter }],
+    ["an ephemeral push consumer delivering to the agent's inbox", `$JS.API.CONSUMER.CREATE.${STREAM}.exporter_b.${aliceFilter}`,
+      { name: "exporter_b", deliver_subject: coderInbox, ack_policy: "none", filter_subject: aliceFilter, mem_storage: true }],
+    ["a durable pull consumer", `$JS.API.CONSUMER.CREATE.${STREAM}.exporter_c.${aliceFilter}`,
+      { durable_name: "exporter_c", ack_policy: "none", filter_subject: aliceFilter }],
+    ["a consumer under alice's own reader name", `$JS.API.CONSUMER.CREATE.${STREAM}.${readerOf(W.web)}.${aliceFilter}`,
+      { durable_name: readerOf(W.web), deliver_subject: coderInbox, ack_policy: "none", filter_subject: aliceFilter }],
+    ["a legacy durable create", `$JS.API.CONSUMER.DURABLE.CREATE.${STREAM}.exporter_d`,
+      { durable_name: "exporter_d", deliver_subject: coderInbox, ack_policy: "none", filter_subject: aliceFilter }],
+    ["an unnamed create", `$JS.API.CONSUMER.CREATE.${STREAM}`,
+      { deliver_subject: coderInbox, ack_policy: "none", filter_subject: aliceFilter, mem_storage: true }],
   ];
-  type ApiReply = { error?: { code?: number; description?: string } };
-  const mismatched = [], brokerSaid: string[] = [];
-  for (const [name, body] of bodies) {
-    const consumer = `probe_${randomUUID().slice(0, 8)}`;
-    const reply = await teammate.nc.request(`$JS.API.CONSUMER.CREATE.${STREAM}.${consumer}.${permissionOwnerFilter(space, BOB)}`,
-      enc(JSON.stringify({ stream_name: STREAM, config: { name: consumer, deliver_subject: `_INBOX_${teammate.nonce}.${consumer}`, ack_policy: "none", mem_storage: true, ...body } })),
-      { timeout: 3000 }).then((m) => m.json<ApiReply>(), (e): ApiReply => ({ error: { description: messageOf(e) } }));
-    if (typeof reply.error?.code !== "number") mismatched.push({ name, reply });
-    brokerSaid.push(`${reply.error?.code} ${reply.error?.description}`);
+  const landed = [];
+  for (const [name, subject] of exporterCreates)
+    if (!(await publishRefused(exporterSeat, subject))) landed.push(name);
+  // The probes above publish an empty body; the same subjects with a full create body must be refused too.
+  for (const [name, subject, config] of exporterCreates) {
+    const reply = await exporterSeat.nc.request(subject, enc(JSON.stringify({ stream_name: STREAM, config })), { timeout: 3000 })
+      .then((m) => m.json<{ error?: unknown }>(), (e) => ({ error: messageOf(e) }));
+    if (reply.error === undefined) landed.push(`${name} (with a body)`);
   }
-  console.log(`  broker refusals ${JSON.stringify(brokerSaid)}`);
-  check(`a create under the teammate's own filter but naming another body is refused by the broker (${bodies.length - mismatched.length} of ${bodies.length})`,
-    mismatched.length === 0, mismatched);
-  check(`...and none of those ${readers.length + bodies.length} refused creates left a consumer behind`,
-    (await state()).consumer_count === consumersBefore, { before: consumersBefore, after: (await state()).consumer_count });
+  await exporterSeat.nc.close();
+  const lateWrite = await write(coder, ALICE, "coder", "e".repeat(26));
+  await wait(500);
+  check(`an interactive row creates no consumer on the records bucket, durable, push or pull (${exporterCreates.length * 2 - landed.length} of ${exporterCreates.length * 2} refused)`,
+    landed.length === 0, landed);
+  check("...so after it disconnects, a new record reaches no subject it chose, and the bucket holds only the readers the provisioner opened",
+    lateWrite === "landed" && exported.length === 0 && (await state()).consumer_count === opened.size,
+    { lateWrite, exported: exported.length, consumers: (await state()).consumer_count, opened: opened.size });
+
+  const creators: [string, Seat][] = [["the agent", coder], ["a sibling agent", helper], ["a teammate's interactive row", teammate], ["a space admin", admin]];
+  const created = [];
+  for (const [who, s] of creators)
+    for (const [name, subject] of exporterCreates)
+      if (!(await publishRefused(s, subject))) created.push(`${who}: ${name}`);
+  check(`no agent, teammate or admin creates a consumer on the records bucket either (${creators.length * exporterCreates.length - created.length} of ${creators.length * exporterCreates.length} refused)`,
+    created.length === 0, created);
+
+  // ── What a pull may ask for, as the broker holds it ──────────────────────────────────────────
+  const next = (w: Who) => `$JS.API.CONSUMER.MSG.NEXT.${STREAM}.${readerOf(w)}`;
+  /** The broker's status reply to one pull, `<code> <description>`, or "none". */
+  async function pullStatus(s: Seat, body: Record<string, unknown>, reply: string): Promise<string> {
+    let status = "none";
+    const sub = s.nc.subscribe(reply, { callback: (err, m) => { if (!err && m.headers?.code) status = `${m.headers.code} ${m.headers.description}`; } });
+    await s.nc.flush();
+    s.nc.publish(next(W.web), enc(JSON.stringify(body)), { reply });
+    await until(() => status !== "none", 1500);
+    sub.unsubscribe();
+    return status;
+  }
+  const limits: [string, Record<string, unknown>, RegExp][] = [
+    ["a batch above 4", { batch: PERMISSION_READER_BATCH + 1, expires: 1e9 }, /409.*MaxRequestBatch/],
+    ["a wait above 30 s", { batch: 1, expires: 31e9 }, /409.*MaxRequestExpires/],
+    ["more bytes than four records", { batch: 1, expires: 1e9, max_bytes: PERMISSION_READER_BATCH * 262_144 + 1 }, /409.*MaxRequestMaxBytes/],
+  ];
+  const unbounded = [], limitSaid: string[] = [];
+  for (const [name, body, expected] of limits) {
+    const said = await pullStatus(web, body, `_INBOX_${web.nonce}.limit.${limitSaid.length}`);
+    limitSaid.push(said);
+    if (!expected.test(said)) unbounded.push({ name, said });
+  }
+  console.log(`  pull refusals ${JSON.stringify(limitSaid)}`);
+  check(`the broker refuses a pull that asks for more than 4 records, 30 s or four records' bytes (${limits.length - unbounded.length} of ${limits.length})`,
+    unbounded.length === 0, unbounded);
+
+  // A pull with no wait outlives its connection while someone else listens on its reply subject. Here
+  // the accomplice is the agent: its inbox is where alice's revoked session aims the pull.
+  const parkedInbox = `_INBOX_${coder.nonce}.parked`;
+  const parked: string[] = [], parkedStatus: string[] = [];
+  coder.nc.subscribe(`${parkedInbox}.>`, { callback: (err, m) => {
+    if (err) return;
+    if (m.headers?.code) parkedStatus.push(`${m.headers.code} ${m.headers.description}`);
+    else parked.push(m.subject);
+  } });
+  await coder.nc.flush();
+  const letters = "abcdefghijklmnopqrstuvwxyz";
+  const writeMany = async (n: number, tag: string) => {
+    for (let i = 0; i < n; i++) await write(coder, ALICE, "coder", `${tag}${"z".repeat(26)}`.slice(0, 25) + letters[i]);
+  };
+  /** A fresh reader, read to its end by `thief`, then one pull of `batch` with no wait aimed at the agent. */
+  async function park(round: string): Promise<{ second: string }> {
+    await open(W.web);
+    const thief = await seat(W.web);
+    await read(thief, W.web);
+    thief.nc.publish(next(W.web), enc(JSON.stringify({ batch: PERMISSION_READER_BATCH })), { reply: `${parkedInbox}.${round}` });
+    await thief.nc.flush();
+    const second = await pullStatus(thief, { batch: PERMISSION_READER_BATCH }, `_INBOX_${thief.nonce}.second`);
+    await thief.nc.close();
+    return { second };
+  }
+  const first = await park("one");
+  check("the reader holds one waiting pull: a second, while the first is parked, is refused", /409.*MaxWaiting/.test(first.second), first);
+  await writeMany(2, "ra");
+  await until(() => parked.length === 2, 3000);
+  const beforeOpen = parked.length;
+  await open(W.web);
+  await writeMany(3, "rb");
+  await wait(700);
+  check("a pull parked by a session that has left delivers to its accomplice until the owner's next open, which ends it",
+    beforeOpen === 2 && parked.length === 2, { beforeOpen, after: parked.length, status: parkedStatus });
+  await park("two");
+  const capBefore = parked.length;
+  await writeMany(PERMISSION_READER_BATCH + 2, "rc");
+  await wait(1000);
+  check(`...and it moves at most ${PERMISSION_READER_BATCH} records, however many are written (${parked.length - capBefore} of ${PERMISSION_READER_BATCH + 2})`,
+    parked.length - capBefore === PERMISSION_READER_BATCH, { moved: parked.length - capBefore });
 
   // ── Answers: only the owner's interactive row asks, and the agent replies on the request's leaf ──
+  // The holder binds the subject of its own runtime; its grant covers every runtime of its own agent.
+  const RUNTIME = randomUUID();
   const served: string[] = [];
-  coder.nc.subscribe(permissionServeFilter(space, ALICE, "coder"), {
+  coder.nc.subscribe(permissionServeFilter(space, ALICE, "coder", RUNTIME), {
     callback: (err, m) => { if (!err) { served.push(m.subject); m.respond(enc(`reply ${served.length}`)); } },
   });
   await coder.nc.flush();
-  const ask = permissionAnswerSubject(space, ALICE, "coder", ALICE, "web");
+  const ask = permissionAnswerSubject(space, ALICE, "coder", RUNTIME, ALICE, "web");
   const replyTo = `${ask}.reply.${randomUUID().replace(/-/g, "")}`;
   const replies: string[] = [];
   web.nc.subscribe(replyTo, { max: 1, callback: (err, m) => { if (!err) replies.push(m.string()); } });
@@ -278,13 +395,13 @@ try {
     served.join() === ask && replies.join() === "reply 1", { served, replies });
 
   const forged: [string, Seat, string][] = [
-    ["the agent asking on its own prompt as itself", coder, permissionAnswerSubject(space, ALICE, "coder", ALICE, "coder")],
+    ["the agent asking on its own prompt as itself", coder, permissionAnswerSubject(space, ALICE, "coder", RUNTIME, ALICE, "coder")],
     ["the agent asking on its own prompt as its owner's browser", coder, ask],
-    ["a sibling asking on the agent's prompt as itself", helper, permissionAnswerSubject(space, ALICE, "coder", ALICE, "helper")],
+    ["a sibling asking on the agent's prompt as itself", helper, permissionAnswerSubject(space, ALICE, "coder", RUNTIME, ALICE, "helper")],
     ["a sibling asking on the agent's prompt as its owner's browser", helper, ask],
-    ["the agent asking on its sibling's prompt", coder, permissionAnswerSubject(space, ALICE, "helper", ALICE, "coder")],
-    ["a teammate asking on the agent's prompt", teammate, permissionAnswerSubject(space, ALICE, "coder", BOB, "web")],
-    ["a space admin asking on the agent's prompt", admin, permissionAnswerSubject(space, ALICE, "coder", BOB, "console")],
+    ["the agent asking on its sibling's prompt", coder, permissionAnswerSubject(space, ALICE, "helper", RUNTIME, ALICE, "coder")],
+    ["a teammate asking on the agent's prompt", teammate, permissionAnswerSubject(space, ALICE, "coder", RUNTIME, BOB, "web")],
+    ["a space admin asking on the agent's prompt", admin, permissionAnswerSubject(space, ALICE, "coder", RUNTIME, BOB, "console")],
     ["a sibling replying on the agent's reply leaf", helper, `${replyTo}.forged`],
   ];
   const sent = [];
@@ -294,17 +411,18 @@ try {
   check("...so the agent served one request and the browser got one reply", served.length === 1 && replies.length === 1, { served, replies });
 
   const snoops: [string, Seat, string][] = [
-    ["a sibling", helper, permissionServeFilter(space, ALICE, "coder")],
-    ["a teammate", teammate, permissionServeFilter(space, ALICE, "coder")],
+    ["a sibling, over every runtime of the agent", helper, permissionServeFilter(space, ALICE, "coder", "*")],
+    ["a teammate, over every runtime of the agent", teammate, permissionServeFilter(space, ALICE, "coder", "*")],
     ["a space admin, over the whole rail", admin, `${spacePrefix(space)}.perm.>`],
-    ["the agent, over its owner's browser's replies", coder, `${permissionAnswerSubject(space, ALICE, "*", ALICE, "web")}.reply.*`],
+    ["the agent, over its owner's browser's replies", coder, `${permissionAnswerSubject(space, ALICE, "*", "*", ALICE, "web")}.reply.*`],
   ];
   const heard = [];
   for (const [name, s, subject] of snoops) if (!(await subscribeRefused(s, subject))) heard.push(name);
   check(`no one else listens on the rail (${snoops.length - heard.length} of ${snoops.length} refused)`, heard.length === 0, heard);
 
-  console.log(`  counts ${JSON.stringify({ records: (await state()).messages, served: served.length, replies: replies.length, refusedWrites: crossing.length, refusedReads: readers.length + pointReads.length + bodies.length, refusedAsks: forged.length, refusedListens: snoops.length })}`);
+  console.log(`  counts ${JSON.stringify({ records: (await state()).messages, served: served.length, replies: replies.length, refusedWrites: crossing.length, refusedReads: readers.length + pointReads.length, refusedCreates: exporterCreates.length * 2 + creators.length * exporterCreates.length, parked: parked.length, refusedAsks: forged.length, refusedListens: snoops.length })}`);
 } finally {
+  for (const ep of endpoints) await ep.stop().catch(() => {});
   for (const nc of raws) await nc.close().catch(() => {});
   await killAndAwaitExit(srv);
   rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

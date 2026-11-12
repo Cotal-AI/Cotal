@@ -9,7 +9,7 @@
  *
  * Browser-safe, so a dashboard parses records with the code stock readers use.
  */
-import { assertLifecycleToken, parsePrincipalKey, principalKey } from "./subjects.js";
+import { assertLifecycleToken, assertRuntimeToken, parsePrincipalKey, principalKey } from "./subjects.js";
 import type { JsonValue } from "./types.js";
 
 const principalIdBrand: unique symbol = Symbol("PrincipalId");
@@ -32,12 +32,19 @@ export const PERMISSION_RECORD_MAX_BYTES = 262_144;
 export const PERMISSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 /** The longest note a denial carries. */
 export const PERMISSION_NOTE_MAX_CHARS = 2_000;
+/** How long a holder waits for its harness to confirm a verdict before it records the answer as
+ *  undelivered and replies `answered`. */
+export const PERMISSION_HANDOFF_BOUND_MS = 10_000;
+/** How long an answerer waits for the holder's reply. It outlasts {@link PERMISSION_HANDOFF_BOUND_MS},
+ *  plus a write and the round trip, so an undelivered verdict reaches the answerer as `answered`. */
+export const PERMISSION_ANSWER_TIMEOUT_MS = PERMISSION_HANDOFF_BOUND_MS + 5_000;
 /** Room a record keeps below {@link PERMISSION_RECORD_MAX_BYTES} for the write's headers, which the
  *  bucket's limit counts, and for the largest state an answer can store: a denial whose note is all
  *  control characters serializes at six bytes a character. */
 const PERMISSION_RECORD_RESERVE_BYTES = 16 * 1024;
 
-/** The process holding the prompt: the `lifecycleUid` and `runtime.id` its presence row carries. */
+/** The process holding the prompt: the `lifecycleUid` and `runtime.id` its presence row carries. The
+ *  runtime id is one subject token, because an answer is addressed to it. */
 export interface PermissionHolder {
   readonly lifecycleUid: string;
   readonly runtimeId: string;
@@ -172,11 +179,11 @@ function requestId(v: unknown): PermissionRequestId | undefined {
   return typeof v === "string" && /^[a-z2-7]{26}$/.test(v) ? (v as PermissionRequestId) : undefined;
 }
 
-// The typeof check comes first: the token check is a RegExp test, which would coerce a JSON array.
-function lifecycleToken(v: unknown): v is string {
+// The typeof check comes first: a token check is a RegExp test, which would coerce a JSON array.
+function token(v: unknown, assert: (s: string) => string): v is string {
   if (typeof v !== "string") return false;
   try {
-    assertLifecycleToken(v);
+    assert(v);
     return true;
   } catch {
     return false;
@@ -185,7 +192,8 @@ function lifecycleToken(v: unknown): v is string {
 
 function holder(v: unknown): PermissionHolder | undefined {
   const h = closed(v, ["lifecycleUid", "runtimeId"]);
-  return h && lifecycleToken(h.lifecycleUid) && text(h.runtimeId) ? { lifecycleUid: h.lifecycleUid, runtimeId: h.runtimeId } : undefined;
+  return h && token(h.lifecycleUid, assertLifecycleToken) && token(h.runtimeId, assertRuntimeToken)
+    ? { lifecycleUid: h.lifecycleUid, runtimeId: h.runtimeId } : undefined;
 }
 
 function input(v: unknown): PermissionInput | undefined {
@@ -311,9 +319,10 @@ export function parsePermissionAnswerBody(raw: unknown): { readonly id: Permissi
 }
 
 /**
- * The holder's reply. It names the state, never the record, so the input is not echoed.
+ * The holder's reply. It names the state, never the record, so the input is not echoed. A holder that
+ * does not hold the prompt sends no reply at all.
  *  - `answered`, `expired`: the prompt was already settled; `state` says how.
- *  - `unknown`: this holder has no open or recently settled prompt with that id.
+ *  - `unknown`: the holder closed while it applied the answer, and gave the prompt back to the harness.
  *  - `busy`: the record write did not land and nothing changed; asking again is safe.
  *  - `conflict`: something else wrote the record, so the holder gave the prompt back to the terminal.
  *  - `withheld`: an approval of an input too large to store, which its owner could not read.
@@ -346,8 +355,8 @@ export function parsePermissionAnswerReply(raw: unknown): PermissionAnswerReply 
 /** What an answer achieved, as its sender reads it.
  *  - `accepted`: the holder applied it and the harness received the verdict.
  *  - `answered`: someone or something settled the prompt first; `state` names how.
- *  - `gone`: nothing can apply an answer to this prompt now: no holder serves it, the holder no
- *    longer knows it, or something else wrote its record.
+ *  - `gone`: nothing can apply an answer to this prompt now: no process holds it, its holder closed,
+ *    or something else wrote its record.
  *  - `refused`: the broker refused the request, because the sender is not an interactive principal
  *    of the agent's owner, or the holder refused to approve an input it withheld.
  *  - `unknown`: the effect is unknown. Read the record before asking again; the same answer from the
@@ -413,7 +422,39 @@ export interface PermissionHolderPort {
   close(): void;
 }
 
-/** One change a watcher of an owner's records sees. `removed` is a delete marker its agent wrote. */
-export type PermissionChange =
-  | { readonly kind: "put"; readonly key: string; readonly record: PermissionRecord }
-  | { readonly kind: "removed"; readonly key: string };
+/** What an answer is addressed to: the prompt, and the process its record names as holder. */
+export type PermissionTarget = Pick<PermissionRecord, "agent" | "id" | "holder">;
+
+/** One interactive lifecycle's permission reader (SPEC §8.2). The watch fills it from its own
+ *  endpoint's identity, so a host cannot open one principal's reader for another's watch. */
+export interface PermissionReaderRef {
+  readonly owner: string;
+  readonly actor: string;
+  readonly lifecycleUid: string;
+}
+
+/** The trusted side's open: delete whatever consumer holds the reader's name, then create it fresh.
+ *  `CotalEndpoint.openPermissionReader` on a provisioner endpoint does this. The watch calls it
+ *  before every bind. */
+export type PermissionReaderOpener = (reader: PermissionReaderRef) => Promise<void>;
+
+/** Why a watch stopped. `refused`: the broker refused the bind, so this principal is not an
+ *  interactive row of that lifecycle. `open-failed`: the opener threw. `contended`: the reader went
+ *  busy or missing again before a fresh pass completed, as when two watchers share one lifecycle. */
+export type PermissionWatchFailure =
+  | { readonly kind: "stopped" }
+  | { readonly kind: "refused"; readonly reason: string }
+  | { readonly kind: "open-failed"; readonly reason: string }
+  | { readonly kind: "contended" };
+
+/** One running watch of an owner's permission records. It owns the view. */
+export interface PermissionWatch {
+  /** Settles once the first full pass is in. A watch that fails first leaves it pending. */
+  readonly ready: Promise<void>;
+  /** Every record of the owner's agents, oldest `askedAt` first: the last complete pass and every
+   *  change since. A fresh pass never shows half a view. */
+  records(): readonly PermissionRecord[];
+  /** Settles when the watch stops, with why. */
+  readonly failed: Promise<PermissionWatchFailure>;
+  stop(): Promise<void>;
+}

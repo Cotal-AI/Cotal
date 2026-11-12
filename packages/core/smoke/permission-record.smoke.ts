@@ -27,6 +27,7 @@ import {
   type PermissionState,
   type PermissionStep,
 } from "../src/permissions.js";
+import { startPermissionView, stepPermissionView, type PermissionViewEvent, type PermissionViewState, type PermissionViewStep } from "../src/permission-view.js";
 
 const { check, finish } = createSuite();
 
@@ -170,6 +171,9 @@ const REFUSALS: [string, Edit, string?][] = [
   ["an agent of three tokens", set("agent", `${OWNER}.coder.x`), `${OWNER}.coder.x.${ID}`],
   ["a holder without a runtime id", within("holder", drop("runtimeId"))],
   ["a holder with an empty runtime id", within("holder", set("runtimeId", ""))],
+  ["a holder runtime id of two subject tokens", within("holder", set("runtimeId", "0f0e2d4c.5b6a"))],
+  ["a holder runtime id that is a wildcard", within("holder", set("runtimeId", "*"))],
+  ["a holder runtime id past 64 characters", within("holder", set("runtimeId", "r".repeat(65)))],
   ["a holder lifecycle that is not a lifecycle token", within("holder", set("lifecycleUid", "NOT-A-UID"))],
   ["a holder lifecycle given as an array of one token", within("holder", set("lifecycleUid", ["l".repeat(26)]))],
   ["a holder with an extra field", within("holder", set("pid", 42))],
@@ -196,7 +200,7 @@ check("the record key is <owner>.<actor>.<id>",
   parsedBase !== undefined && permissionKey(parsedBase.agent, parsedBase.id) === KEY, parsedBase && permissionKey(parsedBase.agent, parsedBase.id));
 const admitted = REFUSALS.filter(([, edit, key]) => parsePermissionRecord(edit(base()), key ?? KEY) !== undefined).map(([name]) => name);
 check(`every malformed record is refused (${REFUSALS.length - admitted.length} of ${REFUSALS.length})`,
-  REFUSALS.length === 36 && admitted.length === 0, admitted);
+  REFUSALS.length === 39 && admitted.length === 0, admitted);
 
 // ── No record is a CotalMessage ───────────────────────────────────────────────────────────────
 
@@ -246,5 +250,79 @@ const LIVENESS: [string, Parameters<typeof holderLiveness>[1], ReturnType<typeof
 const livenessMisses = LIVENESS.filter(([, seen, want]) => holderLiveness(H, seen) !== want).map(([name, seen]) => ({ name, got: holderLiveness(H, seen) }));
 check(`every liveness rule answers as designed (${LIVENESS.length - livenessMisses.length} of ${LIVENESS.length})`,
   LIVENESS.length === 8 && livenessMisses.length === 0, livenessMisses);
+
+// ── stepPermissionView: the watch's view of an owner's records ────────────────────────────────
+
+const rec = (id: string, state: PermissionState = { kind: "pending" }) =>
+  parsePermissionRecord({ ...base(), id: id.repeat(26), state }, `${OWNER}.coder.${id.repeat(26)}`)!;
+const keyOf = (id: string) => `${OWNER}.coder.${id.repeat(26)}`;
+const put = (gen: number, dseq: number, pending: number, id: string, state?: PermissionState): PermissionViewEvent =>
+  ({ kind: "delivered", gen, dseq, pending, key: keyOf(id), change: { kind: "put", record: rec(id, state) } });
+/** Run events from a fresh watch, as the shell does, and return the last step plus every effect. */
+function run(events: readonly PermissionViewEvent[]): { last: PermissionViewStep; effects: string[] } {
+  let step = startPermissionView();
+  const effects = step.effects.map((e) => (e.kind === "open" ? `open:${e.gen}` : e.kind));
+  for (const event of events) {
+    step = stepPermissionView(step.state, event);
+    effects.push(...step.effects.map((e) => (e.kind === "open" ? `open:${e.gen}` : e.kind === "fail" ? `fail:${e.failure.kind}` : e.kind)));
+  }
+  return { last: step, effects };
+}
+const ids = (state: PermissionViewState) => [...state.view.keys()].map((k) => k.slice(-1)).sort().join("");
+const live = (gen: number) => [{ kind: "opened", gen, pending: 2 }, put(gen, 1, 1, "a"), put(gen, 2, 0, "b")] as PermissionViewEvent[];
+const VIEW: [string, () => boolean, () => unknown][] = (() => {
+  const cells: [string, () => boolean, () => unknown][] = [];
+  const cell = (name: string, events: PermissionViewEvent[], want: (r: ReturnType<typeof run>) => boolean) =>
+    cells.push([name, () => want(run(events)), () => { const r = run(events); return { state: r.last.state.kind, view: ids(r.last.state), effects: r.effects }; }]);
+  cell("a watch starts by opening its reader", [], (r) => r.last.state.kind === "opening" && r.effects.join() === "open:1");
+  cell("an empty reader is a complete pass at once", [{ kind: "opened", gen: 1, pending: 0 }],
+    (r) => r.last.state.kind === "live" && ids(r.last.state) === "" && r.effects.join() === "open:1,changed,ready");
+  cell("a pass shows nothing until its last pending record lands, then all of it",
+    [{ kind: "opened", gen: 1, pending: 2 }, put(1, 1, 1, "a")],
+    (r) => r.last.state.kind === "passing" && ids(r.last.state) === "" && r.effects.join() === "open:1");
+  cell("the pass completes on its counted record", live(1), (r) => r.last.state.kind === "live" && ids(r.last.state) === "ab" && r.effects.join() === "open:1,changed,ready");
+  cell("a pass whose last records aged out completes when nothing is pending",
+    [{ kind: "opened", gen: 1, pending: 3 }, put(1, 1, 0, "a")], (r) => r.last.state.kind === "live" && ids(r.last.state) === "a");
+  cell("a live change updates the view and hints", [...live(1), put(1, 3, 0, "c")],
+    (r) => ids(r.last.state) === "abc" && r.effects.join() === "open:1,changed,ready,changed");
+  cell("a delete marker removes its record", [...live(1), { kind: "delivered", gen: 1, dseq: 3, pending: 0, key: keyOf("a"), change: { kind: "removed" } }],
+    (r) => ids(r.last.state) === "b");
+  cell("a dropped value changes nothing and hints nothing, and the sequence moves on",
+    [...live(1), { kind: "delivered", gen: 1, dseq: 3, pending: 0, key: keyOf("z"), change: { kind: "dropped" } }, put(1, 4, 0, "c")],
+    (r) => r.last.state.kind === "live" && ids(r.last.state) === "abc" && r.effects.filter((e) => e === "changed").length === 2);
+  cell("a skipped delivery sequence opens the reader again and keeps the last complete view", [...live(1), put(1, 4, 0, "c")],
+    (r) => r.last.state.kind === "opening" && r.last.state.gen === 2 && ids(r.last.state) === "ab" && r.effects.at(-1) === "open:2");
+  cell("a fresh pass replaces the view only when it completes, with no second ready",
+    [...live(1), { kind: "reconnected" }, { kind: "opened", gen: 2, pending: 2 }, put(2, 1, 1, "b"), put(2, 2, 0, "c")],
+    (r) => r.last.state.kind === "live" && ids(r.last.state) === "bc" && r.effects.filter((e) => e === "ready").length === 1);
+  cell("...and while it runs, the view is still the last complete one",
+    [...live(1), { kind: "reconnected" }, { kind: "opened", gen: 2, pending: 2 }, put(2, 1, 1, "c")],
+    (r) => r.last.state.kind === "passing" && ids(r.last.state) === "ab");
+  cell("a delivery or failure from an older open is ignored",
+    [...live(1), { kind: "reconnected" }, put(1, 3, 0, "z"), { kind: "fetch-failed", gen: 1 }, { kind: "open-failed", gen: 1, reason: "late" }],
+    (r) => r.last.state.kind === "opening" && r.last.state.gen === 2 && ids(r.last.state) === "ab");
+  cell("a failed fetch opens the reader again", [...live(1), { kind: "fetch-failed", gen: 1 }],
+    (r) => r.last.state.kind === "opening" && r.last.state.retried && r.effects.at(-1) === "open:2");
+  cell("a second failure before a pass completes is contention",
+    [...live(1), { kind: "fetch-failed", gen: 1 }, { kind: "fetch-failed", gen: 2 }],
+    (r) => r.last.state.kind === "failed" && r.last.state.failure.kind === "contended" && r.effects.at(-1) === "fail:contended" && ids(r.last.state) === "ab");
+  cell("a completed pass forgives an earlier failure",
+    [...live(1), { kind: "fetch-failed", gen: 1 }, ...live(2), { kind: "fetch-failed", gen: 2 }],
+    (r) => r.last.state.kind === "opening" && r.last.state.gen === 3);
+  cell("a replaced connection is never contention",
+    [...live(1), { kind: "fetch-failed", gen: 1 }, { kind: "reconnected" }, { kind: "fetch-failed", gen: 3 }],
+    (r) => r.last.state.kind === "opening" && r.last.state.gen === 4);
+  cell("a refused bind ends the watch", [{ kind: "refused", reason: "Permissions Violation" }],
+    (r) => r.last.state.kind === "failed" && r.last.state.failure.kind === "refused" && r.effects.at(-1) === "fail:refused");
+  cell("a throwing opener ends the watch", [{ kind: "open-failed", gen: 1, reason: "no provisioner" }],
+    (r) => r.last.state.kind === "failed" && r.last.state.failure.kind === "open-failed");
+  cell("stop ends the watch, and a stopped watch takes no more events",
+    [...live(1), { kind: "stop" }, put(1, 3, 0, "c"), { kind: "reconnected" }],
+    (r) => r.last.state.kind === "failed" && r.last.state.failure.kind === "stopped" && ids(r.last.state) === "ab" && r.effects.join() === "open:1,changed,ready,fail:stopped");
+  return cells;
+})();
+const viewMisses = VIEW.filter(([, ok]) => !ok()).map(([name, , detail]) => ({ name, got: detail() }));
+check(`every cell of the watch's view steps as designed (${VIEW.length - viewMisses.length} of ${VIEW.length})`,
+  VIEW.length === 19 && viewMisses.length === 0, viewMisses);
 
 finish();
