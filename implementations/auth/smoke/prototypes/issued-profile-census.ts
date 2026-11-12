@@ -8,7 +8,7 @@ import {
   epcStreamName, epeStreamName, epfStreamName, epjStreamName, eprStreamName,
   eptStreamName, eptReqStreamName, epwStreamName,
   channelBucket, presenceBucket, membershipBucket, deliveryBucket, managerBucket,
-  membersBucket, aclBucket, epAuthBucket, recordsBucket, sessionsBucket, transferBucket, objectStoreStream,
+  membersBucket, aclBucket, epAuthBucket, recordsBucket, sessionsBucket, anycastBucket, transferBucket, objectStoreStream,
   type Profile, type MintOpts, type MintPrincipal, type EpCapability,
 } from "@cotal-ai/core";
 import { calloutPermissions } from "../../src/permissions.js";
@@ -195,6 +195,8 @@ export function streamSubjects(space: string): Record<string, string> {
     [`KV_cotal_accepted_${space}`]: kv(`cotal_accepted_${space}`),
     [`KV_cotal_admission_${space}`]: kv(`cotal_admission_${space}`),
     [`KV_${sessionsBucket(space)}`]: kv(sessionsBucket(space)),
+    // Anycast request records. A raw read of this bucket is modelled like the other issued stores.
+    [`KV_${anycastBucket(space)}`]: kv(anycastBucket(space)),
     // The census instance's transfer bucket (SPEC 8): its writer and reader read it raw.
     [objectStoreStream(transferBucket(space, CENSUS_INSTANCE))]: `$O.${transferBucket(space, CENSUS_INSTANCE)}.>`,
   };
@@ -227,7 +229,7 @@ export function writeAndRawReadStreams(permissions: Record<string, unknown>, spa
   return [...rawRead].filter(writable).sort();
 }
 
-/** True when a publish grant row lands anywhere inside a stream's captured subject space. */
+/** True when a publish grant covers the stream's subjects. One key inside the stream does not. */
 function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
   const prefix = streamPattern.replace(/\.>$/, "").split(".");
   const row = grantRow.split(".");
@@ -236,7 +238,7 @@ function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
     if (row[i] === ">") return true;
     if (row[i] !== "*" && prefix[i] !== "*" && row[i] !== prefix[i]) return false;
   }
-  return true;
+  return row[prefix.length] === ">" || row[prefix.length] === "*";
 }
 
 /**
