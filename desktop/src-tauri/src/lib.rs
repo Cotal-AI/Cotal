@@ -16,6 +16,11 @@ pub const NODE_SIDECAR: &str = if cfg!(windows) { "node" } else { "cotal-node" }
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "op", deny_unknown_fields)]
 pub enum DesktopRequest {
+    #[serde(rename = "desktop-policy")]
+    DesktopPolicy {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        auto: Option<bool>,
+    },
     #[serde(rename = "update-check")]
     UpdateCheck {},
     #[serde(rename = "update-release")]
@@ -210,6 +215,9 @@ mod tests {
         }
         .validate()
         .is_err());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"desktop-policy","auto":false}"#).is_ok());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"desktop-policy","auto":"on"}"#).is_err());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"desktop-policy","path":"/tmp/foreign"}"#).is_err());
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"update-settings","auto":false,"notify":true}"#).is_ok());
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"update-settings","notify":"on"}"#).is_err());
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"update-check","force":true}"#).is_err());

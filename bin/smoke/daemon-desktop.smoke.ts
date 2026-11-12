@@ -61,6 +61,16 @@ async function request(value: unknown, opts: { runtime?: boolean | string; daemo
   });
 }
 try {
+  const policy = await request({ op: "desktop-policy" }, { runtime: false });
+  check("shared automatic preference defaults on without daemon or runtime directory", policy.ok === true && policy.result.auto === true);
+  const policyOff = await request({ op: "desktop-policy", auto: false }, { runtime: false });
+  check("shared opt-out persists before service installation", policyOff.ok === true && policyOff.result.auto === false);
+  const policyAgain = await request({ op: "desktop-policy" }, { runtime: false });
+  check("shared opt-out survives a new desktop client", policyAgain.ok === true && policyAgain.result.auto === false);
+  const policyOn = await request({ op: "desktop-policy", auto: true }, { runtime: false });
+  check("shared opt-in is restored without service installation", policyOn.ok === true && policyOn.result.auto === true);
+  const invalidPolicy = await request({ op: "desktop-policy", auto: "on" });
+  check("shared preference rejects untyped values", invalidPolicy.ok === false && invalidPolicy.error.code === "BAD_REQUEST");
   const about = await request({ op: "about" });
   check("real stock CLI bridge reports its package version", about.ok === true && about.result.version === version);
   check("about does not install or start a daemon", !existsSync(paths.socket));
