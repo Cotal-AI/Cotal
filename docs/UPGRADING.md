@@ -1,5 +1,32 @@
 # Upgrading a running deployment
 
+## Tool payload publication
+
+Upgrading starts publishing mapped tool inputs and results by default for Claude and Jcode seats
+with an event plane. Payload readers can now see local file content, command output and other
+tool content that was previously withheld. Review access before restarting seats. Authenticated
+spaces admit the owner, admins and holders of concrete foreign event-channel read grants to the
+separate payload rail. Chat wildcards do not grant that access. Open brokers provide no isolation.
+
+Pass `--no-event-payloads` at spawn, or set `eventPayloads: false` in the persona, to retain tool
+names, times and completion status without inputs or results. `--no-events` still disables the
+whole event plane where permitted. A registration may enforce
+`policy: { eventPayloads: "withheld" }`; a seat cannot weaken it. Registered Cotal tool payloads
+are excluded by identity. Other tools are not scanned for secret-shaped text.
+
+Upgrade the broker setup and credentials with the clients: payloads use a separate `EVP_<space>`
+stream and broker rail. Ordinary-channel readers continue to see tool metadata only. WAL v4
+records sibling publication and its acknowledgement; older emitters refuse it. Older pending
+public frames migrate without invented payloads, and frozen public payload bodies still halt.
+Settle a pending sibling under its prior policy before enabling withholding. The live broker and
+stream limits produce explicit whole-value cut markers, not silent partial output.
+
+Other connectors carry safety controls, but their payload mappings and native acceptance, combined
+channel history and backup coverage remain deferred. The private consent path in
+[SPEC §13.19](../SPEC.md#1319-private-tool-results) remains separate, with unchanged activation
+requirements, for holders not admitted to the payload rail. See the
+[connector reference](claude-connector-reference.mdx#event-plane) for limits and recovery details.
+
 > **Guide** (informative) · **For:** operators upgrading a mesh that already exists · **See also:** [Interface stability](stability.md), [Run a mesh](run-a-mesh.mdx), [Identity and auth](identity-and-auth.mdx)
 
 [Interface stability](stability.md) says what the version numbers promise. This page says what to

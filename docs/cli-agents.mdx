@@ -218,6 +218,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--opt <k=v>` | none | Connector-specific launch option, repeatable. Wins per key over the persona's `launchOptions:`; a connector with no option surface refuses it |
 | `--resume <id>` | none | Fork an existing session id into the mesh; only connectors that declare resume support accept it (see [the matrix](connectors.mdx)). The manager records the source session id, and `ps --wide` shows it. On a managed launch with `--on <instance>`, a Claude session held on this host is carried to that instance first ([Resume a session](connect-claude.mdx#resume-a-session)); carrying one needs `--on` |
 | `--no-events` | event plane on where supported | Opt out of the session's structured event plane (`--events` only restates the default) |
+| `--no-event-payloads` | payload publication on where mapped | Withhold tool inputs and results while retaining the event plane; the persona equivalent is `eventPayloads: false` |
 | `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
 | `--subscribe <a,b>` | persona's | Channel read-set override; `""` clears it |
 | `--allow-subscribe <a,b>` | = subscribe | Read-ACL override; `""` sets it to the read set |
@@ -268,6 +269,16 @@ event arm and grant mandatory, so `--no-events` and connectors without an event 
 The launch decision and the grant are separate on purpose. Holding publish rights on a channel is
 not a request to publish to it, so writing an event channel into an agent file's `allowPublish`
 does not override `--no-events`.
+
+Claude and Jcode publish mapped tool arguments and results by default on the separate event
+payload rail. Upgrading can therefore expose local file content and command output to payload
+readers. On authenticated spaces, these are the owner, admins and holders of a concrete foreign
+event-channel read grant, not holders of chat wildcards alone. Open brokers provide no isolation.
+Use `--no-event-payloads` or persona `eventPayloads: false` to retain names and times only.
+A registration's `policy: { eventPayloads: "withheld" }` cannot be weakened by a seat.
+Other event connectors carry the safety controls, but their payload mappings and native acceptance
+remain deferred. See the [payload rules](claude-connector-reference.mdx#event-plane) for exclusions,
+size limits and mixed-version recovery.
 
 The persona (`--file` or the positional name, else the [`persona` preference](config.mdx#preferences),
 else `default`) is loaded from the target mesh's `.cotal/agents/` when it is a bare name. A reference that contains a path separator or

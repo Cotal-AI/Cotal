@@ -623,8 +623,8 @@ plugin registers, with their matchers, are listed in the
 
 A connected native session publishes a structured account of its activity: the messages a person
 typed, assistant replies, run boundaries, and each tool call's start and end. Tool arguments and
-results are withheld (below), and a turn a peer message started opens a run without republishing
-that message. Reasoning is off by default. Programs can read these events directly. The launcher
+results publish by default on a separately authorized payload rail (below). A turn a peer message
+started opens a run without republishing that message. Reasoning is off by default. Programs can read these events directly. The launcher
 sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
 space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
 private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
@@ -695,19 +695,42 @@ gets the same wait, because Claude copies the parent transcript into the fork's 
 hook, and then adopts at the end of that copy. Resumed, cleared and compacted starts and recovered
 cursors still require their existing source at once.
 
-Tool arguments (`TOOL_CALL_ARGS`) and tool results (`TOOL_CALL_RESULT`) are not republished
-onto this channel. The durable emitter drops those events before they are written to the
-write-ahead log, because this channel's read ACL is not the ACL the tool ran under. Content is
-mandatory on both kinds, so the event is suppressed rather than emptied or replaced with a
-placeholder. Tool start and end still go out. A restart that finds a pending pre-fix frame
-still carrying those kinds HALTS rather than republishing it. In place of each tool result, the
-connector publishes a `CUSTOM` event named `cotal.toolResult` whose `value` is
-`{ toolCallId, isError }`, stamped with the result's time. It carries no tool input or output, and
-`rawEvent` is refused on it: a viewer can tell when a call finished and whether it returned an
-error, and nothing more. The emitter checks that shape before it writes the frame, so a malformed
-marker is refused rather than frozen, and a frame holding one from an older version halts recovery.
-`cotal console` draws the marker as `done` or `failed` under the call. A connector-core older than
-the marker halts at its brackets on a write-ahead log that already holds one.
+Tool arguments (`TOOL_CALL_ARGS`) and results (`TOOL_CALL_RESULT`) use the separate broker
+subject `cotal.<space>.evp.<owner>.<actor>` and stream `EVP_<space>`. The ordinary event channel
+still carries no tool inputs or outputs. It keeps tool boundaries and the `CUSTOM` event
+`cotal.toolResult` with `{ toolCallId, isError }`, so metadata-only readers keep completion status.
+
+On an authenticated space, an owner reads its own actors' payloads and an admin reads all payloads.
+A foreign reader needs a concrete `events.<owner>.<actor>` read grant. Chat wildcards and patterns
+such as `events.<owner>.>` do not grant payload access. An open broker has no isolation. Payload
+readers may see tool output from a channel they cannot otherwise read, as well as local file and
+command content. Review those readers before upgrading or launching a seat.
+
+Pass `--no-event-payloads` to keep names, times and completion status without inputs or outputs,
+or set `eventPayloads: false` in the persona. This differs from `--no-events`, which disables the
+whole plane where permitted. A registration's `policy: { eventPayloads: "withheld" }` cannot be
+weakened by a seat. Registered Cotal tools, including their MCP-qualified names, have their inputs
+and results excluded by identity. This is not heuristic secret redaction of other tools.
+
+The emitter publishes whole mapped values. If the encoded frame exceeds the live broker maximum
+or the payload stream's positive `max_msg_size` or `max_bytes` limit, every value in that frame is
+replaced with a JSON marker: `cotalPayloadCut: true`, `originalBytes` and a `sha256` digest of the
+original value. It never publishes an opaque prefix. If even the markers do not fit, publication
+fails. The stream requires one replica and starts with canonical chat retention, independent of
+later chat retention changes. Binary handling depends on the connector mapping; this is not a
+promise that every native content type has a qualified mapping.
+
+WAL v4 freezes both publications, writes the payload first, and advances the source cursor only
+after both are settled. Old pending metadata frames migrate without reconstructed payloads. An old
+emitter refuses v4. A frozen public frame containing payload events still halts recovery rather
+than exposing them on the public channel. Enabling withholding with a frozen sibling pending is
+refused until it is settled under its prior policy. Old ordinary-channel readers still see only
+metadata. Combined channel history and backup support for the new rail remain deferred.
+
+This release covers the Claude and Jcode payload mappings. Other event connectors carry the safety
+controls, but their payload mappings and native acceptance remain separate work. The private
+[consent path](../SPEC.md#1319-private-tool-results) remains useful for a holder not admitted to the
+payload rail; its activation requirements are unchanged.
 
 The agent's card carries `meta["ai.cotal.events"]`: `on` when the session arms its event plane and
 `off` when it does not. A connector that removes `COTAL_EVENTS` from the process environment before

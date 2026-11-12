@@ -111,6 +111,10 @@ fails when Pi no longer has that session instead of creating an empty one under 
 
 ## Event plane
 
+The shared launch and emitter carry payload-withholding safety controls. This release does not
+qualify Pi payload mapping or native payload acceptance. See the
+[payload rules](claude-connector-reference.mdx#event-plane) for the separate rail and current scope.
+
 A managed Pi seat publishes AG-UI runs, completed assistant text messages, and tool start/end
 boundaries to `events.<owner>.<actor>`. The thread id is Pi's native session id. Pi's native
 session JSONL is the durable source; extension hooks only wake the reader after persistence.

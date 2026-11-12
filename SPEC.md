@@ -6078,12 +6078,45 @@ invalid, and a fresh terminal session still requires a supported terminal transp
 
 This optional, additive contract permits a verified human to consent to one holder reading a
 managed agent's future tool results through the endpoint control surface. It adds no public event
-payload: public `events.<owner>.<actor>` MUST continue to withhold `TOOL_CALL_ARGS` and
-`TOOL_CALL_RESULT`. Tool arguments, transcript scraping, a private HTTP result path and provider
-credentials in a client or sandbox are outside this contract.
+payload. The ordinary `events.<owner>.<actor>` channel MUST continue to withhold `TOOL_CALL_ARGS`
+and `TOOL_CALL_RESULT`; the separately authorized payload rail below does not change that rule.
+This consent path remains useful for a holder not admitted to that rail. Admission to either path
+MUST NOT imply admission to the other. Tool arguments, transcript scraping, a private HTTP result
+path and provider credentials in a client or sandbox are outside this consent contract.
 
-**Activation.** Acceptance of this subsection is not implementation or enablement. A deployment
-MUST NOT enable this path until the auth and host, Core and Manager, connector-core, and browser
+**Event payload rail.** Payload frames use `cotal.<space>.evp.<owner>.<actor>` and the independent
+`EVP_<space>` stream. Their envelope retains the corresponding event channel name, and their
+AG-UI frame retains its thread, epoch and sequence. The rail carries only `TOOL_CALL_ARGS` and
+`TOOL_CALL_RESULT`. On authenticated spaces, an owner may read its own actors' payloads and an
+admin may read all payloads. Foreign access requires a concrete `events.<owner>.<actor>` read
+grant. Ordinary chat wildcards, including event-channel patterns, MUST NOT confer payload reads.
+An open broker provides no such isolation. A writer may publish only its own principal's payloads.
+
+Publication is on by default where the connector maps payloads. Withholding MUST preserve the
+ordinary tool start, end and result-status events. A space policy requiring withholding MUST NOT
+be weakened by a seat. Cotal's registered tool inputs and results MUST be excluded by tool identity,
+not by scanning their text. Native connector mapping and qualification determine which other tools
+are supported; this revision does not claim complete connector coverage.
+
+The reference emitter bounds the encoded frame by the live broker maximum and the positive
+`max_msg_size` and `max_bytes` limits of the payload stream, which requires one replica. If a frame
+does not fit, it replaces each whole payload value with a JSON cut marker containing
+`cotalPayloadCut: true`, `originalBytes` and a lowercase hexadecimal `sha256` digest of that value.
+It MUST NOT publish an opaque partial value. Metadata that still exceeds the limit fails loudly.
+The payload stream starts with the chat stream's canonical retention configuration, independently
+of any operator changes to chat retention. Combined channel history and backup coverage are not
+established by this revision.
+
+The reference WAL v4 freezes the sibling payload body and its acknowledgement with the public
+transaction. Payload publication precedes public publication, and the source cursor advances only
+after both are settled. Older pending public frames migrate without invented payloads. Older
+emitters refuse v4 rather than discard sibling work. A pending public body containing payload
+events still halts recovery. Switching to withholding while a sibling publication is pending is
+refused until that transaction is settled under its prior policy. Readers of the ordinary channel
+continue to receive metadata only; older readers do not acquire payload access by upgrading a writer.
+
+**Activation.** Acceptance of the private consent contract is not implementation or enablement.
+A deployment MUST NOT enable the private consent path until the auth and host, Core and Manager, connector-core, and browser
 caller owners have each landed and qualified their part, and a stock release carries those parts.
 A product surface additionally MUST qualify its own freshness and viewer checks. The prerequisites
 of §13.19.4 remain mandatory; without either, the serving commands MUST answer `unavailable`.
@@ -7361,6 +7394,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-12 | **Tool payload rail (§13.19).** Separately authorized event payloads publish by default where mapped, with explicit withholding, registered Cotal-tool exclusions, bounded cut markers and durable sibling publication. The private consent path remains separate and its activation prerequisites are unchanged. |
 | 2026-11-12 | **Incarnation-scoped responder queues (§13.2), clarification.** Scatter and instance responders may use a queue group per incarnation to overlap serving connections during renewal. Distinct instances use distinct groups so scatter still reaches each instance. Credential grants are unchanged. |
 | 2026-11-10 | **A spawn-scoped `manager-caller` view lists its own agents (§9, §10), additive.** A person who may spawn on their own Manager could not list the agents they launched there. `ps` was not in the view unless the actor held `admin`, so `cotal ps` and `cotal status <agent>` were refused by the broker. A view whose actor holds `spawn` now carries `ps` on its one pinned instance, beside `status`, `models` and `resolve-cwd`. The Manager answers it with the caller's own owner's agents only, unless the caller holds `admin`. `slots` stays with `admin`, no class, scatter or other-instance row is added, and the standing `spawn` set is unchanged. |
 | 2026-11-09 | **A spawner hands on endpoint commands it holds (§13.7, §13.15, §14.8).** A persona's `endpoints` list names `{ endpoint, commands, instanceId? }` entries on the inline `spawn` record, on `define-persona` and in a catalog file. On a static space each command lowers to an untargeted caller capability, on the class rail or, with `instanceId`, on that instance's rail alone plus that instance's `describe`; the delegation bound measures it against the spawner's issued evidence (a run's spawn against its admission's ceiling), and the helper's mint and renewals grant it. A static agent mint refuses a targeted or journaled endpoint capability, because the static terminal has no obligation drain, and a copied static credential's reach until expiry is named as a known gap. A single-label endpoint and a reserved command are refused. A user-auth manager refuses the field, `[]` included. Manager cluster revision 47. |
