@@ -1,5 +1,16 @@
 # @cotal-ai/auth
 
+## 0.163.3
+
+### Patch Changes
+
+- 0d10441: The issued-profile census models the anycast records bucket and treats a publish of one key as not covering that stream. The smoke runs in the CI suite.
+- Updated dependencies [6f00d97]
+- Updated dependencies [cc11f40]
+  - @cotal-ai/lang@0.163.3
+  - @cotal-ai/core@0.163.3
+  - @cotal-ai/workspace@0.163.3
+
 ## 0.163.2
 
 ### Patch Changes
