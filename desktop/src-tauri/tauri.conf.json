@@ -45,6 +45,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "linux": {
+      "rpm": {
+        "compression": {
+          "type": "xz",
+          "level": 6
+        }
+      }
+    },
     "macOS": {
       "minimumSystemVersion": "13.5",
       "entitlements": "entitlements.plist",
