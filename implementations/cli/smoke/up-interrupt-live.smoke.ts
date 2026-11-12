@@ -3,7 +3,8 @@
  *  Run: pnpm smoke:up-interrupt:live */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { canonicalLocalProcessPath, MANAGER_PIDFILE, readPidfile } from "@cotal-ai/workspace";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -64,8 +65,15 @@ for (const [name, signal, code, format, noManager] of [
         assert.ok(Date.now() < until, "broker did not listen before deadline");
         await sleep(100);
       }
-      // The live report's window: broker accepted, before the manager is ready.
-      await sleep(1_500);
+      if (!noManager) {
+        const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space });
+        while (!existsSync(pidPath) || !readPidfile(pidPath)) {
+          assert.equal(child.exitCode, null, `up ended before its Manager launch: ${stderr}`);
+          assert.ok(Date.now() < until, "Manager launch was not recorded before deadline");
+          await sleep(10);
+        }
+        console.log(`Observed Manager launch before ${signal}`);
+      }
       assert.equal(child.exitCode, null, "up finished before the interruption window");
       assert.equal(child.kill(signal), true);
     }
