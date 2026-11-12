@@ -1,5 +1,22 @@
 # @cotal-ai/manager
 
+## 0.162.0
+
+### Minor Changes
+
+- 1207cf2: Include workflow permission in the default scope of a full actor grant so it can delegate the shipped default persona. Explicit scopes and existing grants remain unchanged.
+
+### Patch Changes
+
+- 55a5cc8: Keep manager requests flowing while its remote credentials renew. Bind the replacement serving connection before draining the old one, and use incarnation-scoped queues to prevent duplicate execution without widening permissions. Wait for outgoing supervisor, goal and session-ledger requests before reconnecting those duties. Bound retired serving drainage and report unfinished requests without retrying their effects. Retry serving issuance after an unchanged-authority gate touch so concurrent session mints do not cause renewal refusals.
+- Updated dependencies [21f573f]
+- Updated dependencies [03b2e19]
+- Updated dependencies [74e192c]
+- Updated dependencies [55a5cc8]
+  - @cotal-ai/core@0.162.0
+  - @cotal-ai/workspace@0.162.0
+  - @cotal-ai/seat@0.162.0
+
 ## 0.161.1
 
 ### Patch Changes
