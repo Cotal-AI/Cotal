@@ -314,10 +314,10 @@ try {
   } finally {
     if (defaultGranted) await cotalAuthProvider.revokeAgent({ dir: stateDir, owner: cliRow!.owner, actor: defaultIdentity.id, lifecycleUid: defaultLifecycle });
   }
-  const explicitScope = await cotal(["actor", "grant", "explicit-scope-probe", "--sub", sub, "--full", "--scope", "spawn"]);
+  const explicitScope = await cotal(["actor", "grant", "explicit_scope_probe", "--sub", sub, "--full", "--scope", "spawn"]);
   check("explicit scope overrides the full default without gaining run", explicitScope.status === 0 &&
-    loadActorLedger(stateDir).some(row => row.actor === "explicit-scope-probe" && row.scope.join(",") === "spawn"), explicitScope.out);
-  await cotal(["actor", "revoke", "explicit-scope-probe", "--sub", sub]);
+    loadActorLedger(stateDir).some(row => row.actor === "explicit_scope_probe" && row.scope.join(",") === "spawn"), explicitScope.out);
+  await cotal(["actor", "revoke", "explicit_scope_probe", "--sub", sub]);
 
   // The ENVELOPE rule on the foreground CLI spawn path: NARROW the cli grant explicitly, then an
   // over-ask beyond it is refused at the grant write — before any broker footprint — and the
