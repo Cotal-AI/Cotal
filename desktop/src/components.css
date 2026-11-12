@@ -183,7 +183,8 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 @media (prefers-reduced-motion: reduce) {
   button:not(:disabled):hover, button:not(:disabled):active { transform: none; }
 }
-.connection-card.has-running-agents { display: flex; flex-direction: column; max-height: calc(100vh - 130px); min-height: 0; flex-shrink: 1; overflow-y: auto; }
+.connection-card:has(#connected-panel:not([hidden]) #connected-spaces li:nth-child(4)) { max-height: calc(100vh - 150px); overflow-y: auto; }
+.connection-card.has-running-agents { display: flex; flex-direction: column; max-height: calc(100vh - 150px); min-height: 0; flex-shrink: 1; overflow-y: auto; }
 .has-running-agents > :not(#connected-panel) { flex-shrink: 0; }
 .has-running-agents #connected-panel { display: flex; flex-direction: column; min-height: 0; }
 .has-running-agents #dashboard { align-self: flex-start; }

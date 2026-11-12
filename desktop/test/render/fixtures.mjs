@@ -186,6 +186,7 @@ export const scenarios = [
     expect: async page => {
       assert.equal(await page.locator("#connected-panel").isVisible(), true);
       assert.equal(await page.locator('[data-testid="connected-space-row"]').count(), count);
+      assert.ok(await page.locator("footer").evaluate(el => el.getBoundingClientRect().bottom <= innerHeight), "long-space footer stays inside the viewport");
       assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected");
       assert.deepEqual(await page.locator('[data-testid="connected-space-row"] > span > small:last-child').allTextContents(), Array(count).fill("Connected"));
       assert.equal(await page.locator("#settings-panel").isVisible(), false);
