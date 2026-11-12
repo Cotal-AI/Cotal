@@ -226,7 +226,10 @@ the same way, bounded to 5 to 300 seconds, with the five-minute `issuer` lifetim
 ### Claim recovery order
 
 The auth plane can renew a registered manager's five standing credentials from the current
-service registration. Run-driver renewal reads the hosted run attempt and checks its active
+service registration. The manager binds its replacement serve connection before draining the old
+connection. Both use the same incarnation's queue groups, so overlap does not execute a request
+twice. The old connection drains in-flight handlers before closing.
+Run-driver renewal reads the hosted run attempt and checks its active
 fence as well as the manager's open issuance gate and process epoch. A moved gate or run
 fence refuses issuance. These primitives do not establish a complete pooled deployment.
 A fresh auth plane can initialize without a delivery-admin responder. Reclaiming a held claim from a dead predecessor needs the delivery
