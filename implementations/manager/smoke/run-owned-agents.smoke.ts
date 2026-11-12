@@ -548,6 +548,11 @@ try {
     const recordsBefore = await runCount();
     writeFileSync(controlPath, scenario);
     await until(() => trace().some((e) => e.kind === `tool-${scenario}`), `native tool ${scenario}`);
+    // The child writes the trace when the tool call returns. The drive and the run record can
+    // still be landing, so a parent-restored read at that instant sees the old counts (#5609).
+    if (scenario === "parent-restored") {
+      await until(async () => drives.size === before + 1 && await runCount() === recordsBefore + 1, "native tool parent-restored recorded", 10_000).catch(() => {});
+    }
     check(`MC-5 ${scenario} uses authentic child caller without new acceptance on denial`, (trace().find((e) => e.kind === `tool-${scenario}`)?.isError === true) === (scenario !== "parent-restored") && drives.size === before + (scenario === "parent-restored" ? 1 : 0) && await runCount() === recordsBefore + (scenario === "parent-restored" ? 1 : 0));
   }
   writeFileSync(join(root, ".cotal", "agents", "toolbaseline.md"), "---\nname: toolbaseline\nagent: u4-seat\ncapabilities: []\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nNative child without run.\n");
