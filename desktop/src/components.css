@@ -197,6 +197,7 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 .connection-card:has(#connected-panel:not([hidden])) { display: flex; flex-direction: column; max-height: calc(100vh - 150px); overflow: hidden; }
 .connection-card:has(#connected-panel:not([hidden])) > :not(#connected-panel) { flex-shrink: 0; }
 .connection-card #connected-panel { min-height: 0; overflow-y: auto; }
+.connection-card.height-changing:has(#connected-panel:not([hidden])) { overflow: clip; }
 .connection-card.has-running-agents { display: flex; flex-direction: column; max-height: calc(100vh - 150px); min-height: 0; flex-shrink: 1; overflow-y: auto; }
 .has-running-agents > :not(#connected-panel) { flex-shrink: 0; }
 .has-running-agents #connected-panel { display: flex; flex-direction: column; min-height: 0; }
