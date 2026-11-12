@@ -45,6 +45,7 @@ function closeNameEditor(): void {
   (settingsOpen ? el("settings-name") : el("edit-computer-name")).focus();
 }
 el("edit-computer-name").addEventListener("click", () => {
+  if (stage === "finished" && !settingsOpen) openSettings();
   nameEditing = true; el("machine-name").hidden = !settingsOpen; el("edit-computer-name").hidden = true;
   if (settingsOpen) {
     el("settings-computer").parentElement!.append(el("computer-name-form"));
@@ -527,12 +528,35 @@ function showStage(next: Stage, focus = false): void {
   el("tray-indicator").classList.toggle("in-flight", busy);
   buttons();
 }
+let spaceListSheet: CSSStyleSheet | undefined;
+function sizeSpaceList(): void {
+  const list = el("connected-spaces");
+  const rows = [...list.children] as HTMLElement[];
+  if (rows.length < 4 || !list.getClientRects().length) return;
+  let height = 0;
+  const budget = 220;
+  for (const row of rows) {
+    const next = row.getBoundingClientRect().height;
+    if (height && height + next > budget) break;
+    height += next;
+  }
+  if (!spaceListSheet) {
+    spaceListSheet = new CSSStyleSheet();
+    spaceListSheet.replaceSync(".connected-spaces-scroll:has(li:nth-child(4)) { max-height: 160px; }");
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, spaceListSheet];
+  }
+  (spaceListSheet.cssRules[0] as CSSStyleRule).style.maxHeight = `${height}px`;
+}
+window.addEventListener("resize", sizeSpaceList);
+window.addEventListener("load", sizeSpaceList);
 function renderConnections(): void {
   const list = el("connected-spaces");
+  text("spaces-heading", `Spaces using this computer (${connections.size})`);
   list.parentElement!.tabIndex = connections.size >= 4 ? 0 : -1;
   const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), busy]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;
+  requestAnimationFrame(sizeSpaceList);
   list.replaceChildren(...[...connections].map(([space, state]) => {
     const row = document.createElement("li"); row.dataset.testid = "connected-space-row"; row.dataset.space = space;
     const copy = document.createElement("span");
@@ -540,7 +564,7 @@ function renderConnections(): void {
     const kind = document.createElement("small"); kind.className = "application-chip"; kind.textContent = accountSpaces.get(space)?.kind ?? "Space";
     copy.append(name, kind);
     const accountRow = computerRows.get(space);
-    if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow); copy.append(detail); }
+    if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow, state === "launch-ready"); copy.append(detail); }
     else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);

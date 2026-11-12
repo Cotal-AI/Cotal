@@ -12,7 +12,8 @@ test("computer list follows desired intent while retaining connected local space
 
 test("computer rows use observed account state and actionable refusal", () => {
   const row = { space: "mine", desired: true, observed: "connected" };
-  assert.equal(computerSpaceState(row), "Connected");
+  assert.equal(computerSpaceState(row), "Starting");
+  assert.equal(computerSpaceState(row, true), "Connected");
   assert.equal(computerSpaceState({ ...row, observed: "approval-pending" }), "Waiting for owner approval");
   assert.equal(computerSpaceState({ ...row, observed: "removed on this computer" }), "Removed on this computer");
   assert.equal(computerSpaceState({ ...row, observed: "connecting" }), "Starting");
