@@ -78,7 +78,22 @@ function tool(dir: string, name: string, out = ""): void {
   chmodSync(join(dir, name), 0o755);
   writeFileSync(join(dir, `${name}.cmd`), `@${out ? `echo ${out}` : "exit /b 0"}\r\n`);
 }
-tool(bin, "codex");
+const codexStandIn = join(bin, "codex-fixture.cjs");
+writeFileSync(codexStandIn, `const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const state = path.join(process.env.HOME, ".codex-fixture.json");
+const saved = fs.existsSync(state) ? JSON.parse(fs.readFileSync(state, "utf8")) : {};
+if (args.join(" ") === "plugin marketplace list") console.log(saved.market ? "cotal-mesh" : "");
+else if (args.slice(0, 3).join(" ") === "plugin marketplace add") {
+  saved.market = args[3]; fs.writeFileSync(state, JSON.stringify(saved));
+} else if (args.join(" ") === "plugin add cotal@cotal-mesh") {
+  saved.version = JSON.parse(fs.readFileSync(path.join(saved.market, "plugins/cotal/.codex-plugin/plugin.json"), "utf8")).version;
+  fs.writeFileSync(state, JSON.stringify(saved));
+} else if (args.join(" ") === "plugin list" && saved.version) console.log("cotal@cotal-mesh  installed  " + saved.version);
+`);
+writeFileSync(join(bin, "codex"), `#!/bin/sh\nexec "${process.execPath}" "${codexStandIn}" "$@"\n`, { mode: 0o755 });
+writeFileSync(join(bin, "codex.cmd"), `@"${process.execPath}" "${codexStandIn}" %*\r\n`);
 tool(bin, "tmux");
 tool(more, "herdr", "herdr 0.7.0");
 tool(more, "orca");
@@ -92,6 +107,7 @@ const env: Record<string, string> = {
   COTAL_HOME: process.env.COTAL_HOME,
   COTAL_SKIP_CONNECTOR_SEED: "1",
   COTAL_SKIP_ASSIST: "1",
+  COTAL_NO_UPDATE_CHECK: "1",
   PATH: [bin, ...(process.platform === "win32" ? [join(process.execPath, "..")] : [])].join(delimiter),
   TERM: "xterm-256color",
 };
@@ -299,10 +315,10 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
 
   const before = files();
   const again = await json(FULL("research", dir));
-  check("a rerun with the same answers is a no-op, exit 0, and writes nothing",
-    again.status === 0 && again.env?.outcome === "no-op" && again.env.result.spaceState === "prepared" && again.env.result.written.length === 0 && JSON.stringify(files().filter((f) => !f.endsWith("setup.log"))) === JSON.stringify(before.filter((f) => !f.endsWith("setup.log"))), shown(again));
+  check("a rerun refreshes the Codex plugin, exits 0, and creates no new files",
+    again.status === 0 && again.env?.outcome === "ok" && again.env.result.actions.length === 1 && again.env.result.actions[0].action === "codex-plugin" && again.env.result.spaceState === "prepared" && again.env.result.written.length === 0 && JSON.stringify(files().filter((f) => !f.endsWith("setup.log"))) === JSON.stringify(before.filter((f) => !f.endsWith("setup.log"))), shown(again));
   const plain = await run([...FULL("research", dir), "--plain"]);
-  check("its plain report says the space is already set up", plain.status === 0 && /research is already set up for codex/.test(plain.stdout) && /already prepared/.test(plain.stdout), shown(plain));
+  check("its plain report names the refreshed setup and already prepared space", plain.status === 0 && /set up research for codex/.test(plain.stdout) && /already prepared/.test(plain.stdout), shown(plain));
 
   const startedRoot = project("started-here");
   recordMesh({ space: "startedspace", server: "nats://127.0.0.1:4997", root: startedRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
@@ -374,7 +390,7 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
     boundTarget.root === catalogProject && boundTarget.personaRoot === join(catalogProject, ".cotal", "agents") &&
       existsSync(join(boundTarget.personaRoot, "default.md")) && !sentinelCredsPath.startsWith(catalogProject), boundTarget);
   const boundAgain = await json(hosted("catalog-team", catalogProject));
-  check("the same discovered project binding again is a no-op", boundAgain.status === 0 && boundAgain.env?.outcome === "no-op" && boundAgain.env.result.spaceState === "registered", shown(boundAgain));
+  check("the same discovered project binding refreshes the plugin without rebinding", boundAgain.status === 0 && boundAgain.env?.outcome === "ok" && boundAgain.env.result.actions.length === 1 && boundAgain.env.result.actions[0].action === "codex-plugin" && boundAgain.env.result.spaceState === "registered", shown(boundAgain));
   const otherCatalogProject = project("catalog-project-other");
   const rebound = await json(hosted("catalog-team", otherCatalogProject));
   check("a discovered space already bound to another project refuses instead of moving again",
@@ -403,7 +419,7 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
     added.status === 0 && added.env?.result.spaceState === "added" && findMesh("hosted")?.root === userRoot && findMesh("hosted")?.mode === "user" && added.env.result.written.some((w: { what: string }) => w.what === "space registration"), shown(added));
   check("and its persona lands where spawn reads for that space", existsSync(join(resolveMeshTarget(home, { space: "hosted" }).personaRoot, "default.md")));
   const again = await json(hosted("hosted", userRoot, ["--connection-file", file]));
-  check("the same connection file again is a no-op", again.status === 0 && again.env?.outcome === "no-op" && again.env.result.spaceState === "registered", shown(again));
+  check("the same connection file refreshes the plugin without registering again", again.status === 0 && again.env?.outcome === "ok" && again.env.result.actions.length === 1 && again.env.result.actions[0].action === "codex-plugin" && again.env.result.spaceState === "registered", shown(again));
   writeFileSync(join(home, "moved.json"), JSON.stringify({ ...bundle, server: "nats://127.0.0.1:4998" }));
   const moved = await json(hosted("hosted", userRoot, ["--connection-file", join(home, "moved.json")]));
   check("a connection file naming another broker for a registered space is CONFLICT", refused(moved, 2, "CONFLICT") && /cotal space forget hosted/.test(moved.env?.error?.remedy ?? ""), shown(moved));
@@ -424,7 +440,7 @@ const row = (r: Awaited<ReturnType<typeof json>>, name: string) => rows(r).find(
   const listed = await json(["runtimes"]);
   check("cotal runtimes reports it installed and reachable", listed.env?.result?.items?.some((x: { name: string; state: string; reachable: boolean }) => x.name === "tmux" && x.state === "installed" && x.reachable === true), shown(listed));
   const again = await json([...FULL("rt", dir), "--runtime", "tmux"]);
-  check("naming it again is a no-op that finds it set up", again.status === 0 && again.env?.outcome === "no-op" && row(again, "tmux")?.state === "set-up" && row(again, "tmux")?.reachable === true, shown(again));
+  check("naming it again refreshes the plugin and finds the runtime set up", again.status === 0 && again.env?.outcome === "ok" && again.env.result.actions.length === 1 && again.env.result.actions[0].action === "codex-plugin" && row(again, "tmux")?.state === "set-up" && row(again, "tmux")?.reachable === true, shown(again));
   const bare = await run(["ext", "add", "@cotal-ai/tmux"]);
   check("ext add of a first-party name with no version installs this cotal's version, not the registry's newest",
     bare.status === 0 && installed("@cotal-ai/tmux")?.version === VERSION && installed("@cotal-ai/tmux")?.spec === `@cotal-ai/tmux@${VERSION}`, { run: shown(bare), installed: installed("@cotal-ai/tmux") });
@@ -497,7 +513,7 @@ if (process.platform !== "win32") {
     const frame = t.s.text().slice(t.s.text().lastIndexOf(DESTINATION));
     check("Cloud cannot be chosen: moving past Self-hosted comes back to Local", /● Local/.test(frame.slice(frame.lastIndexOf("Local") - 4)), frame.slice(-400));
     t.write("\x03");
-    check("Ctrl-C leaves setup and saves nothing", (await t.exited()) && JSON.stringify(files()) === JSON.stringify(before), { code: t.s.code });
+    check("Ctrl-C leaves setup and saves nothing", (await t.exited()) && JSON.stringify(files()) === JSON.stringify(before), { code: t.s.code, added: files().filter(f => !before.includes(f)), removed: before.filter(f => !files().includes(f)) });
   }
   {
     const dir = project("pty-local");
