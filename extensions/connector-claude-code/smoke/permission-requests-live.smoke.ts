@@ -77,9 +77,9 @@ const releaseBroker = teardownOnSignal(srv, root);
 const TMUX = ["-L", `cotal-perm-${randomUUID().slice(0, 8)}`];
 const tmux = (...args: string[]) => spawnSync("tmux", [...TMUX, ...args], { encoding: "utf8" });
 const screen = () => tmux("capture-pane", "-p", "-t", "seat").stdout ?? "";
-const type = (text: string) => { tmux("send-keys", "-t", "seat", "-l", text); tmux("send-keys", "-t", "seat", "Enter"); };
 
 const endpoints: CotalEndpoint[] = [];
+const artifacts: string[] = [];
 try {
   for (let i = 0; i < 50 && !(await isReachable(SERVERS)); i++) await wait(200);
   const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner");
@@ -115,6 +115,7 @@ try {
     space, name: "coder", id: seatId.id, creds: credsPath, servers: SERVERS, lifecycleUid: seatUid, model: "haiku",
     launchOptions: { "permission-mode": "default" }, resolvedBinaries: { claude: CLAUDE }, events: false,
   });
+  artifacts.push(...(spec.artifacts ?? []));
   const launcher = join(root, "launch.mjs");
   writeFileSync(launcher, `import { spawn } from "node:child_process";
 const s = ${JSON.stringify({ command: spec.command, args: spec.args, env: { ...spec.env, HOME: home, CLAUDE_CONFIG_DIR: config, ...xdg, TERM: "xterm-256color" } })};
@@ -130,9 +131,20 @@ spawn(s.command, s.args, { env: s.env, stdio: "inherit" }).on("exit", (code) => 
   check("claude starts in the pane and its seat joins the mesh", Boolean(ready && seatOnline), screen().slice(-800));
 
   const seat = (): Presence | undefined => web.getRoster().find((p) => p.lifecycleUid === seatUid);
+  // Claude reads keys typed in one burst as a paste and can drop an Enter inside it, which leaves the
+  // prompt unsent. Enter goes as its own keystroke until the seat's UserPromptSubmit hook says the
+  // turn started.
+  const type = async (text: string): Promise<void> => {
+    tmux("send-keys", "-t", "seat", "-l", text);
+    for (let tries = 0; tries < 3; tries++) {
+      await wait(500);
+      tmux("send-keys", "-t", "seat", "Enter");
+      if (await until(() => seat()?.status === "working", 5_000)) return;
+    }
+  };
   const idle = () => until(() => seat()?.status === "idle" && !screen().includes("Do you want to proceed?"), 90_000);
   const ask = async (marker: string): Promise<PermissionRecord | undefined> => {
-    type(`Run this exact bash command and nothing else: touch ${marker}`);
+    await type(`Run this exact bash command and nothing else: touch ${marker}`);
     return until(() => [...records.values()].find((r) => r.input.kind === "shown" && JSON.stringify(r.input.value).includes(marker)), 90_000);
   };
   const stateOf = (id: string) => records.get(id)?.state;
@@ -142,7 +154,7 @@ spawn(s.command, s.args, { env: s.env, stdio: "inherit" }).on("exit", (code) => 
   const a = await ask("marker-approve");
   check("a held prompt writes one pending record naming the seat, the tool, the full command and the directory",
     a !== undefined && a.agent === AGENT && a.tool === "Bash" && a.state.kind === "pending" && a.cwd === ws && a.holder.lifecycleUid === seatUid
-      && a.input.kind === "shown" && (a.input.value as { command?: string }).command === "touch marker-approve", a);
+      && a.input.kind === "shown" && (a.input.value as { command?: string }).command === "touch marker-approve", a ?? screen());
   if (!a) throw new Error("no record for the first prompt; nothing below can run");
   await wait(8_000);
   const condition = seat()?.condition;
@@ -214,6 +226,7 @@ spawn(s.command, s.args, { env: s.env, stdio: "inherit" }).on("exit", (code) => 
   tmux("kill-server");
   await Promise.all(endpoints.map((ep) => ep.stop().catch(() => {})));
   await killAndAwaitExit(srv);
+  for (const path of artifacts) rmSync(path, { recursive: true, force: true });
   if (!process.env.COTAL_LIVE_KEEP) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   else console.log(`  kept ${root}`);
   releaseBroker();
