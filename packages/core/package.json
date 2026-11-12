@@ -48,6 +48,10 @@
       "types": "./dist/presence-ages.d.ts",
       "import": "./dist/presence-ages.js"
     },
+    "./permissions": {
+      "types": "./dist/permissions.d.ts",
+      "import": "./dist/permissions.js"
+    },
     "./peer-label": {
       "types": "./dist/peer-label.d.ts",
       "import": "./dist/peer-label.js"
