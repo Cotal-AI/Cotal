@@ -100,6 +100,7 @@ export interface DaemonStatus {
   readonly account?: AccountComputerStatus;
   readonly generation?: { readonly installed: string; readonly running: string; readonly waiting: string };
   readonly managers?: readonly HostedManager[];
+  readonly agents?: readonly HostedAgents[];
   /** The local control listener is bound and verified. It does NOT mean connected to a mesh or Cloud. */
   readonly state: "ready";
   readonly protocol: typeof DAEMON_PROTOCOL_VERSION;
@@ -108,6 +109,20 @@ export interface DaemonStatus {
   readonly startedAt: string;
   readonly uptimeMs: number;
 }
+
+export interface HostedAgent {
+  readonly name: string;
+  readonly application: string;
+  readonly model?: string;
+  readonly cwd: string;
+  readonly startedAt: string;
+  readonly state: "running" | "exited";
+}
+
+export type HostedAgents = { readonly space: string; readonly observedAt: string } & (
+  | { readonly state: "read"; readonly agents: readonly HostedAgent[] }
+  | { readonly state: "unreadable"; readonly message: string }
+);
 
 export interface HostedManager {
   readonly connectors?: readonly { readonly agent: string; readonly state: string; readonly reason?: string }[];
