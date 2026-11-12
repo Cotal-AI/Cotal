@@ -7,7 +7,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { cachedPreferences, CommandFailure, resolvePreference, parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
 import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
@@ -210,6 +210,8 @@ function show(name: string | undefined, values: { space?: string; server?: strin
  *  then the saved one), validate a private draft, then compare and commit through the shared local writer. */
 async function edit(name: string | undefined, values: { space?: string; server?: string }): Promise<void> {
   if (!name) return usage();
+  if (!resolvePreference("editor", { preferences: cachedPreferences() }).value)
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
   const catalog = personaCatalog(values);
   const edit = await editPersona(personaPath(catalog.root, name), name, catalog);
   if (edit.action === "saved") console.log(c.green(`✓ saved "${name}"`));

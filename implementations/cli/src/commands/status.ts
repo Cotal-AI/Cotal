@@ -1357,7 +1357,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     }
     // `up` and `down` refuse a root whose `.cotal` is a link, so the step that would start it there is
     // the one their refusal names.
-    const unstarted = e instanceof UnregisteredRoot ? e.root : isWorkspaceTargetError(e) && e.code === "not-started" ? e.details.root : undefined;
+    const unstarted = e instanceof UnregisteredRoot ? e.root : isWorkspaceTargetError(e) && (e.code === "not-started" || e.code === "no-meshes") ? e.details.root : undefined;
     const link = unstarted === undefined ? undefined : cotalDirLink(unstarted);
     if (unstarted !== undefined && link !== undefined) {
       hints.push(linkedCotalRemedy(unstarted, link));

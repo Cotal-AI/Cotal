@@ -115,7 +115,7 @@ const selectedRefusal = (r: ReturnType<typeof run>) => refusedWith(r, "TARGET_UN
   'start it where it runs, or `cotal space forget sel07` to unregister it') && r.envelope?.target?.space === "sel07";
 
 const before = run(["whoami", "--json"]);
-check("control: with nothing recorded, the root still resolves, so the journal is what changes it", before.status === 0 && before.envelope?.outcome === "ok", shown(before));
+check("control: with nothing recorded, the root names no space and borrows none", before.status === 2 && before.envelope?.error?.code === "TARGET_NOT_FOUND" && before.envelope.error.message === `no space is registered or prepared here for ${root}`, shown(before));
 
 const now = new Date().toISOString();
 const member = (role: string, definition: string, state: string) => ({ role, definition, instanceId: null, state });
