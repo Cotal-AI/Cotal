@@ -5,6 +5,8 @@
  * them; a failed, a foreign-account and an epoch-fenced candidate each leave the last-good family
  * untouched and record explicit cleanup debt; the repaired candidate is preflighted and adopted,
  * and every connection is back on the broker under the renewed JWT with the same nkey.
+ * Authority delay, two sequential delayed broker handshakes, and post-adoption reconnect delay
+ * exercise the shared ten-second budget. Late authority results and PONGs cannot adopt.
  *
  * Limit: the five connections are dialed by this smoke through the manager's own dialer and read
  * the manager's own credential holders, with ignoreAuthErrorAbort so an expired connection keeps
@@ -17,9 +19,10 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer, connect as tcpConnect, type Socket } from "node:net";
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
-  createSpaceAuth, credsClaims, isReachable, mintCreds, mintLifecycleUid, newIdentity, remoteManagerActors, serverConfig,
+  createSpaceAuth, credsClaims, jwtFromCreds, isReachable, mintCreds, mintLifecycleUid, newIdentity, remoteManagerActors, serverConfig,
   type Identity, type SpaceAuth,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -75,16 +78,49 @@ type Internals = {
 };
 
 const conns: NatsConnection[] = [];
+const sockets = new Set<Socket>();
+const holds = new Set<string>();
+const heldDials: number[] = [];
+const proxy = createServer((inbound) => {
+  const outbound = tcpConnect(PORT, "127.0.0.1");
+  sockets.add(inbound); sockets.add(outbound);
+  const drop = () => { inbound.destroy(); outbound.destroy(); sockets.delete(inbound); sockets.delete(outbound); };
+  inbound.on("error", drop); outbound.on("error", drop);
+  inbound.on("close", drop); outbound.on("close", drop);
+  let connectBytes = "";
+  let hold = false;
+  let held = false;
+  inbound.on("data", (chunk) => {
+    if (holds.size) {
+      connectBytes = (connectBytes + chunk.toString()).slice(-65_536);
+      for (const jwt of holds) if (connectBytes.includes(jwt)) {
+        holds.delete(jwt); hold = true; heldDials.push(performance.now());
+      }
+    }
+    outbound.write(chunk);
+  });
+  outbound.on("data", (chunk) => {
+    if (hold && !held && chunk.includes("PONG\r\n")) {
+      held = true;
+      setTimeout(() => { if (!inbound.destroyed) inbound.write(chunk); }, 6_000);
+    } else if (!inbound.destroyed) inbound.write(chunk);
+  });
+});
 try {
   await awaitBrokerReady(() => isReachable(SERVERS), { servers: SERVERS, attempts: 50, delayMs: 100 });
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const address = proxy.address();
+  assert.ok(address && typeof address === "object");
   const TTL = 16;
   const initial = await family(auth, TTL);
-  let mode: "fail" | "foreign" | "fenced" | "good" = "fail";
+  let mode: "fail" | "foreign" | "fenced" | "good" | "late" | "slow" = "fail";
+  let finishLate: (() => void) | undefined;
+  let lateAuthorityDone: Promise<void> | undefined;
   let calls = 0;
   let m!: Internals;
   const renewed: { value?: Record<Name, string> } = {};
   const manager = new Manager({
-    space, servers: SERVERS, runtime: "pty",
+    space, servers: `nats://127.0.0.1:${address.port}`, runtime: "pty",
     remoteAuthority: {
       owner, actors, instanceId, lifecycleUid: mintLifecycleUid(), identities: held,
       accountPublicKey: auth.account.pub,
@@ -97,8 +133,17 @@ try {
         if (mode === "fail") throw new Error("injected issuer outage");
         if (mode === "foreign") return family(foreign, 3600);
         if (mode === "fenced") { const f = await family(auth, 3600); m.serviceServe!.grant.epoch = 8; return f; }
-        renewed.value = await family(auth, 3600);
-        return renewed.value;
+        const candidate = await family(auth, 3600);
+        if (mode === "slow") {
+          holds.add(jwtFromCreds(candidate.supervisor)!);
+          holds.add(jwtFromCreds(candidate.executor)!);
+        }
+        if (mode === "late") {
+          lateAuthorityDone = new Promise<void>((resolve) => { finishLate = resolve; });
+          await lateAuthorityDone;
+        }
+        renewed.value = candidate;
+        return candidate;
       },
       serveGrant: { epoch: 7 } as never,
       agentBearerExchangeUrl: "https://auth.example.test",
@@ -180,6 +225,19 @@ try {
     await assert.rejects(m.renewRemoteStandingBundle(true), /injected issuer outage/);
     assert.deepEqual(holders(), initial);
   });
+  await cell("a stalled authority has one aggregate budget and records all possibly issued subjects", async () => {
+    mode = "late";
+    const started = performance.now();
+    const scheduled = m.renewRemoteStandingBundle();
+    await wait(50);
+    const forced = m.renewRemoteStandingBundle(true);
+    await Promise.all([scheduled, forced]);
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed >= 9_500 && elapsed < 12_000, `renewal took ${elapsed}ms`);
+    assert.deepEqual(holders(), initial);
+    assert.match(m.remoteRenewalDebt!.reason, /aggregate budget.*issuance outcome is unknown/);
+    assert.deepEqual(new Set(m.remoteRenewalDebt!.unadoptedSubjects), new Set(names.map((n) => held[n].id)));
+  });
   await cell("the repaired family is adopted for all five duties and debt is cleared", async () => {
     mode = "good";
     await m.renewRemoteStandingBundle();
@@ -187,10 +245,48 @@ try {
     assert.equal(m.remoteRenewalDebt, undefined);
     for (const n of names) assert.equal(credsClaims(renewed.value![n]).sub, held[n].id, `${n} keeps its held nkey`);
   });
+  await cell("the timed-out authority's late result cannot overwrite a newer adoption or its debt", async () => {
+    const adopted = holders();
+    finishLate!();
+    await lateAuthorityDone;
+    await wait(100);
+    assert.deepEqual(holders(), adopted);
+    assert.equal(m.remoteRenewalDebt, undefined);
+  });
   await cell("every standing connection is back on the broker under the renewed JWT", async () => {
     let ok: boolean[] = [];
     for (let i = 0; i < 20; i++) { ok = await flushAll(); if (ok.every(Boolean)) break; await wait(250); }
     assert.deepEqual(ok, [true, true, true, true, true]);
+  });
+  await cell("two sub-budget preflight handshakes share one aggregate deadline and retain the healthy old family", async () => {
+    mode = "slow";
+    const previous = holders();
+    const started = performance.now();
+    await assert.rejects(m.renewRemoteStandingBundle(true), /aggregate budget|TIMEOUT/i);
+    const elapsed = performance.now() - started;
+    assert.equal(heldDials.length, 2, "both six-second handshakes must be reached");
+    assert.ok(elapsed >= 9_500 && elapsed < 12_000, `preflight took ${elapsed}ms`);
+    assert.deepEqual(holders(), previous);
+    assert.deepEqual(await flushAll(), [true, true, true, true, true]);
+    await wait(2_500);
+    assert.deepEqual(holders(), previous, "a late PONG cannot adopt the abandoned family");
+    mode = "good";
+  });
+  await cell("a post-adoption reconnect wait expires without undoing adoption or inventing unadopted debt", async () => {
+    const reconnect = m.ep.refreshCredsRequestSafe;
+    let finishReconnect!: () => void;
+    const pending = new Promise<void>((resolve) => { finishReconnect = resolve; });
+    m.ep.refreshCredsRequestSafe = () => pending;
+    try {
+      const started = performance.now();
+      await m.renewRemoteStandingBundle(true);
+      assert.ok(performance.now() - started < 12_000, "adopted reconnect exceeded the shared budget");
+      assert.deepEqual(holders(), renewed.value);
+      assert.equal(m.remoteRenewalDebt, undefined);
+    } finally {
+      finishReconnect();
+      m.ep.refreshCredsRequestSafe = reconnect;
+    }
   });
   await cell("the renewed connections stay served well past the initial expiry", async () => {
     await wait(TTL * 1000 / 2);
@@ -198,6 +294,8 @@ try {
   });
 } finally {
   await Promise.all(conns.map((nc) => nc.close().catch(() => {})));
+  for (const socket of sockets) socket.destroy();
+  await new Promise<void>((resolve) => proxy.close(() => resolve()));
   releaseBroker();
   await killAndAwaitExit(srv);
 }
