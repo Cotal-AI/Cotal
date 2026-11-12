@@ -989,6 +989,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Full per-endpoint-name {@link resolveService} cache for {@link describeService}. Narrow command
    *  handles never enter it, so discovery cannot inherit a truncated invocation surface. */
   private readonly resolvedServices = new Map<string, ResolvedService>();
+  private readonly serviceInvocations = new WeakMap<NatsConnection, Set<Promise<unknown>>>();
   /** Narrow invocation handles, keyed by endpoint and the sorted command set they verify. Kept
    *  separate from full discovery handles so alternating commands neither overwrite each other nor
    *  poison {@link describeService}. */
@@ -3032,6 +3033,19 @@ export class CotalEndpoint extends EventEmitter {
     this.resolvedCommandServices.delete(endpoint);
   }
 
+  /** Keep a permission repair from closing other requests before their broker refusals arrive.
+   *  Accepted goal following is not a request and must never hold this barrier. */
+  private async trackServiceInvocation<T>(nc: NatsConnection, request: Promise<T>): Promise<T> {
+    let pending = this.serviceInvocations.get(nc);
+    if (!pending) {
+      pending = new Set();
+      this.serviceInvocations.set(nc, pending);
+    }
+    pending.add(request);
+    try { return await request; }
+    finally { pending.delete(request); }
+  }
+
   /** The resolved, digest-verified command surface of `endpoint` as this connection's caller sees
    *  it. Unpinned calls cache the complete discovery surface, and `refresh` drops both the full
    *  handle and any command-specific invocation handles. `instanceId` selects one instance without
@@ -3112,6 +3126,9 @@ export class CotalEndpoint extends EventEmitter {
    *     the bind is dropped but the call is re-issued only for a command on the
    *     {@link isRepeatSafeCommand} allowlist; anything else surfaces, since a second attempt could
    *     duplicate its effect.
+   *  A broker permission refusal marked `not-executed` rebuilds the connection and retries once
+   *  within the original deadline, so a grant issued after authentication becomes usable. A
+   *  second refusal stands. Responder errors and calls that may have run never trigger this repair.
    *  Errors from the responder come back structurally on the attributed reply
    *  (`reply.ok === false`); transport/validation refusals throw {@link EpEnvelopeError}. */
   async invokeService(
@@ -3120,11 +3137,58 @@ export class CotalEndpoint extends EventEmitter {
     args?: Record<string, unknown>,
     opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string; classInstanceId?: string } = {},
   ): Promise<EpAttributedReply> {
+    const nc = this.nc;
+    if (!nc) throw new Error(this.notLiveMsg());
+    const deadline = Date.now() + (opts.deadlineMs ?? 10_000);
+    try {
+      return await this.invokeServiceOnce(endpoint, command, args, opts);
+    } catch (e) {
+      if (!(e instanceof EpEnvelopeError) || e.code !== "permission-denied" || e.outcome !== "not-executed"
+        || deadline <= Date.now()) throw e;
+      opts.signal?.throwIfAborted();
+      // Concurrent refusals of the same connection share its rebuild. If another call already
+      // replaced it, use that connection rather than immediately tearing the fresh one down.
+      const recovery = (async () => {
+        // Closing on the first denial can discard a concurrent call's still-arriving denial,
+        // leaving that call with an unknown timeout. Let the old attempts settle first.
+        await Promise.allSettled([...(this.serviceInvocations.get(nc) ?? [])]);
+        opts.signal?.throwIfAborted();
+        if (deadline <= Date.now()) throw e;
+        if (this.nc === nc) await this.reconnect();
+        else await this.rebuildPromise;
+      })();
+      let onAbort: (() => void) | undefined;
+      const cancelled = new Promise<never>((_, reject) => {
+        onAbort = () => reject(opts.signal?.reason);
+        if (opts.signal?.aborted) onAbort();
+        else opts.signal?.addEventListener("abort", onAbort, { once: true });
+      });
+      try {
+        await withDeadline(Promise.race([recovery, cancelled]), deadline - Date.now(), () => e);
+      } finally {
+        if (onAbort) opts.signal?.removeEventListener("abort", onAbort);
+      }
+      opts.signal?.throwIfAborted();
+      if (deadline <= Date.now()) throw e;
+      this.clearResolvedService(endpoint);
+      return this.invokeServiceOnce(endpoint, command, args, { ...opts, deadlineMs: deadline - Date.now() }, deadline);
+    }
+  }
+
+  private async invokeServiceOnce(
+    endpoint: string,
+    command: string,
+    args: Record<string, unknown> | undefined,
+    opts: Parameters<CotalEndpoint["invokeService"]>[3] = {},
+    retryDeadline?: number,
+  ): Promise<EpAttributedReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const nc = this.nc;
     const caller = this.serviceCaller();
     const resolve = async (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000): Promise<ResolvedService> => {
       signal?.throwIfAborted();
+      if (retryDeadline !== undefined) deadlineMs = Math.min(deadlineMs, retryDeadline - Date.now());
+      if (deadlineMs <= 0) throw new EpEnvelopeError("deadline-exceeded", "the invocation deadline elapsed before resolve", undefined, "not-executed");
       const needed = opts.follow ? [command, "goal-result"] : [command];
       const classSelected = opts.instanceId === undefined && opts.classInstanceId === undefined;
       const full = classSelected ? this.resolvedServices.get(endpoint) : undefined;
@@ -3158,7 +3222,10 @@ export class CotalEndpoint extends EventEmitter {
       signal?.throwIfAborted();
       const unfollowable = opts.follow ? goalFollowRefusal(service) : undefined;
       if (unfollowable) return Promise.resolve(unfollowable);
-      return invokeCommand(nc, this.space, service, command, args, { ...invokeOpts, signal });
+      const deadlineMs = retryDeadline === undefined ? invokeOpts.deadlineMs : retryDeadline - Date.now();
+      if (deadlineMs !== undefined && deadlineMs <= 0)
+        throw new EpEnvelopeError("deadline-exceeded", "the invocation deadline elapsed before publish", undefined, "not-executed");
+      return invokeCommand(nc, this.space, service, command, args, { ...invokeOpts, deadlineMs, signal });
     };
     // A `failed-precondition` from the resolve is its own refusal, raised before any command was
     // published, so resolving once more is a repair. The repair spends what is left of the same
@@ -3290,13 +3357,13 @@ export class CotalEndpoint extends EventEmitter {
     };
     // A goal-bearing command (spawn/launch) follows its acceptance to the terminal so
     // the caller still returns on the real outcome (UX unchanged); every other command replies directly.
-    if (!opts.follow) return doInvoke(await resolveFirst());
+    if (!opts.follow) return this.trackServiceInvocation(nc, (async () => doInvoke(await resolveFirst()))());
     // Resolved before the submission starts: the follow reports an unmarked failure inside the
     // submission as a command that may have run, and the resolve publishes none of this call.
     let service: ResolvedService;
-    return this.followServiceGoal(endpoint, (signal) => doInvoke(service, signal), opts.deadlineMs ?? 10_000, {
+    return this.followServiceGoal(endpoint, (signal) => this.trackServiceInvocation(nc, doInvoke(service, signal)), opts.deadlineMs ?? 10_000, {
       signal: opts.signal,
-      prepare: async (signal, deadline) => { service = await resolveFirst(signal, deadline); },
+      prepare: async (signal, deadline) => { service = await this.trackServiceInvocation(nc, resolveFirst(signal, deadline)); },
     });
   }
 

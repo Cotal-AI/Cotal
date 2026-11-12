@@ -18,8 +18,14 @@ as stored. Ordinary user-auth agent connects now derive their endpoint rows from
 core's native grant builder, including reserved Describe for each authorized exact instance. A user-mode
 chat session is never a grantee, so the callout mints it no endpoint rows. An unpinned
 `invokeService` or `invokeCommand` whose class publish the broker refuses is re-sent once on the rail of
-the instance that answered its describe, so a granted caller reaches the service without naming the instance. The
-callout rechecks grantee lifecycle, named ancestor grants, current name, assignment, root, activation,
+the instance that answered its describe, so a granted caller reaches the service without naming the instance.
+The `CotalEndpoint.invokeService` method also rebuilds its connection and retries once after a broker
+`permission-denied` refusal marked `not-executed`. This makes a grant issued while the caller was
+connected usable without a manual reconnect. Recovery shares concurrent rebuilds and spends the
+original invocation deadline. A second refusal stands. Responder refusals and calls whose outcome
+is `executed` or `unknown` do not trigger this recovery. Low-level `invokeCommand` callers own
+their connection and must reconnect themselves after a late grant.
+The callout rechecks grantee lifecycle, named ancestor grants, current name, assignment, root, activation,
 approval and ceiling, then checks the policy evidence again after signing and native-key recording.
 The original connection expiry is at most 60 seconds from issuance, and capped by root and approval
 expiry. These are fresh leader reads,

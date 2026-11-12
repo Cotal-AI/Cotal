@@ -8,7 +8,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
-  EpEnvelopeError, contractDigest, invokeCommand, mintCreds, newIdentity, parseServiceAuthorityRequest, resolveService,
+  CotalEndpoint, EpEnvelopeError, contractDigest, invokeCommand, mintCreds, newIdentity, parseServiceAuthorityRequest, resolveService,
   setupSpaceStreams, type AuthProvider, type ServiceAuthorityRequest,
 } from "@cotal-ai/core";
 import { startHostedAuthFixture, MemoryStore } from "../../auth/smoke/_hosted-auth-fixture.js";
@@ -62,12 +62,25 @@ const clientStore = new MemoryStore({ kind: "injected", coordinate: "linear-clie
 await clientStore.put(authClientSentinelKey(a.space), a.sentinelCreds);
 let service: AuthServiceHandle | undefined;
 const conns: NatsConnection[] = [];
+const endpoints: CotalEndpoint[] = [];
 let running: Promise<void> | undefined;
 let ctl = new AbortController();
 let closedUpstreams = 0, toolCalls = 0;
+let slowStarted: (() => void) | undefined;
 const upstream = () => ({
-  inventory: async () => ({ digest: "fixture-inventory", mode: "readonly", tools: [] }),
-  callTool: async () => { toolCalls++; return { kind: "result", inventoryDigest: "fixture-inventory", result: { content: [{ type: "text", text: "fixture-result" }] } }; },
+  inventory: async () => ({ endpoint: "ai.cotal.linear", digest: "fixture-inventory", fetchedAt: new Date().toISOString(),
+    mode: "readonly", server: {}, capabilities: {}, unsupported: [], pages: 1, bytes: 0, tools: [] }),
+  callTool: async (input: { name: string }) => {
+    toolCalls++;
+    if (input.name === "executed-denial" || input.name === "unknown-denial" || input.name === "not-executed-denial")
+      throw new EpEnvelopeError("permission-denied", "fixture responder refusal", undefined,
+        input.name === "executed-denial" ? "executed" : input.name === "unknown-denial" ? "unknown" : "not-executed");
+    if (input.name === "slow") {
+      slowStarted?.();
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    return { kind: "result", inventoryDigest: "fixture-inventory", result: { content: [{ type: "text", text: "fixture-result" }] } };
+  },
   close: async () => { closedUpstreams++; },
 }) as unknown as LinearUpstream;
 const seen: ServiceAuthorityRequest[] = [];
@@ -134,10 +147,14 @@ try {
   assert.ok(seen.some(r => r.operation === "ready"), "ready is acknowledged through the native door");
   const registered = (await provider.serviceEndpointAuthority!({ store: clientStore, dir, request })).result;
   assert.equal(registered.state, "registered"); if (registered.state !== "registered") throw new Error("register replay");
-  const dial = async (actor: string) => {
+  const bearer = async (actor: string) => {
     const response = await fetch(`${service!.url}/exchange`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${service!.cap}` }, body: JSON.stringify({ idpToken: jwt(), actor }) });
     assert.equal(response.status, 200);
     const { token } = await response.json() as { token: string };
+    return token;
+  };
+  const dial = async (actor: string) => {
+    const token = await bearer(actor);
     const nonce = rid();
     const nc = await connect({ servers: fx.servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0,
       authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(token)] });
@@ -145,20 +162,96 @@ try {
   };
   // A caller connected before its grant keeps the permissions it authenticated with (#5668).
   const early = await dial("caller");
+  const openCaller = async (actor = "caller", lifecycleUid = caller.lifecycleUid!) => {
+    const ep = new CotalEndpoint({ space: a.space, servers: fx.servers, bearer: () => bearer(actor),
+      sentinelCreds: a.sentinelCreds, lifecycleUid, channels: [], consume: false,
+      watchPresence: false, registerPresence: false, watchChannels: false,
+      card: { owner, actor, name: actor, kind: "agent" } });
+    ep.on("error", () => {});
+    ep.on("warning", () => {});
+    endpoints.push(ep);
+    await ep.start();
+    return ep;
+  };
+  const connected = await openCaller();
+  const pinnedCaller = await openCaller();
+  const cancelledCaller = await openCaller();
+  let reconnects = 0;
+  connected.on("connection", ({ connected }: { connected: boolean }) => { if (connected) reconnects++; });
   const grantCall = await serviceEndpointHostCall(dir, a.space, ["grant", proposalId], { to: `${owner}.caller`, lifecycle: caller.lifecycleUid!, commands: LINEAR_COMMANDS.join(",") });
   assert.equal(grantCall.answer.state, "granted");
   assert.match(grantCall.note ?? "", new RegExp(`connection ${owner}\\.caller opened before this grant .*must reconnect`), "the grant result says a connected grantee must reconnect");
   const stale = await resolveService(early, a.space, endpoint, { owner, actor: "caller", uid: caller.lifecycleUid! }, { instanceId: request.instanceId, deadlineMs: 3000 }).then(() => undefined, (e: unknown) => e);
   assert.ok(stale instanceof EpEnvelopeError && stale.code === "permission-denied" && stale.outcome === "not-executed", String(stale));
   assert.match(stale.message, /granted after this connection authenticated.*reconnect and retry/, "the connected caller is told to reconnect, not that it holds no grant");
+  const toolArgs = (name: string) => ({ name, arguments: {}, inventoryDigest: "fixture-inventory" });
+  const recovered = await Promise.allSettled([
+    connected.invokeService(endpoint, "call-tool", toolArgs("echo"), { deadlineMs: 3000 }),
+    connected.invokeService(endpoint, "call-tool", toolArgs("echo"), { deadlineMs: 3000 }),
+  ]);
+  assert.ok(recovered.every(r => r.status === "fulfilled" && r.value.reply.ok), "concurrent late-granted mutations recover without a manual reconnect");
+  assert.equal(toolCalls, 2, "each recovered mutation executes once");
+  assert.equal(reconnects, 1, "concurrent refusals share one connection rebuild");
+  const pinnedReply = await pinnedCaller.invokeService(endpoint, "inventory", {}, { instanceId: request.instanceId, deadlineMs: 3000 });
+  assert.equal(pinnedReply.reply.ok, true, "a pinned pre-grant describe recovers on a fresh connection too");
+  console.log("late-grant pinned reply received");
+  for (const [name, outcome] of [["executed-denial", "executed"], ["unknown-denial", "unknown"], ["not-executed-denial", "not-executed"]] as const) {
+    const before: number = toolCalls;
+    const refusedReply = await connected.invokeService(endpoint, "call-tool", toolArgs(name), { deadlineMs: 3000 });
+    assert.equal(refusedReply.reply.ok, false);
+    assert.equal(refusedReply.reply.error?.outcome, outcome, "the responder's outcome survives");
+    assert.equal(toolCalls, before + 1, "a responder refusal is never replayed");
+    assert.equal(reconnects, 1, "a responder refusal never reconnects");
+  }
+  const beforeTimeout = toolCalls;
+  await assert.rejects(connected.invokeService(endpoint, "call-tool", toolArgs("slow"), { deadlineMs: 40 }),
+    (e: unknown) => e instanceof EpEnvelopeError && e.code === "deadline-exceeded" && e.outcome === "unknown");
+  assert.equal(toolCalls, beforeTimeout + 1, "a timed-out mutation is not replayed");
+  assert.equal(reconnects, 1, "an unknown timeout does not reconnect");
+  const started = new Promise<void>(resolve => { slowStarted = resolve; });
+  const slowCall = connected.invokeService(endpoint, "call-tool", toolArgs("slow"), { deadlineMs: 3000 });
+  await started;
+  const beforeDeadline = Date.now();
+  await assert.rejects(connected.invokeService(endpoint, "inventory", {}, { instanceId: rid(), deadlineMs: 60 }),
+    (e: unknown) => e instanceof EpEnvelopeError && e.code === "permission-denied" && e.outcome === "not-executed");
+  assert.ok(Date.now() - beforeDeadline < 140, "waiting for another request does not extend the recovery deadline");
+  assert.equal((await slowCall).reply.ok, true, "deadline exhaustion never tears down an in-flight mutation");
+  slowStarted = undefined;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(reconnects, 1, "a repair that outlives its caller never reconnects later");
+  const beforeAbort = toolCalls;
+  const aborted = new AbortController();
+  aborted.abort(new Error("fixture cancellation"));
+  await assert.rejects(connected.invokeService(endpoint, "call-tool", toolArgs("echo"), { signal: aborted.signal }), /fixture cancellation/);
+  assert.equal(toolCalls, beforeAbort, "a cancelled call publishes no mutation");
+  const cancelRecovery = new AbortController();
+  let recoveryFinished!: () => void;
+  const readyAfterCancel = new Promise<void>(resolve => { recoveryFinished = resolve; });
+  cancelledCaller.on("connection", ({ connected }: { connected: boolean }) => {
+    if (connected) recoveryFinished();
+    else cancelRecovery.abort(new Error("cancelled during recovery"));
+  });
+  await assert.rejects(cancelledCaller.invokeService(endpoint, "call-tool", toolArgs("echo"),
+    { deadlineMs: 3000, signal: cancelRecovery.signal }), /cancelled during recovery/);
+  await readyAfterCancel;
+  assert.equal(toolCalls, beforeAbort, "a rebuild finishing after cancellation never submits the mutation");
+  const ungranted = await openCaller("stranger", stranger.lifecycleUid!);
+  let deniedReconnects = 0;
+  ungranted.on("connection", ({ connected }: { connected: boolean }) => { if (connected) deniedReconnects++; });
+  await assert.rejects(ungranted.invokeService(endpoint, "inventory", {}, { instanceId: request.instanceId, deadlineMs: 3000 }),
+    (e: unknown) => e instanceof EpEnvelopeError && e.code === "permission-denied" && e.outcome === "not-executed"
+      && /reconnect and retry/.test(e.message));
+  assert.equal(deniedReconnects, 1, "a permanent refusal reconnects only once and then stands");
+  assert.equal(toolCalls, beforeAbort, "a permanent broker refusal executes nothing");
+  const recoveryCalls = toolCalls;
   const nc = await dial("caller");
   const target = await resolveService(nc, a.space, endpoint, { owner, actor: "caller", uid: caller.lifecycleUid! }, { instanceId: request.instanceId, deadlineMs: 3000 });
   const result = await invokeCommand(nc, a.space, target, "call-tool", { name: "echo", arguments: {}, inventoryDigest: "fixture-inventory" }, { deadlineMs: 3000 });
   assert.equal(result.reply.ok, true, "authorized native discovery and invocation reach Linear's handler");
-  assert.equal(toolCalls, 1);
+  assert.equal(toolCalls, recoveryCalls + 1);
   const denied = await dial("stranger");
   await assert.rejects(resolveService(denied, a.space, endpoint, { owner, actor: "stranger", uid: stranger.lifecycleUid! }, { instanceId: request.instanceId, deadlineMs: 500 }));
-  assert.equal(toolCalls, 1, "ungranted caller does not reach the upstream");
+  assert.equal(toolCalls, recoveryCalls + 1, "ungranted caller does not reach the upstream");
   const keys = [...clientStore.values.keys()].filter(k => k.endsWith("register.json"));
   assert.equal(keys.length, 1);
   await assert.rejects(linearUserAuthRequest(clientStore, keys[0]!, { space: a.space, endpoint, accountPublicKey: "wrong-account" }), /another account/);
@@ -173,7 +266,7 @@ try {
   const resumed = await resolveService(nc, a.space, endpoint, { owner, actor: "caller", uid: caller.lifecycleUid! }, { instanceId: request.instanceId, deadlineMs: 3000 });
   const resumedReply = await invokeCommand(nc, a.space, resumed, "call-tool", { name: "echo", arguments: {}, inventoryDigest: "fixture-inventory" }, { deadlineMs: 3000 });
   assert.equal(resumedReply.reply.ok, true, "the same instance-scoped caller grant serves after restart");
-  assert.equal(toolCalls, 2);
+  assert.equal(toolCalls, recoveryCalls + 2);
   if (process.argv.includes("--renewal")) {
     const firstExpiry = expiries.at(-1)!;
     const reconnected = once(renewalEvents, "ready", { signal: AbortSignal.timeout(90_000) });
@@ -187,7 +280,7 @@ try {
     const refreshed = await resolveService(nc, a.space, endpoint, { owner, actor: "caller", uid: caller.lifecycleUid! }, { instanceId: request.instanceId, deadlineMs: 3000 });
     const refreshedReply = await invokeCommand(nc, a.space, refreshed, "call-tool", { name: "echo", arguments: {}, inventoryDigest: "fixture-inventory" }, { deadlineMs: 3000 });
     assert.equal(refreshedReply.reply.ok, true, "the same native instance serves after expiry reconnect");
-    assert.equal(toolCalls, 3);
+    assert.equal(toolCalls, recoveryCalls + 3);
     if (approved.state !== "approved") throw new Error("approval missing");
     const revoked = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: { kind: "owner", owner }, input: {
       endpoint, instanceId: request.instanceId, expectedAssignmentDigest: approved.approval.assignment.assignmentDigest, cause: "owner-request" } });
@@ -200,16 +293,17 @@ try {
     await assert.rejects(start(), /did not authorize|renewal ended/);
     assert.equal(closedUpstreams, 4, "a revoked restart closes its upstream without a replacement registration");
     assert.equal(contractDigest(seen.filter(r => r.operation === "register").at(-1)!), contractDigest(request));
-    assert.equal(toolCalls, 3);
+    assert.equal(toolCalls, recoveryCalls + 3);
     console.log("LINEAR HOSTED RENEWAL: native timer, real bearer-expiry reconnect, same-instance invocation, deny-new shutdown and revoked restart refusal passed; remote eviction is not claimed");
   } else {
     ctl.abort(); await running; running = undefined;
     assert.equal(closedUpstreams, 3, "restart stop closes its upstream");
   }
-  console.log("LINEAR HOSTED SERVE: approval refusal names its proposal and approve command, the printed approval, approval replay, native ready, exact caller discovery/invocation, the reconnect remedy for a caller connected before its grant, ungranted refusal, account pin, stop and same-instance restart passed");
+  console.log("LINEAR HOSTED SERVE: approval, discovery, late-grant recovery, concurrent single rebuild, pinned recovery, no replay after responder refusal or unknown outcome, cancellation, ungranted refusal, account pin, stop and same-instance restart passed");
   emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   ctl.abort(); await running?.catch(() => {});
+  for (const ep of endpoints) await ep.stop();
   for (const nc of conns) await nc.close();
   await service?.close();
   await new Promise<void>(resolve => idp.close(() => resolve()));

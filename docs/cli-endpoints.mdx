@@ -637,9 +637,12 @@ outside the approval's caller ceiling. An agent spawned by another actor is admi
 actual parent chain, with every ancestor already holding a covering grant, so grant the chain from
 its root down. A caller that already holds an active grant covering those commands is reported with
 its grant id and nothing is sent. The broker fixes a connection's permissions when it authenticates,
-so a grant reaches only the caller's next connection: one already connected stays refused until it
-reconnects (an agent session uses `cotal_reconnect`), and both the grant result and the refusal say
-so. A grant or revoke goes under a request id derived from the space and
+so a grant reaches only the caller's next connection. `CotalEndpoint.invokeService`, used by agent
+sessions, reconnects and retries once after a broker refusal marked `not-executed`, within the
+original deadline. A second refusal stands, and an executed or unknown call is never replayed by
+this recovery. Older clients and low-level callers still need a manual reconnect
+(an agent session uses `cotal_reconnect`), so the grant result and refusal retain that remedy.
+A grant or revoke goes under a request id derived from the space and
 the request, including the policy revision it was read at, so running it again after a lost answer
 sends the same request and the host replays its answer. `callers` lists the grantees of the
 proposal's instance, 50 per page; pass the page's `nextCursor` as `--cursor`. `revoke` answers
