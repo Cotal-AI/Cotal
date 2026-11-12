@@ -370,7 +370,29 @@ try {
     const plan = service.plan(paths, undefined, posixArgv, () => { throw new Error("a task pins no PATH"); });
     const ps = r.calls.find((c) => c.file.endsWith("powershell.exe"))!;
     const script = Buffer.from(ps.args.at(-1)!, "base64").toString("utf16le");
-    check("task lookup imports ScheduledTasks before command discovery", script.includes("Import-Module ScheduledTasks\n") && script.indexOf("Import-Module ScheduledTasks") < script.indexOf("Get-ScheduledTask"));
+    // Windows PowerShell 5.1 module manifests. Inspect the actual EncodedCommand from plan,
+    // including the conditional instance query, without executing PowerShell on this host.
+    const commandModules: Record<string, string> = {
+      "Import-Module": "Microsoft.PowerShell.Core",
+      "Where-Object": "Microsoft.PowerShell.Core",
+      "Get-ScheduledTask": "ScheduledTasks",
+      "New-Object": "Microsoft.PowerShell.Utility",
+      "ConvertTo-Json": "Microsoft.PowerShell.Utility",
+    };
+    const imported = new Set(["Microsoft.PowerShell.Core"]);
+    const seen = new Set<string>();
+    for (const line of script.split("\n")) {
+      // This fixed query uses unabbreviated Verb-Noun cmdlets. Unknown additions need a manifest entry.
+      for (const match of line.matchAll(/\b[A-Z][a-zA-Z]*-[A-Z][a-zA-Z]*\b/gi)) {
+        const command = match[0];
+        const module = commandModules[command];
+        seen.add(command);
+        check(`task lookup ${command}: ${module ?? "unknown module"} imported before use`, module !== undefined && imported.has(module));
+      }
+      const moduleImport = /^Import-Module ([\w.]+)$/.exec(line);
+      if (moduleImport) imported.add(moduleImport[1]!);
+    }
+    for (const command of Object.keys(commandModules)) check(`task lookup covers ${command}`, seen.has(command));
     check("the SID comes from whoami", r.calls[0]!.file.endsWith("whoami.exe") && r.calls[0]!.args.join(" ") === "/user /fo csv /nh");
     check("the task read takes the name only from its environment", ps.env?.COTAL_DAEMON_TASK === name && !script.includes(name) && ps.args.slice(0, 4).join(" ") === "-NoLogo -NoProfile -NonInteractive -EncodedCommand");
     check("plan names the task and its definition file", plan.unit === name && plan.unitPath === join(state, "service-task.xml") && plan.mechanism === "scheduled-task");

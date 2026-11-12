@@ -127,6 +127,7 @@ interface RegisteredTask {
 const READ_TASK = [
   "$ErrorActionPreference = 'Stop'",
   "Import-Module ScheduledTasks",
+  "Import-Module Microsoft.PowerShell.Utility",
   "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
   "$task = @(Get-ScheduledTask | Where-Object { $_.TaskPath -ceq '\\' -and $_.TaskName -ceq $env:COTAL_DAEMON_TASK })",
   "if ($task.Count -eq 0) { '{\"present\":false}'; exit 0 }",
