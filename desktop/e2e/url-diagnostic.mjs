@@ -26,8 +26,13 @@ export async function collectUrlDiagnostic(evaluate, link) {
     const { components, browser } = value;
     const keys = Object.keys(components).sort().join(',');
     if (keys !== 'hash,hostname,pathname,port,protocol' && !(keys === 'error' && components.error === 'URL_CONSTRUCTION_FAILED')) throw new Error();
-    if (keys !== 'error' && (components.protocol !== 'cotal:' || !['', 'connect'].includes(components.hostname)
-      || !['', '/', 'connect', '/connect'].includes(components.pathname) || components.port !== '' || !['', '[present]'].includes(components.hash))) throw new Error();
+    if (keys !== 'error') {
+      components.protocol = components.protocol === 'cotal:' ? components.protocol : '[unexpected]';
+      components.hostname = ['', 'connect'].includes(components.hostname) ? components.hostname : '[unexpected]';
+      components.pathname = ['', '/', 'connect', '/connect'].includes(components.pathname) ? components.pathname : '[unexpected]';
+      components.port = typeof components.port === 'string' && /^[0-9]{0,5}$/.test(components.port) ? components.port : '[unexpected]';
+      if (!['', '[present]'].includes(components.hash)) throw new Error();
+    }
     if (Object.keys(browser).sort().join(',') !== 'chromium,edge,safari,webkit'
       || Object.values(browser).some(v => v !== null && (typeof v !== 'string' || !/^[0-9.]{1,64}$/.test(v)))) throw new Error();
     return { source: 'app-webview', components, browser };

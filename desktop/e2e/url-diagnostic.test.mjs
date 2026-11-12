@@ -31,6 +31,12 @@ test('unexpected WebView reply cannot smuggle secrets into the artifact', async 
     assert.deepEqual(result, { source: 'app-webview', error: 'WEBVIEW_EVALUATION_FAILED' });
   }
 });
+test('unexpected components retain safe anomaly markers and numeric ports', async () => {
+  const result = await collectUrlDiagnostic(evaluate, 'private://private-host/private-path:secret');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.components)), { protocol: '[unexpected]', hostname: '[unexpected]', pathname: '[unexpected]', port: '', hash: '' });
+  const port = await collectUrlDiagnostic(evaluate, 'cotal://connect:431');
+  assert.equal(port.components.port, '431');
+});
 test('Windows and Linux journeys evaluate identical fixed input before the real link wait', () => {
   const journey = readFileSync(new URL('./first-run.ts', import.meta.url), 'utf8');
   assert.match(journey, /if \(driver instanceof WindowDriver\) \{\s+const diagnostic = await collectUrlDiagnostic/);
@@ -43,4 +49,7 @@ test('Windows attached probe uses script before the scenario-length context wait
   assert.match(source, /collectUrlDiagnostic\([\s\S]*?driver.call\("POST", driver.path\("execute\/sync"\), \{ script, args \}\), link.href\)/);
   assert.ok(source.indexOf('observations.urlDiagnostic =') < source.indexOf('await until("plain public link context visible"'));
   assert.match(source, /await until\("plain public link context visible", \(\) => driver.displayed\("link-context"\), Boolean\);/);
+  assert.ok(source.indexOf('after-failure.png') > source.indexOf('observations.outcome = "probe-error"'));
+  assert.ok(source.indexOf('after-failure.png') < source.indexOf('await driver.close()'));
+  assert.match(source, /observations.failureWindow = await driver.call/);
 });
