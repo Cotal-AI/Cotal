@@ -78,7 +78,7 @@ try {
   check("positive control: registered-open named status still works", registered.code === 0 && registered.out.includes("raw-pin"), registered);
   for (const pin of [[], ["--on", iid]]) {
     const inspect = await cli(["endpoint", "invoke", "manager", "inspect", "--args", JSON.stringify({ name: "raw-seat" }), ...pin]);
-    check(`registered-open generic inspect ${pin.length ? "with" : "without"} explicit owner`, inspect.code === 0 && inspect.out.includes("raw-pin") && inspect.out.includes(iid), inspect);
+    check(`registered-open generic inspect ${pin.length ? "with" : "without"} explicit owner stays unsupported`, inspect.code === 2 && inspect.out.includes('"code":"UNSUPPORTED"') && inspect.out.includes("requires an authenticated caller"), inspect);
   }
   assert.deepEqual(failures, []);
   console.log(`NAMED READ OPEN SMOKE OK (${checks} passed)`);
