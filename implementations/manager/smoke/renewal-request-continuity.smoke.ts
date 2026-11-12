@@ -196,28 +196,34 @@ try {
   });
   await manager.start();
   const m = manager as unknown as Internals;
+  const dispatchObserved = new WeakSet<NatsConnection>();
   const instrument = () => {
     for (const [duty, nc] of [["supervisor", m.ep.nc], ["serve", m.serviceServe?.nc],
       ["goalWriter", m.goalWriter?.nc], ["sessionLedger", m.sessionLedgerConn?.nc]] as const)
       if (nc) observeConnection(nc, duty);
+    const nc = m.serviceServe?.nc;
+    if (!nc || dispatchObserved.has(nc)) return;
+    dispatchObserved.add(nc);
+    // Fixture-only observation of the installed client's actual dispatch boundary.
+    // Preserve the original callback, receiver and message without delaying or retrying it.
+    // A replacement can receive requests before the next observation tick, so dispatch counts
+    // are a diagnostic lower bound. Public replies determine continuity acceptance.
+    const observedServe = nc as unknown as { protocol: { subscriptions: { all(): { subject: string; callback(error: Error | null, message: { data: Uint8Array; subject: string }): void }[] } } };
+    for (const subscription of observedServe.protocol.subscriptions.all()) {
+      if (!subscription.subject.includes(".ep.")) continue;
+      const callback = subscription.callback;
+      subscription.callback = function (error, message) {
+        if (!error) {
+          try {
+            const body = JSON.parse(new TextDecoder().decode(message.data));
+            if (byId.has(String(body.id))) record("request-dispatch", { id: body.id, subject: message.subject });
+          } catch { /* Only fixture request envelope ids are observed. */ }
+        }
+        return callback.call(this, error, message);
+      };
+    }
   };
   instrument();
-  // Fixture-only observation of the installed client's actual dispatch boundary.
-  // Preserve the original callback, receiver and message without delaying or retrying it.
-  const observedServe = m.serviceServe!.nc as unknown as { protocol: { subscriptions: { all(): { subject: string; callback(error: Error | null, message: { data: Uint8Array; subject: string }): void }[] } } };
-  for (const subscription of observedServe.protocol.subscriptions.all()) {
-    if (!subscription.subject.includes(".ep.")) continue;
-    const callback = subscription.callback;
-    subscription.callback = function (error, message) {
-      if (!error) {
-        try {
-          const body = JSON.parse(new TextDecoder().decode(message.data));
-          if (byId.has(String(body.id))) record("request-dispatch", { id: body.id, subject: message.subject });
-        } catch { /* Only fixture request envelope ids are observed. */ }
-      }
-      return callback.call(this, error, message);
-    };
-  }
   // start() installs subscriptions synchronously, but their SUB frames may still be buffered.
   // Establish broker-side interest before the first measured caller on another connection.
   assert.ok(m.serviceServe, "SETUP: Manager must install the real service");
@@ -322,6 +328,7 @@ try {
   assert.ok(calls.some((c) => c.command === "despawn" && c.executionAt), "real despawn must execute");
   assert.equal(missing.length, 0, "public requests lost across real renewals, see timestamped evidence");
   assert.equal(refusals.length, 0, "public requests received structured refusals, see timestamped evidence");
+  assert.equal(errors.length, 0, "broker emitted errors during renewal, see retained broker stderr");
 } finally {
   running = false;
   record("cleanup", { setupComplete, renewals });
