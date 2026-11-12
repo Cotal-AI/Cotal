@@ -351,9 +351,6 @@ jobs:
             desktop/src-tauri/target/release/bundle/**/*.rpm
             desktop/src-tauri/target/release/bundle/**/*.msi
             desktop/src-tauri/target/release/bundle/**/*.exe
-            desktop/src-tauri/target/release/bundle/**/*.AppImage
-            desktop/src-tauri/target/release/bundle/**/*.app.tar.gz
-            desktop/src-tauri/target/release/bundle/**/*.sig
           if-no-files-found: error
           retention-days: 7
   release:
@@ -400,3 +397,24 @@ jobs:
           mapfile -d '' packages < <(find installers -type f -print0)
           test "${#packages[@]}" -gt 0
           gh release upload "$TAG" "${packages[@]}"
+      - name: Attach and verify updater artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(node --input-type=module -e 'import fs from "node:fs"; import path from "node:path"; const i=JSON.parse(fs.readFileSync("updater-assets/inventory.json","utf8")); for(const a of i.artifacts) for(const f of [a.file,`${a.file}.sig`]) console.log(path.join("updater-assets",f));')
+          test "${#assets[@]}" -eq 14
+          gh release upload "$TAG" "${assets[@]}"
+          mkdir downloaded-updater
+          for asset in "${assets[@]}"; do
+            gh release download "$TAG" --pattern "$(basename "$asset")" --dir downloaded-updater
+          done
+          node desktop/scripts/verify-updater-assets.mjs updater-assets/inventory.json downloaded-updater
+      - name: Attach updater manifest after verified artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release upload "$TAG" desktop-latest.json
