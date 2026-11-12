@@ -68,7 +68,7 @@ export interface UnitReceipt {
 }
 
 /** Where the receipt lives: beside the lifetime lock, in this daemon's own state directory. */
-export function unitReceiptFile(paths: DaemonPaths): string {
+export function unitReceiptFile(paths: Pick<DaemonPaths, "state">): string {
   return join(paths.state, "service-unit.json");
 }
 
