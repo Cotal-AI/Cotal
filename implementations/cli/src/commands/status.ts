@@ -143,6 +143,7 @@ import {
   journalRecordedElsewhere,
   readStackJournal,
   serviceHeldRecords,
+  STACK_ADAPTER,
   STACK_DEFINITION,
   stackStartedWithoutManager,
   stackOperationBlock,
@@ -242,6 +243,10 @@ interface ProcessRow {
   state: "running" | "stopped" | "not-serving" | "unknown" | "unreadable";
   pid: number | null;
   detail: string | null;
+  /** The nats summary's source. Older serialized reports and other components may omit it. */
+  source?: "legacy-pidfile" | "owned-service";
+  legacyPidfile?: { state: ProcessRow["state"]; pid: number | null; detail: string | null };
+  ownedService?: Pick<ReturnType<typeof instanceProjection>, "definition" | "instanceId" | "observedProcess" | "recordedState" | "pid"> | null;
 }
 
 interface OwnedServiceStatus {
@@ -283,8 +288,8 @@ export interface StatusResult {
     processes: ProcessRow[] | null;
     processSpace: string | null;
     storedState: boolean;
-    /** Whether this root records a controller stack for the process space. Its members are service
-     *  instances, so the legacy pidfile rows say nothing about them. */
+    /** Whether this root records a controller stack for the process space. The nats summary uses
+     *  its owned broker observation and retains the legacy pidfile observation separately. */
     controllerStack: boolean;
     /** Presence of a folder's journal, even when it cannot be parsed or read. Older inputs may omit it. */
     stackJournal?: "present" | "absent" | "unreadable";
@@ -934,6 +939,8 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     // A journal another folder recorded, as a copy or a moved folder keeps it: clean store refuses here.
     elsewhere = isCommandFailure(error) && error.code === "CONFLICT";
   }
+  const brokerIndex = processes.findIndex((row) => row.name === "nats");
+  if (brokerIndex !== -1) processes[brokerIndex] = brokerProcess(processes[brokerIndex]!, controllerStack ? journal : undefined, gaps);
   const noManager = journal !== undefined && controllerStack && stackStartedWithoutManager(journal);
   // An operation cut off with no recorded outcome can keep up and down from settling it; status names
   // why and the way out their refusal names. A refusal of another kind is left to them.
@@ -1039,6 +1046,41 @@ function sameDir(a: string, b: string): boolean {
 function processRow(name: string, p: PidfileState, detail: string | null): ProcessRow {
   if (p.liveness === "alive") return { name, state: "running", pid: p.pid ?? null, detail };
   return { name, state: p.liveness === "unknown" ? "unknown" : "stopped", pid: p.pid ?? null, detail: p.note ?? null };
+}
+
+/** A controller broker has no legacy pidfile. Observe its saved process identity instead, keeping
+ *  the pidfile result as a separate fact. A failed owned-record read never selects the legacy row. */
+function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, gaps: Gaps): ProcessRow {
+  const { state, pid, detail } = legacy;
+  const row: ProcessRow = { ...legacy, source: journal ? "owned-service" : "legacy-pidfile", legacyPidfile: { state, pid, detail }, ownedService: null };
+  if (!journal) return row;
+  try {
+    const instances = serviceInstances(journal.space, STACK_DEFINITION.broker);
+    if (instances.length === 0) {
+      if (journal.members.some((member) => member.role === "broker" && (member.instanceId !== null || member.replacement !== undefined)))
+        throw new Error("the stack's recorded broker instance is missing");
+      return { ...row, state: "stopped", pid: null, detail: "no owned broker instance" };
+    }
+    const definition = serviceDefinitionStore(journal.space).read(STACK_DEFINITION.broker)?.record.value;
+    const launch = definition?.launch;
+    if (launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER.broker || launch.options.root !== journal.root)
+      throw new Error("the owned broker definition does not name this folder");
+    if (instances.length !== 1) throw new Error(`expected one owned broker instance, found ${instances.length}`);
+    const owned = instanceProjection(instances[0]!);
+    row.ownedService = { definition: owned.definition, instanceId: owned.instanceId, observedProcess: owned.observedProcess, recordedState: owned.recordedState, pid: owned.pid };
+    row.state = owned.observedProcess === "running" ? "running"
+      : ["gone", "previous-boot", "foreign-pid"].includes(owned.observedProcess) ? "stopped"
+      : owned.observedProcess === "unreadable" ? "unreadable" : "unknown";
+    row.pid = owned.pid;
+    row.detail = `owned service ${owned.definition}: ${owned.observedProcess}`;
+    if (row.state === "unreadable") gaps.add("FOLDER_BROKER_UNAVAILABLE", row.detail, { root: journal.root, space: journal.space });
+  } catch (error) {
+    row.state = "unreadable";
+    row.pid = null;
+    row.detail = `owned broker observation unavailable · ${(error as Error).message}`;
+    gaps.add("FOLDER_BROKER_UNAVAILABLE", row.detail, { root: journal.root, space: journal.space });
+  }
+  return row;
 }
 
 /** Bare status's manager row, #2073: a live pid alone is not proof the manager serves — that was
