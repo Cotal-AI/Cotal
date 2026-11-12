@@ -2258,7 +2258,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             accountDesired = false; accountRevision++;
             deregisterMode = "unsupported";
             child = await startDaemon();
-            await waitAccount(s => s.managers.some((row: any) => row.space === ON && row.state === "refused" && row.next?.includes(`endpoint deregister manager ${initialManager.instanceId}`)), "A9 unsupported removal names the recorded instance and recovery command");
+            await waitAccount(s => s.managers.some((row: any) => row.space === ON && row.state === "stopped" && row.registrationCleanup === "pending" && row.next?.includes(`endpoint deregister manager ${initialManager.instanceId}`)), "A9 unsupported removal names the recorded instance and recovery command");
             const unsupported = await plainCommand("status");
             check("A9 human status reports the registration left behind", unsupported.out.includes("registration is left behind") && unsupported.out.includes(`endpoint deregister manager ${initialManager.instanceId}`), unsupported);
             check("A9 unsupported cleanup keeps the registration visible", (await participantPs(4)).managers.some((row: any) => row.instanceId === initialManager.instanceId && row.state === "silent"));
