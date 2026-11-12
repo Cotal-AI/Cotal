@@ -1,9 +1,9 @@
 /** The binary composes machine-daemon custody with the stock package updater. */
 import { existsSync } from "node:fs";
 import { registry, type Command } from "@cotal-ai/core";
-import { update, updateRuntime } from "@cotal-ai/cli/update";
+import { update, updateRuntime, localUpdateManagers, readManagerContinuity, updateManagerPin } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
-import { CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, resolveControlTarget, shellPath } from "@cotal-ai/workspace";
+import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, resolveControlTarget, shellPath } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
@@ -106,15 +106,28 @@ const composed: Command = { ...command, async run(args) {
       }
       console.log(`hosted Manager ${manager.space}: instance ${manager.instanceId} answered; ${status.agentCount ?? "unknown"} seat(s)`);
     }
-    // The stock resolver still inspects other locally hosted spaces when one is not selected.
-    if (typeof flags.space !== "string") {
+    // A daemon child is only one form of local custody. Read service and foreground Managers
+    // from this install too, including another instance serving the same space.
+    let localVerdict: "none" | "legacy" = "none";
+    if (process.platform === "linux" && typeof flags.creds !== "string") {
+      const on = await updateManagerPin(flags, "cotal update");
+      for (const manager of localUpdateManagers({ ...flags, ...(on === undefined ? {} : { on }) })) {
+        if (active.some(hosted => hosted.instanceId === manager.instanceId)) continue;
+        if (typeof flags.space === "string" && flags.space !== manager.space) continue;
+        if (typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(manager.server)) continue;
+        if (on !== undefined && on !== manager.instanceId) continue;
+        if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before its continuity read`);
+        if (await readManagerContinuity({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") localVerdict = "legacy";
+      }
+    }
+    if (process.platform !== "linux" && typeof flags.space !== "string") {
       const { readMeshRegistry } = await import("@cotal-ai/workspace");
       for (const entry of readMeshRegistry().entries) {
-        if (active.some((manager) => manager.space === entry.space)) continue;
+        if (active.some(manager => manager.space === entry.space)) continue;
         if (await updateRuntime.reportRunningManager({ ...flags, space: entry.space }) === "legacy") return "legacy";
       }
     }
-    return "none";
+    return localVerdict;
   }) });
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode || !daemonObserved) return;
   // The daemon started this update and restarts itself once this process has exited. A restart

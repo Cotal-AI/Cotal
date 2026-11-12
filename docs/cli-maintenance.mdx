@@ -10,6 +10,16 @@ import { Callout } from "fumadocs-ui/components/callout";
 `manager` provides retained-seat inspection and guarded issuance-gate repair.
 
 
+## Updating local Managers
+
+On Linux, `cotal update --self` reads every local Manager that loaded this installation,
+including Managers outside the selected space. Each request uses that Manager's local instance
+identity. `--space`, `--server`, `--creds`, and `--on` narrow the request. Missing or conflicting
+identity records refuse rather than selecting a Manager on another computer.
+
+macOS and Windows retain their existing Manager discovery in this release. The machine daemon
+continues to pin its hosted Managers on all supported platforms.
+
 ## `manager reconcile` [#reconcile-gate]
 
 ```bash
