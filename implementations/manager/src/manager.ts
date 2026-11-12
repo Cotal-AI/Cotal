@@ -3181,8 +3181,12 @@ export class Manager {
         this.ep.reconnect().catch((e) => console.error(`! remote manager supervisor reconnect after renewal: ${rejectionText(e)}`)),
         (async () => {
           try {
-            await previous.handle.stop();
-            await previous.nc.flush();
+            // A handler or a lost broker PONG can keep stop/flush pending forever. Only the
+            // retired transport is expendable: never retry its requests or close the replacement.
+            await withTimeout((async () => {
+              await previous.handle.stop();
+              await previous.nc.flush();
+            })(), 5_000, "old serve drain unfinished after 5000ms; closing retired transport, in-flight request outcomes are unknown and must not be retried");
           } finally {
             await previous.nc.close();
           }

@@ -228,7 +228,9 @@ the same way, bounded to 5 to 300 seconds, with the five-minute `issuer` lifetim
 The auth plane can renew a registered manager's five standing credentials from the current
 service registration. The manager binds its replacement serve connection before draining the old
 connection. Both use the same incarnation's queue groups, so overlap does not execute a request
-twice. The old connection drains in-flight handlers before closing.
+twice. The old connection has five seconds to drain in-flight handlers and flush replies before
+closing. If that deadline expires, the manager reports the unfinished drain and closes only the
+retired transport. An unfinished request's outcome is unknown and must not be retried blindly.
 Run-driver renewal reads the hosted run attempt and checks its active
 fence as well as the manager's open issuance gate and process epoch. A moved gate or run
 fence refuses issuance. These primitives do not establish a complete pooled deployment.
