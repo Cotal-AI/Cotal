@@ -97,7 +97,7 @@ export function localUpdateManagers(flags: { space?: unknown; server?: unknown; 
     }
   }
   const pids = new Set(known.keys());
-  if (process.platform !== "win32") {
+  {
     const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,args="], { encoding: "utf8" });
     if (ps.error || ps.status !== 0) blocked("the process table could not be listed");
     for (const line of ps.stdout.split("\n")) {

@@ -30,6 +30,9 @@ const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 const { spaceKey } = await import("@cotal-ai/workspace");
 const { readUpdateManagerIdentity } = await import("../src/lib/update-managers.js");
+const { isCliEntry } = await import("../src/lib/manager-proc.js");
+const { fileURLToPath } = await import("node:url");
+assert.equal(isCliEntry(fileURLToPath(new URL("../../../bin/cotal.ts", import.meta.url))), true, "checkout entry remains attributable across bin/package.json");
 const root = mkdtempSync(join(tmpdir(), "cotal-update-identity-"));
 try {
   mkdirSync(join(root, ".cotal", "auth"), { recursive: true });

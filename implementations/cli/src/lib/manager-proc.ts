@@ -203,7 +203,11 @@ export function isCliEntry(path: string): boolean {
       if (dirname(dir) === dir) return false;
       continue;
     }
-    if (name === "cotal.ts") return pkg.name === "cotal-monorepo";
+    if (name === "cotal.ts") {
+      if (pkg.name === "cotal-monorepo" && path === join(dir, "bin", "cotal.ts")) return true;
+      if (dirname(dir) === dir) return false;
+      continue;
+    }
     const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.cotal;
     return typeof bin === "string" && basename(bin) === name;
   }
