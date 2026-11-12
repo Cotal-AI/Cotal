@@ -269,8 +269,9 @@ export interface EpServeHandle {
  * Serve an authorized instance's granted commands on the three §13.2 rails, exactly the
  * per-command forms the serve credential grants (§13.9 {@link epServeSubscribeRows}): the class
  * rail queue-qualified under the canonical queue group (`one` = queue-group anycast), the
- * scatter rail plain, and this instance's own `inst` rail. `opts.omitClassCommands` skips the
- * class (`one`) subscribe for named commands only: the credential still grants those rows, the
+ * scatter and `inst` rails distributed within each incarnation's queue group. Overlapping
+ * connections for one incarnation share dispatch; distinct instances retain scatter delivery.
+ * `opts.omitClassCommands` skips the class (`one`) subscribe for named commands only: the credential still grants those rows, the
  * instance and scatter rails still serve them, and `describe` still lists them. A class queue
  * has no nak, so not subscribing is the only way a member does not consume a class request.
  *
@@ -332,6 +333,7 @@ export function serveEndpoint(
   const identity: EpServeIdentity = { endpoint: serve.endpoint, instanceId: serve.instanceId, epoch: serve.epoch };
   const e = endpointToken(identity.endpoint);
   const iId = assertLifecycleToken(identity.instanceId, "instanceId");
+  const incarnationQueue = `${e}.${iId}.${identity.epoch}`;
   const seen = new Set<string>();
   const defs: ActiveDef[] = [];
   for (const def of commands) {
@@ -625,8 +627,8 @@ function encodeReply(reply: EndpointReply): Uint8Array {
     for (const rail of ["ep", `ep.${EP_RAIL_V1}`]) {
       if (!omitClass.has(cmd))
         subs.push(nc.subscribe(`${p}.${rail}.one.${e}.${cmd}.>`, { queue: epClassQueueGroup(identity.endpoint), callback: cb }));
-      subs.push(nc.subscribe(`${p}.${rail}.all.${e}.${cmd}.>`, { callback: cb }));
-      subs.push(nc.subscribe(`${p}.${rail}.inst.${e}.${iId}.${cmd}.>`, { callback: cb }));
+      subs.push(nc.subscribe(`${p}.${rail}.all.${e}.${cmd}.>`, { queue: incarnationQueue, callback: cb }));
+      subs.push(nc.subscribe(`${p}.${rail}.inst.${e}.${iId}.${cmd}.>`, { queue: incarnationQueue, callback: cb }));
     }
   }
 

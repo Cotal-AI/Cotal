@@ -525,8 +525,9 @@ export function epBaselineGrantRows(space: string, caller: EpCaller): { pub: str
  *   - class rail: `"ep.one.<endpoint>.<command>.> <queue>"` — QUEUE-QUALIFIED ONLY (the NATS
  *     `subject queue` grant form): no credential can plain-subscribe the class rail, which is
  *     what keeps per-request nonces visible only to the queue-selected instance;
- *   - scatter rail: `ep.all.<endpoint>.<command>.>` plain;
- *   - instance rail: `ep.inst.<endpoint>.<instanceId>.<command>.>` exact.
+ *   - scatter rail: `ep.all.<endpoint>.<command>.>` with per-instance incarnation distribution;
+ *   - instance rail: `ep.inst.<endpoint>.<instanceId>.<command>.>` with the same distribution.
+ *  These unqualified grants permit native queue groups without changing subscription authority.
  *  The epoch is deliberately absent from serve subscriptions (§13.1's barrier is the fence). */
 export function epServeSubscribeRows(space: string, endpoint: string, instanceId: string, command: string): string[] {
   const e = endpointToken(endpoint);
