@@ -1067,7 +1067,6 @@
     "smoke:chat-history-limit": "tsx packages/core/smoke/chat-history-limit.smoke.ts",
     "smoke:chat-history-schema-diff": "tsx packages/core/smoke/chat-history-schema-diff.smoke.ts",
     "smoke:membership-store-no-reserve": "tsx packages/core/smoke/membership-store-no-reserve.smoke.ts",
-    "smoke:conditional-dlv": "tsx packages/core/smoke/conditional-dlv.smoke.ts && tsx implementations/auth/smoke/conditional-dlv-chat.smoke.ts",
     "smoke:backup-inventory": "tsx packages/core/smoke/backup-inventory.smoke.ts",
     "smoke:backup-cli": "tsx implementations/cli/smoke/backup.smoke.ts",
     "smoke:backup-kv-consumer": "tsx implementations/cli/smoke/backup-kv-consumer.smoke.ts",

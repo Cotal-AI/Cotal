@@ -175,7 +175,6 @@ export async function openUserChatSession(target: MeshTarget, options: {
     card: { owner, actor, name: options.label, kind: "endpoint", meta: { sessionKind: "chat" } },
     lifecycleUid,
     channels: [...options.channels],
-    allowSubscribe: [...options.read],
     bearer: bearerSource,
     sentinelCreds: first.sentinelCreds,
   });

@@ -81,11 +81,6 @@ const PRESENCE_TTL_MS = 6_000;
  *  created file-backed by an older cotal stays file-backed until it is recreated. */
 export const PRESENCE_STORAGE = StorageType.Memory;
 
-/** The membership feed is a derived projection of CONNZ plus the durable members registry. It is
- * rebuilt in full before its heartbeat is stamped, so retaining it across a broker restart adds
- * disk I/O without preserving authority or a CAS sequence. */
-export const MEMBERSHIP_STORAGE = StorageType.Memory;
-
 /** JetStream message-dedup window on the Plane-3 streams: a `Nats-Msg-Id`
  *  (`<msgId>:<owner>:<generation>`) repeated within this window is collapsed. Sized generous (2h) so
  *  an activation-catch-up copy and a racing fan-out copy of the same message dedup even for a slow/
@@ -260,12 +255,7 @@ export function spaceRegistryStreamConfigs(space: string) {
 export function membershipStoreDefinition(space: string) {
   return {
     bucket: membershipBucket(space),
-    createOptions: {
-      history: 1,
-      max_bytes: -1,
-      maxValueSize: MEMBERSHIP_MAX_VALUE_SIZE,
-      storage: MEMBERSHIP_STORAGE,
-    },
+    createOptions: { history: 1, max_bytes: -1, maxValueSize: MEMBERSHIP_MAX_VALUE_SIZE },
   };
 }
 
@@ -279,9 +269,7 @@ export function membershipStoreDefinition(space: string) {
  *
  * Exactly the former 64 MiB cap is reconciled to `-1`. Any other positive `max_bytes` is deliberate
  * drift and is left untouched. Likewise, an existing positive value ceiling other than ours is not
- * widened or narrowed silently. The pre-bound `-1` value ceiling is upgraded to the native bound.
- * Storage is not mutable through STREAM.UPDATE. A legacy File bucket therefore refuses here until a
- * host explicitly calls {@link reconcileSpaceMemoryBuckets} with `recreateFileMembership`. */
+ * widened or narrowed silently. The pre-bound `-1` value ceiling is upgraded to the native bound. */
 export async function ensureMembershipStore(
   jsm: JetStreamManager,
   kvm: Kvm,
@@ -292,10 +280,6 @@ export async function ensureMembershipStore(
   await kvm.create(definition.bucket, definition.createOptions);
   let { config } = await jsm.streams.info(stream);
   const drift: string[] = [];
-  if (config.storage !== MEMBERSHIP_STORAGE)
-    drift.push(
-      `storage is ${config.storage}, expected ${MEMBERSHIP_STORAGE} (conversion deletes derived state and requires explicit recreateFileMembership authority)`,
-    );
   if (config.max_bytes !== -1 && config.max_bytes !== LEGACY_MEMBERSHIP_MAX_BYTES)
     drift.push(`max_bytes is ${config.max_bytes}, expected -1 (a deliberate cap is not widened by setup)`);
   if (config.max_msgs_per_subject !== 1)
@@ -309,14 +293,9 @@ export async function ensureMembershipStore(
     await jsm.streams.update(stream, { ...config, max_bytes: -1, max_msg_size: MEMBERSHIP_MAX_VALUE_SIZE });
     ({ config } = await jsm.streams.info(stream));
   }
-  if (
-    config.storage !== MEMBERSHIP_STORAGE ||
-    config.max_bytes !== -1 ||
-    config.max_msgs_per_subject !== 1 ||
-    config.max_msg_size !== MEMBERSHIP_MAX_VALUE_SIZE
-  )
+  if (config.max_bytes !== -1 || config.max_msgs_per_subject !== 1 || config.max_msg_size !== MEMBERSHIP_MAX_VALUE_SIZE)
     throw new Error(
-      `membership store ${stream} reconcile did not take: storage=${config.storage}, max_bytes=${config.max_bytes}, ` +
+      `membership store ${stream} reconcile did not take: max_bytes=${config.max_bytes}, ` +
       `max_msgs_per_subject=${config.max_msgs_per_subject}, max_msg_size=${config.max_msg_size}`,
     );
 }
@@ -704,122 +683,26 @@ export function ttlBuckets(space: string): ReadonlyArray<readonly [string, numbe
  *  bucket already carried the intended TTL and nothing was written. */
 export type TtlReconciled = { stream: string; fromMs: number; toMs: number; recreated?: true };
 
-/** A Memory-backed derived bucket that was recreated, including an explicit legacy File conversion. */
-export type MemoryBucketReconciled = {
-  stream: string;
-  recreated: true;
-  convertedFromFile?: true;
-};
-
-export type SpaceMemoryReconciled = TtlReconciled | MemoryBucketReconciled;
-
-/** A legacy File-backed membership feed needs an explicit destructive conversion. It is derived
- * state, but the deletion right stays off the provisioner credential. In auth mode this option
- * therefore carries a separate, membership-stream-pinned recreate credential. On an open mesh the
- * object is still required as explicit operator consent and its `creds` member stays absent. */
-export interface RecreateFileMembership {
-  creds?: string;
-}
-
-async function membershipStorage(
-  jsm: JetStreamManager,
-  space: string,
-): Promise<StorageType | undefined> {
-  try {
-    return (await jsm.streams.info(`KV_${membershipBucket(space)}`)).config.storage;
-  } catch (error) {
-    if (isStreamNotFound(error)) return undefined;
-    throw error;
-  }
-}
-
-async function deleteLegacyMembershipStore(opts: {
-  servers: string;
-  space: string;
-  creds?: string;
-}): Promise<void> {
-  const nc = await dialerFor(opts.servers)({
-    servers: opts.servers,
-    ...standaloneConnectOpts({ creds: opts.creds, tls: false }),
-  });
-  try {
-    requireBrokerFloor(nc);
-    const jsm = await jetstreamManager(nc);
-    const stream = `KV_${membershipBucket(opts.space)}`;
-    const info = await jsm.streams.info(stream);
-    if (info.config.storage !== StorageType.File)
-      throw new Error(
-        `membership store ${stream} changed before explicit conversion: storage is ${info.config.storage}, expected file; nothing was deleted`,
-      );
-    await jsm.streams.delete(stream);
-  } finally {
-    await drainAndClose(nc);
-  }
-}
-
-/** Explicitly replace one legacy File-backed derived membership stream with its canonical empty
- * Memory-backed form. Every membership writer and reader must be stopped by the host before this
- * call. `recreateCreds` can only inspect/delete that one stream; `provisionerCreds` can create and
- * verify the replacement but cannot delete it. No other stream or bucket is read or changed. */
-export async function recreateMembershipStore(opts: {
-  servers: string;
-  space: string;
-  provisionerCreds?: string;
-  recreateCreds?: string;
-}): Promise<MemoryBucketReconciled> {
-  await deleteLegacyMembershipStore({
-    servers: opts.servers,
-    space: opts.space,
-    creds: opts.recreateCreds,
-  });
-  const nc = await dialerFor(opts.servers)({
-    servers: opts.servers,
-    ...standaloneConnectOpts({ creds: opts.provisionerCreds, tls: false }),
-  });
-  try {
-    requireBrokerFloor(nc);
-    await ensureMembershipStore(await jetstreamManager(nc), new Kvm(nc), opts.space);
-  } finally {
-    await drainAndClose(nc);
-  }
-  return {
-    stream: `KV_${membershipBucket(opts.space)}`,
-    recreated: true,
-    convertedFromFile: true,
-  };
-}
-
-/** Reconcile all three TTL'd buckets plus the derived membership Memory bucket for a space.
+/** #286: reconcile all three TTL'd buckets for a space, over a connection of its own.
  *
  *  Exists because `setupSpaceStreams` is only reachable on the CREATE path (`cotal up` starting a
  *  mesh), while the drifted-bucket case this fixes is by definition a mesh that is ALREADY RUNNING —
  *  an old deployment being upgraded in place. That path starts nothing and so must not run the
- *  create-everything routine; it needs exactly the reconcile and nothing else. Memory-backed
- *  presence and derived membership disappear on a broker restart, so missing copies are recreated
- *  from their canonical definitions and reported `recreated`. A missing File bucket is lost state
- *  and still refuses. A present legacy File membership bucket refuses until the host explicitly
- *  converts it while every membership writer and reader is stopped.
+ *  create-everything routine; it needs exactly the reconcile and nothing else. The one exception is
+ *  a MEMORY-backed bucket (presence): a broker restart drops it while the mesh keeps running, so a
+ *  missing one is re-created from the same `ttlBuckets` row and reported `recreated` (AGENT-2889). A
+ *  missing FILE bucket is lost state and still refuses.
  *
- *  Read-first by construction: each bucket is skipped when its config already matches, so a
- *  steady-state repeat issues four `STREAM.INFO` reads and zero writes. Returns only the buckets it
- *  changed. `creds` is omitted on an open mesh, exactly as `setupSpaceStreams` documents. */
-export async function reconcileSpaceMemoryBuckets(opts: {
+ *  Read-first by construction: each bucket is skipped when its `max_age` already matches, so a
+ *  steady-state repeat `cotal up` issues three `STREAM.INFO` reads and ZERO writes. Returns only the
+ *  buckets it actually changed. `creds` is omitted on an open mesh, exactly as `setupSpaceStreams`
+ *  documents — the TTL'd buckets are NOT mode-gated, so an open mesh drifts identically. */
+export async function reconcileSpaceTtls(opts: {
   servers: string;
   space: string;
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
-  /** Explicitly delete a legacy File-backed derived membership feed before recreating it in Memory. */
-  recreateFileMembership?: RecreateFileMembership;
-}): Promise<SpaceMemoryReconciled[]> {
-  let converted: MemoryBucketReconciled | undefined;
-  if (opts.recreateFileMembership) {
-    converted = await recreateMembershipStore({
-      servers: opts.servers,
-      space: opts.space,
-      provisionerCreds: opts.creds,
-      recreateCreds: opts.recreateFileMembership.creds,
-    });
-  }
+}): Promise<TtlReconciled[]> {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, tls: false }) });
   try {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
@@ -828,8 +711,7 @@ export async function reconcileSpaceMemoryBuckets(opts: {
     const jsm = await jetstreamManager(nc);
     const js = jetstream(nc);
     const kvm = new Kvm(nc);
-    const reconciled: SpaceMemoryReconciled[] = converted ? [converted] : [];
-    const ttlReconciled = await Promise.all(
+    const reconciled = await Promise.all(
       ttlBuckets(opts.space).map(async ([bucket, ttl, storage]): Promise<TtlReconciled | undefined> => {
         try {
           return await reconcileBucketTtl(jsm, js, `KV_${bucket}`, bucket, ttl);
@@ -840,35 +722,10 @@ export async function reconcileSpaceMemoryBuckets(opts: {
         }
       }),
     );
-    reconciled.push(...ttlReconciled.filter((done): done is TtlReconciled => done !== undefined));
-
-    const stream = `KV_${membershipBucket(opts.space)}`;
-    const storage = await membershipStorage(jsm, opts.space);
-    if (storage === StorageType.File) {
-      throw new Error(
-        `membership store ${stream} is file-backed legacy derived state; refusing silent deletion. ` +
-        "Stop every membership writer/reader and call recreateMembershipStore, or pass recreateFileMembership to reconcileSpaceMemoryBuckets, under the exact recreate authority",
-      );
-    } else if (storage === undefined) {
-      await ensureMembershipStore(jsm, kvm, opts.space);
-      reconciled.push({ stream, recreated: true });
-    } else {
-      await ensureMembershipStore(jsm, kvm, opts.space);
-    }
-    return reconciled;
+    return reconciled.filter((done): done is TtlReconciled => done !== undefined);
   } finally {
     await drainAndClose(nc);
   }
-}
-
-/** Compatibility name for callers that reconcile TTLs. The operation also restores missing
- * Memory-backed derived buckets, but never opts into File membership conversion. */
-export async function reconcileSpaceTtls(opts: {
-  servers: string;
-  space: string;
-  creds?: string;
-}): Promise<SpaceMemoryReconciled[]> {
-  return reconcileSpaceMemoryBuckets(opts);
 }
 
 /** Native object-store creation inputs. Binding, bounds and legacy-cap checks stay
@@ -1002,17 +859,7 @@ export async function setupSpaceStreams(opts: {
   space: string;
   /** Privileged creds for an authed mesh; omit on an open mesh (a bare connection has the rights). */
   creds?: string;
-  /** Explicit consent plus exact delete authority for legacy File-backed derived membership. */
-  recreateFileMembership?: RecreateFileMembership;
 }): Promise<void> {
-  if (opts.recreateFileMembership) {
-    await recreateMembershipStore({
-      servers: opts.servers,
-      space: opts.space,
-      provisionerCreds: opts.creds,
-      recreateCreds: opts.recreateFileMembership.creds,
-    });
-  }
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ creds: opts.creds, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
@@ -1035,8 +882,7 @@ export async function setupSpaceStreams(opts: {
     // Derived channel-membership feed (broker CONNZ ∪ members registry): privileged-write (the
     // `membership-rw` cred), admin/observer-read, no TTL (the daemon prunes departed agents). Its
     // one-key-per-agent history and native value-size ceiling bound it without a storage reservation.
-    // Pre-created so the scoped writer holds no STREAM.CREATE. A legacy File copy refuses until the
-    // host opts into the exact stopped-space delete-and-recreate operation above.
+    // Pre-created so the scoped writer holds no STREAM.CREATE; legacy stock reservations reconcile.
     await ensureMembershipStore(jsm, kvm, opts.space);
     const anycast = anycastStoreDefinition(opts.space);
     await kvm.create(anycast.bucket, anycast.createOptions);

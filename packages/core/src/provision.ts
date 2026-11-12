@@ -141,9 +141,6 @@ export type Profile =
   | "channel-writer" // channel-registry value-writes (channels set/default, spawn -f seed)
   | "channel-purger" // channel-writer + STREAM.PURGE.CHAT (web channel-delete)
   | "teardown" // the space-wide STREAM.DELETE holder (down -f space teardown)
-  // Explicit legacy derived-membership File -> Memory conversion. The only other membership
-  // STREAM.DELETE holder, exact to that backing stream and never standing.
-  | "membership-store-recreate"
   // Ephemeral, minted only by `up --recreate-issued-stores`: back up, then delete, the two
   // issued-authority stores of ONE space that predate bounded retention. The other STREAM.DELETE holder.
   | "issued-store-recreate"
@@ -308,7 +305,6 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "channel-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "channel registry mutation command" },
   "channel-purger": { class: "mixed", note: "one-shot for CLI, standing inside web; split or renewal required before default exp" },
   teardown: { class: "one-shot", note: "space teardown can be long/destructive; needs TTL budget/remint guard before default exp" },
-  "membership-store-recreate": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one stopped-space conversion of the derived membership stream from File to Memory; exact stream info/delete only" },
   "issued-store-recreate": { class: "one-shot", defaultTtlSeconds: 30 * 60, note: "one `up --recreate-issued-stores` step: snapshot and delete the two pre-retention issued-authority stores of one space; 30 minutes bounds a large store's snapshot" },
   "control-caller-privileged": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "ps/start control call" },
   "control-caller-admin": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "stop/attach admin control call" },
@@ -979,8 +975,7 @@ export async function provisionAgent(
 }
 
 /** The DURABLE half of agent onboarding, principal-keyed and credential-agnostic: pre-create the
- *  bind-only DM durable and, when the read ACL is nonempty, the DELIVER durable; record the read ACL;
- *  ensure the role TASK queue. The static
+ *  bind-only DM + DELIVER durables, record the read ACL, ensure the role TASK queue. The static
  *  path ({@link provisionAgent}) follows it with a mint; the USER-MODE spawn path runs it alone —
  *  a user agent's credential is its bearer (callout-minted per connect), never a static cred.
  *  Returns the resolved read ACL so both callers scope from the same computed set. */
@@ -1000,11 +995,7 @@ export async function provisionAgentDurables(
   // would hand the agent live delivery it isn't permitted to read.
   const allowSubscribe = resolveReadAcl(subscribe, opts.allowSubscribe);
   await provisioner.provisionDmInbox(pr.owner, pr.actor, uid);
-  // The Plane-3 backstop carries channel copies only. A channel-less lifecycle has no authorized
-  // DLV copy and therefore gets no consumer. Re-granting from [] to nonempty calls the unchanged
-  // provisioner path, whose DeliverPolicy.All consumer reads every copy written since the re-grant.
-  if (allowSubscribe.length > 0)
-    await provisioner.provisionDlvInbox(pr.owner, pr.actor, uid);
+  await provisioner.provisionDlvInbox(pr.owner, pr.actor, uid);
   // Record the agent's read ACL in the durable registry (the same act as baking it into the JWT) so the
   // server-side delivery daemon can re-authorize this agent's durable entries + validate its runtime
   // durable-joins — it holds no in-memory ledger. The agent SELF-JOINS its durable boot channels via the
@@ -1468,7 +1459,6 @@ export function permissionsFor(
   if (profile === "channel-writer") return channelWriterPermissions(space, pr); // channel-registry writes
   if (profile === "channel-purger") return channelPurgerPermissions(space, pr); // channel-writer + CHAT purge
   if (profile === "teardown") return teardownPermissions(space, pr, opts.transferStreams ?? []); // space-wide STREAM.DELETE holder
-  if (profile === "membership-store-recreate") return membershipStoreRecreatePermissions(space, pr);
   if (profile === "issued-store-recreate") return issuedStoreRecreatePermissions(space, pr); // the two issued-authority stores only
   if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, "privileged", opts); // ps/start reads
   if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, "admin", opts); // any-mode stop/attach
@@ -1617,7 +1607,7 @@ export function permissionsFor(
     throw new Error("permissionsFor(agent): a lifecycleUid is required - the agent's dm/dlv/chathist grants are lifecycle-keyed exact names (SPEC 13.1)");
   const uid = assertLifecycleToken(pr.lifecycleUid);
   const chatHistD = chatHistDurable(pr.owner, pr.actor, uid), dmD = dmDurable(pr.owner, pr.actor, uid);
-  const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor, uid); // Plane-3 per-member delivery (bind-only when channel-readable)
+  const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor, uid); // Plane-3 per-member delivery (bind-only)
   const roles = taskRoles(opts.role, opts.capabilities);
   const pubAllow = [
     // peer publish — owner+actor identity + channel scope, built from the real builders. Default-deny:
@@ -1674,14 +1664,13 @@ export function permissionsFor(
     `$JS.API.CONSUMER.INFO.${DM}.${dmD}`,
     `$JS.API.CONSUMER.MSG.NEXT.${DM}.${dmD}`,
     `$JS.ACK.${DM}.${dmD}.>`,
-    // Plane-3 DELIVER consumer (SPEC §8): when this credential can read at least one channel, BIND
-    // ONLY its own pre-created dlv_<id> — info/fetch/ack, never create. A channel-less credential has
-    // no DLV rows and no DLV durable. It gets NO grant on the INBOX (mixed pre-auth) stream either.
-    ...(allowSubscribe.length > 0 ? [
-      `$JS.API.CONSUMER.INFO.${DLV}.${dlvD}`,
-      `$JS.API.CONSUMER.MSG.NEXT.${DLV}.${dlvD}`,
-      `$JS.ACK.${DLV}.${dlvD}.>`,
-    ] : []),
+    // Plane-3 DELIVER consumer (SPEC §8): BIND ONLY its own pre-created dlv_<id> — info/fetch/ack,
+    // never create (the provisioner pre-creates it filtered to dlv.<id>). The agent acks this via
+    // native JetStream — the re-authorized per-member handoff. It gets NO grant on the INBOX (mixed
+    // pre-auth) stream at all: default-deny keeps the fan-out target unreadable by the agent.
+    `$JS.API.CONSUMER.INFO.${DLV}.${dlvD}`,
+    `$JS.API.CONSUMER.MSG.NEXT.${DLV}.${dlvD}`,
+    `$JS.ACK.${DLV}.${dlvD}.>`,
     // Presence: on-demand read + watch (read, public roster) + flow control + PUT OWN KEY ONLY.
     // The read is a batched Direct Get of the bucket (SPEC §6): a seat reads the roster when it acts
     // instead of receiving every member's heartbeat. Its reply subject is caller-chosen, the same
@@ -2244,24 +2233,6 @@ function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: 
     // Own inbox (connectProbe presence-watch delivery + JS API responses) + the ep reply rail (the
     // ps + any-mode despawn calls reply there). The `ctl.admin.<id>.reply.>` subtree is gone.
     sub: { allow: [`_INBOX_${pr.connId}.>`, ...ep.sub] },
-  };
-}
-
-/** MEMBERSHIP-STORE-RECREATE — explicit conversion of the derived membership feed from File to
- * Memory. The credential can inspect and delete exactly that one stream. It cannot create the
- * replacement, read membership values, or touch another stream; the ordinary short-lived
- * provisioner creates and verifies the empty Memory replacement after deletion. */
-function membershipStoreRecreatePermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
-  const stream = `KV_${membershipBucket(space)}`;
-  return {
-    pub: {
-      allow: [
-        "$JS.API.INFO",
-        `$JS.API.STREAM.INFO.${stream}`,
-        `$JS.API.STREAM.DELETE.${stream}`,
-      ],
-    },
-    sub: { allow: [`_INBOX_${pr.connId}.>`] },
   };
 }
 
