@@ -51,6 +51,7 @@ import {
   renderOnceTask,
 } from "@cotal-ai/core";
 import { eventPlaneArmed, type AgentConfig } from "./config.js";
+import { checkEventStartup, EventStateConflictError } from "./event-startup.js";
 import { TURN_PULL_RETRY_MS } from "./turn-poll.js";
 import { ONCE_HANDOFF_MS, claimOnceHandoff, confirmOnceHandoff, endOnceHandoff, exitOnceSeat, onOnceHandoffTimeout, onceHandoffState, sealOnceHandoff, stopOnceHandoffTimer } from "./once.js";
 import { attributionSafe } from "./framing.js";
@@ -715,6 +716,12 @@ export class MeshAgent extends EventEmitter {
       // A seat reads the roster when it acts (readRoster) instead of watching it: a watch delivers
       // every member's heartbeat to every member, K² per heartbeat in a space of K (SPEC §6).
       watchPresence: false,
+      beforeBind: async () => {
+        const env = this.launchEnv ?? process.env;
+        if (this.eventStartupChecked || !eventPlaneArmed(config, env)) return;
+        await checkEventStartup(this.ep, env);
+        this.eventStartupChecked = true;
+      },
       card: {
         id: config.id,
         name: config.name,
@@ -1076,6 +1083,7 @@ export class MeshAgent extends EventEmitter {
 
   private consumerClaim?: HeldLock;
   private connectFlight?: Promise<void>;
+  private eventStartupChecked = false;
 
   private async connectLoop(retryMs: number): Promise<void> {
     while (!this._stopping && !this._connected) {
@@ -1101,6 +1109,12 @@ export class MeshAgent extends EventEmitter {
         // session, and there is no next retry to explain or sleep toward.
         if (this._stopping) return;
         this.lastConnectionError = error.message;
+        if (error instanceof EventStateConflictError) {
+          await this.ep.stop();
+          this.consumerClaim?.release();
+          this.consumerClaim = undefined;
+          throw error;
+        }
         // #1356: "mesh unreachable" was asserted unconditionally, including while this same object
         // held `transportConnected: true` — measured against a presence bucket whose writes the
         // broker refuses: broker up, TCP connected, every sibling stream writable, and the operator
@@ -1169,7 +1183,8 @@ export class MeshAgent extends EventEmitter {
     await this.ep.stop();
     await departure;
     // A late initial bind must finish its stopped teardown before custody is released.
-    await this.connectFlight;
+    // A permanent startup refusal is reported by start(); stop must still release its custody.
+    await this.connectFlight?.catch(() => {});
     this.consumerClaim?.release();
     this.consumerClaim = undefined;
   }

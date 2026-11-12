@@ -168,6 +168,14 @@ export class FileSubjectFrontier implements SubjectFrontier {
     return new FileSubjectFrontier(path, FileSubjectFrontier.parse(path, bytes, opts));
   }
 
+  /** Inspect acknowledged state without writing a recovered record or taking the emitter's lock. */
+  static async recordedTip(path: string, opts: { space: string; principal: string }): Promise<number> {
+    const bytes = await FileSubjectFrontier.readRecord(path);
+    return bytes === undefined
+      ? FileSubjectFrontier.recoverTipFromThreadLogs(dirname(path), opts.principal)
+      : FileSubjectFrontier.parse(path, bytes, opts).tip;
+  }
+
   /**
    * Bytes to a validated document, or a refusal.
    *

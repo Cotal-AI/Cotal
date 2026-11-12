@@ -318,6 +318,8 @@ export interface EndpointOptions {
   /** Trusted composition custody of each opened transport, including replacement epochs.
    * Called before binding so the owner can await its terminal closed signal on bind failure. */
   onConnection?: (nc: NatsConnection) => void;
+  /** Await local admission checks before presence, consumers and the ready event on each bind. */
+  beforeBind?: () => Promise<void>;
   /** The collaboration to join. */
   space: string;
   /** Identity. `id` is generated if omitted. */
@@ -697,6 +699,7 @@ export class CotalEndpoint extends EventEmitter {
   private nc?: NatsConnection;
   private readonly requestsAwaitingReply = new Map<NatsConnection, Set<(error: Error) => void>>();
   private readonly onConnection?: (nc: NatsConnection) => void;
+  private readonly beforeBind?: () => Promise<void>;
   private js?: JetStreamClient;
   private jsm?: JetStreamManager;
   private kv?: KV;
@@ -1158,6 +1161,7 @@ export class CotalEndpoint extends EventEmitter {
     if ((opts.transportPingIntervalMs === undefined) !== (opts.transportMaxPingOut === undefined))
       throw new Error("EndpointOptions transportPingIntervalMs and transportMaxPingOut must be configured together");
     this.onConnection = opts.onConnection;
+    this.beforeBind = opts.beforeBind;
     this.transportPingIntervalMs = opts.transportPingIntervalMs ?? 10_000;
     this.transportMaxPingOut = opts.transportMaxPingOut ?? 2;
     this.transportConnectTimeoutMs = opts.transportConnectTimeoutMs;
@@ -1849,6 +1853,8 @@ export class CotalEndpoint extends EventEmitter {
     // no accepted-row read, presence, channel registry, JetStream manager, lease, membership,
     // Plane-3 or liveness responder, so the credential needs no row for any of them.
     if (this.dmOnly) {
+      await this.beforeBind?.();
+      if (this.stopped) return;
       await this.bindDmOnly(this.dmOnly);
       if (this.stopped) return;
       this.emit("connection", { connected: true });
@@ -1867,6 +1873,9 @@ export class CotalEndpoint extends EventEmitter {
         throw new Error(`the accepted row names ${ref.owner}.${ref.actor} (uid ${ref.uid}), not this endpoint ${this.owner}.${this.actor} (uid ${uid}); refusing to ride a foreign issuance (SPEC 13.15)`);
       this.issuedGeneration = ref.generation;
     }
+
+    await this.beforeBind?.();
+    if (this.stopped) return;
 
     if (this.doWatch || this.doRegister) {
       const kvm = new Kvm(this.nc);

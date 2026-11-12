@@ -54,6 +54,7 @@ import { join } from "node:path";
 import { CotalEndpoint, isReachable, mintLifecycleUid, principalKey } from "@cotal-ai/core";
 import { runFinished, runStarted } from "../src/agui.js";
 import { AguiEmitter } from "../src/agui-emitter.js";
+import { MeshAgent } from "../src/agent.js";
 import { JsonlFileSource } from "../src/durable-source.js";
 import { EventWal } from "../src/event-wal.js";
 import { FileSubjectFrontier } from "../src/subject-frontier.js";
@@ -86,8 +87,8 @@ const SPACE = `p${randomUUID().slice(0, 8).replace(/-/g, "")}`;
  * mutant that resolves `subjectPath` under the THREAD dir survived every cell in five suites while
  * reproducing the released defect live.
  */
-const locFor = (threadId: string, actor = ACTOR) =>
-  eventWalLocation({ workspaceRoot: root, space: SPACE, principal: principalKey(OWNER, actor).key, threadId });
+const locFor = (threadId: string, actor = ACTOR, workspaceRoot = root) =>
+  eventWalLocation({ workspaceRoot, space: SPACE, principal: principalKey(OWNER, actor).key, threadId });
 const PRINCIPAL_DIR = locFor("any-thread").principalDir;
 
 try {
@@ -119,13 +120,13 @@ try {
   /** One whole session: its own thread id, its own log, the SHARED subject record. */
   const session = async (
     threadId: string,
-    opts?: { actor?: string; frontier?: FileSubjectFrontier },
+    opts?: { actor?: string; frontier?: FileSubjectFrontier; workspaceRoot?: string },
   ) => {
     const actor = opts?.actor ?? ACTOR;
     const principal = principalKey(OWNER, actor).key;
     // Isolation between blocks comes from a distinct ACTOR, which the resolver turns into a
     // distinct principal directory. Nothing here chooses a directory by hand.
-    const loc = locFor(threadId, actor);
+    const loc = locFor(threadId, actor, opts?.workspaceRoot);
     mkdirSync(loc.threadDir, { recursive: true });
     const walPath = loc.walPath;
     const srcPath = join(loc.threadDir, "session.jsonl");
@@ -191,6 +192,50 @@ try {
   // A third, because two sessions cannot distinguish "fixed" from "the second one happened to work".
   const s3 = await session("ses_three");
   c("session-3:...and-a-THIRD-one-does-too", s3.published === 1 && s3.err === undefined, s3);
+
+  // A different state root has no local record of this principal's earlier acknowledgements.
+  {
+    const actor = `A${randomUUID().replace(/-/g, "").toUpperCase().slice(0, 40)}`;
+    const first = await session("root_one", { actor });
+    c("fresh-root:CONTROL-the-first-root-publishes", first.published === 1 && first.tip > 0, first);
+    const workspaceRoot = join(root, "second-root");
+    mkdirSync(workspaceRoot);
+    const admission = async (id: string, stateRoot: string) => {
+      const agent = new MeshAgent({
+        id, name: "multi-agent", space: SPACE, servers: url, lifecycleUid: mintLifecycleUid(),
+        kind: "agent", subscribe: [], allowSubscribe: [], allowPublish: [], tls: false,
+      }, { ...process.env, COTAL_EVENTS: "1", COTAL_WORKSPACE_ROOT: stateRoot });
+      let ready = false;
+      let errorName: string | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      agent.on("connection", (state: { connected: boolean }) => { if (state.connected) ready = true; });
+      try {
+        await Promise.race([
+          agent.start(50),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("startup deadline")), 5000);
+          }),
+        ]);
+        ready = true;
+      } catch (error) {
+        errorName = (error as Error).name;
+      } finally {
+        clearTimeout(timer);
+        await agent.stop();
+      }
+      return { ready, errorName };
+    };
+    const second = await admission(actor, workspaceRoot);
+    c("fresh-root:refuses-nonempty-subject-before-ready",
+      !second.ready && second.errorName === "EventStateConflictError", second);
+    const sameRoot = await admission(actor, root);
+    c("fresh-root:CONTROL-the-original-root-is-admitted", sameRoot.ready && sameRoot.errorName === undefined, sameRoot);
+    const unusedActor = `A${randomUUID().replace(/-/g, "").toUpperCase().slice(0, 40)}`;
+    const unusedAdmission = await admission(unusedActor, workspaceRoot);
+    const unused = await session("root_new_actor", { actor: unusedActor, workspaceRoot });
+    c("fresh-root:CONTROL-an-unused-principal-still-publishes",
+      unusedAdmission.ready && unused.published === 1 && unused.err === undefined, { unusedAdmission, unused });
+  }
 
   // ------------------------------------------------------------------ THE CONTROL
   //

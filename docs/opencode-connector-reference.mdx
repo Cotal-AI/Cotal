@@ -179,9 +179,15 @@ channel, the grant, and how to read it. The launcher sets `COTAL_EVENTS` by defa
 `--no-events` to opt out on an unrestricted space. A required registration carries
 `eventsRequired` in launch material, or `COTAL_EVENTS_REQUIRED=1` on the direct env fallback, so a
 personal user-mode OpenCode session arms without a separate event flag. Its own publish grant must
-cover the principal-keyed event channel or the connector refuses before joining. The session boundary
-is captured at adopt, before the mesh link connects, so a session created before the first bind still
-publishes and nothing it writes while the connector is still starting up is silently dropped.
+cover the principal-keyed event channel or the connector refuses before joining.
+
+The connector checks transcript state before joining. If the broker retains events for this principal
+but the selected state root has no acknowledged frontier, startup refuses with a diagnostic. Reuse the
+previous state root or launch with a new principal. The check reads retained counts, not transcript
+contents, and does not change the append expectation or discard local logs.
+
+The managed session is created and announced only after the mesh join completes. Its event boundary
+is captured at adopt, before any prompt is admitted.
 
 Both OpenCode lines publish the same events. On 2.x the connector reads the session it launched
 through OpenCode's message list, `GET /api/session/:id/message`, from its first record, and publishes

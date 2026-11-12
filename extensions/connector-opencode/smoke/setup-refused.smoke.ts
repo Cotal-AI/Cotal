@@ -14,6 +14,8 @@
  * Run: pnpm smoke:opencode-setup-refused
  */
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,17 +48,28 @@ const nats = spawn("nats-server", ["-js", "-n", SMOKE_BROKER_TOKEN, "-a", "127.0
 const releaseBroker = teardownOnSignal(nats, root);
 const present = new Map<string, string>(); // name -> last presence event type
 let observer: CotalEndpoint | undefined;
+let sessionCreates = 0;
+const http = createServer((request, response) => {
+  if (request.method === "POST" && request.url === "/api/session") {
+    sessionCreates++;
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { id: `ses_${sessionCreates}` } }));
+  } else response.writeHead(404).end();
+});
+http.listen(0, "127.0.0.1");
+await once(http, "listening");
+const serverUrl = `http://127.0.0.1:${(http.address() as { port: number }).port}`;
 
-async function arm(name: string, refuse?: (ctx: FakeOpenCode2Context) => void): Promise<{ error?: string; teardown?: () => Promise<void>; end?: () => void }> {
+async function arm(name: string, refuse?: (ctx: FakeOpenCode2Context) => void, env: Record<string, string> = {}): Promise<{ error?: string; teardown?: () => Promise<void>; end?: () => void }> {
   for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
   Object.assign(process.env, {
     COTAL_SPACE: SPACE,
     COTAL_NAME: name,
     COTAL_ID: name.toLowerCase(),
     COTAL_SERVERS: servers,
-    COTAL_OPENCODE_SERVER_URL: "http://127.0.0.1:9", // session HTTP is unavailable; this fixture tests mesh presence only
+    COTAL_OPENCODE_SERVER_URL: serverUrl,
     OPENCODE_SERVER_USERNAME: "opencode",
     OPENCODE_SERVER_PASSWORD: "test-secret",
+    ...env,
   });
   delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
   const ctx = fakeOpenCode2Context();
@@ -107,7 +120,36 @@ try {
   await b.teardown?.();
   for (let i = 0; i < 100 && present.get("Accepted") !== "offline"; i++) await sleep(100);
   check("the accepted agent's teardown takes it offline", present.get("Accepted") === "offline", [...present]);
+  check("CONTROL: admitted setup creates its managed session", sessionCreates === 1, sessionCreates);
+
+  const writer = new CotalEndpoint({ space: SPACE, servers, card: { name: "Previous", id: "conflict", kind: "endpoint" } });
+  writer.on("error", () => {});
+  await writer.start();
+  try { await writer.multicast("retained fixture frame", { channel: "events.local.conflict" }); }
+  finally { await writer.stop(); }
+  const before = sessionCreates;
+  const exits: Array<string | number | undefined> = [];
+  const rejections: unknown[] = [];
+  const onRejection = (error: unknown) => { rejections.push(error); };
+  process.on("unhandledRejection", onRejection);
+  const realExit = process.exit;
+  process.exit = ((code?: string | number) => { exits.push(code); return undefined as never; }) as typeof process.exit;
+  let refused: Awaited<ReturnType<typeof arm>> | undefined;
+  try {
+    refused = await arm("Conflict", undefined, { COTAL_EVENTS: "1", COTAL_WORKSPACE_ROOT: root });
+    for (let i = 0; i < 100 && exits.length === 0 && rejections.length === 0; i++) await sleep(50);
+    check("ADMISSION: startup refusal exits the managed host", exits.length === 1 && exits[0] === 1, exits);
+    check("ADMISSION: refusal creates no session or presence", sessionCreates === before && !present.has("Conflict"), { before, sessionCreates });
+    check("ADMISSION: rejected start is handled", rejections.length === 0, rejections);
+  } finally {
+    process.exit = realExit;
+    process.off("unhandledRejection", onRejection);
+    refused?.end?.();
+    await refused?.teardown?.();
+  }
 } finally {
+  http.closeAllConnections();
+  await new Promise<void>((resolve) => http.close(() => resolve()));
   await observer?.stop().catch(() => {});
   await killAndAwaitExit(nats);
   releaseBroker();

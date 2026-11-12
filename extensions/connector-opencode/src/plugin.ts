@@ -291,7 +291,8 @@ export const cotal: Plugin = async () => {
   // plugin's initializer would deadlock the server. Return hooks first, but do not join or
   // create a session until the server has answered. This is a managed serve process: on a
   // refusal, exit it so the shim reports the failure instead of waiting for a handshake.
-  void modelReady.then(() => agent.start(), (error: Error) => {
+  const meshReady = modelReady.then(() => agent.start());
+  void meshReady.catch((error: Error) => {
     log(error.message);
     process.exit(1);
   });
@@ -955,7 +956,7 @@ export const cotal: Plugin = async () => {
    *  can't be picked. Awaited by ensureSession before the first drive. */
   const sessionReady: Promise<string | undefined> = (async () => {
     try {
-      await modelReady;
+      await meshReady;
       const res = await opencodeApi<{ id?: string }>("/session", {
         method: "POST",
         body: JSON.stringify({ title: `cotal:${config.space}:${config.name}` }),
