@@ -9,6 +9,7 @@ import {
   EpEnvelopeError,
   formatAge,
   isReachable,
+  isStreamNotFound,
   mintCreds,
   mintLifecycleUid,
   resolveService,
@@ -1090,8 +1091,8 @@ function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, ga
  *
  *  Three outcomes:
  *  - answered: `running` with the delivery-aware detail.
- *  - a DEFINITIVE no-answer — `managerNoService`, the predicate `managerHealth`'s not-serving branch also uses
- *    (`unansweredRequest`, or the service-registry-missing text): `not-serving` with
+ *  - a DEFINITIVE no-answer: `managerNoService`, the predicate `managerHealth`'s not-serving branch also uses
+ *    (`unansweredRequest`, or an `EpEnvelopeError` whose `cause` satisfies `isStreamNotFound`): `not-serving` with
  *    `service endpoint not answering`, plus the marker error when the marker could not be read.
  *  - any other failure (a refused probe, an `unavailable` user-mode credential): `running` with
  *    `service unchecked`, so a failed probe never reads as a dead rail.
@@ -1170,8 +1171,8 @@ async function userManagerStatus(target: MeshTarget, instanceId?: string): Promi
 
 /** A no-responder service rail or an absent manager registry: the definitive no-service evidence
  *  that both the manager row and the manager health check grade on, kept in one place (#3046). */
-function managerNoService(e: unknown): boolean {
-  return e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test(e.message));
+export function managerNoService(e: unknown): boolean {
+  return e instanceof EpEnvelopeError && (unansweredRequest(e) || isStreamNotFound(e.cause));
 }
 
 /** One probe of the space's manager service endpoint. Only a definitive no-answer is
@@ -2598,6 +2599,11 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
   }
 }
 
+/** True when a delivery-lease read failed because the lease stream/bucket is absent (#3046). */
+export function deliveryLeaseAbsent(e: unknown): boolean {
+  return isStreamNotFound(e);
+}
+
 /** Delivery owns two answers: its ready lease is its liveness/control surface; its latest explicit
  * adoption report is the renewal record it writes through the manager-owned renewal pass.  The
  * latter is intentionally not inferred from credential mtime or process output. */
@@ -2664,8 +2670,9 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
     // A live recorded daemon with no delivery lease bucket cannot be serving this build's delivery
     // control surface.  A denied/timed-out read is different: it is a refusal and must never read
     // as a clean absence.
-    const noLeaseSurface = /stream not found/i.test((e as Error).message);
-    facts.push(noLeaseSurface ? "ready lease absent" : `lease probe refused: ${(e as Error).message}`);
+    const noLeaseSurface = deliveryLeaseAbsent(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    facts.push(noLeaseSurface ? "ready lease absent" : `lease probe refused: ${msg}`);
     return { name: "delivery", verdict: noLeaseSurface ? "not-serving" : "refused", facts };
   } finally {
     await close?.();
