@@ -34,7 +34,7 @@ for (const scenario of ['retry','rollback','paused','preflight']) {
   const child=spawn(process.execPath,[join(repo,'bin/dist/cotal.js'),'update','--self'],{cwd:root,env,stdio:['ignore','pipe','pipe']});
   let output='';child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
   const code=await new Promise((r,j)=>{child.once('error',j);child.once('exit',r)});
-  assert.equal(code,scenario==='retry'?0:1,output);
+  assert.equal(code,scenario==='retry'?0:scenario==='preflight'?1:42,output);
   if(scenario==='preflight') assert.equal(existsSync(join(prefix,'lib/node_modules/cotal-ai')),false,output);
   else {
    const installed=JSON.parse(readFileSync(join(prefix,'lib/node_modules/cotal-ai/package.json'),'utf8')).version;
