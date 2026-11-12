@@ -13,6 +13,15 @@ export async function chatStreamGone(ep: CotalEndpoint): Promise<boolean> {
   }
 }
 
+/** Whether `name` is gone from the endpoint's broker. Any other failure to read it answers no. */
+export async function streamGone(ep: CotalEndpoint, name: string): Promise<boolean> {
+  try {
+    return !(await ep.streamRecorded(name));
+  } catch {
+    return false;
+  }
+}
+
 /** This machine's stack for `space`: its root, and whether it still runs members other than its
  *  broker, which is absent when its records cannot be read. Undefined when no stack of it runs from
  *  this machine. */

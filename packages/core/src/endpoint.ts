@@ -56,7 +56,7 @@ import { REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsIn
 import { listRegistryEndpoints, registryListingCaller } from "./registry-client.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { lastKvEntries } from "./kv-scan.js";
-import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
+import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing, isStreamNotFound } from "./jetstream-missing.js";
 import { isRestoredConsumer } from "./backup.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidKind } from "./agent-file.js";
@@ -7828,6 +7828,18 @@ export class CotalEndpoint extends EventEmitter {
   async chatFrontier(): Promise<number> {
     const jsm = await this.manager();
     return (await jsm.streams.info(chatStream(this.space))).state.last_seq;
+  }
+
+  /** Whether this connection's account has a JetStream stream of this name. A missing stream is
+   *  false. Any other failure is thrown, so a caller does not treat an unread broker as absence. */
+  async streamRecorded(name: string): Promise<boolean> {
+    try {
+      await (await this.manager()).streams.info(name);
+      return true;
+    } catch (e) {
+      if (isStreamNotFound(e)) return false;
+      throw e;
+    }
   }
 
   /** The bytes this connection's account holds in JetStream file storage, as `$JS.API.INFO`

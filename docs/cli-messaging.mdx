@@ -96,6 +96,11 @@ a larger cap applies after that through `cotal down` and `cotal up --max-file-st
 unknown and never retried automatically. A lost acknowledgement stays `OPERATION_UNKNOWN` (exit 3)
 even if the stream is later found missing: the message may have been stored before deletion.
 A missing space confirmed while opening the sender still refuses before publishing.
+On an authenticated space, and on a space this machine started, `send` reads the stream that stores
+that destination before it publishes. A channel post is stored on the chat stream, a direct message
+on the DM stream, and a role send on the task stream. When that stream is confirmed absent, `send`
+refuses `TARGET_UNAVAILABLE` (exit 2) and publishes nothing. A direct message is still stored when
+only the chat stream is absent. A read that fails does not count as absence.
 A broker that cannot write its store sends no
 acknowledgement at all, so when such a publish times out and the space's broker log on this machine
 records a store write failure, the `OPERATION_UNKNOWN` message names its time, cause and file and
