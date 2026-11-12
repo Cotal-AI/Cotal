@@ -1750,7 +1750,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       const cli = async (...args: string[]) => {
         if (desktopSetupOnly && args[0] === "setup") {
           const shellPath = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
-          writeFileSync(join(home, ".bash_profile"), `export PATH=${JSON.stringify(shellPath)}\n`, { mode: 0o600 });
+          for (const profile of [".bash_profile", ".zprofile", ".profile"]) writeFileSync(join(home, profile), `export PATH=${JSON.stringify(shellPath)}\n`, { mode: 0o600 });
           const child = spawn(process.execPath, [cliEntry, "daemon", "desktop"], { cwd: root, env: { ...env, PATH: "/usr/bin:/bin" }, stdio: ["pipe", "pipe", "pipe"], timeout: 180_000, killSignal: "SIGKILL" });
           let out = "", err = "";
           const progress: string[] = [];

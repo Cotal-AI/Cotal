@@ -29,7 +29,7 @@ function isolated(name: string) {
     XDG_CACHE_HOME: join(dir, "cache"), XDG_DATA_HOME: join(dir, "data"), XDG_STATE_HOME: join(dir, "state"),
     PATH: `${join(dir, "native")}:/usr/local/bin:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: context, DO_NOT_TRACK: "1",
   });
-  writeFileSync(join(dir, "home", ".bash_profile"), `export PATH=${JSON.stringify(env.PATH)}\n`, { mode: 0o600 });
+  for (const profile of [".bash_profile", ".zprofile", ".profile"]) writeFileSync(join(dir, "home", profile), `export PATH=${JSON.stringify(env.PATH)}\n`, { mode: 0o600 });
   return { dir, env, calls, receipt: join(dir, "cotal", "daemon", "service-unit.json"), unit: join(dir, "config", "systemd", "user", "cotal-daemon.service") };
 }
 type Isolated = ReturnType<typeof isolated>;
@@ -72,7 +72,7 @@ function checkInstallation(target: Isolated): void {
 
 // A real account-shell failure must remain actionable before any service operation.
 const shellFailure = isolated("shell-failure");
-writeFileSync(join(shellFailure.dir, "home", ".bash_profile"), "exit 1\n", { mode: 0o600 });
+for (const profile of [".bash_profile", ".zprofile", ".profile"]) writeFileSync(join(shellFailure.dir, "home", profile), "exit 1\n", { mode: 0o600 });
 const refusedPath = await request(shellFailure, "install");
 assert.equal(refusedPath.ok, false);
 assert.equal(refusedPath.error?.code, "DEPENDENCY_UNAVAILABLE");
