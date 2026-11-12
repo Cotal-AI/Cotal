@@ -67,7 +67,7 @@ pnpm --dir desktop check:runtime
 pnpm --dir desktop app:dev
 ```
 
-The runtime staging command uses lockfile-based `pnpm deploy` with a hoisted dependency layout to package the built stock workspace. It refuses an existing staged runtime rather than overwriting files a daemon could still be using. Use a clean build checkout for another version. No install or service start happens during staging.
+The runtime staging command uses lockfile-based `pnpm deploy` with a hoisted dependency layout to package the built stock workspace. It removes build-only source maps, TypeScript declarations, test trees, duplicate non-runtime package outputs and the local `nats-server` binary before sealing `desktop-runtime.json`, and strips local debug symbols from the bundled Node binary on Linux and macOS. It refuses an existing staged runtime rather than overwriting files a daemon could still be using. Use a clean build checkout for another version. No install or service start happens during staging.
 
 On Windows, the bundled executable keeps the name `node.exe`. The runtime check relocates it with that installed name. Linux and macOS continue to use `cotal-node`. The app selects the bundled executable from its own installation, never from PATH.
 
