@@ -52,7 +52,7 @@ function noResponders(e: unknown): boolean {
  *  an observer's read, which a sender may not ask, so this machine mints an observer from the
  *  space's trust material as `status` does; without it the connection's own credential asks. A
  *  connection that cannot start or ask answers no. */
-async function chatStreamGoneAt(conn: Connection): Promise<boolean> {
+export async function chatStreamGoneAt(conn: Connection): Promise<boolean> {
   let probe: CotalEndpoint | undefined;
   try {
     const id = newIdentity();

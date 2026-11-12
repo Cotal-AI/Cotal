@@ -95,7 +95,10 @@ recorded for it. Its Next is `cotal history clear --yes`, which purges the space
 a larger cap applies after that through `cotal down` and `cotal up --max-file-store <bytes>`. Any other unconfirmed publish outcome is
 unknown and never retried automatically. A lost acknowledgement stays `OPERATION_UNKNOWN` (exit 3)
 even if the stream is later found missing: the message may have been stored before deletion.
-A missing space confirmed while opening the sender still refuses before publishing.
+Before publishing, the sender checks for a missing chat stream on a space whose streams were
+already created. Confirmed absence refuses `TARGET_UNAVAILABLE` (exit 2) with the same empty-stream
+recreation guidance as `history`, even when the roster and channel registry reads succeeded.
+A denied or unanswered check does not establish absence or change an unconfirmed publish outcome.
 A broker that cannot write its store sends no
 acknowledgement at all, so when such a publish times out and the space's broker log on this machine
 records a store write failure, the `OPERATION_UNKNOWN` message names its time, cause and file and

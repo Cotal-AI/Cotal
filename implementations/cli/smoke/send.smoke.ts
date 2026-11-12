@@ -32,6 +32,7 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
   channelBucket,
+  chatStream,
   CotalEndpoint,
   createSpaceAuth,
   credsProblem,
@@ -55,7 +56,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 106;
+const EXPECTED = 110;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -802,6 +803,31 @@ try {
     got.some((g) => g.route === "DM" && g.text === offlineText),
     got.filter((g) => g.route === "DM").map((g) => g.text),
   );
+
+  // The registry and presence reads still succeed when only CHAT is gone. Absence must be
+  // established before sending, not inferred after a publication lost its acknowledgement.
+  const teardownIdentity = newIdentity();
+  const teardownCreds = await mintCreds(auth, teardownIdentity, "teardown", { lifecycleUid: mintLifecycleUid() });
+  const teardown = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)), inboxPrefix: `_INBOX_${teardownIdentity.id}` });
+  try {
+    await (await jetstreamManager(teardown)).streams.delete(chatStream(space));
+    for (const destination of [["-c", "general"], ["-r", "reviewer"], ["-t", "bob"]]) {
+      const refused = await run(["send", ...destination, "after deletion", "--json"]);
+      const envelope = JSON.parse(refused.stdout);
+      check(`send ${destination.join(" ")} refuses a stream confirmed absent before publication`,
+        refused.code === 2 && envelope.outcome === "refused" && envelope.error?.code === "TARGET_UNAVAILABLE"
+          && envelope.error.message.includes(`the streams of ${space} are not on its broker`)
+          && envelope.error.remedy.includes("cotal up") && envelope.error.remedy.includes("empty"), refused);
+    }
+    await setupSpaceStreams({ servers, space, creds: provisionerCreds });
+    const recovered = await run(["send", "-c", "general", "after recreation", "--json"]);
+    const history = await run(["history", "general", "--json"]);
+    check("recreating the streams restores send and retained history", recovered.code === 0
+      && JSON.parse(recovered.stdout).result?.stored === true && history.code === 0
+      && JSON.parse(history.stdout).result.items.some((item: { text: string }) => item.text === "after recreation"), { recovered, history });
+  } finally {
+    await teardown.close();
+  }
 } finally {
   await bob?.stop().catch(() => {});
   await carol?.stop().catch(() => {});

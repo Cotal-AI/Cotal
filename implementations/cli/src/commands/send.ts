@@ -25,9 +25,10 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, agentGrants, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, agentGrants, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, spaceStreamsExpected } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
-import { batchedRead, openTransient } from "../lib/transient.js";
+import { batchedRead, chatStreamGoneAt, openTransient } from "../lib/transient.js";
+import { streamsAbsent } from "../lib/space-streams.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { brokerStoreWrite, recordedStore, storeRefusedWrite, storeWriteRepair } from "../lib/broker-store-health.js";
@@ -411,6 +412,9 @@ export async function send(args: ParsedArgs): Promise<void> {
     ? `the message is longer than this broker's ${ep.maxPayload}-byte message limit; nothing was sent`
     : `the message is ${bytes} bytes, and with its envelope it exceeds this broker's ${ep.maxPayload}-byte message limit; nothing was sent`, { target, remedy: "shorten the message, or split it across several sends" });
   try {
+    // Successful roster/registry reads do not prove CHAT still exists. Only confirmed absence
+    // before publication is a refusal; an unacknowledged attempt below must remain unknown.
+    if (spaceStreamsExpected(space, connection.mode) && await chatStreamGoneAt(connection)) throw streamsAbsent(connection);
     const rest = await bodyRest(body, ep.maxPayload, refusal);
     if ("over" in rest) throw tooLarge(rest.over);
     const { text } = rest;
