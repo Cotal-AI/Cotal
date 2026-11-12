@@ -58,7 +58,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            bundles: deb,rpm
+            bundles: deb,rpm,appimage
           - os: macos-15
             bundles: app,dmg
           - os: macos-15-intel
@@ -334,6 +334,9 @@ jobs:
             desktop/src-tauri/target/release/bundle/**/*.rpm
             desktop/src-tauri/target/release/bundle/**/*.msi
             desktop/src-tauri/target/release/bundle/**/*.exe
+            desktop/src-tauri/target/release/bundle/**/*.AppImage
+            desktop/src-tauri/target/release/bundle/**/*.app.tar.gz
+            desktop/src-tauri/target/release/bundle/**/*.sig
           if-no-files-found: error
           retention-days: 7
   release:
