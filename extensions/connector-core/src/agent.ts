@@ -2779,7 +2779,8 @@ export class MeshAgent extends EventEmitter {
       const instance = peer.card.meta?.["ai.cotal.manager.instance"];
       if (typeof instance !== "string")
         throw new EpEnvelopeError("failed-precondition", `agent ${JSON.stringify(peer.card.name)} reports no holding manager instance`, undefined, "not-executed");
-      ownerInstance = assertLifecycleToken(instance, "holding manager instance");
+      try { ownerInstance = assertLifecycleToken(instance, "holding manager instance"); }
+      catch { throw new EpEnvelopeError("failed-precondition", `agent ${JSON.stringify(peer.card.name)} reports an invalid holding manager instance`, undefined, "not-executed"); }
       selected = peer;
       opts = { ...opts, instanceId: ownerInstance };
       // Presence resolves the alias, but the manager's name lookup remains exact.

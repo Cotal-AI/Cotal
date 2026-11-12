@@ -20,9 +20,11 @@ An unanswered owner produces `TARGET_UNAVAILABLE` naming the instance. An absent
 `not-found`. A seat that reports no manager refuses owner resolution. Presence is a routing hint,
 not a grant, and an inspect response for a different lifecycle is rejected.
 
-The CLI's named status, generic manager inspect and terminal attach paths use the same presence selection.
-Its per-call operator instrument is minted for the selected instance. An explicit class-only
-caller file cannot make a named read and is refused without substituting an operator credential.
+The CLI's named status, generic manager inspect and terminal attach paths use the same presence selection
+on static and open spaces. Its per-call operator instrument is minted for the selected instance.
+The canonical name, principal and lifecycle remain pinned through that mint, the inspect response
+and any subsequent targeted action. Ambiguous names and invalid manager hints refuse before submission.
+An explicit class-only caller file cannot make a named read and is refused without substituting an operator credential.
 `inspect` is the manager's only read keyed by a running seat name. Persona, workflow, goal and
 durable-slot reads keep their own manager-local scopes. An explicit instance still selects only
 that manager, which never relays or returns another manager's live row. Generic user-auth

@@ -25,8 +25,9 @@ const {
   resolveService, invokeCommand,
 } = await import("@cotal-ai/core");
 const { MeshAgent, cotalToolSpecs, parseToolArgs } = await import("@cotal-ai/connector-core");
-const { authDir, saveSpaceAuth, recordMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
-const { askManager } = await import("@cotal-ai/workspace/control");
+const { authDir, saveSpaceAuth, recordMesh, workspaceSecretStore, resolveControlTarget } = await import("@cotal-ai/workspace");
+const { askManager, control, locateSeat } = await import("@cotal-ai/workspace/control");
+const { attachSeat } = await import("@cotal-ai/workspace/attach");
 const { Manager } = await import("../dist/index.js");
 const { bootDeliveryDaemon } = await import("./_boot-delivery.js");
 const here = dirname(fileURLToPath(import.meta.url));
@@ -94,7 +95,7 @@ try {
   check("two distinct shipped managers serve one static-auth space", iid1 !== iid2);
   prov = new CotalEndpoint({ space, servers, creds: provisioner, card: { name: "provisioner", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
   await prov.start();
-  const caller = async (granted: boolean, name = granted ? "granted" : "ordinary") => {
+  const caller = async (granted: boolean, name = granted ? "granted" : "ordinary", managerInstanceId?: string) => {
     const identity = newIdentity(), uid = mintLifecycleUid();
     const endpointCapabilities = granted ? [iid1, iid2].flatMap(instanceId => [
       { endpoint: "manager", command: "describe", instanceId, routes: [] },
@@ -102,7 +103,7 @@ try {
       { endpoint: "manager", command: "attach", instanceId, routes: [], target: { mode: "owner" as const, tOwner: DEV_OWNER } },
     ]) : [];
     const creds = await provisionAgent(prov!, auth, identity, { subscribe: [], allowSubscribe: [], allowPublish: [], lifecycleUid: uid, capabilities: ["spawn"], endpointCapabilities });
-    const config = { space, servers, creds, name, id: identity.id, lifecycleUid: uid, kind: "agent" as const, tls: false, subscribe: [], allowSubscribe: [], allowPublish: [] };
+    const config = { space, servers, creds, name, id: identity.id, lifecycleUid: uid, kind: "agent" as const, tls: false, subscribe: [], allowSubscribe: [], allowPublish: [], managerInstanceId };
     const agent = new MeshAgent(config);
     agent.on("error", () => {});
     callers.push(agent);
@@ -186,6 +187,87 @@ try {
   check("generic CLI unpinned attach reaches the holding manager", cliAttach.code === 0 && cliAttach.out.includes(iid1), cliAttach);
   const cliAbsent = await cli("inspect", { args: JSON.stringify({ name: "absent" }) });
   check("generic CLI absent name is TARGET_NOT_FOUND without a manager read", cliAbsent.code !== 0 && cliAbsent.err.includes("TARGET_NOT_FOUND"), cliAbsent);
+  const cliAgent = async (command: "agentStatus" | "stop" | "input" | "attachSeat", name: string, stale = false) => {
+    const module = pathToFileURL(resolve(here, "../../cli/dist/commands/agents.js")).href;
+    const workspace = pathToFileURL(resolve(repo, "packages/workspace/dist/index.js")).href;
+    const cliControlModule = pathToFileURL(resolve(here, "../../cli/dist/lib/control.js")).href;
+    const values = { space, json: true, ...(command === "input" ? { text: "never submitted" } : {}) };
+    const script = `const { ${command}: run } = await import(${JSON.stringify(module)});
+      const { isCommandFailure, failureEnvelope, exitCode } = await import(${JSON.stringify(workspace)});
+      ${stale ? `const { cliControl } = await import(${JSON.stringify(cliControlModule)});
+        const readRoster = cliControl.roster;
+        cliControl.roster = async flags => (await readRoster(flags)).map(p => p.card.name === "second" ? { ...p, lifecycleUid: "z".repeat(26) } : p);` : ""}
+      try { ${command === "attachSeat" ? `const verdict = await run(${JSON.stringify({ space, name })}, { reconnect: false, onRefusal: "exit" }); console.log(JSON.stringify(verdict));` : `await run(${JSON.stringify({ positionals: [name], values })});`} }
+      catch (error) { if (!isCommandFailure(error)) throw error; console.log(JSON.stringify(failureEnvelope(${JSON.stringify(command)}, error))); process.exitCode = exitCode(error.outcome, error.code); }`;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { cwd: repo, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "", err = "";
+    child.stdout.on("data", data => { out += String(data); });
+    child.stderr.on("data", data => { err += String(data); });
+    const code = await new Promise<number | null>((resolveExit, reject) => { child.once("error", reject); child.once("exit", resolveExit); });
+    return { code, out, err };
+  };
+  const firstPeer = (await roster()).find(p => p.card.name === "first" && p.status !== "offline")!;
+  const ctx = { space, server: servers };
+  for (const alias of ["FIRST", firstPeer.card.id]) {
+    const toolRead = await invoke(granted.tool, alias);
+    check(`connector canonicalizes ${alias === "FIRST" ? "uppercase" : "principal ID"}`, !toolRead.isError && toolRead.text.includes("pinned-one"), toolRead);
+    const read = await cli("inspect", { args: JSON.stringify({ name: alias }) });
+    check("generic CLI canonicalizes presence-resolved inspect aliases", read.code === 0 && read.out.includes("pinned-one") && read.out.includes(iid1), read);
+    const attachedAlias = await cli("attach", { name: alias, admin: true });
+    check("generic CLI canonicalizes presence-resolved attach aliases", attachedAlias.code === 0 && attachedAlias.out.includes(iid1), attachedAlias);
+    const workspaceRead = await control(client, ctx, "status", { name: alias });
+    check("public workspace control retains canonical located name", workspaceRead.ok && workspaceRead.managerInstanceId === iid1, workspaceRead);
+    const status = await cliAgent("agentStatus", alias);
+    check("actual CLI named status uses one owner and canonical identity", status.code === 0 && status.out.includes('"scope":"agent"') && status.out.includes(iid1) && status.out.includes('"name":"first"'), status);
+  }
+  const staleControl = await control(staleClient, ctx, "status", { name: "second" });
+  check("public workspace control rejects stale location pins", !staleControl.ok && staleControl.code === "expired", staleControl);
+  for (const command of ["agentStatus", "stop", "input", "attachSeat"] as const) {
+    const refused = await cliAgent(command, "SECOND", true);
+    check(`actual CLI ${command} rejects stale selected lifecycle`, refused.code === 2 && refused.out.includes("LIFECYCLE_BLOCKED") && refused.out.includes("changed lifecycle"), refused);
+  }
+  const managerName = await cliAgent("agentStatus", "manager");
+  check("actual CLI manager pseudo-name keeps its diagnostic refusal", managerName.code === 2 && managerName.out.includes("TARGET_NOT_FOUND") && managerName.out.includes("cotal endpoint describe manager"), managerName);
+  const loc = await locateSeat(staleClient, ctx, "second", { onRefusal: "throw" });
+  assert.equal(loc.kind, "pin");
+  if (loc.kind !== "pin") throw new Error("expected located pin");
+  check("location retains selected canonical name, principal and lifecycle", loc.expectedSeat?.name === "second" && loc.expectedSeat.id.includes(".") && typeof loc.expectedSeat.lifecycleUid === "string", loc);
+  const admin = await resolveControlTarget(ctx, "control-caller-admin", loc.instanceId, { onRefusal: "throw" });
+  for (const op of ["attach", "stop", "input"]) {
+    const refused = await askManager(client, space, servers, op, { name: "SECOND", ...(op === "input" ? { text: "never submitted" } : {}) }, admin.auth, "any", undefined, { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat });
+    check(`located ${op} refuses stale lifecycle before submission`, !refused.ok && refused.code === "expired" && refused.preSubmitRefusal === true, refused);
+  }
+  const staleAttach = await attachSeat({ ...ctx, name: "second" }, { control: staleClient, reconnect: false, onRefusal: "throw", verb: "cotal attach" });
+  check("public workspace attach loop refuses the stale located lifecycle", staleAttach.kind === "gone" || staleAttach.kind === "failed" && staleAttach.message.includes("changed lifecycle"), staleAttach);
+  const duplicateAgain = await caller(false, "first");
+  for (const command of ["inspect", "attach"]) {
+    const refused = await cli(command, command === "inspect" ? { args: JSON.stringify({ name: "first" }) } : { name: "first", admin: true });
+    check(`generic CLI ambiguous ${command} is a pre-submit refusal`, refused.code !== 0 && refused.err.includes("TARGET_AMBIGUOUS") && refused.err.includes("refused"), refused);
+  }
+  for (const command of ["agentStatus", "stop", "input"] as const) {
+    const refused = await cliAgent(command, "first");
+    check(`actual CLI ${command} classifies ambiguity before submission`, refused.code === 2 && refused.out.includes("TARGET_AMBIGUOUS") && refused.out.includes('"outcome":"refused"'), refused);
+  }
+  const ambiguousReply = await askManager(client, space, servers, "status", { name: "first" }, { creds: granted.creds, epCaller: granted.epCaller }, "owner");
+  check("askManager returns ambiguity rather than rejecting its promise", !ambiguousReply.ok && ambiguousReply.preSubmitRefusal && ambiguousReply.error?.includes("ambiguous"), ambiguousReply);
+  await duplicateAgain.agent.stop();
+  const malformed = await caller(false, "bad-hint", "NOT-A-VALID-LIFECYCLE-TOKEN!");
+  await assert.rejects(granted.agent.invokeEndpoint("manager", "inspect", { name: "bad-hint" }), (error: unknown) => {
+    const typed = error as { code?: string; outcome?: string };
+    return typed.code === "failed-precondition" && typed.outcome === "not-executed";
+  });
+  check("connector malformed owner hint has a typed not-executed refusal", true);
+  for (const command of ["inspect", "attach"]) {
+    const refused = await cli(command, command === "inspect" ? { args: JSON.stringify({ name: "bad-hint" }) } : { name: "bad-hint", admin: true });
+    check(`generic CLI malformed ${command} is TARGET_UNAVAILABLE before submission`, refused.code !== 0 && refused.err.includes("TARGET_UNAVAILABLE") && refused.err.includes("refused"), refused);
+  }
+  for (const command of ["agentStatus", "stop", "input"] as const) {
+    const refused = await cliAgent(command, "bad-hint");
+    check(`actual CLI ${command} classifies malformed hint before submission`, refused.code === 2 && refused.out.includes("TARGET_UNAVAILABLE") && refused.out.includes('"outcome":"refused"'), refused);
+  }
+  const malformedReply = await askManager(client, space, servers, "status", { name: "bad-hint" }, { creds: granted.creds, epCaller: granted.epCaller }, "owner");
+  check("askManager returns malformed hint rather than rejecting its promise", !malformedReply.ok && malformedReply.code === "unavailable" && malformedReply.preSubmitRefusal, malformedReply);
+  await malformed.agent.stop();
   const deniedSpawn = await ordinary.agent.spawn("denied-audit", undefined, { agent: "e2e-stub", model: "pinned-denied", cwd: repo, events: false });
   check("class-only spawn remains launched with an explicit permission-refused pin audit", deniedSpawn.ok && String((deniedSpawn.data as { pinAudit?: { error?: string } })?.pinAudit?.error).includes("permission-denied"), deniedSpawn);
   // Stop only the owned manager's serving connection while its real seat continues publishing.
@@ -195,6 +277,10 @@ try {
   check("unanswered owner is TARGET_UNAVAILABLE naming that instance, with no class fallback", unavailable.isError && unavailable.text.includes("TARGET_UNAVAILABLE") && unavailable.text.includes(iid1), unavailable);
   const cliUnavailable = await cli("inspect", { args: JSON.stringify({ name: "first" }), timeout: "500" });
   check("generic CLI owner silence names the owner as TARGET_UNAVAILABLE", cliUnavailable.code !== 0 && cliUnavailable.err.includes("TARGET_UNAVAILABLE") && cliUnavailable.err.includes(iid1), cliUnavailable);
+  const statusUnavailable = await cliAgent("agentStatus", "first");
+  check("actual CLI named status reports its silent owner as TARGET_UNAVAILABLE", statusUnavailable.code === 2 && statusUnavailable.out.includes("TARGET_UNAVAILABLE") && statusUnavailable.out.includes(iid1) && !statusUnavailable.out.includes("all-managers"), statusUnavailable);
+  const statusOther = await cliAgent("agentStatus", "second");
+  check("actual CLI named status does not depend on an unrelated silent manager", statusOther.code === 0 && statusOther.out.includes(iid2) && !statusOther.out.includes(iid1), statusOther);
   const other = await invoke(granted.tool, "second");
   check("sibling still answers its own seat while first owner is unavailable", !other.isError && other.text.includes(iid2), other);
   console.log(`NAMED READ OWNER SMOKE OK (${checks} passed)`);

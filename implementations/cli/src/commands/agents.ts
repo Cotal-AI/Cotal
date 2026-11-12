@@ -24,6 +24,7 @@ import {
   type Tone,
   recordOperationSpace,
   resolveControlTarget,
+  resolveMeshTarget,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -119,6 +120,7 @@ export function validateStopArguments(args: ParsedArgs): void {
 export async function stop(args: ParsedArgs): Promise<void> {
   validateStopArguments(args);
   const v = args.values as FlagValues<typeof stopFlags>;
+  let pin: ManagerPin = {};
   let on: string | undefined;
   let t: Awaited<ReturnType<typeof resolveControlTarget>>;
   let name: string | undefined;
@@ -134,7 +136,8 @@ export async function stop(args: ParsedArgs): Promise<void> {
     t = seat;
   } else {
     name = managedTarget(args, "stop");
-    on = await pinForTarget({ ...v, name } as never, "cotal stop");
+    pin = await pinForTarget({ ...v, name } as never, "cotal stop");
+    on = pin.instanceId;
     // A typed pin the registry does not list is refused at once, as spawn refuses it. Stop's admin
     // instrument holds no registry read, so the check uses the one ps reads the registry with.
     if (v.on !== undefined && on !== undefined) {
@@ -144,7 +147,7 @@ export async function stop(args: ParsedArgs): Promise<void> {
     t = await resolveControlTarget(v, "control-caller-admin", on);
   }
   recordOperationSpace(t.space);
-  const reply = await askManager(cliControl, t.space, t.server, v.self ? "stopSelf" : "stop", { ...(name ? { name } : {}), graceful: v.force !== true }, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId: on });
+  const reply = await askManager(cliControl, t.space, t.server, v.self ? "stopSelf" : "stop", { ...(name ? { name } : {}), graceful: v.force !== true }, t.auth, t.auth.bearer ? "owner" : "any", undefined, { ...pin, instanceId: on });
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, selection: v.self ? "verified-self" : "named", ...(name ? { agent: name } : {}) };
   if (!reply.ok) throw unansweredDescribeRefusal(reply, "agent stop", target) ?? managerFailure(reply, "agent stop", target);
   const data = reply.data as { name?: unknown; stopped?: unknown; graceful?: unknown } | undefined;
@@ -257,14 +260,13 @@ function fmtUptime(ms: number): string {
   return `${d}d ${Math.floor(h - d * 24)}h`;
 }
 
-/** Resolve `--on` for a targeted verb: an explicit pin wins; otherwise locate the seat. Returns the
- *  instance to address, or exits with an error that says WHICH case the miss was. */
-async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Promise<string | undefined> {
+/** Resolve a targeted verb's manager and retain the presence-selected seat for its fresh caller. */
+async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Promise<ManagerPin> {
   const on = await managerPin(v, verb);
-  if (on !== undefined) return on;
+  if (on !== undefined) return { instanceId: on };
   const loc = await locateSeat(cliControl, v, String(v.name));
-  if (loc.kind === "pin") return loc.instanceId;
-  if (loc.kind === "unpinned") return undefined;
+  if (loc.kind === "pin") return { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat };
+  if (loc.kind === "unpinned") return {};
   // Refused before anything is sent, as `ps` refuses, rather than after a describe no manager can answer.
   if (loc.kind === "no-manager") {
     recordOperationSpace(loc.space);
@@ -616,11 +618,27 @@ function startManagerNext(root: string | undefined, space: string, named: boolea
   return { command: `cotal manager start${at}`, description: "Start a manager for this space" };
 }
 
-/** A named-agent detail uses the same authorized census as ps, never an invented process view. */
+/** Read one named seat from its presence-selected owner. User-auth keeps its authorized census. */
+async function readNamedSeat(values: FlagValues<typeof psFlags>, name: string): Promise<SeatCensus> {
+  const on = await managerPin(values, "cotal status");
+  if (name === "manager" || resolveMeshTarget(process.cwd(), { space: values.space, readOnly: true }).mode === "user")
+    return readSeats(values, "ps", on);
+  const pin = on === undefined ? await pinForTarget({ ...values, name } as never, "cotal status") : { instanceId: on };
+  const t = await resolveControlTarget(values, "control-caller-privileged", pin.instanceId, { onRefusal: "throw" });
+  recordOperationSpace(t.space);
+  const target = { space: t.space, scope: "agent", managerInstanceId: pin.instanceId ?? null };
+  const reply = await askManager(cliControl, t.space, t.server, "status", { name }, t.auth, "any", undefined, pin);
+  if (!reply.ok) throw readFailure(reply, target);
+  const instanceId = reply.managerInstanceId ?? pin.instanceId;
+  if (!instanceId) throw new CommandFailure("failed", "OPERATION_FAILED", "the manager did not attribute its named agent read", { target });
+  return { target: { ...target, managerInstanceId: instanceId }, items: [reply.data], managers: [{ instanceId, state: "answered" }], warnings: [], rowsOf: new Map([[instanceId, [reply.data]]]) };
+}
+
+/** A named-agent detail uses its holding manager's inspect read and checks the selected lifecycle. */
 export async function agentStatus(args: ParsedArgs): Promise<void> {
   const name = args.positionals[0]!;
   const values = args.values as FlagValues<typeof psFlags>;
-  const census = await readSeats(values, "ps", await managerPin(values, "cotal status"));
+  const census = await readNamedSeat(values, name);
   const rows = census.items.map((value): AgentRow => {
     if (!value || typeof value !== "object") throw new CommandFailure("failed", "OPERATION_FAILED", "a manager returned an invalid agent record", { target: census.target });
     const row = value as Partial<AgentRow>;
@@ -628,7 +646,7 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
       throw new CommandFailure("failed", "OPERATION_FAILED", "a manager returned an incomplete agent record", { target: census.target });
     return value as AgentRow;
   });
-  const matches = rows.filter((row) => row.name === name || row.id === name);
+  const matches = census.target.scope === "agent" ? rows : rows.filter((row) => row.name === name || row.id === name);
   if (matches.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "more than one manager reports this agent; select a manager with --on", { target: { ...census.target, name, candidates: matches.map((row) => ({ name: row.name, id: row.id, instanceId: row.instanceId ?? null })) } });
   // `manager` and an answering manager's instance id name the manager itself, which runs no row of
   // its own, so the refusal says where its state is read.
@@ -878,8 +896,8 @@ export async function attachSeat(
   v: AttachTarget,
   opts: { reconnect: boolean; onRefusal: "exit" | "throw"; on?: string },
 ): Promise<AttachVerdict> {
-  const on = opts.on === undefined && opts.onRefusal === "exit" ? await pinForTarget(v as never, "cotal attach") : opts.on;
-  return attachSeatWith(v, { ...opts, on, control: cliControl, verb: "cotal attach", noTerminalRemedy });
+  const pin = opts.on === undefined && opts.onRefusal === "exit" ? await pinForTarget(v as never, "cotal attach") : { instanceId: opts.on };
+  return attachSeatWith({ ...v, expectedSeat: pin.expectedSeat ?? v.expectedSeat }, { ...opts, on: pin.instanceId, control: cliControl, verb: "cotal attach", noTerminalRemedy });
 }
 
 async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ name: string; on: string; expectedTarget: NonNullable<ManagerPin["expectedTarget"]> } | undefined> {
@@ -913,7 +931,7 @@ export async function attach(args: ParsedArgs): Promise<void> {
   }
   const v = { ...args.values, name: name ?? selection!.name, ...(selection ? { on: selection.on } : {}) } as FlagValues<typeof attachFlags> & { name: string };
   const reconnecting = v["no-reconnect"] !== true;
-  const on = v.on !== undefined ? await pinForTarget(v as never, "cotal attach") : undefined;
+  const on = v.on !== undefined ? (await pinForTarget(v as never, "cotal attach")).instanceId : undefined;
   // A typed pin the registry does not list is refused at once, as stop refuses it.
   if (selection === undefined && on !== undefined) {
     const reader = await resolveControlTarget(v, "control-caller-privileged", on);
@@ -956,7 +974,8 @@ export function inputArguments(args: ParsedArgs): { name: string; text: string }
 export async function input(args: ParsedArgs): Promise<void> {
   const parsed = inputArguments(args);
   const v = { ...args.values, ...parsed } as FlagValues<typeof inputFlags> & { name: string; text: string };
-  const on = await pinForTarget(v as never, "cotal input");
+  const pin = await pinForTarget(v as never, "cotal input");
+  const on = pin.instanceId;
   // A typed pin the registry does not list is refused at once, as stop refuses it.
   if (v.on !== undefined && on !== undefined) {
     const reader = await resolveControlTarget(v, "control-caller-privileged", on);
@@ -965,7 +984,7 @@ export async function input(args: ParsedArgs): Promise<void> {
   const t = await resolveControlTarget(v, "control-caller-admin", on);
   recordOperationSpace(t.space);
   const reach = t.auth.bearer ? "owner" : "any";
-  const reply = await askManager(cliControl, t.space, t.server, "input", { name: v.name, text: v.text, enter: v["no-enter"] !== true }, t.auth, reach, undefined, { instanceId: on });
+  const reply = await askManager(cliControl, t.space, t.server, "input", { name: v.name, text: v.text, enter: v["no-enter"] !== true }, t.auth, reach, undefined, pin);
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, agent: v.name };
   if (!reply.ok) throw unansweredDescribeRefusal(reply, "terminal input", target) ?? managerFailure(reply, "terminal input", target);
   const data = reply.data as { name?: unknown; bytes?: unknown } | undefined;

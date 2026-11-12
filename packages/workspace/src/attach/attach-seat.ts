@@ -192,7 +192,7 @@ async function establishAttachSession(
   const reach = t.auth.bearer ? "owner" : "any";
   // A refusal's report names the mesh in its heading, so this block names it once, in a field.
   if (first) console.error(renderReport({ sections: [{ title: "Attach", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Agent", v.name], ["Manager", on ?? t.auth.managerInstanceId ?? "native selection"]] }] }] }, "rich", process.stderr));
-  const reply = await askManager(v.control, t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on, expectedTarget: v.expectedTarget });
+  const reply = await askManager(v.control, t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on, expectedTarget: v.expectedTarget, expectedSeat: v.expectedSeat });
   if (!reply.ok) {
     // The one refusal no attach can work around: this seat's runtime streams no terminal. It is
     // said once, with the runtime's own guidance for watching the agent where it really runs, and
@@ -740,8 +740,9 @@ export type AttachVerdict = { kind: "ended"; reason: string } | { kind: "gone" }
 
 /** What an attach needs to know: the mesh coordinates the control commands take, plus the seat.
  *  `expectedTarget` pins the incarnation a picker chose; `asSeat` attaches with the launching seat's
- *  own caller instead of an operator identity. */
-export type AttachTarget = { space?: string; server?: string; creds?: string; name: string; expectedTarget?: ManagerPin["expectedTarget"]; asSeat?: boolean };
+ *  own caller instead of an operator identity. `expectedSeat` retains a presence selection across
+ *  the per-instance instrument mint and every reconnect. */
+export type AttachTarget = { space?: string; server?: string; creds?: string; name: string; expectedTarget?: ManagerPin["expectedTarget"]; expectedSeat?: ManagerPin["expectedSeat"]; asSeat?: boolean };
 
 /** What only the caller of an attach knows. `onRefusal` chooses what an unresolvable mesh or an
  *  absent seat does on the first attempt: `exit` prints and exits as a command does, `throw` returns
@@ -775,7 +776,10 @@ export async function attachSeat(
     const loc = await locateSeat(caller.control, v, v.name, { onRefusal: "throw" });
     if (loc.kind === "absent") return { kind: "failed", message: seatNotFoundMessage(loc, v.name) };
     if (loc.kind === "several") return { kind: "failed", message: seatMissRefusal(v.name, caller.verb, loc) };
-    if (loc.kind === "pin") on = loc.instanceId;
+    if (loc.kind === "pin") {
+      on = loc.instanceId;
+      v = { ...v, expectedSeat: loc.expectedSeat };
+    }
   }
   const detach = detachKey();
   const hold = holdTerminal();

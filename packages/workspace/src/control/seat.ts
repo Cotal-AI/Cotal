@@ -1,9 +1,10 @@
-import { assertLifecycleToken, remoteManagerActors, resolvePeer, type Presence } from "@cotal-ai/core";
+import { remoteManagerActors, type Presence } from "@cotal-ai/core";
 import { isConnectRefusal, type ConnectFlags } from "../connect.js";
 import { resolveControlTarget } from "../control-target.js";
 import { DEFAULT_MANAGER_NAME } from "../manager-name.js";
 import { CommandFailure, isCommandFailure } from "../output.js";
-import { askManager, readFailure, type ControlClient, type ManagerReply, type ScatterInstanceReply } from "./manager.js";
+import { askManager, readFailure, type ControlClient, type ManagerPin, type ManagerReply, type ScatterInstanceReply } from "./manager.js";
+import { presenceSeat } from "./seat-presence.js";
 
 /** The exchange's refusal of an unpinned manager-caller selection while several of the caller's own
  *  managers are live: their count, the owner and the instance ids. */
@@ -94,7 +95,7 @@ export async function severalLive(failure: CommandFailure, readRoster: () => Pro
  * set, as presence shows it.
  */
 export type SeatLocation =
-  | { kind: "pin"; instanceId: string }
+  | { kind: "pin"; instanceId: string; expectedSeat?: ManagerPin["expectedSeat"] }
   | { kind: "unpinned" } // one instance, or a mode that cannot scatter — no ambiguity to resolve
   /** The registry lists no live manager, so no instance can host the seat or be asked for it. */
   | { kind: "no-manager"; space: string; native: { code?: string; detail: string } }
@@ -143,12 +144,11 @@ export async function locateSeat(
   if (probe.auth.managerInstanceId !== undefined) return { kind: "pin", instanceId: probe.auth.managerInstanceId };
   if (probe.auth.bearer) return { kind: "unpinned" };
   const roster = await client.roster({ space: probe.space, server: probe.server });
-  const peer = resolvePeer(roster.filter(p => p.status !== "offline"), name);
-  if (!peer) return { kind: "absent", checked: 0, instances: [], space: probe.space };
-  const instance = peer.card.meta?.["ai.cotal.manager.instance"];
-  if (typeof instance !== "string")
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `agent "${name}" reports no holding manager instance`, { target: { space: probe.space, agent: name } });
-  return { kind: "pin", instanceId: assertLifecycleToken(instance, "holding manager instance") };
+  try { return { kind: "pin", ...presenceSeat(roster, name) }; }
+  catch (error) {
+    if (isCommandFailure(error) && error.code === "TARGET_NOT_FOUND") return { kind: "absent", checked: 0, instances: [], space: probe.space };
+    throw error;
+  }
 }
 
 /**
