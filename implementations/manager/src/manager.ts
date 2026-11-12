@@ -5434,6 +5434,7 @@ export class Manager {
         ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
         allowSubscribe: opts.allowSubscribe,
         ...(opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
+        ...(opts.eventPayloads === false ? { eventPayloads: false as const } : {}),
       },
       ...(opts.spawnRequest !== undefined ? { spawn: opts.spawnRequest } : {}),
     };
@@ -12565,6 +12566,7 @@ export class Manager {
     const issued = a.issued;
     const creds = await this.withIssuer((i) =>
       mintCreds(this.auth!, { id: a.id, seed: a.seed! }, "agent", {
+        eventPayloads: this.eventPayloadsWithheld ? false : a.launch.eventPayloads,
         allowSubscribe: a.launch.allowSubscribe,
         allowPublish: a.launch.allowPublish,
         role: a.role,

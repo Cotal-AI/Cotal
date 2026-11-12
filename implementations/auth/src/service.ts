@@ -1777,6 +1777,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             scope: t.capabilities ?? [],
             allowSubscribe,
             allowPublish: t.allowPublish ?? [],
+            ...(t.eventPayloads === false ? { eventPayloads: false as const } : {}),
             ...(t.role !== undefined ? { role: t.role } : {}),
             ...(t.label !== undefined ? { label: t.label } : {}),
             parent: spawner.parent,
