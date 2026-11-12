@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -10,6 +10,8 @@ import { jwt } from 'better-auth/plugins/jwt';
 import { deviceAuthorization } from 'better-auth/plugins/device-authorization';
 import { bearer } from 'better-auth/plugins/bearer';
 import { toNodeHandler } from 'better-auth/node';
+import { chooseAccount } from '../src/commands.js';
+import { COTAL_CLOUD_IDP } from '@cotal-ai/workspace';
 import { approveDevice } from './_device-approval.js';
 
 const home = mkdtempSync(join(tmpdir(), 'cotal-cloud-login-'));
@@ -17,6 +19,9 @@ const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) =
 process.env.COTAL_HOME = join(home, 'cotal');
 process.env.XDG_CONFIG_HOME = join(home, 'config');
 mkdirSync(process.env.COTAL_HOME, { mode: 0o700 });
+assert.equal(await chooseAccount({ values: {}, positionals: [], raw: [] }, 'login'), COTAL_CLOUD_IDP);
+assert.equal(await chooseAccount({ values: { cloud: true }, positionals: [], raw: [] }, 'login'), COTAL_CLOUD_IDP);
+console.log('Fresh provider selection defaults directly to Cloud; --cloud selects it explicitly.');
 const env = { ...cleanEnv, HOME: home, COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: '1' };
 
 let handler: ReturnType<typeof toNodeHandler>;
@@ -94,4 +99,9 @@ try {
       console.log(`Real provider landing ${cell.shape}${cell.previous ? ' preserves existing selection' : ''}: passed`);
     } finally { clearTimeout(deadline); }
   }
-} finally { clearTimeout(timer); server.closeAllConnections(); server.close(); }
+} finally {
+  clearTimeout(timer);
+  server.closeAllConnections();
+  await new Promise<void>(resolve => server.close(() => resolve()));
+  rmSync(home, { recursive: true, force: true });
+}

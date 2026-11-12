@@ -132,6 +132,10 @@ export async function chooseAccount(args: ParsedArgs, mode: "login" | "logout"):
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "cached account metadata could not be read; it was not reset"); }
   const providers = new Map(cached.map((item) => [item.idp, item.sub]));
   if (mode === "login") for (const mesh of loadMeshes()) if (mesh.userAuth?.idp.url) providers.set(normalizeIdpUrl(mesh.userAuth.idp.url), providers.get(normalizeIdpUrl(mesh.userAuth.idp.url)));
+  if (mode === "login" && providers.size === 0) {
+    console.error("Signing in to Cotal Cloud. For another host, use cotal login --idp <url>.");
+    return COTAL_CLOUD_IDP;
+  }
   if (providers.size === 1 && (mode === "logout" || providers.has(COTAL_CLOUD_IDP) || !canChooseAccount())) return providers.keys().next().value;
   if (mode === "logout" && providers.size === 0) return undefined;
   if (!canChooseAccount() || presentationOf(args.values) === "json") throw new CommandFailure("refused", "USAGE_INVALID", "select Cotal Cloud with --cloud or another provider with --idp outside an interactive terminal");

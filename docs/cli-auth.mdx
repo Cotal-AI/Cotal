@@ -9,8 +9,8 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 ## Sign in to Cotal Cloud
 
-Run `cotal login` in a terminal and choose **Cotal Cloud (cloud.cotal.ai)**, or run
-`cotal login --cloud` to select it without a prompt. Approve the printed link and code.
+Run `cotal login`. With no known provider, it signs in to Cotal Cloud in a terminal
+or a pipe. Use `cotal login --cloud` to select Cloud explicitly. Approve the printed link and code.
 A supported desktop session opens the link in your browser. Use `--no-browser` to open it
 elsewhere. Piped output does not open a browser.
 
@@ -438,7 +438,8 @@ or creating replacement agents merely to obtain a different report.
 ## Account screens [#account-screens]
 
 Bare `login` chooses a known provider from cached account metadata or registered spaces. When
-none is known, an interactive terminal asks for the provider auth URL. `--idp` selects it directly.
+none is known, it selects Cotal Cloud and prints how to use another host. With several
+known providers, a terminal offers a choice. `--idp` selects another host directly.
 The device-approval link and code are written only to stderr. Session tokens are never printed.
 The sign-in receipt separates account identity from each space's grants. This client's device
 flow requires approval and refuses `--no-input` before requesting a device session.
