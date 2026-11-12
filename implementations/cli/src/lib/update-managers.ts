@@ -61,13 +61,18 @@ function option(argv: readonly string[], key: string): string | undefined {
 }
 
 /** Install-wide candidates, independent of the selected mesh. Records supply roots, not liveness. */
-export function localUpdateManagers(): UpdateManager[] {
+export function localUpdateManagers(flags: { space?: unknown; server?: unknown; on?: unknown } = {}): UpdateManager[] {
   const registry = readMeshRegistry();
   if (registry.unusable.length) throw registry.unusable[0];
   const entries = registry.entries;
+  const matches = (space: string, server: string) =>
+    (typeof flags.space !== "string" || flags.space === space) &&
+    (typeof flags.server !== "string" || brokerAddressKey(flags.server) === brokerAddressKey(server));
   const known = new Map<number, { root: string; space: string; server: string }>();
   for (const entry of entries) {
+    if (!matches(entry.space, entry.server)) continue;
     for (const path of recordedLocalProcessPaths(MANAGER_PIDFILE, entry.root)) {
+      if (path.space && typeof flags.space === "string" && path.space !== flags.space) continue;
       if (path.unread) blocked(`${path.path}: ${path.unread}`);
       const record = readProcessRecord(path.path, commandIsCotalSupervisor);
       if (record.state === "unknown" || record.state === "unattributable") blocked(`unresolved process record ${path.path}`);
@@ -140,12 +145,15 @@ export function localUpdateManagers(): UpdateManager[] {
     const hostedSpace = option(argv, "space");
     const root = hostedHome && hostedSpace ? join(hostedHome, "daemon", spaceSegment(hostedSpace), "manager") : option(argv, "root") ?? recorded?.root ?? cwd;
     const space = option(argv, "space") ?? env.COTAL_SPACE ?? recorded?.space;
+    if (space && typeof flags.space === "string" && flags.space !== space) continue;
     if (!root || !space) blocked(`Manager pid ${pid} has no proven root or space`);
     const entry = entries.find(value => value.space === space);
     const server = option(argv, "server") ?? env.COTAL_SERVER ?? recorded?.server ?? entry?.server;
     if (!server) blocked(`Manager pid ${pid}, root ${root}, space ${space} has no broker address`);
+    if (!matches(space, server)) continue;
     if (!("token" in pin) || assertRecordIdentity(pin).kind !== "match") blocked(`Manager pid ${pid} changed or has no process creation identity`);
     const instanceId = readUpdateManagerIdentity(root, space);
+    if (typeof flags.on === "string" && instanceId !== flags.on) continue;
     const candidate = { pid, root, space, server, instanceId, process: pin };
     result.set(JSON.stringify([brokerAddressKey(server) ?? server, space, instanceId]), candidate);
   }

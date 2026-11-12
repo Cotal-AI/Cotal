@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import assert from "node:assert/strict";
 import { reportRunningManagers } from "../src/commands/update.js";
 
@@ -38,4 +39,25 @@ try {
   writeFileSync(file, "{}");
   assert.throws(() => readUpdateManagerIdentity(root, "A"), /invalid identity/);
 } finally { rmSync(root, { recursive: true, force: true }); }
+// A real argv-bearing process with a missing identity must not poison another explicit space.
+if (process.platform === "linux") {
+  const { spawn } = await import("node:child_process");
+  const fixture = mkdtempSync(join(tmpdir(), "cotal-update-census-process-"));
+  const entry = join(fixture, "cotal.ts");
+  writeFileSync(entry, "setInterval(() => {}, 1000);\n");
+  const child = spawn(process.execPath, [entry, "supervise", "--space", "unrelated", "--server", "nats://127.0.0.1:4222"], { cwd: fixture, stdio: "ignore" });
+  const priorEntry = process.argv[1];
+  try {
+    await once(child, "spawn");
+    process.argv[1] = entry;
+    const { localUpdateManagers } = await import("../src/lib/update-managers.js");
+    const scoped = localUpdateManagers as unknown as (flags: { space: string }) => unknown[];
+    assert.deepEqual(scoped({ space: "selected" }), [], "unrelated missing identity is excluded before validation");
+  } finally {
+    process.argv[1] = priorEntry!;
+    child.kill();
+    await once(child, "exit");
+    rmSync(fixture, { recursive: true, force: true });
+  }
+}
 console.log("local Manager continuity census passed");
