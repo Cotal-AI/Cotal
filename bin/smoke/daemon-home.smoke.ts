@@ -227,13 +227,20 @@ try {
     check("G0 the remedy names help, not a live status read", missing.err.includes("cotal help daemon") && !missing.err.split("\n")[1]!.includes("cotal daemon status"), missing.err.slice(0, 400));
     const help = await cli(["--help"]);
     check("G0 scoped help succeeds before any daemon starts", help.status === 0 && help.out.includes("desktop"), { status: help.status });
-    for (const mode of ["setup", "connect-check", "register", "service-connect", "service-disconnect", "service-status"]) {
+    for (const mode of ["connect-check", "register", "service-connect", "service-disconnect", "service-status"]) {
       const scoped = await cli([mode, "--help"]);
       check(`G0 ${mode} help requires an explicit space without promising a resolved default`, scoped.status === 0 && scoped.out.includes(`cotal daemon ${mode} --space <s>`) && scoped.out.includes("target space (required") && !scoped.out.includes("the resolved mesh"), scoped.out);
       const missingSpace = await cli([mode, "--json"]);
       check(`G0 ${mode} still refuses an omitted space`, missingSpace.status === 1 && missingSpace.doc.error?.code === "USAGE_INVALID" && missingSpace.doc.error.message?.includes("needs --space <s>") === true, missingSpace.doc);
     }
     const setupHelp = await cli(["setup", "--help"]);
+    check("G0 setup permits account-only setup and describes its scoped space flags", setupHelp.status === 0 && setupHelp.out.includes("[--space <s>]") && setupHelp.out.includes("--no-manager and --wait require --space") && !setupHelp.out.includes("the resolved mesh"), setupHelp.out);
+    const missingProvider = await cli(["setup", "--json"]);
+    check("G0 account-only setup without an installed daemon asks for its provider", missingProvider.status === 1 && missingProvider.doc.error?.code === "USAGE_INVALID" && missingProvider.doc.error.message === "No daemon is installed; pass --idp <url> to connect an account", missingProvider.doc);
+    for (const flags of [["--no-manager"], ["--wait", "0"]]) {
+      const scoped = await cli(["setup", ...flags, "--json"]);
+      check(`G0 setup ${flags[0]} still requires an explicit space`, scoped.status === 1 && scoped.doc.error?.code === "USAGE_INVALID" && scoped.doc.error.message === "--no-manager and --wait require --space <s>", scoped.doc);
+    }
     check("G0 setup provider options do not claim to be login-only", !setupHelp.out.includes("login:") && setupHelp.out.includes("--idp <auth base URL>") && setupHelp.out.includes("--client-id <id>"), setupHelp.out);
     const loginHelp = await cli(["login", "--help"]);
     check("G0 login usage requires a provider", loginHelp.status === 0 && loginHelp.out.includes("cotal daemon login --idp <auth base URL>"), loginHelp.out);
