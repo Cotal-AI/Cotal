@@ -128,7 +128,6 @@ import { selectResetTarget } from "./reset-store-apply.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { readPersonas, type PersonaEntry } from "../lib/personas.js";
-import { defaultPersonaFix } from "../lib/default-persona.js";
 import { c } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { agentStatus } from "./agents.js";
@@ -998,7 +997,9 @@ function folderPersonas(root: string, selected: Selected, values: FlagValues<typ
   const personas = personaCatalog(root, gaps);
   if (!selected.ok) return { personas, launches: null };
   if (sameDir(personaDir(root), selected.target.personaRoot)) return { personas, launches: true };
-  hints.push(
+  let folderHasPersonas = false;
+  try { folderHasPersonas = readPersonas(root).length > 0; } catch { /* personaCatalog already reports the unreadable catalog */ }
+  if (folderHasPersonas) hints.push(
     `a bare \`${displayCmd()} spawn\` uses the selected mesh, NOT this folder - personas in ${personaDir(root)} will not launch until you run it from that mesh's root or select it (\`${displayCmd()} use <space>\`${values.space ? "" : ", or pass `--space`"})`,
   );
   return { personas, launches: false };
@@ -2076,15 +2077,16 @@ function nextActions(r: StatusResult): Section {
   const items: { command: string; description: string }[] = [];
   const extra: string[] = [];
   const noApplication = !r.machine.connectors?.length;
+  if (!r.selected.resolved && !r.meshes.items.length && !r.meshes.unreadable.length) {
+    items.push({ command: `${cmd} login`, description: "Sign in to Cotal Cloud" });
+  }
   if (r.selected.resolved) {
     const s = r.selected;
     // A space that already resolves needs only the application to spawn into it.
     if (noApplication) items.push({ command: `${cmd} setup`, description: "Set up an agent application" });
     // Name what fixes the default persona alone; setup does far more than that.
-    else if (s.personas.default === "missing") {
-      const fix = defaultPersonaFix({ space: s.space, root: s.root, origin: r.meshes.items.find((m) => m.space === s.space)?.origin }, cmd);
-      items.push({ command: fix.command, description: fix.cwd ? `Write the default persona; run it in ${fix.cwd}` : "Create the default persona" });
-    } else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${s.space}`, description: "See what is wrong with the default persona" });
+    else if (s.personas.default === "missing") items.push({ command: `${cmd} spawn`, description: "Open your default agent; creates the shipped default persona" });
+    else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${s.space}`, description: "See what is wrong with the default persona" });
     else items.push({ command: `${cmd} spawn`, description: "Open your default agent" });
     items.push({ command: `${cmd} ps`, description: "See the agent roster" });
   } else if (noApplication) items.push({ command: `${cmd} setup`, description: r.selected.code === "not-started" ? "Set up an agent application" : "Set up an agent application and a space" });

@@ -45,6 +45,12 @@ teardownOnSignal(broker, store);
 try {
   await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100 });
   recordMesh({ space: "defaults", server, root: project, mode: "open", ts: new Date().toISOString() });
+  const guidanceConfig = join(root, "guidance-config");
+  const manifest = join(guidanceConfig, "cotal", "extensions");
+  mkdirSync(manifest, { recursive: true, mode: 0o700 });
+  writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@rig/app", version: "0.0.0", spec: "@rig/app@0.0.0", provides: [{ kind: "connector", name: "app" }], commands: [], connectors: [{ name: "app", requires: [], eventPlane: false, setup: null }] }] }));
+  const guidance = cli(["status", "--plain"], { XDG_CONFIG_HOME: guidanceConfig });
+  check("missing implicit default points at spawn rather than manual persona creation", guidance.includes("creates the shipped default persona") && !guidance.includes("persona create default"), guidance);
   cli(["persona", "create", "pinned", "--prompt", "x", "--subscribe", "", "--harness", "opencode"]);
   cli(["persona", "create", "unpinned", "--prompt", "x", "--subscribe", ""]);
   cli(["config", "set", "harness", "jcode"]);

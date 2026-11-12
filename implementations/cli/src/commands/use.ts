@@ -88,7 +88,9 @@ function clearSelection(named: boolean, presentation: ReturnType<typeof presenta
 }
 
 function selectionView(s: Selection): Report {
-  if (s.current === null) return { sections: [{ blocks: [{ kind: "lines", lines: [{ text: "no space is selected - select one with `cotal use <name>`; `cotal space` lists them", tone: "hint" }] }] }] };
+  if (s.current === null) return { sections: [{ blocks: [{ kind: "lines", lines: [{ text: loadMeshes().length === 0 && loadPreparedSpaces().length === 0
+    ? "no spaces are known here - sign in to Cotal Cloud with `cotal login`"
+    : "no space is selected - select one with `cotal use <name>`; `cotal space` lists them", tone: "hint" }] }] }] };
   const head: Cell = s.current === s.previous
     ? { text: `selected: ${s.current}`, tone: "selected" }
     : { text: `selected ${s.current}${s.previous ? ` (was ${s.previous})` : ""}`, tone: "ok", mark: "✓" };

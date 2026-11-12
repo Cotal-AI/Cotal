@@ -54,7 +54,7 @@ import {
   setCommandSurface,
   setInstalledExtensionsEnabled,
 } from "./ext-loader.js";
-import { deferredSeedRefusal, reconcileSeededConnectors } from "./seed/reconcile.js";
+import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors } from "./seed/reconcile.js";
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
@@ -228,6 +228,7 @@ async function extSeedGate(registry: Registry, argv: string[], configFolder: Con
 function skipsSeed(name: string, sub: string | undefined, argv: readonly string[], cmd?: Command): boolean {
   if (name === "help" || name === "version" || name === "__complete" || name === "completion") return true;
   if (cmd && readsOnly(cmd, sub)) return true;
+  if (name === "login") return true; // device approval does not launch or install a connector
   if (name === "use" && sub === undefined) return true; // bare `use` shows the selection: a read
   // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
   // mutation of the operator-global seed store, manifest and npm prefix — it ran BEFORE the command
@@ -265,6 +266,13 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   // connection, so, like a credential exchange, it must not seed the store under a running connector.
   if (name === "app-identity") return true;
   return false;
+}
+
+function seedRefusal(error: unknown): void {
+  if (error instanceof SeedChildFailure && error.lines.length > 1) {
+    stderrLine("✗ ", error.summary, c.red);
+    for (const line of error.lines) stderrLine("  ", line, c.red);
+  } else stderrLine("✗ ", error instanceof Error ? error.message : String(error), c.red);
 }
 
 /** Whether the invocation is a mode its command declares as a read ({@link Command.reads}). */
@@ -590,7 +598,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     try {
       if (await extSeedGate(registry, argv, configFolder, leadingGlobals)) return;
     } catch (e) {
-      stderrLine("✗ ", (e as Error).message, c.red);
+      seedRefusal(e);
       process.exit(1);
     }
   }
@@ -689,7 +697,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
         });
         failureExit(cmd, failure, true, rest.includes("--plain"));
       }
-      stderrLine("✗ ", (e as Error).message, c.red);
+      seedRefusal(e);
       process.exit(1);
     }
     if (!deferred) {

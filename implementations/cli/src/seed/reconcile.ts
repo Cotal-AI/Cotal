@@ -96,6 +96,12 @@ export interface ReconcileResult {
   readonly removedKept: string[];
 }
 
+export class SeedChildFailure extends Error {
+  constructor(readonly summary: string, readonly lines: readonly string[]) {
+    super(`${summary}: ${lines.join("\n")}`);
+  }
+}
+
 /** Auto reconcile for the boot gate: silent no-op when the stamp is current and healthy. */
 export async function reconcileSeededConnectors(): Promise<void> {
   await reconcile("auto");
@@ -681,7 +687,7 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   // runs this ahead of whatever command was typed, so on stdout it would land in front of that
   // command's result (a first-boot `cotal meshes --json` printed seven non-JSON lines).
   if (r.stdout) process.stderr.write(r.stdout);
-  if (r.status !== 0) throw new Error(`failed to seed connector "${name}" from ${storePath}: ${childFailure(r)}`);
+  if (r.status !== 0) throw new SeedChildFailure(`failed to seed connector "${name}" from ${storePath}`, childFailure(r).split("\n"));
 }
 
 /** Why a seed child failed. It writes its progress and then its `✗` failure to stderr: the progress

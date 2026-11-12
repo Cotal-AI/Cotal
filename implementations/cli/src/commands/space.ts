@@ -297,7 +297,7 @@ function spacesView(result: SpacesResult): Report {
   }];
   // A prepared space is listed below, so the empty line names what is missing without denying it.
   if (result.items.length === 0)
-    return { sections: [{ title: "Spaces", blocks: [{ kind: "lines", lines: result.prepared.length ? [ran ? "No space is running or registered." : "No space has been started or registered yet."] : ["No spaces registered.", { text: "Prepare a local space or connect to one you already run.", tone: "hint" }] }] }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal setup", description: "Choose a local or self-hosted space" }, { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }] }] }] };
+    return { sections: [{ title: "Spaces", blocks: [{ kind: "lines", lines: result.prepared.length ? [ran ? "No space is running or registered." : "No space has been started or registered yet."] : ["No spaces registered.", { text: "Sign in to Cotal Cloud with `cotal login`, or prepare a local space.", tone: "hint" }] }] }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [...(result.prepared.length ? [] : [{ command: "cotal login", description: "Sign in to Cotal Cloud" }]), { command: "cotal setup", description: "Choose a local or self-hosted space" }, { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }] }] }] };
   return {
     sections: [{
       title: "Spaces",

@@ -590,7 +590,7 @@ const authCommands: Command[] = [
     name: "login",
     group: "Identity",
     summary: "sign in to Cotal Cloud or another host with device approval",
-    examples: [{ command: "cotal login", note: "choose a provider and approve sign-in" }, { command: "cotal login --idp <url>", note: "sign in to one provider" }],
+    examples: [{ command: "cotal login", note: "sign in to Cotal Cloud and approve sign-in" }, { command: "cotal login --idp <url>", note: "sign in to one provider" }],
     usage: "cotal login [--cloud | --idp <auth base URL>] [--client-id <id>] [--no-browser] [--plain]",
     prepareMeshTarget: false,
     outputs: ["plain"],
