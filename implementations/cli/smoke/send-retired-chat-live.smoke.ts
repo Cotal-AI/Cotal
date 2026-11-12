@@ -4,14 +4,18 @@
  * that the same lifecycle still receives its pending DM. All CLI calls use an isolated static stack.
  * Run: pnpm smoke:send-retired-chat:live
  */
-import assert from "node:assert/strict";
+import rawAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { CotalEndpoint, dmDurable, parsePrincipalKey } from "@cotal-ai/core";
-import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, countedAssert, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { connectOrThrow } from "@cotal-ai/workspace";
+
+const counted = countedAssert(rawAssert);
+const assert: typeof rawAssert = counted.assert;
+const cells = counted.cells;
 
 const repo = resolve(import.meta.dirname, "../../..");
 const cliPath = join(repo, "bin/cotal.ts");
@@ -168,3 +172,4 @@ try {
   assert.equal(down.status, 0, down.stderr);
   console.log(`Evidence retained at ${evidence}`);
 }
+emitSentinel({ passed: cells(), failed: 0 });

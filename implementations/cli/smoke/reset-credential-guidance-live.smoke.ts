@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { assertSmokeSandboxDown, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 const repo = resolve(import.meta.dirname, "../../..");
 const cliPath = join(repo, "bin/cotal.ts");
@@ -32,9 +32,10 @@ function ok(cwd: string, ...args: string[]) {
   assert.equal(run.status, 0, `${args[0]} failed: ${run.stderr || run.stdout}`);
   return run;
 }
+let passed = 0;
 const failures: string[] = [];
 function check(label: string, test: () => void) {
-  try { test(); console.log(`PASS ${label}`); }
+  try { test(); passed++; console.log(`PASS ${label}`); }
   catch (error) { failures.push(label); console.error(`FAIL ${label}: ${error instanceof Error ? error.message : String(error)}`); }
 }
 const space = "resetcreds";
@@ -124,3 +125,4 @@ try {
   console.log(`Retained stopped sandbox: ${base}`);
 }
 assert.deepEqual(failures, [], "stale credential guidance regressions");
+emitSentinel({ passed, failed: failures.length });

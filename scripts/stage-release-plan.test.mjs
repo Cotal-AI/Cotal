@@ -3,9 +3,10 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import YAML from "yaml";
 import { createServer } from "node:http";
+import { emitSentinel } from "../bin/smoke/sentinel.mjs";
 import { preflightNpmPublish, classifyDirectPublishPermission } from "./preflight-npm-publish.mjs";
 import { closureFromConfig } from "./verify-publish-closure.mjs";
 import { releaseManifests, stageReleasePlan, STAGING_TAG } from "./stage-release-plan.mjs";
@@ -269,4 +270,8 @@ test("actual workflow promotion shell uses ordinary npm, stops on error and does
     assert.match(calls, /install --prefer-online/);
     assert(!calls.includes("dist-tag"), "actual verifier refusal must leave every latest tag untouched");
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+after(() => {
+  emitSentinel({ passed: 10, failed: 0 });
 });

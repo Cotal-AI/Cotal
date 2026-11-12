@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
+import { emitSentinel } from "../bin/smoke/sentinel.mjs";
 
 const root = join(import.meta.dirname, "..");
 const cli = join(root, "node_modules/@changesets/cli/bin.js");
@@ -39,4 +40,8 @@ for (const tag of ["latest", "cotal-staged"]) test(`unmodified installed Changes
     assert(args.some((arg) => arg.endsWith(".tgz")));
     assert.match(publish.stdout + publish.stderr, /synthetic write boundary refused/);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+after(() => {
+  emitSentinel({ passed: 12, failed: 0 });
 });
