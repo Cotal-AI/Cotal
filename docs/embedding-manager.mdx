@@ -412,6 +412,23 @@ each replacement connection.
 [hosted runtime contract](design/hosted-runtime-contracts.md) records the bounded additions and
 their ownership; it is not a shipped pooled service.
 
+A standing-family renewal has a ten-second aggregate budget for the host response, all five broker
+preflights and the post-adoption reconnect wait. Failed preparation retains the current family and
+reports renewal debt. A late host response cannot adopt credentials. Timeout does not cancel host
+issuance or prove it failed; the host still owns that operation, and all five held subjects are
+recorded as possibly issued when no response arrived. Late broker dials close without serving.
+Failed serving candidates close before subscription cleanup, so an unanswered drain PONG cannot
+extend preparation. Any handlers already dispatched on that candidate keep their original outcomes
+and are not replayed. The current serving transport stays intact.
+After adoption, reconnect timeout leaves the adopted family and native transport reconnects intact.
+Existing requests retain their original outcomes and are never replayed by this recovery.
+
+Each remote closed-serve recovery attempt also has a ten-second budget across joining renewal and
+dialing. The existing retries wait one, five and thirty seconds before their attempts. Exhaustion
+releases the manager lease and exits loudly. Executor maintenance joins the same bounded family
+renewal before it submits maintenance work. Healthy old transports keep serving during preparation;
+expired credentials are still refused. This budget does not remove planned reconnect gaps.
+
 ### Agent isolation
 
 **Signer isolation needs an OS sandbox.** The default pty runtime

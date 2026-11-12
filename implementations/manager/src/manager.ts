@@ -382,6 +382,7 @@ const STARTUP_RECONCILING = "startup static lifecycle reconciliation";
  *  authority. The finite ~36s window is intentionally not a liveness inference: exhausting it
  *  leaves the durable alias held and requires a later manager start. */
 export const STATIC_RECONCILE_RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
+const REMOTE_STANDING_BUDGET_MS = 10_000;
 const STATIC_RECONCILE_MAX_ATTEMPTS = STATIC_RECONCILE_RETRY_DELAYS_MS.length + 1;
 
 type StaticReconcileItem = ManagerStaticReconciliationFailure & {
@@ -469,6 +470,13 @@ function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
     timer = setTimeout(() => reject(new Error(msg)), ms);
   });
   return Promise.race([p.finally(() => clearTimeout(timer)), timeout]);
+}
+
+/** One absolute budget across authority, preflight and adoption waits, or one closed-serve attempt. */
+function remoteStandingTimeLeft(deadline: number): number {
+  const left = deadline - performance.now();
+  if (left <= 0) throw new Error("remote manager standing operation exceeded its 10000ms aggregate budget");
+  return Math.ceil(left);
 }
 
 function sameStrings(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
@@ -2005,6 +2013,24 @@ export class Manager {
     return dialerFor(servers)({ ...opts, servers });
   }
 
+  /** Initial NATS timeout is per dial, not per server list. Keep the aggregate deadline too, and
+   * close a late result rather than letting an abandoned preflight or recovery install a transport. */
+  private async dialRemoteStanding(opts: Parameters<ReturnType<typeof dialerFor>>[0], deadline: number): Promise<NatsConnection> {
+    const ms = remoteStandingTimeLeft(deadline);
+    const pending = this.dial({ ...opts, timeout: ms });
+    try {
+      const nc = await withTimeout(pending, ms, "remote manager standing dial exceeded its 10000ms aggregate budget");
+      remoteStandingTimeLeft(deadline);
+      if (this.leaseStopping) throw new Error("manager stopped while a remote standing dial was in flight");
+      return nc;
+    } catch (e) {
+      // Timing out our wait does not cancel connect(). It still owns its socket until it rejects
+      // or returns a connection, which must close without serving or changing a current holder.
+      void pending.then((nc) => nc.close(), () => {}).catch((error) => console.error(`! remote manager abandoned standing dial cleanup: ${rejectionText(error)}`));
+      throw e;
+    }
+  }
+
   constructor(opts: ManagerOptions) {
     if (opts.expectedConnectorGeneration !== undefined && opts.expectedConnectorGeneration !== MANAGER_VERSION)
       throw new Error(`expected connector generation ${opts.expectedConnectorGeneration} differs from this Manager's loaded generation ${MANAGER_VERSION}; restart from the installed CLI`);
@@ -3164,7 +3190,7 @@ export class Manager {
     if (this.remoteBundleRenewal) return this.remoteBundleRenewal;
     if (this.leaseStopping) return;
     this.remoteBundleAdoption = new Promise<void>((resolve) => { this.finishRemoteBundleAdoption = resolve; });
-    const renewal = this.renewRemoteStandingBundleOnce(force);
+    const renewal = this.renewRemoteStandingBundleOnce(force, performance.now() + REMOTE_STANDING_BUDGET_MS);
     this.remoteBundleRenewal = renewal;
     try { await renewal; } finally {
       this.finishRemoteBundleAdoption?.();
@@ -3186,7 +3212,7 @@ export class Manager {
       throw new Error(`the ${label} credential is not healthy after all-duty renewal; last-good is kept and nothing is minted locally`);
   }
 
-  private async renewRemoteStandingBundleOnce(force: boolean): Promise<void> {
+  private async renewRemoteStandingBundleOnce(force: boolean, deadline: number): Promise<void> {
     const remote = this.remoteAuthority;
     if (!remote?.renewStandingBundle || !this.serviceServe) return;
     const current = [this.remoteSupervisorCreds, this.remoteExecutorCreds, this.serviceServe.creds,
@@ -3203,8 +3229,12 @@ export class Manager {
     const serving = this.serviceServe;
     const previous = { nc: serving.nc, handle: serving.handle };
     let replacement: { nc: NatsConnection; handle: EpServeHandle } | undefined;
+    let adopted = false;
     try {
-      candidate = await remote.renewStandingBundle(processEpoch);
+      // Only this continuation can adopt. A host operation may still issue after this wait times
+      // out, but its late result cannot re-enter preflight or change any Manager holder.
+      candidate = await withTimeout(remote.renewStandingBundle(processEpoch), remoteStandingTimeLeft(deadline),
+        "remote manager standing authority exceeded its 10000ms aggregate budget; issuance outcome is unknown");
       if (Object.keys(candidate).sort().join(",") !== [...REMOTE_MANAGER_IDENTITY_NAMES].sort().join(","))
         throw new Error("host returned an incomplete or widened standing credential family");
       for (const name of REMOTE_MANAGER_IDENTITY_NAMES) {
@@ -3215,17 +3245,20 @@ export class Manager {
         if (credsClaims(candidate[name]).sub !== remote.identities[name].id)
           throw new Error(`host returned a ${name} credential for a different nkey than the held identity`);
         const staged = candidate[name];
-        const nc = await this.dial({ authenticator: (nonce?: string) => credsAuthenticator(new TextEncoder().encode(staged))(nonce), maxReconnectAttempts: 0 });
+        const nc = await this.dialRemoteStanding({ authenticator: (nonce?: string) => credsAuthenticator(new TextEncoder().encode(staged))(nonce), maxReconnectAttempts: 0 }, deadline);
         await nc.close();
       }
+      remoteStandingTimeLeft(deadline);
       if (this.leaseStopping || this.serviceServe !== serving || serving.nc !== previous.nc || serving.grant.epoch !== processEpoch)
         throw new Error("manager changed its active serve epoch or connection while standing renewal was in flight");
-      let adopted = false;
       const stagedServeCreds = candidate.serve;
       replacement = await this.dialServeConnection({ ...serving, creds: stagedServeCreds },
-        () => adopted ? serving.creds! : stagedServeCreds);
+        () => adopted ? serving.creds! : stagedServeCreds, deadline);
+      remoteStandingTimeLeft(deadline);
       if (this.leaseStopping || this.serviceServe !== serving || serving.nc !== previous.nc || serving.grant.epoch !== processEpoch)
         throw new Error("manager changed its active serve epoch or connection while standing renewal was in flight");
+      if (REMOTE_MANAGER_IDENTITY_NAMES.some((name) => inspectCredHealth(candidate![name]).state !== "healthy"))
+        throw new Error("standing candidate is no longer healthy after broker preflight");
       serving.nc = replacement.nc;
       serving.handle = replacement.handle;
       replacement = undefined;
@@ -3242,7 +3275,7 @@ export class Manager {
       this.remoteRenewalDebt = undefined;
       // Maintenance needed by admitted handlers must not wait for those same handlers to drain.
       this.finishRemoteBundleAdoption?.();
-      await Promise.all([
+      await withTimeout(Promise.all([
         this.pushSupervisorCreds(),
         (async () => {
           try {
@@ -3258,14 +3291,18 @@ export class Manager {
         })().catch((e) => console.error(`! remote manager retired serve drainage after renewal: ${rejectionText(e)}`)),
         ...(this.goalWriter ? [this.pushRenewedCreds(this.goalWriter.nc)] : []),
         ...(this.sessionLedgerConn ? [this.pushRenewedCreds(this.sessionLedgerConn.nc)] : []),
-      ]);
+      ]), remoteStandingTimeLeft(deadline), "remote manager standing reconnect exceeded its 10000ms aggregate budget; adopted transports keep their native reconnect ownership");
     } catch (e) {
       if (replacement) {
-        await this.retireConnection(replacement.nc, () => replacement!.handle.stop());
+        await this.discardServeCandidate(replacement.nc, replacement.handle);
+      }
+      if (adopted) {
+        console.error(`! remote manager adopted standing family: ${rejectionText(e)}`);
+        return;
       }
       const unadoptedSubjects = candidate && typeof candidate === "object"
         ? Object.values(candidate).flatMap((cred) => { try { return typeof cred === "string" && credsClaims(cred).sub ? [credsClaims(cred).sub!] : []; } catch { return []; } })
-        : [];
+        : REMOTE_MANAGER_IDENTITY_NAMES.map((name) => remote.identities[name].id);
       this.remoteRenewalDebt = { at: Date.now(), processEpoch, reason: rejectionText(e), unadoptedSubjects };
       console.error(`! remote manager all-duty renewal: ${this.remoteRenewalDebt.reason} - no unsigned or local replacement is available`);
       if (force) throw e;
@@ -4020,8 +4057,8 @@ export class Manager {
     // still move the key's revision after we clear the timer, and releasing against a cached
     // revision it has since moved is a CAS the broker correctly refuses, silently, forever.
     await this.leaseRenewTask?.catch(() => {});
-    // An already accepted host issuance must finish before standing transports close. The
-    // epoch/stop fence refuses adoption, but does not cancel the issuer's in-flight request.
+    // Join the bounded Manager renewal. Its stop/deadline fence refuses late adoption, but the
+    // host still owns any submitted issuance and its outcome can remain unknown after timeout.
     await this.remoteBundleRenewal?.catch(() => {});
     // A spawn admitted before the fence closed may still be launching. Its seat must be in the
     // snapshot below, or it would outlive a stop that reported success.
@@ -4190,6 +4227,14 @@ export class Manager {
     }
     if (flush) try { await flush(); } catch { /* best effort */ }
     try { await drainAndClose(nc); } catch { /* best effort */ }
+  }
+
+  /** A failed candidate must not extend preparation by draining subscriptions on a stalled socket.
+   * Close only that candidate first. Native stop still owns any already-dispatched handlers, whose
+   * outcomes remain unknown to callers and must not be replayed; they do not hold family adoption. */
+  private async discardServeCandidate(nc: NatsConnection, handle?: EpServeHandle): Promise<void> {
+    await nc.close();
+    if (handle) void handle.stop().catch((e) => console.error(`! remote manager discarded serve candidate cleanup: ${rejectionText(e)}`));
   }
 
   /** Track a dedicated connection's transport into {@link transportDown} from the first moment:
@@ -9670,13 +9715,15 @@ export class Manager {
   private async dialServeConnection(
     state: { nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string },
     readCreds: () => string = () => state.creds!,
+    deadline?: number,
   ): Promise<{ nc: NatsConnection; handle: EpServeHandle }> {
-    const nc = await this.dial({
+    const opts = {
       // Open mesh: a bare serve connection (no credential exists; the broker enforces nothing).
       ...(state.creds !== undefined ? standaloneConnectOpts({ creds: readCreds, tls: false }) : {}),
       inboxPrefix: `_INBOX_${state.identity.id}`,
       maxReconnectAttempts: -1,
-    });
+    };
+    const nc = await (deadline === undefined ? this.dial(opts) : this.dialRemoteStanding(opts, deadline));
     this.trackTransport(nc);
     let handle: EpServeHandle | undefined;
     try {
@@ -9710,12 +9757,14 @@ export class Manager {
         ...(this.omitClassCommands() ? { omitClassCommands: this.omitClassCommands() } : {}),
       });
       // A subscribed replacement must be visible to the broker before the old rails retire.
-      await nc.flush();
+      if (deadline === undefined) await nc.flush();
+      else await withTimeout(nc.flush(), remoteStandingTimeLeft(deadline),
+        "remote manager standing serve flush exceeded its 10000ms aggregate budget");
     } catch (e) {
-      await this.retireConnection(nc, handle ? () => handle!.stop() : undefined);
+      await this.discardServeCandidate(nc, handle);
       throw e;
     }
-    // Wired only once the connection serves: a connection this method drains itself after a
+    // Wired only once the connection serves: a candidate this method closes after a
     // refused serve is not a fault to recover, and the caller already sees the refusal.
     nc.closed().then((err) => {
       if (this.serviceServe?.nc === nc) void this.onServeConnectionClosed(err ?? undefined, nc);
@@ -9755,16 +9804,20 @@ export class Manager {
     console.error(`! manager service endpoint connection closed: ${err?.message ?? "unknown reason"}`);
     const recovered = await this.boundedReconnect("service endpoint", async () => {
       if (!s) return false;
+      const deadline = this.remoteAuthority ? performance.now() + REMOTE_STANDING_BUDGET_MS : undefined;
       // Let an admitted renewal finish owning its candidate before recovery opens another.
-      await this.remoteBundleRenewal;
+      if (deadline === undefined) await this.remoteBundleRenewal;
+      else await withTimeout(Promise.resolve(this.remoteBundleRenewal), remoteStandingTimeLeft(deadline),
+        "remote manager closed-serve renewal wait exceeded its 10000ms aggregate budget");
       if (this.leaseStopping || this.serviceServe !== s || s.nc !== closed) return true;
-      if (this.remoteAuthority) await this.renewRemoteBeforeRedial("serve", () => s.creds);
+      if (deadline !== undefined) await withTimeout(this.renewRemoteBeforeRedial("serve", () => s.creds), remoteStandingTimeLeft(deadline),
+        "remote manager closed-serve renewal wait exceeded its 10000ms aggregate budget");
       else if (inspectCredHealth(s.creds ?? "").state !== "healthy" && s.creds !== undefined) {
         s.creds = await this.remintServeCreds(s);
         this.scheduleServeRenewal(s.creds);
       }
       if (this.leaseStopping || this.serviceServe !== s || s.nc !== closed) return true;
-      const { nc, handle } = await this.dialServeConnection(s);
+      const { nc, handle } = await this.dialServeConnection(s, undefined, deadline);
       if (this.leaseStopping || this.serviceServe !== s || s.nc !== closed) {
         try { await handle.stop(); } finally { await nc.close(); }
         return true;
