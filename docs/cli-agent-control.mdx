@@ -67,6 +67,14 @@ A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control 
 that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
 entry, is the route that does.
 
+The stock auth provider gives each hosted manager admin-authorization decision a single
+5-second dependency budget, covering IdP token acquisition, the authority POST and its complete
+response body. If that budget expires, the manager refuses with `unavailable` and outcome
+`not-executed`, before the control caller's 10-second invocation deadline. It aborts the pending
+HTTP work without cancelling another caller's token fetch. Authorization is still checked fresh
+on every call. A slow or unreachable authority never permits stale authorization or an
+owner-filtered substitute for the refused read.
+
 `ps` shows the instance id `--on` takes for each manager that answered, with or without agents. One
 manager is listed under `Manager` as its `instance`, and with several each gets a `manager <id>`
 header. With no agents its Next is `cotal spawn`, or `cotal setup` when no agent application is set

@@ -403,8 +403,22 @@ export const cotalAuthProvider: AuthProvider = {
   },
 
   async authorizeRemoteManagerAdmin({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerAdminAuthorizationRequest }): Promise<RemoteManagerAdminAuthorizationResult> {
-    const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "authorizing manager admin reach");
-    return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager admin authorization") as Promise<RemoteManagerAdminAuthorizationResult>;
+    // Leave room for the manager's reply inside the control caller's 10-second invocation limit.
+    // The same signal bounds token acquisition, POST headers and the complete response body.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5_000);
+    timer.unref();
+    try {
+      const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "authorizing manager admin reach");
+      return await postManagerAuthority(endpoint, idpUrl, authorization, request, "manager admin authorization", undefined, controller.signal) as RemoteManagerAdminAuthorizationResult;
+    } catch (error) {
+      if (controller.signal.aborted)
+        throw new EpEnvelopeError("unavailable", "manager admin authorization exceeded its 5000ms dependency budget; no operation was executed", undefined, "not-executed");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+    }
   },
 
   async authorizeRemoteManagerParticipation({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerParticipationAuthorizationRequest }): Promise<RemoteManagerParticipationAuthorizationResult> {
@@ -854,19 +868,23 @@ async function postManagerAuthority(
   request: unknown,
   what: string,
   preparedIdpJwt?: string,
+  signal?: AbortSignal,
 ): Promise<unknown> {
-  const idpJwt = preparedIdpJwt ?? await fetchIdpJwt(idpUrl, requireIdpSession(idpSessionDir(), idpUrl).token);
+  signal?.throwIfAborted();
+  const idpJwt = preparedIdpJwt ?? await fetchIdpJwt(idpUrl, requireIdpSession(idpSessionDir(), idpUrl).token, signal);
+  signal?.throwIfAborted();
   const response = await fetch(endpoint, {
     method: "POST",
     redirect: "manual",
     headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
     body: JSON.stringify({ idpToken: idpJwt, request }),
-    signal: AbortSignal.timeout(30_000),
+    signal: signal ?? AbortSignal.timeout(30_000),
   }).catch((error) => { throw new Error(`the ${what} endpoint did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`, { cause: error }); });
   if (response.status >= 300 && response.status < 400)
     throw new Error(`the ${what} endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
   // A stand-in object would reach the caller as a result the endpoint never sent.
   const body = await response.json().catch(() => { throw new Error(`the ${what} endpoint at ${endpoint} answered HTTP ${response.status} with a body that could not be read as JSON`); });
+  signal?.throwIfAborted();
   if (!response.ok) throw managerAuthorityRefusal(what, request, body, response.status);
   return body;
 }
