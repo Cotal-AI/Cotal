@@ -1,5 +1,6 @@
 import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { endianness } from "node:os";
 import { assertLifecycleToken } from "@cotal-ai/core";
 import {
   assertRecordIdentity, brokerAddressKey, commandIsCotalSupervisor, identityRecord,
@@ -57,6 +58,43 @@ export function readUpdateManagerIdentity(root: string, space: string): string {
 function option(argv: readonly string[], key: string): string | undefined {
   const index = argv.indexOf(`--${key}`);
   return index >= 0 ? argv[index + 1] : argv.find(value => value.startsWith(`--${key}=`))?.slice(key.length + 3);
+}
+
+/** Render the pinned Linux start time using the kernel's clock frequency, without requiring ps. */
+function managerStarted(token: string | undefined): string {
+  if (token === undefined) return "unavailable (no process creation pin)";
+  try {
+    const aux = readFileSync("/proc/self/auxv");
+    const width = process.arch === "ia32" || process.arch === "arm" ? 4 : 8;
+    const word = (offset: number): number => width === 8
+      ? Number(endianness() === "LE" ? aux.readBigUInt64LE(offset) : aux.readBigUInt64BE(offset))
+      : endianness() === "LE" ? aux.readUInt32LE(offset) : aux.readUInt32BE(offset);
+    let ticksPerSecond: number | undefined;
+    for (let offset = 0; offset + 2 * width <= aux.length; offset += 2 * width) {
+      if (word(offset) === 17) { ticksPerSecond = word(offset + width); break; } // AT_CLKTCK
+    }
+    const boot = /^btime (\d+)$/m.exec(readFileSync("/proc/stat", "utf8"))?.[1];
+    if (!boot || !ticksPerSecond || !Number.isSafeInteger(ticksPerSecond) || !/^\d+$/.test(token)) throw new Error("unreadable kernel clock");
+    return `${new Date((Number(boot) + Number(token) / ticksPerSecond) * 1000).toISOString()} (approximate, start token ${token})`;
+  } catch {
+    return `unavailable (start token ${token} clock ticks since boot)`;
+  }
+}
+
+function unprovenManagerEntry(pid: number, argv: readonly string[], cwd: string | undefined, pin: ProcessIdentityRecord | { pid: number }): never {
+  const command = argv.findIndex(arg => ["supervise", "__daemon-manager", "__service-manager", "__machine-manager"].includes(arg));
+  // Report observed launch arguments, not an invented canonical target for a deleted symlink.
+  const paths = argv.slice(1, command < 0 ? undefined : command).filter(arg => !arg.startsWith("-"));
+  const entries = paths.map(arg => {
+    const path = isAbsolute(arg) ? arg : cwd && !cwd.endsWith(" (deleted)") ? resolve(cwd, arg) : undefined;
+    if (!path) return `${JSON.stringify(arg)} (cannot resolve from working directory)`;
+    try { realpathSync(path); return `${JSON.stringify(arg)} (exists)`; }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return `${JSON.stringify(arg)} (${code === "ENOENT" || code === "ENOTDIR" ? "path is gone" : `cannot inspect: ${code ?? "unknown error"}`})`;
+    }
+  });
+  throw new Error(`local Manager continuity cannot be established: Manager pid ${pid} has no proven CLI entry for this installation; started ${managerStarted("token" in pin ? pin.token : undefined)}; working directory ${JSON.stringify(cwd ?? "unavailable")}; launch entry arguments: ${entries.join(", ") || "unavailable"}; stop this process if it is a leftover, or run the update from the installation that owns it (restore that installation first if its launch entry is gone); a missing path does not prove another installation because it may have been a symlink into this one; no Manager instance was guessed`);
 }
 
 /** Install-wide candidates, independent of the selected mesh. Records supply roots, not liveness. */
@@ -149,7 +187,7 @@ export function localUpdateManagers(flags: { space?: unknown; server?: unknown; 
         catch { return false; }
       });
       if (other) continue;
-      blocked(`Manager pid ${pid} has no proven CLI entry for this installation`);
+      unprovenManagerEntry(pid, argv, cwd, pin);
     }
     const recorded = known.get(pid);
     const hostedHome = argv.includes("__machine-manager") ? option(argv, "session-directory") : undefined;

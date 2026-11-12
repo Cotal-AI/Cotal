@@ -17,6 +17,12 @@ including Managers outside the selected space. Each request uses that Manager's 
 identity. `--space`, `--server`, `--creds`, and `--on` narrow the request. Missing or conflicting
 identity records refuse rather than selecting a Manager on another computer.
 
+A local Manager whose launch entry cannot be attributed also refuses the update. The refusal
+reports its start time, working directory, launch entry arguments, and missing paths. Stop that
+process if it is a leftover, or run the update from the installation that owns it. Restore that
+installation first if its launch entry is gone. A missing external entry can have been a symlink
+into this installation, so its location alone does not prove that the Manager belongs elsewhere.
+
 macOS and Windows retain their existing Manager discovery in this release. The machine daemon
 continues to pin its hosted Managers on all supported platforms.
 
