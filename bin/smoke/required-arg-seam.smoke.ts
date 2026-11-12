@@ -536,7 +536,10 @@ const SEAMS: Seam[] = [
   // runtime/smoke/run-command three, and manager/src/manager.ts three. All ten state `tls: false`.
   // 400/314 -> 402/316: main landed two more calls without booking them: bin/smoke/daemon-service-connect
   // and delivery/smoke/deliver-pending-sender add one each. Both state `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 402, untypecheckedSites: 316 },
+  // 402/316 -> 414/326: connection-cleanup adds four smoke calls, daemon-service-connect
+  // three, and remote-registration-close/expiry/maintenance one each. endpoint-deregister
+  // adds two authority calls. All twelve explicitly state `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 414, untypecheckedSites: 326 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
