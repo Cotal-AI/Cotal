@@ -62,18 +62,37 @@ func domAttribute(_ element: AXUIElement, _ name: String) -> String? {
     let result = AXUIElementCopyParameterizedAttributeValue(element, "AXDOMAttribute" as CFString, name as CFString, &value)
     return result == .success ? value as? String : nil
 }
+func zeroMatchReceipt(_ selectors: [String], _ tree: [AXUIElement]) {
+    let areas = tree.filter { string($0, "AXRole") == "AXWebArea" }
+    let owners: [[String: Any]] = areas.map { area in
+        var owner: pid_t = 0
+        let result = AXUIElementGetPid(area, &owner)
+        return ["pid": owner, "pidError": result.rawValue, "owned": result == .success && owner == pid]
+    }
+    let record: [String: Any] = ["operation": operation, "pid": pid, "selectors": selectors,
+                               "source": "selector-tree", "nodeCount": tree.count,
+                               "AXWebAreaCount": areas.count, "AXWebAreas": owners,
+                               "window": windowSelectionContext ?? [:]]
+    if let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]),
+       let text = String(data: data, encoding: .utf8) {
+        fputs("macOS driver zero-match: \(text)\n", stderr)
+    }
+}
 func matches(_ id: String, testId: Bool = false) -> [AXUIElement] {
     guard id.range(of: "^[a-z][a-z0-9-]*$", options: .regularExpression) != nil else { fail("invalid selector") }
     let tree = nodes(app)
     if testId {
         // Test IDs are not inherently accessible. A same-named DOM ID is an exact selector too.
         let found = tree.filter { domAttribute($0, "data-testid") == id || string($0, "AXDOMIdentifier") == id }
+        if found.isEmpty { zeroMatchReceipt([id], tree) }
         if found.isEmpty && !tree.contains(where: { domAttribute($0, "data-testid") != nil }) {
             fail("WebKit does not expose data-testid through AXDOMAttribute; add stable DOM IDs to owned controls")
         }
         return found
     }
-    return tree.filter { string($0, "AXDOMIdentifier") == id }
+    let found = tree.filter { string($0, "AXDOMIdentifier") == id }
+    if found.isEmpty { zeroMatchReceipt([id], tree) }
+    return found
 }
 func unique(_ elements: [AXUIElement]) -> AXUIElement {
     guard elements.count == 1 else { fail("selector must name one element, found \(elements.count)") }
@@ -169,26 +188,20 @@ func focusReceipt(_ phase: String, _ window: AXUIElement) -> Bool {
     loginReceipt(phase, ["pid": pid, "delivery": loginDelivery, "frontmostPID": front?.processIdentifier ?? 0,
                          "frontmostBundleID": front?.bundleIdentifier ?? "unavailable", "isActive": running.isActive,
                          "focusedWindow": focused, "mainWindow": main, "AppKitKeyWindow": "unavailable AXFocusedWindow is a proxy only"])
-    return running.isActive && front?.processIdentifier == pid && focused["owned"] as? Bool == true && focused["selected"] as? Bool == true && main["owned"] as? Bool == true && main["selected"] as? Bool == true
+    // Main/focused AX state is diagnostic only. Some WebKit windows expose it read-only.
+    // Native hit ownership and the exact checkbox remain the input admission fences.
+    return running.isActive && front?.processIdentifier == pid
 }
 func prepareLoginWindow() -> AXUIElement {
     let window = appWindow()
     activate()
     guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success else { fail("cannot raise selected owned window") }
-    for name in ["AXMain", "AXFocused"] {
-        if attribute(window, name) as? Bool == true { continue }
-        var settable: DarwinBoolean = false
-        let admission = AXUIElementIsAttributeSettable(window, name as CFString, &settable)
-        loginReceipt("focus-write-admission", ["pid": pid, "attribute": name, "error": admission.rawValue, "settable": settable.boolValue])
-        guard admission == .success, settable.boolValue else { fail("selected owned window attribute is not settable: \(name)") }
-        guard AXUIElementSetAttributeValue(window, name as CFString, kCFBooleanTrue) == .success else { fail("cannot set selected owned window attribute: \(name)") }
-    }
     let deadline = Date().addingTimeInterval(2)
     repeat {
         if focusReceipt("activation-observation", window) { return window }
         Thread.sleep(forTimeInterval: 0.1)
     } while Date() < deadline
-    fail("owned active focused window verification timed out")
+    fail("owned active frontmost app verification timed out")
 }
 func press(_ element: AXUIElement) {
     guard enabled(element), visible(element), let rect = bounds(element) else { fail("control is not actionable") }
@@ -311,11 +324,15 @@ func windowVisible() -> Bool {
 func settingsControls() -> (AXUIElement, AXUIElement) {
     let deadline = Date().addingTimeInterval(5)
     var observation = ""
+    var lastTree: [AXUIElement] = []
+    var missing: [String] = []
     repeat {
         guard !running.isTerminated else { fail("owned app exited during Settings readiness") }
         let tree = nodes(appWindow())
+        lastTree = tree
         let headings = tree.filter { string($0, "AXDOMIdentifier") == "settings-title" }
         let backs = tree.filter { string($0, "AXDOMIdentifier") == "open-settings" }
+        missing = [("settings-title", headings.count), ("open-settings", backs.count)].filter { $0.1 == 0 }.map { $0.0 }
         observation = "settings-title count=\(headings.count), open-settings count=\(backs.count)"
         guard headings.count <= 1, backs.count <= 1 else { fail("ambiguous Settings selector: \(observation)") }
         if let heading = headings.first, let back = backs.first {
@@ -332,11 +349,14 @@ func settingsControls() -> (AXUIElement, AXUIElement) {
         }
         Thread.sleep(forTimeInterval: 0.1)
     } while Date() < deadline
+    if !missing.isEmpty { zeroMatchReceipt(missing, lastTree) }
     fail("Settings readiness timed out: \(observation)")
 }
 func loginCheckboxState() -> (element: AXUIElement, value: Int) {
     guard !running.isTerminated else { fail("owned app exited during autostart observation") }
-    let found = nodes(appWindow()).filter { string($0, "AXDOMIdentifier") == "autostart" }
+    let tree = nodes(appWindow())
+    let found = tree.filter { string($0, "AXDOMIdentifier") == "autostart" }
+    if found.isEmpty { zeroMatchReceipt(["autostart"], tree) }
     guard found.count == 1 else { fail("autostart exact selector count=\(found.count)") }
     let checkbox = found[0]
     // Descendant scope comes from the exact owned window, not a new parent-PID

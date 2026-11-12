@@ -6,6 +6,44 @@ const read = path => readFileSync(new URL(path, import.meta.url), "utf8");
 const windows = read("./lifecycle-windows.ps1");
 const mac = read("./macos-driver.swift");
 
+test("Mac activation reads focus state without requiring writable main or focused attributes", () => {
+  const focus = mac.split("func focusReceipt(")[1].split("func prepareLoginWindow()")[0];
+  assert.match(focus, /describe\("AXFocusedWindow"\)/);
+  assert.match(focus, /describe\("AXMainWindow"\)/);
+  assert.match(focus, /"frontmostPID": front\?\.processIdentifier/);
+  assert.match(focus, /return running.isActive && front\?\.processIdentifier == pid\s*}/);
+  const prepare = mac.split("func prepareLoginWindow()")[1].split("func press(")[0];
+  assert.doesNotMatch(prepare, /AXUIElementSetAttributeValue|AXUIElementIsAttributeSettable|AXMain|AXFocused/);
+  const markers = ['let window = appWindow()', 'activate()', 'AXUIElementPerformAction(window, kAXRaiseAction', 'focusReceipt("activation-observation", window)', 'return window'];
+  let previous = -1;
+  for (const marker of markers) {
+    const index = prepare.indexOf(marker);
+    assert.ok(index > previous, marker);
+    previous = index;
+  }
+  const press = mac.split("func press(")[1].split("func key(")[0];
+  assert.ok(press.indexOf('focusReceipt("at-post"') < press.indexOf('event.post(tap:'));
+  assert.match(press, /finalOwner == pid/);
+  assert.match(press, /string\(exactHit, "AXDOMIdentifier"\) == "autostart"/);
+});
+
+test("Mac zero-match diagnostics count AXWebAreas and record ownership without retrying input", () => {
+  const diagnostic = mac.split("func zeroMatchReceipt(")[1].split("func matches(")[0];
+  assert.match(diagnostic, /tree.filter.*"AXRole".*"AXWebArea"/);
+  assert.match(diagnostic, /AXUIElementGetPid\(area, &owner\)/);
+  assert.match(diagnostic, /"pidError": result.rawValue, "owned": result == .success && owner == pid/);
+  assert.match(diagnostic, /"AXWebAreaCount": areas.count, "AXWebAreas": owners/);
+  assert.match(diagnostic, /"selectors": selectors/);
+  assert.match(diagnostic, /fputs\("macOS driver zero-match:.*stderr\)/);
+  assert.doesNotMatch(diagnostic, /nodes\(|press\(|activate\(|Thread.sleep|AXUIElementPerformAction|AXUIElementSetAttributeValue/);
+  const matches = mac.split("func matches(")[1].split("func unique(")[0];
+  assert.equal((matches.match(/if found.isEmpty \{ zeroMatchReceipt\(\[id\], tree\) }/g) ?? []).length, 2);
+  const settings = mac.split("func settingsControls()")[1].split("func loginCheckboxState()")[0];
+  assert.match(settings, /if !missing.isEmpty \{ zeroMatchReceipt\(missing, lastTree\) }\s*fail\("Settings readiness timed out/);
+  const login = mac.split("func loginCheckboxState()")[1].split("switch operation")[0];
+  assert.match(login, /if found.isEmpty \{ zeroMatchReceipt\(\["autostart"\], tree\) }\s*guard found.count == 1/);
+});
+
 test("Mac Settings readiness is bounded and diagnoses exact selectors without input retries", () => {
   assert.match(mac, /func settingsControls\(\)/);
   assert.match(mac, /Settings readiness timed out/);
@@ -29,7 +67,7 @@ test("Mac observation changes preserve strict window and native input ownership"
   assert.equal((settings.match(/press\(back\)/g) ?? []).length, 1);
   assert.equal((login.match(/press\(initial.element\)/g) ?? []).length, 1);
   assert.match(mac, /let tree = nodes\(appWindow\(\)\)/);
-  assert.match(mac, /nodes\(appWindow\(\)\).filter.*"autostart"/);
+  assert.match(mac, /let tree = nodes\(appWindow\(\)\)[\s\S]*let found = tree.filter.*"autostart"/);
   assert.match(mac, /owner == pid && role == kAXWindowRole && title == "Cotal" && isVisible/);
   assert.match(mac, /selectedIndexes.count == 1/);
   assert.match(mac, /let ownerResult = AXUIElementGetPid\(target, &owner\)/);
