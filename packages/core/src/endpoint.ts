@@ -1,3 +1,4 @@
+import { requestSafeReconnect } from "./request-safe-reconnect.js";
 import { EventEmitter } from "node:events";
 import { drainAndClose } from "./connection-cleanup.js";
 import { randomUUID } from "node:crypto";
@@ -1638,6 +1639,22 @@ export class CotalEndpoint extends EventEmitter {
       this.emitRecoverable(new Error(`creds refresh failed (${e instanceof Error ? e.message : String(e)}) - retrying; this connection dies at its current JWT's expiry if renewal keeps failing`));
       this.armCredsRefresh(CotalEndpoint.CREDS_RETRY_MS);
     }
+  }
+
+  /** Fetch, broker-prove and adopt the source credential, then refresh the same connection
+   * once outgoing mux and named-reply requests are quiet. A busy timeout retains the connection
+   * and adopted credential. Call again to retry. This does not tear down endpoint bindings. */
+  async refreshCredsRequestSafe(): Promise<void> {
+    if (!this.credsSource) throw new Error("credential refresh requires a creds source");
+    const nc = this.nc;
+    if (!nc || this.stopped) throw new Error("credential refresh requires a running endpoint");
+    const deadline = Date.now() + CotalEndpoint.RELOAD_DEADLINE_MS;
+    await this.runCredsTxn(async () => {
+      await this.adoptFreshCreds({ deadline });
+      if (this.nc !== nc || this.stopped) throw new Error("endpoint connection changed during credential refresh");
+      await requestSafeReconnect(nc, () => this.requestsAwaitingReply.get(nc)?.size ?? 0);
+      if (this.nc === nc && !this.stopped) this.armAuthExpiryReconnectFence(nc);
+    });
   }
 
   /** EXPLICIT credential reload — the auditable adoption step of D5 class-2 standing renewal (served

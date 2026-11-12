@@ -70,7 +70,7 @@ type Internals = {
   serviceServe?: { nc: NatsConnection; identity: Identity; grant: { epoch: number }; creds?: string };
   goalWriter?: { nc: NatsConnection; creds?: string };
   sessionLedgerConn?: { nc: NatsConnection; creds?: string };
-  ep: { reconnect(): Promise<void> };
+  ep: { refreshCredsRequestSafe(): Promise<void> };
   remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] };
 };
 
@@ -118,7 +118,7 @@ try {
   };
   const supNc = await live(() => m.remoteSupervisorCreds!, held.supervisor);
   const execNc = await live(() => m.remoteExecutorCreds!, held.executor);
-  m.ep = { reconnect: async () => { await supNc.reconnect(); await execNc.reconnect(); } };
+  m.ep = { refreshCredsRequestSafe: async () => { await supNc.reconnect(); await execNc.reconnect(); } };
   m.serviceServe = { nc: undefined as never, identity: held.serve, grant: { epoch: 7 }, creds: initial.serve };
   m.serviceServe.nc = await live(() => m.serviceServe!.creds!, held.serve);
   Object.assign(m.serviceServe, { handle: { stop: async () => {} } });

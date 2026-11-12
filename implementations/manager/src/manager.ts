@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { drainAndClose } from "@cotal-ai/core";
+import { drainAndClose, requestSafeReconnect } from "@cotal-ai/core";
 import { hostname, homedir } from "node:os";
 import { listDirectory } from "./list-dir.js";
 import { credsAuthenticator, RequestError } from "@nats-io/transport-node";
@@ -1987,6 +1987,8 @@ export class Manager {
   private remoteExecutorCreds?: string;
   private remoteSupervisorCreds?: string;
   private remoteBundleRenewal?: Promise<void>;
+  private remoteBundleAdoption?: Promise<void>;
+  private finishRemoteBundleAdoption?: () => void;
   /** A refused or failed standing candidate is cleanup debt, never a silent loss: the last-good
    * family stays live and this records what the host may have signed but the manager never adopted. */
   private remoteRenewalDebt?: { at: number; processEpoch: number; reason: string; unadoptedSubjects: string[] };
@@ -2907,15 +2909,62 @@ export class Manager {
     console.error(`manager endpoint-serve renewal scheduled at ${renewAt}`);
   }
 
-  /** #2073: push a freshly re-minted credential onto its LIVE connection instead of waiting for a
-   *  reconnect the expiry itself would force two dials too late. `nc.reconnect()` re-evaluates the
-   *  authenticator, which reads the mutable `creds` holder on every attempt, so the new CONNECT
-   *  presents the fresh credential without re-registration. In-flight requests on the connection
-   *  fail once, on the reconnect. Best-effort, matching `CotalEndpoint.swapConnectionOntoFreshCreds`:
-   *  a connection that is already closed (e.g. mid re-dial after a fault) cannot reconnect, and that
-   *  failure is not this call's to report. */
-  private async pushRenewedCreds(nc: NatsConnection): Promise<void> {
-    await nc.reconnect().catch(() => {});
+  private credentialPushRetry?: ReturnType<typeof setTimeout>;
+  private readonly credentialPushes = new Map<NatsConnection, Promise<void>>();
+  private supervisorCredentialPush?: Promise<void>;
+  private readonly pendingCredentialPushes = new Set<NatsConnection>();
+  private supervisorCredentialPushPending = false;
+
+  private scheduleCredentialPushRetry(): void {
+    if (this.credentialPushRetry || this.leaseStopping) return;
+    this.credentialPushRetry = setTimeout(() => {
+      this.credentialPushRetry = undefined;
+      if (this.leaseStopping) return;
+      void Promise.all([
+        ...[...this.pendingCredentialPushes].map((nc) => this.pushRenewedCreds(nc)),
+        ...(this.supervisorCredentialPushPending ? [this.pushSupervisorCreds()] : []),
+      ]);
+    }, 1_000);
+    this.credentialPushRetry.unref();
+  }
+
+  /** Retain a busy transport and retry its adopted credential without replaying requests. */
+  private pushRenewedCreds(nc: NatsConnection): Promise<void> {
+    const active = this.credentialPushes.get(nc);
+    if (active) return active;
+    const push = this.pushRenewedCredsOnce(nc).finally(() => { this.credentialPushes.delete(nc); });
+    this.credentialPushes.set(nc, push);
+    return push;
+  }
+
+  private async pushRenewedCredsOnce(nc: NatsConnection): Promise<void> {
+    this.pendingCredentialPushes.add(nc);
+    try {
+      await requestSafeReconnect(nc);
+      this.pendingCredentialPushes.delete(nc);
+    } catch (e) {
+      if (nc.isClosed()) this.pendingCredentialPushes.delete(nc);
+      console.error(`! manager credential push deferred: ${rejectionText(e)}`);
+      if (!nc.isClosed()) this.scheduleCredentialPushRetry();
+    }
+  }
+
+  private pushSupervisorCreds(): Promise<void> {
+    if (this.supervisorCredentialPush) return this.supervisorCredentialPush;
+    const push = this.pushSupervisorCredsOnce().finally(() => { this.supervisorCredentialPush = undefined; });
+    this.supervisorCredentialPush = push;
+    return push;
+  }
+
+  private async pushSupervisorCredsOnce(): Promise<void> {
+    this.supervisorCredentialPushPending = true;
+    try {
+      await this.ep.refreshCredsRequestSafe();
+      this.supervisorCredentialPushPending = false;
+    } catch (e) {
+      console.error(`! remote manager supervisor credential push deferred: ${rejectionText(e)}`);
+      this.scheduleCredentialPushRetry();
+    }
   }
 
   /** #2073: the shared bounded-retry shape for a closed standing connection: wait out each of
@@ -3114,9 +3163,17 @@ export class Manager {
   private async renewRemoteStandingBundle(force = false): Promise<void> {
     if (this.remoteBundleRenewal) return this.remoteBundleRenewal;
     if (this.leaseStopping) return;
+    this.remoteBundleAdoption = new Promise<void>((resolve) => { this.finishRemoteBundleAdoption = resolve; });
     const renewal = this.renewRemoteStandingBundleOnce(force);
     this.remoteBundleRenewal = renewal;
-    try { await renewal; } finally { if (this.remoteBundleRenewal === renewal) this.remoteBundleRenewal = undefined; }
+    try { await renewal; } finally {
+      this.finishRemoteBundleAdoption?.();
+      if (this.remoteBundleRenewal === renewal) {
+        this.remoteBundleRenewal = undefined;
+        this.remoteBundleAdoption = undefined;
+        this.finishRemoteBundleAdoption = undefined;
+      }
+    }
   }
 
   /** A signerless manager's closed standing connection re-dials through the all-duty family only.
@@ -3134,7 +3191,13 @@ export class Manager {
     if (!remote?.renewStandingBundle || !this.serviceServe) return;
     const current = [this.remoteSupervisorCreds, this.remoteExecutorCreds, this.serviceServe.creds,
       this.goalWriterCreds, this.sessionLedgerCreds];
-    if (!force && current.every((cred) => cred && inspectCredHealth(cred).state === "healthy")) return;
+    if (!force && current.every((cred) => cred && inspectCredHealth(cred).state === "healthy")) {
+      await Promise.all([
+        ...[...this.pendingCredentialPushes].map((nc) => this.pushRenewedCreds(nc)),
+        ...(this.supervisorCredentialPushPending ? [this.pushSupervisorCreds()] : []),
+      ]);
+      return;
+    }
     const processEpoch = this.serviceServe.grant.epoch;
     let candidate: Awaited<ReturnType<NonNullable<typeof remote.renewStandingBundle>>> | undefined;
     const serving = this.serviceServe;
@@ -3177,8 +3240,10 @@ export class Manager {
       // Adoption is committed above; a connection that cannot come back yet is a push failure the
       // endpoint's own reconnect loop retries with the adopted credential, not unadopted debt.
       this.remoteRenewalDebt = undefined;
+      // Maintenance needed by admitted handlers must not wait for those same handlers to drain.
+      this.finishRemoteBundleAdoption?.();
       await Promise.all([
-        this.ep.reconnect().catch((e) => console.error(`! remote manager supervisor reconnect after renewal: ${rejectionText(e)}`)),
+        this.pushSupervisorCreds(),
         (async () => {
           try {
             // A handler or a lost broker PONG can keep stop/flush pending forever. Only the
@@ -3933,6 +3998,8 @@ export class Manager {
 
   private async stopOnce(withAgents: boolean): Promise<void> {
     this.leaseStopping = true;
+    clearTimeout(this.credentialPushRetry);
+    this.credentialPushRetry = undefined;
     this.transcripts?.stop();
     this.staticReconcileStopping = true;
     this.chatExpiry.stop();
@@ -9414,7 +9481,17 @@ export class Manager {
       // Shutdown has drained and discarded the standing serve context. Renew only its scoped
       // maintenance executor through the existing host operation; never resurrect standing duties.
       if (this.leaseStopping) await this.renewRemoteExecutor(true);
-      else await (this.remoteAuthority.renewStandingBundle ? this.renewRemoteStandingBundle(true) : this.renewRemoteExecutor(true));
+      else if (this.remoteAuthority.renewStandingBundle) {
+        // The renewal drains old handlers after adopting. A handler waiting here must be
+        // released at adoption, not after its own completion is required by that drain.
+        const renewal = this.renewRemoteStandingBundle(true);
+        void renewal.catch((error) => console.error(`! remote manager standing renewal completion: ${rejectionText(error)}`));
+        await this.remoteBundleAdoption;
+        if (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy") {
+          await renewal;
+          throw new Error("standing renewal did not adopt a healthy scoped executor");
+        }
+      } else await this.renewRemoteExecutor(true);
     }
     const creds = this.remoteExecutorCreds ?? (this.auth
       ? await mintCreds(this.auth, identity, "endpoint-serve-executor", {

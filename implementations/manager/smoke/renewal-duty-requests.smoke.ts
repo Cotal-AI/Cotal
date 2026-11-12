@@ -200,6 +200,8 @@ try {
   const unused = async (): Promise<never> => { throw new Error("fixture does not enroll or retire agents"); };
   manager = new Manager({
     space, servers, runtime: "pty", workspaceRoot: join(store, "workspace"),
+    // This stress run creates six real sessions per seat. Capacity is tested elsewhere.
+    maxSessions: 2_000,
     remoteAuthority: {
       owner, actors, instanceId, lifecycleUid, identities: held, accountPublicKey: auth.account.pub,
       supervisorCreds: initial.supervisor, executorCreds: initial.executor, serveCreds: initial.serve,
@@ -213,6 +215,29 @@ try {
       scanGoalIndex: async () => [], authorizeAdmin: async () => false,
     },
   });
+  const traced = manager as unknown as {
+    withEndpointServeExecutor: (...args: unknown[]) => Promise<unknown>;
+    sessionServingCredentials: () => Record<string, (...args: unknown[]) => unknown>;
+  };
+  const executor = traced.withEndpointServeExecutor;
+  traced.withEndpointServeExecutor = async function (...args) {
+    const id = mintLifecycleUid(); record("executor-enter", { id });
+    try { const result = await executor.apply(this, args); record("executor-exit", { id }); return result; }
+    catch (error) { record("executor-error", { id, error: String(error) }); throw error; }
+  };
+  const servingCredentials = traced.sessionServingCredentials;
+  traced.sessionServingCredentials = function () {
+    const seam = servingCredentials.call(this);
+    for (const method of ["observeGate", "stage", "open"] as const) {
+      const original = seam[method]!;
+      seam[method] = async function (...args) {
+        const id = mintLifecycleUid(); record("session-seam-enter", { id, method });
+        try { const result = await original.apply(this, args); record("session-seam-exit", { id, method }); return result; }
+        catch (error) { record("session-seam-error", { id, method, error: String(error) }); throw error; }
+      };
+    }
+    return seam;
+  };
   await manager.start();
   const m = manager as unknown as Internals;
   const dispatchObserved = new WeakSet<NatsConnection>();

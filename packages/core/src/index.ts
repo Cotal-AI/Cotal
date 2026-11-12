@@ -1,4 +1,5 @@
 /** @module index */
+export { requestSafeReconnect } from "./request-safe-reconnect.js";
 export * from "./types.js";
 export { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 export * from "./advisory-lock.js";

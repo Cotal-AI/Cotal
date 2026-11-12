@@ -3,4 +3,4 @@
 "@cotal-ai/manager": patch
 ---
 
-Keep manager requests flowing while its remote serving credentials renew. Bind the replacement connection before draining the old one, and use incarnation-scoped queues to prevent duplicate execution during the handoff without widening permissions.
+Keep manager requests flowing while its remote credentials renew. Bind the replacement serving connection before draining the old one, and use incarnation-scoped queues to prevent duplicate execution without widening permissions. Wait for outgoing supervisor, goal and session-ledger requests before reconnecting those duties. Bound retired serving drainage and report unfinished requests without retrying their effects.
