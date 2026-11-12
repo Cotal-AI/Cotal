@@ -71,6 +71,33 @@ const signIn = async page => { await page.click("#login"); await page.locator("#
 const connect = async page => { await signIn(page); await page.click("#connect"); };
 const update = { channel: "desktop", current: "0.156.0", latest: "0.161.0", lastCheck: "2026-11-11T22:00:00Z", lastResult: "available", automatic: true, notify: true };
 export const scenarios = [
+  ...[12, 30].map(count => ({
+    name: `connected-long-spaces-${count}`,
+    state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: count }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, desired: true, observed: "connected" })) } },
+    expect: async page => {
+      assert.equal(await page.locator("#connected-panel").isVisible(), true);
+      assert.equal(await page.locator('[data-testid="connected-space-row"]').count(), count);
+      assert.equal(await page.locator("#settings-panel").isVisible(), false);
+      const region = page.getByRole("region", { name: "Connected space list", exact: true });
+      assert.equal(await region.getAttribute("tabindex"), "0");
+      const lastRow = page.locator('[data-testid="connected-space-row"]').last();
+      await region.focus();
+      await region.press("End");
+      await page.waitForFunction(() => { const el = document.querySelector(".connected-spaces-scroll"); return el.scrollTop + el.clientHeight >= el.scrollHeight - 2; });
+      await lastRow.scrollIntoViewIfNeeded();
+      const lastButton = lastRow.locator("button").last();
+      await lastButton.focus();
+      assert.equal(await lastButton.evaluate(el => el === document.activeElement), true);
+      assert.equal(await lastButton.evaluate(el => { const row = el.getBoundingClientRect(); const bounds = el.closest(".connected-spaces-scroll").getBoundingClientRect(); return row.top >= bounds.top && row.bottom <= bounds.bottom; }), true);
+      await region.evaluate(el => { el.scrollTop = 0; });
+      assert.equal(await page.locator("#dashboard").isVisible(), true);
+      await page.click("#open-settings", { timeout: 5000 });
+      assert.equal(await page.locator("#settings-panel").isVisible(), true);
+      assert.equal(await page.locator("#open-settings").textContent(), "Back");
+      await page.click("#open-settings", { timeout: 5000 });
+      assert.equal(await page.locator("#connected-panel").isVisible(), true);
+    },
+  })),
   ...["available", "missing", "current", "failed", "off", "linux", "windows", "toggle-off", "toggle-on", "check"].map(mode => ({
     name: `settings-${mode}`,
     state: { installed: true, signedIn: true, connected: true, missingAsset: mode === "missing", platform: mode === "linux" ? "linux" : mode === "windows" ? "win32" : "darwin", update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : mode === "failed" ? { latest: undefined, lastResult: "check failed" } : mode === "off" || mode === "toggle-on" ? { notify: false } : {}) } },

@@ -381,6 +381,7 @@ function showStage(next: Stage, focus = false): void {
 }
 function renderConnections(): void {
   const list = el("connected-spaces");
+  list.parentElement!.tabIndex = connections.size >= 4 ? 0 : -1;
   const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), busy]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;

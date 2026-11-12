@@ -28,6 +28,8 @@ The app runs the stock `cotal daemon setup --space <space> --idp <url>` operatio
 
 On macOS and Linux the bundled CLI reads PATH from the account's interactive login shell with a bounded native call. It keeps only PATH, validates absolute directories, and adds its bundled Node directory. No shell output or shell credentials enter the renderer. Setup uses the daemon's guarded pinned-PATH refresh when a newly installed application is missing from its service environment. Windows reads the current machine and user PATH through the system PowerShell without loading a profile; its scheduled task reads those values on each native start. No renderer PATH is accepted. A shell that fails or a relative PATH refuses instead of guessing. Installation preserves the refusal message and next step before any service change.
 
+Long connected-space lists scroll inside a named region. Tab to the list and use the arrow keys, Home or End to reach its rows while the header stays available.
+
 On account-computer hosts, Open dashboard opens the signed-in provider's `/machines` page even before a space is launch-ready. Per-space hosts target `/machines?space=<canonical catalog id>&machine=<Manager instance id>` only with a launch-ready Manager. The canonical ID comes from the daemon's discovered catalog, not a space slug. Changing spaces or disconnecting discards the old per-space target.
 
 The app does not replace existing daemon identities, change grants, or claim remote vitals that the registered service does not expose. Sign-out, identity-contract migration, remote management and signed automatic updates remain separate from these controls.
