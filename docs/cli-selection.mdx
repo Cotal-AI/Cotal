@@ -621,7 +621,8 @@ Full instance IDs and execution hosts stay visible. Process observations and his
 are separate columns; neither a saved serving state nor a supervisor receipt becomes a fresh
 endpoint response or OS unit-state check. Legacy PID-file rows are labeled separately. On a root
 whose controller stack serves the selected space, its members are the `stack-` rows here, the
-legacy rows and the stored-state hint are omitted, and when the stack does not answer or a member's
+legacy rows and the stored-state hint are omitted from the text report. When the stack does not
+answer or a member's
 process is gone, Next offers `cotal up --root <root>` first, with `<root>` quoted when a shell would
 split it. On a stack whose last `up` was `--no-manager` it adds `--no-manager`, and a manager record
 an earlier `up` left does not count as a stopped member. When a service of the space outside the stack runs one of this root's records, such as a
@@ -913,6 +914,16 @@ row included when `--server` names another.
 
 
 ### JSON report
+
+The `nats` row in `folder.processes` keeps its PID-file observation in `legacyPidfile`, with
+`state`, `pid` and `detail`. Its `source` is `legacy-pidfile` for a legacy root or `owned-service`
+for this folder's controller stack. For a controller stack, the summary `state`, `pid` and `detail`
+come from the owned broker's process observation. `ownedService` carries its `definition`,
+`instanceId`, `observedProcess`, `recordedState` and `pid`, or null when no instance was read.
+An unstarted stack with no instance means stopped. A missing retained instance or an unreadable
+or ambiguous owned record means unreadable with a partial report, without substituting the
+PID-file state. A foreign host or unresolved
+launch means unknown. The observations are not an atomic snapshot and do not prove broker readiness.
 
 `status --json` writes one envelope whose `target` is `{space, scope}`, where `space` is the selected
 space or `null` and `scope` is `selected` or `all`. Its `result` is the report the text draws:
