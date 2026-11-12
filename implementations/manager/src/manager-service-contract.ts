@@ -388,9 +388,32 @@ const nonBlank = () => ({ type: "string", pattern: "^\\s*\\S" }) as const;
  *  than carrying a second, driftable copy of it. */
 export const SPAWN_INPUT_KEYS: readonly string[] = Object.keys(SPAWN_INPUT_SCHEMA.properties);
 
-/** Resolve a host-local spawn directory on the manager that will launch the seat. The runtime
- * already consumes this exact closed shape; keeping it in the manager command table makes the
- * registered contract and the served validator one source. */
+/** Bounded directory navigation for an authorized host-local launch. */
+const LIST_DIR_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false,
+  properties: {
+    path: { type: "string", minLength: 1 },
+    includeHidden: { type: "boolean" },
+    limit: { type: "integer", minimum: 1, maximum: 1000 },
+  },
+} as const;
+const LIST_DIR_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["path", "parent", "directories", "truncated", "roots"],
+  properties: {
+    path: { type: "string" }, parent: { type: ["string", "null"] },
+    directories: {
+      type: "array", maxItems: 1000,
+      items: {
+        type: "object", additionalProperties: false, required: ["name", "symlink"],
+        properties: { name: { type: "string" }, symlink: { type: "boolean" } },
+      },
+    },
+    truncated: { type: "boolean" },
+    roots: { type: "array", maxItems: 26, items: { type: "string" } },
+  },
+} as const;
+
+/** Resolve a host-local spawn directory on the manager that will launch the seat. */
 const RESOLVE_CWD_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["cwd"],
   properties: { cwd: { type: "string", minLength: 1 } },
@@ -1027,6 +1050,7 @@ const ROWS: CommandRow[] = [
   { name: "inspect", capability: "manager.read", input: INSPECT_INPUT_SCHEMA, output: AGENT_ROW_SCHEMA, targeted: false, handler: "inspect" },
   { name: "slots", capability: "manager.read", input: SLOTS_INPUT_SCHEMA, output: SLOTS_OUTPUT_SCHEMA, targeted: false, handler: "slots" },
   { name: "models", capability: "manager.read", input: MODELS_INPUT_SCHEMA, output: MODELS_OUTPUT_SCHEMA, targeted: false, handler: "models" },
+  { name: "list-dir", capability: "manager.spawn", input: LIST_DIR_INPUT_SCHEMA, output: LIST_DIR_OUTPUT_SCHEMA, targeted: false, handler: "listDir" },
   { name: "resolve-cwd", capability: "manager.spawn", input: RESOLVE_CWD_INPUT_SCHEMA, output: RESOLVE_CWD_OUTPUT_SCHEMA, targeted: false, handler: "resolveCwd" },
   { name: "resolve-agent", capability: "manager.spawn", input: RESOLVE_AGENT_INPUT_SCHEMA, output: RESOLVE_AGENT_OUTPUT_SCHEMA, targeted: false, handler: "resolveAgent" },
   { name: "spawn", capability: "manager.spawn", input: SPAWN_INPUT_SCHEMA, output: SPAWN_OUTPUT_SCHEMA, targeted: false, handler: "spawn" },
@@ -1257,9 +1281,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  The changed input schema advances the described surface without adding a command.
  *
  *  47 = the inline `persona` on `spawn` and the `define-persona` input take `endpoints`, the endpoint
- *  commands a persona hands on. Both input schemas are closed, so a revision-46 contract rejects it. */
+ *  commands a persona hands on. Both input schemas are closed, so a revision-46 contract rejects it.
+ *
+ *  48 = `list-dir` lists bounded child directory names on the selected Manager's host. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 47, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 48, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
@@ -1317,6 +1343,7 @@ export interface ManagerServiceHandlers {
   inspect(ctx: EpServeContext): unknown | Promise<unknown>;
   slots(ctx: EpServeContext): unknown | Promise<unknown>;
   models(ctx: EpServeContext): unknown | Promise<unknown>;
+  listDir(ctx: EpServeContext): unknown | Promise<unknown>;
   resolveCwd(ctx: EpServeContext): unknown | Promise<unknown>;
   resolveAgent(ctx: EpServeContext): unknown | Promise<unknown>;
   spawn(ctx: EpServeContext): unknown | Promise<unknown>;

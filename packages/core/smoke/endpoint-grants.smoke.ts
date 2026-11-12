@@ -142,9 +142,9 @@ c("the spawn capability grants NO `input` row in either mode: seat input is oper
 // seat writes, granted nowhere else; the run driver submits its turns under this instrument), and
 // the untargeted `manager.admin` family.
 c("the privileged instrument set: reads + spawn + resolve-agent + resolve-cwd + persona writes + the chat-session pair + the run family with the keyed pair, with run-answer self-targeted",
-  operatorInstrumentCapabilities("privileged").length === 23
+  operatorInstrumentCapabilities("privileged").length === 24
   && operatorInstrumentCapabilities("privileged").filter((cap) => cap.target !== undefined).every((cap) => cap.command === "run-answer" && cap.target?.mode === "self")
-  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,resolve-agent,resolve-cwd,define-persona,remove-persona,chat-session-open,chat-session-retire,run-status,run-ps,run-start,run-resume,run-start-keyed,run-submission-status,run-cancel,run-answer");
+  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,resolve-agent,resolve-cwd,list-dir,define-persona,remove-persona,chat-session-open,chat-session-retire,run-status,run-ps,run-start,run-resume,run-start-keyed,run-submission-status,run-cancel,run-answer");
 // `resolve-cwd` is the placement read the folder question of a managed launch calls, and on a static
 // mesh the instrument IS that caller: without this row the question offers typing and every typed
 // folder is refused at the broker. It stays out of the standing agent `spawn` set, which reaches
@@ -158,6 +158,10 @@ c("both instrument tiers carry resolve-cwd untargeted and off the scatter rail, 
   && !spawnCallerCapabilities("u_abc").some((cap) => cap.command === "resolve-cwd")
   && !runCallerCapabilities("u_abc").some((cap) => cap.command === "resolve-cwd")
   && !baselineCallerCapabilities().some((cap) => cap.command === "resolve-cwd"));
+c("list-dir matches operator cwd reads without entering standing spawn or run grants",
+  ["privileged", "admin"].every((tier) => operatorInstrumentCapabilities(tier as "privileged" | "admin").some((cap) => cap.command === "list-dir" && cap.target === undefined && cap.routes === undefined))
+  && ![...spawnCallerCapabilities("u_abc"), ...runCallerCapabilities("u_abc"), ...baselineCallerCapabilities()].some((cap) => cap.command === "list-dir"));
+
 // The pin is what makes the row usable: the instrument is minted per control call, so the typed
 // folder's check reaches exactly the manager `--on` named and no other instance.
 c("a pinned instrument's resolve-cwd row names that one instance and no class rail",
@@ -187,7 +191,7 @@ c("the run capability set: run-start/run-resume/run-start-keyed/run-submission-s
   && !spawnCallerCapabilities("u_abc").some((cap) => cap.command.startsWith("run-")));
 const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
 c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input and turn + the manager.admin family",
-  adminCaps.length === 38
+  adminCaps.length === 39
   && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")

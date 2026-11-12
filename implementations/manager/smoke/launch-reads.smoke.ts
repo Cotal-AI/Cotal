@@ -7,9 +7,9 @@ import * as auth from "../../auth/dist/index.js";
 const assert: typeof import("node:assert/strict") = (await import("node:assert/strict")).default;
 const { createServer } = await import("node:http");
 const { createRequire } = await import("node:module");
-const { mkdirSync, writeFileSync, realpathSync, symlinkSync } = await import("node:fs");
+const { mkdirSync, writeFileSync, realpathSync, symlinkSync, chmodSync } = await import("node:fs");
 const { join } = await import("node:path");
-const { hostname } = await import("node:os");
+const { hostname, homedir } = await import("node:os");
 const { SignJWT, generateKeyPair, exportJWK, decodeJwt } = createRequire(new URL("../../auth/package.json", import.meta.url))("jose") as any;
 const { mintLifecycleUid, mintCreds, newIdentity, setupSpaceStreams, registry, standaloneConnectOpts, issuedUserCaller, resolveService, invokeCommand, permissionsFor } = core;
 const { connect } = await import("@nats-io/transport-node");
@@ -25,7 +25,7 @@ const cell = (name: string, ok: boolean, seen?: unknown) => {
   if (ok) { passed++; console.log(`PASS ${name}`); return; }
   failed++; console.log(`FAIL ${name}${seen === undefined ? "" : ` - ${JSON.stringify(seen)}`}`);
 };
-const SPAWN_READS = ["status", "models", "resolve-cwd", "ps"];
+const SPAWN_READS = ["status", "models", "resolve-cwd", "list-dir", "ps"];
 /** The manager command each publish row names, with its route and pinned instance. */
 const managerRows = (rows: string[]) => rows.flatMap((row) => {
   const m = /\.ep\.(one|all|inst)\.manager\.(.+)$/.exec(row);
@@ -136,6 +136,7 @@ try {
     status: await call(c, "status"),
     models: await call(c, "models", {}),
     "resolve-cwd": await call(c, "resolve-cwd", { cwd: root }),
+    "list-dir": await call(c, "list-dir", { path: root }),
     "list-personas": await call(c, "list-personas"),
     ps: await call(c, "ps"),
     slots: await call(c, "slots"),
@@ -149,6 +150,7 @@ try {
     const s = seen[actor]!;
     cell(`${actor}: status answers`, s.status.kind === "answered", s.status);
     cell(`${actor}: models answers`, s.models.kind === "answered", s.models);
+    cell(`${actor}: list-dir answers`, s["list-dir"].kind === "answered", s["list-dir"]);
     cell(`${actor}: resolve-cwd answers`, s["resolve-cwd"].kind === "answered", s["resolve-cwd"]);
     cell(`${actor}: list-personas answers`, s["list-personas"].kind === "answered", s["list-personas"]);
     cell(`${actor}: ps answers`, s.ps.kind === "answered", s.ps);
@@ -164,17 +166,49 @@ try {
     l["resolve-cwd"].kind === "answered" && l["resolve-cwd"].data.cwd === cwd && l["resolve-cwd"].data.host === hostname(), l["resolve-cwd"]);
   const r = seen.runner!;
   cell("runner: status, models, resolve-cwd, ps and slots stay broker-refused",
-    [r.status, r.models, r["resolve-cwd"], r.ps, r.slots].every((o) => o.kind === "broker-refused"), [r.status, r.models, r["resolve-cwd"], r.ps, r.slots].map(kind));
+    [r.status, r.models, r["resolve-cwd"], r["list-dir"], r.ps, r.slots].every((o) => o.kind === "broker-refused"), [r.status, r.models, r["resolve-cwd"], r["list-dir"], r.ps, r.slots].map(kind));
   cell("runner: list-personas answers", r["list-personas"].kind === "answered", r["list-personas"]);
   const d = seen.reader!;
   cell("reader: every read stays broker-refused", Object.values(d).every((o) => o.kind === "broker-refused"), Object.values(d).map(kind));
   const o = seen.operator!;
   cell("operator: status, models, resolve-cwd, list-personas and ps answer",
-    [o.status, o.models, o["resolve-cwd"], o["list-personas"], o.ps].every((x) => x.kind === "answered"), [o.status, o.models, o["resolve-cwd"], o["list-personas"], o.ps].map(kind));
+    [o.status, o.models, o["resolve-cwd"], o["list-dir"], o["list-personas"], o.ps].every((x) => x.kind === "answered"), [o.status, o.models, o["resolve-cwd"], o["list-dir"], o["list-personas"], o.ps].map(kind));
   cell("operator: slots reaches the Manager, which owns no slot rows in user mode",
     o.slots.kind === "manager-refused" && o.slots.code === "failed-precondition", o.slots);
 
   const launcher = opened.launcher!;
+  const listingRoot = join(fx.dir, "listing");
+  mkdirSync(listingRoot);
+  for (const name of ["zebra", "alpha", ".hidden"]) mkdirSync(join(listingRoot, name));
+  writeFileSync(join(listingRoot, "file.txt"), "not returned");
+  symlinkSync(join(listingRoot, "alpha"), join(listingRoot, "alias"));
+  symlinkSync(join(listingRoot, "file.txt"), join(listingRoot, "file-alias"));
+  symlinkSync(join(listingRoot, "missing"), join(listingRoot, "broken"));
+  const listing = await call(launcher, "list-dir", { path: listingRoot });
+  cell("listing: sorted directories only, symlink explicitly marked, hidden omitted",
+    listing.kind === "answered" && JSON.stringify(listing.data.directories) === JSON.stringify([
+      { name: "alias", symlink: true }, { name: "alpha", symlink: false }, { name: "zebra", symlink: false },
+    ]) && !listing.data.truncated && listing.data.path === realpathSync(listingRoot), listing);
+  const bounded = await call(launcher, "list-dir", { path: listingRoot, limit: 1 });
+  cell("listing: limit bounds sorted result with truncation marker", bounded.kind === "answered" && bounded.data.directories.length === 1 && bounded.data.directories[0].name === "alias" && bounded.data.truncated, bounded);
+  const hidden = await call(launcher, "list-dir", { path: listingRoot, includeHidden: true });
+  cell("listing: hidden directories are opt-in", hidden.kind === "answered" && hidden.data.directories[0].name === ".hidden", hidden);
+  const aliasListing = await call(launcher, "list-dir", { path: join(listingRoot, "alias") });
+  cell("listing: navigating a symlink reports canonical target", aliasListing.kind === "answered" && aliasListing.data.path === realpathSync(join(listingRoot, "alpha")), aliasListing);
+  const homeListing = await call(launcher, "list-dir", {});
+  cell("listing: absent path uses Manager home", homeListing.kind === "answered" && homeListing.data.path === realpathSync(homedir()), homeListing);
+  const rootListing = await call(launcher, "list-dir", { path: "/" });
+  cell("listing: filesystem root has no parent", rootListing.kind === "answered" && rootListing.data.parent === null && rootListing.data.roots.includes("/"), rootListing);
+  for (const path of ["relative", join(listingRoot, "file.txt"), join(listingRoot, "missing")]) {
+    const result = await call(launcher, "list-dir", { path });
+    cell(`listing: invalid directory ${path} refused`, result.kind === "manager-refused" && result.code === "failed-precondition", result);
+  }
+  const denied = join(listingRoot, "denied"); mkdirSync(denied); chmodSync(denied, 0);
+  try {
+    const result = await call(launcher, "list-dir", { path: denied });
+    cell("listing: permission denied is a filesystem refusal", result.kind === "manager-refused" && result.code === "failed-precondition" && /EACCES/.test(JSON.stringify(result.error)), result);
+  } finally { chmodSync(denied, 0o700); }
+
   const elsewhere = await resolveService(launcher.nc, a.space, "manager", launcher.issued, { instanceId: control.state.instanceId, deadlineMs: 2000 })
     .then(() => "resolved", (e: Error) => /REFUSED BY THE BROKER/.test(e.message) ? "broker-refused" : e.message);
   cell("launcher: the view is broker-refused on another Manager instance", elsewhere === "broker-refused", elsewhere);
@@ -199,6 +233,13 @@ try {
   }
   cell("delegated launcher: existing, missing and symlink host paths have identical refusals",
     refusals.every((r) => r.kind === "manager-refused") && new Set(refusals.map((r) => JSON.stringify(r))).size === 1, refusals);
+  const listingRefusals: Outcome[] = [];
+  for (const path of [undefined, outside, missing, alias]) {
+    const result = await call(delegatedCaller, "list-dir", path === undefined ? {} : { path });
+    listingRefusals.push(result);
+    cell("delegated listing: refuses before host lookup", result.kind === "manager-refused" && result.code === "failed-precondition" && /starts seats outside this host/.test(JSON.stringify(result.error)), result);
+  }
+  cell("delegated listing: all paths get identical execution refusal", new Set(listingRefusals.map((r) => JSON.stringify(r))).size === 1, listingRefusals);
   cell("delegated launcher: neither runtime spawn entry was called", runtimeSpawnCalls === 0, runtimeSpawnCalls);
 } catch (error) {
   failed++; console.log(`FAIL fixture: ${(error as Error).message}`);

@@ -26,7 +26,7 @@ The output schemas below describe successful command results, not the protocol e
 
 ## manager
 
-Cluster `ai.cotal.manager`, revision 47. 43 commands.
+Cluster `ai.cotal.manager`, revision 48. 44 commands.
 
 | Command                                                   | Capability          | Class     | Target modes |
 | --------------------------------------------------------- | ------------------- | --------- | ------------ |
@@ -36,6 +36,7 @@ Cluster `ai.cotal.manager`, revision 47. 43 commands.
 | [`inspect`](#manager-inspect)                             | `manager.read`      | ephemeral | untargeted   |
 | [`slots`](#manager-slots)                                 | `manager.read`      | ephemeral | untargeted   |
 | [`models`](#manager-models)                               | `manager.read`      | ephemeral | untargeted   |
+| [`list-dir`](#manager-list-dir)                           | `manager.spawn`     | ephemeral | untargeted   |
 | [`resolve-cwd`](#manager-resolve-cwd)                     | `manager.spawn`     | ephemeral | untargeted   |
 | [`resolve-agent`](#manager-resolve-agent)                 | `manager.spawn`     | ephemeral | untargeted   |
 | [`spawn`](#manager-spawn)                                 | `manager.spawn`     | ephemeral | untargeted   |
@@ -1200,6 +1201,101 @@ Output schema:
             "type": "string"
           }
         }
+      }
+    }
+  }
+}
+```
+
+### manager list-dir
+
+Registered declaration:
+
+```json
+{
+  "name": "list-dir",
+  "class": "ephemeral",
+  "targeted": false,
+  "capability": "manager.spawn",
+  "inputDigest": "sha256:cd830419944dff608fe70ec9d2b8c717d36eeb1a8730cfe9808aa5eb1f4e3691",
+  "outputDigest": "sha256:f3dfedb507a0f5e590cc11de3072cfa94c1d66b5c557cde666f965c144e5115f"
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "includeHidden": {
+      "type": "boolean"
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    }
+  }
+}
+```
+
+Output schema:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "path",
+    "parent",
+    "directories",
+    "truncated",
+    "roots"
+  ],
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "parent": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "directories": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "symlink"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "symlink": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "roots": {
+      "type": "array",
+      "maxItems": 26,
+      "items": {
+        "type": "string"
       }
     }
   }
