@@ -106,7 +106,7 @@ try {
           JSON.stringify(refusedNext.slice(refusedNext.lastIndexOf("Next") + 1).map((line) => line.trim().split(/ {2,}/))) === JSON.stringify([
             [recordCheck],
             [`rm ${pidfile}`, "Remove it once no manager runs for this folder"],
-            ["cotal down", "Then stop the stack"],
+            ["cotal down --yes", "Then stop the stack"],
           ]), refusedOutput);
         suite.check("down keeps that pidfile and the broker",
           readFileSync(pidfile, "utf8") === "garbage" && brokerPid !== undefined && probeLiveness(brokerPid) === "alive", refusedOutput);
