@@ -720,7 +720,11 @@ member's **current read ACL** and, for `durable`-channel fan-out entries, its **
 (the message's CHAT sequence is `> joinCursor` and `≤ leaveCursor`; §7), not a current-member boolean,
 so a pre-leave entry stays deliverable and a post-`leaveCursor` one does not,
 and delivers each authorized copy to the member over an **at-least-once** handoff (its own
-`dlv_<owner>-<actor>-<uid>` DELIVER consumer, carrying the same ack semantics, not a fire-and-forget publish). The trusted reader MUST NOT ack or
+`dlv_<owner>-<actor>-<uid>` DELIVER consumer when that lifecycle's `allowSubscribe` is nonempty,
+carrying the same ack semantics, not a fire-and-forget publish). A lifecycle with an empty
+`allowSubscribe` has no authorized channel copy, so the reference MUST NOT provision that consumer
+or grant its bind rows. Raising the ACL from empty to nonempty provisions it with `DeliverPolicy.All`.
+The trusted reader MUST NOT ack or
 delete the backstop entry until the member has confirmed the copy was surfaced or handled (or it has
 been transferred to an equivalent per-member at-least-once mechanism with the same ack semantics); on a
 downstream nak, timeout, or crash before that confirmation, the entry remains pending and redelivers, so
@@ -778,10 +782,10 @@ KV buckets are also streams and are pre-created:
 
 | Bucket | Holds | TTL |
 | --- | --- | --- |
-| `cotal_presence_<space>` | presence (§6) | 6000 ms |
-| `cotal_channels_<space>` | channel registry (§7) | none |
-| `cotal_membership_<space>` | derived channel-membership feed (below), history 1 per key, maximum value 262144 bytes, no global byte reservation | none |
-| `cotal_anycast_<space>` | anycast request records (§8.1), history 1 per key, maximum value 65536 bytes, no global byte reservation | none |
+| `cotal_presence_<space>` | presence (§6), Memory storage | 6000 ms |
+| `cotal_channels_<space>` | channel registry (§7), File storage | none |
+| `cotal_membership_<space>` | derived channel-membership feed (below), Memory storage, history 1 per key, maximum value 262144 bytes, no global byte reservation | none |
+| `cotal_anycast_<space>` | anycast request records (§8.1), File storage, history 1 per key, maximum value 65536 bytes, no global byte reservation | none |
 
 **Derived channel-membership feed (observability).** `cotal_membership_<space>` is a per-agent
 (key = `card.id`) derived view of who is subscribed to each channel: the **union** of an agent's
@@ -789,9 +793,12 @@ KV buckets are also streams and are pre-created:
 `durable` memberships (the members registry), each value `{ live: string[], durable: string[],
 observedAt }` with `live` keeping subscription patterns (wildcards) the consumer expands at read time,
 and `durable` keeping a family row as recorded (`team.>`, §7).
-The backing KV keeps one message per agent key and limits each serialized value to 262144 bytes. Its
-global `max_bytes` is unlimited (`-1`), so creating an empty space reserves no file-store capacity;
-the broker's actual file-store limit remains the aggregate storage bound.
+The backing KV keeps one message per agent key and limits each serialized value to 262144 bytes. It
+uses Memory storage and its global `max_bytes` is unlimited (`-1`). It is derived from the broker
+connection view plus the File-backed members registry and is rebuilt completely before a fresh
+heartbeat is stamped. The delivery and manager lease buckets remain File-backed because their KV
+sequences are fencing tokens across broker restarts. A missing File lease bucket is lost state and
+MUST be refused, not recreated as if it were an empty lease history.
 It exists so an observer can show silent readers and `live`-channel membership without a broker-admin
 credential in the dashboard tier; it is written by a scoped privileged daemon and read only by the
 admin/observer profile and by the `deployer` and `teardown` operator credentials, which check a
@@ -7027,9 +7034,11 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.API.CONSUMER.INFO.<DM>.<dmD>`
 - `$JS.API.CONSUMER.MSG.NEXT.<DM>.<dmD>`
 - `$JS.ACK.<DM>.<dmD>.>` (DM inbox: BIND-ONLY its own pre-created `dmD`, never create)
-- `$JS.API.CONSUMER.INFO.<DLV>.<dlvD>`
-- `$JS.API.CONSUMER.MSG.NEXT.<DLV>.<dlvD>`
-- `$JS.ACK.<DLV>.<dlvD>.>`, the **durable backstop**: BIND-ONLY its own pre-created per-member DELIVER consumer `dlvD` (the trusted reader's re-authorized handoff, §8). The agent holds NO grant on the mixed pre-auth `INBOX` fan-out stream.
+- when `allowSubscribe` is nonempty: `$JS.API.CONSUMER.INFO.<DLV>.<dlvD>`,
+  `$JS.API.CONSUMER.MSG.NEXT.<DLV>.<dlvD>`, and `$JS.ACK.<DLV>.<dlvD>.>`, the **durable
+  backstop**. It binds only its own pre-created per-member DELIVER consumer `dlvD`, which carries the
+  trusted reader's re-authorized handoff (§8). With an empty `allowSubscribe`, neither the consumer
+  nor these three grants exists. The agent holds no grant on the mixed pre-auth `INBOX` fan-out stream.
 - `$JS.API.DIRECT.GET.<KV>` (the on-demand presence read, §6)
 - `$JS.API.CONSUMER.CREATE.<KV>.>`
 - `$JS.API.CONSUMER.INFO.<KV>.>`
