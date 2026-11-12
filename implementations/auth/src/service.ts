@@ -3098,6 +3098,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
         server: face.advertisedServer ?? server,
         idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience },
         sentinelCreds: callout.sentinelCreds,
+        eventPayloadsWithheld: o.eventPayloadsWithheld,
         ...(face.agentProvisioningUrl ? { agentProvisioningUrl: face.agentProvisioningUrl } : {}),
       });
       const pub = createServer(makePublicHandler(ctx, makePublicPolicy(face.trustedProxy), bundle));
@@ -4523,6 +4524,7 @@ function checkPublicFace(face: PublicFaceInput): string | undefined {
  *  empty — the daemon finalizes it with {@link finalizeUserBundleEndpoint} after the public
  *  listener binds. */
 export function composeUserBundle(args: {
+  eventPayloadsWithheld?: boolean;
   space: string;
   server: string;
   idp: { url: string; issuer: string; audience: string };
@@ -4536,6 +4538,7 @@ export function composeUserBundle(args: {
     space: args.space,
     server: args.server,
     tlsRequired: true,
+    ...(args.eventPayloadsWithheld === true ? { policy: { eventPayloads: "withheld" } } : {}),
     userAuth: {
       // The same provider name the LOCAL arm records — one exported constant rather than a
       // literal repeated here and in provider.ts, so a remote entry cannot come to name a
