@@ -16,7 +16,6 @@ import {
   acquireLocalConsumer,
   type HeldLock,
   BASELINE_LIFECYCLE_ENDPOINT,
-  BIND_SPLIT_REISSUES,
   assertLifecycleToken,
   EpEnvelopeError,
   isPublishPermissionDenied,
@@ -105,6 +104,9 @@ function buildMeta(config: AgentConfig, processCwd: boolean): Record<string, str
   // answer — and, like `connector`, it is overlaid LAST so an agent file cannot declare a host it
   // is not on. Advisory display metadata, never an authorization or routing input.
   meta.host = hostname();
+  // A routing hint only. The broker's instance grants and the manager's live map still decide.
+  delete meta["ai.cotal.manager.instance"];
+  if (config.managerInstanceId) meta["ai.cotal.manager.instance"] = config.managerInstanceId;
   // Whether the session arms its event plane, from the predicate the emitting connectors branch on.
   // Overlaid with the other connector-owned keys, so an agent file cannot declare it. Advisory.
   meta[EVENTS_META_KEY] = eventPlaneArmed(config) ? "on" : "off";
@@ -321,9 +323,6 @@ const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
 const MAX_ENDPOINT_NOTICES = 16;
 /** How many present names a DM miss lists before it starts counting them instead. */
 const NAMED_SIMILAR = 5;
-/** The manager's namespaced detail on an `inspect` miss that found a durable slot. The manager owns
- *  the shape; this keys only on the discriminator and the owning instance it may name. */
-const STATIC_SLOT_OBSERVATION_DETAIL = "ai.cotal.manager.static-slot-observation";
 /** How many turns the run settled before this seat yielded them one session remembers. The
  *  manager serves a seat one turn at a time, so a short memory covers every late yield. */
 const MAX_SETTLED_TURNS = 32;
@@ -2771,6 +2770,48 @@ export class MeshAgent extends EventEmitter {
     return bearer;
   }
 
+  /** Named seat reads use presence to select a manager, never the class queue. Presence confers
+   *  no authority: an instance route the credential cannot publish remains permission-denied.
+   *  Generic user-auth invocation keeps its existing credential path. */
+  async invokeEndpoint(
+    endpoint: string,
+    command: string,
+    args?: Record<string, unknown>,
+    opts: Parameters<CotalEndpoint["invokeService"]>[3] = {},
+  ): Promise<EpAttributedReply> {
+    let ownerInstance = opts.instanceId;
+    const seatRead = endpoint === BASELINE_LIFECYCLE_ENDPOINT && !this.config.userAuth &&
+      command === "inspect" && typeof args?.name === "string";
+    let selected: Presence | undefined;
+    if (seatRead) {
+      const roster = await this.ep.readPresence();
+      const peer = resolvePeerInRoster(roster.filter(p => p.status !== "offline"), args!.name as string);
+      if (!peer) throw new EpEnvelopeError("not-found", `no agent ${JSON.stringify(args!.name)} is held in live presence`, undefined, "not-executed");
+      const instance = peer.card.meta?.["ai.cotal.manager.instance"];
+      if (typeof instance !== "string")
+        throw new EpEnvelopeError("failed-precondition", `agent ${JSON.stringify(peer.card.name)} reports no holding manager instance`, undefined, "not-executed");
+      try { const holdingInstance = assertLifecycleToken(instance, "holding manager instance"); ownerInstance ??= holdingInstance; }
+      catch { throw new EpEnvelopeError("failed-precondition", `agent ${JSON.stringify(peer.card.name)} reports an invalid holding manager instance`, undefined, "not-executed"); }
+      selected = peer;
+      opts = { ...opts, instanceId: ownerInstance };
+      // Presence resolves the alias, but the manager's name lookup remains exact.
+      args = { ...args, name: peer.card.name };
+    }
+    try {
+      const reply = await this.ep.invokeService(endpoint, command, args, opts);
+      if (selected && reply.reply.ok) {
+        const row = reply.reply.data as { id?: string; lifecycleUid?: string };
+        if ((row.id !== selected.card.id && `${this.ep.principal.owner}.${row.id}` !== selected.card.id) || row.lifecycleUid !== selected.lifecycleUid)
+          throw new EpEnvelopeError("expired", `agent ${JSON.stringify(selected.card.name)} changed lifecycle after owner resolution; no current row was accepted`, undefined, "not-executed");
+      }
+      return reply;
+    } catch (error) {
+      if (seatRead && ownerInstance !== undefined && unansweredRequest(error))
+        throw new EpEnvelopeError("unavailable", `TARGET_UNAVAILABLE: manager instance ${ownerInstance} did not answer ${endpoint}.${command}`, (error as EpEnvelopeError).details, (error as EpEnvelopeError).outcome);
+      throw error;
+    }
+  }
+
   /** One v0.4 manager-endpoint invoke (P2 item 1, 1c.2b): the generic {@link CotalEndpoint.invokeService}
    *  path (describe → §13.7 store fetch → digest-verified recompile → typed command), adapted back to
    *  the {@link ControlReply} shape every tool above consumes, with the instance that answered it. `undefined` args are stripped BEFORE the
@@ -2834,7 +2875,7 @@ export class MeshAgent extends EventEmitter {
         const launchLocal = command === "stop" || command === "spawn" || command === "define-persona";
         const classInstanceId = this.config.creds && launchLocal && opts.instanceId === undefined
           ? this.config.managerInstanceId : undefined;
-        r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, input, {
+        r = await this.invokeEndpoint(BASELINE_LIFECYCLE_ENDPOINT, command, input, {
           ...opts, ...(classInstanceId !== undefined ? { classInstanceId } : {}),
         });
       }
@@ -2890,13 +2931,7 @@ export class MeshAgent extends EventEmitter {
    *  foreign-owner target is broker-denied at publish (the same own-domain boundary as ctl).
    *  `instanceId` reads the row from that manager alone. */
   private async managerTargetFor(name: string, instanceId?: string): Promise<{ target: EpVerbTarget } | { error: ControlReply }> {
-    let info = await this.managerInvoke("inspect", { name }, instanceId === undefined ? {} : { instanceId });
-    // `inspect` is instance-local, and in a multi-manager space the class queue can hand it to a
-    // sibling that answers with the owning instance instead of the row. A static credential cannot
-    // address that instance, so the read is asked again until the queue reaches the owner (#443).
-    // A pinned read has no queue to ask again.
-    for (let reissues = 0; instanceId === undefined && reissues < BIND_SPLIT_REISSUES && info.details?.some((d) => d.kind === STATIC_SLOT_OBSERVATION_DETAIL && d.ownerInstanceId !== undefined); reissues++)
-      info = await this.managerInvoke("inspect", { name });
+    const info = await this.managerInvoke("inspect", { name }, instanceId === undefined ? {} : { instanceId });
     if (!info.ok) return { error: info };
     const row = info.data as { id: string; lifecycleUid: string };
     const dot = row.id.indexOf(".");

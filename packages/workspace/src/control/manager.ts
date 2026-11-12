@@ -48,7 +48,8 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { c } from "../colors.js";
 import { controlCaller, type ControlAuth } from "../control-target.js";
 import { staleStoreHint } from "../maintenance.js";
-import { CommandFailure, nativeEndpointRefusal, type RefusalCode } from "../output.js";
+import { CommandFailure, isCommandFailure, nativeEndpointRefusal, type RefusalCode } from "../output.js";
+import { presenceSeat } from "./seat-presence.js";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, notAdmittedRefusal } from "./dial-retry.js";
 
 /** What the surface making control calls supplies, because only it knows. */
@@ -137,9 +138,28 @@ async function askManagerEp(
 ): Promise<ManagerReply> {
   if (pin?.instanceId !== undefined && auth.managerInstanceId !== undefined && pin.instanceId !== auth.managerInstanceId)
     return { ok: false, error: "the manager pin differs from this credential's instance authority", code: "permission-denied" };
-  const instanceId = pin?.instanceId ?? auth.managerInstanceId;
+  let instanceId = pin?.instanceId ?? auth.managerInstanceId;
+  let selected = pin?.expectedSeat;
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
+  // No class-queue read may stand in for the manager that presence says holds this seat.
+  if (!selected && !auth.bearer && (mapped.command === "inspect" || mapped.targeted)) {
+    const name = String(args?.name ?? "").trim();
+    if (!name) return { ok: false, code: "bad-request", error: `${op} requires a name` };
+    try {
+      const seat = presenceSeat(await client.roster({ space, server }), name);
+      instanceId ??= seat.instanceId;
+      selected = seat.expectedSeat;
+    } catch (error) {
+      if (!isCommandFailure(error)) throw error;
+      const code = error.code === "TARGET_NOT_FOUND" ? "not-found" : error.code === "TARGET_AMBIGUOUS" ? "failed-precondition" : "unavailable";
+      const targetRefusal = error.code === "TARGET_AMBIGUOUS" ? "TARGET_AMBIGUOUS"
+        : error.code === "TARGET_NOT_FOUND" ? "TARGET_NOT_FOUND"
+        : error.code === "USAGE_INVALID" ? "USAGE_INVALID" : "TARGET_UNAVAILABLE";
+      return { ok: false, code, error: error.message, preSubmitRefusal: true, nativeOutcome: "not-executed", targetRefusal };
+    }
+  }
+  if (selected) args = { ...args, name: selected.name };
   // Each attempt is a new connection, so a user bearer's connection nonce is minted afresh with it.
   let connectOpts: Record<string, unknown> = {};
   const nc = await dialWithRetry(() => {
@@ -184,6 +204,8 @@ async function askManagerEp(
         return { ...refused, preSubmitRefusal: true, managerInstanceId: info.responder.instanceId, managerEpoch: info.responder.epoch, error: `could not resolve "${name}": ${refused.error}` };
       }
       const row = info.reply.data as { id: string; lifecycleUid: string };
+      if (selected && ((row.id !== selected.id && `${caller.owner}.${row.id}` !== selected.id) || row.lifecycleUid !== selected.lifecycleUid))
+        return { ok: false, code: "expired", error: `${name} changed lifecycle after owner resolution, so nothing was sent`, preSubmitRefusal: true, selectedSeatChanged: true };
       if (pin?.expectedTarget && (row.id !== pin.expectedTarget.id || row.lifecycleUid !== pin.expectedTarget.lifecycleUid))
         return { ok: false, code: "not-found", error: `${name} was replaced by a new run since it was selected, so nothing was sent; refresh the agent list and try again` };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
@@ -246,6 +268,11 @@ async function askManagerEp(
       })
       : await submit();
     if (r.reply.ok !== true) return { ...controlReplyFrom(r.reply), answered: true, managerInstanceId: r.responder.instanceId, managerEpoch: r.responder.epoch, ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request } : {}), ...(r.reply.error?.outcome ? { nativeOutcome: r.reply.error.outcome } : {}) };
+    if (selected && mapped.command === "inspect") {
+      const row = r.reply.data as { id?: string; lifecycleUid?: string };
+      if ((row.id !== selected.id && `${caller.owner}.${row.id}` !== selected.id) || row.lifecycleUid !== selected.lifecycleUid)
+        return { ok: false, code: "expired", error: `${selected.name} changed lifecycle after owner resolution; no current row was accepted`, selectedSeatChanged: true };
+    }
     // The ep `models` reply is normalized to `{catalogs}` — unwrap so call sites keep the ctl shape.
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, managerInstanceId: r.responder.instanceId, managerEpoch: r.responder.epoch, ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request } : {}), ...(data !== undefined ? { data } : {}) };
@@ -280,14 +307,21 @@ export interface ManagerRequestReceipt {
  *  it used to key on the message prefix, which turned an operator-facing string into a control-flow
  *  predicate in another file. `answered` marks a refusal a manager responder sent itself; one the
  *  broker or this client raised leaves it unset. */
-export type ManagerReply = ControlReply & { unanswered?: boolean; answered?: true; preSubmitRefusal?: true; managerInstanceId?: string; managerEpoch?: number; observationCause?: { code?: string; outcome?: string }; intent?: ManagerRequestIntent; request?: ManagerRequestReceipt; nativeOutcome?: "executed" | "not-executed" | "unknown" };
+export type ManagerReply = ControlReply & {
+  /** This client compared the selected seat with inspect and proved its principal/lifecycle changed.
+   *  Permanent for that selection, unlike an expired manager epoch that a fresh resolve can repair. */
+  selectedSeatChanged?: true;
+  /** Typed local target resolution refusal, never a Manager's native reply code. */
+  targetRefusal?: RefusalCode;
+  unanswered?: boolean; answered?: true; preSubmitRefusal?: true; managerInstanceId?: string; managerEpoch?: number; observationCause?: { code?: string; outcome?: string }; intent?: ManagerRequestIntent; request?: ManagerRequestReceipt; nativeOutcome?: "executed" | "not-executed" | "unknown";
+};
 
 /** Classify only a proved pre-effect refusal as refused; a missing effect outcome is not proof.
  *  Every message names the agent when the target carries one and ends with the manager's own
  *  reason, kept to one line. */
 export function managerFailure(reply: ManagerReply, operation: string, target: unknown): CommandFailure {
   const native = { code: reply.code, outcome: reply.nativeOutcome, ...(reply.preSubmitRefusal ? { detail: { phase: "target-resolution", actionSubmitted: false } } : reply.request || reply.intent ? { detail: { request: reply.request ?? null, intent: reply.intent ?? null, observation: reply.observationCause ?? null } } : {}) };
-  const code = nativeEndpointRefusal(reply.code);
+  const code = reply.preSubmitRefusal ? reply.targetRefusal ?? nativeEndpointRefusal(reply.code) : nativeEndpointRefusal(reply.code);
   const agent = (target as { agent?: unknown } | null)?.agent;
   const what = typeof agent === "string" ? `${operation} for agent "${oneLine(agent)}"` : operation;
   const reason = reply.error ? `: ${oneLine(reply.error)}` : "";
@@ -318,6 +352,8 @@ export function describeUnanswered(reply: ManagerReply): boolean {
  *  to type a flag it does not have. Absence of a pin therefore never means "not passed". */
 export interface ManagerPin {
   instanceId?: string;
+  /** The live presence row used to select this manager before minting its caller instrument. */
+  expectedSeat?: { name: string; id: string; lifecycleUid: string };
   /** A picker-selected incarnation, checked after name resolution and before publication. */
   expectedTarget?: { id: string; lifecycleUid: string };
   /** Composite operations persist their original request before publication and the attributed
@@ -924,16 +960,17 @@ const READ_REFUSALS: Readonly<Record<string, RefusalCode>> = {
   unimplemented: "UNSUPPORTED",
   "contract-mismatch": "UNSUPPORTED",
   conflict: "CONFLICT",
+  expired: "LIFECYCLE_BLOCKED",
 };
 
 /** A manager read that did not answer, as the classified failure a structured command reports: the
  *  same sentence, the endpoint's own code under `error.cause`, and the stale-store hint as its remedy
  *  when one applies. A request nobody answered carries `deadline-exceeded`, an unavailable target. */
-export function readFailure(reply: { error?: string; code?: string; details?: unknown }, target?: unknown): CommandFailure {
+export function readFailure(reply: { error?: string; code?: string; details?: unknown; preSubmitRefusal?: true; targetRefusal?: RefusalCode }, target?: unknown): CommandFailure {
   const message = reply.error ?? "the manager refused the read";
   const remedy = staleStoreHint(message);
   const native = reply.code === undefined && reply.details === undefined ? undefined : { ...(reply.code === undefined ? {} : { code: reply.code }), ...(reply.details === undefined ? {} : { detail: reply.details }) };
   const opts = { target, ...(remedy ? { remedy } : {}), ...(native ? { native } : {}) };
-  const code = reply.code === undefined ? undefined : READ_REFUSALS[reply.code];
+  const code = reply.preSubmitRefusal && reply.targetRefusal ? reply.targetRefusal : reply.code === undefined ? undefined : READ_REFUSALS[reply.code];
   return code ? new CommandFailure("refused", code, message, opts) : new CommandFailure("failed", "OPERATION_FAILED", message, opts);
 }

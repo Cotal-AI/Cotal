@@ -126,13 +126,20 @@ no-manager startup choices or imperative planning.
 
 ## Named agent status [#named-agent-status]
 
-`cotal status <agent>` reads the authorized manager census and separates Identity,
-Execution, Mesh and Last reported activity. JSON has `identity`, `execution`, `mesh`
-and `activity` fields; missing optional observations are null with source annotations.
-`--on <manager-instance>` restricts the read. It takes no `--all` or `--components`.
-`cotal status manager`, or an answering manager's instance id, names the manager itself, which runs no
-row of its own: it refuses `TARGET_NOT_FOUND` like any unknown name, and its Next says the manager is
-answering and points to `cotal status` and `cotal endpoint describe manager`.
+`cotal status <agent>` separates Identity, Execution, Mesh and Last reported activity.
+On a static or open space it resolves the live peer, then reads its holding manager's
+`inspect` command. Case-insensitive names, exact peer principal IDs and the bare actor IDs
+printed by static/open manager rows use the resolved canonical name, including with `--on`.
+The selected principal and lifecycle stay pinned through the read.
+On a user-auth space it keeps the authorized manager census. An explicit `--server` and
+unregistered `--space` retain the raw open-broker connection, with or without `--on`.
+JSON has `identity`, `execution`, `mesh` and `activity` fields; missing optional observations
+are null with source annotations.
+`--on <manager-instance>` restricts the read and never redirects to a different owner.
+It takes no `--all` or `--components`.
+`cotal status manager` keeps its manager diagnostic census. When a manager answers but runs
+no agent named `manager`, the refusal names the manager and points to `cotal status` and
+`cotal endpoint describe manager`.
 A requested model is not provider-confirmed. Connector-reported provider
 information is labeled exact or name-matched under the same proof. A new manager
 row marks a roster observation exact only when its principal and lifecycle UID
@@ -143,8 +150,13 @@ stays in a separate name-match field. A waiting observation is not a measured
 blocked duration, and a work event is not task completion. Attach and stop
 hints retain the answering manager's instance when it is a valid native id.
 
-A same-name match on several managers refuses as ambiguous. An unanswered manager leaves
-the search partial; no matching row in that partial read is not proof the agent is gone.
+Several live peers with the same name refuse as ambiguous. Status, stop and input return
+`TARGET_AMBIGUOUS` before submission, including with an explicit `--on` Manager pin.
+A missing or invalid holding-manager
+hint refuses before submission. If the selected manager does not answer, status refuses
+`TARGET_UNAVAILABLE` and names that instance. An unrelated silent manager does not make this
+read partial. On a user-auth space, an unanswered manager still leaves the authorized census
+partial, so no matching row in that partial read is not proof the agent is gone.
 The command starts, stops and attaches nothing.
 
 

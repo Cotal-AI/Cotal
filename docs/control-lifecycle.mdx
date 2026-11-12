@@ -11,6 +11,32 @@ Manager `inspect` keeps its successful response as the live managed-agent row. A
 not read durable lifecycle state, so a temporary records-store failure cannot break inspection of
 an agent the manager currently holds.
 
+For static and open callers, the connector's named `inspect` calls, including the post-spawn
+model audit, resolve the seat through live presence first. Managed connectors publish their
+holding manager in `card.meta["ai.cotal.manager.instance"]`. The caller addresses that instance,
+using only its existing credential. A class-only credential receives `permission-denied` on
+the instance rail. No caller retries the class queue to obtain a different answer.
+An unanswered owner produces `TARGET_UNAVAILABLE` naming the instance. An absent live name is
+`not-found`. A seat that reports no manager refuses owner resolution. Presence is a routing hint,
+not a grant, and an inspect response for a different lifecycle is rejected.
+
+The CLI's named status and terminal attach paths use the same presence selection on static
+and open spaces. Generic manager inspect uses it on static spaces and still requires an
+authenticated endpoint caller. The per-call operator instrument is minted for the selected instance.
+The canonical name, principal and lifecycle remain pinned through that mint, the inspect response
+and any subsequent targeted action. Explicit instance pins keep the same alias resolution and
+identity checks but never redirect to another manager. Ambiguous names and invalid manager hints
+refuse before submission.
+Terminal attachment keeps its initial principal and lifecycle across reconnects, including
+with an explicit manager pin. A replacement under the same alias ends that attachment instead
+of opening the replacement's terminal or retrying the old selection indefinitely. Manager epoch
+expiry alone remains recoverable.
+An explicit class-only caller file cannot make a named read and is refused without substituting an operator credential.
+`inspect` is the manager's only read keyed by a running seat name. Persona, workflow, goal and
+durable-slot reads keep their own manager-local scopes. An explicit instance still selects only
+that manager, which never relays or returns another manager's live row. Generic user-auth
+invocation retains its existing credential path.
+
 On a live miss, a static manager point-reads its durable slot row. A name with no slot, or a slot
 whose phase is `retired`, remains `not-found`. A nonterminal slot returns
 `failed-precondition` with `error.details[].kind =
@@ -27,9 +53,8 @@ class queue can hand `inspect` to an instance that does not host the name. When 
 different instance and is not `retired`, the miss returns `failed-precondition` with the same
 detail plus `ownerInstanceId`, which names the only manager that can act on it. The message names
 both instances, so a caller that reads only the string can tell it from `not-found`. A sibling's
-`retired` row remains `not-found`. A named `cotal_despawn` resolves its target through this read
-and cannot address an instance, so it asks again until the owning instance answers, up to 16
-times.
+`retired` row remains `not-found`. A named `cotal_despawn` resolves its target through the
+owner-addressed inspect read, without retrying sibling slot observations.
 
 The slot is read before the head. These records do not form one atomic snapshot, so the detail
 also carries `readOrder: ["slot", "head"]` and `consistency: "ordered-not-atomic"`. A head can
