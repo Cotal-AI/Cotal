@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.161.0
+
+### Patch Changes
+
+- a8373df: Computers report CPU, memory, home-volume storage and uptime through the daemon's account heartbeat and local status.
+- @cotal-ai/core@0.161.0
+  - @cotal-ai/seat@0.161.0
+  - @cotal-ai/workspace@0.161.0
+
 ## 0.160.8
 
 ### Patch Changes
