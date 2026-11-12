@@ -10,18 +10,64 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // Return the original spawnSync result without changing arguments, environment or control flow.
 const output = join(dirname(fileURLToPath(import.meta.url)), "native-tool-timings.jsonl");
 // Keep this self-contained so the focused test exercises the injected implementation.
-function tapOwnedServiceWorker(threads, monitor, record) {
+function tapOwnedServiceWorker(threads, monitor, record, workerOutput) {
+  function preload(output, constructedAt) {
+    const enteredAt = Date.now();
+    const cp = require("node:child_process");
+    const { threadId } = require("node:worker_threads");
+    const { appendFileSync } = require("node:fs");
+    const write = (phase, fields = {}) => {
+      try {
+        appendFileSync(output, JSON.stringify({ at: new Date().toISOString(), phase,
+          pid: process.pid, threadId, elapsedMs: Date.now() - enteredAt,
+          constructorToEntryMs: enteredAt - constructedAt, ...fields }) + "\n");
+      } catch { /* Diagnostics must not affect native calls. */ }
+    };
+    write("owned-service-worker-entry");
+    const original = cp.spawnSync;
+    let first = true;
+    cp.spawnSync = function (file, ...args) {
+      const tool = typeof file === "string" ? file.replaceAll("\\", "/").split("/").at(-1).toLowerCase() : "";
+      const fixedTool = ["whoami", "whoami.exe"].includes(tool) ? "whoami"
+        : ["powershell", "powershell.exe"].includes(tool) ? "PowerShellREAD_TASK" : undefined;
+      if (!fixedTool) return original.call(this, file, ...args);
+      const started = Date.now();
+      write("owned-service-native-start", { tool: fixedTool,
+        ...(first ? { workerEntryToFirstCallMs: started - enteredAt } : {}) });
+      first = false;
+      const safeCode = (code) => typeof code === "string" && /^(?:E[A-Z0-9_]{1,76})$/.test(code) ? code : undefined;
+      try {
+        const result = original.call(this, file, ...args);
+        write("owned-service-native-end", { tool: fixedTool, callElapsedMs: Date.now() - started,
+          status: Number.isInteger(result.status) ? result.status : null, errorCode: safeCode(result.error?.code) });
+        return result;
+      } catch (error) {
+        write("owned-service-native-end", { tool: fixedTool, callElapsedMs: Date.now() - started,
+          threw: true, errorCode: safeCode(error?.code) });
+        throw error;
+      }
+    };
+    require("node:module").syncBuiltinESMExports();
+  }
   const OriginalWorker = threads.Worker;
   threads.Worker = new Proxy(OriginalWorker, {
     construct(target, args, newTarget) {
       const started = Date.now();
-      const worker = Reflect.construct(target, args, newTarget);
-      // Inspection and diagnostics must never change constructor success or decisions.
+      let observed = false;
+      let forwarded = args;
       try {
         const [script, options] = args;
-        if (typeof script !== "string" || !script.includes("daemonStartedByOwnedService") ||
-            options?.eval !== true || typeof options.workerData?.module !== "string" ||
-            !options.workerData.module.replaceAll("\\", "/").endsWith("/daemon/install.js")) return worker;
+        observed = typeof script === "string" && script.includes("daemonStartedByOwnedService") &&
+          options?.eval === true && typeof options.workerData?.module === "string" &&
+          options.workerData.module.replaceAll("\\", "/").endsWith("/daemon/install.js");
+        if (observed && typeof workerOutput === "string") {
+          forwarded = [`;(${preload.toString()})(${JSON.stringify(workerOutput)},${started});\n${script}`, ...args.slice(1)];
+        }
+      } catch { /* Unknown inputs pass through untouched. */ }
+      const worker = Reflect.construct(target, forwarded, newTarget);
+      // Inspection and diagnostics must never change constructor success or decisions.
+      try {
+        if (!observed) return worker;
         const threadId = worker.threadId;
         const write = (phase, fields = {}) => {
           try {
@@ -66,7 +112,7 @@ function tapOwnedServiceWorker(threads, monitor, record) {
 }
 tapOwnedServiceWorker(workerThreads, errorMonitor, (record) => {
   appendFileSync(output, JSON.stringify(record) + "\n");
-});
+}, output);
 appendFileSync(output, JSON.stringify({ at: new Date().toISOString(), phase: "wrapper-start", pid: process.pid }) + "\n");
 // Remove only this wrapper's script coordinate before importing the unchanged native entry.
 // Node flags and the entry's daemon/serve arguments remain the shipped launcher vector.

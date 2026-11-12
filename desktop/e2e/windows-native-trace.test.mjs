@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter, errorMonitor, once } from "node:events";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { Worker } from "node:worker_threads";
 import test from "node:test";
@@ -175,9 +176,84 @@ test("real host worker lifecycle is observed without native service operations",
   assert.deepEqual(records.map((r) => r.phase), ["owned-service-worker-start", "owned-service-worker-message", "owned-service-worker-exit"]);
 });
 
+test("injected worker source traces real child calls without exposing inputs", async () => {
+  const directory = resolve("out/r32-check-home/native-trace", `${process.pid}-${Date.now()}`);
+  mkdirSync(directory, { recursive: true });
+  const output = resolve(directory, "timings.jsonl");
+  const records = [];
+  const threads = { Worker };
+  tap(threads, errorMonitor, (r) => records.push(r), output);
+  class Derived extends threads.Worker {}
+  const worker = new Derived(`${script}
+    (async () => {
+      const cp = require('node:child_process');
+      const esm = await import('node:child_process');
+      const result = esm.spawnSync('whoami', [], { encoding: 'utf8' });
+      const missing = cp.spawnSync('/private-secret/powershell.exe', ['private-script'], { encoding: 'utf8' });
+      let thrown;
+      try { cp.spawnSync('whoami', [], { timeout: -1 }); } catch (error) { thrown = error.code; }
+      require('node:worker_threads').parentPort.postMessage({ status: result.status,
+        stdout: result.stdout, missing: missing.error.code, thrown,
+        argv: process.argv, same: esm.spawnSync === cp.spawnSync });
+    })();`, options());
+  assert.ok(worker instanceof Derived && worker instanceof Worker);
+  const messages = [];
+  worker.on('message', (message) => messages.push(message));
+  const [code] = await once(worker, 'exit');
+  assert.equal(code, 0);
+  assert.equal(messages[0].status, 0);
+  assert.ok(messages[0].stdout.trim().length > 0);
+  assert.equal(messages[0].missing, 'ENOENT');
+  assert.equal(messages[0].thrown, 'ERR_OUT_OF_RANGE');
+  assert.equal(messages[0].same, true);
+  const lines = readFileSync(output, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(lines.map((r) => r.phase), ['owned-service-worker-entry',
+    'owned-service-native-start', 'owned-service-native-end',
+    'owned-service-native-start', 'owned-service-native-end',
+    'owned-service-native-start', 'owned-service-native-end']);
+  assert.equal(lines[2].status, 0);
+  assert.equal(lines[4].errorCode, 'ENOENT');
+  assert.equal(lines[6].threw, true);
+  assert.equal(lines[6].errorCode, 'ERR_OUT_OF_RANGE');
+  assert.ok(lines[1].workerEntryToFirstCallMs >= 0);
+  assert.equal(lines[3].workerEntryToFirstCallMs, undefined);
+  assert.ok(lines.every((r) => r.constructorToEntryMs >= 0 && r.threadId === records[0].threadId && r.pid === process.pid));
+  assert.ok(lines.filter((r) => r.phase.endsWith('-end')).every((r) => r.callElapsedMs >= 0));
+  assert.ok(!JSON.stringify(lines).includes('private'));
+});
+
+test("enabled injection preserves unknown inputs and forwarded options", () => {
+  const { threads, Original, calls } = fixture(() => {});
+  const isolated = { Worker: Original };
+  tap(isolated, errorMonitor, () => {}, '/diagnostic-only/output');
+  const opts = options();
+  new isolated.Worker('unknown', opts);
+  assert.equal(calls[0].args[0], 'unknown');
+  assert.equal(calls[0].args[1], opts);
+  class Derived extends isolated.Worker {}
+  new Derived(script, opts);
+  assert.ok(calls[1].args[0].endsWith(script));
+  assert.equal(calls[1].args[1], opts);
+  assert.equal(calls[1].newTarget, Derived);
+  assert.equal(threads.Worker.prototype, isolated.Worker.prototype);
+});
+
+test("worker diagnostic I/O failure does not change native result", async () => {
+  const threads = { Worker };
+  tap(threads, errorMonitor, () => {}, '/dev/null/not-a-directory');
+  const worker = new threads.Worker(`${script}
+    const result = require('node:child_process').spawnSync('whoami', [], { encoding: 'utf8' });
+    require('node:worker_threads').parentPort.postMessage(result.status);`, options());
+  const messages = [];
+  worker.on('message', (value) => messages.push(value));
+  const [code] = await once(worker, 'exit');
+  assert.equal(code, 0);
+  assert.deepEqual(messages, [0]);
+});
+
 test("wrapper synchronizes builtin exports after tap and before unchanged entry import", () => {
-  assert.ok(source.indexOf("tapOwnedServiceWorker(workerThreads") < source.indexOf("syncBuiltinESMExports();"));
-  assert.ok(source.indexOf("syncBuiltinESMExports();") < source.indexOf("await import(pathToFileURL(process.argv[1]).href)"));
+  assert.ok(source.indexOf("tapOwnedServiceWorker(workerThreads") < source.lastIndexOf("syncBuiltinESMExports();"));
+  assert.ok(source.lastIndexOf("syncBuiltinESMExports();") < source.indexOf("await import(pathToFileURL(process.argv[1]).href)"));
 });
 
 test("real host worker early failure reaches the consumer and is followed by exit", async () => {
