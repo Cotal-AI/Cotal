@@ -2,10 +2,11 @@
  * Claude Code's permission prompts, answered by the agent's owner from another session, on a real
  * broker with a real interactive Claude Code.
  *
- * The seat is the shipped launch (`buildLaunch` with `permission-mode=default`), its MCP server and
- * hook bundles, and `claude` itself in a tmux pane. The owner's browser actor `web` is an interactive
- * row: it watches the records and answers. Each case asks Claude to run one `touch`, so the file
- * says whether the command ran.
+ * The space runs the shipped auth callout over a real ledger. The seat is a managed-agent row that
+ * connects with a bearer, launched through the shipped `buildLaunch` with `permission-mode=default`,
+ * its MCP server and hook bundles, and `claude` itself in a tmux pane. The owner's browser actor `web`
+ * is an interactive ledger row: it watches the records through its own reader, which a provisioner
+ * opens, and answers. Each case asks Claude to run one `touch`, so the file says whether it ran.
  *
  *  1. The owner approves after holding the prompt past the relay's 2 s deadline: the command runs,
  *     and the record says who approved. A sibling agent and a teammate are refused by the broker,
@@ -13,7 +14,9 @@
  *  2. The owner denies with a note: nothing runs, and Claude reads the note as the reason.
  *  3. Yes at the terminal: the command runs and the record says the machine allowed it.
  *  4. No at the terminal: nothing runs and the record says the machine withdrew it.
- *  5. The agent dies holding a prompt: readers derive `gone`, and an answer reads `gone`.
+ *  5. A background subagent asks, and the main thread finishes another turn meanwhile: the subagent's
+ *     prompt stays pending, and the owner's approval still runs its command.
+ *  6. The agent dies holding a prompt: readers derive `gone`, and an answer reads `gone`.
  *
  * Needs nats-server, tmux, the `claude` CLI and a Claude login. The login file is copied from
  * COTAL_LIVE_CLAUDE_CREDENTIALS (default ~/.claude/.credentials.json) into a private 0700 config
@@ -26,10 +29,16 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFile
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
+import { generateKeyPair, SignJWT } from "jose";
 import {
-  CotalEndpoint, DEV_OWNER, createSpaceAuth, holderLiveness, isReachable, mintCreds, mintLifecycleUid, newIdentity, principalId,
-  provisionAgent, serverConfig, setupSpaceStreams, type PermissionRecord, type Presence,
+  CotalEndpoint, createSpaceAuth, holderLiveness, isReachable, mintCreds, mintLifecycleUid, newIdentity, principalId,
+  provisionAgentDurables, serverConfig, setupSpaceStreams, type PermissionRecord, type Presence,
 } from "@cotal-ai/core";
+import {
+  calloutPermissions, createCalloutAuth, deriveOwnerToken, grantActor, grantManagedActor, ledgerAclResolver, ledgerAuthorizeConnect,
+  newActorToken, startAuthCallout, USER_TOKEN_VER,
+} from "@cotal-ai/auth";
 import { claudeConnector } from "../src/extension.js";
 import { createSuite, freePort, killAndAwaitExit, skipSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -42,6 +51,7 @@ if (!CLAUDE) skipSuite("the claude CLI is not on PATH");
 if (!existsSync(CREDENTIALS)) skipSuite("no Claude login file (set COTAL_LIVE_CLAUDE_CREDENTIALS)");
 
 const { check, finish } = createSuite();
+const enc = new TextEncoder();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function until<T>(read: () => T | undefined | false, ms: number): Promise<T | undefined> {
   for (const end = Date.now() + ms; Date.now() < end; await wait(250)) {
@@ -71,49 +81,88 @@ const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const space = `perm-live-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(root, "js") }));
+const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
+writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], {
+  transport: { kind: "plaintext" }, port: PORT, storeDir: join(root, "js"), extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }],
+}));
 const srv = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, root);
 const TMUX = ["-L", `cotal-perm-${randomUUID().slice(0, 8)}`];
 const tmux = (...args: string[]) => spawnSync("tmux", [...TMUX, ...args], { encoding: "utf8" });
 const screen = () => tmux("capture-pane", "-p", "-t", "seat").stdout ?? "";
 
+const OWNER = deriveOwnerToken("s".repeat(32), "permission-live|owner");
+const BOB = deriveOwnerToken("s".repeat(32), "permission-live|bob");
+const ISSUER = "https://permission-live.test";
 const endpoints: CotalEndpoint[] = [];
+const raws: NatsConnection[] = [];
 const artifacts: string[] = [];
 try {
   for (let i = 0; i < 50 && !(await isReachable(SERVERS)); i++) await wait(200);
   const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: provisionerCreds });
-  async function endpoint(creds: string, card: { id?: string; name: string; owner?: string; actor?: string }, lifecycleUid: string, watchPresence = false) {
-    const ep = new CotalEndpoint({ space, servers: SERVERS, creds, lifecycleUid, channels: [], consume: false, watchPresence, registerPresence: false, watchChannels: false, card: { kind: "agent", ...card } });
+  async function endpoint(card: { name: string; owner?: string; actor?: string }, auth: { creds: string } | { bearer: string }, lifecycleUid: string, watchPresence = false) {
+    const ep = new CotalEndpoint({
+      space, servers: SERVERS, lifecycleUid, channels: [], consume: false, watchPresence, registerPresence: false, watchChannels: false,
+      card: { kind: "agent", ...card }, ...("creds" in auth ? { creds: auth.creds } : { bearer: auth.bearer, sentinelCreds: callout.sentinelCreds }),
+    });
     ep.on("error", () => {});
     await ep.start();
     endpoints.push(ep);
     return ep;
   }
-  const provisioner = await endpoint(provisionerCreds, { name: "provisioner" }, mintLifecycleUid());
-  const seatId = newIdentity(), seatUid = mintLifecycleUid();
-  const seatCreds = await provisionAgent(provisioner, auth, seatId, { lifecycleUid: seatUid, subscribe: [], allowSubscribe: [] });
-  const AGENT = principalId(DEV_OWNER, seatId.id);
-  async function principal(owner: string, actor: string, interactive: boolean, watchPresence = false) {
-    const id = newIdentity(), uid = mintLifecycleUid();
-    const creds = await mintCreds(auth, id, "agent", { principal: { owner, actor }, lifecycleUid: uid, ...(interactive ? { interactive: true as const } : {}) });
-    return endpoint(creds, { id: id.id, name: actor, owner, actor }, uid, watchPresence);
-  }
-  const web = await principal(DEV_OWNER, "web", true, true);
-  const sibling = await principal(DEV_OWNER, "helper", false);
-  const teammate = await principal("bob", "web", true);
+  const provisioner = await endpoint({ name: "provisioner" }, { creds: provisionerCreds }, mintLifecycleUid());
 
-  const records = new Map<string, PermissionRecord>();
-  const watch = await web.watchPermissions((c) => { if (c.kind === "put") records.set(c.record.id, c.record); });
+  // The ledger: the seat and its sibling are managed-agent rows, the browsers are interactive rows.
+  const ledger = join(root, "ledger");
+  const seatUid = mintLifecycleUid(), helperUid = mintLifecycleUid();
+  const managed = (actor: string, lifecycleUid: string) => grantManagedActor(ledger, {
+    owner: OWNER, actor, scope: [], allowSubscribe: [], allowPublish: [], lifecycleUid, tokenHash: newActorToken().tokenHash, custody: { kind: "foreground" },
+  });
+  managed("coder", seatUid);
+  managed("helper", helperUid);
+  const webRow = grantActor(ledger, { owner: OWNER, actor: "web", scope: [], allowSubscribe: [], allowPublish: [] });
+  const bobRow = grantActor(ledger, { owner: BOB, actor: "web", scope: [], allowSubscribe: [], allowPublish: [] });
+  const { publicKey, privateKey } = await generateKeyPair("EdDSA");
+  const calloutNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc.encode(callout.calloutCreds)), maxReconnectAttempts: 0 });
+  raws.push(calloutNc);
+  startAuthCallout(calloutNc as never, {
+    xkeySeed: callout.xkey.seed,
+    authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
+    dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+    space, token: { key: publicKey as never, issuer: ISSUER },
+    recordIssuance: async () => {},
+    authorizeActor: ledgerAuthorizeConnect(ledger),
+    permissionsFor: calloutPermissions(ledgerAclResolver(ledger)),
+    log: (line) => { if (/denied|drop|fail/i.test(line)) console.log("  [callout]", line); },
+  });
+  const bearer = (owner: string, actor: string, lifecycleUid: string) =>
+    new SignJWT({ sub: owner, ver: USER_TOKEN_VER, act: { owner, actor, scope: [], lifecycleUid } })
+      .setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISSUER).setAudience(space).setSubject(owner)
+      .setIssuedAt().setNotBefore(Math.floor(Date.now() / 1000) - 60).setExpirationTime("14m").sign(privateKey); // the callout caps a bearer at 15 min
+
+  await provisionAgentDurables(provisioner, { owner: OWNER, actor: "coder", lifecycleUid: seatUid }, { subscribe: [], allowSubscribe: [] });
+  const AGENT = principalId(OWNER, "coder");
+  const web = await endpoint({ name: "web", owner: OWNER, actor: "web" }, { bearer: await bearer(OWNER, "web", webRow.lifecycleUid!) }, webRow.lifecycleUid!, true);
+  const sibling = await endpoint({ name: "helper", owner: OWNER, actor: "helper" }, { bearer: await bearer(OWNER, "helper", helperUid) }, helperUid);
+  const teammate = await endpoint({ name: "web", owner: BOB, actor: "web" }, { bearer: await bearer(BOB, "web", bobRow.lifecycleUid!) }, bobRow.lifecycleUid!);
+
+  const watch = await web.watchPermissions((reader) => provisioner.openPermissionReader(reader));
   await watch.ready;
+  const records = () => watch.records();
 
-  const credsPath = join(root, "seat.creds");
-  writeFileSync(credsPath, seatCreds, { mode: 0o600 });
+  // The seat's bearer and the sentinel ride 0600 files; only their paths reach the launch.
+  const bearerPath = join(root, "seat.bearer"), sentinelPath = join(root, "sentinel.creds");
+  writeFileSync(bearerPath, await bearer(OWNER, "coder", seatUid), { mode: 0o600 });
+  writeFileSync(sentinelPath, callout.sentinelCreds, { mode: 0o600 });
   Object.assign(process.env, { HOME: home, CLAUDE_CONFIG_DIR: config, ...xdg });
   const spec = claudeConnector.buildLaunch({
-    space, name: "coder", id: seatId.id, creds: credsPath, servers: SERVERS, lifecycleUid: seatUid, model: "haiku",
+    space, name: "coder", servers: SERVERS, lifecycleUid: seatUid, model: "haiku",
     launchOptions: { "permission-mode": "default" }, resolvedBinaries: { claude: CLAUDE }, events: false,
+    userAuth: {
+      owner: OWNER, actor: "coder", sentinelCredsPath: sentinelPath,
+      bearerCmd: [process.execPath, "-e", "process.stdout.write(require('node:fs').readFileSync(process.argv[1], 'utf8'))", bearerPath],
+    },
   });
   artifacts.push(...(spec.artifacts ?? []));
   const launcher = join(root, "launch.mjs");
@@ -128,7 +177,7 @@ spawn(s.command, s.args, { env: s.env, stdio: "inherit" }).on("exit", (code) => 
     return ["? for shortcuts", "(shift+tab to cycle)"].some((t) => text.includes(t)) && text;
   }, 60_000);
   const seatOnline = await until(() => web.getRoster().find((p) => p.lifecycleUid === seatUid && p.status !== "offline"), 30_000);
-  check("claude starts in the pane and its seat joins the mesh", Boolean(ready && seatOnline), screen().slice(-800));
+  check("claude starts in the pane and its user-mode seat joins the mesh", Boolean(ready && seatOnline), screen().slice(-800));
 
   const seat = (): Presence | undefined => web.getRoster().find((p) => p.lifecycleUid === seatUid);
   // Claude reads keys typed in one burst as a paste and can drop an Enter inside it, which leaves the
@@ -143,11 +192,12 @@ spawn(s.command, s.args, { env: s.env, stdio: "inherit" }).on("exit", (code) => 
     }
   };
   const idle = () => until(() => seat()?.status === "idle" && !screen().includes("Do you want to proceed?"), 90_000);
-  const ask = async (marker: string): Promise<PermissionRecord | undefined> => {
-    await type(`Run this exact bash command and nothing else: touch ${marker}`);
-    return until(() => [...records.values()].find((r) => r.input.kind === "shown" && JSON.stringify(r.input.value).includes(marker)), 90_000);
+  const recordOf = (marker: string) => records().find((r) => r.input.kind === "shown" && JSON.stringify(r.input.value).includes(marker));
+  const ask = async (marker: string, prompt = `Run this exact bash command and nothing else: touch ${marker}`): Promise<PermissionRecord | undefined> => {
+    await type(prompt);
+    return until(() => recordOf(marker), 90_000);
   };
-  const stateOf = (id: string) => records.get(id)?.state;
+  const stateOf = (id: string) => records().find((r) => r.id === id)?.state;
   const ran = (marker: string) => existsSync(join(ws, marker));
 
   // ── 1. The owner approves; siblings and teammates cannot; a second answer is refused ──────────
@@ -161,24 +211,24 @@ spawn(s.command, s.args, { env: s.env, stdio: "inherit" }).on("exit", (code) => 
   check("eight seconds on, the prompt is still held and the seat's approval condition names it",
     stateOf(a.id)?.kind === "pending" && condition?.code === "approval" && condition.request === a.id, { state: stateOf(a.id), condition });
   const refused = [
-    await sibling.answerPermission(AGENT, a.id, { decision: "approve" }),
-    await teammate.answerPermission(AGENT, a.id, { decision: "approve" }),
+    await sibling.answerPermission(a, { decision: "approve" }),
+    await teammate.answerPermission(a, { decision: "approve" }),
   ];
   check(`a sibling agent and a teammate are refused by the broker (${refused.filter((o) => o.kind === "refused").length} of 2), and the prompt stays pending`,
     refused.every((o) => o.kind === "refused") && stateOf(a.id)?.kind === "pending", refused);
-  const approved = await web.answerPermission(AGENT, a.id, { decision: "approve" });
+  const approved = await web.answerPermission(a, { decision: "approve" });
   check("the owner's approval is accepted once Claude has it, by the owner's browser",
-    approved.kind === "accepted" && approved.state.kind === "approved" && approved.state.by === `${DEV_OWNER}.web`, approved);
+    approved.kind === "accepted" && approved.state.kind === "approved" && approved.state.by === `${OWNER}.web`, approved);
   check("...and the command runs", Boolean(await until(() => ran("marker-approve"), 60_000)), screen().slice(-600));
-  const second = await web.answerPermission(AGENT, a.id, { decision: "deny", note: "too late" });
-  check("a second answer is refused and names the first", second.kind === "answered" && second.state.kind === "approved" && second.state.by === `${DEV_OWNER}.web`, second);
+  const second = await web.answerPermission(a, { decision: "deny", note: "too late" });
+  check("a second answer is refused and names the first", second.kind === "answered" && second.state.kind === "approved" && second.state.by === `${OWNER}.web`, second);
   check("the record says the owner's browser approved it", (await until(() => stateOf(a.id)?.kind === "approved" && stateOf(a.id), 10_000))?.kind === "approved", stateOf(a.id));
   await idle();
 
   // ── 2. The owner denies with a note ───────────────────────────────────────────────────────────
   const NOTE = "use the staging bucket instead";
   const d = await ask("marker-deny");
-  const denied = d && (await web.answerPermission(AGENT, d.id, { decision: "deny", note: NOTE }));
+  const denied = d && (await web.answerPermission(d, { decision: "deny", note: NOTE }));
   check("the owner's denial with a note is accepted", denied !== undefined && denied.kind === "accepted" && denied.state.kind === "denied" && denied.state.note === NOTE, denied);
   await idle();
   const transcript = (() => {
@@ -208,23 +258,40 @@ spawn(s.command, s.args, { env: s.env, stdio: "inherit" }).on("exit", (code) => 
     !ran("marker-no") && no?.kind === "answered-on-machine" && no.outcome === "withdrawn", n && stateOf(n.id));
   await until(() => ["? for shortcuts", "(shift+tab to cycle)"].some((t) => screen().includes(t)) && !screen().includes("Do you want to proceed?"), 30_000);
 
-  // ── 5. The agent dies holding a prompt ────────────────────────────────────────────────────────
+  // ── 5. A background subagent's prompt outlives the main turn's end ────────────────────────────
+  // Claude runs a subagent in the background and keeps the main thread free; the subagent's prompt
+  // carries its agent_id, and the main thread's Stop must not settle it.
+  const s = await ask("marker-sub", "Use the Agent tool with subagent_type general-purpose. Tell the subagent to run exactly this bash command and nothing else: touch marker-sub");
+  await idle();
+  await type("Reply with the single word ok and nothing else.");
+  const turnEnded = await idle();
+  await wait(2_000);
+  check("a background subagent's prompt stays pending after the main thread finishes another turn",
+    s !== undefined && Boolean(turnEnded) && stateOf(s.id)?.kind === "pending" && !ran("marker-sub"), { state: s && stateOf(s.id), status: seat()?.status });
+  const subApproved = s && (await web.answerPermission(s, { decision: "approve" }));
+  check("...and the owner's approval of it is accepted and runs the subagent's command",
+    subApproved?.kind === "accepted" && Boolean(await until(() => ran("marker-sub"), 60_000)), { subApproved, state: s && stateOf(s.id) });
+  await idle();
+
+  // ── 6. The agent dies holding a prompt ────────────────────────────────────────────────────────
   const g = await ask("marker-gone");
   if (g) await until(() => screen().includes("Do you want to proceed?"), 30_000);
   tmux("kill-session", "-t", "seat");
   const offline = await until(() => seat()?.status === "offline" && seat(), 30_000);
   const liveness = g && holderLiveness(g.holder, offline ? { online: false, ...(offline.lifecycleUid ? { lifecycleUid: offline.lifecycleUid } : {}) } : undefined);
   check("after the agent dies its pending record reads gone", g !== undefined && liveness === "gone" && stateOf(g.id)?.kind === "pending", { liveness, state: g && stateOf(g.id) });
-  const late = g && (await web.answerPermission(AGENT, g.id, { decision: "approve" }));
+  const late = g && (await web.answerPermission(g, { decision: "approve" }));
   check("...and an answer to it reads gone", late !== undefined && late.kind === "gone" && !ran("marker-gone"), late);
 
-  const finals = [...records.values()].filter((r) => r.agent === AGENT).map((r) => r.state.kind === "answered-on-machine" ? `${r.state.kind}/${r.state.outcome}` : r.state.kind);
+  const finals = records().filter((r) => r.agent === AGENT).map((r) => r.state.kind === "answered-on-machine" ? `${r.state.kind}/${r.state.outcome}` : r.state.kind);
   console.log(`  records ${JSON.stringify(finals)}`);
-  check(`the owner saw exactly five records, one per prompt (${finals.length})`,
-    finals.length === 5 && ["approved", "denied", "answered-on-machine/allowed", "answered-on-machine/withdrawn", "pending"].every((s) => finals.includes(s)), finals);
+  const expected = ["approved", "denied", "answered-on-machine/allowed", "answered-on-machine/withdrawn", "approved", "pending"];
+  check(`the owner saw exactly six records, one per prompt, oldest first (${finals.length})`, finals.join() === expected.join(), finals);
+  await watch.stop();
 } finally {
   tmux("kill-server");
   await Promise.all(endpoints.map((ep) => ep.stop().catch(() => {})));
+  for (const nc of raws) await nc.close().catch(() => {});
   await killAndAwaitExit(srv);
   for (const path of artifacts) rmSync(path, { recursive: true, force: true });
   if (!process.env.COTAL_LIVE_KEEP) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
