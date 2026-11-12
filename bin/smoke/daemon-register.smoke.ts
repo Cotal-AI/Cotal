@@ -48,6 +48,7 @@
  *
  * Run: tsx bin/smoke/daemon-register.smoke.ts   (Linux only; needs nats-server)
  */
+import assert from "node:assert/strict";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, type AddressInfo, type Socket } from "node:net";
 import { mkdtempSync, chmodSync, mkdirSync, rmSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -149,6 +150,7 @@ const jwtsIssued: string[] = [];
 let idpRevoked = false;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
+  if (req.url?.startsWith("/api/cli/machines/") && [SESSION, MANAGED_SESSION].some(session => req.headers.authorization === `Bearer ${session}`)) { res.writeHead(404); return void res.end("{}"); }
   if (req.url === "/api/auth/jwks") return void res.end(JSON.stringify({ keys: [jwk] }));
   if (req.url === "/api/auth/token" && idpRevoked) { res.writeHead(401); return void res.end("{}"); }
   if (req.url === "/api/auth/token" && [SESSION, MANAGED_SESSION].some((session) => req.headers.authorization === `Bearer ${session}`)) {
@@ -383,6 +385,17 @@ try {
       check("R9 no manager-instance file under the home or participant root", ![home, participant].some((p) => readdirSync(p, { recursive: true }).map(String).some((f) => f.includes("manager-instance"))));
     });
     await cell("R12 local record failures differ from a remote outage", async () => {
+      const registerFresh = async () => {
+        let registration = await cli(ON, "register");
+        if (registration.doc.result?.outcome === "approval-required") {
+          const proposalId = registration.doc.result.proposalId as string;
+          const proposal = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "proposal-read", input: { proposalId }, granter: operator } as never) as { record?: { revision: number; value: { nameBinding: { revision: number } | null } } };
+          const decision = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "decide", granter: { kind: "owner", owner: fixture.owner }, input: { proposalId, expectedProposalRevision: proposal.record?.revision ?? 0, expectedNameRevision: proposal.record?.value.nameBinding?.revision ?? 0, decision: "approve", callerCeiling: [] } } as never) as { state: string };
+          assert.equal(decision.state, "approved");
+          registration = await cli(ON, "register");
+        }
+        assert.equal(registration.doc.result?.outcome, "registered", JSON.stringify(registration.doc));
+      };
       const f = regFile(ON)!;
       const requestFile = join(home, "daemon", f);
       const identityFile = join(dirname(requestFile), "service-identity.json");
@@ -393,6 +406,7 @@ try {
       const connected = await cli(ON, "service-connect");
       check("R12 control: valid records connect to the real broker and complete readiness", connected.status === 0 && connected.doc.result?.state === "connected", connected.doc);
       await cli(ON, "service-disconnect");
+      await registerFresh();
       const marker = "PRIVATE_LOCAL_RECORD_MARKER";
       for (const record of records) {
         const original = readFileSync(record.file);
@@ -412,6 +426,7 @@ try {
         const restored = await cli(ON, "service-connect");
         check(`R12 restoring the original ${record.name} recovers without changing its identity`, restored.status === 0 && restored.doc.result?.state === "connected" && readFileSync(record.file).equals(original), restored.doc);
         await cli(ON, "service-disconnect");
+        await registerFresh();
       }
       dropAuthority = true;
       try {
