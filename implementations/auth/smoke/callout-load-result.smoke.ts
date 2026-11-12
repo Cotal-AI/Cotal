@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { inspect } from "node:util";
+import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { collectLoadResult, LoadChildFailure, retainLoadFailure } from "./_callout-load-result.js";
 
 const proofDir = process.env.CALLOUT_LOAD_PROOF_DIR;
@@ -63,6 +64,7 @@ try {
   }
   if (proofDir) writeFileSync(join(proofDir, "RESULT.json"), `${JSON.stringify({ checks, rows, root, brokerStarted: false }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
   console.log(supervised ? JSON.stringify({ phase: "done", checks, cases: cases.length }) : `callout-load result checks: ${checks}/${checks} passed`);
+  if (!supervised) emitSentinel({ passed: checks, failed: 0 });
 } finally {
   control?.close();
   if (!proofDir) rmSync(root, { recursive: true });
