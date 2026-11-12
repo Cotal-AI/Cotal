@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.160.8
+
+### Patch Changes
+
+- a331933: Allow unattended updates on computers that have not run setup. Create missing protected config folders before the update snapshot without changing existing permissions or following symbolic links. A computer that has never had `~/.config/cotal` needs one manual `npm install -g cotal-ai@latest` to receive this fix.
+- Updated dependencies [c7c509c]
+  - @cotal-ai/core@0.160.8
+  - @cotal-ai/workspace@0.160.8
+
 ## 0.160.7
 
 ### Patch Changes

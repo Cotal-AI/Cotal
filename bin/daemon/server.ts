@@ -158,6 +158,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
+    vitals: account.vitals(),
+    vitalsError: account.vitalsError(),
     computer: account.name(),
     ...(account.nameWarning() ? { computerNameWarning: account.nameWarning() } : {}),
     state: "ready",
@@ -281,7 +283,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         counters.statusAnswered++;
         managerResult(async () => {
           await Promise.all(managers.all().map((manager) => managers.refresh(manager.space)));
-          const result = status();
+          const result = { ...status(), agents: await managers.agents() };
           if (!result.update) return result;
           // A hosted Manager that is starting or stopping cannot give restart evidence. Status still
           // answers, and an updater that needs the evidence refuses without it.
@@ -344,7 +346,9 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
         const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
           : (async () => {
-            if (await account.intent(req.space, req.op === "service-connect")) return services.status(req.space);
+            // Disconnect retires local authority even when sign-in or the account host is gone.
+            // The local removal revision fences account reconciliation until a fresh enable.
+            if (req.op === "service-connect" && await account.intent(req.space, true)) return services.status(req.space);
             const disconnect = req.op === "service-disconnect" ? services.disconnect(req.space) : undefined;
             void disconnect?.catch(() => {});
             return reconciler.serial(() => withIdpSessionDir(machineHome, async () => {

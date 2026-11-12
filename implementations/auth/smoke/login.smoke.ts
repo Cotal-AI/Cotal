@@ -958,7 +958,7 @@ console.log("E) hostile-IdP responses");
   const logoutHome = mkdtempSync(join(tmpdir(), "cotal-logout-"));
   saveIdpSession(logoutHome, soBase, { token: "cached-login", expiresAt: Date.now() / 1000 + 600 });
   // Asynchronous, so this process's sign-out server can answer the child.
-  const cli = (...args: string[]) => new Promise<{ status: number | null; envelope?: { outcome?: string; result?: { serverRevoked?: boolean; localLoginCleared?: boolean } | null; error?: { code?: string; remedy?: string } }; stderr: string }>((done) => {
+  const cli = (...args: string[]) => new Promise<{ status: number | null; envelope?: { outcome?: string; result?: { serverRevoked?: boolean; localLoginCleared?: boolean; daemonNotice?: string } | null; error?: { code?: string; remedy?: string } }; stderr: string }>((done) => {
     execFile(process.execPath, ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts"), "logout", "--idp", soBase, "--json", ...args],
       { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: logoutHome, COTAL_HOME: logoutHome, XDG_CONFIG_HOME: join(logoutHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 60_000 },
       (error, stdout, stderr) => {
@@ -974,6 +974,12 @@ console.log("E) hostile-IdP responses");
   const local = await cli("--local");
   check("logout --local clears the login without contacting the provider",
     local.status === 0 && local.envelope?.result?.serverRevoked === false && local.envelope.result.localLoginCleared === true && loadIdpSession(logoutHome, soBase) === undefined && signOuts === before + 1, { local, signOuts, before });
+  const absent = await cli("--local");
+  for (const [label, reply] of [["cleared", local], ["already absent", absent]] as const) {
+    const notice = reply.envelope?.result?.daemonNotice ?? "";
+    check(`logout ${label} explains the service proof and both retirement choices`, reply.status === 0
+      && notice.includes("own service proof") && notice.includes("service-disconnect") && notice.includes("dashboard"));
+  }
   so.close();
 }
 

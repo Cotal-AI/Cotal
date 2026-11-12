@@ -2,7 +2,7 @@
  * No exchange or manager mutation is represented by this fixture. */
 import { createServer, type ServerResponse } from "node:http";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { fetchIdpJwt, IdpLoginCancelled, IdpUnreachableError } from "../src/login.js";
+import { fetchIdpJwt, IdpLoginCancelled, IdpRateLimitedError, IdpSessionRejectedError, IdpUnreachableError } from "@cotal-ai/auth";
 
 const { check, finish } = createSuite();
 const priorTimeout = process.env.COTAL_IDP_TIMEOUT_MS;
@@ -48,30 +48,69 @@ try {
     advertised ||= Math.ceil((Date.now() + 1500) / 1000) * 1000;
     send(res, count === 1 ? 429 : 200, count === 1 ? { "retry-after": new Date(advertised).toUTCString() } : {});
   });
-  for (const [label, headers] of [
-    ["missing hint", {}], ["malformed hint", { "x-retry-after": "soon" }],
-    ["negative native hint", { "x-retry-after": "-1" }],
-    ["outside budget", { "x-retry-after": "30" }],
+  for (const [label, headers, seconds] of [
+    ["missing hint", {}, undefined],
+    ["malformed hints", { "retry-after": "bad", "x-retry-after": "soon" }, undefined],
+    ["negative native hint", { "x-retry-after": "-1" }, undefined],
+    ["nonfinite native hint", { "x-retry-after": "9".repeat(400) }, undefined],
+    ["outside budget", { "x-retry-after": "30" }, 30],
+    ["standard outside budget", { "retry-after": "30" }, 30],
+    ["later terminal hint", { "retry-after": "40", "x-retry-after": "30" }, 40],
+    ["valid terminal native", { "retry-after": "bad", "x-retry-after": "30" }, 30],
   ] as const) {
     await fixture(async (url, times) => {
       const error = await failure(fetchIdpJwt(url, label));
       check(`${label}: keeps the HTTP refusal`, error instanceof Error && error.message.includes("HTTP 429"), String(error));
+      check(`${label}: public typed status`, error instanceof IdpRateLimitedError && error.status === 429, error);
+      check(`${label}: provider delay only`, error instanceof IdpRateLimitedError && error.retryAfterSeconds === seconds, error);
       check(`${label}: no speculative retry`, times.length === 1, times.length);
     }, (res) => send(res, 429, headers), 1200);
   }
+  for (const [label, headers] of [
+    ["zero terminal hint", { "retry-after": "0" }],
+    ["past terminal date", { "retry-after": "Wed, 21 Oct 2015 07:28:00 GMT" }],
+  ] as const) {
+    await fixture(async (url, times) => {
+      const error = await failure(fetchIdpJwt(url, label));
+      check(`${label}: no invented retry floor`, error instanceof IdpRateLimitedError && error.status === 429 && error.retryAfterSeconds === 0, error);
+      check(`${label}: wait does not fit`, times.length === 1, times.length);
+    }, (res) => send(res, 429, headers), 500);
+  }
+  let terminalDate = 0;
+  await fixture(async (url, times) => {
+    const before = Date.now();
+    const error = await failure(fetchIdpJwt(url, "terminal date"));
+    const after = Date.now();
+    check("terminal date: typed status", error instanceof IdpRateLimitedError && error.status === 429, error);
+    check("terminal date: minimum remaining seconds", error instanceof IdpRateLimitedError && typeof error.retryAfterSeconds === "number" && error.retryAfterSeconds >= (terminalDate - after) / 1000 && error.retryAfterSeconds <= (terminalDate - before) / 1000, error);
+    check("terminal date: no over-budget retry", times.length === 1, times.length);
+  }, (res) => {
+    terminalDate = Math.ceil((Date.now() + 30_000) / 1000) * 1000;
+    send(res, 429, { "retry-after": new Date(terminalDate).toUTCString(), "x-retry-after": "2" });
+  }, 1200);
   for (const status of [401, 403, 503]) {
     await fixture(async (url, times) => {
       const error = await failure(fetchIdpJwt(url, String(status)));
       check(`${status}: remains a refusal`, error instanceof Error);
+      check(`${status}: not a rate limit`, !(error instanceof IdpRateLimitedError));
+      if (status === 401) check("401: session rejection stays typed", error instanceof IdpSessionRejectedError);
       check(`${status}: never retried`, times.length === 1, times.length);
     }, (res) => send(res, status, { "retry-after": "1" }));
   }
   await fixture(async (url, times) => {
     const error = await failure(fetchIdpJwt(url, "repeated"));
     check("repeated 429 remains a refusal", error instanceof Error && error.message.includes("HTTP 429"));
+    check("repeated 429 uses final response timing", error instanceof IdpRateLimitedError && error.status === 429 && error.retryAfterSeconds === 30, error);
     check("repeated 429 stops after two requests", times.length === 2, times.length);
     check("a failed proof is not held", await fetchIdpJwt(url, "repeated") === jwt && times.length === 3);
-  }, (res, count) => send(res, count <= 2 ? 429 : 200, { "x-retry-after": "1" }));
+  }, (res, count) => send(res, count <= 2 ? 429 : 200, { "x-retry-after": count === 1 ? "1" : "30" }));
+  await fixture(async (url, times) => {
+    const errors = await Promise.all(Array.from({ length: 8 }, () => failure(fetchIdpJwt(url, "shared refusal"))));
+    check("concurrent refusal: same typed failure", errors[0] instanceof IdpRateLimitedError && errors.every((error) => error === errors[0]), errors);
+    check("concurrent refusal: no invented hint on final response", errors[0] instanceof IdpRateLimitedError && errors[0].retryAfterSeconds === undefined, errors[0]);
+    check("concurrent refusal: one shared retry", times.length === 2, times.length);
+    check("concurrent refusal: failure is not cached", await fetchIdpJwt(url, "shared refusal") === jwt && times.length === 3);
+  }, (res, count) => send(res, count <= 2 ? 429 : 200, count === 1 ? { "x-retry-after": "1" } : {}));
   await fixture(async (url, times) => {
     const controller = new AbortController();
     const pending = failure(fetchIdpJwt(url, "cancel", controller.signal));

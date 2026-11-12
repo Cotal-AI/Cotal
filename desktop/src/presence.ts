@@ -11,15 +11,17 @@ function offer(id: string, message: string, primary: string, accept: () => Promi
   if (document.getElementById(id)) return;
   const box = document.createElement("section"); box.id = id; box.setAttribute("aria-label", primary);
   const explanation = document.createElement("p"); explanation.textContent = message;
-  const yes = document.createElement("button"); yes.type = "button"; yes.textContent = primary;
-  const no = document.createElement("button"); no.type = "button"; no.textContent = "Not now";
+  const yes = document.createElement("button"); yes.type = "button"; yes.className = "button"; yes.textContent = primary;
+  const no = document.createElement("button"); no.type = "button"; no.className = "text-button"; no.textContent = "Not now";
   const act = async (fn: () => Promise<void>) => {
     yes.disabled = no.disabled = true;
     try { await fn(); box.remove(); } catch (error) { report(String(error), true); yes.disabled = no.disabled = false; }
   };
   yes.addEventListener("click", () => void act(accept)); no.addEventListener("click", () => void act(decline));
-  box.append(explanation, yes, no);
-  (document.getElementById(id === "move-offer" ? "connection-card" : "preferences") ?? document.querySelector(".connection-card") ?? document.querySelector("main")!).append(box);
+  const actions = document.createElement("div"); actions.className = "actions";
+  actions.append(yes, no);
+  box.append(explanation, actions);
+  (document.getElementById(id === "move-offer" ? "connection-card" : "settings-startup") ?? document.querySelector(".connection-card") ?? document.querySelector("main")!).append(box);
 }
 
 export async function refreshPresence(connected = false): Promise<void> {
@@ -43,7 +45,7 @@ export async function refreshPresence(connected = false): Promise<void> {
       } else if (p.pinMessage) {
         offerShown = true;
         const message = document.createElement("p"); message.id = "pin-availability"; message.textContent = p.pinMessage;
-        document.getElementById("preferences")!.append(message);
+        document.getElementById("settings-startup")!.append(message);
       }
     }
   } finally { working = false; }

@@ -166,6 +166,15 @@ export class IdpDeviceAuthorizationRefusedError extends Error {}
 /** The IdP answered 401 to a cached session: it expired or was revoked there. */
 export class IdpSessionRejectedError extends Error {}
 
+/** A token read still answered 429. The provider's minimum delay is in seconds, without the
+ *  client's retry floor, or undefined when neither retry header is usable. */
+export class IdpRateLimitedError extends Error {
+  readonly status = 429;
+  constructor(message: string, readonly retryAfterSeconds?: number) {
+    super(message);
+  }
+}
+
 /** A sign-in stopped by the caller's AbortSignal. It stops this local operation only: nothing
  *  is revoked at the IdP, and an approval already given there is left as it is. */
 export class IdpLoginCancelled extends Error {}
@@ -439,18 +448,22 @@ async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: 
     throwIfCancelled(cancel);
     if (remaining <= 0) throw new IdpUnreachableError(`idp request to ${base}/token timed out before the retry`);
     const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } }, cancel, remaining);
-    if (res.status === 429 && attempt === 0) {
+    if (res.status === 429) {
       const delays = ["retry-after", "x-retry-after"].map((name) => {
         const value = res.headers.get(name)?.trim();
         return value && /^\d+$/.test(value) ? Number(value) * 1000
           : value && name === "retry-after" ? Date.parse(value) - Date.now() : NaN;
       }).filter(Number.isFinite);
       const wait = Math.max(1000, ...delays);
-      if (delays.length && wait < deadline - Date.now()) {
+      if (attempt === 0 && delays.length && wait < deadline - Date.now()) {
         await res.body?.cancel();
         await sleepUnlessCancelled(wait, cancel);
         continue;
       }
+      throw new IdpRateLimitedError(
+        `idp session: ${base}/token failed (HTTP 429)`,
+        delays.length ? Math.max(0, ...delays) / 1000 : undefined,
+      );
     }
     if (res.status === 401)
       throw new IdpSessionRejectedError(
@@ -621,7 +634,7 @@ export function signedInMachineAccounts(dir: string): AuthSpaceCatalogAccount[] 
 /** Call only the account-computer routes on the signed-in provider's origin. */
 export async function requestAccountMachine(opts: {
   dir: string; idpUrl: string; machineId: string; method: "PUT" | "GET";
-  metadata?: { name: string; platform: "linux" | "darwin" | "win32"; daemonVersion: string; managers: readonly { spaceId: string; instanceId: string }[] };
+  metadata?: { name: string; platform: "linux" | "darwin" | "win32"; daemonVersion: string; managers: readonly { spaceId: string; instanceId: string }[]; vitals?: { sampledAt: string; cpu: { logicalCount: number; utilisationPercent: number; intervalMs: number; load1?: number; load5?: number; load15?: number }; memory: { totalBytes: number; availableBytes: number }; filesystems: Array<{ mount: string; totalBytes: number; freeBytes: number }>; uptimeSeconds: number } };
   etag?: string; signal?: AbortSignal;
   intent?: { spaceId: string; enabled: boolean; expectedRevision: number };
 }): Promise<{ status: number; etag?: string; body?: unknown }> {
@@ -635,7 +648,9 @@ export async function requestAccountMachine(opts: {
   const headers: Record<string, string> = { authorization: `Bearer ${session.token}` };
   if (opts.etag) headers["if-none-match"] = opts.etag;
   if (opts.method === "PUT") headers["content-type"] = "application/json";
-  const response = await idpFetch(url, { method: opts.method, headers, redirect: "manual", ...(opts.method === "PUT" ? { body: JSON.stringify(opts.intent ? { enabled: opts.intent.enabled, expectedRevision: opts.intent.expectedRevision } : opts.metadata) } : {}) }, opts.signal);
+  const body = opts.method === "PUT" ? JSON.stringify(opts.intent ? { enabled: opts.intent.enabled, expectedRevision: opts.intent.expectedRevision } : opts.metadata) : undefined;
+  if (body !== undefined && Buffer.byteLength(body, "utf8") > 16384) throw new Error("invalid computer registration exceeds 16384 bytes");
+  const response = await idpFetch(url, { method: opts.method, headers, redirect: "manual", ...(opts.method === "PUT" ? { body } : {}) }, opts.signal);
   const etag = response.headers.get("etag");
   return { status: response.status, ...(etag ? { etag } : {}), ...(response.ok ? { body: await idpJson<unknown>(url, response, opts.signal) } : {}) };
 }

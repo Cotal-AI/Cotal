@@ -4,6 +4,8 @@ import { EpEnvelopeError } from "@cotal-ai/core";
 import {
   MANAGER_VITALS_MAX_MOUNTS,
   measureManagerVitals,
+  measureComputerVitals,
+  type ComputerVitalsDeps,
   type ManagerVitalsDeps,
 } from "../src/vitals.js";
 
@@ -79,3 +81,25 @@ await cell("inconsistent memory and filesystem values refuse", async () => {
 
 console.log(`manager vitals acceptance: ${passed} passed, ${10 - passed} failed, 10 total`);
 if (passed !== 10) process.exitCode = 1;
+
+const liveComputer = await measureComputerVitals();
+assert.equal(liveComputer.cpu.logicalCount, cpus().length);
+assert.ok(liveComputer.cpu.utilisationPercent >= 0 && liveComputer.cpu.utilisationPercent <= 100);
+assert.ok(liveComputer.filesystems.length > 0);
+assert.ok(liveComputer.uptimeSeconds >= 0);
+for (const os of ["linux", "darwin", "win32"] as const) {
+  let read = 0, clock = 0;
+  const fixture: ComputerVitalsDeps = {
+    resources: deps({ platform: () => os }),
+    cpuTimes: () => [{ user: read++ * 25, nice: 0, sys: 0, idle: (read - 1) * 75, irq: 0 }],
+    wait: async () => {}, clock: () => clock++ * 250, uptime: () => 123.8,
+  };
+  const sample = await measureComputerVitals(fixture);
+  assert.equal(sample.cpu.utilisationPercent, 25);
+  assert.equal(sample.cpu.intervalMs, 250);
+  assert.equal(sample.uptimeSeconds, 123);
+  assert.equal(Object.hasOwn(sample.cpu, "load1"), os !== "win32");
+  await assert.rejects(() => measureComputerVitals({ ...fixture, cpuTimes: () => [] }), /topology/);
+  await assert.rejects(() => measureComputerVitals({ ...fixture, cpuTimes: () => [{ user: 0, nice: 0, sys: 0, idle: 0, irq: 0 }] }), /did not advance/);
+}
+console.log("computer vitals live sample and cross-platform counter fixtures passed");

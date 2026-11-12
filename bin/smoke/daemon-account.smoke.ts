@@ -1,10 +1,12 @@
 /** Real daemon endpoint against account-computer HTTP routes, in a private machine home. */
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { saveIdpSession } from "@cotal-ai/auth";
+import { saveIdpSession, requestAccountMachine } from "@cotal-ai/auth";
 import { remoteManagerClient } from "@cotal-ai/manager";
 import { daemonPathsFor } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
@@ -37,6 +39,7 @@ renameSync(`${identityFile}.original`, identityFile);
 console.log("ok recorded Manager selection is read-only and refuses corrupt or linked records");
 const machineHome = process.env.COTAL_HOME;
 const runtime = join(root, "rt"); mkdirSync(runtime, { mode: 0o700 });
+let registration: Record<string, unknown> | undefined;
 let malformed = false;
 let mode = 200, puts = 0, gets = 0;
 let revision = 1;
@@ -50,6 +53,9 @@ const fixture = createServer((req, res) => {
   const machine = req.url?.match(/^\/api\/cli\/machines\/([0-9a-f-]+)(\/spaces)?$/);
   if (!machine) { res.writeHead(404); res.end("{}"); return; }
   if (req.method === "PUT") {
+    let body = "";
+    req.on("data", chunk => { body += String(chunk); });
+    req.on("end", () => { assert.ok(Buffer.byteLength(body) <= 16384); registration = JSON.parse(body) as Record<string, unknown>; });
     puts++;
     persistedBeforePut = readdirSync(join(machineHome, "daemon", "accounts"), { recursive: true }).some(path => String(path).endsWith("computer.json"));
     if (mode === 404) { res.writeHead(404); res.end("{}"); return; }
@@ -77,7 +83,34 @@ async function until(test: () => boolean, label: string) {
 try {
   await until(() => gets > 0 && daemon.status().account?.desiredRevision === 1, "registered and applied complete desired set");
   assert.ok(persistedBeforePut);
+  assert.equal(registration?.vitals, undefined, "initial registration does not wait for sampling");
+  await until(() => !!daemon.status().vitals, "background sample becomes available");
+  await promisify(execFile)(process.execPath, ["--import", "tsx", "bin/cotal.ts", "daemon", "name", "sample-ready", "--daemon-home", machineHome], { env: { ...process.env, COTAL_HOME: join(root, "cli-cotal"), XDG_RUNTIME_DIR: runtime } });
+  await until(() => !!registration?.vitals, "next registration carries cached sample");
+  assert.ok(registration);
+  assert.deepEqual(registration.vitals, daemon.status().vitals, "status exposes the sent sample");
+  const { stdout: humanStatus } = await promisify(execFile)(process.execPath, ["--import", "tsx", "bin/cotal.ts", "daemon", "status", "--daemon-home", machineHome], { env: { ...process.env, COTAL_HOME: join(root, "cli-cotal"), XDG_RUNTIME_DIR: runtime } });
+  assert.match(humanStatus, /\d+\.\d GiB free \/ \d+\.\d GiB total \(\d+\.\d% used\)/);
+  assert.match(humanStatus, /System uptime:\s+\d+ days \d+ hours/);
+  console.log("ok real CLI status renders GiB, used percentage and days/hours");
+  const vitals = daemon.status().vitals!;
+  assert.ok(Number.isFinite(Date.parse(vitals.sampledAt)));
+  assert.ok(vitals.cpu.logicalCount > 0 && Number.isSafeInteger(vitals.cpu.logicalCount));
+  assert.ok(vitals.cpu.utilisationPercent >= 0 && vitals.cpu.utilisationPercent <= 100);
+  assert.ok(vitals.cpu.intervalMs > 0);
+  assert.ok(Number.isSafeInteger(vitals.uptimeSeconds) && vitals.uptimeSeconds >= 0);
+  for (const value of [vitals.memory.totalBytes, vitals.memory.availableBytes, ...vitals.filesystems.flatMap(fs => [fs.totalBytes, fs.freeBytes])]) assert.ok(Number.isSafeInteger(value) && value >= 0);
+  assert.ok(vitals.memory.availableBytes <= vitals.memory.totalBytes);
+  assert.ok(vitals.filesystems.length > 0 && vitals.filesystems.length <= 128);
+  for (const fs of vitals.filesystems) { assert.ok(fs.freeBytes <= fs.totalBytes); assert.ok(Buffer.byteLength(fs.mount) <= 1024); }
+  assert.deepEqual(Object.keys(vitals).sort(), ["cpu", "filesystems", "memory", "sampledAt", "uptimeSeconds"]);
   const identity = daemon.status().account!.machineId!;
+  const managers = Array.from({ length: 100 }, (_, i) => ({ spaceId: `space-${i}`, instanceId: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}` }));
+  await requestAccountMachine({ dir: machineHome, idpUrl, machineId: identity, method: "PUT", metadata: { name: "capacity", platform: "linux", daemonVersion: "test", managers, vitals } });
+  await until(() => Array.isArray(registration?.managers) && registration.managers.length === 100, "100 Managers plus vitals register");
+  const beforeOversize = puts;
+  await assert.rejects(() => requestAccountMachine({ dir: machineHome, idpUrl, machineId: identity, method: "PUT", metadata: { name: "x".repeat(16384), platform: "linux", daemonVersion: "test", managers: [], vitals } }), /exceeds 16384 bytes/);
+  assert.equal(puts, beforeOversize, "oversized registration refuses before network");
   assert.equal(accountComputerId(machineHome, { issuer, sub: "owner" }), identity);
   assert.notEqual(accountComputerId(machineHome, { issuer, sub: "other" }), identity);
   const records = readdirSync(join(machineHome, "daemon", "accounts"));

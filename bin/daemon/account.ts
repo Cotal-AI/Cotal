@@ -1,3 +1,4 @@
+import { measureComputerVitals, type ComputerVitals } from "@cotal-ai/manager";
 import { defaultComputerName, readComputerName, saveComputerName } from "./computer-name.js";
 import { findMesh } from "@cotal-ai/workspace";
 import { loadIdpSession, requestAccountMachine, signedInMachineAccounts, withIdpSessionDir } from "@cotal-ai/auth";
@@ -8,6 +9,10 @@ import type { createAccountReconciler } from "./account-reconcile.js";
 
 /** Poll account intent without interpreting transport failure as an empty desired set. */
 export function createAccountComputer(home: string, version: string, reconciler: ReturnType<typeof createAccountReconciler>) {
+  let vitals: ComputerVitals | undefined;
+  let vitalsError: string | undefined;
+  let sampling: Promise<void> | undefined;
+  const sample = () => sampling ??= measureComputerVitals().then(value => { vitals = value; vitalsError = undefined; }).catch(() => { vitalsError = "Computer vitals could not be measured; no new sample was sent."; }).finally(() => { sampling = undefined; });
   let name: string;
   let nameWarning: string | undefined;
   try { name = readComputerName(home); }
@@ -44,8 +49,10 @@ export function createAccountComputer(home: string, version: string, reconciler:
     const hosted = reconciler.hostedManagers(context.snapshot?.spaces ?? []);
     const hostedKey = JSON.stringify(hosted);
     const call = (method: "PUT" | "GET") => requestAccountMachine({ dir: home, idpUrl: account.idpUrl, machineId, method, signal: AbortSignal.any([abort.signal, context.abort.signal]),
-      ...(method === "GET" ? { etag: context.etag } : { metadata: { name, platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version, managers: hosted } }) });
+      ...(method === "GET" ? { etag: context.etag } : { metadata: { name, platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version, managers: hosted, ...(vitals && !vitalsError ? { vitals } : {}) } }) });
     if (Date.now() - context.lastHeartbeat >= 60_000 || hostedKey !== (context.sentManagers ?? "[]")) {
+      void sample();
+      context.abort.signal.throwIfAborted();
       const sentName = name;
       const result = await call("PUT");
       if (result.status === 404) { state.mode = "per-space"; state.hostSupport = "unsupported"; state.message = "account computers unsupported; existing per-space connections remain local"; return; }
@@ -135,7 +142,9 @@ export function createAccountComputer(home: string, version: string, reconciler:
   };
   return {
     /** Start polling and settle every account's initial attempt before saved hosting resumes. */
-    async start() { run(); await work; await Promise.all([...tasks]); }, intent,
+    async start() { run(); await work; await Promise.all([...tasks]); if (!vitals && !vitalsError) void sample(); }, intent,
+    vitals: () => vitals,
+    vitalsError: () => vitalsError,
     name: () => name,
     nameWarning: () => nameWarning,
     rename(value: string) {

@@ -18,7 +18,8 @@
  *   only after the broker is back and the space answers a fresh `ready`.
  *
  * A connection that reached `connected` records that intent at
- * `<COTAL_HOME>/daemon/<space segment>/service-connect.json`, and `service-disconnect` removes it.
+ * `<COTAL_HOME>/daemon/<space segment>/service-connect.json`. `service-disconnect` removes it and
+ * the connection's renewal store, registration request and identity after shutting down the source.
  * A restarted daemon reads those records and connects each space again, so the connections it held
  * before a crash come back without anyone running `service-connect`. Only a connection the space
  * accepted is recorded, so a refused space is not retried on every start. An unavailable resume
@@ -31,7 +32,7 @@
  * or provider text leaves this module; every message is fixed text.
  */
 import { join } from "node:path";
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
   CotalEndpoint, authorizeGuestServeGrant, compileContract, resolveAuthProvider, serveAuthenticityOf, serveEndpoint,
@@ -44,6 +45,7 @@ import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness, registerDaemon 
 import { ACCOUNT_MISMATCH_MESSAGE } from "./connect.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
 import { daemonCommandCopy } from "./guidance.js";
+import { removeServiceRecords } from "./service-records.js";
 
 /** Map registration outcomes consistently for setup and service status. */
 export function fromRegister(r: RegisterResult): ServiceConnectionState {
@@ -370,15 +372,12 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     return result(space);
   }
 
-  /** Record or forget this space's connect intent. A store failure never changes the connection's
+  /** Record this space's connect intent. A store failure never changes the connection's
    *  own reported state: it is reported as a resume that will not happen, not as a failed connect. */
   const remember = (space: string): void => {
     const path = daemonConnectIntentFile(space, home);
     mkSecretDir(join(path, ".."));
     writeSecretFile(path, `${JSON.stringify({ v: 1, space })}\n`);
-  };
-  const forget = (space: string): void => {
-    rmSync(daemonConnectIntentFile(space, home), { force: true });
   };
   const cancelRetry = (space: string): void => {
     clearTimeout(retries.get(space));
@@ -439,9 +438,14 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
           cancelRetry(space);
           const l = live.get(space);
           if (l) { await teardown(l); live.delete(space); }
-          // A disconnect is explicit, so it must outlive a restart: forget the intent before answering.
-          forget(space);
-          return { space, state: "disconnected", message: SENTENCE.disconnected };
+          let removedRecords: string[];
+          try { removedRecords = removeServiceRecords(home, space); }
+          catch {
+            live.set(space, { abort: new AbortController(), state: "local-state-error", brokerUp: false, serving: new Set() });
+            return { ...result(space), message: "the connection is closed, but removing its local service records failed; some records may remain. Repair their permissions and retry service-disconnect; the remote record may remain until you remove the computer in the dashboard" };
+          }
+          return { space, state: "disconnected", removedRecords,
+            message: `not connected; removed local service records: ${removedRecords.length ? removedRecords.join(", ") : "none remained"}. The remote record may remain; remove the computer in the dashboard to revoke its authority` };
         } finally {
           disconnecting.delete(space);
         }

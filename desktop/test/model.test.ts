@@ -18,6 +18,10 @@ test("only verified service connection is presented as connected", () => {
   assert.equal(connectionView("launch-ready").connected, true);
 });
 
+test("approval guidance refers to this computer", () => {
+  assert.equal(connectionView("approval-pending").description, "The space owner must approve this computer. No connection is claimed yet.");
+});
+
 test("launch readiness requires an answering registered Manager with an available application", () => {
   for (const manager of [undefined, {}, { state: "answering" }, { state: "restarting", instanceId: "m", connectors: [{ state: "available" }] }, { state: "answering", instanceId: "m", connectors: [{ state: "unavailable" }] }]) assert.equal(launchReady(manager), false);
   assert.equal(launchReady({ state: "answering", instanceId: "m", connectors: [{ state: "available" }] }), true);

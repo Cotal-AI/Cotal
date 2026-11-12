@@ -1,3 +1,4 @@
+import { renderAgents } from "./agents";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
@@ -32,15 +33,23 @@ el("dashboard").append(icon("external"));
 type Stage = "welcome" | "sign-in" | "connect" | "finished";
 let nameEditing = false;
 let savedComputerName = "This computer";
+const computerNameFormHome = el("computer-name-form").parentElement!;
 function renderComputerName(value: string): void {
   savedComputerName = value; text("machine-name", value); el("machine-name").title = value;
 }
 function closeNameEditor(): void {
   nameEditing = false; el("computer-name-form").hidden = true; el("machine-name").hidden = false;
-  el("edit-computer-name").hidden = !(stage === "connect" || stage === "finished"); el("edit-computer-name").focus();
+  computerNameFormHome.append(el("computer-name-form"));
+  el("settings-computer").hidden = false; el("settings-name").hidden = false;
+  el("edit-computer-name").hidden = !(stage === "connect" || stage === "finished");
+  (settingsOpen ? el("settings-name") : el("edit-computer-name")).focus();
 }
 el("edit-computer-name").addEventListener("click", () => {
-  nameEditing = true; el("machine-name").hidden = true; el("edit-computer-name").hidden = true;
+  nameEditing = true; el("machine-name").hidden = !settingsOpen; el("edit-computer-name").hidden = true;
+  if (settingsOpen) {
+    el("settings-computer").parentElement!.append(el("computer-name-form"));
+    el("settings-computer").hidden = true; el("settings-name").hidden = true;
+  }
   el("computer-name-form").hidden = false; text("computer-name-error", "");
   el<HTMLInputElement>("computer-name-input").value = savedComputerName; el("computer-name-input").focus();
 });
@@ -72,6 +81,7 @@ let releaseAssets: { name: string; url: string }[] = [];
 let releaseVersion: string | undefined;
 let releaseLoading: string | undefined;
 let releaseFailed: string | undefined;
+let installerMessage: string | undefined;
 async function loadRelease(version: string): Promise<void> {
   if (releaseVersion === version || releaseLoading === version) return;
   releaseLoading = version;
@@ -89,9 +99,10 @@ async function openInstaller(): Promise<void> {
       releaseVersion = version;
     }
     const link = installerLink(version, appPlatform, appArch, releaseAssets);
-    text("settings-message", link.available ? "Install the downloaded version, then reopen Cotal." : "No installer for this platform is on this release. Opening its release page.");
+    installerMessage = link.available ? "Install the downloaded version, then reopen Cotal." : "No installer for this platform is on this release. Opening its release page.";
+    text("settings-last-check", installerMessage); announce(installerMessage);
     await invoke("open_browser", { url: link.url });
-  } catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); notice("The release could not be checked. Try again.", true); }
+  } catch (error) { installerMessage = error instanceof Error ? error.message : String(error); text("settings-last-check", installerMessage); announce(installerMessage); notice("The release could not be checked. Try again.", true); }
 }
 let dismissedUpdate = localStorage.getItem("dismissed-update") ?? undefined;
 let trayUpdate: string | undefined;
@@ -112,8 +123,8 @@ function renderSettings(): void {
   text("settings-computer", savedComputerName);
   text("settings-versions", `App ${appVersion ?? "Unavailable"} · Service ${daemonVersion}`);
   text("settings-update-summary", updateSummary(updateStatus, appVersion ?? ""));
-  text("settings-last-check", lastChecked(updateStatus?.lastCheck));
-  text("settings-spaces", disconnectSpaces(accountProvider()).join(", ") || "No observed spaces for this provider");
+  text("settings-last-check", installerMessage ?? lastChecked(updateStatus?.lastCheck));
+  text("settings-spaces", disconnectSpaces(accountProvider()).map(space => accountSpaces.get(space)?.label ?? space).join(", ") || "No observed spaces for this provider");
   const policy = updatePolicy(updateStatus?.channel, appPlatform);
   text("update-preference-label", policy.label); text("update-policy", policy.description);
   el<HTMLInputElement>("update-preference").checked = policy.label === "Install updates automatically" ? updateStatus?.automatic === true : updateStatus?.notify !== false;
@@ -395,7 +406,8 @@ function showStage(next: Stage, focus = false): void {
   document.querySelector(".app")!.classList.toggle("later-open", finished && !completedSetup);
   document.querySelector(".connection-card")!.classList.toggle("has-refusal", el("notice").classList.contains("error"));
   el("link-context").hidden = !linked || next !== "welcome";
-  el("refresh").hidden = signIn || busy || finished;
+  el("refresh").hidden = signIn || busy || (finished && !pending);
+  text("refresh", pending ? "Check approval" : "Refresh status");
   el("custom-host").hidden = !customHost || loginActive;
   el("login-actions").hidden = loginActive;
   el("service-explanation").hidden = loginActive;
@@ -408,7 +420,7 @@ function showStage(next: Stage, focus = false): void {
   else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in to keep this computer connected"; description = "Approve this computer in your browser to keep managing its spaces."; }
   else if (finished && computerAccount?.hostSupport === "supported") {
     const rows = computerSpaces(computerAccount);
-    title = anyConnected ? connectionView("launch-ready").title : rows.some(row => row.desired && row.observed !== "removed on this computer") ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
+    title = anyConnected ? connectionView("launch-ready").title : rows.some(row => row.observed === "refusal") ? "Connection needs attention" : rows.some(row => row.desired && row.observed !== "removed on this computer") ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
     description = rows.length ? connectionView("launch-ready").description : "Turn on the spaces that can use it in the dashboard.";
   }
   else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${accountSpaces.get(pending[0])?.label ?? pending[0]} needs to approve this computer. It connects by itself once they do.`; }
@@ -445,8 +457,12 @@ function showStage(next: Stage, focus = false): void {
     if (addingSpace) formParent.append(el("space-panel"), el("connect-panel"));
     else el("setup-progress").before(el("space-panel"), el("connect-panel"));
   }
-  el("applications-label").hidden = addingSpace || !anyConnected || !el("connected-applications").children.length;
-  el("connected-applications").hidden = addingSpace || !anyConnected;
+  const inventoryVisible = !addingSpace && (anyConnected || el("agent-list").children.length > 0);
+  el("running-agents").hidden = !inventoryVisible;
+  const summaryVisible = inventoryVisible && el("running-agents").dataset.available === "true";
+  el("applications-summary").hidden = !summaryVisible;
+  el("applications-label").hidden = summaryVisible || addingSpace || !anyConnected || !el("connected-applications").children.length;
+  el("connected-applications").hidden = summaryVisible || addingSpace || !anyConnected;
   el("dashboard").hidden = addingSpace || !(anyConnected || computerAccount?.hostSupport === "supported");
   if (finished && pending) { el("connection-icon").dataset.tone = "waiting"; setIcon(el("connection-icon"), "clock"); }
   el("another-space").hidden = addingSpace;
@@ -467,15 +483,16 @@ function showStage(next: Stage, focus = false): void {
     el("spaces-heading").hidden = signInRequired || !anyConnected;
     const starting = computerSpaces(computerAccount).some(row => row.desired && row.observed !== "removed on this computer");
     const refused = computerSpaces(computerAccount).some(row => row.observed === "refusal");
-    text("tray-label", signInRequired ? "Sign in required" : anyConnected ? "Connected" : starting ? "Starting" : "Ready");
-    el("tray-indicator").classList.toggle("connected", anyConnected || !starting && !signInRequired);
+    text("tray-label", signInRequired ? "Sign in required" : anyConnected ? "Connected" : refused ? "Needs attention" : starting ? "Starting" : "Ready");
+    el("tray-indicator").classList.toggle("connected", anyConnected || !starting && !signInRequired && !refused);
     el("tray-indicator").classList.toggle("error", signInRequired || refused);
     if (!anyConnected) {
       const empty = computerSpaces(computerAccount).length === 0;
-      el("connection-icon").dataset.tone = signInRequired ? "error" : starting ? "waiting" : empty ? "success" : "neutral";
-      setIcon(el("connection-icon"), signInRequired ? "browser" : starting ? "clock" : empty ? "check" : "computer");
+      el("connection-icon").dataset.tone = signInRequired || refused ? "error" : starting ? "waiting" : empty ? "success" : "neutral";
+      setIcon(el("connection-icon"), signInRequired ? "browser" : refused ? "warning" : starting ? "clock" : empty ? "check" : "computer");
     }
-  } else el("spaces-heading").hidden = false;
+  } else el("spaces-heading").hidden = connections.size === 0;
+  document.querySelector<HTMLElement>(".connected-spaces-scroll")!.hidden = connections.size === 0;
   el("dashboard-spaces-note").hidden = !finished || addingSpace || computerAccount?.hostSupport !== "supported" || computerAccount.mode === "sign-in-required" || computerSpaces(computerAccount).length === 0;
   el("connection-icon").hidden = addingSpace;
   document.querySelector(".connection-card")!.classList.toggle("adding-space", addingSpace);
@@ -579,6 +596,7 @@ function showApplications(manager: unknown): void {
   const available = connectors.filter(c => c.state === "available" && typeof c.agent === "string").map(c => names[c.agent!] ?? c.agent!);
   const container = el("connected-applications");
   const value = available.join("\n");
+  text("applications-summary", available.length ? `Applications: ${available.join(", ")}` : "");
   if (container.dataset.applications === value) return;
   container.dataset.applications = value;
   container.replaceChildren(...available.map(name => { const chip = document.createElement("span"); chip.className = "application-chip"; chip.dataset.testid = "application-chip"; chip.textContent = name; return chip; }));
@@ -632,6 +650,7 @@ async function refresh(): Promise<void> {
     const status = await request({ op: "status" });
     if (!current()) return;
     ready = status.state === "ready";
+    renderAgents(status, el("running-agents"));
     daemonVersion = String(status.version);
     updateStatus = status.update as UpdateStatus | undefined;
     renderSettings();
@@ -837,6 +856,7 @@ function openSettings(): void {
 async function settingsAction(body: Request): Promise<void> {
   if (busy) return;
   busy = true; refreshGeneration++;
+  installerMessage = undefined;
   el<HTMLButtonElement>("check-updates").disabled = true;
   el<HTMLInputElement>("update-preference").disabled = true;
   try {
@@ -855,8 +875,8 @@ el("update-preference").addEventListener("change", () => {
 });
 el("update-download").addEventListener("click", () => void openInstaller());
 el("settings-download").addEventListener("click", () => void openInstaller());
-el("open-settings").addEventListener("click", () => { if (busy) return; if (settingsOpen) { pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
-el("settings-back").addEventListener("click", () => { if (busy) return; pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
+el("open-settings").addEventListener("click", () => { if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
+el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
 el("account-outcome-back").addEventListener("click", () => { accountOutcomeOpen = false; renderSettings(); el("settings-title").focus(); });
 el("settings-signout").addEventListener("click", () => confirmAccountAction("logout"));
 el("settings-disconnect").addEventListener("click", () => confirmAccountAction("disconnect"));

@@ -87,6 +87,7 @@ export {
   IdpUnreachableError,
   IdpDeviceAuthorizationRefusedError,
   IdpSessionRejectedError,
+  IdpRateLimitedError,
   type IdpSession,
   type DeviceLoginOpts,
   type DeviceLoginPrompt,

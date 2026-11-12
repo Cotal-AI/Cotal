@@ -1,5 +1,12 @@
 # @cotal-ai/connector-core
 
+## 0.160.8
+
+### Patch Changes
+
+- 3d20eda: Reconnect now warns when ambient channel delivery still requires a session restart.
+  The response distinguishes transport recovery from exhausted channel drop tracking and explains that direct messages, anycast and fresh unmuted mentions remain available.
+
 ## 0.160.7
 
 No changes in this release.

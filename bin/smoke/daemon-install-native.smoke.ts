@@ -43,7 +43,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, spaceSegment } from "@cotal-ai/workspace";
 import { mkSecretDir } from "@cotal-ai/core";
 import type { DaemonPaths } from "../daemon/endpoint.js";
 import { assertScheduledEntry, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
@@ -588,8 +588,21 @@ try {
         check(`N6 repeat ${kind} install prints its Next in plain output`, retry.status === 2 && retry.stderr.includes(again.doc.error!.remedy!), retry.stderr);
 
         check(`N6 valid ${kind} receipt plans and starts`, call("uninstall", home, ["--dry-run"]).status === 0 && call("start", home).status === 0);
+        const machineHome = home ?? env.COTAL_HOME!;
+        const recordDir = join(machineHome, "daemon", spaceSegment("retirement"));
+        const store = join(recordDir, "service-store");
+        mkdirSync(store, { recursive: true, mode: 0o700 });
+        for (const name of ["service-connect.json", "register-request.json", "service-identity.json"])
+          writeFileSync(join(recordDir, name), "private fixture record", { mode: 0o600 });
+        writeFileSync(join(store, "store.id"), "private fixture store", { mode: 0o600 });
+        const unrelated = join(recordDir, "manager.log");
+        writeFileSync(unrelated, "preserve Manager log", { mode: 0o600 });
+        check(`N6 ${kind} uninstall preview retains service records`, call("uninstall", home, ["--dry-run"]).status === 0 && existsSync(store));
         const removed = call("uninstall", home, ["--yes"]);
         check(`N6 valid ${kind} receipt removes its source and receipt`, removed.status === 0 && !existsSync(receipt.unitPath) && !existsSync(receiptFile));
+        check(`N6 ${kind} uninstall removes service records in the selected machine home`, !existsSync(store)
+          && ["service-connect.json", "register-request.json", "service-identity.json"].every(name => !existsSync(join(recordDir, name)))
+          && readFileSync(unrelated, "utf8") === "preserve Manager log");
         continue;
       }
       let selected = home, changed = { ...receipt };
@@ -719,7 +732,8 @@ try {
   } else console.log(`  ○ UNTESTED N8: Linux unit-directory preflight; this is ${process.platform}`);
 } finally {
   if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
-  rmSync(root, { recursive: true, force: true });
+  if (process.argv.includes("--keep-fixture")) console.log(`Retained native daemon fixture: ${root}`);
+  else rmSync(root, { recursive: true, force: true });
 }
 
 /** CommandLineToArgvW's rules for the argument tail: whitespace splits, a quote toggles, and 2n

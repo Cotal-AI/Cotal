@@ -75,7 +75,7 @@ export function connectionView(state: string): { title: string; description: str
     case "launch-ready": return { title: "This computer is connected", description: "Manage the spaces that can launch agent applications on this computer.", connected: true };
     case "no-application": return { title: "No agent application found", description: "Install a supported application named below, then choose Check again.", connected: false };
     case "connected": return { title: "Not connected", description: "The connection is not yet ready to launch agent applications.", connected: false };
-    case "approval-pending": return { title: "Waiting for owner approval", description: "The space owner must approve this machine. No connection is claimed yet.", connected: false };
+    case "approval-pending": return { title: "Waiting for owner approval", description: "The space owner must approve this computer. No connection is claimed yet.", connected: false };
     case "connecting": return { title: "Connecting this computer", description: "Checking that this computer can launch agent applications.", connected: false };
     case "disconnected": return { title: "Computer disconnected", description: "The background service is still running. Disconnecting does not revoke remote permissions.", connected: false };
     case "ready": return { title: "Background service is ready", description: "Connect this computer to your account.", connected: false };
