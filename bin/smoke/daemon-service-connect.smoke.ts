@@ -78,6 +78,7 @@
  * Add --hosting-only --updater-ownership-repro for two living updater clients' restart admission ownership.
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Manual empty-legacy admission: --hosting-only --update-repro --manual-admission-race-repro.
+ * Add --manual-admission-empty-repro instead for empty admission fencing and failure release.
  * Uses private same-source upgrade archives and holds then fails npm before replacement.
  * Credential expiry regression only: add --credential-expiry-only (C1, C2, C7, C10, C15 and C18).
  */
@@ -118,7 +119,8 @@ if (process.platform !== "linux") skipSuite(`daemon-service-connect smoke: Linux
 const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
 const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
 const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
-const manualAdmissionRace = process.argv.includes("--manual-admission-race-repro");
+const manualAdmissionEmpty = process.argv.includes("--manual-admission-empty-repro");
+const manualAdmissionRace = manualAdmissionEmpty || process.argv.includes("--manual-admission-race-repro");
 if (manualAdmissionRace && (!process.argv.includes("--hosting-only") || !process.argv.includes("--update-repro"))) throw new Error("manual admission repro requires --hosting-only --update-repro");
 const setupHintsOnly = process.argv.includes("--setup-hints-only");
 const cancelOnly = process.argv.includes("--cancel-only");
@@ -2883,33 +2885,58 @@ process.exit(result.status ?? 93);
             }
             assert.ok(output.includes(`instance ${manager.instanceId} answered; 0 seat(s)`), "npm root hold must follow updater's own real zero-seat continuity read");
             console.log("MANUAL_ADMISSION root held after continuity", JSON.stringify({ updaterPid: updater.pid, npm: JSON.parse(readFileSync(rootEntered, "utf8")), output }));
-            const started = await start("manual_install_race");
-            raceSeat = started.ok;
-            const during = await status();
-            const inventory = resultOf(await ask(paths.socket, { op: "status" }, 25_000)).agents?.find((row: any) => row.space === ON);
-            console.log("MANUAL_ADMISSION real start after continuity while npm root held", JSON.stringify({ started, during, inventory }));
-            assert.equal(started.ok, true, "real seat must be admitted after the updater continuity read");
-            assert.ok(during.ok && (during.data as any)?.agentCount === (started.ok ? 1 : 0), "real Manager inventory must agree with spawn result");
-            assert.ok(inventory?.state === "read" && inventory.agents.length === (started.ok ? 1 : 0), "daemon IPC inventory must independently observe the seat count");
-            assert.equal(inventory.agents[0].name, "manual_install_race");
-            writeFileSync(rootRelease, "release\n");
-            const installDeadline = Date.now() + 90_000;
-            while (!existsSync(entered) && updater.exitCode === null && updater.signalCode === null) {
-              if (Date.now() > installDeadline) throw new Error(`manual updater neither refused admission nor reached install: ${output}`);
-              await sleep(20);
-            }
-            const admittedInstall = existsSync(entered);
-            if (admittedInstall) {
+            if (manualAdmissionEmpty) {
+              writeFileSync(rootRelease, "release\n");
+              const installDeadline = Date.now() + 90_000;
+              while (!existsSync(entered)) {
+                if (updater.exitCode !== null || updater.signalCode !== null || Date.now() > installDeadline) throw new Error(`empty manual updater did not reach npm install: ${output}`);
+                await sleep(20);
+              }
               const journal = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"));
               assert.equal(journal.phase, "replacing");
-              assert.equal(JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8")).version, "0.151.2");
-              const occupied = await status();
-              console.log("MANUAL_ADMISSION install admitted with real raced seat", JSON.stringify({ journal: { phase: journal.phase, preparedRestart: journal.preparedRestart }, occupied, npm: JSON.parse(readFileSync(entered, "utf8")), output }));
-              assert.ok(occupied.ok && (occupied.data as any)?.agentCount === 1, "raced seat must remain real and live at install boundary");
+              // A cold connector would block on the closure lock without a real Manager fence.
+              // Do not submit that unbounded work unless the installed preparation is proven.
+              check("Manual empty install holds prepared restart custody", journal.preparedRestart === true, journal.preparedRestart);
+              assert.equal(journal.preparedRestart, true, "empty install must prepare before replacing");
+              const started = await start("manual_install_race");
+              raceSeat = started.ok;
+              const during = await status();
+              const daemon = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
+              const inventory = daemon.agents?.find((row: any) => row.space === ON);
+              const evidence = daemon.update?.restartEvidence;
+              console.log("MANUAL_ADMISSION empty install direct spawn", JSON.stringify({ started, during, inventory, evidence }));
+              check("Manual empty install fences real spawn before connector loading", !started.ok && started.answered === true && started.outcome === "not-executed" && /fenced/.test(started.error ?? ""), started);
+              assert.ok(!during.ok && during.answered === true && during.outcome === "not-executed" && /fenced/.test(during.error ?? ""), "ordinary status must report its real maintenance refusal");
+              assert.ok(evidence?.prepared === true && evidence.managers.some((row: any) => row.space === ON && row.fenced === true && row.seats === 0) && inventory?.state === "read" && inventory.agents.length === 0, "prepared install must retain empty fenced evidence and independent IPC inventory");
+            } else {
+              const started = await start("manual_install_race");
+              raceSeat = started.ok;
+              const during = await status();
+              const inventory = resultOf(await ask(paths.socket, { op: "status" }, 25_000)).agents?.find((row: any) => row.space === ON);
+              console.log("MANUAL_ADMISSION real start after continuity while npm root held", JSON.stringify({ started, during, inventory }));
+              assert.equal(started.ok, true, "real seat must be admitted after the updater continuity read");
+              assert.ok(during.ok && (during.data as any)?.agentCount === 1, "real Manager inventory must agree with spawn result");
+              assert.ok(inventory?.state === "read" && inventory.agents.length === 1, "daemon IPC inventory must independently observe the seat count");
+              assert.equal(inventory.agents[0].name, "manual_install_race");
+              writeFileSync(rootRelease, "release\n");
+              const installDeadline = Date.now() + 90_000;
+              while (!existsSync(entered) && updater.exitCode === null && updater.signalCode === null) {
+                if (Date.now() > installDeadline) throw new Error(`manual updater neither refused admission nor reached install: ${output}`);
+                await sleep(20);
+              }
+              const admittedInstall = existsSync(entered);
+              if (admittedInstall) {
+                const journal = JSON.parse(readFileSync(join(home, "update-recovery.json"), "utf8"));
+                assert.equal(journal.phase, "replacing");
+                assert.equal(JSON.parse(readFileSync(join(globalPrefix, "lib/node_modules/cotal-ai/package.json"), "utf8")).version, "0.151.2");
+                const occupied = await status();
+                console.log("MANUAL_ADMISSION install admitted with real raced seat", JSON.stringify({ journal: { phase: journal.phase, preparedRestart: journal.preparedRestart }, occupied, npm: JSON.parse(readFileSync(entered, "utf8")), output }));
+                assert.ok(occupied.ok && (occupied.data as any)?.agentCount === 1, "raced seat must remain real and live at install boundary");
+              }
+              await stop("manual_install_race"); raceSeat = false;
+              console.log("MANUAL_ADMISSION exact race seat stopped before releasing npm install");
+              check("Manual updater rechecks raced real seat before npm replacement", !admittedInstall && output.includes("SEATS_ACTIVE"), { admittedInstall, output });
             }
-            await stop("manual_install_race"); raceSeat = false;
-            console.log("MANUAL_ADMISSION exact race seat stopped before releasing npm install");
-            check("Manual updater rechecks raced real seat before npm replacement", !admittedInstall && output.includes("SEATS_ACTIVE"), { admittedInstall, output });
           } finally {
             try { if (raceSeat) await stop("manual_install_race"); }
             finally {
