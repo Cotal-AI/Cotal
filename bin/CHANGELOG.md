@@ -1,5 +1,38 @@
 # cotal-ai
 
+## 0.163.0
+
+### Patch Changes
+
+- ef6651a: Signing in as a different account at the same provider now deletes the previous account's discovered-space credential files along with their registrations.
+  This applies to `cotal login` and to the default daemon's `cotal daemon login` and `setup`. Only the sentinel file each discovered registration kept in its catalog folder is deleted, and never one reached through a symbolic link below the account's catalog folder; manual registrations and their files stay. A file that cannot be deleted is named and the run exits 4 (`OPERATION_PARTIAL`) after signing in; `daemon login` JSON lists such files in `credentialsKept`, and the desktop app keeps the new sign-in while showing the same files and cleanup. A separate `--daemon-home` still never changes the shared registry or its credentials.
+- fcdcfdd: Reject invalid daemon sign-in provider URLs with a typed usage refusal before selecting a provider.
+  
+  Keep fresh daemon setup and login checks aligned with the Cotal Cloud default, while preserving explicit providers and refusing before service changes when the user service manager is unavailable.
+- 56ab4ea: Keep daemon command discovery from loading the Manager implementation before an operation needs it. Load the vitals sampler and registration cleanup helper at their existing asynchronous operation boundaries.
+- f8801fc: Sign in to Cotal Cloud from the terminal without knowing its provider URL.
+  
+  Default fresh sign-in to Cotal Cloud, add the same --cloud shorthand to account and daemon sign-in, select a personal or sole space after approval, and open approval in a browser when a desktop terminal supports it. Keep custom providers and printed approval instructions available.
+- Updated dependencies [ef6651a]
+- Updated dependencies [2040519]
+- Updated dependencies [85a09e4]
+- Updated dependencies [4c53a5c]
+- Updated dependencies [f8801fc]
+- Updated dependencies [94985e3]
+- Updated dependencies [d1b321c]
+- Updated dependencies [4d2d755]
+- Updated dependencies [9da8da8]
+  - @cotal-ai/auth@0.163.0
+  - @cotal-ai/workspace@0.163.0
+  - @cotal-ai/cli@0.163.0
+  - @cotal-ai/manager@0.163.0
+  - @cotal-ai/connector-core@0.163.0
+  - @cotal-ai/delivery@0.163.0
+  - @cotal-ai/runtime@0.163.0
+  - @cotal-ai/registry@0.163.0
+  - @cotal-ai/core@0.163.0
+  - @cotal-ai/seat@0.163.0
+
 ## 0.162.0
 
 ### Patch Changes
