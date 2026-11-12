@@ -13,7 +13,7 @@ const workflow = parseDocument(readFileSync(new URL('../../.github/workflows/des
 test('workflow has two 12-minute Windows phases and retains other platform checks', () => {
   assert.deepEqual(workflow.errors, []);
   const job = workflow.toJS().jobs['native-build'];
-  assert.equal(job['timeout-minutes'], 90);
+  assert.equal(job['timeout-minutes'], 120, 'job includes the separately bounded environment-group diagnostic');
   const steps = job.steps;
   const phases = steps.filter(step => /windows-journey.mjs (start|resume)/.test(step.run ?? ''));
   assert.equal(phases.length, 2);
