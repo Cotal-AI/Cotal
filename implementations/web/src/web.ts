@@ -1514,8 +1514,12 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   };
   for (const plane of ["chat", "inst", "svc"])
     ep.tap(onTap, { subject: `${spacePrefix(space)}.${plane}.>` });
-  // This observer uses the admin view. The broker still checks the dedicated payload grant.
-  ep.tap(onTap, { subject: `${spacePrefix(space)}.evp.>` });
+  // A supplied observer credential can read only its owner's payload rail.
+  const payloadPrefix = `${spacePrefix(space)}.evp.`;
+  const payloadSubjects = conn.creds
+    ? (credsClaims(conn.creds).nats?.sub?.allow ?? []).filter(subject => subject.startsWith(payloadPrefix))
+    : [`${payloadPrefix}>`];
+  for (const subject of payloadSubjects) ep.tap(onTap, { subject });
 
   // The client build sits beside the compiled server in `dist/web`. Run from source, as the smokes
   // run it, the server lives in `src`, so the page is read from the package's `dist/web` instead.

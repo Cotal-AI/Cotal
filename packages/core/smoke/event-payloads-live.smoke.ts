@@ -8,7 +8,7 @@ import { connect } from "@nats-io/transport-node";
 import { createSpaceAuth, mintCreds, serverConfig } from "../src/provision.js";
 import { newIdentity } from "../src/identity.js";
 import { setupSpaceStreams } from "../src/streams.js";
-import { isReachable } from "../src/endpoint.js";
+import { CotalEndpoint, isReachable } from "../src/endpoint.js";
 import { eventPayloadSubject } from "../src/event-payloads.js";
 import { mintLifecycleUid } from "../src/subjects.js";
 import { freePort, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -61,6 +61,22 @@ try {
   assert.equal(withheldTap.getReceived(), 0);
   assert.ok(withheldErrors.length > 0);
   console.log("PASS real minted broker grants: own owner reads, wildcard foreign denied, explicit foreign reads, withheld publisher denied");
+  const observerCreds = await mintCreds(auth, newIdentity(), "observer", { principal: { owner, actor: "observer" } });
+  const observer = new CotalEndpoint({ space, servers, creds: observerCreds, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { name: "observer", kind: "endpoint" } });
+  writer.publish(subject, new TextEncoder().encode(JSON.stringify({ id: "history-probe", space, ts: Date.now(), from: { id: `${owner}.seat`, name: "seat" }, parts: [{ kind: "text", text: "history-payload-canary" }] })));
+  await writer.flush();
+  try {
+    await observer.start();
+    const rows = await observer.eventPayloadHistory(owner, "seat", { limit: 10, signal: AbortSignal.timeout(5000) });
+    assert.ok(rows.some(row => row.id === "history-probe"), "owner observer reads retained payload using scoped consumer create");
+    console.log("PASS real observer retained payload history");
+  } finally { await observer.stop(); }
+  const foreignObserver = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "observer", { principal: { owner: foreign, actor: "observer" } }), channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { name: "foreign-observer", kind: "endpoint" } });
+  try {
+    await foreignObserver.start();
+    await assert.rejects(foreignObserver.eventPayloadHistory(owner, "seat", { limit: 10, signal: AbortSignal.timeout(5000) }), /permission/i);
+    console.log("PASS foreign observer retained payload history denied");
+  } finally { await foreignObserver.stop(); }
 } finally {
   await Promise.all(connections.map(c => c.close()));
   broker.kill("SIGTERM"); await once(broker, "exit"); release();

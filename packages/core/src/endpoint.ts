@@ -4838,6 +4838,11 @@ export class CotalEndpoint extends EventEmitter {
    *  the name was taken again since. The read moves to a free name, and the taken one stays out of use
    *  until such a consumer would have expired. */
   private async openHistoryReader(reader: HistoryReader, config: Partial<ConsumerConfig>): Promise<Consumer> {
+    // A single filter must ride the filter-bearing API subject so scoped read grants apply.
+    if (config.filter_subjects?.length === 1) {
+      const { filter_subjects, ...rest } = config;
+      config = { ...rest, filter_subject: filter_subjects[0] };
+    }
     const pool = reader.pool;
     for (;;) {
       // A reconnect under the auth callout moved this connection to new reader names, and its
