@@ -70,6 +70,7 @@ try {
   assert.match(output, /cotal status/);
   assert.match(output, /cotal chat/);
   assert.equal(readFileSync(join(env.COTAL_HOME!, 'current-mesh'), 'utf8').trim(), 'personal');
+  assert.equal(readFileSync(join(env.COTAL_HOME!, 'current-mesh.adopted'), 'utf8').trim(), 'personal');
   console.log('Real Better Auth approval through CLI selects personal space and names next commands.');
   for (const cell of [
     { shape: 'sole-team' as const, expected: 'team_0' },

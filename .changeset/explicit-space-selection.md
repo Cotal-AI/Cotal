@@ -1,6 +1,7 @@
 ---
 "@cotal-ai/workspace": minor
 "@cotal-ai/cli": minor
+"@cotal-ai/auth": minor
 ---
 
 Selections made with `cotal use` now apply in every folder, overriding the folder's running space.
