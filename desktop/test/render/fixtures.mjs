@@ -298,17 +298,17 @@ export const scenarios = [
         assert.equal(outcome, mode === "success" ? "Signed out of Cotal Cloud, cloud.cotal.ai. Existing connections keep running." : "Sign-out: The provider refused to revoke this sign-in. Try again.");
       } else {
         assert.deepEqual(snapshot.requests.map(request => request.space), ["acme-team", "research"]);
-        assert.match(outcome, /acme-team/);
-        assert.match(outcome, /research/);
+        assert.match(outcome, /Acme team/);
+        assert.match(outcome, /Research/);
         assert.equal(snapshot.connected, mode !== "success");
         assert.deepEqual(snapshot.spaces.map(space => space.desired), mode === "success" ? [false, false] : mode === "partial" ? [false, true] : [true, true]);
         assert.equal(snapshot.signedIn, true, "disconnecting does not sign out");
         if (mode === "refusal" || mode === "partial") {
-          for (const space of mode === "partial" ? ["research"] : ["acme-team", "research"]) assert.ok(outcome.includes(`${space}: Active sessions prevent disconnecting this space.`));
-          if (mode === "partial") assert.ok(outcome.includes("acme-team: disconnected, confirmed by refresh."));
+          for (const space of mode === "partial" ? ["Research"] : ["Acme team", "Research"]) assert.ok(outcome.includes(`${space}: Active sessions prevent disconnecting this space.`));
+          if (mode === "partial") assert.ok(outcome.includes("Acme team: disconnected, confirmed by refresh."));
         }
-        if (mode === "success") for (const space of ["acme-team", "research"]) assert.ok(outcome.includes(`${space}: disconnected, confirmed by refresh.`));
-        if (mode === "unknown") for (const space of ["acme-team", "research"]) assert.ok(outcome.includes(`${space}: Disconnect not confirmed (unknown).`));
+        if (mode === "success") for (const space of ["Acme team", "Research"]) assert.ok(outcome.includes(`${space}: disconnected, confirmed by refresh.`));
+        if (mode === "unknown") for (const space of ["Acme team", "Research"]) assert.ok(outcome.includes(`${space}: Disconnect not confirmed (unknown).`));
       }
     },
   }))),
@@ -433,3 +433,70 @@ export const scenarios = [
   { name: "notice", state: { waiting: true, copyFailure: true }, prepare: page => page.click("#login"), act: page => page.click("#copy-code") },
   { name: "details-open", state: { noApp: true }, prepare: connect, act: page => page.locator("#details summary").click() },
 ];
+
+// Audit regressions use the same real UI entry points as the original fixtures.
+const auditCase = (source, name, expect) => {
+  const original = scenarios.find(scenario => scenario.name === source);
+  assert.ok(original, `audit fixture exists: ${source}`);
+  scenarios.push({ ...original, name, expect: async page => {
+    if (original.expect) await original.expect(page);
+    await expect(page);
+  } });
+};
+for (const source of ["settings-available", "settings-missing", "audit-pin-offer", "audit-pin-message"]) {
+  auditCase(source, `audit-e1-${source}`, async page => {
+    const geometry = await page.locator("#settings-panel").evaluate(card => {
+      const about = document.querySelector("#settings-versions").closest(".settings-row");
+      const box = card.getBoundingClientRect();
+      const row = about.getBoundingClientRect();
+      return { scroll: card.scrollHeight - card.clientHeight, scrollTop: card.scrollTop,
+        contained: row.top >= box.top + card.clientTop && row.bottom <= box.top + card.clientTop + card.clientHeight };
+    });
+    console.log(`E1 ${source}: ${JSON.stringify(geometry)}`);
+    assert.deepEqual(geometry, { scroll: 0, scrollTop: 0, contained: true }, "E1: About is fully inside Settings without internal scrolling at 100% zoom");
+  });
+}
+auditCase("audit-pin-message", "audit-e4-pin-message-order", async page => {
+  const renders = [];
+  for (let render = 0; render < 3; render++) {
+    renders.push(await page.locator("#settings-startup").evaluate(startup => {
+      const preferences = startup.querySelector("#preferences");
+      const message = startup.querySelector("#pin-availability");
+      return !!preferences && !!message && !!(preferences.compareDocumentPosition(message) & Node.DOCUMENT_POSITION_FOLLOWING)
+        && preferences.getBoundingClientRect().bottom <= message.getBoundingClientRect().top;
+    }));
+    await page.click("#check-updates");
+    await page.waitForFunction(() => !document.querySelector("#check-updates").disabled);
+  }
+  console.log(`E4 startup order: ${JSON.stringify(renders)}`);
+  assert.deepEqual(renders, [true, true, true], "E4: Open at login precedes the pin message across repeated Settings renders");
+});
+auditCase("audit-move-offer", "audit-e4-move-offer-spacing", async page => {
+  const spacing = await page.locator("#move-offer").evaluate(offer => {
+    const style = getComputedStyle(offer);
+    const explanation = document.querySelector("#service-explanation").getBoundingClientRect();
+    return { margin: parseFloat(style.marginTop), divider: parseFloat(style.borderTopWidth),
+      gap: offer.getBoundingClientRect().top - explanation.bottom };
+  });
+  assert.ok(spacing.margin >= 16 && spacing.divider >= 2 && spacing.gap >= 16,
+    `E4: move offer has a top divider and breathing room: ${JSON.stringify(spacing)}`);
+});
+auditCase("account-signout-outcome-back", "audit-e5-post-signout-labels", async page => {
+  const copy = await page.locator("#settings-spaces").textContent();
+  console.log(`E5 post-signout Settings: ${copy}`);
+  assert.match(copy, /Acme team/, "E5: Settings retains Acme team after sign-out");
+  assert.match(copy, /Research/, "E5: Settings retains Research after sign-out");
+  assert.doesNotMatch(copy, /acme-team|research/, "E5: Settings does not fall back to raw slugs");
+  await page.click("#open-settings");
+  assert.deepEqual(await page.locator('[data-testid="connected-space-row"] strong').allTextContents(),
+    ["Acme team", "Research"], "E5: Connected view retains labels after sign-out");
+});
+for (const outcome of ["success", "partial", "refusal", "unknown"]) {
+  auditCase(`account-disconnect-${outcome}`, `audit-e5-disconnect-${outcome}-labels`, async page => {
+    const copy = await page.locator("#account-outcome").textContent();
+    console.log(`E5 disconnect ${outcome}: ${copy}`);
+    assert.match(copy, /Acme team:/, `E5: ${outcome} outcome names Acme team`);
+    assert.match(copy, /Research:/, `E5: ${outcome} outcome names Research`);
+    assert.doesNotMatch(copy, /(?:acme-team|research):/, `E5: ${outcome} outcome does not use raw slug labels`);
+  });
+}
