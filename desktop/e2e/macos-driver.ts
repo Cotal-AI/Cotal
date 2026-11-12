@@ -39,6 +39,12 @@ export class MacOSDriver {
       throw error;
     } finally {
       const nativeLog = this.launchEnv.COTAL_DESKTOP_E2E_NATIVE_LOG;
+      if (nativeLog) {
+        const prefix = "macOS driver zero-match: ";
+        const receipts = stderr.split(/\r?\n/).filter(line => line.startsWith(prefix)).map(line => line.slice(prefix.length));
+        if (receipts.length) await appendFile(join(dirname(nativeLog), "macos-selector-observations.jsonl"), `${receipts.join("\n")}\n`, { mode: 0o600 })
+          .catch(() => console.error("macOS selector observation unavailable"));
+      }
       if (operation === "disable-login" && nativeLog) {
         const prefix = "macOS driver login diagnostic: ";
         const receipts = stderr.split(/\r?\n/).filter(line => line.startsWith(prefix)).map(line => line.slice(prefix.length));

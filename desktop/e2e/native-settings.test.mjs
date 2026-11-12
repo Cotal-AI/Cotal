@@ -130,6 +130,23 @@ test("Mac wrapper retains success and failure receipts from the same invocation"
   assert.match(command, /\.catch\(\(\) => console.error\("macOS login input receipt unavailable"\)\)/);
 });
 
+test("Mac wrapper persists only zero-match records for every operation without changing its verdict", () => {
+  const command = read("./macos-driver.ts").split("private async command<T>")[1].split("async open(")[0];
+  const diagnostic = command.split('} finally {')[1].split('if (operation === "disable-login"')[0];
+  assert.match(command, /stderr = result.stderr/);
+  assert.match(command, /stderr = \(error as \{ stderr: string }\).stderr/);
+  assert.match(command, /return JSON.parse\(result.stdout\) as T/);
+  assert.match(command, /throw error;\s*} finally/);
+  assert.match(diagnostic, /if \(nativeLog\) \{/);
+  assert.doesNotMatch(diagnostic, /operation ===|throw |return /);
+  assert.match(diagnostic, /const prefix = "macOS driver zero-match: "/);
+  assert.match(diagnostic, /filter\(line => line.startsWith\(prefix\)\).map\(line => line.slice\(prefix.length\)\)/);
+  assert.match(diagnostic, /if \(receipts.length\) await appendFile\(join\(dirname\(nativeLog\), "macos-selector-observations.jsonl"\)/);
+  assert.match(diagnostic, /mode: 0o600/);
+  assert.match(diagnostic, /\.catch\(\(\) => console.error\("macOS selector observation unavailable"\)\)/);
+  assert.doesNotMatch(diagnostic, /appendFile\([^\n]*stderr/);
+});
+
 test("native quit selectors match the product's exact menu label", () => {
   const label = "Quit app (computer stays connected)";
   assert.ok(read("../src-tauri/src/app.rs").includes(`"${label}"`));
