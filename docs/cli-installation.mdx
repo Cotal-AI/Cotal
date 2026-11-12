@@ -159,7 +159,7 @@ is followed by another reconcile attempt, then a verified reinstall
 and reconcile of the previous version. A private same-filesystem snapshot restores the previous seed
 stamp, connectors and operator extensions before Managers start. Interrupted restoration resumes on
 the next update or daemon start. The snapshot is removed after successful update or restoration.
-If the computer has never run setup, update creates the missing config folders with private permissions before taking the snapshot. Existing unsafe folders or symbolic links still refuse the update.
+If the computer has never run setup, update creates the missing config folders with private permissions before taking the snapshot. Existing unsafe folders or symbolic links still refuse the update. Automatic config and snapshot preflight refusals appear in the daemon status update result as one line with paths redacted.
 If reconciliation still fails after retry, the command preserves the original child's exit status
 through restoration. An interrupt takes precedence over that status.
 If restoration also fails, the error names the installed version
