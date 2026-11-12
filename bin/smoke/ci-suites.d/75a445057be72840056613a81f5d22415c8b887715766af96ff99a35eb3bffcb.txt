@@ -1,0 +1,1 @@
+smoke:update-seed-preflight

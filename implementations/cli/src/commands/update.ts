@@ -34,7 +34,7 @@ import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
 import { cliVersion } from "../lib/version.js";
-import { runSeed, compareSemver, seedInstallationCurrent } from "../seed/reconcile.js";
+import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedState } from "../seed/reconcile.js";
 import { operatorInstallDiffers } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { refreshConnectorInstalls } from "./setup.js";
@@ -110,6 +110,8 @@ export interface UpdateRuntime {
   preparedRestart?(): boolean;
   /** Reserve empty hosted Manager admission after continuity checks, before replacement. */
   prepareReplacement?(): Promise<() => Promise<void>>;
+  /** Validate recorded local service ownership before replacing packages or reconciling connectors. */
+  preflightReplacement?(): Promise<void>;
   claimGlobalUpdate(root: string): () => void;
   selfArgv(): string[];
   /** Whether this CLI runs from a source checkout, where `--self` installs a separate global copy. */
@@ -149,6 +151,7 @@ export const updateRuntime: UpdateRuntime = {
         .every(entry => operatorInstallDiffers(entry, cliVersion()) === undefined);
     } catch { return false; }
   },
+  preflightReplacement: async () => { assertReadableSeedState(); },
   refreshConnectors: refreshConnectorInstalls,
   reconcile: async () => {
     await runSeed({ verify: true });
@@ -408,6 +411,12 @@ async function reconcileCurrent(
     return finish(false);
   }
 
+  try { await rt.preflightReplacement?.(); }
+  catch (error) {
+    rt.err(c.red(`✗ installed daemon preflight: ${refusal(error)}`));
+    return finish(false);
+  }
+
   rt.out(c.bold("Built-in connectors"));
   try {
     await rt.reconcile();
@@ -633,7 +642,6 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
   // and it has to reach the MINT below, since a credential cannot gain an instance rail after it is
   // issued. A name or host resolves to an instance id the same way `ps` resolves it.
   const on = await managerPin(flags, "cotal update");
-  let remote = false;
   // #2158: a remote user mesh's manager runs under another install, on another machine. Replacing
   // THIS machine's binary interrupts no manager there, so there is no custody here to preserve and
   // no answer from that mesh's exchange can change what this install does. Peek the mode the same
@@ -676,7 +684,6 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
         console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));
         return "none";
       }
-      remote = true;
       console.log(c.dim(`  ${peek.space}: a manager for this mesh runs on this machine; reading its custody`));
     }
     // #3559: `cotal down` then `cotal update` is the cold path past a `legacy` verdict, so a stopped
@@ -725,25 +732,26 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       : [],
   );
   if (!report) return "none";
-  printLegacyReport(report, target.space, remote ? `cotal manager stop --space ${target.space}` : `cotal down --space ${target.space}`);
+  printLegacyReport(report, target.space, undefined, console.log, on);
   return "legacy";
 }
 
-/** What a `legacy` verdict prints: the verdict, each seat's continuity class, and the cold path past
- *  it as the next step. The verdict alone left the operator with no way on (#5027): the update exits
- *  nonzero, and the path the docs name, `cotal down` then `cotal update`, was nowhere on the screen.
- *  `stop` is the command that ends that manager: `cotal down` for a mesh this machine runs, and
- *  `cotal manager stop` for a remote mesh whose manager this machine runs. */
+/** Name legacy custody and the cold update sequence without guessing its hosting lifecycle.
+ *  An endpoint identity is not a saved service instance or proof of its original starter.
+ *  The third argument is retained for callers, but an unverified stop command is not a remedy. */
 export function printLegacyReport(
   report: LegacyManagerReport,
   space: string,
-  stop: string = `cotal down --space ${space}`,
+  _stop: string | undefined = undefined,
   out: (line: string) => void = console.log,
+  manager?: string,
 ): void {
   out(c.yellow("! legacy manager custody: PTY continuity is impossible; this update is not a hot update"));
+  out(`  Manager ${manager ?? "(instance unavailable)"} in space ${JSON.stringify(space)}: ${report.seats.length} seats`);
   for (const seat of report.seats)
     out(c.dim(`  ${seat.name}: ${seat.continuity}`));
-  out(`  Next: stop that mesh with \`${stop}\`, then run this update again; the stop ends the seats above, and the update after it is a cold one`);
+  out("  Cannot determine this Manager's original hosting command. Obtain its exact stop and start commands before stopping it; do not infer a service instance from its Manager identity.");
+  out("  Next: stop this Manager through its original host, ending any seats listed above; run `cotal update --self`, then restart through that host with the original start command. This is a cold update, including for a Manager with 0 seats.");
 }
 
 /** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
@@ -843,6 +851,12 @@ function assertConfigAncestorProtected(): void {
 }
 
 async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>): Promise<number> {
+  try { await rt.preflightReplacement?.(); }
+  catch (error) {
+    recordUpdateDeferral(targetVersion, "installed daemon preflight refused");
+    rt.err(c.red(`✗ installed daemon preflight: ${refusal(error)}`));
+    return 1;
+  }
   try {
     if (await rt.reportRunningManager(target) === "legacy") { recordUpdateDeferral(targetVersion, "waiting for agents to stop"); return 1; }
   } catch (e) {

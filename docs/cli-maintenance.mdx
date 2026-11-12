@@ -20,6 +20,12 @@ identity records refuse rather than selecting a Manager on another computer.
 macOS and Windows retain their existing Manager discovery in this release. The machine daemon
 continues to pin its hosted Managers on all supported platforms.
 
+A local legacy custody report names the space, known Manager identity, seat count, and each
+seat's continuity class, including when there are no seats. Before a cold update, obtain the
+original host's stop and start commands. The report cannot recover those commands from a Manager
+identity, which is not a saved service instance. Stop through that host, run `cotal update --self`,
+then restart with the original start command. Stopping ends the listed seats.
+
 ## Updating the installation
 
 On Linux, when `cotal update --self` finds no newer CLI version and proves the installed package closure
@@ -28,6 +34,18 @@ or restarting the daemon. Legacy custody is informational on this path: a later 
 still requires stopping those agents. An unreadable custody report remains a refusal.
 This package check does not verify external harness integrations. Run `cotal update` to refresh
 those integrations. If the package closure needs repair, the usual continuity guards still apply.
+
+`cotal update` validates a recorded machine-daemon service before reconciling connectors.
+`cotal update --self` also checks it before replacing the global package. A missing receipt
+leaves an unrecorded service alone. A valid receipt for another installation does not block
+this check. A malformed receipt, missing source, or ownership mismatch refuses before those
+package and connector changes. These receipt checks do not need `XDG_RUNTIME_DIR`. A valid
+receipt can proceed without it. A dangling receipt symlink still refuses.
+
+Read the receipt and source paths named by the refusal. If the receipt is stale, remove only
+that receipt to forget it, then run `cotal daemon install`. For an owned installation, run
+`cotal daemon uninstall` before reinstalling. Update does not remove receipts automatically.
+These checks do not guarantee that later downloads, connector refreshes, or native restarts succeed.
 
 ## `manager reconcile` [#reconcile-gate]
 

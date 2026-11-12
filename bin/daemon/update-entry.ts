@@ -1,5 +1,6 @@
 /** The binary composes machine-daemon custody with the stock package updater. */
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { registry, type Command } from "@cotal-ai/core";
 import { update, updateRuntime, localUpdateManagers, readManagerContinuity, updateManagerPin } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
@@ -7,7 +8,7 @@ import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, r
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, restartInstalled, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
@@ -36,6 +37,9 @@ const composed: Command = { ...command, async run(args) {
       }
       throw error;
     }
+  }, async preflightReplacement() {
+    await updateRuntime.preflightReplacement?.();
+    preflightInstalledDaemon({ state: join(homeCotalDir(), "daemon") });
   }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
     if (process.env.COTAL_AUTO_UPDATE !== "1" || !daemonObserved) return async () => {};
     const paths = daemonPaths();
