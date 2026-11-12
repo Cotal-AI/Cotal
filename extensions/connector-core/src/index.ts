@@ -23,4 +23,5 @@ export * from "./tools.js";
 export * from "./gateway.js";
 export * from "./control.js";
 export * from "./relay.js";
+export * from "./permission-desk.js";
 export { registerOnceExit } from "./once.js";
