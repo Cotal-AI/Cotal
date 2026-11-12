@@ -8,6 +8,7 @@ export function nativeStub(scenario) {
   const manager = () => ({ space: "acme-team", state: "answering", instanceId: "machine-1", connectors: [{ agent: "claude", state: "available" }, { agent: "codex", state: "available" }] });
   window.isTauri = true;
   window.__renderState = state;
+  window.__emitTauri = (event, payload) => { const id = state.listeners?.[event]; if (id) callbacks.get(id)?.({ event, payload }); };
   Object.defineProperty(navigator, "clipboard", { value: { writeText: async value => { if (state.copyFailure) throw new Error("Clipboard unavailable"); state.clipboard = value; } }, configurable: true });
   window.__TAURI_INTERNALS__ = {
     transformCallback(fn) { callbacks.set(++next, fn); return next; },
@@ -15,8 +16,8 @@ export function nativeStub(scenario) {
     async invoke(command, args) {
       if (command === "first_paint") { state.paintReports = (state.paintReports ?? 0) + 1; return null; }
       if (command === "plugin:deep-link|get_current") return state.link ? [state.link] : null;
-      if (command === "plugin:event|listen") return 1;
-      if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: false, pinOffer: false, pinMessage: "" };
+      if (command === "plugin:event|listen") { state.listeners = state.listeners ?? {}; state.listeners[args.event] = args.handler; return 1; }
+      if (command === "desktop_presence") return { loginEnabled: state.loginEnabled ?? true, relocationOffer: Boolean(state.relocationOffer), pinOffer: Boolean(state.pinOffer), pinMessage: state.pinMessage ?? "" };
       if (command === "set_update_notice") { state.trayUpdate = args.version; return null; }
       if (command === "open_browser" || command === "set_connection_state" || command.startsWith("plugin:")) return null;
       if (command !== "daemon_request") throw new Error(`Unexpected native command: ${command}`);
@@ -29,10 +30,10 @@ export function nativeStub(scenario) {
       if (request.op === "update-release") return ok({ assets: state.missingAsset ? [] : [{ name: "Cotal_0.161.0_aarch64.dmg", url: "https://github.com/Cotal-AI/Cotal/releases/download/v0.161.0/Cotal_0.161.0_aarch64.dmg" }] });
       if (request.op === "update-settings") { state.update = { ...state.update, ...(request.auto !== undefined ? { automatic: request.auto } : {}), ...(request.notify !== undefined ? { notify: request.notify } : {}) }; return ok({ update: state.update }); }
       if (request.op === "update-check") return ok({ update: state.update });
-      if (request.op === "install") { state.installed = true; return ok({ installed: true }); }
+      if (request.op === "install") { if (state.installWait) await new Promise(() => {}); state.installed = true; return ok({ installed: true }); }
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      if (request.op === "status" && state.offline) return fail("NOT_ANSWERING", "The background service did not answer. Check the host connection before retrying.");
-      if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.connected ? [manager()] : [], agents: state.agents ?? [], ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      if (request.op === "status" && state.offline) return fail(state.offlineCode ?? "NOT_ANSWERING", "The background service did not answer. Check the host connection before retrying.");
+      if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
       if (request.op === "spaces") return ok({ ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : [] });
       if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? "Davids-MacBook-Pro" }); }
@@ -185,4 +186,30 @@ export const scenarios = [
   { name: "disconnected", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#connected-spaces button"), expect: async page => assert.equal(await page.locator("#notice").isVisible(), false) },
   { name: "notice", state: { waiting: true, copyFailure: true }, prepare: page => page.click("#login"), act: page => page.click("#copy-code") },
   { name: "details-open", state: { noApp: true }, prepare: connect, act: page => page.locator("#details summary").click() },
+  { name: "audit-service-install", state: { installWait: true }, act: page => page.click("#login") },
+  { name: "audit-credential-expired", state: { loginError: "CREDENTIAL_EXPIRED" }, act: page => page.click("#login") },
+  { name: "audit-unreachable", state: { loginError: "UNREACHABLE" }, act: page => page.click("#login") },
+  { name: "audit-approval-refusal", state: { installed: true, offline: true, offlineCode: "APPROVAL_PENDING" } },
+  { name: "audit-default-refusal", state: { installed: true, offline: true, offlineCode: "OPERATION_FAILED" } },
+  { name: "audit-close-explained", state: { installed: true, signedIn: true, connected: true }, act: page => page.evaluate(() => window.__emitTauri("desktop-close-explained", "Cotal stays in your system tray. Open it from the tray or Dock. Quit app leaves the background service running.")) },
+  { name: "audit-move-offer", state: { installed: true, relocationOffer: true } },
+  { name: "audit-pin-offer", state: { installed: true, signedIn: true, connected: true, pinOffer: true }, act: page => page.click("#open-settings") },
+  { name: "audit-pin-message", state: { installed: true, signedIn: true, connected: true, pinMessage: "Cotal is pinned to your taskbar." }, act: page => page.click("#open-settings") },
+  { name: "audit-settings-npm-linux", state: { installed: true, signedIn: true, connected: true, platform: "linux", update: { ...update, channel: "npm", latest: "0.156.0", lastResult: "up to date" } }, act: page => page.click("#open-settings") },
+  { name: "audit-settings-unchecked", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: undefined, lastCheck: undefined, lastResult: "none" } }, act: page => page.click("#open-settings") },
+  { name: "audit-settings-unavailable", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#open-settings") },
+  { name: "audit-agents-unavailable", state: { installed: true, signedIn: true, connected: true, omitAgents: true } },
+  { name: "audit-update-banner-agents", state: { installed: true, signedIn: true, connected: true, update, agents: [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }] } },
+  { name: "audit-app-found-later", state: { noApp: true }, prepare: connect, act: async page => { await page.evaluate(() => { window.__renderState.noApp = false; }); await page.click("#recover"); } },
+  { name: "audit-account-several-spaces", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "starting" }] } } },
+  { name: "audit-settings-download-click", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); } },
+  { name: "audit-settings-missing-click", state: { installed: true, signedIn: true, connected: true, missingAsset: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); } },
+  { name: "audit-account-spaces-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "connected" }] }, agents: [{ space: "acme-team", state: "read", agents: Array.from({ length: 8 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }] } },
+  { name: "audit-settings-name-edit", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); } },
+  { name: "audit-settings-name-invalid", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); await page.fill("#computer-name-input", ""); await page.press("#computer-name-input", "Enter"); } },
+  { name: "audit-settings-current-name-edit", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: "0.156.0" } }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); } },
+  { name: "audit-account-refusal-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "refusal", lastRefusal: "No available connector in the hosted Manager environment. Install Claude Code or Codex, then check again." }] } } },
+  { name: "audit-zoom-125-connected", state: { installed: true, signedIn: true, connected: true }, act: page => page.evaluate(() => { document.styleSheets[0].insertRule("html { zoom: 1.25; }", document.styleSheets[0].cssRules.length); }) },
+  { name: "audit-zoom-150-welcome", state: {}, act: page => page.evaluate(() => { document.styleSheets[0].insertRule("html { zoom: 1.5; }", document.styleSheets[0].cssRules.length); }) },
+  { name: "audit-zoom-125-settings", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.evaluate(() => { document.styleSheets[0].insertRule("html { zoom: 1.25; }", document.styleSheets[0].cssRules.length); }); } },
 ];
