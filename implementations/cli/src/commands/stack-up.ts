@@ -24,6 +24,7 @@ import {
   findMesh,
   findPreparedSpace,
   getCurrent,
+  readCurrentSelection,
   getSpaceAuth,
   hasUserAuthState,
   homeCotalDir,
@@ -445,12 +446,14 @@ function usableSelection(): string | undefined {
 
 /** What `up` says when it selects the space it started, because nothing usable was selected. */
 export function selectedOnUp(space: string): string {
-  return `selected "${space}": a command without --space targets it, except in another space's project folder`;
+  return `automatically selected "${space}": commands target it except in another space's running project; cotal use ${space} selects it in every folder`;
 }
 
 /** What `up` says when another selected space stays selected. */
 export function keptOnUp(space: string, kept: string): string {
-  return `"${space}" up; "${kept}" stays selected for commands run outside this folder - \`cotal use ${space}\` to switch`;
+  return readCurrentSelection()?.source === "explicit"
+    ? `"${space}" up; commands here still target the selected space "${kept}" - use --space ${space} or cotal use --clear to reach this folder's space`
+    : `"${space}" up; "${kept}" stays automatically selected outside this folder - cotal use ${space} selects this space in every folder`;
 }
 
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its

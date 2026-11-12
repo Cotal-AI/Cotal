@@ -407,8 +407,8 @@ harness. A `--link` supplies the where and the auth in one value. See
 [Spaces](spaces.mdx) and [Identity and auth](identity-and-auth.mdx).
 
 A `--token` or `--creds` goes to `--server`, or else to the broker the space is registered at,
-keeping that registration's TLS requirement. With no `--space`, that is the selected space, else
-this folder's, and inside a project whose root has one space other than the selection, that space.
+keeping that registration's TLS requirement. With no `--space`, an explicit `cotal use` selection
+wins in every folder. An automatically adopted selection yields to the folder's running space.
 A space not registered here is refused before anything is dialed. The default address is never
 assumed for a credential.
 

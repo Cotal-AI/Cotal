@@ -664,6 +664,17 @@ export function getCurrent(): string | undefined {
  *  as unset. {@link setCurrent} writes a name and {@link clearCurrent} removes the file, so an empty
  *  pointer is damage, not a cleared selection. */
 export function readCurrent(): string | undefined {
+  return readCurrentSelection()?.space;
+}
+
+/** How the current space was selected. Legacy bare-name pointers record explicit intent. */
+export interface CurrentSelection {
+  readonly space: string;
+  readonly source: "explicit" | "adopted";
+}
+
+/** Read the sole selection pointer, rejecting damaged structured records. */
+export function readCurrentSelection(): CurrentSelection | undefined {
   let space: string;
   try {
     space = readFileSync(currentFile(), "utf8").trim();
@@ -672,12 +683,31 @@ export function readCurrent(): string | undefined {
     throw new MeshRegistryError(currentFile(), `${currentFile()} could not be read: ${(e as Error).message}`, { cause: e });
   }
   if (!space) throw new MeshRegistryError(currentFile(), `${currentFile()} is empty - select a mesh with \`cotal use <space>\` or remove the file`);
-  return space;
+  if (!space.startsWith("{") && !space.startsWith("[")) return { space, source: "explicit" };
+  let value: unknown;
+  try { value = JSON.parse(space); } catch (cause) {
+    throw new MeshRegistryError(currentFile(), `${currentFile()} does not parse as a selection - select a space with \`cotal use <space>\` or clear it with \`cotal use --clear\``, { cause });
+  }
+  const record = value as Record<string, unknown> | null;
+  if (!record || Array.isArray(record) || Object.keys(record).some(key => !["v", "space", "source"].includes(key)) || record.v !== 1 || typeof record.space !== "string" || !record.space.trim() || (record.source !== "explicit" && record.source !== "adopted"))
+    throw new MeshRegistryError(currentFile(), `${currentFile()} is not a valid selection - select a space with \`cotal use <space>\` or clear it with \`cotal use --clear\``);
+  return { space: record.space, source: record.source };
 }
 
+/** Record a selection made by the person, including promotion of an adopted selection. */
 export function setCurrent(space: string): void {
+  writeCurrentSelection(space, "explicit");
+}
+
+/** Record an automatic selection, which does not override another project's running space. */
+export function setAdoptedCurrent(space: string): void {
+  writeCurrentSelection(space, "adopted");
+}
+
+function writeCurrentSelection(space: string, source: CurrentSelection["source"]): void {
+  if (!space.trim()) throw new Error("a selection needs a space name");
   prepareCotalHomeForWrite();
-  writeSecretFile(currentFile(), space);
+  writeSecretFile(currentFile(), JSON.stringify({ v: 1, space, source }));
 }
 
 export function clearCurrent(): void {

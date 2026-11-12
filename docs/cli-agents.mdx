@@ -50,7 +50,7 @@ cotal spawn [<persona>] [--file <persona-file>] [-d | --foreground] [--dry-run] 
 ```
 
 A bare `spawn` runs the application in this terminal, on every kind of mesh, and no manager is
-involved unless you pick one when it asks where to run, as described below. Its exit, or the terminal's, may end the agent. A manager runs the launch only when you
+involved unless you name one with `--on` or request `--detach`. Its exit, or the terminal's, may end the agent. A manager runs the launch only when you
 ask for one. `--detach` (`-d`) hands it to a manager, waits until the agent joins, and returns
 without attaching. `--on <instance>` hands it to that manager and attaches this terminal to the
 agent (see [Managed launch view](cli-agent-views.mdx#managed-launch-view)), when that manager's runtime streams a
@@ -67,21 +67,10 @@ and the connector refusal names the `cotal ext add` that installs it. `--file` (
 persona file, never a manifest: manifests deploy with `cotal team deploy <file>`, and a manifest
 passed to `--file` is refused with that command.
 
-On a terminal, a bare `spawn` on a user-auth mesh where several of your managers are live asks
-where the agent runs before it does anything else. The managers listed are the ones the exchange
-counts for a manager selection, so the question comes up only when `spawn -d` would ask which
-manager to use. Each manager's row gives its instance id, the host it reports, the runtime it
-spawns through and whether a terminal attaches to its seats (`pty · terminal attach`, or
-`tmux · no terminal attach`), so the choice is made before anything is launched. A manager whose
-presence does not carry it reads as `tmux · terminal attach not reported`. When presence cannot
-be read, each manager is listed by its instance id, and a line above the question starts with
-`names unavailable:` and gives the refusal and its remedy.
-`This terminal` is the default and runs it as above. Picking a manager launches the
-agent there and attaches this terminal, as `--on` does, and a `Manager chosen` receipt names the
-`--on` that skips the question. No manager credential is held while you answer. `--foreground`,
-`--file` and `--live-only` keep the spawn in this terminal without asking, and so does a command
-that cannot ask: no terminal on stdin and stdout, `--no-input`, or `COTAL_NO_PROMPT=1`. Cancelling
-the question does nothing and exits 0.
+On a terminal, a bare `spawn` uses this terminal without asking where to run. When several of
+your Managers are live, one line lists them with the `--on <name>` selectors that launch there.
+`spawn --detach` has no default Manager among several candidates, so it still asks on a terminal
+and refuses in a script unless `--on` selects one. A selected space never causes a space question.
 
 A managed launch on a terminal, picked at a question or named with `--on`, asks which folder the
 agent works in when you give no `-C` and the manager is not known to run on this host. The host is

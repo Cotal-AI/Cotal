@@ -1185,9 +1185,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     stderrLine("✗ ", `${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} require --space <s>`, c.red);
     process.exit(1);
   }
-  // On a terminal, a spawn that names no launch mode, persona file or terminal-only option asks
-  // where it runs when several of your managers are live. This terminal is the default; a manager
-  // launches it and attaches here, as --on does.
+  // On a terminal, keep the native default and announce live Manager alternatives.
+  // Only --detach or --on requests managed placement.
   if (handoffText === undefined && enrollmentUrl === undefined && values.foreground !== true && !spawnUsesManager(values) && values.file === undefined
     && values.config === undefined && !values["live-only"] && !values.json && !values.plain && canPrompt()) {
     const place = await askSpawnPlace(values, process.argv.slice(2));
@@ -1528,7 +1527,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "UNSUPPORTED", `persona ${path} names \`endpoints\`, and on a per-user auth mesh endpoint access comes from the service owner's grants, which a persona cannot hand on (SPEC 13.15)`, { target: { space, path }, remedy: "drop `endpoints` from the persona, and grant the agent with `cotal service-endpoint grant` once it runs" });
   const endpointCapabilities = lowerPersonaEndpoints(def.endpoints);
   // Said once every check above has passed, so a refusal is never read as a launch that started.
-  console.error(renderReport({ sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", process.stderr));
+  console.error(renderReport({ space, sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", process.stderr));
   // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the
   // launch (e.g. `buildLaunch` throws on a rejected `--opt`) and before the child execs. The SAME
   // retirement serves a failed provisioning or launch (rollback) and the normal foreground

@@ -7,6 +7,21 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Explicit space selections apply in every folder
+
+`cotal use <space>` now wins over a project's running space until another selection or
+`cotal use --clear`. Pass `--space <name>` to target that project's space for one command.
+Automatically adopted selections still yield to another project's running space.
+
+Old bare-name selection pointers are treated as explicit. An old pointer adopted by the first
+`up` therefore also becomes global after upgrading. Clear it to restore folder-based targeting,
+or select the space you want. New pointers record the selection's origin in the same file.
+
+JSON keys are unchanged. `use`'s `folder` identifies the folder's local space, not a target
+override. `status`'s `meshes.folder` and space-list target markers no longer mark that space as
+the target when an explicit selection wins. Foreground `spawn` uses this terminal without a
+Manager-place question and lists the live Managers with their `--on` selectors.
+
 ## Full actor grants include workflow scope
 
 A new `cotal actor grant --full` with no `--scope` now grants `spawn,run,role:default`.

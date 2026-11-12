@@ -39,7 +39,7 @@ import { clean, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, setCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, setCurrent, setAdoptedCurrent, clearCurrent } = await import("@cotal-ai/workspace");
 const { observeServiceProcess, serviceInstances } = await import("../src/lib/service-instances.js");
 
 const { check, finish } = createSuite();
@@ -152,10 +152,23 @@ const QUESTION = "Which one?";
   const named = terminal(["who", "--space", "alpha"]);
   check("--space on a terminal is not asked", await until(() => named.s.code !== undefined) && !named.s.text().includes(QUESTION) && /\bin alpha\b/.test(named.s.text()), { code: named.s.code, out: named.s.text().slice(-600) });
 
-  setCurrent("alpha");
+  setAdoptedCurrent("alpha");
   const selected = terminal(["who"]);
   check("a selection on a terminal is the target, with no question", await until(() => selected.s.code !== undefined) && !selected.s.text().includes(QUESTION) && /\bin alpha\b/.test(selected.s.text()), { code: selected.s.code, out: selected.s.text().slice(-600) });
 
+  setCurrent("alpha");
+  const explicitBeta = run(["who", "--json"], join(home, "beta"));
+  check("explicit selection wins in another running project's folder", envelope(explicitBeta)?.target?.space === "alpha", shown(explicitBeta));
+  const explicitNote = run(["who"], join(home, "beta"));
+  check("explicit selection explains its target under Mesh once", /Mesh: alpha/.test(explicitNote.stdout + explicitNote.stderr) && /selected space applies here/.test(explicitNote.stdout + explicitNote.stderr), shown(explicitNote));
+  const explicitWrite = run(["history", "clear", "--dry-run", "--json"], join(home, "beta"));
+  check("a write preview names the explicit selected space, not the folder", envelope(explicitWrite)?.target?.space === "alpha", shown(explicitWrite));
+  const explicitSpawn = run(["spawn", "--dry-run", "--json"], join(home, "beta"));
+  check("spawn preview follows explicit selection without a space question", envelope(explicitSpawn)?.target?.space === "alpha" && !explicitSpawn.stderr.includes(QUESTION), shown(explicitSpawn));
+  const cleared = run(["use", "--clear"], join(home, "beta"));
+  check("clearing explicit selection restores folder targeting", cleared.status === 0 && envelope(run(["who", "--json"], join(home, "beta")))?.target?.space === "beta", shown(cleared));
+  setAdoptedCurrent("alpha");
+  // An adopted selection preserves the running-folder rule.
   // In beta's own root beta is REGISTERED and its broker answers, so it is the target there, and its
   // heading says the selection applies outside it. A folder's space captures the commands run there
   // only while it runs; the prepared and stopped arms are below.
@@ -234,13 +247,13 @@ const QUESTION = "Which one?";
   const epsilon = join(home, "epsilon");
   mkdirSync(join(epsilon, ".cotal"), { recursive: true });
   recordPreparedSpace({ space: "epsilon", root: epsilon, ts: new Date(0).toISOString() });
-  setCurrent("epsilon");
+  setAdoptedCurrent("epsilon");
   const preparedSelection = run(["status"], delta);
   check("with a prepared selection, status reports that selection, not the space this folder holds",
     /^ {2}Selected space 'epsilon' is prepared, not started$/m.test(preparedSelection.stdout) && new RegExp(`^Mesh: epsilon\n {2}${HELD}$`, "m").test(preparedSelection.stdout) &&
       !/"delta" is prepared but not started/.test(preparedSelection.stdout),
     preparedSelection.stdout.slice(0, 1600));
-  setCurrent("alpha");
+  setAdoptedCurrent("alpha");
   removePreparedSpace("epsilon");
   const entry = run([], delta), entryHelp = run(["help"], delta), entryAway = run([]);
   check("in that folder bare cotal and help lead with the selection, name what the folder holds, and offer its up",
@@ -284,10 +297,10 @@ const QUESTION = "Which one?";
   const eta = join(home, "eta");
   mkdirSync(join(eta, ".cotal"), { recursive: true });
   recordPreparedSpace({ space: "eta", root: eta, ts: new Date(0).toISOString() });
-  setCurrent("eta");
+  setAdoptedCurrent("eta");
   const entryPrepared = run([], zetaRoot), entryPreparedAway = run([]);
   const refusedPs = run(["ps"], zetaRoot), refusedPsJson = run(["ps", "--json"], zetaRoot), refusedSend = run(["send", "-c", "general", "hi"], zetaRoot);
-  setCurrent("alpha");
+  setAdoptedCurrent("alpha");
   removePreparedSpace("eta");
   const startsEta = (r: ReturnType<typeof run>) => r.status === 0 && /^eta · prepared · /m.test(r.stdout) && r.stdout.includes(`\nStart here\n  cotal up --root ${eta}  Start this space\n`) && !r.stdout.includes("cotal spawn");
   check("with a prepared selection, bare cotal there names the selection's up as this space's start and offers no spawn, as away from any project",
@@ -305,9 +318,9 @@ const QUESTION = "Which one?";
   recordPreparedSpace({ space: "eta", root: eta, ts: new Date(0).toISOString() });
   cappedJournal(eta, "eta", "up", "failed");
   const entryCapped = run([], zetaRoot), headingCapped = run(["who"], zetaRoot);
-  setCurrent("eta");
+  setAdoptedCurrent("eta");
   const entryEtaHere = run([], eta), entryEtaThere = run([], zetaRoot);
-  setCurrent("alpha");
+  setAdoptedCurrent("alpha");
   removePreparedSpace("eta");
   rmSync(join(eta, ".cotal", "stack-controller.json"));
   rmSync(join(zetaRoot, ".cotal", "stack-controller.json"));
@@ -349,7 +362,7 @@ const QUESTION = "Which one?";
       !/\(this folder's\)/.test(listStoppedText.stdout) && envelope(listRunning)?.result?.folder === "beta",
     { status: envelope(statusStopped)?.result?.meshes?.folder, list: shown(listStopped), text: shown(listStoppedText), running: shown(listRunning) });
   check("use there says commands target zeta while it runs and the selection while it is stopped",
-    useStopped.stdout.includes(`commands in this folder target its space "zeta" while it runs; the selection applies outside it and while it is stopped`), shown(useStopped));
+    useStopped.stdout.includes(`commands here target this folder's space "zeta" while it runs`) && useStopped.stdout.includes("Cotal adopted this selection automatically"), shown(useStopped));
   removeMesh("zeta");
   const clearChannel = run(["history", "clear", "general"], delta);
   check("history clear with a channel refuses naming the space it targets, not the selected space",
@@ -392,7 +405,7 @@ const QUESTION = "Which one?";
   const copy = `${omega}-copy`, recorded = realpathSync(omega);
   spawnSync("cp", ["-a", omega, copy]);
   const holds = `this folder holds the records of "omega", which is registered for ${recorded}`, step = `use the stack from ${recorded}, where "omega" is registered`;
-  setCurrent("alpha");
+  setAdoptedCurrent("alpha");
   const ps = run(["ps"], copy), entry = run([], copy), status = run(["status"], copy), statusJson = envelope(run(["status", "--json"], copy));
   clearCurrent();
   check("in a copy of it bare cotal leads with the selection and says what the folder holds, with the step the reads name",
@@ -427,7 +440,11 @@ const QUESTION = "Which one?";
   // Outside every project and the machine home, so a start here would make this folder a root. Its
   // lock creates `.cotal/maintenance` before these refusals, and a folder left with it reads as a
   // root of the default space.
-  const fresh = mkdtempSync(join(tmpdir(), "cotal-target-resolution-fresh-"));
+  const freshBase = process.platform === "linux" ? "/var/tmp" : tmpdir();
+  if (process.platform === "linux") {
+    for (const parent of [freshBase, "/var", "/"]) if (existsSync(join(parent, ".cotal"))) throw new Error(`unsafe fresh fixture ancestor: ${parent}`);
+  }
+  const fresh = mkdtempSync(join(freshBase, "cotal-target-resolution-fresh-"));
   try {
     const entries = () => readdirSync(fresh).sort().join(",");
     writeFileSync(join(fresh, "list.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: gamma\nbroker: { servers: ["${A}"] }\nchannels: {}\n`);
@@ -456,7 +473,7 @@ const QUESTION = "Which one?";
 {
   // An up cut off before it registered the space leaves its broker running. That stack runs in part,
   // so the commands run in its folder target it over the selection, as with nothing selected.
-  setCurrent("alpha");
+  setAdoptedCurrent("alpha");
   const half = join(home, "half");
   mkdirSync(half, { mode: 0o755 });
   anchors.set(half, recordSmokeSandbox({ root: half, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! }));

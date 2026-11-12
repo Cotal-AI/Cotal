@@ -22,7 +22,7 @@ import {
   readNatsInfoGreeting,
   PREFLIGHT_CONFIRM_TIMEOUT_MS,
   recordMesh,
-  setCurrent,
+  setAdoptedCurrent,
   SPACE_NAME_MAX,
   spaceNameTooLong,
   userAuthStateDir,
@@ -442,7 +442,7 @@ export function writeRecord(entry: MeshEntry): { adoptedCurrent: boolean; keptCu
   const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording
   recordMesh(entry);
   if (!usableCurrent) {
-    setCurrent(entry.space);
+    setAdoptedCurrent(entry.space);
     return { adoptedCurrent: true };
   }
   return { adoptedCurrent: false, ...(usableCurrent !== entry.space ? { keptCurrent: usableCurrent } : {}) };
