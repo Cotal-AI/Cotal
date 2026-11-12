@@ -30,9 +30,11 @@ let releaseBroker: (() => void) | undefined;
 const coreConfig = join(store, "core.conf");
 writeFileSync(coreConfig, `port: ${port}\nhost: 127.0.0.1\n`);
 async function boot(jetstreamEnabled = true): Promise<void> {
-  broker = spawn("nats-server", jetstreamEnabled
-    ? ["-js", "-sd", store, "-p", String(port), "-a", "127.0.0.1"]
-    : ["-c", coreConfig], { stdio: "ignore" });
+  if (jetstreamEnabled) {
+    broker = spawn("nats-server", ["-js", "-sd", store, "-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" });
+  } else {
+    broker = spawn("nats-server", ["-c", coreConfig], { stdio: "ignore" });
+  }
   releaseBroker = teardownOnSignal(broker, store);
   await until(async () => {
     assert.equal(broker.exitCode, null, "owned broker must survive startup");

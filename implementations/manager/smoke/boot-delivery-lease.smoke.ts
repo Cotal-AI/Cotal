@@ -151,7 +151,7 @@ try {
     } finally {
       responder?.unsubscribe();
       await reader.flush();
-      await manager.stop();
+      await manager.stop({ withAgents: true });
     }
   }
 
@@ -192,7 +192,7 @@ try {
     } finally {
       responder.unsubscribe();
       await reader.flush();
-      await manager.stop();
+      await manager.stop({ withAgents: true });
     }
   }
   {
@@ -203,7 +203,7 @@ try {
       await manager.start();
       c("a manager still starts beside a daemon with the matching store answer", true);
     } finally {
-      await manager.stop();
+      await manager.stop({ withAgents: true });
       await delivery.stop();
     }
   }
