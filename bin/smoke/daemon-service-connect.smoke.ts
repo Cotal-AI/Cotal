@@ -140,6 +140,12 @@ const { SignJWT, exportJWK, generateKeyPair } = await import(pathToFileURL(authR
 const peerUid = (s: Socket) => peerCredentials(s).uid;
 const peerPid = (s: Socket) => peerCredentials(s).pid;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const { parseHostedAgents } = await import("../daemon/agents.js");
+const inventoryRow = { name: "writer", application: "codex", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" };
+assert.deepEqual(parseHostedAgents([{ ...inventoryRow, token: "secret", prompt: "private" }]), [inventoryRow]);
+assert.throws(() => parseHostedAgents(Array(51).fill(inventoryRow)));
+assert.throws(() => parseHostedAgents([{ ...inventoryRow, name: "bad\nname" }]));
+assert.throws(() => parseHostedAgents([{ ...inventoryRow, startedAt: "invalid" }]));
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, JSON.stringify(extra ?? "")?.slice(0, 600)); }

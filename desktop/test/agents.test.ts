@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 const { JSDOM } = createRequire(import.meta.url)("jsdom");
 import { agentInventory, renderAgents, runningFor, shortFolder } from "../src/agents.js";
-import { parseHostedAgents } from "../../bin/daemon/agents.js";
 const agent: { name: string; application: string; cwd: string; startedAt: string; state: string; model?: string } = { name: "writer", application: "codex", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" };
 const read = (space: string, agents = [agent]) => ({ space, state: "read", agents });
 test("none and unavailable are distinct", () => {
@@ -56,10 +55,4 @@ test("elapsed time does not invent negative runtime", () => {
   const start = Date.parse(agent.startedAt);
   assert.equal(runningFor(agent.startedAt, start - 1), "Just started");
   assert.equal(runningFor(agent.startedAt, start + 65 * 60_000), "1h 5m");
-});
-test("parent projection strips unknown fields and rejects malformed or oversized rows", () => {
-  assert.deepEqual(parseHostedAgents([{ ...agent, token: "secret", prompt: "private" }]), [agent]);
-  assert.throws(() => parseHostedAgents(Array(51).fill(agent)));
-  assert.throws(() => parseHostedAgents([{ ...agent, name: "bad\nname" }]));
-  assert.throws(() => parseHostedAgents([{ ...agent, startedAt: "invalid" }]));
 });
