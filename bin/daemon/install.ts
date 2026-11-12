@@ -48,6 +48,7 @@ import { launchAgentService, xmlText } from "./install-darwin.js";
 import { scheduledTaskName, scheduledTaskService } from "./install-win32.js";
 import { daemonCommandCopy } from "./guidance.js";
 import { recoverPausedTask } from "./restart-recovery.js";
+import { removeAllServiceRecords } from "./service-records.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
 export type ServiceMechanism = "systemd-user" | "launchd-agent" | "scheduled-task";
@@ -691,10 +692,11 @@ export async function restartInstalled(paths: DaemonPaths, daemonHome?: string, 
 
 export interface UninstallResult extends UninstallPlan {
   readonly state: "removed";
+  readonly removedServiceRecords: readonly string[];
 }
 
-/** Stop it, disable autostart, remove the unit and its receipt, and reload the user manager (on
- *  macOS and Windows, the adapter's own stop and deregistration). */
+/** Stop it, disable autostart, erase its service records under lifetime exclusion, remove the unit
+ *  and receipt, and reload the user manager (on macOS and Windows, the adapter's deregistration). */
 export async function applyUninstall(paths: DaemonPaths, daemonHome: string | undefined): Promise<UninstallResult> {
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   checkDir(paths.state);
@@ -771,9 +773,12 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
     // The wait above must not turn a changed source/receipt into deletion authority.
     const current = recordedUnit(paths, daemonHome).receipt;
     if (current.unitSha256 !== receipt.unitSha256 || current.installedAt !== receipt.installedAt) throw uncertain("the daemon installation changed during shutdown");
+    let removedServiceRecords: string[];
+    try { removedServiceRecords = removeAllServiceRecords(daemonHome ?? dirname(paths.state)); }
+    catch { throw uncertain("removing local service credentials and identity records failed; some records may remain. Repair their permissions and retry uninstall; the remote records may remain until you remove the computer in the dashboard"); }
     rmSync(plan.unitPath, { force: true });
     if (!service) submitSystemdUnitRegistration("reload", plan.unit);
     rmSync(unitReceiptFile(paths), { force: true });
-    return { ...plan, state: "removed" };
+    return { ...plan, state: "removed", removedServiceRecords };
   } finally { socket?.destroy(); exclusion?.release(); }
 }

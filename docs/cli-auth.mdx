@@ -432,6 +432,12 @@ discovered registry entries without contacting the provider, for a provider that
 not confirm sign-out. The provider session stays valid until it expires or is revoked at the
 provider, and the receipt says so.
 
+Signing out leaves an already connected daemon connected on the computer's own service proof,
+not the human session. The sign-out receipt explains this in text and its JSON `daemonNotice`.
+To end that connection, run `cotal daemon service-disconnect --space <space>` on this computer,
+or remove the computer in the dashboard. Disconnect removes its local renewal credentials and
+identity records. It does not revoke the remote authority.
+
 
 `endpoints --json` and `endpoints --plain` show the authorized live presence snapshot, including
 agents and infrastructure. This legacy live read is labeled as presence, not a saved-reference
