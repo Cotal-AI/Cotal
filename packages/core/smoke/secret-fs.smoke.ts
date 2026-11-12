@@ -6,6 +6,7 @@
  * (the local regression guard — mode bits after write/harden). The win32 `icacls` readback (the real
  * point — broad inherited access is actually stripped) is win32-only; Windows CI is the oracle.
  */
+import "./secret-fs-long-path.smoke.js";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
