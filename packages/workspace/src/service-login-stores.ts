@@ -1,6 +1,8 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
+import { loginRecoveryCommand } from "./cloud-login.js";
+import { homeCotalDir } from "./cotal-home.js";
 import { isAbsolute, join, resolve } from "node:path";
 
 /** A proven same-user Manager unit and its explicit private sign-in directory. */
@@ -155,10 +157,12 @@ export function assertServiceLoginStore(store: ServiceLoginStore): void {
 }
 
 /** Recovery text names a service only when its current protected unit proves the store. */
-export function serviceLoginRecovery(_idp: string, directory?: string): string {
+export function serviceLoginRecovery(idp: string, directory?: string): string {
+  const command = loginRecoveryCommand(idp);
+  if (directory === undefined) return `run \`${command}\` to sign in again`;
   try {
-    const store = serviceLoginStores().find((s) => directory === undefined || s.directory === directory);
-    if (store) { assertServiceLoginStore(store); return `Manager service ${JSON.stringify(store.service)} uses a separate sign-in store; run \`cotal login\``; }
+    const store = serviceLoginStores().find((s) => s.directory === directory);
+    if (store) { assertServiceLoginStore(store); return `Manager service ${JSON.stringify(store.service)} uses a separate sign-in store; run \`${command}\``; }
   } catch { /* Unproven service names must not appear in recovery advice. */ }
-  return directory ? `run \`COTAL_HOME='${directory.replaceAll("'", "'\\''")}' cotal login\` to sign in again` : "run `cotal login` to sign in again";
+  return directory !== homeCotalDir() ? `run \`COTAL_HOME='${directory.replaceAll("'", "'\\''")}' ${command}\` to sign in again` : `run \`${command}\` to sign in again`;
 }
