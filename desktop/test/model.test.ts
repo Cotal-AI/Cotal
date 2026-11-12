@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl } from "../src/model.ts";
+import { initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice } from "../src/model.ts";
 
 test("account targeting prefers the link, personal space, only space, then asks", () => {
   const personal = { space: "mine", catalogId: "sp_mine", label: "Mine", kind: "personal" };
@@ -58,4 +58,13 @@ test("expired credentials and pending approval refusals map to their recovery ac
     action: "refresh",
     label: "Check approval",
   });
+});
+
+test("kept credential notice names each well-formed file and is empty otherwise", () => {
+  assert.equal(keptCredentialsNotice({ outcome: "signed-in" }), "");
+  assert.equal(keptCredentialsNotice({ outcome: "signed-in", credentialsKept: [] }), "");
+  assert.equal(keptCredentialsNotice({ outcome: "signed-in", credentialsKept: [null, { space: "a" }, "x"] }), "");
+  const two = keptCredentialsNotice({ credentialsKept: [{ space: "a", path: "/p/a", reason: "EACCES" }, { space: "b", path: "/p/b", reason: "it is a symbolic link" }, { path: 1 }] });
+  assert.match(two, /^Signed in, but 2 credential files of the previous account's spaces could not be deleted: \/p\/a \(a: EACCES\), \/p\/b \(b: it is a symbolic link\)\. Delete each file named\./);
+  assert.match(keptCredentialsNotice({ credentialsKept: [{ space: "a", path: "/p/a", reason: "EACCES" }] }), /^Signed in, but a credential file /);
 });

@@ -1177,10 +1177,11 @@ Signing in as a different account at the same provider removes the previous acco
 cache from the selected daemon home. The default daemon also removes that account's discovered
 space registrations, clearing a selection that named a removed space, and deletes the sentinel
 credential file each of those registrations kept in its catalog folder. Manual registrations and
-their credential files stay. A credential file that cannot be deleted stays on disk while its
+their credential files stay. A file reached through a symbolic link below the account's catalog
+folder is not deleted. A credential file that cannot be deleted stays on disk while its
 registration is still removed: the run is partial (exit 4, `OPERATION_PARTIAL`), its message names
 each file and why, and JSON lists them in `credentialsKept`. A `setup` that signs in this way stops
-there as partial. This cleanup does not revoke credentials or stop existing connections.
+there as partial. The desktop app keeps the new sign-in and shows the same files and cleanup. This cleanup does not revoke credentials or stop existing connections.
 A separate `--daemon-home` never changes the shared registry or its credentials. Signing in as the
 same account or failing before a replacement session is saved does not remove registrations.
 

@@ -17,7 +17,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { performance } from "node:perf_hooks";
 import { AGENT_LIFECYCLE_HELD, mintLifecycleUid } from "@cotal-ai/core";
 import { jwtVerify } from "jose";
@@ -755,6 +755,25 @@ console.log("C2) advertised space catalog cache");
     const linked = removeCatalogAccount("account-e");
     check("a symbolic link in place of the credential is reported, and its target is not followed",
       linked.credentialsKept[0]?.reason === "it is a symbolic link" && readFileSync(target, "utf8") === "target bytes" && findMesh("e_link") === undefined, linked);
+    // A symbolic link above the file passes a lexical containment check and a leaf lstat. The file it
+    // reaches lies outside the catalog, so it stays, both for the credential's own folder and for a
+    // folder higher up, and the registration still goes.
+    for (const [space, linkAt] of [["g_parent", (root: string) => userAuthStateDir(root, "g_parent")], ["g_ancestor", (root: string) => root]] as const) {
+      const root = custodyRoot("account-g", space);
+      const elsewhere = mkdtempSync(join(tmpdir(), `cotal-login-catalog-${space}-`));
+      const linked = linkAt(root);
+      const credential = join(userAuthStateDir(root, space), "sentinel.creds");
+      const reached = join(elsewhere, relative(linked, credential));
+      mkdirSync(dirname(reached), { recursive: true, mode: 0o700 });
+      writeFileSync(reached, "outside bytes", { mode: 0o600 });
+      mkdirSync(dirname(linked), { recursive: true, mode: 0o700 });
+      symlinkSync(elsewhere, linked);
+      discovered(space, "account-g", credential);
+      const through = removeCatalogAccount("account-g");
+      check(`a symbolic link at ${space === "g_parent" ? "the credential's folder" : "the space's custody folder"} is reported, and the file it reaches outside the catalog stays`,
+        existsSync(reached) && readFileSync(reached, "utf8") === "outside bytes" && through.credentialsKept.length === 1 && through.credentialsKept[0]?.space === space && findMesh(space) === undefined, { through, reached: existsSync(reached) });
+    }
+    check("a manual registration's credential stays through every switch above", existsSync(manualSentinel) && findMesh("manual_creds")?.origin === "manual");
   }
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const locked = sentinelIn(custodyRoot("account-f", "f_locked"), "f_locked");

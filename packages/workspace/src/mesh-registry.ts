@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot, userAuthStateDir } from "./auth-paths.js";
 import { homeCotalDir } from "./cotal-home.js";
@@ -456,14 +456,15 @@ export interface KeptCatalogCredential {
  *  sentinel credential file is deleted with its registration. Files are deleted before any
  *  registration is removed, so an interrupted switch never leaves a credential that no record names.
  *  Only a regular file inside the entry's catalog custody folder, where catalog application wrote it,
- *  is deleted, so a record cannot name another file for removal. A file that cannot be deleted is
+ *  and reached through no symbolic link below this account's catalog folder, is deleted, so a record
+ *  cannot name another file for removal. A file that cannot be deleted is
  *  returned for the caller to report. Its registration is removed regardless: the switched-away
  *  account no longer refreshes it and `space forget` refuses a catalog entry. Manual and local
  *  entries and their credentials are never touched. */
 export function removeCatalogAccount(ownerKey: string): { removed: string[]; credentialsKept: KeptCatalogCredential[] } {
   const owned = loadMeshes().filter((m) => m.origin === "catalog" && m.catalogOwner === ownerKey);
   const credentialsKept = owned.flatMap((m) => {
-    const kept = removeCatalogCredential(m);
+    const kept = removeCatalogCredential(m, ownerKey);
     return kept ? [kept] : [];
   });
   const removed = owned.map((m) => m.space);
@@ -483,17 +484,24 @@ export function keptCatalogCredentials(kept: readonly KeptCatalogCredential[]): 
 }
 
 /** Delete one discovered entry's sentinel credential file, or say why it stays. An absent file is
- *  already gone. */
-function removeCatalogCredential(entry: MeshEntry): KeptCatalogCredential | undefined {
+ *  already gone. Catalog application writes custody folders under `<Cotal home>/catalog/<ownerKey>`,
+ *  so the file's real folder must be its path below the real location of that account folder. A
+ *  symbolic link anywhere below it, which a lexical check and a leaf lstat both miss, leaves the
+ *  file in place. */
+function removeCatalogCredential(entry: MeshEntry, ownerKey: string): KeptCatalogCredential | undefined {
   const path = entry.userAuth?.sentinelCredsPath;
   if (path === undefined) return undefined;
   const kept = (reason: string): KeptCatalogCredential => ({ space: entry.space, path, reason });
   try {
     const custody = userAuthStateDir(entry.catalogRoot ?? entry.root, entry.space, { readOnly: true });
     if (!resolve(path).startsWith(resolve(custody) + sep)) return kept("it is outside the space's catalog credential folder");
+    const account = join(homeCotalDir(), "catalog", ownerKey);
+    const below = relative(resolve(account), resolve(dirname(path)));
+    if (below === ".." || below.startsWith(`..${sep}`) || isAbsolute(below)) return kept("it is outside this account's catalog folder");
     const stat = lstatSync(path, { throwIfNoEntry: false });
     if (!stat) return undefined;
     if (!stat.isFile()) return kept(stat.isSymbolicLink() ? "it is a symbolic link" : "it is not a regular file");
+    if (realpathSync(dirname(path)) !== join(realpathSync(account), below)) return kept("a folder above it is a symbolic link");
     rmSync(path);
     return undefined;
   } catch (e) {
