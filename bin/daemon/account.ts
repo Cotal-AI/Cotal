@@ -22,7 +22,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
   }
   const pendingNames = new Set<string>();
   let state: AccountComputerStatus = { mode: "signed-out", hostSupport: "unknown", spaces: [] };
-  const contexts = new Map<string, { state: AccountComputerStatus; etag?: string; lastHeartbeat: number; sentManagers?: string; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void> }>();
+  const contexts = new Map<string, { state: AccountComputerStatus; etag?: string; needsFreshApply?: boolean; lastHeartbeat: number; sentManagers?: string; snapshot?: SpaceCatalogSnapshot; revision?: number; bindingRevisions?: Record<string, number>; abort: AbortController; work?: Promise<void> }>();
   const tasks = new Set<Promise<void>>();
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -66,7 +66,11 @@ export function createAccountComputer(home: string, version: string, reconciler:
     const result = await call("GET");
     context.abort.signal.throwIfAborted();
     if (result.status === 304) {
-      if (context.snapshot && context.revision !== undefined) await withIdpSessionDir(home, () => reconciler.apply(account, context.snapshot!, context.revision!, context.bindingRevisions!, false, context.abort.signal));
+      if (context.snapshot && context.revision !== undefined) {
+        const outcome = await withIdpSessionDir(home, () => reconciler.apply(account, context.snapshot!, context.revision!, context.bindingRevisions!, context.needsFreshApply === true, context.abort.signal));
+        if (outcome === "deferred") { delete context.etag; }
+        else { delete context.needsFreshApply; }
+      }
       // The host answered and nothing changed, so an earlier failed request no longer describes this computer.
       delete state.message;
       return;
@@ -86,8 +90,10 @@ export function createAccountComputer(home: string, version: string, reconciler:
     state.mode = "account"; delete state.message; state.desiredRevision = Number(body.revision);
     context.snapshot = body as unknown as SpaceCatalogSnapshot;
     context.revision = Number(body.revision);
-    await withIdpSessionDir(home, () => reconciler.apply(account, context.snapshot!, context.revision!, context.bindingRevisions!, true, context.abort.signal));
-    context.etag = result.etag;
+    context.needsFreshApply = true;
+    const outcome = await withIdpSessionDir(home, () => reconciler.apply(account, context.snapshot!, context.revision!, context.bindingRevisions!, true, context.abort.signal));
+    if (outcome === "deferred") { delete context.etag; }
+    else { delete context.needsFreshApply; context.etag = result.etag; }
       }
     });
   };

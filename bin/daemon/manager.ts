@@ -58,6 +58,25 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   const live = new Map<string, Live>();
   let closed = false;
   let generationPending = false;
+  const admissionHolds = new Map<string, { drained: Promise<void>; release(): void }>();
+  const activeStarts = new Set<Promise<HostedManager>>();
+  const deferredLaunches = new Map<Live, { run(): void; dueAt: number; unref: boolean }>();
+  const admissionHeld = () => admissionHolds.size !== 0;
+  const drainAdmission = () => Promise.allSettled([
+    ...activeStarts, ...[...live.values()].flatMap(l => [l.starting, l.healthTask]),
+  ]).then(() => {});
+  const launchTimer = (l: Live, run: () => void, delay: number, unref = false) => {
+    if (l.timer) clearTimeout(l.timer);
+    deferredLaunches.set(l, { run, dueAt: Date.now() + delay, unref });
+    if (admissionHeld()) { l.timer = undefined; return; }
+    l.timer = setTimeout(() => {
+      l.timer = undefined;
+      if (admissionHeld()) return;
+      deferredLaunches.delete(l);
+      run();
+    }, delay);
+    if (unref) l.timer.unref();
+  };
   let generationPrepared = false;
   let generationTask = Promise.resolve();
   const generationOwners = new Set<string>();
@@ -155,12 +174,12 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   };
   const observe = (l: Live) => {
     if (l.healthTimer) clearTimeout(l.healthTimer);
-    if (closed || generationPending || l.stopping || !l.child) return;
+    if (closed || generationPending || admissionHeld() || l.stopping || !l.child) return;
     l.healthTimer = setTimeout(() => {
       l.healthTimer = undefined;
       const child = l.child;
-      if (!child || l.starting || closed || generationPending || l.stopping) { observe(l); return; }
-      const current = () => !closed && !generationPending && !l.stopping && l.child === child;
+      if (!child || l.starting || closed || generationPending || admissionHeld() || l.stopping) { observe(l); return; }
+      const current = () => !closed && !generationPending && !admissionHeld() && !l.stopping && l.child === child;
       l.healthTask = (async () => {
         try {
           const pending = generationAttempts.get(child);
@@ -168,6 +187,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
             try { await generationCall(child, pending, "abort"); generationAttempts.delete(child); }
             catch { return; }
           }
+          if (!current()) return;
           // Parent IPC proves child responsiveness without the daemon obtaining mesh credentials.
           await generationCall(child, randomUUID(), "inspect");
           if (current()) l.healthFailures = 0;
@@ -238,17 +258,30 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     if (closed || l.stopping || l.view.state === "refused") return;
     l.view = { ...l.view, state: "restarting", pid: l.child?.pid };
     if (generationPending) return;
+    if (admissionHeld()) { deferLaunch(l); return; }
     l.view = { ...l.view, restarts: l.view.restarts + 1 };
     const delay = Math.min(30_000, 1000 * 2 ** Math.min(l.failures++, 5));
-    l.timer = setTimeout(() => {
-      l.timer = undefined;
+    launchTimer(l, () => {
+      if (closed || generationPending || l.stopping) return;
       l.starting = launch(l).catch((error) => refuse(l, (error as Error).message, `correct the cause and run \`cotal daemon setup --space ${l.view.space}\``)).finally(() => { l.starting = undefined; });
       void l.starting.catch(() => {});
     }, delay);
   };
+  function deferLaunch(l: Live): void {
+    deferredLaunches.set(l, {
+      run() {
+        l.starting = launch(l).catch(error => refuse(l, String(error), "inspect daemon status before retrying")).finally(() => { l.starting = undefined; });
+      },
+      dueAt: Date.now(),
+      unref: false,
+    });
+  }
   async function launch(l: Live): Promise<HostedManager> {
     const space = l.view.space;
-    if (closed || generationPending || l.stopping) return l.view;
+    if (closed || generationPending || admissionHeld() || l.stopping) {
+      if (!closed && !l.stopping && admissionHeld()) deferLaunch(l);
+      return l.view;
+    }
     const entry = findMesh(space);
     if (!entry) return refuse(l, "this space is no longer registered on this machine", `run \`cotal daemon setup --space ${space} --idp <url>\` to discover it again`);
     if (entry.mode !== "user" || entry.userAuth?.remote !== true) return refuse(l, "hosted Managers require a registered user-auth participant space", "use `cotal manager start` from the folder that hosts the space");
@@ -278,16 +311,17 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       refuse(l, reason, "correct the connector cause, run \`cotal ext seed --repair\` with the daemon's installed CLI, then retry setup; the daemon will retry automatically");
       if (!closed && !l.stopping && !generationPending) {
         const delay = Math.min(300_000, 5000 * 2 ** Math.min(l.failures++, 6));
-        l.timer = setTimeout(() => {
-          l.timer = undefined;
+        launchTimer(l, () => {
           if (closed || l.stopping || generationPending) return;
           l.starting = launch(l).catch((cause) => refuse(l, String(cause), `correct the cause and run \`cotal daemon setup --space ${space}\``)).finally(() => { l.starting = undefined; });
-        }, delay);
-        l.timer.unref();
+        }, delay, true);
       }
       return { ...l.view };
     }
-    if (closed || generationPending || l.stopping) return l.view;
+    if (closed || generationPending || admissionHeld() || l.stopping) {
+      if (!closed && !l.stopping && admissionHeld()) deferLaunch(l);
+      return l.view;
+    }
     const savedCleanup = readManagerCleanup(home, space);
     const storeIdentity = workspaceSecretStore(entry.root).identity;
     if (storeIdentity.kind !== "fs") throw new Error("hosted Manager cleanup requires the original filesystem store identity");
@@ -299,6 +333,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       writeManagerCleanup(home, { version: 1, space, root: entry.root, provider: entry.userAuth.provider, storeIdentity, phase: "hosted" });
     }
     if (entry.userAuth.provider === "cotal") await retainManagerAuthorityRoute(workspaceSecretStore(entry.root), userAuthStateDir(entry.root, space, { readOnly: true }), space);
+    if (closed || generationPending || admissionHeld() || l.stopping) {
+      if (!closed && !l.stopping && admissionHeld()) deferLaunch(l);
+      return l.view;
+    }
     const root = daemonManagerRoot(space, home);
     mkSecretDir(root); mkSecretDir(join(root, ".cotal"));
     writeDefaultPersonaForLaunch(root);
@@ -432,12 +470,14 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     schedule(l);
     return { ...l.view };
   }
-  const start = async (space: string): Promise<HostedManager> => {
-    await startRaw(space);
-    return status(space);
+  const start = (space: string): Promise<HostedManager> => {
+    const task = startRaw(space).then(() => status(space));
+    activeStarts.add(task);
+    void task.then(() => activeStarts.delete(task), () => activeStarts.delete(task));
+    return task;
   };
   const startRaw = async (space: string): Promise<HostedManager> => {
-    if (closed || generationPending) throw new HostedManagerRefusal("GENERATION_PENDING", "the daemon is stopping or preparing an installed generation transition", command(`wait for the installed generation transition, then run \`cotal daemon setup --space ${space}\``));
+    if (closed || generationPending || admissionHeld()) throw new HostedManagerRefusal("GENERATION_PENDING", "the daemon is stopping or preparing an installed generation transition", command(`wait for the installed generation transition, then run \`cotal daemon setup --space ${space}\``));
     let l = live.get(space);
     if (!l) {
       const previous = status(space);
@@ -454,6 +494,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       try {
         const reply = await probe(space, l.view.instanceId);
         if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager did not answer status");
+        if (admissionHeld() || generationPending) return l.view;
         if (closed || l.stopping || !l.child) throw new Error("the hosted Manager is stopping");
         writeSecretFileAtomic(daemonManagerIntentFile(space, home), JSON.stringify({ v: 1, space }));
         rmSync(refusalFile(space), { force: true });
@@ -463,14 +504,16 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           const seats = await generationCall(child, randomUUID(), "inspect");
           if (seats === undefined || l.child !== child) throw new Error("the hosted Manager changed before its applications could be refreshed");
           if (seats > 0) throw new HostedManagerRefusal("SEATS_ACTIVE", `hosted Manager for ${space} holds ${seats} active seat(s); its applications cannot be refreshed`, command(`stop the seats through Manager ${l.view.instanceId} in space ${space}, then run \`cotal daemon setup --space ${space}\``));
+          if (admissionHeld() || generationPending) return l.view;
           const attempt = randomUUID();
           generationAttempts.set(child, attempt);
           l.stopping = true;
           if (l.healthTimer) { clearTimeout(l.healthTimer); l.healthTimer = undefined; }
           try {
             await l.healthTask;
+            if (closed || generationPending || admissionHeld() || l.child !== child) throw new Error("the hosted Manager changed before its applications could be refreshed");
             await generationCall(child, attempt, "prepare");
-            if (closed || generationPending || l.child !== child) throw new Error("the hosted Manager changed before its applications could be refreshed");
+            if (closed || generationPending || admissionHeld() || l.child !== child) throw new Error("the hosted Manager changed before its applications could be refreshed");
             await stopChild(l);
             generationAttempts.delete(child);
             l.stopping = false;
@@ -492,6 +535,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       return { ...l.view };
     }
     if (l.timer) { clearTimeout(l.timer); l.timer = undefined; }
+    deferredLaunches.delete(l);
     if (l.healthTask) await l.healthTask;
     l.stopping = false;
     const current = l;
@@ -511,7 +555,41 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       return [space];
     });
   };
+  const resumeAdmission = () => {
+    if (admissionHeld() || closed || generationPending) return;
+    for (const l of live.values()) {
+      const retry = deferredLaunches.get(l);
+      if (l.stopping || l.view.state === "stopped") { deferredLaunches.delete(l); continue; }
+      if (!l.starting && !l.child && retry) {
+        deferredLaunches.delete(l);
+        launchTimer(l, retry.run, Math.max(0, retry.dueAt - Date.now()), retry.unref);
+      } else if (!l.child && !l.starting && !l.timer && l.view.state === "restarting") schedule(l);
+      else if (l.child) { deferredLaunches.delete(l); observe(l); }
+    }
+  };
   return {
+    /** Block new lifecycle work until this owner's idempotent handle is released.
+     * Drain includes work already entered, not credential renewal or direct observations.
+     * The caller must await drained before release and retain the hold until durable abort. */
+    holdAdmission(owner: string) {
+      const existing = admissionHolds.get(owner);
+      if (existing) return existing;
+      const hold = {
+        drained: Promise.resolve(),
+        release() {
+          if (admissionHolds.get(owner) !== hold) return;
+          admissionHolds.delete(owner);
+          resumeAdmission();
+        },
+      };
+      admissionHolds.set(owner, hold);
+      for (const l of live.values()) {
+        if (l.timer) { clearTimeout(l.timer); l.timer = undefined; }
+        if (l.healthTimer) { clearTimeout(l.healthTimer); l.healthTimer = undefined; }
+      }
+      hold.drained = drainAdmission();
+      return hold;
+    },
     start, status, refresh,
     async agents(): Promise<HostedAgents[]> {
       const observations = await Promise.all([...live.values()].filter(l => l.view.state !== "stopped").map(async l => {
@@ -558,6 +636,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       generationAcquisitions--;
       if (generationPrepared) { generationOwners.add(owner); return; }
       try {
+        await drainAdmission();
         await Promise.all([...live.values()].map((l) => l.healthTask));
         // A timed-out prepare can still have landed. Roll back every retained attempt before retrying.
         for (const [child, attemptId] of generationAttempts) {
@@ -606,10 +685,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           catch { /* Retain the exact attempt for rollback on the next automatic retry. */ }
         }
         generationPending = generationAttempts.size !== 0 || generationAcquisitions !== 0;
-        if (!generationPending) for (const l of live.values()) {
-          if (!l.child && !l.starting && !l.timer && l.view.state === "restarting") schedule(l);
-          else if (l.child) observe(l);
-        }
+        if (!generationPending) resumeAdmission();
         throw error;
       }
       });
@@ -627,10 +703,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         }
         generationReleases.clear();
         generationPending = generationAcquisitions !== 0;
-        if (!generationPending) for (const l of live.values()) {
-          if (!l.child && !l.starting && !l.timer && l.view.state === "restarting") schedule(l);
-          else if (l.child) observe(l);
-        }
+        if (!generationPending) resumeAdmission();
       });
     },
     all: () => [...new Set([...spaces(true), ...live.keys()])].map(status),
@@ -638,6 +711,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       // A crash during child shutdown must not restore a withdrawn hosting intent.
       rmSync(daemonManagerIntentFile(space, home), { force: true });
       let l = live.get(space);
+      if (l) deferredLaunches.delete(l);
       if (l) {
         l.stopping = true;
         if (l.timer) clearTimeout(l.timer);

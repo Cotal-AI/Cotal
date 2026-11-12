@@ -56,6 +56,18 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
     queue = next.then(() => {}, () => {});
     return next;
   };
+  const mutationOwners = new Map<string, { drained: Promise<void>; release(): void }>();
+  /** Pause new account applies without stopping reads, renewals or existing work.
+   * Direct serial callbacks remain the coordinator's responsibility to gate.
+   * Acquire and await drained outside serial, never from a callback on that queue.
+   */
+  const holdMutations = (owner: string) => {
+    const previous = mutationOwners.get(owner);
+    if (previous) return previous;
+    const hold = { drained: queue, release() { if (mutationOwners.get(owner) === hold) mutationOwners.delete(owner); } };
+    mutationOwners.set(owner, hold);
+    return hold;
+  };
   const localRemoval = (space: string) => {
     const state = saved.spaces[space];
     if (state) { state.removedAt = state.revision; persist(); }
@@ -66,7 +78,10 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
   };
   const desiredByOwner = new Map<string, Set<string>>();
   const desiredAll = () => new Set([...desiredByOwner.values()].flatMap(set => [...set]));
-  const apply = (account: AuthSpaceCatalogAccount, snapshot: SpaceCatalogSnapshot, revision: number, bindingRevisions: Record<string, number>, fresh = true, signal?: AbortSignal) => serial(async () => {
+  const apply = (account: AuthSpaceCatalogAccount, snapshot: SpaceCatalogSnapshot, revision: number, bindingRevisions: Record<string, number>, fresh = true, signal?: AbortSignal): Promise<"applied" | "deferred"> => {
+    if (mutationOwners.size !== 0) return Promise.resolve("deferred");
+    return serial<"applied" | "deferred">(async () => {
+    if (mutationOwners.size !== 0) return "deferred";
     signal?.throwIfAborted();
     if (snapshot.spaces.some(row => !Number.isSafeInteger(bindingRevisions[row.id]) || bindingRevisions[row.id]! <= 0 || bindingRevisions[row.id]! > revision)) throw new Error("invalid binding revisions");
     const desired = new Set(snapshot.spaces.map(row => row.slug));
@@ -129,8 +144,10 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
         refusals.set(row.slug, safe); retryAt.set(row.slug, Date.now() + 30_000);
       }
     }
-  });
-  return { apply, localRemoval, localAddition, serial,
+    return "applied";
+    });
+  };
+  return { apply, holdMutations, isHeld: () => mutationOwners.size !== 0, localRemoval, localAddition, serial,
     /** The answering Managers this computer hosts for the given account spaces, by catalog space id. */
     hostedManagers(rows: readonly { id: string; slug: string }[]) {
       return rows.flatMap((row) => {
