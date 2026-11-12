@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { taskStageScript } from "./windows-task-stage-script.mjs";
+import { contextVariantCount, contextVariants, renderContextTable } from "./windows-task-context-measure.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
 const xml = value => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -21,7 +22,7 @@ export function contextTaskDefinition(source, { sid, node, args, cwd }) {
     return /[ \t]/.test(value) ? `"${value}${"\\".repeat(/\\*$/.exec(value)[0].length)}"` : value;
   };
   const argumentsText = args.map(quote).join(" ");
-  const text = `<?xml version="1.0" encoding="UTF-16"?><Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Principals><Principal id="Author"><UserId>${sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><Enabled>true</Enabled><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><ExecutionTimeLimit>PT12M</ExecutionTimeLimit><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><Priority>4</Priority></Settings><Actions Context="Author"><Exec><Command>${xml(node)}</Command><Arguments>${xml(argumentsText)}</Arguments><WorkingDirectory>${xml(cwd)}</WorkingDirectory></Exec></Actions></Task>`;
+  const text = `<?xml version="1.0" encoding="UTF-16"?><Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Principals><Principal id="Author"><UserId>${sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><Enabled>true</Enabled><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><ExecutionTimeLimit>PT26M</ExecutionTimeLimit><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><Priority>4</Priority></Settings><Actions Context="Author"><Exec><Command>${xml(node)}</Command><Arguments>${xml(argumentsText)}</Arguments><WorkingDirectory>${xml(cwd)}</WorkingDirectory></Exec></Actions></Task>`;
   return { bytes: Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]), argumentsText };
 }
 
@@ -103,17 +104,17 @@ async function main() {
   validateOwner(owner);
   assert.equal(inspect(owner).instances, 0, "only the exact idle owned task may be run");
   native(system("schtasks.exe"), ["/Run", "/TN", unit]);
-  const deadline = Date.now() + 11 * 60_000;
+  const deadline = Date.now() + 25 * 60_000;
   let rows;
   while (Date.now() < deadline) {
     if (existsSync(taskOutput)) {
       try { rows = JSON.parse(readFileSync(taskOutput, "utf8")); } catch { /* A partial incremental write is not completion. */ }
       if (Array.isArray(rows)) writeFileSync(join(output, "scheduled-task.json"), JSON.stringify(rows, null, 2));
-      if (Array.isArray(rows) && rows.length === 3) break;
+      if (Array.isArray(rows) && rows.length === contextVariantCount) break;
     }
     await delay(500);
   }
-  assert.ok(Array.isArray(rows) && rows.length === 3, "scheduled task measurements did not complete; cleanup remains receipt-guarded");
+  assert.ok(Array.isArray(rows) && rows.length === contextVariantCount, "scheduled task measurements did not complete; cleanup remains receipt-guarded");
   validateOwner(owner);
   let idle = false;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -122,7 +123,7 @@ async function main() {
   }
   assert.ok(idle, "scheduled diagnostic process exit must be confirmed before comparison");
   try {
-    native(process.execPath, ["--max-semi-space-size=1", modulePath, "run", configPath, "harness", harnessOutput], process.env, 11 * 60_000);
+    native(process.execPath, ["--max-semi-space-size=1", modulePath, "run", configPath, "harness", harnessOutput], process.env, 25 * 60_000);
   } finally {
     if (existsSync(harnessOutput)) {
       let partial;
@@ -131,12 +132,11 @@ async function main() {
     }
   }
   const harnessRows = JSON.parse(readFileSync(harnessOutput, "utf8"));
-  assert.equal(harnessRows.length, 3);
-  const { renderContextTable } = await import("./windows-task-context-measure.mjs");
+  assert.equal(harnessRows.length, contextVariantCount);
   const table = renderContextTable([...rows, ...harnessRows]);
   writeFileSync(join(output, "comparison.md"), table, { flag: "wx" });
   console.log(table);
-  writeFileSync(join(output, "scope.json"), JSON.stringify({ principal: "same current SID / InteractiveToken / LeastPrivilege as shipped task", order: "scheduled-task three variants, then harness three variants; warmed, not cold-controlled", strippedEnvironment: "shipped desktop daemon_env_key allowlist plus DO_NOT_TRACK=1, not a claim to reproduce PATH refresh, native launcher or all daemon initialization", bounds: "180s per native read, 11min per context, PT12M task limit", ownership: "own receipt and exact source/action/principal before Run; stock guarded uninstall afterward", output: "environment names and only USERPROFILE/LOCALAPPDATA/TEMP/PSModulePath values" }, null, 2));
+  writeFileSync(join(output, "scope.json"), JSON.stringify({ principal: "same current SID / InteractiveToken / LeastPrivilege as shipped task", order: "scheduled-task seven variants, then harness seven variants; warmed, not cold-controlled", variants: contextVariants, strippedEnvironment: "shipped desktop daemon_env_key allowlist plus DO_NOT_TRACK=1; each group variant separately restores only its named group from the current context; not a claim to reproduce PATH refresh, native launcher or all daemon initialization", interpretation: "group comparison does not identify an individual variable; no product timeout or environment changes", bounds: "180s per native read, 25min per context, PT26M task limit", ownership: "own receipt and exact source/action/principal before Run; stock guarded uninstall afterward", output: "environment names and only USERPROFILE/LOCALAPPDATA/TEMP/PSModulePath values" }, null, 2));
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

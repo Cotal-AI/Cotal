@@ -10,7 +10,7 @@ test("context task keeps shipped principal and owns one bounded untriggered acti
   assert.equal(definition.bytes.readUInt16LE(0), 0xfeff);
   const text = definition.bytes.subarray(2).toString("utf16le");
   assert.ok(text.includes(`<UserId>${input.sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel>`));
-  assert.ok(text.includes("<ExecutionTimeLimit>PT12M</ExecutionTimeLimit>"));
+  assert.ok(text.includes("<ExecutionTimeLimit>PT26M</ExecutionTimeLimit>"));
   assert.ok(!text.includes("<Triggers>") && !text.includes("RestartOnFailure"));
   assert.equal((text.match(/<Exec>/g) ?? []).length, 1);
   assert.equal(definition.argumentsText, '--max-semi-space-size=1 "C:\\private root\\measure.mjs" run');
@@ -34,4 +34,9 @@ test("receipt guard and cleanup precede the unchanged native scenario", () => {
   assert.ok(!preflight.includes('["/Delete"') && !preflight.includes('["/End"'));
   assert.ok(preflight.includes('"daemon", "uninstall", "--daemon-home", owner.daemonHome, "--yes", "--json"'));
   assert.ok(!preflight.includes("env: owner.env"));
+  assert.ok(preflight.includes("rows.length === contextVariantCount"));
+  assert.ok(preflight.includes("assert.equal(harnessRows.length, contextVariantCount)"));
+  assert.ok(preflight.includes("25 * 60_000"));
+  assert.ok(workflow.includes("timeout-minutes: 65"));
+  assert.ok(workflow.includes("timeout-minutes: 120"));
 });
