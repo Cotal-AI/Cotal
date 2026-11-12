@@ -2820,6 +2820,80 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         }
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--update-attempt-repro")) {
+          // Proposed preinstall-only grammar. No coordinate supplied by the client.
+          const ownerFile = join(root, "update-attempt-owner.cjs");
+          writeFileSync(ownerFile, `
+            const { connect } = require('node:net');
+            process.on('message', ({ socket, request }) => {
+              const client = connect(socket);
+              let buffer = '';
+              const timer = setTimeout(() => { client.destroy(); process.send({ failure: 'socket reply timeout' }); }, 30000);
+              client.setEncoding('utf8');
+              client.once('connect', () => client.write(JSON.stringify(request) + '\\n'));
+              client.on('data', chunk => {
+                buffer += chunk;
+                const end = buffer.indexOf('\\n');
+                if (end < 0) return;
+                clearTimeout(timer); client.destroy();
+                process.send({ reply: JSON.parse(buffer.slice(0, end)), pid: process.pid });
+              });
+              client.once('error', error => { clearTimeout(timer); process.send({ failure: error.message }); });
+            });
+            process.on('disconnect', () => process.exit(0));
+          `, { mode: 0o600, flag: "wx" });
+          const owners: ChildProcess[] = [];
+          const attempt = "9b939980-c28d-4c6e-a5f3-2bed688d8c00";
+          let revision = 1;
+          const request = (owner: ChildProcess, fields: Record<string, unknown>) => new Promise<any>((resolve, reject) => {
+            const timer = setTimeout(() => finish(new Error("explicit attempt owner timed out")), 35_000);
+            const onExit = () => finish(new Error("explicit attempt owner exited before reply"));
+            const onMessage = (message: any) => finish(message.failure ? new Error(message.failure) : undefined, message.reply);
+            const finish = (error?: Error, reply?: unknown) => { clearTimeout(timer); owner.off("exit", onExit); owner.off("message", onMessage); error ? reject(error) : resolve(reply); };
+            owner.once("exit", onExit); owner.once("message", onMessage);
+            owner.send({ socket: paths.socket, request: { v: 1, id: "explicit-attempt", ...fields } });
+          });
+          try {
+            for (let i = 0; i < 2; i++) owners.push(spawn(process.execPath, [ownerFile], { cwd: root, env, stdio: ["ignore", "inherit", "inherit", "ipc"] }));
+            const [a, b] = owners;
+            const prepare = { op: "update-attempt-prepare", attempt, targetVersion: "0.200.0", packageSha256: "b".repeat(64), scope: "current-user" };
+            const prepared = await request(a, prepare);
+            console.log("  Explicit attempt full grammar baseline", JSON.stringify({ updaterA: a.pid, updaterB: b.pid, request: prepare, prepared }));
+            check("Explicit preinstall prepare returns fenced acknowledgement", prepared.ok === true && prepared.result?.kind === "update-attempt" && prepared.result.attempt === attempt && prepared.result.phase === "fenced" && Number.isSafeInteger(prepared.result.revision), prepared);
+            assert.equal(prepared.ok, true, "missing explicit preinstall prepare grammar must fail here, not at fixture setup");
+            assert.equal(prepared.result.phase, "fenced");
+            revision = prepared.result.revision;
+            const duplicate = await request(a, prepare);
+            check("Explicit same process new socket prepare is idempotent", duplicate.ok === true && duplicate.result?.revision === revision && duplicate.result.attempt === attempt && duplicate.result.phase === "fenced", duplicate);
+            const foreign = await request(b, { op: "update-attempt-abort", attempt, revision });
+            check("Explicit foreign process cannot abort owner preparation", foreign.ok === false, foreign);
+            const pending = await ask(paths.socket, { op: "manager-start", space: ON });
+            check("Explicit attempt retains Manager admission fence", pending.ok === false && errorOf(pending).code === "GENERATION_PENDING", pending);
+            const caller = spawn(process.execPath, [cliEntry, "spawn", "--on", manager.instanceId, "--space", ON, "--harness", "daemon-smoke", "--name", "explicit_fenced_seat", "--no-events", "--detach", "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+            try {
+              let output = "", error = "";
+              caller.stdout.on("data", chunk => { output += String(chunk); });
+              caller.stderr.on("data", chunk => { error += String(chunk); });
+              const code = await new Promise<number | null>((resolve, reject) => { caller.once("error", reject); caller.once("close", resolve); });
+              const reply = JSON.parse(output);
+              check("Explicit child fence refuses independent pinned seat", code !== 0 && reply.error?.code === "TARGET_UNAVAILABLE" && JSON.stringify(reply).includes("preserving"), { code, reply, error });
+              assert.equal(reply.error?.code, "TARGET_UNAVAILABLE");
+            } finally { if (caller.exitCode === null && caller.signalCode === null) await killAndAwaitExit(caller, "SIGTERM"); }
+            const aborted = await request(a, { op: "update-attempt-abort", attempt, revision });
+            check("Explicit owning process new socket abort commits", aborted.ok === true && aborted.result?.phase === "aborted" && aborted.result.revision === revision + 1, aborted);
+            const resumed = await ask(paths.socket, { op: "manager-start", space: ON });
+            const view = resultOf(resumed);
+            check("Explicit final abort restores same Manager", resumed.ok === true && view.state === "answering" && view.pid === manager.pid && view.instanceId === manager.instanceId, resumed);
+          } finally {
+            const cleanup = await Promise.allSettled(owners.map(owner => request(owner, { op: "update-attempt-abort", attempt, revision })));
+            console.log("  Explicit attempt owner cleanup replies", JSON.stringify(cleanup.map((result, i) => ({ pid: owners[i]?.pid, ...(result.status === "fulfilled" ? { reply: result.value } : { failure: String(result.reason) }) }))));
+            await Promise.all(owners.map(async owner => { if (owner.connected) owner.disconnect(); await killAndAwaitExit(owner, "SIGTERM"); }));
+            console.log("  Explicit attempt owner processes reaped", JSON.stringify(owners.map(owner => ({ pid: owner.pid, exitCode: owner.exitCode, signalCode: owner.signalCode }))));
+            const after = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 30_000));
+            check("Explicit baseline cleanup preserves same answering Manager", after.state === "answering" && after.pid === manager.pid && after.instanceId === manager.instanceId, after);
+          }
+          return;
+        }
         if (process.argv.includes("--manager-hold-repro")) {
           // Real broker, hosted child and independent CLI caller. No transaction wire API.
           await killAndAwaitExit(child, "SIGTERM");
