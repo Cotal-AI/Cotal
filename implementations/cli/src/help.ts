@@ -251,7 +251,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   ] : anySpace ? [
     ["use", "cotal use <name>", "Choose the space commands use"],
     ["space", "cotal space", "List the spaces on this machine"],
-  ] : [["setup", "cotal setup", "Choose your application and prepare a space"]]));
+  ] : [["login", "cotal login", "Sign in to Cotal Cloud"], ["setup", "cotal setup", "Choose your application and prepare a space"]]));
   sections.push(actions("Everyday", [
     ["ps", "cotal ps", "List agents"],
     ["attach", "cotal attach <name>", "Return to an agent"],
