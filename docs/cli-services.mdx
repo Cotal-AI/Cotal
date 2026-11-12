@@ -546,10 +546,9 @@ the flags it replaces:
 ] }
 ```
 
-An entry may set `"eventPayloads": "withheld"` to deny tool-payload publication in that space's
-auth-service credential grants. Other values are refused. Omitting it preserves the host runtime
-policy and does not relax a host-wide restriction. The generated discovery bundle advertises the
-restriction so newly registering clients receive it.
+An embedder may set the trusted `AuthServiceRuntimeOptions.eventPayloadsWithheld` option to `true`
+to deny tool-payload publication in auth-service credential grants. The generated discovery bundle
+advertises the restriction so newly registering clients receive it.
 
 An entry takes `exchangePublicPort`, `exchangePublicUrl`, `exchangeTrustedProxy`, `advertisedServer`
 and `agentProvisioningUrl`, with the rules of the flags: the last four need `exchangePublicPort`.

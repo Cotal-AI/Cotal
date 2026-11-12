@@ -2506,7 +2506,7 @@ const AUTH_HOST_FACE_FIELDS = ["exchangePublicPort", "exchangePublicUrl", "excha
 
 /** The fields of an `auth-service --spaces` manifest entry besides `space`: the public face, and
  *  `serviceEndpoints`, the per-space form of `--service-endpoints`. */
-const AUTH_HOST_ENTRY_FIELDS = [...AUTH_HOST_FACE_FIELDS, "serviceEndpoints", "registry", "eventPayloads"] as const;
+const AUTH_HOST_ENTRY_FIELDS = [...AUTH_HOST_FACE_FIELDS, "serviceEndpoints", "registry"] as const;
 
 /** One space's settings in an `auth-service --spaces` manifest, read from its entry. */
 export interface AuthHostEntry {
@@ -2517,8 +2517,6 @@ export interface AuthHostEntry {
   serviceEndpoints: boolean;
   /** Default off; only this lane hosts the registry when true. */
   registry?: boolean;
-  /** A restrictive per-space policy. Omission uses the host runtime policy. */
-  eventPayloads?: "withheld";
 }
 
 /** Reads one space's public face from its entry's public-face fields, under the rules the flags
@@ -2556,9 +2554,7 @@ const authHostSettings: SpaceSettings<AuthHostEntry> = {
     const { serviceEndpoints, registry } = fields;
     if (serviceEndpoints !== undefined && typeof serviceEndpoints !== "boolean") throw new Error(`serviceEndpoints must be true or false, got ${JSON.stringify(serviceEndpoints)}`);
     if (registry !== undefined && typeof registry !== "boolean") throw new Error("registry must be true or false");
-    if (fields.eventPayloads !== undefined && fields.eventPayloads !== "withheld") throw new Error('eventPayloads must be "withheld" when present');
-    return { publicFace, serviceEndpoints: serviceEndpoints === true, registry: registry === true,
-      ...(fields.eventPayloads === "withheld" ? { eventPayloads: "withheld" as const } : {}) };
+    return { publicFace, serviceEndpoints: serviceEndpoints === true, registry: registry === true };
   },
   across(settings) {
     const ports = new Map<number, string>();
@@ -2673,8 +2669,7 @@ async function runAuthServiceHost(args: { manifest: string; server: string; root
     startup: "servable",
     open: (space, entry) => openAuthServiceLane({
       space, server, root, secrets, hostedStore: store !== undefined, publicFace: entry.publicFace,
-      serviceEndpoints: entry.serviceEndpoints, registry: entry.registry === true,
-      runtime: { ...args.runtime, ...(entry.eventPayloads === "withheld" ? { eventPayloadsWithheld: true } : {}) }, log: (l) => log(`[${space}] ${l}`),
+      serviceEndpoints: entry.serviceEndpoints, registry: entry.registry === true, runtime: args.runtime, log: (l) => log(`[${space}] ${l}`),
       ...(args.limits !== undefined ? { limits: args.limits } : {}),
     }),
     label: "auth service host",
