@@ -13,8 +13,8 @@
  * Run: pnpm smoke:disarm-delete-timeout
  */
 import { CotalEndpoint } from "../src/endpoint.js";
-import type { PushConsumer } from "@nats-io/jetstream";
-import { TimeoutError } from "@nats-io/transport-node";
+import { JetStreamApiCodes, JetStreamApiError, type JetStreamManager, type PushConsumer } from "@nats-io/jetstream";
+import { PermissionViolationError, TimeoutError } from "@nats-io/transport-node";
 
 let pass = 0;
 let fail = 0;
@@ -92,6 +92,10 @@ try {
 }
 check("a non-timeout delete failure still throws", authThrew === true);
 
+const deleteMember = (
+  ep as unknown as { deleteMembershipConsumer(jsm: JetStreamManager, stream: string, name: string): Promise<boolean> }
+).deleteMembershipConsumer.bind(ep);
+
 const missingWatch = {
   onChange: () => {},
   stopped: false,
@@ -99,13 +103,78 @@ const missingWatch = {
   consumerStream: "KV_membership",
   consumerName: "gone",
   consumer: {
-    delete: () => Promise.reject(Object.assign(new Error("consumer not found"), { code: 404 })),
+    delete: () => Promise.reject(new JetStreamApiError({ code: 404, err_code: JetStreamApiCodes.ConsumerNotFound, description: "consumer not found" })),
   } as unknown as PushConsumer,
 };
 await disarm(missingWatch);
-check("a 404 delete still clears consumer identity", missingWatch.consumerStream === undefined && missingWatch.consumerName === undefined, missingWatch);
+check("a structured ConsumerNotFound delete clears consumer identity", missingWatch.consumerStream === undefined && missingWatch.consumerName === undefined, missingWatch);
 
-const EXPECTED = 5;
+const deleteSubject = "$JS.API.CONSUMER.DELETE.KV_membership.ordered-watch";
+const publishDenied = new PermissionViolationError(
+  `Permissions Violation for Publish to "${deleteSubject}"`,
+  "publish",
+  deleteSubject,
+);
+
+const releasedCases: [string, unknown][] = [
+  ["ConsumerNotFound with non-matching description", new JetStreamApiError({ code: 404, err_code: JetStreamApiCodes.ConsumerNotFound, description: "consumer gone" })],
+  ["StreamNotFound", new JetStreamApiError({ code: 404, err_code: JetStreamApiCodes.StreamNotFound, description: "stream gone" })],
+  ["publish PermissionViolationError", publishDenied],
+  ["wrapped publish PermissionViolationError", new Error("wrapped", { cause: publishDenied })],
+];
+
+for (const [label, err] of releasedCases) {
+  const releasedWatch = {
+    onChange: () => {},
+    stopped: false,
+    arm: Promise.resolve(),
+    consumerStream: "KV_membership",
+    consumerName: "ordered-watch",
+    consumer: { delete: () => Promise.reject(err) } as unknown as PushConsumer,
+  };
+  let disarmErr: unknown;
+  let disarmThrew = false;
+  try { await disarm(releasedWatch); } catch (e) { disarmThrew = true; disarmErr = e; }
+  check(`disarm classifies ${label} as released`, !disarmThrew && releasedWatch.consumerStream === undefined && releasedWatch.consumerName === undefined, { disarmErr, releasedWatch });
+
+  const jsm = { consumers: { delete: () => Promise.reject(err) } } as unknown as JetStreamManager;
+  let delOk = false;
+  let delErr: unknown;
+  try { delOk = await deleteMember(jsm, "KV_membership", "ordered-watch"); } catch (e) { delErr = e; }
+  check(`deleteMembershipConsumer classifies ${label} as released`, delOk === true && delErr === undefined, delErr);
+}
+
+const refusedCases: [string, unknown][] = [
+  ["plain Error with code 404", Object.assign(new Error("consumer not found"), { code: 404 })],
+  ["plain Error with stream-not-found text", new Error("wrapped: stream not found")],
+  ["plain object with code 404", { code: 404 }],
+  ["JetStreamApiError 404 with wrong err_code", new JetStreamApiError({ code: 404, err_code: 10000, description: "consumer not found" })],
+  ["JetStreamApiError 500 with unrelated err_code and matching text", new JetStreamApiError({ code: 500, err_code: 10003, description: "stream not found" })],
+  ["subscription PermissionViolationError", new PermissionViolationError('Permissions Violation for Subscription to "_INBOX.reply"', "subscription", "_INBOX.reply")],
+  ["null", null],
+  ["undefined", undefined],
+];
+
+for (const [label, err] of refusedCases) {
+  const refusedWatch = {
+    onChange: () => {},
+    stopped: false,
+    arm: Promise.resolve(),
+    consumerStream: "KV_membership",
+    consumerName: "ordered-watch",
+    consumer: { delete: () => Promise.reject(err) } as unknown as PushConsumer,
+  };
+  let disarmCaught: unknown = Symbol("did-not-throw");
+  try { await disarm(refusedWatch); } catch (e) { disarmCaught = e; }
+  check(`disarm refuses ${label} and rethrows exact value`, Object.is(disarmCaught, err) && refusedWatch.consumerStream === "KV_membership" && refusedWatch.consumerName === "ordered-watch", { disarmCaught, refusedWatch });
+
+  const jsm = { consumers: { delete: () => Promise.reject(err) } } as unknown as JetStreamManager;
+  let delCaught: unknown = Symbol("did-not-throw");
+  try { await deleteMember(jsm, "KV_membership", "ordered-watch"); } catch (e) { delCaught = e; }
+  check(`deleteMembershipConsumer refuses ${label} and rethrows exact value`, Object.is(delCaught, err), delCaught);
+}
+
+const EXPECTED = 29;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(`DISARM-DELETE-TIMEOUT SMOKE ${fail === 0 ? "OK" : "FAILED"}`);
