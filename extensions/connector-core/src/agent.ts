@@ -51,6 +51,7 @@ import {
   renderOnceTask,
 } from "@cotal-ai/core";
 import { eventPlaneArmed, type AgentConfig } from "./config.js";
+import { checkEventStartup, EventStateConflictError } from "./event-startup.js";
 import { TURN_PULL_RETRY_MS } from "./turn-poll.js";
 import { ONCE_HANDOFF_MS, claimOnceHandoff, confirmOnceHandoff, endOnceHandoff, exitOnceSeat, onOnceHandoffTimeout, onceHandoffState, sealOnceHandoff, stopOnceHandoffTimer } from "./once.js";
 import { attributionSafe } from "./framing.js";
@@ -715,6 +716,22 @@ export class MeshAgent extends EventEmitter {
       // A seat reads the roster when it acts (readRoster) instead of watching it: a watch delivers
       // every member's heartbeat to every member, K² per heartbeat in a space of K (SPEC §6).
       watchPresence: false,
+      beforeBind: async () => {
+        const env = this.launchEnv ?? process.env;
+        if (this.eventStartupChecked || !eventPlaneArmed(config, env)) return;
+        try {
+          await checkEventStartup(this.ep, env);
+          this.eventStartupChecked = true;
+        } catch (error) {
+          // A space that requires events cannot admit a seat whose transcript cannot start.
+          // Where events are optional the seat still starts: the plane stays down and the reason
+          // is kept, which is what a stopped event plane already does after startup.
+          if (config.eventsRequired === true) throw error;
+          this.eventStartupChecked = true;
+          this.eventPlaneBlocked = error instanceof Error ? error.message : String(error);
+          this.lastConnectionError = this.eventPlaneBlocked;
+        }
+      },
       card: {
         id: config.id,
         name: config.name,
@@ -776,7 +793,7 @@ export class MeshAgent extends EventEmitter {
       if (this._stopping) return;
       this._connected = e.connected;
       if (e.connected) {
-        this.lastConnectionError = undefined;
+        this.lastConnectionError = this.eventPlaneBlocked;
         this.endpointNoticeLog.clear();
       }
       this.emit("connection", e);
@@ -1076,6 +1093,8 @@ export class MeshAgent extends EventEmitter {
 
   private consumerClaim?: HeldLock;
   private connectFlight?: Promise<void>;
+  private eventStartupChecked = false;
+  private eventPlaneBlocked?: string;
 
   private async connectLoop(retryMs: number): Promise<void> {
     while (!this._stopping && !this._connected) {
@@ -1101,6 +1120,12 @@ export class MeshAgent extends EventEmitter {
         // session, and there is no next retry to explain or sleep toward.
         if (this._stopping) return;
         this.lastConnectionError = error.message;
+        if (error instanceof EventStateConflictError) {
+          await this.ep.stop();
+          this.consumerClaim?.release();
+          this.consumerClaim = undefined;
+          throw error;
+        }
         // #1356: "mesh unreachable" was asserted unconditionally, including while this same object
         // held `transportConnected: true` — measured against a presence bucket whose writes the
         // broker refuses: broker up, TCP connected, every sibling stream writable, and the operator
@@ -1169,7 +1194,8 @@ export class MeshAgent extends EventEmitter {
     await this.ep.stop();
     await departure;
     // A late initial bind must finish its stopped teardown before custody is released.
-    await this.connectFlight;
+    // A permanent startup refusal is reported by start(); stop must still release its custody.
+    await this.connectFlight?.catch(() => {});
     this.consumerClaim?.release();
     this.consumerClaim = undefined;
   }
