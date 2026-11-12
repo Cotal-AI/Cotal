@@ -97,7 +97,7 @@ try {
   const blankKey = "local.blank";
   await kv.put(blankKey, JSON.stringify({ card: { id: blankKey, name: "" }, status: "idle", ts: Date.now() }));
   const kept = (await reader.readPresence()).find((p) => p.card.id === blankKey);
-  check("the roster reader drops a stored row whose card.name is empty", kept === undefined, kept?.card.name);
+  check("the roster reader drops a stored row whose card.name is empty", kept === undefined);
 } finally {
   await writer?.stop(); await reader?.stop(); await nc?.close();
   await killAndAwaitExit(broker); rmSync(directory, { recursive: true, force: true }); release();
