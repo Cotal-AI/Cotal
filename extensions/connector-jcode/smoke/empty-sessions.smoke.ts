@@ -26,6 +26,8 @@ async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 2
 }
 
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-empty-sessions-`));
+// Control sockets are AF_UNIX: a long path under the tokened root can exceed sun_path.
+const sockRoot = mkdtempSync(join("/tmp", "jes-"));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
@@ -80,7 +82,7 @@ function startHost(name: string, extra: NodeJS.ProcessEnv): { child: ChildProces
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
-      COTAL_CONTROL_SOCKET: join(root, `${name}-control.sock`),
+      COTAL_CONTROL_SOCKET: join(sockRoot, `${name}-control.sock`),
       COTAL_CONTROL_TOKEN: `${name}-control-token`,
       ...extra,
     },
@@ -266,5 +268,6 @@ try {
   if (child && child.exitCode === null) child.kill("SIGKILL");
   nats.kill("SIGKILL");
   await sleep(100);
+  rmSync(sockRoot, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 }

@@ -21,6 +21,8 @@ async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 2
 }
 
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-permanent-refusal-`));
+// Control sockets are AF_UNIX: a long path under the tokened root can exceed sun_path.
+const sockRoot = mkdtempSync(join("/tmp", "jpr-"));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
@@ -122,7 +124,7 @@ try {
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
-      COTAL_CONTROL_SOCKET: join(root, "control.sock"),
+      COTAL_CONTROL_SOCKET: join(sockRoot, "control.sock"),
       COTAL_CONTROL_TOKEN: "jcode-provider-refusal-control-token",
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -188,5 +190,6 @@ try {
   await operator?.stop().catch(() => {});
   nats.kill("SIGKILL");
   await sleep(100);
+  rmSync(sockRoot, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 }

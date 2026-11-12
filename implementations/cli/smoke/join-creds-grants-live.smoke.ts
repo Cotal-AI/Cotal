@@ -3,9 +3,11 @@
  * against a real authenticated broker and bound delivery responder. */
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createRequire } from "node:module";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   CotalEndpoint, createSpaceAuth, mintCreds, mintLifecycleUid,
   newIdentity, seedChannelRegistry, setupSpaceStreams,
@@ -24,9 +26,10 @@ for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key
 Object.assign(env, { COTAL_HOME: join(dir, "home"), XDG_CONFIG_HOME: join(dir, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_PROMPT: "1", COTAL_TELEMETRY: "off" });
 // The parent also writes only this fixture's registry.
 process.env.COTAL_HOME = env.COTAL_HOME;
+const tsxLoader = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
 const children = new Set<ChildProcess>();
 function cli(...args: string[]) {
-  const proc = spawn(process.execPath, ["--import", "tsx", join(tree, "bin/cotal.ts"), ...args], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
+  const proc = spawn(process.execPath, ["--import", tsxLoader, join(tree, "bin/cotal.ts"), ...args], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
   children.add(proc);
   let text = "";
   proc.stdout.on("data", (b: Buffer) => { text += b.toString(); });

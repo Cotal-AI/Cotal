@@ -189,17 +189,116 @@ try {
     buf.write("ELF", 1);
     buf.writeUInt16LE(elfMachine[nonHostArch], 18);
     writeFileSync(dest, buf);
+    for (const platform of ["darwin", "win32"] as const) {
+      for (const arch of ["x64", "arm64"] as const) {
+        const hostPath = join(clone, "build", "Release", `${platform}-${arch}`, "peercred.node");
+        mkdirSync(dirname(hostPath), { recursive: true });
+        const hostBuf = Buffer.alloc(platform === "darwin" ? 32 : 88);
+        if (platform === "darwin") {
+          hostBuf.writeUInt32LE(0xfeedfacf, 0);
+          hostBuf.writeUInt32LE(arch === "x64" ? 0x01000007 : 0x0100000c, 4);
+          hostBuf.writeUInt32LE(8, 12);
+        } else {
+          hostBuf.write("MZ");
+          hostBuf.writeUInt32LE(64, 60);
+          hostBuf.write("PE\0\0", 64);
+          hostBuf.writeUInt16LE(arch === "x64" ? 0x8664 : 0xaa64, 68);
+          hostBuf.writeUInt16LE(0x2000, 86);
+        }
+        writeFileSync(hostPath, hostBuf);
+      }
+    }
+    return clone;
+  };
+  const workspacePackRoot = (dir: string): string => {
+    const cloneRoot = join(base, "workspace-pack");
+    const clone = join(cloneRoot, "packages", "workspace");
+    cpSync(join(repo, dir), clone, {
+      recursive: true,
+      filter: (src) => !src.split(sep).includes("node_modules"),
+    });
+    const cloneManifestPath = join(clone, "package.json");
+    const cloneManifest = JSON.parse(readFileSync(cloneManifestPath, "utf8")) as {
+      version: string;
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    delete cloneManifest.devDependencies;
+    if (cloneManifest.dependencies?.["@cotal-ai/core"]?.startsWith("workspace:")) {
+      cloneManifest.dependencies["@cotal-ai/core"] = cloneManifest.version;
+    }
+    writeFileSync(cloneManifestPath, `${JSON.stringify(cloneManifest, null, 2)}\n`);
+    const sdk = JSON.parse(readFileSync(join(clone, "native", "node-sdk.json"), "utf8")) as {
+      version: string;
+      headers: string;
+      libraries: Record<"x64" | "arm64", string>;
+    };
+    const sourceFiles = [
+      "native/win32-process.c",
+      "native/win32-system-id.cpp",
+      "native/darwin-process.c",
+      "native/node-sdk.json",
+      "scripts/build-native.mjs",
+      "scripts/native-contract.mjs",
+    ];
+    const sourceHashes = Object.fromEntries(
+      sourceFiles.map((p) => [p, createHash("sha256").update(readFileSync(join(clone, p))).digest("hex")]),
+    );
+    for (const platform of ["win32", "darwin"] as const) {
+      for (const arch of ["x64", "arm64"] as const) {
+        const nativeDir = join(clone, "build", "Release", `${platform}-${arch}`);
+        const file = platform === "win32" ? "creation.node" : "process.node";
+        if (existsSync(join(nativeDir, file)) && existsSync(join(nativeDir, "build.json"))) continue;
+        mkdirSync(nativeDir, { recursive: true });
+        const bytes = Buffer.alloc(platform === "darwin" ? 32 : 88);
+        if (platform === "darwin") {
+          bytes.writeUInt32LE(0xfeedfacf, 0);
+          bytes.writeUInt32LE(arch === "x64" ? 0x01000007 : 0x0100000c, 4);
+          bytes.writeUInt32LE(8, 12);
+        } else {
+          bytes.write("MZ");
+          bytes.writeUInt32LE(64, 60);
+          bytes.write("PE\0\0", 64);
+          bytes.writeUInt16LE(arch === "x64" ? 0x8664 : 0xaa64, 68);
+          bytes.writeUInt16LE(0x2000, 86);
+        }
+        writeFileSync(join(nativeDir, file), bytes);
+        const receipt = {
+          version: 1,
+          platform,
+          arch,
+          nodeApi: 8,
+          source: "0".repeat(40),
+          sourceHashes,
+          nodeHeaders: sdk.version,
+          compiler: "fixture",
+          headersSha256: sdk.headers,
+          ...(platform === "win32"
+            ? { windowsSdk: "10.0.26100.0\\", librarySha256: sdk.libraries[arch] }
+            : { macosSdk: "15.0", deploymentTarget: "11.0" }),
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        };
+        writeFileSync(join(nativeDir, "build.json"), `${JSON.stringify(receipt, null, 2)}\n`);
+      }
+    }
     return clone;
   };
   for (const name of needed) {
     const dir = workspacePackages.get(name)!;
-    const packRoot = name === "@cotal-ai/seat" ? seatPackRoot(dir) : join(repo, dir);
+    const packRoot =
+      name === "@cotal-ai/seat"
+        ? seatPackRoot(dir)
+        : name === "@cotal-ai/workspace"
+          ? workspacePackRoot(dir)
+          : join(repo, dir);
     const packed = run(pnpm, ["-C", packRoot, "pack", "--pack-destination", packs], repo);
     assert.equal(packed.status, 0, `packed ${dir}: ${packed.stdout}\n${packed.stderr}`);
   }
+  const hostOnlyClone = join(base, "seat-pack", "packages", "seat");
+  rmSync(join(hostOnlyClone, "build", "Release", `linux-${nonHostArch}`), { recursive: true, force: true });
   const hostOnlyDest = join(base, "host-only-pack");
   mkdirSync(hostOnlyDest);
-  const hostOnly = run(pnpm, ["-C", join(repo, "packages", "seat"), "pack", "--pack-destination", hostOnlyDest], repo);
+  const hostOnly = run(pnpm, ["-C", hostOnlyClone, "pack", "--pack-destination", hostOnlyDest], repo);
   assert.notEqual(
     hostOnly.status,
     0,

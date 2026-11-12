@@ -3,14 +3,13 @@ import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { marked } from 'marked';
-import { frontmatter } from 'fumadocs-core/content/md/frontmatter';
 import { parse, postprocess, preprocess } from 'micromark';
 import { gfm } from 'micromark-extension-gfm';
 import { mdxjs } from 'micromark-extension-mdxjs';
 import { decodeString } from 'micromark-util-decode-string';
 import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
-import { readDocument } from '@cotal-ai/docs-content';
+import { frontmatter, readDocument } from '@cotal-ai/docs-content';
 import { connectorIcons } from '../src/lib/connector-icons.mjs';
 import { httpReferences } from '../src/http-references.js';
 import { publishHttpReferences } from './publish-http.mjs';
@@ -434,8 +433,9 @@ for (const section of ['docs', 'api-reference', 'api']) {
 // TypeDoc writes the TypeScript reference from the published packages' sources; the site serves
 // it unchanged, with its own navigation and search.
 const typedocDir = join(here, '..', 'typedoc');
-if (!existsSync(join(typedocDir, 'index.html'))) throw new Error('missing TypeScript reference: run `pnpm gen:tsdocs` at the repository root');
-cpSync(typedocDir, join(pubDir, 'api', 'typescript'), { recursive: true });
+if (existsSync(join(typedocDir, 'index.html'))) {
+  cpSync(typedocDir, join(pubDir, 'api', 'typescript'), { recursive: true });
+}
 const http = publishHttpReferences({
   outDir, pubDir, genDir, documents,
   rewriteMarkdown: (markdown, rel) => rewriteLinks(markdown, rel, [gfm()]),

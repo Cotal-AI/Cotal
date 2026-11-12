@@ -9,6 +9,7 @@ import { frontmatter } from 'fumadocs-core/content/md/frontmatter';
 import { remarkLLMs } from 'fumadocs-core/mdx-plugins/remark-llms';
 import { replaceSource } from 'fumadocs-core/mdx-plugins/stringifier';
 import { AGENT_PROMPT } from './agent-prompt.mjs';
+export { frontmatter };
 
 /** @typedef {import('./index.d.ts').Document} Document */
 /** @typedef {import('mdast').Nodes} Node */
