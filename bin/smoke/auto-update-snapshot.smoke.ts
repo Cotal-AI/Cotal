@@ -1,6 +1,6 @@
 import "../../implementations/cli/smoke/update-isolation.js";
 import assertions from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync, chmodSync, symlinkSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
@@ -21,6 +21,33 @@ const seed = join(config, "seed"), extensions = join(config, "extensions");
 mkdirSync(process.env.COTAL_HOME, { recursive: true, mode: 0o700 });
 const release = claimUpdateClosureAccess();
 try {
+  if (process.platform !== "win32") {
+    const unsafe = join(root, "unsafe");
+    mkdirSync(unsafe, { mode: 0o700 });
+    chmodSync(unsafe, 0o777);
+    process.env.XDG_CONFIG_HOME = unsafe;
+    assert.throws(() => snapshotUpdateClosure());
+    assert.equal(existsSync(join(unsafe, "cotal")), false);
+    assert.equal(statSync(unsafe).mode & 0o777, 0o777);
+    chmodSync(unsafe, 0o700);
+    const linked = join(root, "linked");
+    symlinkSync(join(root, "missing-target"), linked);
+    process.env.XDG_CONFIG_HOME = linked;
+    assert.throws(() => snapshotUpdateClosure());
+    assert.equal(existsSync(join(root, "missing-target")), false);
+    process.env.XDG_CONFIG_HOME = join(root, "config");
+  }
+  assert.equal(existsSync(config), false);
+  const fresh = snapshotUpdateClosure();
+  assert.ok(existsSync(fresh.path));
+  if (process.platform !== "win32") assert.equal(statSync(config).mode & 0o777, 0o700);
+  fresh.discard();
+  if (process.platform !== "win32") {
+    chmodSync(config, 0o755);
+    const existing = snapshotUpdateClosure();
+    assert.equal(statSync(config).mode & 0o777, 0o755);
+    existing.discard();
+  }
   for (const dir of [seed, extensions]) { mkdirSync(dir, { recursive: true, mode: 0o700 }); writeFileSync(join(dir, "stamp"), "previous"); }
   const snapshot = snapshotUpdateClosure();
   for (const dir of [seed, extensions]) writeFileSync(join(dir, "stamp"), "replacement");

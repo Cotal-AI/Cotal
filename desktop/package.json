@@ -12,6 +12,7 @@
     "tauri": "tauri",
     "prepare:runtime": "node scripts/prepare-runtime.mjs",
     "check:runtime": "node scripts/check-runtime.mjs",
+    "check:size": "node scripts/check-bundle-size.mjs",
     "app:dev": "tauri dev",
     "app:build": "tauri build"
   },

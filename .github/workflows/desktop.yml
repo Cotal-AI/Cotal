@@ -232,6 +232,8 @@ jobs:
           }
           & pnpm @args
           if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed.' }
+          & pnpm --dir desktop check:size
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop bundle size budget exceeded.' }
       - name: Verify the macOS bundle signature seals the whole app
         if: runner.os == 'macOS'
         run: |
