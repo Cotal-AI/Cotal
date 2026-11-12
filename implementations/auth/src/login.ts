@@ -634,7 +634,7 @@ export function signedInMachineAccounts(dir: string): AuthSpaceCatalogAccount[] 
 /** Call only the account-computer routes on the signed-in provider's origin. */
 export async function requestAccountMachine(opts: {
   dir: string; idpUrl: string; machineId: string; method: "PUT" | "GET";
-  metadata?: { name: string; platform: "linux" | "darwin" | "win32"; daemonVersion: string; managers: readonly { spaceId: string; instanceId: string }[] };
+  metadata?: { name: string; platform: "linux" | "darwin" | "win32"; daemonVersion: string; managers: readonly { spaceId: string; instanceId: string }[]; vitals?: { sampledAt: string; cpu: { logicalCount: number; utilisationPercent: number; intervalMs: number; load1?: number; load5?: number; load15?: number }; memory: { totalBytes: number; availableBytes: number }; filesystems: Array<{ mount: string; totalBytes: number; freeBytes: number }>; uptimeSeconds: number } };
   etag?: string; signal?: AbortSignal;
   intent?: { spaceId: string; enabled: boolean; expectedRevision: number };
 }): Promise<{ status: number; etag?: string; body?: unknown }> {
@@ -648,7 +648,9 @@ export async function requestAccountMachine(opts: {
   const headers: Record<string, string> = { authorization: `Bearer ${session.token}` };
   if (opts.etag) headers["if-none-match"] = opts.etag;
   if (opts.method === "PUT") headers["content-type"] = "application/json";
-  const response = await idpFetch(url, { method: opts.method, headers, redirect: "manual", ...(opts.method === "PUT" ? { body: JSON.stringify(opts.intent ? { enabled: opts.intent.enabled, expectedRevision: opts.intent.expectedRevision } : opts.metadata) } : {}) }, opts.signal);
+  const body = opts.method === "PUT" ? JSON.stringify(opts.intent ? { enabled: opts.intent.enabled, expectedRevision: opts.intent.expectedRevision } : opts.metadata) : undefined;
+  if (body !== undefined && Buffer.byteLength(body, "utf8") > 16384) throw new Error("invalid computer registration exceeds 16384 bytes");
+  const response = await idpFetch(url, { method: opts.method, headers, redirect: "manual", ...(opts.method === "PUT" ? { body } : {}) }, opts.signal);
   const etag = response.headers.get("etag");
   return { status: response.status, ...(etag ? { etag } : {}), ...(response.ok ? { body: await idpJson<unknown>(url, response, opts.signal) } : {}) };
 }

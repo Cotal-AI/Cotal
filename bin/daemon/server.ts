@@ -158,6 +158,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
+    vitals: account.vitals(),
+    vitalsError: account.vitalsError(),
     computer: account.name(),
     ...(account.nameWarning() ? { computerNameWarning: account.nameWarning() } : {}),
     state: "ready",

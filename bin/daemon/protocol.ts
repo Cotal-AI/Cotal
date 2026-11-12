@@ -93,6 +93,8 @@ export interface DaemonUpdateStatus {
 }
 
 export interface DaemonStatus {
+  readonly vitals?: import("@cotal-ai/manager").ComputerVitals;
+  readonly vitalsError?: string;
   readonly computer?: string;
   readonly computerNameWarning?: string;
   /** Optional for older daemon clients. Shared with desktop status readers. */

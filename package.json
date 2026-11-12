@@ -1005,7 +1005,7 @@
     "smoke:capability-census:live": "tsx bin/smoke/capability-census-live.smoke.ts",
     "smoke:launch-matrix:live": "tsx bin/smoke/launch-matrix-live.smoke.ts",
     "smoke:deprecated-daemon-entries": "tsx bin/smoke/deprecated-daemon-entries.smoke.ts",
-    "smoke:daemon-account-restart": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-account.smoke.ts && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-restart-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-hosted --account-restart-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-unsupported --direct-disconnect-repro",
+    "smoke:daemon-account-restart": "pnpm --filter cotal-ai... build && tsx bin/smoke/computer-vitals-home.smoke.ts && tsx bin/smoke/daemon-account.smoke.ts && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-restart-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-hosted --account-restart-repro && tsx bin/smoke/daemon-service-connect.smoke.ts --hosting-only --account-only --account-unsupported --direct-disconnect-repro",
     "smoke:daemon-name": "tsx bin/smoke/daemon-name.smoke.ts",
     "smoke:daemon-other-providers": "tsx bin/smoke/daemon-other-providers.smoke.ts",
     "smoke:daemon-update-generation": "tsx bin/smoke/daemon-update-generation.smoke.ts",
