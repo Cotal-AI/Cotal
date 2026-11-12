@@ -340,6 +340,8 @@ export const scenarios = [
     assert.equal(await page.locator('[data-testid="connected-space-row"]').count(), 2);
   } },
   { name: "approval-pending", state: { installed: true, signedIn: true, serviceState: "approval-pending" }, expect: async page => {
+    assert.equal(await page.locator("#refresh").isVisible(), true);
+    assert.equal(await page.locator("#refresh").textContent(), "Check approval");
     assert.equal(await page.locator("#connection-title").textContent(), "Waiting for owner approval");
     assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "clock");
     assert.equal(await page.locator("#dashboard").isVisible(), false);
@@ -347,9 +349,14 @@ export const scenarios = [
     assert.match(await page.locator("#connected-spaces").textContent(), /Waiting for owner approval/);
     assert.equal(await page.locator(".connection-card.has-refusal").count(), 0);
   } },
+  { name: "approval-refresh", state: { installed: true, signedIn: true, serviceState: "approval-pending" }, act: async page => {
+    await page.evaluate(() => { window.__renderState.connected = true; window.__renderState.serviceState = "connected"; });
+    await page.click("#refresh");
+    await page.waitForFunction(() => document.querySelector("#connection-title").textContent === "This computer is connected");
+  }, expect: async page => { assert.equal(await page.locator("#refresh").isVisible(), false); assert.equal(await page.locator("#dashboard").isVisible(), true); } },
   { name: "version-mismatch", state: { installed: true, signedIn: true, version: "old" } },
   { name: "progress-done", state: { connecting: true }, prepare: connect, act: page => page.evaluate(() => window.__advanceSetup()) },
-  { name: "disconnected", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#connected-spaces button"), expect: async page => assert.equal(await page.locator("#notice").isVisible(), false) },
+  { name: "disconnected", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#connected-spaces button"), expect: async page => { assert.equal(await page.locator("#notice").isVisible(), false); assert.equal(await page.locator("#spaces-heading").isVisible(), false); assert.equal(await page.locator(".connected-spaces-scroll").isVisible(), false); assert.equal(await page.locator("#another-space").textContent(), "Add a space"); } },
   { name: "notice", state: { waiting: true, copyFailure: true }, prepare: page => page.click("#login"), act: page => page.click("#copy-code") },
   { name: "details-open", state: { noApp: true }, prepare: connect, act: page => page.locator("#details summary").click() },
 ];
