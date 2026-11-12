@@ -1,3 +1,4 @@
+import { promisify } from "node:util";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
@@ -13,11 +14,22 @@ try {
   Object.assign(process.env, { HOME: join(root, "home"), USERPROFILE: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_HOME: join(root, "cotal"), COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1" });
   let powershellChecks = 0;
   const originalExecFile = childProcess.execFile;
+  {
+    const observed = ((...args: Parameters<typeof childProcess.execFile>) => Reflect.apply(originalExecFile, childProcess, args)) as typeof childProcess.execFile;
+    Object.defineProperty(observed, promisify.custom, { value: promisify(originalExecFile) });
+    const result = await promisify(observed)(process.execPath, ["-e", "console.log('observer-contract')"]);
+    assert.equal(result.stdout.trim(), "observer-contract");
+  }
   if (process.platform === "win32") {
-    childProcess.execFile = ((...args: Parameters<typeof childProcess.execFile>) => {
+    const countedExecFile = ((...args: Parameters<typeof childProcess.execFile>) => {
       if (args[0] === "powershell.exe") powershellChecks++;
       return Reflect.apply(originalExecFile, childProcess, args);
     }) as typeof childProcess.execFile;
+    Object.defineProperty(countedExecFile, promisify.custom, { value: (...args: Parameters<typeof childProcess.execFile>) => {
+      if (args[0] === "powershell.exe") powershellChecks++;
+      return Reflect.apply(promisify(originalExecFile), childProcess, args);
+    } });
+    childProcess.execFile = countedExecFile;
     syncBuiltinESMExports();
   }
   const { measureComputerVitals } = await import("@cotal-ai/manager");
