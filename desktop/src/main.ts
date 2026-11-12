@@ -45,6 +45,7 @@ function closeNameEditor(): void {
   (settingsOpen ? el("settings-name") : el("edit-computer-name")).focus();
 }
 el("edit-computer-name").addEventListener("click", () => {
+  if (stage === "finished" && !settingsOpen) openSettings();
   nameEditing = true; el("machine-name").hidden = !settingsOpen; el("edit-computer-name").hidden = true;
   if (settingsOpen) {
     el("settings-computer").parentElement!.append(el("computer-name-form"));
@@ -141,7 +142,7 @@ function renderSettings(): void {
   el("account-outcome-back").hidden = !accountOutcomeOpen;
   el("account-outcome").hidden = !accountOutcomeOpen;
   el("preferences").hidden = !settingsOpen;
-  if (settingsOpen) { el("settings-startup").append(el("preferences")); el("preferences").hidden = false; }
+  if (settingsOpen) { el("settings-startup").insertBefore(el("preferences"), document.getElementById("pin-offer") ?? document.getElementById("pin-availability")); el("preferences").hidden = false; }
   else if (el("preferences").parentElement !== preferencesHome) preferencesHome.append(el("preferences"));
 }
 type AccountAction = { kind: "logout" | "disconnect"; provider: string; spaces: string[]; trigger: string };
@@ -211,6 +212,8 @@ async function runAccountAction(): Promise<void> {
   if (!target || busy || loginActive) return;
   busy = true; refreshGeneration++; buttons(); renderSettings();
   const outcomes: string[] = [];
+  const spaceLabels = new Map(target.spaces.map(space => [space, accountSpaces.get(space)?.label ?? space]));
+  const spaceLabel = (space: string): string => spaceLabels.get(space) ?? space;
   const acknowledged = new Set<string>();
   let catalogRefreshed = false;
   try {
@@ -228,8 +231,8 @@ async function runAccountAction(): Promise<void> {
           const result = await request({ op: "service-disconnect", space });
           if (result.state !== "disconnected" || launchReady(result.manager)) throw new Error(typeof result.message === "string" ? result.message : `Disconnect not confirmed (${typeof result.state === "string" ? result.state : "unknown status"}).`);
           acknowledged.add(space);
-          outcomes.push(`${space}: service reports disconnected; checking current status.`);
-        } catch (error) { outcomes.push(`${space}: ${error instanceof Error ? error.message : String(error)}`); }
+          outcomes.push(`${spaceLabel(space)}: service reports disconnected; checking current status.`);
+        } catch (error) { outcomes.push(`${spaceLabel(space)}: ${error instanceof Error ? error.message : String(error)}`); }
         text("account-outcome", outcomes.join("\n"));
       }
     }
@@ -237,7 +240,7 @@ async function runAccountAction(): Promise<void> {
     await refresh();
     // Replace progress-only rows with the final observation, keeping operation errors.
     for (const space of acknowledged) {
-      const index = outcomes.indexOf(`${space}: service reports disconnected; checking current status.`);
+      const index = outcomes.indexOf(`${spaceLabel(space)}: service reports disconnected; checking current status.`);
       if (index >= 0) outcomes.splice(index, 1);
     }
     if (target.kind === "disconnect" && ready) {
@@ -246,19 +249,19 @@ async function runAccountAction(): Promise<void> {
         try {
           const service = await request({ op: "service-status", space });
           if (service.state !== "disconnected" || launchReady(service.manager) || observedReadySpaces.includes(space) || row?.desired || (row && row.observed !== "removed on this computer" && row.observed !== "disconnected")) {
-            outcomes.push(`${space}: refreshed status does not confirm removal. Disconnect is incomplete.`);
+            outcomes.push(`${spaceLabel(space)}: refreshed status does not confirm removal. Disconnect is incomplete.`);
           } else {
             connections.delete(space); instances.delete(space); applicationRefusals.delete(space);
             if (selectedSpace() === space) connection = { space, state: "disconnected" };
-            if (acknowledged.has(space) && catalogRefreshed) outcomes.push(`${space}: disconnected, confirmed by refresh.`);
-            else if (!catalogRefreshed) outcomes.push(`${space}: service is disconnected, but account refresh failed. Full removal is not confirmed.`);
-            else outcomes.push(`${space}: currently disconnected, but the requested operation was not confirmed.`);
+            if (acknowledged.has(space) && catalogRefreshed) outcomes.push(`${spaceLabel(space)}: disconnected, confirmed by refresh.`);
+            else if (!catalogRefreshed) outcomes.push(`${spaceLabel(space)}: service is disconnected, but account refresh failed. Full removal is not confirmed.`);
+            else outcomes.push(`${spaceLabel(space)}: currently disconnected, but the requested operation was not confirmed.`);
           }
-        } catch (error) { outcomes.push(`${space}: refresh could not confirm removal. ${error instanceof Error ? error.message : String(error)}`); }
+        } catch (error) { outcomes.push(`${spaceLabel(space)}: refresh could not confirm removal. ${error instanceof Error ? error.message : String(error)}`); }
       }
     }
     if (!ready) {
-      for (const space of acknowledged) outcomes.push(`${space}: service reported disconnected, but current removal status is unverified.`);
+      for (const space of acknowledged) outcomes.push(`${spaceLabel(space)}: service reported disconnected, but current removal status is unverified.`);
       outcomes.push("Current status could not be refreshed. Check the connection before retrying.");
     }
   } catch (error) {
@@ -525,12 +528,35 @@ function showStage(next: Stage, focus = false): void {
   el("tray-indicator").classList.toggle("in-flight", busy);
   buttons();
 }
+let spaceListSheet: CSSStyleSheet | undefined;
+function sizeSpaceList(): void {
+  const list = el("connected-spaces");
+  const rows = [...list.children] as HTMLElement[];
+  if (rows.length < 4 || !list.getClientRects().length) return;
+  let height = 0;
+  const budget = 220;
+  for (const row of rows) {
+    const next = row.getBoundingClientRect().height;
+    if (height && height + next > budget) break;
+    height += next;
+  }
+  if (!spaceListSheet) {
+    spaceListSheet = new CSSStyleSheet();
+    spaceListSheet.replaceSync(".connected-spaces-scroll:has(li:nth-child(4)) { max-height: 160px; }");
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, spaceListSheet];
+  }
+  (spaceListSheet.cssRules[0] as CSSStyleRule).style.maxHeight = `${height}px`;
+}
+window.addEventListener("resize", sizeSpaceList);
+window.addEventListener("load", sizeSpaceList);
 function renderConnections(): void {
   const list = el("connected-spaces");
+  text("spaces-heading", `Spaces using this computer (${connections.size})`);
   list.parentElement!.tabIndex = connections.size >= 4 ? 0 : -1;
   const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), busy]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;
+  requestAnimationFrame(sizeSpaceList);
   list.replaceChildren(...[...connections].map(([space, state]) => {
     const row = document.createElement("li"); row.dataset.testid = "connected-space-row"; row.dataset.space = space;
     const copy = document.createElement("span");
@@ -538,7 +564,7 @@ function renderConnections(): void {
     const kind = document.createElement("small"); kind.className = "application-chip"; kind.textContent = accountSpaces.get(space)?.kind ?? "Space";
     copy.append(name, kind);
     const accountRow = computerRows.get(space);
-    if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow); copy.append(detail); }
+    if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow, state === "launch-ready"); copy.append(detail); }
     else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);
@@ -708,6 +734,7 @@ async function spaces(refreshCatalog: boolean): Promise<void> {
   signedInProviders = Array.isArray(result.signedInProviders) ? result.signedInProviders.filter((item): item is string => typeof item === "string") : [];
   const select = el<HTMLSelectElement>("space"); const previous = select.value;
   const connectedProviders = [...providers].filter(([space]) => connections.has(space));
+  const retainedSpaces = [...accountSpaces].filter(([space]) => connections.has(space) || computerAccount?.spaces.some(row => row.space === space));
   select.replaceChildren(new Option("Choose a space", "")); providers.clear(); catalogIds.clear(); accountSpaces.clear();
   if (!Array.isArray(result.spaces)) throw new Error("The background service returned no space list.");
   for (const item of result.spaces) {
@@ -717,9 +744,10 @@ async function spaces(refreshCatalog: boolean): Promise<void> {
     if (typeof item.idp === "string") providers.set(item.space, item.idp);
     if (typeof item.catalogId === "string") catalogIds.set(item.space, item.catalogId);
   }
+  for (const [space, entry] of retainedSpaces) if (!accountSpaces.has(space)) accountSpaces.set(space, { space, label: entry.label });
   for (const [space, provider] of connectedProviders) {
     if (!providers.has(space)) providers.set(space, provider);
-    if (![...select.options].some(option => option.value === space)) select.add(new Option(space, space));
+    if (![...select.options].some(option => option.value === space)) select.add(new Option(accountSpaces.get(space)?.label ?? space, space));
   }
   const preferred = connections.has(previous) ? previous : initialSpace([...accountSpaces.values()], requestedSpace) ?? (accountSpaces.has(previous) ? previous : undefined) ?? observedReadySpaces.find(space => accountSpaces.has(space));
   if (preferred) select.value = preferred;

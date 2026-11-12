@@ -8,6 +8,7 @@ export function nativeStub(scenario) {
   const manager = () => ({ space: "acme-team", state: "answering", instanceId: "machine-1", connectors: [{ agent: "claude", state: "available" }, { agent: "codex", state: "available" }] });
   window.isTauri = true;
   window.__renderState = state;
+  window.__emitTauri = (event, payload) => { const id = state.listeners?.[event]; if (id) callbacks.get(id)?.({ event, payload }); };
   Object.defineProperty(navigator, "clipboard", { value: { writeText: async value => { if (state.copyFailure) throw new Error("Clipboard unavailable"); state.clipboard = value; } }, configurable: true });
   window.__TAURI_INTERNALS__ = {
     transformCallback(fn) { callbacks.set(++next, fn); return next; },
@@ -15,7 +16,7 @@ export function nativeStub(scenario) {
     async invoke(command, args) {
       if (command === "first_paint") { state.paintReports = (state.paintReports ?? 0) + 1; return null; }
       if (command === "plugin:deep-link|get_current") return state.link ? [state.link] : null;
-      if (command === "plugin:event|listen") return 1;
+      if (command === "plugin:event|listen") { state.listeners = state.listeners ?? {}; state.listeners[args.event] = args.handler; return 1; }
       if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: state.relocationOffer ?? false, pinOffer: state.pinOffer ?? false, pinMessage: state.pinMessage ?? "" };
       if (command === "set_update_notice") { state.trayUpdate = args.version; return null; }
       if (command === "open_browser" || command === "set_connection_state" || command.startsWith("plugin:")) return null;
@@ -29,10 +30,10 @@ export function nativeStub(scenario) {
       if (request.op === "update-release") return ok({ assets: state.missingAsset ? [] : [{ name: "Cotal_0.161.0_aarch64.dmg", url: "https://github.com/Cotal-AI/Cotal/releases/download/v0.161.0/Cotal_0.161.0_aarch64.dmg" }] });
       if (request.op === "update-settings") { state.update = { ...state.update, ...(request.auto !== undefined ? { automatic: request.auto } : {}), ...(request.notify !== undefined ? { notify: request.notify } : {}) }; return ok({ update: state.update }); }
       if (request.op === "update-check") return ok({ update: state.update });
-      if (request.op === "install") { state.installed = true; return ok({ installed: true }); }
+      if (request.op === "install") { if (state.installWait) await new Promise(() => {}); state.installed = true; return ok({ installed: true }); }
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      if (request.op === "status" && state.offline) return fail("NOT_ANSWERING", "The background service did not answer. Check the host connection before retrying.");
-      if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      if (request.op === "status" && state.offline) return fail(state.offlineCode ?? "NOT_ANSWERING", "The background service did not answer. Check the host connection before retrying.");
+      if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
       if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? ["https://cloud.cotal.ai/api/auth"] : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
       if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? "Davids-MacBook-Pro" }); }
@@ -106,6 +107,27 @@ const reachable = async page => {
 const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
 const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
 export const scenarios = [
+  { name: "connected-short-spaces-6", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: 6 }, (_, i) => ({ space: `team-${i + 1}`, desired: true, observed: "connected" })) } }, expect: async page => {
+    const heights = await page.locator('[data-testid="connected-space-row"]').evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height));
+    assert.ok(heights.every(height => height < 70), "short names retain natural compact row heights");
+    const fit = await page.locator(".connected-spaces-scroll").evaluate(el => {
+      const rows = [...el.querySelectorAll("li")].map(row => row.getBoundingClientRect().height);
+      const height = el.getBoundingClientRect().height;
+      let used = 0;
+      let count = 0;
+      for (const row of rows) { if (used + row > height + 1) break; used += row; count++; }
+      return { height, used, count, next: rows[count] ?? 0 };
+    });
+    assert.ok(Math.abs(fit.height - fit.used) <= 1, "list ends on a whole row");
+    assert.ok(fit.count === heights.length || fit.used + fit.next > 220, "list shows every complete row that fits its budget");
+  } },
+  { name: "header-name-editor", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#edit-computer-name"), expect: async page => {
+    assert.equal(await page.locator("#settings-panel #computer-name-form").isVisible(), true, "finished header Edit opens the Settings row editor");
+  } },
+  { name: "account-manager-starting", state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: "connected" }] } }, expect: async page => {
+    assert.equal(await page.locator('[data-space="research"] small').last().textContent(), "Starting", "a space without a ready Manager must not claim Connected");
+  } },
+
   ...["edit", "invalid", "current"].map(mode => ({
     name: `audit-settings-name-location-${mode}`, state: { installed: true, signedIn: true, connected: true, update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}) } },
     act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); if (mode === "invalid") { await page.fill("#computer-name-input", ""); await page.press("#computer-name-input", "Enter"); } },
@@ -157,6 +179,10 @@ export const scenarios = [
   { name: "audit-move-offer", state: { installed: true, relocationOffer: true }, expect: presenceOffer("move-offer") },
   { name: "audit-pin-offer", state: { installed: true, signedIn: true, connected: true, pinOffer: true }, act: page => page.click("#open-settings"), expect: presenceOffer("pin-offer") },
   { name: "audit-pin-message", state: { installed: true, signedIn: true, connected: true, pinMessage: "Cotal is pinned to your taskbar." }, act: page => page.click("#open-settings"), expect: async page => assert.equal(await page.locator("#settings-startup > #pin-availability").count(), 1) },
+  ...[1.25, 1.5].map(factor => ({ name: `audit-zoom-${factor * 100}-connected`, state: { installed: true, signedIn: true, connected: true, agents: auditAgents }, act: zoom(factor), expect: async page => {
+    await page.locator("#dashboard").scrollIntoViewIfNeeded();
+    assert.ok(await page.locator("#dashboard").evaluate(el => { const box = el.getBoundingClientRect(); const card = el.closest(".connection-card").getBoundingClientRect(); return box.top >= card.top && box.bottom <= card.bottom && box.bottom <= innerHeight; }), "dashboard stays fully reachable inside the connection card");
+  } })),
   ...[1.25, 1.5].map(factor => ({ name: `audit-zoom-${factor * 100}-settings`, state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await zoom(factor)(page); }, expect: reachable })),
 
   { name: "audit-update-banner-agents", state: { installed: true, signedIn: true, connected: true, update, agents: auditAgents } },
@@ -171,10 +197,20 @@ export const scenarios = [
   })),
   ...[12, 30].map(count => ({
     name: `connected-long-spaces-${count}`,
-    state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: count }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, desired: true, observed: "connected" })) } },
+    state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: count }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, desired: true, observed: "connected" })) } },
     expect: async page => {
       assert.equal(await page.locator("#connected-panel").isVisible(), true);
       assert.equal(await page.locator('[data-testid="connected-space-row"]').count(), count);
+      const visibleRows = await page.locator(".connected-spaces-scroll").evaluate(el => {
+        const bounds = el.getBoundingClientRect();
+        return [...el.querySelectorAll("li")].map(row => { const box = row.getBoundingClientRect(); return { full: box.top >= bounds.top && box.bottom <= bounds.bottom + 1, partial: box.top < bounds.bottom && box.bottom > bounds.bottom + 1 }; });
+      });
+      assert.ok(visibleRows.filter(row => row.full).length >= (page.viewportSize().width === 880 ? 2 : 1), "space list shows whole wrapped rows");
+      assert.equal(visibleRows.some(row => row.partial), false, "space list never slices a row");
+      assert.equal(await page.locator("#spaces-heading").textContent(), `Spaces using this computer (${count})`);
+      assert.ok(await page.locator("footer").evaluate(el => el.getBoundingClientRect().bottom <= innerHeight), "long-space footer stays inside the viewport");
+      assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected");
+      assert.deepEqual(await page.locator('[data-testid="connected-space-row"] > span > small:last-child').allTextContents(), Array(count).fill("Connected"));
       assert.equal(await page.locator("#settings-panel").isVisible(), false);
       const region = page.getByRole("region", { name: "Connected space list", exact: true });
       assert.equal(await region.getAttribute("tabindex"), "0");
@@ -298,17 +334,17 @@ export const scenarios = [
         assert.equal(outcome, mode === "success" ? "Signed out of Cotal Cloud, cloud.cotal.ai. Existing connections keep running." : "Sign-out: The provider refused to revoke this sign-in. Try again.");
       } else {
         assert.deepEqual(snapshot.requests.map(request => request.space), ["acme-team", "research"]);
-        assert.match(outcome, /acme-team/);
-        assert.match(outcome, /research/);
+        assert.match(outcome, /Acme team/);
+        assert.match(outcome, /Research/);
         assert.equal(snapshot.connected, mode !== "success");
         assert.deepEqual(snapshot.spaces.map(space => space.desired), mode === "success" ? [false, false] : mode === "partial" ? [false, true] : [true, true]);
         assert.equal(snapshot.signedIn, true, "disconnecting does not sign out");
         if (mode === "refusal" || mode === "partial") {
-          for (const space of mode === "partial" ? ["research"] : ["acme-team", "research"]) assert.ok(outcome.includes(`${space}: Active sessions prevent disconnecting this space.`));
-          if (mode === "partial") assert.ok(outcome.includes("acme-team: disconnected, confirmed by refresh."));
+          for (const space of mode === "partial" ? ["Research"] : ["Acme team", "Research"]) assert.ok(outcome.includes(`${space}: Active sessions prevent disconnecting this space.`));
+          if (mode === "partial") assert.ok(outcome.includes("Acme team: disconnected, confirmed by refresh."));
         }
-        if (mode === "success") for (const space of ["acme-team", "research"]) assert.ok(outcome.includes(`${space}: disconnected, confirmed by refresh.`));
-        if (mode === "unknown") for (const space of ["acme-team", "research"]) assert.ok(outcome.includes(`${space}: Disconnect not confirmed (unknown).`));
+        if (mode === "success") for (const space of ["Acme team", "Research"]) assert.ok(outcome.includes(`${space}: disconnected, confirmed by refresh.`));
+        if (mode === "unknown") for (const space of ["Acme team", "Research"]) assert.ok(outcome.includes(`${space}: Disconnect not confirmed (unknown).`));
       }
     },
   }))),
@@ -333,7 +369,10 @@ export const scenarios = [
       else await page.press("#computer-name-input", "Enter");
     },
     expect: async page => {
-      if (mode === "invalid") assert.match(await page.locator("#computer-name-error").textContent(), /1 to 128/);
+      if (mode === "invalid") {
+        assert.match(await page.locator("#computer-name-error").textContent(), /1 to 128/);
+        assert.ok(await page.locator(".machine").evaluate(el => parseFloat(getComputedStyle(el).borderRadius) < 100), "Connect editor must not be a pill");
+      }
       if (mode === "save") assert.equal(await page.locator("#machine-name").textContent(), "My named computer");
       if (mode === "cancel") assert.equal(await page.locator("#machine-name").textContent(), "Davids-MacBook-Pro");
       if (mode === "long") assert.equal(await page.locator("#machine-name").getAttribute("title"), ("Very long computer name ".repeat(5)).trim());
@@ -432,4 +471,81 @@ export const scenarios = [
   { name: "disconnected", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#connected-spaces button"), expect: async page => { assert.equal(await page.locator("#notice").isVisible(), false); assert.equal(await page.locator("#spaces-heading").isVisible(), false); assert.equal(await page.locator(".connected-spaces-scroll").isVisible(), false); assert.equal(await page.locator("#another-space").textContent(), "Add a space"); } },
   { name: "notice", state: { waiting: true, copyFailure: true }, prepare: page => page.click("#login"), act: page => page.click("#copy-code") },
   { name: "details-open", state: { noApp: true }, prepare: connect, act: page => page.locator("#details summary").click() },
+  { name: "audit-service-install", state: { installWait: true }, act: page => page.click("#login"), expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "Preparing your sign-in"); assert.match(await page.locator("#notice").textContent(), /Preparing the background service/); } },
+  { name: "audit-credential-expired", state: { loginError: "CREDENTIAL_EXPIRED" }, act: page => page.click("#login"), expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "Sign in again"); assert.equal(await page.locator("#recover").textContent(), "Sign in again"); } },
+  { name: "audit-unreachable", state: { loginError: "UNREACHABLE" }, act: page => page.click("#login"), expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "We cannot reach your connection"); assert.equal(await page.locator("#recover").textContent(), "Try again"); } },
+  { name: "audit-approval-refusal", state: { installed: true, offline: true, offlineCode: "APPROVAL_PENDING" }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "Waiting for owner approval"); assert.equal(await page.locator("#recover").textContent(), "Check approval"); } },
+  { name: "audit-default-refusal", state: { installed: true, offline: true, offlineCode: "OPERATION_FAILED" }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This operation could not finish"); assert.equal(await page.locator("#recover").textContent(), "Try again"); } },
+  { name: "audit-close-explained", state: { installed: true, signedIn: true, connected: true }, act: page => page.evaluate(() => window.__emitTauri("desktop-close-explained", "Cotal stays in your system tray. Open it from the tray or menu bar. Quit app leaves the background service running.")), expect: async page => { assert.match(await page.locator("#notice").textContent(), /Cotal stays in your system tray/); } },
+  { name: "audit-settings-npm-linux", state: { installed: true, signedIn: true, connected: true, platform: "linux", update: { ...update, channel: "npm", latest: "0.156.0", lastResult: "up to date" } }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#update-preference-label").textContent(), "Install updates automatically"); } },
+  { name: "audit-settings-unchecked", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: undefined, lastCheck: undefined, lastResult: "none" } }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-last-check").textContent(), "Not checked yet"); } },
+  { name: "audit-settings-unavailable", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-update-summary").textContent(), "Update information is unavailable."); } },
+  { name: "audit-app-found-later", state: { noApp: true }, prepare: connect, act: async page => { await page.evaluate(() => { window.__renderState.noApp = false; }); await page.click("#recover"); }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected"); assert.equal(await page.locator("#recovery-panel").isVisible(), false); } },
 ];
+
+// Audit regressions use the same real UI entry points as the original fixtures.
+const auditCase = (source, name, expect) => {
+  const original = scenarios.find(scenario => scenario.name === source);
+  assert.ok(original, `audit fixture exists: ${source}`);
+  scenarios.push({ ...original, name, expect: async page => {
+    if (original.expect) await original.expect(page);
+    await expect(page);
+  } });
+};
+for (const source of ["settings-available", "settings-missing", "audit-pin-offer", "audit-pin-message"]) {
+  auditCase(source, `audit-e1-${source}`, async page => {
+    const geometry = await page.locator("#settings-panel").evaluate(card => {
+      const about = document.querySelector("#settings-versions").closest(".settings-row");
+      const box = card.getBoundingClientRect();
+      const row = about.getBoundingClientRect();
+      return { scroll: card.scrollHeight - card.clientHeight, scrollTop: card.scrollTop,
+        contained: row.top >= box.top + card.clientTop && row.bottom <= box.top + card.clientTop + card.clientHeight };
+    });
+    console.log(`E1 ${source}: ${JSON.stringify(geometry)}`);
+    assert.deepEqual(geometry, { scroll: 0, scrollTop: 0, contained: true }, "E1: About is fully inside Settings without internal scrolling at 100% zoom");
+  });
+}
+auditCase("audit-pin-message", "audit-e4-pin-message-order", async page => {
+  const renders = [];
+  for (let render = 0; render < 3; render++) {
+    renders.push(await page.locator("#settings-startup").evaluate(startup => {
+      const preferences = startup.querySelector("#preferences");
+      const message = startup.querySelector("#pin-availability");
+      return !!preferences && !!message && !!(preferences.compareDocumentPosition(message) & Node.DOCUMENT_POSITION_FOLLOWING)
+        && preferences.getBoundingClientRect().bottom <= message.getBoundingClientRect().top;
+    }));
+    await page.click("#check-updates");
+    await page.waitForFunction(() => !document.querySelector("#check-updates").disabled);
+  }
+  console.log(`E4 startup order: ${JSON.stringify(renders)}`);
+  assert.deepEqual(renders, [true, true, true], "E4: Open at login precedes the pin message across repeated Settings renders");
+});
+auditCase("audit-move-offer", "audit-e4-move-offer-spacing", async page => {
+  const spacing = await page.locator("#move-offer").evaluate(offer => {
+    const style = getComputedStyle(offer);
+    const explanation = document.querySelector("#service-explanation").getBoundingClientRect();
+    return { margin: parseFloat(style.marginTop), divider: parseFloat(style.borderTopWidth),
+      gap: offer.getBoundingClientRect().top - explanation.bottom };
+  });
+  assert.ok(spacing.margin >= 16 && spacing.divider >= 2 && spacing.gap >= 16,
+    `E4: move offer has a top divider and breathing room: ${JSON.stringify(spacing)}`);
+});
+auditCase("account-signout-outcome-back", "audit-e5-post-signout-labels", async page => {
+  const copy = await page.locator("#settings-spaces").textContent();
+  console.log(`E5 post-signout Settings: ${copy}`);
+  assert.match(copy, /Acme team/, "E5: Settings retains Acme team after sign-out");
+  assert.match(copy, /Research/, "E5: Settings retains Research after sign-out");
+  assert.doesNotMatch(copy, /acme-team|research/, "E5: Settings does not fall back to raw slugs");
+  await page.click("#open-settings");
+  assert.deepEqual(await page.locator('[data-testid="connected-space-row"] strong').allTextContents(),
+    ["Acme team", "Research"], "E5: Connected view retains labels after sign-out");
+});
+for (const outcome of ["success", "partial", "refusal", "unknown"]) {
+  auditCase(`account-disconnect-${outcome}`, `audit-e5-disconnect-${outcome}-labels`, async page => {
+    const copy = await page.locator("#account-outcome").textContent();
+    console.log(`E5 disconnect ${outcome}: ${copy}`);
+    assert.match(copy, /Acme team:/, `E5: ${outcome} outcome names Acme team`);
+    assert.match(copy, /Research:/, `E5: ${outcome} outcome names Research`);
+    assert.doesNotMatch(copy, /(?:acme-team|research):/, `E5: ${outcome} outcome does not use raw slug labels`);
+  });
+}

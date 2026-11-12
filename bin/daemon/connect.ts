@@ -64,6 +64,13 @@ function parseIdentity(space: string) {
   };
 }
 
+/** Read an existing daemon identity without ever minting a replacement. */
+export function readDaemonServiceIdentity(space: string, home: string): DaemonServiceIdentity {
+  return claimIdentityRecord(daemonIdentityFile(space, home), "daemon service identity", parseIdentity(space), () => {
+    throw new Error("the daemon service identity is missing");
+  });
+}
+
 /** The fixed sentence per failure. Nothing from the remote side is quoted. */
 const SENTENCE = {
   "not-registered": "this space is not registered on this machine; add it with `cotal meshes add`",

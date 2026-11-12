@@ -196,6 +196,7 @@ try {
         }
         return failures;
       });
+      assert.ok(await page.locator("footer").evaluate(el => { const box = el.getBoundingClientRect(); return box.top >= 0 && box.bottom <= innerHeight; }), `${name}: footer inside viewport`);
       assert.deepEqual(geometry, [], `${name}: geometry`);
       await page.addScriptTag({ url: `${address}/axe.js` });
       const violations = await page.evaluate(async () => (await axe.run(document)).violations.map(v => ({ id: v.id, targets: v.nodes.map(n => n.target) })));

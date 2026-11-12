@@ -391,3 +391,12 @@ test("unknown and service-only states cannot claim launch readiness", async () =
     finally { a.dom.window.close(); }
   }
 });
+
+test("linked space missing from discovered spaces shows an unavailable notice and chooser", async () => {
+  const a = await app({ link: `cotal://connect?idp=${encodeURIComponent(COTAL_CLOUD_IDP)}&space=missing_space`, count: 2 });
+  try {
+    await a.click("login"); await a.login();
+    assert.equal(a.node("space-panel").hidden, false);
+    assert.match(a.node("notice").textContent ?? "", /The requested space is not available to this account/);
+  } finally { a.dom.window.close(); }
+});

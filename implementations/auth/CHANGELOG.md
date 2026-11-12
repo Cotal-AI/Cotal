@@ -1,5 +1,15 @@
 # @cotal-ai/auth
 
+## 0.161.1
+
+### Patch Changes
+
+- c732226: Keep hosted Manager registration cleanup recoverable after a local space is removed. Save the original authority and instance identity without copying credentials, retain pending and unknown outcomes across restarts and uninstall, and never automatically repeat an unconfirmed removal.
+- Updated dependencies [fa2aece]
+  - @cotal-ai/core@0.161.1
+  - @cotal-ai/workspace@0.161.1
+  - @cotal-ai/lang@0.161.1
+
 ## 0.161.0
 
 ### Patch Changes

@@ -56,3 +56,13 @@ test("elapsed time does not invent negative runtime", () => {
   assert.equal(runningFor(agent.startedAt, start - 1), "Just started");
   assert.equal(runningFor(agent.startedAt, start + 65 * 60_000), "1h 5m");
 });
+test("exited agents render with Exited status in the agent row", () => {
+  const dom = new JSDOM('<section class="connection-card"><section id="running-agents"><h2 id="agents-heading"></h2><p id="agents-empty"></p><p id="agents-unavailable"></p><ul id="agent-list"></ul></section></section>');
+  const prior = globalThis.document;
+  globalThis.document = dom.window.document;
+  try {
+    const root = dom.window.document.getElementById("running-agents")!;
+    renderAgents({ agents: [read("team", [{ ...agent, state: "exited" }])] }, root);
+    assert.equal(root.querySelector(".agent-time")?.textContent, "Exited");
+  } finally { globalThis.document = prior; dom.window.close(); }
+});
