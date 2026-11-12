@@ -199,7 +199,8 @@ const STATUS_OUTPUT_SCHEMA = {
            *  client must never read an absent fact as true. */
           eventPlane: { type: "boolean" },
           /** Whether this connector relays its harness's permission prompts to the agent's owner
-           *  (SPEC §8.2). A client reads it absent, from an older Manager, as false. */
+           *  (SPEC §8.2). True only on a user-auth mesh, where an owner's interactive row can answer.
+           *  A client reads it absent, from an older Manager, as false. */
           permissionRequests: { type: "boolean" },
           reason: { type: "string" },
         },
@@ -1290,8 +1291,8 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  48 = `list-dir` lists bounded child directory names on the selected Manager's host.
  *
  *  49 = every `status.connectors` row requires `permissionRequests`, whether the connector relays its
- *  harness's permission prompts to the agent's owner. The status output schema is closed, so a
- *  revision-48 contract rejects it. */
+ *  harness's permission prompts to the agent's owner on this mesh. The status output schema is closed,
+ *  so a revision-48 contract rejects it. */
 export function managerClusterDocument(): ClusterDocument {
   return buildClusterDocument(MANAGER_CLUSTER_URN, 49, ROWS);
 }
