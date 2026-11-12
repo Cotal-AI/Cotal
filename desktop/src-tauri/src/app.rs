@@ -177,9 +177,17 @@ fn first_paint(window: tauri::WebviewWindow) -> Result<(), String> {
 
 fn show_now(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+        let result = (|| -> tauri::Result<()> {
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Regular)?;
+            window.show()?;
+            window.unminimize()?;
+            window.set_focus()?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = app.emit("desktop-presence-error", format!("Cotal could not show its window: {error}"));
+        }
     }
 }
 
@@ -218,7 +226,7 @@ pub fn run() {
             let window = app.get_webview_window("main").ok_or("The main window is unavailable.")?;
             window.set_background_color(Some(tauri::window::Color(255, 252, 238, 255)))?;
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
             app.manage(native_presence::Presence(std::sync::Mutex::new(native_presence::load(app.handle())?)));
             let status = MenuItem::with_id(app, "status", "Checking connection…", false, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
@@ -226,7 +234,7 @@ pub fn run() {
             let quit = MenuItem::with_id(
                 app,
                 "quit",
-                "Quit Cotal",
+                "Quit app (computer stays connected)",
                 true,
                 None::<&str>,
             )?;
@@ -261,14 +269,26 @@ pub fn run() {
                 api.prevent_close();
                 match native_presence::explain_close(window.app_handle()) {
                     Ok(true) => {
-                        let _ = window.emit("desktop-close-explained", "Cotal stays in your system tray. Open it from the tray or Dock. Quit app leaves the background service running.");
+                        #[cfg(target_os = "macos")]
+                        let message = "Closing this window keeps Cotal in the menu bar, not the Dock. Open it from the menu bar or Applications. Quitting the app leaves this computer connected.";
+                        #[cfg(not(target_os = "macos"))]
+                        let message = "Closing this window keeps Cotal in your system tray. Open it from the tray. Quitting the app leaves this computer connected.";
+                        let _ = window.emit("desktop-close-explained", message);
                         // Keep the first explanation visible until the person closes again.
                         return;
                     }
                     Err(message) => { let _ = window.emit("desktop-presence-error", message); return; }
                     Ok(false) => {}
                 }
-                let _ = window.hide();
+                let result = (|| -> tauri::Result<()> {
+                    window.hide()?;
+                    #[cfg(target_os = "macos")]
+                    window.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    let _ = window.emit("desktop-presence-error", format!("Cotal could not hide its window: {error}"));
+                }
             }
         })
         .build(tauri::generate_context!())
