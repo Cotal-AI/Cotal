@@ -123,10 +123,12 @@ interface RegisteredTask {
 
 /** Fixed: the task name arrives only through `COTAL_DAEMON_TASK`, never as script text. It lists
  *  every task and filters, because a filtered `Get-ScheduledTask` that matches nothing is an error
- *  rather than an empty answer. */
+ *  rather than an empty answer. Utility is imported by name before `New-Object` and `ConvertTo-Json`,
+ *  so those commands are not found by scanning the module path. */
 const READ_TASK = [
   "$ErrorActionPreference = 'Stop'",
   "Import-Module ScheduledTasks",
+  "Import-Module Microsoft.PowerShell.Utility",
   "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
   "$task = @(Get-ScheduledTask | Where-Object { $_.TaskPath -ceq '\\' -and $_.TaskName -ceq $env:COTAL_DAEMON_TASK })",
   "if ($task.Count -eq 0) { '{\"present\":false}'; exit 0 }",
