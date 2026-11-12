@@ -902,7 +902,7 @@ export type DeliveryMode = "chat" | "anycast" | "unicast";
  *  verbatim once `from.id` carries the principal dot-form. `rest` is the channel (chat) or the routed
  *  target/role/service (inst → recipient principal dot-form; svc → role; ctl → service). */
 export interface ParsedSubject {
-  kind: "chat" | "inst" | "svc" | "ctl";
+  kind: "chat" | "evp" | "inst" | "svc" | "ctl";
   owner: string;
   actor: string;
   /** The sender principal in canonical dot-form `<owner>.<actor>`. */
@@ -928,6 +928,10 @@ export function parseSubject(subject: string): ParsedSubject | null {
   const kind = parts[2];
   const mk = (kind: ParsedSubject["kind"], owner: string, actor: string, rest: string): ParsedSubject =>
     ({ kind, owner, actor, sender: `${owner}.${actor}`, rest });
+  if (kind === "evp") {
+    if (parts.length !== 5) return null;
+    return mk(kind, parts[3], parts[4], `events.${parts[3]}.${parts[4]}`);
+  }
   if (kind === "chat") {
     if (parts.length < 6) return null; // cotal.<space>.chat.<owner>.<actor>.<channel…>
     return mk(kind, parts[3], parts[4], parts.slice(5).join("."));
