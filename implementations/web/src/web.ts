@@ -904,6 +904,12 @@ export class SessionWatchers<F> {
  *  (an answer) and from any other failure (a 503 with the reason). */
 export class AgentEventsLate extends Error {}
 
+/** A payload-only read failure leaves the independently read metadata available. */
+export interface PayloadReadFailure {
+  status: "timeout" | "refused" | "failed";
+  reason: string;
+}
+
 /** One agent's newest frames within the deadline. Reads `limit + 1` from `events.<owner>.<actor>`
  *  with `channelHistory` and answers the newest `limit`, oldest first, with `more` when one more
  *  existed. A permission denial (`isPermissionDenied` from core) is an answer, `{ refused }` with the
@@ -931,7 +937,7 @@ export async function agentEventsPage(
   limit: number,
   grantFor: (channel: string, owner: string) => string | undefined,
   deadlineMs: number = AGGREGATION_DEADLINE_MS,
-): Promise<{ frames: CotalMessage[]; more: boolean } | { refused: string; grant?: string }> {
+): Promise<{ frames: CotalMessage[]; more: boolean; payloadRead?: PayloadReadFailure } | { refused: string; grant?: string }> {
   const channel = eventChannel(agent);
   const clock = deadline(deadlineMs);
   try {
@@ -939,13 +945,18 @@ export async function agentEventsPage(
     const page = await within(source.channelHistory(channel, { limit: limit + 1, signal: clock.signal, publisher }), clock.until);
     if (page === LATE) throw new AgentEventsLate(`${channel}: the read did not finish within ${deadlineMs}ms`);
     let payloads: CotalMessage[] = [];
+    let payloadRead: PayloadReadFailure | undefined;
     if (source.eventPayloadHistory) {
       try {
         const result = await within(source.eventPayloadHistory(agent.owner, agent.actor, { limit: limit + 1, signal: clock.signal }), clock.until);
         if (result !== LATE) payloads = result;
+        else payloadRead = { status: "timeout", reason: "Tool payload read timed out. Try again." };
       } catch (e) {
-        if (!isPermissionDenied(e)) throw e;
-        // A reader of metadata need not hold the independent payload rail grant.
+        payloadRead = clock.signal.aborted
+          ? { status: "timeout", reason: "Tool payload read timed out. Try again." }
+          : isPermissionDenied(e)
+            ? { status: "refused", reason: "Tool payload read refused. Ask the mesh owner to check payload access." }
+            : { status: "failed", reason: "Tool payload read failed. Try again." };
       }
     }
     const seen = new Set<string>();
@@ -956,7 +967,7 @@ export async function agentEventsPage(
       return true;
     }).sort((a, b) => a.ts - b.ts);
     const more = page.length > limit || payloads.length > limit;
-    return { frames: merged, more };
+    return { frames: merged, more, ...(payloadRead === undefined ? {} : { payloadRead }) };
   } catch (e) {
     if (e instanceof AgentEventsLate) throw e;
     if (isPermissionDenied(e)) {

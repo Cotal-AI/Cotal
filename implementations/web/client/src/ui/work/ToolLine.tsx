@@ -54,7 +54,7 @@ function callIcon(call: ToolCall, state: CallState) {
  *
  *  When the state changes the line mounts afresh and cross-fades in (`useXfade`), so the spinner,
  *  title and time turn into the final ones together. The name, title and times are React text. */
-export function ToolLine({ call, state, shimmer = true, className }: { call: ToolCall; state: CallState; shimmer?: boolean; className?: string }) {
+export function ToolLine({ call, state, shimmer = true, className, payloadRead }: { call: ToolCall; state: CallState; shimmer?: boolean; className?: string; payloadRead?: import("../../api/types.js").PayloadReadFailure }) {
   const now = useNow(state === "running");
   const fade = useXfade(state);
   const tone = state === "running" ? (shimmer ? "running" : undefined) : state === "failed" ? "error" : state === "pending" || state === "noResult" ? "pending" : undefined;
@@ -88,5 +88,5 @@ export function ToolLine({ call, state, shimmer = true, className }: { call: Too
       )}
     </TraceLine>
   );
-  return <div className="ox-call">{state !== "failed" ? line : <FailedTip line={line} words={call.kind === "command" ? FAILED_COMMAND : FAILED_OTHER} />}<ToolPayloads call={call} /></div>;
+  return <div className="ox-call">{state !== "failed" ? line : <FailedTip line={line} words={call.kind === "command" ? FAILED_COMMAND : FAILED_OTHER} />}<ToolPayloads call={call} payloadRead={payloadRead} /></div>;
 }

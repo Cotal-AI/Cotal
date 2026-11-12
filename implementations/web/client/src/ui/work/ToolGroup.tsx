@@ -26,7 +26,7 @@ function groupIcon(calls: readonly ToolCall[], toolStatus: boolean): IconSvgElem
  *  "<n> failed" in the destructive ink when any failed, and its description the step count and span
  *  (`groupDescription`). Open, it holds a Trace of each call's `ToolLine`. A closed group mounts none
  *  of them. `line` (the panel's peek) draws only the icon and the title, with nothing to open. */
-export function ToolGroup({ calls, at, toolStatus, line = false, className }: { calls: readonly ToolCall[]; at: CallAt; toolStatus: boolean; line?: boolean; className?: string }) {
+export function ToolGroup({ calls, at, toolStatus, line = false, className, payloadRead }: { calls: readonly ToolCall[]; at: CallAt; toolStatus: boolean; line?: boolean; className?: string; payloadRead?: import("../../api/types.js").PayloadReadFailure }) {
   const { title, failed } = groupTitle(calls, toolStatus);
   const head = (
     <>
@@ -54,7 +54,7 @@ export function ToolGroup({ calls, at, toolStatus, line = false, className }: { 
       </TraceCollapsibleTrigger>
       <TraceCollapsibleContent className="ox-cc">
         <Trace className="ox-calls">
-          {calls.map((c) => <ToolLine key={c.key} call={c} state={callState(c, { ...at, toolStatus })} />)}
+          {calls.map((c) => <ToolLine payloadRead={payloadRead} key={c.key} call={c} state={callState(c, { ...at, toolStatus })} />)}
         </Trace>
       </TraceCollapsibleContent>
     </TraceCollapsible>
