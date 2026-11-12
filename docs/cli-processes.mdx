@@ -536,6 +536,9 @@ without treating an option's value as another command word.
 
 ## daemon [#daemon]
 
+Daemon command discovery does not load the Manager implementation. Computer vitals sampling and
+hosted Manager registration cleanup load their Manager helpers when those operations run.
+
 A recorded native machine daemon checks for updates daily with up to one hour of jitter.
 A newly seen release waits one hour before installation. Automatic installation uses
 `cotal update --self` and waits until every hosted Manager is empty, then holds its admission

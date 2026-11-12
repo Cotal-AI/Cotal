@@ -1,4 +1,4 @@
-import { measureComputerVitals, type ComputerVitals } from "@cotal-ai/manager";
+import type { ComputerVitals } from "@cotal-ai/manager";
 import { defaultComputerName, readComputerName, saveComputerName } from "./computer-name.js";
 import { findMesh } from "@cotal-ai/workspace";
 import { loadIdpSession, requestAccountMachine, signedInMachineAccounts, withIdpSessionDir } from "@cotal-ai/auth";
@@ -13,7 +13,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
   let vitals: ComputerVitals | undefined;
   let vitalsError: string | undefined;
   let sampling: Promise<void> | undefined;
-  const sample = () => sampling ??= measureComputerVitals().then(value => { vitals = value; vitalsError = undefined; }).catch(() => { vitalsError = "Computer vitals could not be measured; no new sample was sent."; }).finally(() => { sampling = undefined; });
+  const sample = () => sampling ??= import("@cotal-ai/manager").then(({ measureComputerVitals }) => measureComputerVitals()).then(value => { vitals = value; vitalsError = undefined; }).catch(() => { vitalsError = "Computer vitals could not be measured; no new sample was sent."; }).finally(() => { sampling = undefined; });
   let name: string;
   let nameWarning: string | undefined;
   try { name = readComputerName(home); }
