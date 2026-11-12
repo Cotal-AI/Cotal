@@ -8,7 +8,10 @@ audience: operators
 The CLI reports its selected space, discovers commands, and returns receipts for operations.
 Its help describes the flags and output formats each command supports.
 On a fresh machine, run `cotal login` to sign in to Cotal Cloud. When no space is known,
-`cotal use`, a spawn refusal and the status next steps point to sign-in.
+`cotal use`, `cotal space`, a spawn refusal and the status next steps point to sign-in.
+Login does not install connectors. The first launch prepares the connectors it needs.
+When a selected space has no default persona, `cotal spawn` creates the shipped default.
+Status warns about a different folder's personas only when that folder contains personas.
 You can still run `cotal up` in a project or pass `--server` for a local or custom broker.
 
 `--server` takes one broker URL with a `nats://`, `tls://`, `ws://` or `wss://` scheme.

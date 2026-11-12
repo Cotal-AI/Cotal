@@ -22,7 +22,7 @@ mkdirSync(process.env.COTAL_HOME, { mode: 0o700 });
 assert.equal(await chooseAccount({ values: {}, positionals: [], raw: [] }, 'login'), COTAL_CLOUD_IDP);
 assert.equal(await chooseAccount({ values: { cloud: true }, positionals: [], raw: [] }, 'login'), COTAL_CLOUD_IDP);
 console.log('Fresh provider selection defaults directly to Cloud; --cloud selects it explicitly.');
-const env = { ...cleanEnv, HOME: home, COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: '1' };
+const env = { ...cleanEnv, HOME: home, COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: '0', COTAL_ALLOW_CHECKOUT_SEED: '1' };
 
 let handler: ReturnType<typeof toNodeHandler>;
 let sub = '';
@@ -66,6 +66,9 @@ try {
   await approval;
   clearTimeout(timer);
   assert.equal(code, 0, output);
+  assert.doesNotMatch(output, /wrote operator-global seed store payload|added @cotal-ai\//);
+  assert.equal(existsSync(join(env.XDG_CONFIG_HOME!, 'cotal', 'seed')), false);
+  assert.equal(existsSync(join(env.XDG_CONFIG_HOME!, 'cotal', 'extensions.json')), false);
   assert.match(output, /Selected personal/);
   assert.match(output, /cotal status/);
   assert.match(output, /cotal chat/);

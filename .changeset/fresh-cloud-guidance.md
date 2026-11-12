@@ -6,4 +6,4 @@
 ---
 
 Fresh CLI guidance points to Cotal Cloud sign-in when no space is known.
-Correct the login help example, empty selection guidance, no-mesh spawn remedy and status next steps while retaining local broker alternatives.
+Correct sign-in help and empty-space guidance, avoid connector installation during login, and point status at the shipped default launch without warnings about nonexistent folder personas. Keep multiline seed refusals readable while preserving permission checks and local broker alternatives.

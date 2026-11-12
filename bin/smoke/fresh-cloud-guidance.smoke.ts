@@ -24,6 +24,8 @@ function cli(args: string[], status = 0): string {
 }
 const help = cli(["login", "--help"]);
 check("login help names direct Cloud sign-in instead of a chooser", help.includes("sign in to Cotal Cloud and approve sign-in") && !help.includes("choose a provider"), help);
+const spaces = cli(["space"]);
+check("an empty space listing points at Cloud login", spaces.includes("cotal login"), spaces);
 const use = cli(["use"]);
 check("an empty fresh selection points at login", use.includes("`cotal login`"), use);
 const preview = cli(["spawn", "--dry-run"], 2);
