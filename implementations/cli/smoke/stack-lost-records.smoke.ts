@@ -25,7 +25,7 @@ function cli(args: string[], cotalHome = home) {
   if (cotalHome === home) assertSmokeSandboxDown(anchor, args, options);
   const result = spawnSync(process.execPath, [binary, ...args, "--json"], options);
   assert.equal(result.error, undefined, result.error?.message);
-  const data = JSON.parse(result.stdout) as { outcome?: string; result?: { kind?: string; selected?: { message?: string }; members?: { role: string; process: string }[]; signalled?: boolean }; error?: { code?: string; message?: string; remedy?: string } };
+  const data = JSON.parse(result.stdout) as { outcome?: string; completeness?: string; warnings?: { code: string; message: string }[]; result?: { kind?: string; selected?: { message?: string }; members?: { role: string; process: string }[]; signalled?: boolean }; error?: { code?: string; message?: string; remedy?: string } };
   return { exit: result.status, data };
 }
 const journalPath = join(root, ".cotal", "stack-controller.json");
@@ -45,7 +45,14 @@ try {
   mkdirSync(home, { mode: 0o700 });
   anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: env.XDG_CONFIG_HOME });
   const status = cli(["status"]);
-  assert.equal(status.exit, 0);
+  assert.equal(status.exit, 4);
+  assert.equal(status.data.outcome, "partial");
+  assert.equal(status.data.completeness, "partial");
+  assert.equal(status.data.error?.code, "OPERATION_PARTIAL");
+  assert.deepEqual(status.data.warnings?.map(({ code, message }) => ({ code, message })), [{
+    code: "FOLDER_BROKER_UNAVAILABLE",
+    message: "owned broker observation unavailable · the stack's recorded broker instance is missing",
+  }]);
   assert.match(status.data.result?.selected?.message ?? "", /member records are missing/);
   assert.doesNotMatch(status.data.result?.selected?.message ?? "", /runs under another/);
   const before = readFileSync(journalPath, "utf8");
