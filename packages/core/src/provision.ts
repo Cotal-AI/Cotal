@@ -2626,7 +2626,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // object-store client reads by creating an ephemeral PUSH consumer with a caller-chosen
   // `deliver_subject`, so a CONSUMER.CREATE here would be an exporter of every artifact in the space.
   const OBJ = objectStoreStream(artifactBucket(space));
-  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, OBJ, ...endpointPlaneStreamNames(space), ...buckets].flatMap((s) => [
+  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, eventPayloadStream(space), OBJ, ...endpointPlaneStreamNames(space), ...buckets].flatMap((s) => [
     `$JS.API.STREAM.CREATE.${s}`,
     `$JS.API.STREAM.INFO.${s}`,
   ]);
