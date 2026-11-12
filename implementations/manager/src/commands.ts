@@ -728,6 +728,11 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     process.on("message", (raw: unknown) => {
       if (!raw || typeof raw !== "object") return;
       const frame = raw as { kind?: unknown; attemptId?: unknown; op?: unknown };
+      if (frame.kind === "machine-agents" && typeof frame.attemptId === "string" && /^[A-Za-z0-9-]{1,64}$/.test(frame.attemptId)) {
+        try { process.send?.({ kind: "machine-agents-result", attemptId: frame.attemptId, ok: true, agents: mgr.hostedAgents() }); }
+        catch { process.send?.({ kind: "machine-agents-result", attemptId: frame.attemptId, ok: false }); }
+        return;
+      }
       if (frame.kind !== "machine-generation" || typeof frame.attemptId !== "string" || !["inspect", "prepare", "abort"].includes(String(frame.op))) return;
       const attemptId = frame.attemptId;
       pending = pending.then(async () => {

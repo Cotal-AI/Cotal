@@ -1,3 +1,4 @@
+import { renderAgents } from "./agents";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
@@ -418,7 +419,7 @@ function showStage(next: Stage, focus = false): void {
   else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in to keep this computer connected"; description = "Approve this computer in your browser to keep managing its spaces."; }
   else if (finished && computerAccount?.hostSupport === "supported") {
     const rows = computerSpaces(computerAccount);
-    title = anyConnected ? connectionView("launch-ready").title : rows.some(row => row.desired && row.observed !== "removed on this computer") ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
+    title = anyConnected ? connectionView("launch-ready").title : rows.some(row => row.observed === "refusal") ? "Connection needs attention" : rows.some(row => row.desired && row.observed !== "removed on this computer") ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
     description = rows.length ? connectionView("launch-ready").description : "Turn on the spaces that can use it in the dashboard.";
   }
   else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${accountSpaces.get(pending[0])?.label ?? pending[0]} needs to approve this computer. It connects by itself once they do.`; }
@@ -455,8 +456,12 @@ function showStage(next: Stage, focus = false): void {
     if (addingSpace) formParent.append(el("space-panel"), el("connect-panel"));
     else el("setup-progress").before(el("space-panel"), el("connect-panel"));
   }
-  el("applications-label").hidden = addingSpace || !anyConnected || !el("connected-applications").children.length;
-  el("connected-applications").hidden = addingSpace || !anyConnected;
+  const inventoryVisible = !addingSpace && (anyConnected || el("agent-list").children.length > 0);
+  el("running-agents").hidden = !inventoryVisible;
+  const summaryVisible = inventoryVisible && el("running-agents").dataset.available === "true";
+  el("applications-summary").hidden = !summaryVisible;
+  el("applications-label").hidden = summaryVisible || addingSpace || !anyConnected || !el("connected-applications").children.length;
+  el("connected-applications").hidden = summaryVisible || addingSpace || !anyConnected;
   el("dashboard").hidden = addingSpace || !(anyConnected || computerAccount?.hostSupport === "supported");
   if (finished && pending) { el("connection-icon").dataset.tone = "waiting"; setIcon(el("connection-icon"), "clock"); }
   el("another-space").hidden = addingSpace;
@@ -477,13 +482,13 @@ function showStage(next: Stage, focus = false): void {
     el("spaces-heading").hidden = signInRequired || !anyConnected;
     const starting = computerSpaces(computerAccount).some(row => row.desired && row.observed !== "removed on this computer");
     const refused = computerSpaces(computerAccount).some(row => row.observed === "refusal");
-    text("tray-label", signInRequired ? "Sign in required" : anyConnected ? "Connected" : starting ? "Starting" : "Ready");
-    el("tray-indicator").classList.toggle("connected", anyConnected || !starting && !signInRequired);
+    text("tray-label", signInRequired ? "Sign in required" : anyConnected ? "Connected" : refused ? "Needs attention" : starting ? "Starting" : "Ready");
+    el("tray-indicator").classList.toggle("connected", anyConnected || !starting && !signInRequired && !refused);
     el("tray-indicator").classList.toggle("error", signInRequired || refused);
     if (!anyConnected) {
       const empty = computerSpaces(computerAccount).length === 0;
-      el("connection-icon").dataset.tone = signInRequired ? "error" : starting ? "waiting" : empty ? "success" : "neutral";
-      setIcon(el("connection-icon"), signInRequired ? "browser" : starting ? "clock" : empty ? "check" : "computer");
+      el("connection-icon").dataset.tone = signInRequired || refused ? "error" : starting ? "waiting" : empty ? "success" : "neutral";
+      setIcon(el("connection-icon"), signInRequired ? "browser" : refused ? "warning" : starting ? "clock" : empty ? "check" : "computer");
     }
   } else el("spaces-heading").hidden = false;
   el("dashboard-spaces-note").hidden = !finished || addingSpace || computerAccount?.hostSupport !== "supported" || computerAccount.mode === "sign-in-required" || computerSpaces(computerAccount).length === 0;
@@ -589,6 +594,7 @@ function showApplications(manager: unknown): void {
   const available = connectors.filter(c => c.state === "available" && typeof c.agent === "string").map(c => names[c.agent!] ?? c.agent!);
   const container = el("connected-applications");
   const value = available.join("\n");
+  text("applications-summary", available.length ? `Applications: ${available.join(", ")}` : "");
   if (container.dataset.applications === value) return;
   container.dataset.applications = value;
   container.replaceChildren(...available.map(name => { const chip = document.createElement("span"); chip.className = "application-chip"; chip.dataset.testid = "application-chip"; chip.textContent = name; return chip; }));
@@ -642,6 +648,7 @@ async function refresh(): Promise<void> {
     const status = await request({ op: "status" });
     if (!current()) return;
     ready = status.state === "ready";
+    renderAgents(status, el("running-agents"));
     daemonVersion = String(status.version);
     updateStatus = status.update as UpdateStatus | undefined;
     renderSettings();
