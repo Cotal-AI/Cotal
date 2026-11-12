@@ -1,8 +1,11 @@
 /** Contract edge cases complement the live broker regression in bin/smoke. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import type { NatsConnection } from "@nats-io/transport-node";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { drainAndClose } from "../src/connection-cleanup.js";
 
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 const pending = () => new Promise<void>(() => {});
 function connection(overrides: Partial<NatsConnection> = {}) {
   let closes = 0;
@@ -47,3 +50,4 @@ function connection(overrides: Partial<NatsConnection> = {}) {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 console.log("connection cleanup contract edges passed");
+emitSentinel({ passed: counted.cells(), failed: 0 });

@@ -3,7 +3,7 @@
  * A relay withholds teardown UNSUB/PING bytes to exercise credential expiry and a silent peer.
  * Run: pnpm smoke:connection-cleanup
  */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -16,8 +16,12 @@ import {
   channelBucket, createSpaceAuth, drainAndClose, mintCreds, newIdentity,
   seedChannelRegistry, serverConfig, setupSpaceStreams, standaloneConnectOpts,
 } from "@cotal-ai/core";
-import { freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import {
+  countedAssert, emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal,
+} from "@cotal-ai/smoke-kit";
 
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const space = "cleanup";
 const port = await freePort();
@@ -185,3 +189,4 @@ try {
   // Retain the private store and logs for inspection by the caller.
 }
 console.log("connection cleanup smoke passed");
+emitSentinel({ passed: counted.cells(), failed: 0 });
