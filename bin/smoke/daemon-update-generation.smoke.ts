@@ -1,15 +1,19 @@
 import strictAssert from "node:assert/strict";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 import { EndpointRefusal } from "../daemon/endpoint.js";
 import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js";
+import { installedDaemonIdentity, preflightInstalledDaemon, unitReceiptFile } from "../daemon/install.js";
+import { executeUpdate, updateRuntime, type UpdateRuntime } from "@cotal-ai/cli/update";
 
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
-const root = realpathSync(mkdtempSync(join(tmpdir(), "update-generation-")));
-process.env.XDG_RUNTIME_DIR = join(root, "run");
+const root = realpathSync(mkdtempSync(join(tmpdir(), "ug-")));
+process.env.XDG_RUNTIME_DIR = mkdtempSync("/tmp/cotal-ug-");
 process.env.COTAL_HOME = join(root, "home");
 
 type Reply = Awaited<ReturnType<NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"] & {}>>;
@@ -64,6 +68,69 @@ function scripted(steps: (Reply | Error)[]) {
   const run = scripted([status("1.0.0")]);
   await waitForInstalledDaemonGeneration("2.0.0", { installed: () => false, query: run.query });
   assert.equal(run.calls(), 0);
+}
+
+// A stale recorded service is knowable before either replacement or connector writes.
+for (const self of [true, false]) {
+  const state = join(root, `stale-${self}`);
+  mkdirSync(state, { mode: 0o700 });
+  const paths = { state, lock: join(state, "lock"), socket: join(state, "socket") };
+  writeFileSync(unitReceiptFile(paths), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath: join(state, "gone.service"), unitSha256: "stale", installedAt: "2026-11-12" }));
+  const effects: string[] = [], errors: string[] = [];
+  const preflight = { preflightReplacement: async () => { preflightInstalledDaemon(paths); } };
+  const rt: UpdateRuntime = {
+    ...updateRuntime, ...preflight, env: {}, version: () => "0.13.1",
+    reportRunningManager: async () => "none",
+    reconcile: async () => { effects.push("reconcile"); },
+    refreshConnectors: async () => [], extensions: () => [], claimUpdatePass: () => () => {},
+    npm: args => {
+      // Only latest-tag discovery precedes the preflight on the self path.
+      if (args[0] === "view" && args[1] === "cotal-ai@latest") return { status: 0, stdout: '"0.13.2"', stderr: "" };
+      effects.push("registry or install");
+      return { status: 1, stdout: "", stderr: "unexpected registry work" };
+    },
+    out: () => {}, err: line => { errors.push(line); },
+  };
+  assert.equal(await executeUpdate(self, rt), 1);
+  assert.deepEqual(effects, [], "stale receipt refuses before registry closure checks, package replacement or reconciliation");
+  assert.match(errors.join("\n"), /recorded unit file .*gone/);
+}
+
+// Receipt validation never treats malformed state as absent, and leaves other installs alone.
+{
+  const state = join(root, "receipts");
+  mkdirSync(state, { mode: 0o700 });
+  const paths = { state, lock: join(state, "lock"), socket: join(state, "socket") };
+  assert.doesNotThrow(() => preflightInstalledDaemon(paths));
+  writeFileSync(unitReceiptFile(paths), "not json");
+  assert.throws(() => preflightInstalledDaemon(paths), /no installed unit recorded/);
+  if (process.platform === "linux") {
+    const native = join(root, "native"), config = join(root, "config"), directory = join(config, "systemd", "user");
+    mkdirSync(native, { mode: 0o700 });
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(' ') !== '--user show-environment') process.exit(99);\nconsole.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});\n`, { mode: 0o700 });
+    const priorPath = process.env.PATH, priorEntry = process.argv[1], priorExecArgv = process.execArgv;
+    process.execArgv = [];
+    process.argv[1] = fileURLToPath(new URL("../cotal.ts", import.meta.url));
+    process.env.PATH = `${native}:${priorPath}`;
+    try {
+      const source = 'ExecStart="/other/node" "/other/cotal.js" daemon serve\n';
+      const unitPath = join(directory, "cotal-daemon.service");
+      writeFileSync(unitPath, source, { mode: 0o600 });
+      const receipt = { v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(source).digest("hex"), installedAt: "2026-11-12" };
+      writeFileSync(unitReceiptFile(paths), JSON.stringify(receipt));
+      assert.equal(installedDaemonIdentity(paths).same, false);
+      assert.doesNotThrow(() => preflightInstalledDaemon(paths));
+      writeFileSync(unitReceiptFile(paths), JSON.stringify({ ...receipt, unitPath: join(state, "outside.service") }));
+      writeFileSync(join(state, "outside.service"), source, { mode: 0o600 });
+      assert.throws(() => preflightInstalledDaemon(paths), (error: Error & { remedy?: string }) => {
+        assert.match(error.message, /does not name this daemon home's unit/);
+        assert.ok(error.remedy?.includes(unitReceiptFile(paths)));
+        assert.match(error.remedy!, /remove only.*daemon install.*daemon uninstall/);
+        return true;
+      });
+    } finally { process.env.PATH = priorPath; process.argv[1] = priorEntry!; process.execArgv = priorExecArgv; }
+  }
 }
 
 emitSentinel({ passed: counted.cells(), failed: 0 });

@@ -7,7 +7,7 @@ import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, r
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, restartInstalled, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
@@ -36,6 +36,14 @@ const composed: Command = { ...command, async run(args) {
       }
       throw error;
     }
+  }, async preflightReplacement() {
+    let paths;
+    try { paths = daemonPaths(); }
+    catch (error) {
+      if (error instanceof EndpointRefusal && error.code === "NO_RUNTIME_DIR") return;
+      throw error;
+    }
+    preflightInstalledDaemon(paths);
   }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
     if (process.env.COTAL_AUTO_UPDATE !== "1" || !daemonObserved) return async () => {};
     const paths = daemonPaths();
