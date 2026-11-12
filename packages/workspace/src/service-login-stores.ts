@@ -1,8 +1,9 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { spaceFromKey } from "./auth-paths.js";
 import { homedir } from "node:os";
 import { loginRecoveryCommand } from "./cloud-login.js";
-import { homeCotalDir } from "./cotal-home.js";
+import { userCotalDir } from "./cotal-home.js";
 import { isAbsolute, join, resolve } from "node:path";
 
 /** A proven same-user Manager unit and its explicit private sign-in directory. */
@@ -72,12 +73,13 @@ function words(value: string): string[] {
 }
 function absent(path: string): boolean { return lstatSync(path, { throwIfNoEntry: false }) === undefined; }
 function inspect(unitPath: string, service: string, roots: string[]): ServiceLoginStore | undefined {
-  const legacy = /^cotal-manager@[a-f0-9]+\.service$/.test(service);
-  // Aliased unrelated units are not discovery roots. A legacy alias is ambiguous.
-  if (lstatSync(unitPath).isSymbolicLink()) { if (legacy) refuse(); return undefined; }
+  const key = /^cotal-manager@([a-f0-9]+)\.service$/.exec(service)?.[1];
+  const space = key ? spaceFromKey(key) : undefined;
+  if (!space) return undefined;
+  if (lstatSync(unitPath).isSymbolicLink()) refuse();
   const candidate = file(unitPath, true);
   const unit = candidate;
-  if (!legacy && !/^\s*ExecStart\s*=.*\bcotal(?:\.ts|\.js)?(?:["']?\s).*\bsupervise\b/m.test(unit.text)) return undefined;
+  if (!unit.text.startsWith("# installed by `cotal service install`\n") || !unit.text.includes(`# cotal-mesh: ${space}\n`)) refuse();
   if (file(unitPath).pin !== unit.pin) refuse();
   const sources = new Map([[unitPath, unit.pin]]);
   const noDropins: string[] = [];
@@ -142,7 +144,7 @@ export function serviceLoginStores(): ServiceLoginStore[] {
     const entries = physical(root, true, (fd) => readdirSync(`/proc/self/fd/${fd}`));
     if (entries.length > 1024) refuse();
     for (const service of entries.sort()) {
-      if (!/^[A-Za-z0-9_.@:-]+\.service$/.test(service)) continue;
+      if (!/^cotal-manager@[a-f0-9]+\.service$/.test(service)) continue;
       const store = inspect(join(root, service), service, roots);
       if (!store) continue;
       if (names.has(service)) refuse(); names.add(service); stores.push(store);
@@ -156,6 +158,16 @@ export function assertServiceLoginStore(store: ServiceLoginStore): void {
   const check = proofs.get(store); if (!check) refuse(); check();
 }
 
+/** Execute credential IO relative to a pinned physical private directory. Replacing its path
+ * cannot redirect the transaction to another account's store. */
+export function withServiceLoginStore<T>(store: ServiceLoginStore, run: (directory: string) => T): T {
+  assertServiceLoginStore(store);
+  return physical(store.directory, true, fd => {
+    assertServiceLoginStore(store);
+    return run(`/proc/self/fd/${fd}`);
+  });
+}
+
 /** Recovery text names a service only when its current protected unit proves the store. */
 export function serviceLoginRecovery(idp: string, directory?: string): string {
   const command = loginRecoveryCommand(idp);
@@ -164,5 +176,5 @@ export function serviceLoginRecovery(idp: string, directory?: string): string {
     const store = serviceLoginStores().find((s) => s.directory === directory);
     if (store) { assertServiceLoginStore(store); return `Manager service ${JSON.stringify(store.service)} uses a separate sign-in store; run \`${command}\``; }
   } catch { /* Unproven service names must not appear in recovery advice. */ }
-  return directory !== homeCotalDir() ? `run \`COTAL_HOME='${directory.replaceAll("'", "'\\''")}' ${command}\` to sign in again` : `run \`${command}\` to sign in again`;
+  return directory !== userCotalDir() ? `Manager sign-in store ${JSON.stringify(directory)}: run \`COTAL_HOME='${directory.replaceAll("'", "'\\''")}' ${command}\` to sign in again` : `run \`${command}\` to sign in again`;
 }

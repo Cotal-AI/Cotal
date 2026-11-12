@@ -19,6 +19,7 @@ import {
   listIdpAccounts,
   normalizeIdpUrl,
 } from "./login.js";
+import { refreshServiceSessions } from "./service-sessions.js";
 import { signOutIdpSession } from "./logout.js";
 import { inspectHandleFile } from "./handle-inspect.js";
 import { checkedEviction } from "./barrier-evict.js";
@@ -187,6 +188,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
         throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${error.message}; no session was cached`, { target: { idp }, remedy: "check --idp <auth base URL>; it must serve <base>/device/code" });
       throw error;
     });
+    const refreshedServices = refreshServiceSessions(homeCotalDir(), idp, session);
     const provider = resolveAuthProvider();
     let credentialsKept: ReturnType<typeof removeCatalogAccount>["credentialsKept"] = [];
     if (previousSub) {
@@ -225,6 +227,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
           { text: "Account identity is verified. Each space's grants decide access separately. No session token is printed.", tone: "hint" },
         ] },
       ] },
+      ...(refreshedServices.length ? [{ title: "Manager services signed in", blocks: [{ kind: "lines" as const, lines: refreshedServices.map(service => `Signed in ${oneLine(service)} with the same approval.`) }] }] : []),
       ...(discovered.length ? [{ title: "Your spaces", blocks: [{ kind: "fields" as const, rows: discovered.map((m): [string, string] => [m.space, [m.catalogName ?? m.space, m.catalogRole].filter(Boolean).join(" · ")]) }] }] : []),
       ...(selected ? [{ title: "Selected space", blocks: [{ kind: "lines" as const, lines: [`Selected ${oneLine(selected)}. Change it with cotal use <name>.`] }] }] : []),
       { title: "Next", blocks: [{ kind: "commands", items: selected

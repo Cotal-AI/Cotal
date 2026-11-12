@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { spaceKey } from "../src/auth-paths.js";
 import { serviceLoginStores, assertServiceLoginStore, serviceLoginRecovery } from "../src/service-login-stores.js";
 
 if (process.platform === "linux") {
@@ -19,14 +20,14 @@ if (process.platform === "linux") {
     const env = join(root, "manager.env");
     const render = (name: string, values: Record<string, string>) => readFileSync(resolve("bin/smoke/fixtures", name), "utf8").replace(/@([A-Z_]+)@/g, (_, key: string) => values[key]!);
     writeFileSync(env, render("pre-cut-manager-unit.env", { PATH: "/usr/bin", SPACE: "fixture", SERVER: "nats://localhost:4222", STATE_DIR: store }), { mode: 0o600 });
-    const unit = join(units, "cotal-manager@abcd.service");
+    const unit = join(units, `cotal-manager@${spaceKey("fixture")}.service`);
     const source = render("pre-cut-manager-unit.service", { MESH: "fixture", ROOT: root, WORKING_DIRECTORY: root, ENVIRONMENT_FILE: env, ENTRY: "/usr/bin/node --import tsx /fixture/bin/cotal.ts" });
     writeFileSync(unit, source, { mode: 0o600 });
     writeFileSync(join(customUnits, "arbitrary.service"), `[Service]\nExecStart=/usr/bin/cotal supervise\nEnvironment="COTAL_HOME=${custom}"\n`, { mode: 0o600 });
-    const stores = serviceLoginStores(); assert.equal(stores.length, 2);
+    const stores = serviceLoginStores(); assert.equal(stores.length, 1);
     const legacy = stores.find((s) => s.directory === store)!;
     assert.equal(legacy.unitPath, unit); assertServiceLoginStore(legacy);
-    assert.match(serviceLoginRecovery("https://idp.test", store), /cotal-manager@abcd.service/);
+    assert.equal(serviceLoginRecovery("https://idp.test", store).includes(`cotal-manager@${spaceKey("fixture")}.service`), true);
     assert.throws(() => assertServiceLoginStore({ ...legacy }));
     writeFileSync(env, `COTAL_HOME="${custom}"\n`, { mode: 0o600 });
     assert.throws(() => assertServiceLoginStore(legacy));
@@ -40,11 +41,11 @@ if (process.platform === "linux") {
     mkdirSync(`${unit}.d`, { mode: 0o700 }); assert.throws(serviceLoginStores); rmSync(`${unit}.d`, { recursive: true });
     writeFileSync(unit, source + "Environment=COTAL_HOME=/ambiguous\n");
     // This is in [Install], so it does not change the service environment.
-    assert.equal(serviceLoginStores().length, 2);
+    assert.equal(serviceLoginStores().length, 1);
     writeFileSync(unit, source.replace("EnvironmentFile=", "Environment=COTAL_HOME=/ambiguous\nEnvironmentFile="));
     assert.throws(serviceLoginStores);
     writeFileSync(unit, source.replace("EnvironmentFile=", "EnvironmentFile=-")); assert.throws(serviceLoginStores);
-    console.log("PASS service login discovery: legacy, custom, source/store pins, physical paths and parser refusals");
+    console.log("PASS service login discovery: legacy product unit, custom unit excluded, source/store pins, physical paths and parser refusals");
   } finally {
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     rmSync(root, { recursive: true, force: true });
