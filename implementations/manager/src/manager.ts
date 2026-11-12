@@ -3882,16 +3882,12 @@ export class Manager {
     try {
       handle = runtime.adopt(reference);
     } catch (e) {
-      const reap = (runtime as { reap?: (reference: { kind: string; id: string }) => Promise<{ outcome?: string }> }).reap;
-      if (typeof reap !== "function") return;
-      let outcome: string | undefined;
       try {
-        outcome = (await reap.call(runtime, reference)).outcome;
+        await requireRuntimeReap(runtime, reference);
       } catch {
         // The runtime could not prove the seat gone. Leave the record for a later start.
         return;
       }
-      if (outcome !== "reaped") return;
       console.error(`! ${name}: the released seat is gone (${rejectionText(e)}); retiring its lifecycle`);
       handle = {
         name,
