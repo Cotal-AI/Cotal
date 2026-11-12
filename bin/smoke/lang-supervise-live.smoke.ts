@@ -40,6 +40,7 @@ interface JournalEntryT {
 }
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { Manager } = await import("../../implementations/manager/dist/index.js");
+const { childlessRuntime } = await import("../../implementations/manager/smoke/_childless-runtime.js");
 const { MeshHandler, EpfSettleWatcher, startRun } = await import("@cotal-ai/runtime");
 const { launchEnv } = await import("@cotal-ai/connector-core");
 
@@ -103,6 +104,13 @@ try {
 
   mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   await mgr.start();
+  // lang-supervise-live-seat.mjs starts no child processes. Only this test's fixed stub can use
+  // process exit as closure.
+  childlessRuntime(
+    (mgr as unknown as { runtime: import("@cotal-ai/core").Runtime }).runtime,
+    join(workspaceRoot, "childless-runtime"),
+    (spec) => spec.command === process.execPath && spec.args.length === 1 && spec.args[0] === SEAT,
+  );
 
   const nc = await connect({ servers: SERVER, maxReconnectAttempts: 0 });
   const js = jetstream(nc);

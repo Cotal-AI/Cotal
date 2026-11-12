@@ -217,7 +217,6 @@ async function suite(): Promise<void> {
 
   const look = await inspector();
   const ask = await prober();
-  const sink = await traffic();
   const times: Record<string, number> = {};
 
   // ---- the first host serves, the second does not ---------------------------------------------------
@@ -227,6 +226,7 @@ async function suite(): Promise<void> {
   const first = await lease(look);
   check("the lease row is ready and held by the first host's identity", first?.ready === true && first.holder === holderOf(h1), first);
   check("the control rail answers", await ask());
+  const sink = await traffic();
   const delivered1 = await sink.post("before the standby starts");
   check("a post is delivered exactly once while the first host serves", await until(() => sink.copiesOf(delivered1) >= 1, 30_000) && (await wait(1500), sink.copiesOf(delivered1) === 1), sink.copiesOf(delivered1));
 

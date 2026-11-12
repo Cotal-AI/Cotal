@@ -259,7 +259,7 @@ try {
     desktop.p.stdin!.end();
     check("a server with no identities closes cleanly", await within(desktop.exited) === 0);
 
-    const down = cotal(s, "down");
+    const down = cotal(s, "down", "--yes");
     check(`the ${kind} mesh stops`, down.status === 0 && await until(async () => !await portOpen(s.port)));
     s.up = false;
   }
@@ -294,7 +294,7 @@ try {
   forged?.close();
   for (const p of children) if (p.exitCode === null && p.signalCode === null) p.kill("SIGKILL");
   await Promise.all(servers.map((s) => s.exited));
-  for (const s of sandboxes) if (s.up) { const down = cotal(s, "down"); s.up = down.status !== 0 || await portOpen(s.port); }
+  for (const s of sandboxes) if (s.up) { const down = cotal(s, "down", "--yes"); s.up = down.status !== 0 || await portOpen(s.port); }
   if (complete && !sandboxes.some((s) => s.up)) rmSync(dir, { recursive: true, force: true });
   else { process.exitCode = 1; console.error(`fixture retained for diagnosis: ${dir}`); }
 }

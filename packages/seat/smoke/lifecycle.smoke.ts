@@ -652,18 +652,19 @@ assert.equal(process.env.COTAL_RUN, "probe-3152-real");
 delete process.env.COTAL_RUN;
 
 const sleepBin = cp.execFileSync("sh", ["-c", "command -v sleep"], { encoding: "utf8" }).trim();
-const commBin = path.join(${JSON.stringify(probeDir)}, "x) y (z");
-fs.copyFileSync(sleepBin, commBin);
-fs.chmodSync(commBin, 0o755);
-
 const decoy = cp.spawn(sleepBin, ["300"], { stdio: "ignore", env: { PATH: process.env.PATH ?? "", COTAL_RUN: "probe-3152-decoy" } });
-const real = cp.spawn(commBin, ["300"], { stdio: "ignore", env: { PATH: process.env.PATH ?? "" } });
+const real = cp.spawn(process.execPath, ["-e", "process.title = 'x) y (z'; setInterval(() => {}, 1000)"], { stdio: "ignore", env: { PATH: process.env.PATH ?? "" } });
 const P = real.pid;
 const Q = decoy.pid;
 assert.ok(P && Q);
 
 try {
-  await new Promise((r) => setTimeout(r, 200));
+  for (let i = 0; i < 50; i++) {
+    try {
+      if (fs.readFileSync(\`/proc/\${P}/stat\`, "utf8").includes("(x) y (z)")) break;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 40));
+  }
   const rawStat = fs.readFileSync(\`/proc/\${P}/stat\`, "utf8");
   assert.ok(rawStat.includes("(x) y (z)"), rawStat);
   const expectedToken = rawStat.slice(rawStat.lastIndexOf(") ") + 2).trim().split(/\\s+/)[19];

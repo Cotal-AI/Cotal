@@ -14,6 +14,7 @@
  * Run: pnpm smoke:gate-reconcile-resume
  */
 import type { KV } from "@nats-io/kv";
+import { Bucket } from "@nats-io/kv/internal";
 import {
   DEV_OWNER,
   endpointRegistrationBarrier,
@@ -44,8 +45,62 @@ function memKv(): KV & {
   const store = new Map<string, Stored>();
   const writes: Array<{ key: string; value: string; revision: number }> = [];
   let sequence = 0;
-  const self = {
+  const self = Object.assign(Object.create(Bucket.prototype), {
     failDelete: 0,
+    bucket: "mem-kv",
+    stream: "KV_mem-kv",
+    _buildCC: (filter: string | string[]) => ({ filter_subject: Array.isArray(filter) ? filter[0] ?? ">" : filter }),
+    jmToWatchEntry: (m: { key: string; value: Uint8Array; revision: number; operation: "PUT" | "DEL" }) => ({
+      bucket: "mem-kv",
+      key: m.key,
+      value: m.value,
+      revision: m.revision,
+      operation: m.operation,
+      delta: 0,
+      created: new Date(),
+      length: m.value.byteLength,
+      rawKey: m.key,
+      isUpdate: false,
+      string: () => dec.decode(m.value),
+      json: () => JSON.parse(dec.decode(m.value)),
+    }),
+    jsm: {
+      consumers: {
+        delete: async () => true,
+      },
+    },
+    js: {
+      consumers: {
+        getPushConsumer: async (_stream: string, cc: { filter_subject?: string }) => {
+          const prefix = typeof cc.filter_subject === "string" ? cc.filter_subject.replace(/>$/, "") : "";
+          const matching = [...store.entries()].filter(([key]) => !prefix || key.startsWith(prefix));
+          return {
+            api: { add: async () => ({}) },
+            name: "mem-scan-consumer",
+            info: async () => ({ num_pending: matching.length }),
+            consume: async () => {
+              let idx = 0;
+              return {
+                stop: () => {},
+                close: async () => {},
+                [Symbol.asyncIterator]: async function* () {
+                  for (const [key, stored] of matching) {
+                    idx++;
+                    yield {
+                      key,
+                      value: stored.value,
+                      revision: stored.revision,
+                      operation: stored.operation,
+                      info: { pending: matching.length - idx },
+                    };
+                  }
+                },
+              };
+            },
+          };
+        },
+      },
+    },
     get: async (key: string) => store.get(key),
     create: async (key: string, value: Uint8Array) => {
       const current = store.get(key);
@@ -91,7 +146,7 @@ function memKv(): KV & {
     },
     dump: (key: string) => store.get(key),
     writes,
-  };
+  });
   return self as unknown as ReturnType<typeof memKv>;
 }
 

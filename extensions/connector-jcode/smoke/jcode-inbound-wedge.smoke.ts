@@ -216,7 +216,7 @@ try {
   const busyMs = 8_000;
 
   // --- Cell A: the initial automatic batch stays visible while its Cotal-owned run() is open ---
-  child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: String(busyMs) }, join(root, "ci.sock"));
+  child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: String(busyMs) }, join(sockRoot, "ci.sock"));
   // The post-join notice turn (#2001) must complete before Cell A probes, else presence can interleave (#2055).
   await waitFor("the post-join notice turn completes before the initial-drive cell (#2001, #2055)", () =>
     entries().find(
@@ -252,7 +252,7 @@ try {
   peerPresenceAt = 0;
 
   // --- Cell B: advisory idle during a still-open Cotal-owned run() ---
-  child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: String(busyMs), FAKE_JCODE_IDLE_DURING_TURN: "1" }, join(root, "control-a.sock"));
+  child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: String(busyMs), FAKE_JCODE_IDLE_DURING_TURN: "1" }, join(sockRoot, "control-a.sock"));
   // The post-join notice turn (#2001) must complete before the first DM, else presence can interleave (#2055).
   await waitFor("the post-join notice turn completes before the idle-during-drive cell (#2001, #2055)", () =>
     entries().find(
@@ -306,7 +306,7 @@ try {
   peerPresenceAt = 0;
 
   // --- Cell C: TUI-owned working session, host not inside drive() ---
-  child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: "10", FAKE_JCODE_EXTERNAL_TURN_MS: String(busyMs) }, join(root, "control-b.sock"));
+  child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: "10", FAKE_JCODE_EXTERNAL_TURN_MS: String(busyMs) }, join(sockRoot, "control-b.sock"));
   // The post-join notice turn (#2001) must complete before the first DM, else presence can interleave (#2055).
   await waitFor("the post-join notice turn completes before the TUI-owned cell (#2001, #2055)", () =>
     entries().find(
@@ -540,5 +540,6 @@ try {
   await operator?.stop().catch(() => {});
   await killAndAwaitExit(nats);
   releaseBroker();
+  rmSync(sockRoot, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 }
