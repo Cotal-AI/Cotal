@@ -291,8 +291,10 @@ try {
   );
 
   const semanticDownOnly = new Set([
+    "implementations/runtime/smoke/agent-arguments.smoke.ts",
     "implementations/runtime/smoke/mesh-wait.smoke.ts",
     "implementations/runtime/smoke/mesh-monitor.smoke.ts",
+    "packages/lang/smoke/agent-arguments.smoke.ts",
     "packages/lang/smoke/engine.smoke.ts",
   ]);
 
