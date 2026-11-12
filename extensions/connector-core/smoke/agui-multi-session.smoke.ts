@@ -200,13 +200,15 @@ try {
     c("fresh-root:CONTROL-the-first-root-publishes", first.published === 1 && first.tip > 0, first);
     const workspaceRoot = join(root, "second-root");
     mkdirSync(workspaceRoot);
-    const admission = async (id: string, stateRoot: string) => {
+    const admission = async (id: string, stateRoot: string, eventsRequired = false) => {
       const agent = new MeshAgent({
         id, name: "multi-agent", space: SPACE, servers: url, lifecycleUid: mintLifecycleUid(),
         kind: "agent", subscribe: [], allowSubscribe: [], allowPublish: [], tls: false,
+        ...(eventsRequired ? { eventsRequired: true } : {}),
       }, { ...process.env, COTAL_EVENTS: "1", COTAL_WORKSPACE_ROOT: stateRoot });
       let ready = false;
       let errorName: string | undefined;
+      let issue: string | undefined;
       let timer: ReturnType<typeof setTimeout> | undefined;
       agent.on("connection", (state: { connected: boolean }) => { if (state.connected) ready = true; });
       try {
@@ -221,12 +223,16 @@ try {
         errorName = (error as Error).name;
       } finally {
         clearTimeout(timer);
+        issue = agent.connectionIssue;
         await agent.stop();
       }
-      return { ready, errorName };
+      return { ready, errorName, issue };
     };
-    const second = await admission(actor, workspaceRoot);
-    c("fresh-root:refuses-nonempty-subject-before-ready",
+    const optional = await admission(actor, workspaceRoot);
+    c("fresh-root:optional-events-start-with-the-plane-blocked",
+      optional.ready && optional.errorName === undefined && /no acknowledged transcript frontier/.test(optional.issue ?? ""), optional);
+    const second = await admission(actor, workspaceRoot, true);
+    c("fresh-root:required-events-refuse-before-ready",
       !second.ready && second.errorName === "EventStateConflictError", second);
     const sameRoot = await admission(actor, root);
     c("fresh-root:CONTROL-the-original-root-is-admitted", sameRoot.ready && sameRoot.errorName === undefined, sameRoot);

@@ -182,9 +182,11 @@ personal user-mode OpenCode session arms without a separate event flag. Its own 
 cover the principal-keyed event channel or the connector refuses before joining.
 
 The connector checks transcript state before joining. If the broker retains events for this principal
-but the selected state root has no acknowledged frontier, startup refuses with a diagnostic. Reuse the
-previous state root or launch with a new principal. The check reads retained counts, not transcript
-contents, and does not change the append expectation or discard local logs.
+but the selected state root has no acknowledged frontier, the event plane does not start. On a space
+that requires events the launch refuses. Where events are optional the seat starts, the plane stays
+down, and the reason is kept on the connection status. Reuse the previous state root or launch with a
+new principal to publish again. The check reads retained counts, not transcript contents, and does not
+change the append expectation or discard local logs.
 
 The managed session is created and announced only after the mesh join completes. Its event boundary
 is captured at adopt, before any prompt is admitted.

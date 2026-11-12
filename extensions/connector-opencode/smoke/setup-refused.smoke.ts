@@ -127,25 +127,21 @@ try {
   await writer.start();
   try { await writer.multicast("retained fixture frame", { channel: "events.local.conflict" }); }
   finally { await writer.stop(); }
-  const before = sessionCreates;
-  const exits: Array<string | number | undefined> = [];
   const rejections: unknown[] = [];
   const onRejection = (error: unknown) => { rejections.push(error); };
   process.on("unhandledRejection", onRejection);
-  const realExit = process.exit;
-  process.exit = ((code?: string | number) => { exits.push(code); return undefined as never; }) as typeof process.exit;
-  let refused: Awaited<ReturnType<typeof arm>> | undefined;
+  let blocked: Awaited<ReturnType<typeof arm>> | undefined;
   try {
-    refused = await arm("Conflict", undefined, { COTAL_EVENTS: "1", COTAL_WORKSPACE_ROOT: root });
-    for (let i = 0; i < 100 && exits.length === 0 && rejections.length === 0; i++) await sleep(50);
-    check("ADMISSION: startup refusal exits the managed host", exits.length === 1 && exits[0] === 1, exits);
-    check("ADMISSION: refusal creates no session or presence", sessionCreates === before && !present.has("Conflict"), { before, sessionCreates });
-    check("ADMISSION: rejected start is handled", rejections.length === 0, rejections);
+    // A static launch cannot mark events required, so the incompatible root blocks the plane and the
+    // seat still starts. The required-plane refusal is covered by the multi-session smoke.
+    blocked = await arm("Conflict", undefined, { COTAL_EVENTS: "1", COTAL_WORKSPACE_ROOT: root });
+    for (let i = 0; i < 100 && !present.has("Conflict"); i++) await sleep(50);
+    check("ADMISSION: optional events start the seat when the plane is blocked", present.has("Conflict") && present.get("Conflict") !== "offline", [...present]);
+    check("ADMISSION: the blocked start is handled", rejections.length === 0, rejections);
   } finally {
-    process.exit = realExit;
     process.off("unhandledRejection", onRejection);
-    refused?.end?.();
-    await refused?.teardown?.();
+    blocked?.end?.();
+    await blocked?.teardown?.();
   }
 } finally {
   http.closeAllConnections();

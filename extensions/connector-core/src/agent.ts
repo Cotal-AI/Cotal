@@ -719,8 +719,18 @@ export class MeshAgent extends EventEmitter {
       beforeBind: async () => {
         const env = this.launchEnv ?? process.env;
         if (this.eventStartupChecked || !eventPlaneArmed(config, env)) return;
-        await checkEventStartup(this.ep, env);
-        this.eventStartupChecked = true;
+        try {
+          await checkEventStartup(this.ep, env);
+          this.eventStartupChecked = true;
+        } catch (error) {
+          // A space that requires events cannot admit a seat whose transcript cannot start.
+          // Where events are optional the seat still starts: the plane stays down and the reason
+          // is kept, which is what a stopped event plane already does after startup.
+          if (config.eventsRequired === true) throw error;
+          this.eventStartupChecked = true;
+          this.eventPlaneBlocked = error instanceof Error ? error.message : String(error);
+          this.lastConnectionError = this.eventPlaneBlocked;
+        }
       },
       card: {
         id: config.id,
@@ -783,7 +793,7 @@ export class MeshAgent extends EventEmitter {
       if (this._stopping) return;
       this._connected = e.connected;
       if (e.connected) {
-        this.lastConnectionError = undefined;
+        this.lastConnectionError = this.eventPlaneBlocked;
         this.endpointNoticeLog.clear();
       }
       this.emit("connection", e);
@@ -1084,6 +1094,7 @@ export class MeshAgent extends EventEmitter {
   private consumerClaim?: HeldLock;
   private connectFlight?: Promise<void>;
   private eventStartupChecked = false;
+  private eventPlaneBlocked?: string;
 
   private async connectLoop(retryMs: number): Promise<void> {
     while (!this._stopping && !this._connected) {
