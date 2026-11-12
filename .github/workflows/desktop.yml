@@ -145,6 +145,20 @@ jobs:
       - name: Check notarization credential selection
         shell: pwsh
         run: ./desktop/scripts/check-notarization.ps1
+      - name: Prepare signed updater configuration
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ vars.TAURI_SIGNING_PUBLIC_KEY }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content bin/package.json -Raw | ConvertFrom-Json).version
+          $overlay = Join-Path $env:RUNNER_TEMP 'cotal-updater.json'
+          & node desktop/scripts/prepare-updater-config.mjs $env:RELEASE_TAG $version $overlay
+          if ($LASTEXITCODE -ne 0) { throw 'Signed updater configuration failed.' }
+          "COTAL_UPDATER_CONFIG=$overlay" >> $env:GITHUB_ENV
       - name: Prepare release signing
         id: signing
         shell: pwsh
@@ -206,6 +220,9 @@ jobs:
         shell: pwsh
         env:
           TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+          COTAL_UPDATER_PUBLIC_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.TAURI_SIGNING_PUBLIC_KEY || '' }}
           SIGNED_BUILD: ${{ steps.signing.outputs.signed }}
           APPLE_CERTIFICATE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
@@ -222,6 +239,7 @@ jobs:
             Write-Output 'Building unsigned validation packages.'
           } else { Write-Output 'Building signed release packages.' }
           $args = @('--dir', 'desktop', 'exec', 'tauri', 'build', '--bundles', '${{ matrix.bundles }}')
+          if ($env:COTAL_UPDATER_CONFIG) { $args += @('--config', $env:COTAL_UPDATER_CONFIG) }
           if ($env:WINDOWS_SIGNING_CONFIG) { $args += @('--config', $env:WINDOWS_SIGNING_CONFIG) }
           if ($env:RUNNER_OS -eq 'macOS' -and $env:SIGNED_BUILD -ne 'true') {
             # Without a certificate the bundle is signed ad hoc. A linker-signed binary alone leaves the
