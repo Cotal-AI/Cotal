@@ -29,6 +29,17 @@ still requires stopping those agents. An unreadable custody report remains a ref
 This package check does not verify external harness integrations. Run `cotal update` to refresh
 those integrations. If the package closure needs repair, the usual continuity guards still apply.
 
+`cotal update` validates a recorded machine-daemon service before reconciling connectors.
+`cotal update --self` also checks it before replacing the global package. A missing receipt
+leaves an unrecorded service alone. A valid receipt for another installation does not block
+this check. A malformed receipt, missing source, or ownership mismatch refuses before those
+package and connector changes.
+
+Read the receipt and source paths named by the refusal. If the receipt is stale, remove only
+that receipt to forget it, then run `cotal daemon install`. For an owned installation, run
+`cotal daemon uninstall` before reinstalling. Update does not remove receipts automatically.
+These checks do not guarantee that later downloads, connector refreshes, or native restarts succeed.
+
 ## `manager reconcile` [#reconcile-gate]
 
 ```bash

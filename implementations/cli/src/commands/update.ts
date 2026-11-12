@@ -110,6 +110,8 @@ export interface UpdateRuntime {
   preparedRestart?(): boolean;
   /** Reserve empty hosted Manager admission after continuity checks, before replacement. */
   prepareReplacement?(): Promise<() => Promise<void>>;
+  /** Validate recorded local service ownership before replacing packages or reconciling connectors. */
+  preflightReplacement?(): Promise<void>;
   claimGlobalUpdate(root: string): () => void;
   selfArgv(): string[];
   /** Whether this CLI runs from a source checkout, where `--self` installs a separate global copy. */
@@ -405,6 +407,12 @@ async function reconcileCurrent(
     if (await rt.reportRunningManager(target) === "legacy") return finish(false);
   } catch (e) {
     rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
+    return finish(false);
+  }
+
+  try { await rt.preflightReplacement?.(); }
+  catch (error) {
+    rt.err(c.red(`✗ installed daemon preflight: ${refusal(error)}`));
     return finish(false);
   }
 
@@ -843,6 +851,12 @@ function assertConfigAncestorProtected(): void {
 }
 
 async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>): Promise<number> {
+  try { await rt.preflightReplacement?.(); }
+  catch (error) {
+    recordUpdateDeferral(targetVersion, "installed daemon preflight refused");
+    rt.err(c.red(`✗ installed daemon preflight: ${refusal(error)}`));
+    return 1;
+  }
   try {
     if (await rt.reportRunningManager(target) === "legacy") { recordUpdateDeferral(targetVersion, "waiting for agents to stop"); return 1; }
   } catch (e) {

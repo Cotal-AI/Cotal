@@ -383,7 +383,9 @@ function recordedUnit(paths: DaemonPaths, daemonHome: string | undefined): { rec
   else {
     const unit = daemonUnitName(daemonHome);
     if (receipt.daemonHome !== daemonHome || receipt.unit !== unit || receipt.unitPath !== join(systemdUserUnitDirectory(), unit))
-      throw new CommandFailure("refused", "CONFLICT", "the systemd receipt does not name this daemon home's unit in the user manager's unit directory; nothing was changed");
+      throw new CommandFailure("refused", "CONFLICT", "the systemd receipt does not name this daemon home's unit in the user manager's unit directory; nothing was changed", {
+        remedy: `inspect ${codeSpan(unitReceiptFile(paths))} and ${codeSpan(receipt.unitPath)}. If this receipt is stale, remove only ${codeSpan(unitReceiptFile(paths))} to forget it, then run ${codeSpan(daemonCommandCopy("install", daemonHome))}. For an owned installation, run ${codeSpan(daemonCommandCopy("uninstall", daemonHome))} before reinstalling`,
+      });
     try { assertSystemdSource(receipt.unitPath, receipt.unitSha256); }
     catch { throw new CommandFailure("refused", "CONFLICT", `${receipt.unitPath} is not the unit this daemon installed; nothing was removed`); }
   }
@@ -435,6 +437,13 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
   if (service) service.start(receipt);
   else submitSystemdUnitControl("start", plan.unit);
   return plan;
+}
+
+/** Validate a present service receipt without changing the service or treating invalid state as absent. */
+export function preflightInstalledDaemon(paths: DaemonPaths, daemonHome?: string): void {
+  try { lstatSync(unitReceiptFile(paths)); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  installedDaemonIdentity(paths, daemonHome);
 }
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
