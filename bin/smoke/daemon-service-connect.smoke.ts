@@ -3152,6 +3152,76 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("3A authority outage never restarts a healthy IPC-responsive hosted Manager", after.state === "answering" && after.pid === manager.pid && after.restarts === manager.restarts, after);
           return;
         }
+        if (process.argv.includes("--updater-persistence-repro")) {
+          // Legacy memory persistence gap only. This does not prove a future transaction API.
+          const updater = spawn(process.execPath, ["-e", `
+            const { connect } = require('node:net');
+            process.on('message', ({ socket, op }) => {
+              const client = connect(socket);
+              let buffer = '';
+              const timer = setTimeout(() => { client.destroy(); process.send({ failure: 'socket reply timeout' }); }, 30000);
+              client.setEncoding('utf8');
+              client.once('connect', () => client.write(JSON.stringify({ v: 1, id: 'persistence-' + process.pid, op }) + '\\n'));
+              client.on('data', chunk => {
+                buffer += chunk;
+                const end = buffer.indexOf('\\n');
+                if (end < 0) return;
+                clearTimeout(timer);
+                client.destroy();
+                process.send({ reply: JSON.parse(buffer.slice(0, end)) });
+              });
+              client.once('error', error => { clearTimeout(timer); process.send({ failure: error.message }); });
+            });
+          `], { cwd: root, env: { ...process.env }, stdio: ["ignore", "inherit", "inherit", "ipc"] });
+          const request = (op: string) => new Promise<Frame>((resolve, reject) => {
+            const timeout = setTimeout(() => finish(new Error("persistence updater timed out")), 35_000);
+            const onExit = () => finish(new Error("persistence updater exited before reply"));
+            const onMessage = (message: any) => finish(message.failure ? new Error(message.failure) : undefined, message.reply);
+            const finish = (error?: Error, reply?: Frame) => {
+              clearTimeout(timeout);
+              updater.off("exit", onExit);
+              updater.off("message", onMessage);
+              if (error) reject(error); else resolve(reply!);
+            };
+            updater.once("exit", onExit);
+            updater.once("message", onMessage);
+            updater.send({ socket: paths.socket, op });
+          });
+          try {
+            const prepared = await request("managers-prepare-restart");
+            check("Legacy persistence A prepares D1 hosted Manager", prepared.ok === true, prepared);
+            assert.equal(prepared.ok, true);
+            const before = await ask(paths.socket, { op: "manager-start", space: ON });
+            check("Legacy persistence D1 admission is pending", before.ok === false && errorOf(before).code === "GENERATION_PENDING", before);
+            assert.equal(errorOf(before).code, "GENERATION_PENDING");
+            const intent = join(home, "daemon", spaceSegment(ON), "manager-host.json");
+            const savedIntent = readFileSync(intent, "utf8");
+            const firstDaemon = child;
+            const aliveBefore = updater.exitCode === null && updater.signalCode === null && !!updater.pid && process.kill(updater.pid, 0);
+            check("Legacy persistence A is alive before D1 stops", aliveBefore === true);
+            assert.equal(aliveBefore, true);
+            await killAndAwaitExit(firstDaemon, "SIGTERM");
+            assert.equal(readFileSync(intent, "utf8"), savedIntent);
+            check("Legacy persistence fixture D1 exited before replacement", firstDaemon.exitCode !== null || firstDaemon.signalCode !== null);
+            child = await startDaemon();
+            const aliveA = updater.exitCode === null && updater.signalCode === null && !!updater.pid && process.kill(updater.pid, 0);
+            check("Legacy persistence A remains alive across D1 to D2", aliveA === true);
+            assert.equal(aliveA, true);
+            check("Legacy persistence D2 uses unchanged hosting intent", readFileSync(intent, "utf8") === savedIntent);
+            assert.equal(readFileSync(intent, "utf8"), savedIntent);
+            const after = await ask(paths.socket, { op: "manager-start", space: ON });
+            console.log("  Legacy memory persistence gap result", JSON.stringify({ updaterA: updater.pid, daemonD1: firstDaemon.pid, daemonD2: child.pid, aliveA, before, after }));
+            check("Legacy memory persistence gap: live A must retain pending admission after daemon restart", aliveA === true && after.ok === false && errorOf(after).code === "GENERATION_PENDING", after);
+          } finally {
+            try {
+              try {
+                const aborted = await request("managers-abort-restart");
+                check("Legacy persistence owning updater explicitly aborts", aborted.ok === true, aborted);
+              } catch (error) { check("Legacy persistence owning updater abort completes", false, String(error)); }
+            } finally { await killAndAwaitExit(updater, "SIGKILL"); }
+          }
+          return;
+        }
         if (process.argv.includes("--updater-ownership-repro")) {
           // Each updater is an independent, living Node process using the real daemon socket.
           const updaterSource = `
