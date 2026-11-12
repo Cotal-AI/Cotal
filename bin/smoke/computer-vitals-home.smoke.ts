@@ -22,7 +22,7 @@ if (process.argv.includes("--mounted-home")) {
   } else {
     const root = mkdtempSync(join(tmpdir(), "cvhome-"));
     try {
-      const child = spawnSync("unshare", ["-Urnm", "sh", "-c", 'mount -t tmpfs tmpfs "$1" && export HOME="$1" && exec "$2" --import tsx "$3" --mounted-home', "home-smoke", root, process.execPath, fileURLToPath(import.meta.url)], { encoding: "utf8", env: { ...process.env, DO_NOT_TRACK: "1" }, timeout: 30000 });
+      const child = spawnSync("unshare", ["-Urnm", "sh", "-c", 'mount -t tmpfs tmpfs "$1" && export HOME="$1" && exec "$2" --import tsx "$3" --mounted-home', "home-smoke", root, process.execPath, fileURLToPath(import.meta.url)], { encoding: "utf8", env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), DO_NOT_TRACK: "1" }, timeout: 30000 });
       process.stdout.write(child.stdout ?? "");
       process.stderr.write(child.stderr ?? "");
       assert.equal(child.status, 0, "private mounted-home sampler succeeds");
