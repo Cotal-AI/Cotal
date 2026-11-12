@@ -279,7 +279,7 @@ function showStage(next: Stage, focus = false): void {
   else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in to keep this computer connected"; description = "Approve this computer in your browser to keep managing its spaces."; }
   else if (finished && computerAccount?.hostSupport === "supported") {
     const rows = computerSpaces(computerAccount);
-    title = anyConnected ? connectionView("launch-ready").title : rows.some(row => row.desired && row.observed !== "removed on this computer") ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
+    title = anyConnected ? connectionView("launch-ready").title : rows.some(row => row.observed === "refusal") ? "Connection needs attention" : rows.some(row => row.desired && row.observed !== "removed on this computer") ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
     description = rows.length ? connectionView("launch-ready").description : "Turn on the spaces that can use it in the dashboard.";
   }
   else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${accountSpaces.get(pending[0])?.label ?? pending[0]} needs to approve this computer. It connects by itself once they do.`; }
@@ -338,13 +338,13 @@ function showStage(next: Stage, focus = false): void {
     el("spaces-heading").hidden = signInRequired || !anyConnected;
     const starting = computerSpaces(computerAccount).some(row => row.desired && row.observed !== "removed on this computer");
     const refused = computerSpaces(computerAccount).some(row => row.observed === "refusal");
-    text("tray-label", signInRequired ? "Sign in required" : anyConnected ? "Connected" : starting ? "Starting" : "Ready");
-    el("tray-indicator").classList.toggle("connected", anyConnected || !starting && !signInRequired);
+    text("tray-label", signInRequired ? "Sign in required" : anyConnected ? "Connected" : refused ? "Needs attention" : starting ? "Starting" : "Ready");
+    el("tray-indicator").classList.toggle("connected", anyConnected || !starting && !signInRequired && !refused);
     el("tray-indicator").classList.toggle("error", signInRequired || refused);
     if (!anyConnected) {
       const empty = computerSpaces(computerAccount).length === 0;
-      el("connection-icon").dataset.tone = signInRequired ? "error" : starting ? "waiting" : empty ? "success" : "neutral";
-      setIcon(el("connection-icon"), signInRequired ? "browser" : starting ? "clock" : empty ? "check" : "computer");
+      el("connection-icon").dataset.tone = signInRequired || refused ? "error" : starting ? "waiting" : empty ? "success" : "neutral";
+      setIcon(el("connection-icon"), signInRequired ? "browser" : refused ? "warning" : starting ? "clock" : empty ? "check" : "computer");
     }
   } else el("spaces-heading").hidden = false;
   el("dashboard-spaces-note").hidden = !finished || addingSpace || computerAccount?.hostSupport !== "supported" || computerAccount.mode === "sign-in-required" || computerSpaces(computerAccount).length === 0;

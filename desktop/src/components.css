@@ -137,9 +137,9 @@ footer { gap: 16px; margin: 16px 8px 0; }
   .connection-card { padding-top: 16px; padding-bottom: 16px; }
   .connection-icon { margin-bottom: 8px; }
 }
-.app { height: 100vh; min-height: 660px; padding: 0; }
+.app { height: 100vh; min-height: 0; padding: 0; overflow-y: auto; }
 .sidebar { max-width: none; padding: 16px 32px; border-bottom: var(--bw) solid var(--ink); background: var(--paper); }
-main { flex: 1; display: flex; flex-direction: column; justify-content: center; max-width: 648px; padding: 16px 24px; min-height: 0; }
+main { flex: 1; display: flex; flex-direction: column; justify-content: safe center; max-width: 648px; padding: 16px 24px; min-height: min-content; }
 #journey { margin: 0 0 24px; flex-shrink: 0; }
 .connection-card { flex-shrink: 0; }
 footer { flex-shrink: 0; }
