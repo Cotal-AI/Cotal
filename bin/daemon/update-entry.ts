@@ -37,6 +37,7 @@ const composed: Command = { ...command, async run(args) {
       throw error;
     }
   }, async preflightReplacement() {
+    await updateRuntime.preflightReplacement?.();
     let paths;
     try { paths = daemonPaths(); }
     catch (error) {
