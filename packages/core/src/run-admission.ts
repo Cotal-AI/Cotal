@@ -35,6 +35,8 @@ import {
   type IssuedSubjectPermissions,
 } from "./issued-authority.js";
 import { chatSubject, token } from "./subjects.js";
+import { isStreamNotFound } from "./jetstream-missing.js";
+import { spaceResourceCreationConfig } from "./space-resource-definitions.js";
 
 export function admissionBucket(space: string): string {
   return `cotal_admission_${token(space)}`;
@@ -343,8 +345,9 @@ export function admissionStoreDefinition(space: string) {
   };
 }
 
-/** Create-or-verify the admission store: `allow_direct=false`, file, no eviction. */
-export async function ensureAdmissionStore(jsm: JetStreamManager, kvm: Kvm, space: string): Promise<void> {
+/** Create-or-verify the admission store with its immutable policy in the single native CREATE.
+ * The KV argument is retained for existing callers; initialization requires no UPDATE authority. */
+export async function ensureAdmissionStore(jsm: JetStreamManager, _kvm: Kvm, space: string): Promise<void> {
   const definition = admissionStoreDefinition(space);
   const bucket = definition.bucket;
   const stream = `KV_${bucket}`;
@@ -356,12 +359,12 @@ export async function ensureAdmissionStore(jsm: JetStreamManager, kvm: Kvm, spac
   // replacement leaves no marker for the deletion-marker read to catch. The three immutability
   // flags close rollup, message delete and purge; write-once closes the rest, so the admission a
   // host reads is the one that was admitted, and each run and each marker still gets its one write.
-  const shape = definition.hardenAfterCreate;
-  if (await jsm.streams.info(stream).catch(() => undefined) === undefined) {
-    await kvm.create(bucket, definition.createOptions);
-    const created = (await jsm.streams.info(stream)).config;
-    await jsm.streams.update(stream, { ...created, ...shape });
-  }
+  const existing = await jsm.streams.info(stream).catch(error => {
+    if (!isStreamNotFound(error)) throw error;
+    return undefined;
+  });
+  if (existing === undefined)
+    await jsm.streams.add(spaceResourceCreationConfig({ kind: "kv", stream, ...definition, verification: "admission" }));
   const cfg = (await jsm.streams.info(stream)).config;
   assertAdmissionStoreConfig(cfg, space);
 }

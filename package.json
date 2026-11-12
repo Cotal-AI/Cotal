@@ -865,6 +865,7 @@
     "smoke:lifecycle-registry:auth": "tsx implementations/auth/smoke/lifecycle-registry.smoke.ts",
     "smoke:credential-ledger:auth": "tsx implementations/auth/smoke/credential-ledger.smoke.ts",
     "smoke:admission-mediator:auth": "tsx implementations/auth/smoke/admission-mediator.smoke.ts",
+    "smoke:admission-store-atomic": "tsx implementations/auth/smoke/admission-store-atomic.smoke.ts",
     "smoke:retirement-barrier:auth": "tsx implementations/auth/smoke/retirement-barrier.smoke.ts",
     "smoke:mediator-confinement:auth": "tsx implementations/auth/smoke/mediator-confinement.smoke.ts",
     "smoke:deny-new:auth": "tsx implementations/auth/smoke/deny-new.smoke.ts",
