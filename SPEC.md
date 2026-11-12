@@ -157,7 +157,7 @@ The **sender** of every delivery is a principal (§2), carried as **two adjacent
 | Anycast take | `cotal.<space>.take.<role>.<owner>.<actor>` | 4-5 | §8.1 request/reply |
 | Endpoint rails | `cotal.<space>.ep.<one\|all\|inst\|reply>.…`, `cotal.<space>.ep<c\|e\|f\|j\|r\|t\|w\|s>.…` | see §13.2 | §13 control surface |
 | Plane liveness | `cotal.<space>.live.<plane>.<owner>.<actor>` | 4-5 | §6.1 request/reply |
-| Permission answer | `cotal.<space>.perm.<agentOwner>.<agentActor>.<owner>.<actor>` | 5-6 | §8.2 request/reply |
+| Permission answer | `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>` | 6-7 | §8.2 request/reply |
 | Trace | `cotal.<space>.trace.<instance>` | n/a | reserved |
 
 Token indexing is zero-based on `subject.split(".")`: `cotal` = 0, `<space>` = 1,
@@ -172,9 +172,9 @@ Token indexing is zero-based on `subject.split(".")`: `cotal` = 0, `<space>` = 1
   (§8.1) has the same layout, with the role at token 3.
 - `ep`: per-mode arities with the caller as the trailing identity tokens; §13.2 defines them.
 - `inst`: recipient owner+actor at tokens 3–4; sender owner+actor at tokens 5–6.
-- `perm`: the agent whose prompt is answered at tokens 3-4, and the answering principal at tokens
-  5-6. Its reply rides `<request>.reply.<nonce>`. Like `take` and `live`, it is not a delivery, and
-  `parseSubject` recovers no sender from it (§8.2).
+- `perm`: the agent whose prompt is answered at tokens 3-4, the runtime id of the process holding it
+  at token 5, and the answering principal at tokens 6-7. Its reply rides `<request>.reply.<nonce>`.
+  Like `take` and `live`, it is not a delivery, and `parseSubject` recovers no sender from it (§8.2).
 
 The two-token sender is what lets a native publish grant **forge-lock** the sender suffix (e.g.
 `inst.*.*.<myOwner>.<myActor>` permits a DM to anyone but only *as me*), so the broker enforces
@@ -968,7 +968,7 @@ prompt stays with the harness's dialog.
 | `v` | `1` | MUST | record version |
 | `id` | string | MUST | the prompt's id, 128 random bits as 26 lowercase base32 characters (`[a-z2-7]{26}`) |
 | `agent` | string | MUST | the asking agent's principal, `<owner>.<actor>` |
-| `holder` | object | MUST | `{ lifecycleUid, runtimeId }`, the `lifecycleUid` and `runtime.id` of the holder's presence row (§6) |
+| `holder` | object | MUST | `{ lifecycleUid, runtimeId }`, the `lifecycleUid` and `runtime.id` of the holder's presence row (§6). `runtimeId` is one subject token of at most 64 characters of `[A-Za-z0-9_-]`, because an answer is addressed to it |
 | `tool` | string | MUST | the tool the harness asks to run |
 | `input` | object | MUST | `{ kind: "shown", value }` with the tool input as the harness passed it, or `{ kind: "withheld", bytes }` with only its UTF-8 size |
 | `cwd` | string | MAY | the harness's working directory |
@@ -978,9 +978,9 @@ prompt stays with the harness's dialog.
 
 The states are `{ kind: "pending" }`, `{ kind: "approved", by, at }`, `{ kind: "denied", by, at,
 note? }`, `{ kind: "answered-on-machine", at, outcome }` with `outcome` `allowed` or `withdrawn`, and
-`{ kind: "expired", at }`. `by` is the answering principal's `<owner>.<actor>`. `tool`, `cwd` and
-`runtimeId` are non-empty, `lifecycleUid` is a lifecycle UID (§13.1), and every time and byte count
-is a non-negative safe integer. The schema is closed at every level and nothing is coerced. A reader
+`{ kind: "expired", at }`. `by` is the answering principal's `<owner>.<actor>`. `tool` and `cwd` are
+non-empty, `lifecycleUid` is a lifecycle UID (§13.1), and every time and byte count is a non-negative
+safe integer. The schema is closed at every level and nothing is coerced. A reader
 MUST drop a value that does not match it, or whose `agent` and `id` do not make its key, and SHOULD
 report the drop on its recoverable diagnostic path. No record carries `from`, `parts` or `space` at
 its top level, so stored bytes never read as a message (§5). A delete marker under a key removes
@@ -1022,23 +1022,26 @@ holder's writes to that record and gives the prompt back to the harness's dialog
 
 | Purpose | Subject |
 | --- | --- |
-| Answer | `cotal.<space>.perm.<agentOwner>.<agentActor>.<owner>.<actor>` |
+| Answer | `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>` |
 | Reply | `<answer subject>.reply.<nonce>` |
-| Holder serve filter | `cotal.<space>.perm.<owner>.<actor>.<owner>.*` |
-| Holder reply grant | `cotal.<space>.perm.<owner>.<actor>.<owner>.*.reply.>` |
+| Holder serve filter | `cotal.<space>.perm.<owner>.<actor>.<runtimeId>.<owner>.*` |
+| Holder reply grant | `cotal.<space>.perm.<owner>.<actor>.*.<owner>.*.reply.>` |
 
-`<agentOwner>.<agentActor>` is the agent whose prompt is answered. `<owner>.<actor>` is the
-answering principal, which the publish grant forge-locks as it does a DM sender (§3). The holder
-takes an answer's `by` from those tokens, never from the body. `parseSubject` recovers no sender
-from a `perm` subject, and a reader MUST NOT treat one as a delivery.
+`<agentOwner>.<agentActor>` is the agent whose prompt is answered, and `<runtimeId>` is the
+`holder.runtimeId` its record names. `<owner>.<actor>` is the answering principal, which the publish
+grant forge-locks as it does a DM sender (§3). The holder takes an answer's `by` from those tokens,
+never from the body. A holder subscribes only to its own runtime's serve filter, so another process
+of the same agent, such as a stale one, never receives its answers. `parseSubject` recovers no
+sender from a `perm` subject, and a reader MUST NOT treat one as a delivery.
 
 The answer body is `{ v: 1, id, decision, note? }`, where `decision` is `approve` or `deny`. `note`
 rides only beside `deny`, holds at most 2000 characters, and reaches the harness as the denial's
 reason. The answerer names its reply subject `<answer subject>.reply.<nonce>` with a fresh one-token
-nonce, and requests without the muxed inbox, so a prompt that no holder serves returns the broker's
-no-responders status. A holder MUST drop, unanswered, a request whose reply target is absent or is
-not under `<answer subject>.reply.`, and SHOULD report the drop on its recoverable diagnostic path.
-It MUST bind its serve filter again on every broker connection that replaces the one it bound on.
+nonce, and requests without the muxed inbox, so a prompt that no live process holds returns the
+broker's no-responders status. A holder MUST NOT reply for a prompt it does not hold. A holder MUST
+drop, unanswered, a request whose reply target is absent or is not under `<answer subject>.reply.`,
+and SHOULD report the drop on its recoverable diagnostic path. It MUST bind its serve filter again on
+every broker connection that replaces the one it bound on.
 
 The reply is `{ v: 1, ok: true, state }` once the answer applied, or `{ v: 1, ok: false, code,
 state? }`, where `state` rides only with `answered` and `expired`. A reply names the state and never
@@ -1048,7 +1051,7 @@ the record, so the input is not echoed.
 | --- | --- |
 | `answered` | the prompt was already settled, and `state` says how |
 | `expired` | the prompt expired |
-| `unknown` | the holder has no open or recently settled prompt with that id |
+| `unknown` | the holder closed while it applied the answer, and gave the prompt back to the harness |
 | `busy` | the record write did not land, and nothing changed. Asking again is safe |
 | `conflict` | another writer changed the record, or the store refused a write, so the holder gave the prompt back to the harness |
 | `withheld` | an approval of a withheld input |
@@ -1064,8 +1067,11 @@ The answerer reads its outcome from the reply, or from the request's failure:
 | `refused` | the broker's permission refusal, because the sender is not an interactive principal of the agent's owner, or `withheld` |
 | `unknown` | a timeout, a transport failure, a reply that does not parse, `busy` or `bad-request` |
 
-After `unknown`, the answerer reads the record before asking again. The same answer from the same
-principal repeats safely.
+An answerer waits at least 15 seconds for the reply, longer than the holder's 10-second handoff
+bound below plus a write and the round trip, so an undelivered verdict reaches it as `answered`. The
+reference answerer refuses a shorter wait. A timeout means the holder no longer knows the prompt or
+did not reply in time. After `unknown`, the answerer reads the record before asking again. The same
+answer from the same principal repeats safely.
 
 **Gone.** Nothing is left to write `gone` when a holder dies, so no record stores it. Every reader
 derives it from the asking agent's presence row (§6) by one rule. The holder is `gone` when the row
@@ -1091,30 +1097,54 @@ is the only answer. A held prompt waits for the first answer from either place:
   one second and then records `answered-on-machine`, `withdrawn`, unless it closed meanwhile, so a
   session that is ending reads as `gone`. The harness has already acted on these, so the holder
   applies them first and writes them after.
+- When the harness reports a tool run but names no prompt, the holder matches one run to one held
+  prompt of the same harness scope, tool and input, the oldest first. When a scope's turn ends, the
+  holder records the prompts still held in that scope, and no other, as `allowed`. A harness can
+  run subagents beside its main thread, so a subagent's prompt outlives the main thread's turn.
 - Closing the holder gives every held prompt back to the harness's dialog and writes nothing.
   Readers then see the holder `gone`.
 
-While a prompt waits, the holder's `approval` presence condition (§6) MAY name it in `request`.
+While a prompt waits, the holder's `approval` presence condition (§6) MAY name it in `request`. How
+the Claude connector holds Claude Code's prompts is in its
+[reference](docs/claude-connector-reference.mdx#permission-prompts).
 
-The Claude connector holds Claude Code's `PermissionRequest` hook with a 2147483-second timeout and
-sets no deadline. Claude's prompt names no tool call, so the connector matches a Yes at the terminal
-to its prompt by tool and input when `PostToolBatch` lists the calls that ran. A turn's end (`Stop`
-or `StopFailure`) records any prompt still held as `allowed`.
+**Readers.** An interactive principal reads every record of its owner's agents through its own
+lifecycle's **reader**, the pull consumer `perm_<owner>-<actor>-<lifecycleUid>` on
+`KV_cotal_permissions_<space>`. Trusted infra (the provisioner profile) **opens** the reader: it
+deletes any consumer that holds the name, then creates it with the filter
+`$KV.cotal_permissions_<space>.<owner>.>`, `DeliverPolicy.All`, `AckPolicy.None`, `max_waiting` 1,
+`max_batch` 4, `max_expires` 30 seconds, `max_bytes` four records, an inactive threshold of 5 minutes
+and memory storage. The bucket keeps one revision per key, so a fresh reader replays the current
+state. The reader only binds: it holds `CONSUMER.INFO` and `CONSUMER.MSG.NEXT` on that one name, and
+no consumer create, delete or ack. Its host opens the reader again before each fresh pass: on the
+first bind, after its connection is replaced, after a lost delivery, and when the reader is missing
+or busy. A reader MUST NOT show a pass until it is complete, and MUST NOT abandon a pull before it
+ends, because an abandoned pull holds the reader's one waiting slot. Two watchers of one lifecycle
+contend for its reader, so each session reads under its own lifecycle. Readers hold no
+`STREAM.INFO`, which would list every key in the space, and no point read.
 
-**Readers.** An owner's interactive principals read every record of the owner's agents through an
-ordered consumer filtered to `$KV.cotal_permissions_<space>.<owner>.>`, from the last value of each
-key and then every change. The filter rides the consumer-create subject, which the broker binds to
-the request body. They hold no `STREAM.INFO`, which would list every key in the space, and no point
-read.
+The broker holds every pull to those limits, but it does not confine the reply subject a pull names
+(§9). Two residuals follow, and both are bounded:
 
-**Grants.** An agent subscribes to its own serve filter and publishes only beneath its `.reply.`
-leaf, a row that cannot express a request, so no agent can answer its own prompt or a sibling's. It
-writes only its own records, `$KV.cotal_permissions_<space>.<owner>.<actor>.>`. Only an interactive
-ledger row, a person's own CLI or browser actor, may answer a prompt of its owner's agents, as
-itself, and read its owner's records. The auth callout marks a mint interactive from the row's kind
-in the ledger, never from a scope token, because a parent can hand its scope tokens to the agents it
-spawns and cannot hand them its row kind. A static mint is never interactive, so on a static mesh
-only the harness's dialog answers. The boundary is the credential, not the process: any process that
+- While its credential lasts, a reader can send records it may read to any subject in the space. A
+  delivery keeps its stored `$KV.cotal_permissions_<space>.…` subject and a `$JS.ACK` reply, so no
+  receiver classifies it as a message, a DM or an answer, and it discloses only what that principal
+  may already read.
+- A pull that sets no wait outlives its reader's connection and credential while another principal
+  listens on its reply subject. It moves at most 4 more records, and ends at its fourth record, at
+  the owner's next open of that reader, or when the reader is deleted. A create grant had no such
+  bound: one create could leave a durable push consumer exporting every later prompt.
+
+**Grants.** An agent subscribes to the serve filter of every runtime of its own agent and publishes
+only beneath its `.reply.` leaf, a row that cannot express a request, so no agent can answer its own
+prompt or a sibling's. It writes only its own records, `$KV.cotal_permissions_<space>.<owner>.<actor>.>`.
+Every agent mint is denied every consumer create on the bucket, because a create body's durable name
+and push target are fields no subject grant confines (nats-server#8274). Only an interactive ledger
+row, a person's own CLI or browser actor, may answer a prompt of its owner's agents, as itself, and
+bind its own lifecycle's reader. The auth callout marks a mint interactive from the row's kind in the
+ledger, never from a scope token, because a parent can hand its scope tokens to the agents it spawns
+and cannot hand them its row kind. A static mint is never interactive, and the reference refuses
+one, so on a static mesh only the harness's dialog answers. The provisioner opens readers. The boundary is the credential, not the process: any process that
 can mint an interactive row's credential answers as that row, including one that runs as the OS user
 whose Cotal home holds the owner's login session. Appendix B lists the rows.
 
@@ -1128,15 +1158,18 @@ empty.
 
 **Limits.** A holder learns of a Yes at the harness's dialog only when the harness reports that the
 call ran. An answer from the rail that arrives in between is recorded as that answer, although the
-tool ran.
+tool ran. A holder that matches runs by tool and input cannot tell apart two identical prompts of
+one scope, so it settles the oldest.
 
 Reference implementation:
 
 - `PermissionRecord`, `parsePermissionRecord`, `stepPermission`, `holderLiveness` and
   `permissionInput` in `packages/core/src/permissions.ts`
 - `permissionStoreConfig` in `packages/core/src/streams.ts`
-- `CotalEndpoint.openPermissionHolder`, `watchPermissions` and `answerPermission` in
-  `packages/core/src/endpoint.ts`
+- `CotalEndpoint.openPermissionHolder`, `openPermissionReader`, `watchPermissions` and
+  `answerPermission` in `packages/core/src/endpoint.ts`, and the watch's view in
+  `packages/core/src/permission-view.ts`
+- `permissionReaderConfig` in `packages/core/src/streams.ts`
 - `openPermissionDesk` in `extensions/connector-core/src/permission-desk.ts`
 
 ---
@@ -1313,6 +1346,10 @@ reader/mediator (§8) onto the agent's own confined rail. Which of these read pa
 mediation and which are provably safe depends on whether a redelivered message retains its
 original captured subject and how the receiver's subject-derived kind check (§12) then
 classifies it; the reference implementation determines this by test and pins the exact grants.
+The permission reader (§8.2) is pinned that way: no principal holds a consumer create on
+`cotal_permissions_<space>`, an interactive row binds only its own reader by name, the reader's
+config caps every pull, and a delivery keeps its stored `$KV.cotal_permissions_<space>.…` subject,
+which no receiver classifies as a message.
 On the v0.3 rails without this mediation, read containment holds only against a *conforming*
 client; the broker does not enforce it.
 See [docs/security.mdx](docs/security.mdx).
@@ -4203,8 +4240,9 @@ as true. A client that knows the space requires events can therefore refuse a co
 
 **Manager connector permission-prompt facts.** Every `status.connectors` row also carries required
 `permissionRequests: boolean`. True means the connector relays its harness's permission prompts to
-the agent's owner (§8.2). Before a client offers a permission mode that asks, it checks that the
-connector's row reads true. A row from an older Manager that omits the fact reads false, and so does
+the agent's owner on this mesh (§8.2). A Manager reports true only on a user-auth mesh, the one mode
+whose interactive ledger rows can answer, and false on an open or static mesh. Before a client
+offers a permission mode that asks, it checks that the connector's row reads true. A row from an older Manager that omits the fact reads false, and so does
 a row built from an installed-extension cache written before the fact existed.
 
 **Manager inline persona.** The reference manager's `spawn` input takes an optional closed `persona`
@@ -7182,8 +7220,8 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `inbox`
 - `P.live.<manager|delivery>.<owner>.<actor>.>` (replies to its own plane liveness probes, §6.1)
 - for its own role and for each `role:<r>` token in its capabilities (§13.15): `P.take.<role>.<owner>.<actor>.>` (replies to its own anycast takes, §8.1)
-- `P.perm.<owner>.<actor>.<owner>.*` (answers to its own permission prompts from any principal of its own owner, §8.2)
-- interactive row only: `P.perm.<owner>.*.<owner>.<actor>.reply.*` (replies to its own permission answers, §8.2)
+- `P.perm.<owner>.<actor>.*.<owner>.*` (answers to its own permission prompts, at any of its runtimes, from any principal of its own owner, §8.2). A holder binds only its own runtime's subject
+- interactive row only: `P.perm.<owner>.*.*.<owner>.<actor>.reply.*` (replies to its own permission answers, §8.2)
 - `P.ep.reply.*.*.*.<owner>.<actor>.<uid>.*` (exact arity; the agent's own endpoint reply rail: every endpoint's replies to THIS caller triple + nonce, §13.2; replies never ride the per-connection `inbox`)
 - with a listing generation `<g>` (§13.15): `P.ep.v1.reply.*.*.*.<owner>.<actor>.<uid>.<g>.*`, its own versioned reply rail
 - `P.epe.…`; the exact fully-qualified event subtrees of every minted read capability
@@ -7198,10 +7236,10 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `P.inst.*.*.<owner>.<actor>` (DM any recipient, forge-locked to me as sender)
 - `P.svc.*.<owner>.<actor>` (anycast any role, as me)
 - `P.live.<manager|delivery>.<owner>.<actor>` (plane liveness probe, as me, §6.1; the agent holds no `live` serve filter)
-- `P.perm.<owner>.<actor>.<owner>.*.reply.>` (replies to answers of its own permission prompts, §8.2). The row cannot express a request, so no agent answers its own prompt or a sibling's
+- `P.perm.<owner>.<actor>.*.<owner>.*.reply.>` (replies to answers of its own permission prompts, §8.2). The row cannot express a request, so no agent answers its own prompt or a sibling's
 - `$KV.cotal_permissions_<space>.<owner>.<actor>.>` (its own permission records, §8.2)
-- interactive row only: `P.perm.<owner>.*.<owner>.<actor>` (answer a permission prompt of any agent of its own owner, as me, §8.2)
-- interactive row only: `$JS.API.CONSUMER.CREATE.<PERMKV>.*.$KV.cotal_permissions_<space>.<owner>.>` and `$JS.API.CONSUMER.INFO.<PERMKV>.*` (its owner's permission records through an ordered consumer, §8.2). The filter rides the create subject, which the broker binds to the request body. It holds no `STREAM.INFO` and no point read on `PERMKV`
+- interactive row only: `P.perm.<owner>.*.*.<owner>.<actor>` (answer a permission prompt of any agent of its own owner, as me, §8.2)
+- interactive row only: `$JS.API.CONSUMER.INFO.<PERMKV>.<permD>` and `$JS.API.CONSUMER.MSG.NEXT.<PERMKV>.<permD>`, where `permD = perm_<owner>-<actor>-<uid>`: BIND-ONLY its own lifecycle's permission reader, which the provisioner opens (§8.2). No ack row, since the reader is AckNone. It holds no consumer create, no `STREAM.INFO` and no point read on `PERMKV`
 - with a listing generation `<g>` (§13.15): `P.ep.v1.one.registry.endpoints.<owner>.<actor>.<uid>.<g>.*`
   and `$JS.API.DIRECT.GET.KV_cotal_accepted_<space>.$KV.cotal_accepted_<space>.accepted.v1.<token>`,
   the listing's own accepted row and no other
@@ -7264,6 +7302,9 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.API.CONSUMER.CREATE.<DLV>`
 - `$JS.API.CONSUMER.CREATE.<DLV>.>`
 - `$JS.API.CONSUMER.DURABLE.CREATE.<DLV>.>`
+- `$JS.API.CONSUMER.CREATE.<PERMKV>`
+- `$JS.API.CONSUMER.CREATE.<PERMKV>.>`
+- `$JS.API.CONSUMER.DURABLE.CREATE.<PERMKV>.>`
 
 A bare/multi-filter consumer create on `CHAT` is **not** explicitly denied (that would also deny the
 pinned `chatHistD` create the agent needs), so it is default-denied (the agent holds no such allow),
@@ -7272,8 +7313,11 @@ leaving the single-filter history consumer above as the agent's only CHAT consum
 An interactive row is a person's own CLI or browser actor in the user-auth ledger. The auth callout
 grants the interactive rows above from the ledger row's kind, never from a scope token, because a
 parent can hand its scope tokens to the agents it spawns and cannot hand them its row kind. A static
-mint never carries them. The observer, admin, delivery and supervisor profiles and every view hold
-no `perm` row and no grant on `PERMKV`.
+mint never carries them, and the reference refuses one. The observer, admin, delivery and supervisor
+profiles and every view hold no `perm` row and no grant on `PERMKV`. A pull on `permD` may ask for
+at most 4 records, 30 seconds and four records' bytes, one pull at a time, which the reader's config
+sets and the broker enforces; the reply subject it names is not confined, and §8.2 bounds what that
+leaves.
 
 ### Observer
 
@@ -7369,7 +7413,10 @@ single-function profiles, each granting only the verbs its function needs and no
   the §13.9 matrix; `poolD`, `effD`, and the read mediator's reader durables
   (`decD`/`goalD`/`eveD-n`/`recD-n`, owned by the mediator, never by callers, §13.9
   "Mediated reads"), all PULL with exact full-tail filters; and mints scoped credentials;
-  ephemeral onboarding authority. It also publishes `$SYS.REQ.USER.INFO` to observe its own
+  ephemeral onboarding authority. It opens each interactive row's permission reader (§8.2) with
+  `$JS.API.CONSUMER.CREATE.<PERMKV>.*.$KV.cotal_permissions_<space>.*.>`, where the extended create
+  subject binds the body's filter to one owner's records, plus `$JS.API.CONSUMER.INFO.<PERMKV>.*` and
+  `$JS.API.CONSUMER.DELETE.<PERMKV>.*`. It never reads a reader's records. It also publishes `$SYS.REQ.USER.INFO` to observe its own
   native connection identity through the configured system account's import, with replies on
   its existing scoped inbox. It holds no arbitrary-user/account query or system credential;
   the response is not a permission ceiling, lifecycle or authorization to apply changes.
@@ -7563,7 +7610,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
-| 2026-11-12 | **A harness permission prompt reaches the agent's owner (§3, §6, §8, §8.2, §13.7, Appendix B), additive.** In auth mode a connector MAY hold each permission prompt its harness raises while the agent's owner answers it from an interactive session. The harness's own dialog keeps working, and the first answer applies. The holder keeps one closed-schema record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates in its final shape and refuses when reshaped, and serves answers on the new request/reply rail `cotal.<space>.perm.<agentOwner>.<agentActor>.<owner>.<actor>`. Every agent serves answers to its own prompts and writes only its own records. Only an interactive ledger row may answer its owner's agents, as itself, and read its owner's records, a right the auth callout grants from the row's kind and never from a scope token. The `approval` presence condition gains an optional opaque `request` id. Every Manager `status.connectors` row requires `permissionRequests: boolean`, and the Manager cluster advances to revision 49. An open mesh holds no prompt. |
+| 2026-11-12 | **A harness permission prompt reaches the agent's owner (§3, §6, §8, §8.2, §9, §13.7, Appendix B), additive.** In auth mode a connector MAY hold each permission prompt its harness raises while the agent's owner answers it from an interactive session. The harness's own dialog keeps working, and the first answer applies. The holder keeps one closed-schema record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates in its final shape and refuses when reshaped, and serves answers on the new request/reply rail `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>`, addressed to the one process its record names. A holder never replies for a prompt it does not hold, and an answerer waits longer than the holder's 10-second handoff bound. Every agent serves answers to its own prompts and writes only its own records, and no agent mint may create a consumer on the bucket. Only an interactive ledger row may answer its owner's agents, as itself, and read its owner's records, by binding its own lifecycle's `perm_` pull consumer, which the provisioner opens with capped pulls. The auth callout grants that right from the row's kind and never from a scope token, and a static mint refuses it. A native answer settles only prompts of its own harness scope, one run to one prompt. The `approval` presence condition gains an optional opaque `request` id. Every Manager `status.connectors` row requires `permissionRequests: boolean`, true only on a user-auth mesh, and the Manager cluster advances to revision 49. An open mesh holds no prompt. |
 | 2026-11-12 | **Incarnation-scoped responder queues (§13.2), clarification.** Scatter and instance responders may use a queue group per incarnation to overlap serving connections during renewal. Distinct instances use distinct groups so scatter still reaches each instance. Credential grants are unchanged. |
 | 2026-11-10 | **A spawn-scoped `manager-caller` view lists its own agents (§9, §10), additive.** A person who may spawn on their own Manager could not list the agents they launched there. `ps` was not in the view unless the actor held `admin`, so `cotal ps` and `cotal status <agent>` were refused by the broker. A view whose actor holds `spawn` now carries `ps` on its one pinned instance, beside `status`, `models` and `resolve-cwd`. The Manager answers it with the caller's own owner's agents only, unless the caller holds `admin`. `slots` stays with `admin`, no class, scatter or other-instance row is added, and the standing `spawn` set is unchanged. |
 | 2026-11-09 | **A spawner hands on endpoint commands it holds (§13.7, §13.15, §14.8).** A persona's `endpoints` list names `{ endpoint, commands, instanceId? }` entries on the inline `spawn` record, on `define-persona` and in a catalog file. On a static space each command lowers to an untargeted caller capability, on the class rail or, with `instanceId`, on that instance's rail alone plus that instance's `describe`; the delegation bound measures it against the spawner's issued evidence (a run's spawn against its admission's ceiling), and the helper's mint and renewals grant it. A static agent mint refuses a targeted or journaled endpoint capability, because the static terminal has no obligation drain, and a copied static credential's reach until expiry is named as a known gap. A single-label endpoint and a reserved command are refused. A user-auth manager refuses the field, `[]` included. Manager cluster revision 47. |
