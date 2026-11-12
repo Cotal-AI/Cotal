@@ -88,7 +88,7 @@ import { join, dirname } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Transform } from "node:stream";
 import { peerCredentials } from "@cotal-ai/seat";
 import { connect as connectNats } from "@nats-io/transport-node";
@@ -2820,6 +2820,106 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         }
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--manager-hold-repro")) {
+          // Real broker, hosted child and independent CLI caller. No transaction wire API.
+          await killAndAwaitExit(child, "SIGTERM");
+          const ownerSource = `
+            let managers;
+            const holds = new Map();
+            let queue = Promise.resolve();
+            process.on('message', command => {
+              queue = queue.then(async () => {
+                try {
+                  if (!managers) {
+                    process.argv[1] = command.entry;
+                    const module = await import(command.module);
+                    const selfExec = await import(command.selfExec);
+                    const argv = selfExec.daemonArgv();
+                    console.log('Hold owner reexec diagnostics', JSON.stringify({
+                      pid: process.pid, entry: process.argv[1],
+                      execArgvFlags: process.execArgv.filter(arg => arg.startsWith('-')),
+                      execArgvContainsOwnerSource: process.execArgv.some(arg => arg.includes("const holds = new Map()")),
+                      actualArgv: argv.map(arg => arg.includes("const holds = new Map()") ? '<fixture-owner-source>' : arg),
+                    }));
+                    managers = module.createHostedManagers(command.home, command.version);
+                  }
+                  let result;
+                  if (command.op === 'start') result = await managers.start(command.space);
+                  else if (command.op === 'hold') { const h = managers.holdAdmission(command.owner); holds.set(command.owner, h); await h.drained; result = { held: true }; }
+                  else if (command.op === 'release') { holds.get(command.owner)?.release(); result = { released: true }; }
+                  else if (command.op === 'prepare') { await managers.prepareGenerationRestart(command.owner); result = { prepared: true }; }
+                  else if (command.op === 'abort') { await managers.abortGenerationRestart(command.owner); result = { aborted: true }; }
+                  else if (command.op === 'close') { await managers.close(); result = { closed: true }; }
+                  process.send({ ok: true, result });
+                } catch (error) { process.send({ ok: false, code: error.code, message: String(error.message) }); }
+              });
+            });
+            process.on('disconnect', () => { void (managers ? managers.close() : Promise.resolve()).finally(() => process.exit()); });
+          `;
+          const selfExec = import.meta.resolve("@cotal-ai/cli/self-exec");
+          const ownerFile = join(root, "manager-hold-owner.cjs");
+          writeFileSync(ownerFile, ownerSource, { mode: 0o600, flag: "wx" });
+          const owner = spawn(process.execPath, [ownerFile], { cwd: root, env, stdio: ["ignore", "inherit", "inherit", "ipc"] });
+          const call = (op: string, extra: Record<string, unknown> = {}) => new Promise<any>((resolve, reject) => {
+            const timer = setTimeout(() => finish(new Error(`Manager hold owner ${op} timed out`)), 120_000);
+            const onExit = () => finish(new Error("Manager hold owner exited before reply"));
+            const onMessage = (reply: unknown) => finish(undefined, reply);
+            const finish = (error?: Error, reply?: unknown) => { clearTimeout(timer); owner.off("exit", onExit); owner.off("message", onMessage); error ? reject(error) : resolve(reply); };
+            owner.once("exit", onExit); owner.once("message", onMessage);
+            owner.send({ op, entry: cliEntry, module: pathToFileURL(join(cliEntry, "..", "daemon", "manager.js")).href, selfExec, home, version: fixtureVersion, space: ON, ...extra });
+          });
+          const fenceOwner = `attempt:${randomUUID()}:hold-fixture`;
+          let seat: ChildProcess | undefined;
+          try {
+            const started = await call("start");
+            check("Hold real owned Manager answers", started.ok && started.result?.state === "answering", started);
+            assert.equal(started.result?.state, "answering");
+            const liveManager = started.result;
+            assert.equal((await call("hold", { owner: "hold-a" })).ok, true);
+            assert.equal((await call("hold", { owner: "hold-b" })).ok, true);
+            const blocked = await call("start");
+            check("Hold new Manager start refuses admission", !blocked.ok && blocked.code === "GENERATION_PENDING", blocked);
+            assert.equal(blocked.code, "GENERATION_PENDING");
+            assert.equal((await call("prepare", { owner: fenceOwner })).ok, true);
+            seat = spawn(process.execPath, [cliEntry, "spawn", "--on", liveManager.instanceId, "--space", ON, "--harness", "daemon-smoke", "--name", "hold_fenced_seat", "--no-events", "--detach", "--json"], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"] });
+            let output = "", error = "";
+            seat.stdout!.on("data", chunk => { output += String(chunk); });
+            seat.stderr!.on("data", chunk => { error += String(chunk); });
+            const code = await new Promise<number | null>((resolve, reject) => { seat!.once("error", reject); seat!.once("close", resolve); });
+            const reply = JSON.parse(output);
+            check("Hold exact child fence refuses independent pinned seat caller", code === 2 && reply.error?.code === "TARGET_UNAVAILABLE" && reply.error?.message === "manager is in preserving mode; new lifecycle/control work is fenced", { code, reply, error });
+            assert.equal(code, 2);
+            assert.equal(reply.error?.code, "TARGET_UNAVAILABLE");
+            assert.equal(reply.error?.message, "manager is in preserving mode; new lifecycle/control work is fenced");
+            assert.equal((await call("abort", { owner: fenceOwner })).ok, true);
+            assert.equal((await call("release", { owner: "hold-a" })).ok, true);
+            const stillBlocked = await call("start");
+            check("Hold second owner retains admission after child abort", !stillBlocked.ok && stillBlocked.code === "GENERATION_PENDING", stillBlocked);
+            assert.equal(stillBlocked.code, "GENERATION_PENDING");
+            assert.equal((await call("release", { owner: "hold-b" })).ok, true);
+            const resumed = await call("start");
+            check("Hold final release restores same live Manager", resumed.ok && resumed.result?.state === "answering" && resumed.result.pid === liveManager.pid && resumed.result.instanceId === liveManager.instanceId, resumed);
+          } finally {
+            try {
+              const closed = await call("close");
+              check("Hold owner closes its exact hosted children", closed.ok && closed.result?.closed === true, closed);
+            } finally {
+              if (seat && seat.exitCode === null && seat.signalCode === null) await killAndAwaitExit(seat, "SIGTERM");
+              if (owner.connected) owner.disconnect();
+              if (owner.exitCode === null && owner.signalCode === null) {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                try {
+                  await Promise.race([
+                    new Promise<void>(resolve => owner.once("exit", () => resolve())),
+                    new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Manager hold owner did not exit after disconnect; retained for owned cleanup")), 120_000); }),
+                  ]);
+                } finally { if (timer) clearTimeout(timer); }
+              }
+              check("Hold owner process exited after closing children", owner.exitCode === 0 && owner.signalCode === null, { pid: owner.pid, exitCode: owner.exitCode, signalCode: owner.signalCode });
+            }
+          }
+          return;
+        }
         if (process.argv.includes("--exchange-retry-repro")) {
           const initial = resultOf(await ask(paths.socket, { op: "status" }, 25_000));
           check("Exchange fixture explicitly admits per-space hosting on an unsupported account host", unsupportedComputerReads > 0 && initial.account?.mode === "per-space" && initial.account?.hostSupport === "unsupported", initial.account);
