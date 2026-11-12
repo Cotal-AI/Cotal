@@ -261,6 +261,7 @@ export const claudeConnector: Connector = {
   // here would be a second place the subject is decided, and the two would drift the first time
   // either changed.
   eventChannel,
+  permissionRequests: true,
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   listModels: listClaudeModels,

@@ -47,7 +47,7 @@ saveExtensionsManifest({
       commands: [],
       connectors: [
         { name: "boot-missing", requires: ["harness-that-does-not-exist-965"], eventPlane: false },
-        { name: "boot-present", requires: ["present-harness"], eventPlane: true },
+        { name: "boot-present", requires: ["present-harness"], eventPlane: true, permissionRequests: true },
       ],
     },
   ],
@@ -69,7 +69,7 @@ const oldPath = process.env.PATH;
 process.env.PATH = relative(process.cwd(), binDir);
 const manager = new Manager({ space: "harness-boot", servers, runtime: "pty", workspaceRoot, installedExtensions: true });
 const M = manager as unknown as {
-  connectorStatuses: Array<{ agent: string; state: string; binaries: Record<string, string>; eventPlane: boolean; reason?: string }>;
+  connectorStatuses: Array<{ agent: string; state: string; binaries: Record<string, string>; eventPlane: boolean; permissionRequests: boolean; reason?: string }>;
   managerStatusData(): { connectors: Array<{ agent: string; state: string; binaries: Record<string, string>; eventPlane: boolean; reason?: string }> };
 };
 let bootErr = "";
@@ -94,6 +94,8 @@ try {
   check("manager boot continues so unrelated connectors remain usable", missing?.state === "unavailable" && available?.state === "available", M.connectorStatuses);
   check("declared inventory event-plane facts survive without importing connector packages",
     missing?.eventPlane === false && available?.eventPlane === true, M.connectorStatuses);
+  check("declared inventory permission-prompt facts survive, and one cached without the fact reports false",
+    missing?.permissionRequests === false && available?.permissionRequests === true, M.connectorStatuses);
   check(
     "boot records the resolved absolute harness path from a relative PATH entry",
     available?.binaries["present-harness"] === present && isAbsolute(available.binaries["present-harness"]!),

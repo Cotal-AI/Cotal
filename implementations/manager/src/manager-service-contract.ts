@@ -190,7 +190,7 @@ const STATUS_OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["agent", "state", "binaries", "eventPlane"],
+        required: ["agent", "state", "binaries", "eventPlane", "permissionRequests"],
         properties: {
           agent: { type: "string" },
           state: { enum: ["available", "unavailable"] },
@@ -198,6 +198,9 @@ const STATUS_OUTPUT_SCHEMA = {
           /** Whether this connector publishes the AG-UI event plane. Required and explicit: a
            *  client must never read an absent fact as true. */
           eventPlane: { type: "boolean" },
+          /** Whether this connector relays its harness's permission prompts to the agent's owner
+           *  (SPEC §8.2). A client reads it absent, from an older Manager, as false. */
+          permissionRequests: { type: "boolean" },
           reason: { type: "string" },
         },
       },
@@ -334,6 +337,7 @@ export interface ManagerConnectorStatus {
   state: "available" | "unavailable";
   binaries: Record<string, string>;
   eventPlane: boolean;
+  permissionRequests: boolean;
   reason?: string;
 }
 
@@ -1283,9 +1287,13 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  47 = the inline `persona` on `spawn` and the `define-persona` input take `endpoints`, the endpoint
  *  commands a persona hands on. Both input schemas are closed, so a revision-46 contract rejects it.
  *
- *  48 = `list-dir` lists bounded child directory names on the selected Manager's host. */
+ *  48 = `list-dir` lists bounded child directory names on the selected Manager's host.
+ *
+ *  49 = every `status.connectors` row requires `permissionRequests`, whether the connector relays its
+ *  harness's permission prompts to the agent's owner. The status output schema is closed, so a
+ *  revision-48 contract rejects it. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 48, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 49, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
