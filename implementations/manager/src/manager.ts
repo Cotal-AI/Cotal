@@ -886,6 +886,7 @@ export interface ManagerResumeAgent {
     capabilities?: string[];
     endpoints?: PersonaEndpoint[];
     events: boolean;
+    eventPayloads?: boolean;
     shareTools?: readonly string[];
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;
@@ -1091,6 +1092,7 @@ interface ManagedLaunch {
   /** The persona's endpoint commands, as minted. Renewal re-mints their rows. */
   endpoints?: PersonaEndpoint[];
   events: boolean;
+  eventPayloads?: boolean;
   shareTools?: readonly string[];
   forkSource?: string;
   /** Read from {@link resumeRecordPath} once the seat has written it, then kept. */
@@ -3729,6 +3731,7 @@ export class Manager {
         capabilities: a.launch.capabilities,
         ...(a.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(a.launch.endpoints) } : {}),
         events: a.launch.events,
+        eventPayloads: a.launch.eventPayloads,
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
         ...(this.forkProvenance(a) ? { resumed: this.forkProvenance(a) } : {}),
@@ -3933,6 +3936,7 @@ export class Manager {
         allowPublish: launch.allowPublish,
         capabilities: launch.capabilities,
         events: launch.events,
+        eventPayloads: launch.eventPayloads,
         shareTools: launch.shareTools,
         forkSource: launch.forkSource,
         sessionId: launch.sessionId,
@@ -8069,7 +8073,7 @@ export class Manager {
           throw new Error(`lifecycle ${lifecycleUid} was already handed to runtime "${runtime.kind}"; a lifecycle is handed off at most once`);
         this.delegatedLaunched.add(lifecycleUid);
         handle = runtime.spawnDelegated(
-          { agent, persona: readFileSync(configPath, "utf8"), managerInstanceId: this.managerInstanceId, role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events },
+          { agent, persona: readFileSync(configPath, "utf8"), managerInstanceId: this.managerInstanceId, role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events, eventPayloads },
           handoff,
         );
       } else {
@@ -8134,6 +8138,7 @@ export class Manager {
           capabilities,
           ...(personaEndpoints?.length ? { endpoints: copyPersonaEndpoints(personaEndpoints) } : {}),
           events,
+          eventPayloads,
           shareTools: opts.shareTools,
           forkSource: opts.resume,
           ...(opts.resume !== undefined && spec?.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),
@@ -8833,6 +8838,7 @@ export class Manager {
           capabilities: entry.launch.capabilities,
           endpoints: copyPersonaEndpoints(entry.launch.endpoints) ?? [],
           events: entry.launch.events,
+          eventPayloads: this.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
           cwd: entry.launch.cwd,
         };
         const spec = connector.buildLaunch(launchOpts);
@@ -8918,6 +8924,7 @@ export class Manager {
           capabilities: entry.launch.capabilities,
           ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
           events: entry.launch.events,
+          eventPayloads: this.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
           shareTools: entry.launch.shareTools,
           forkSource: entry.launch.forkSource,
           ...(entry.launch.resumed ? { resumed: entry.launch.resumed } : {}),
@@ -12112,6 +12119,7 @@ export class Manager {
         capabilities: entry.launch.capabilities,
         ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
         events: entry.launch.events,
+        eventPayloads: this.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
         shareTools: entry.launch.shareTools,
         forkSource: entry.launch.forkSource,
         ...(entry.launch.resumed ? { resumed: entry.launch.resumed } : {}),
