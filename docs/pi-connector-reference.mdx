@@ -93,6 +93,8 @@ before durable redelivery.
 control listener, delivery association, and ordered presence chain in a process-global identity map,
 then binds the replacement runtime on its next `session_start`. It also atomically records the new
 Pi session id. Only `session_shutdown { reason: "quit" }` stops the mesh.
+Reload and resume reuse the authenticated runtime without rereading the consumed launch material.
+DMs waiting during a reload remain queued and can commit after a clean terminal response.
 
 For managed PTY seats, `cotal spawn --harness pi --detach --resume <pi-session-id>` forks that transcript into
 a new meshed Pi session (`pi --fork`; the source is untouched). After readiness, the manager binds
