@@ -1,5 +1,4 @@
-import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { assertLifecycleToken } from "@cotal-ai/core";
 import {
@@ -98,11 +97,22 @@ export function localUpdateManagers(flags: { space?: unknown; server?: unknown; 
   }
   const pids = new Set(known.keys());
   {
-    const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,args="], { encoding: "utf8" });
-    if (ps.error || ps.status !== 0) blocked("the process table could not be listed");
-    for (const line of ps.stdout.split("\n")) {
-      const match = /^\s*(\d+)\s+(.*)$/.exec(line);
-      if (match && (commandIsCotalSupervisor(match[2]!) || /(?:^|\s)__machine-manager(?:\s|$)/.test(match[2]!))) pids.add(Number(match[1]));
+    // `ps` is missing from slim images and narrow PATHs; /proc is always there.
+    let entries: string[];
+    try { entries = readdirSync("/proc"); }
+    catch { blocked("the process table could not be listed"); }
+    for (const entry of entries) {
+      if (!/^\d+$/.test(entry)) continue;
+      let command: string;
+      try { command = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0").filter(Boolean).join(" "); }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ESRCH") continue;
+        try { if (lstatSync(`/proc/${entry}`).uid !== process.getuid?.()) continue; }
+        catch { continue; }
+        blocked(`cannot read the command of pid ${entry}`);
+      }
+      if (commandIsCotalSupervisor(command) || /(?:^|\s)__machine-manager(?:\s|$)/.test(command)) pids.add(Number(entry));
     }
   }
   const ownEntry = realpathSync(entryScript());
