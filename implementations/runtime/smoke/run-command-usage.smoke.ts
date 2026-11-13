@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
 import { CommandFailure, exitCode, isCommandFailure } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
-import { managerRefusal, renderLangProblem, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
+import { managerRefusal, renderLangProblem, unansweredHostFailure, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
 import { printRunDetail } from "../src/workflow-views.js";
 import { sourceOf } from "../src/offline-command.js";
 
@@ -237,6 +237,28 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     !v1.includes("is a manager running for this mesh?") && !v1.includes("--local"), v1);
   const unmarked = unansweredManagerRefusal(new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms", mark()));
   c("an unanswered failure whose producer recorded no rail keeps the legacy wording", unmarked.includes("is a manager running for this mesh?"), unmarked);
+}
+
+// A start whose request went out and whose reply never came may have been recorded: the manager
+// started and completed such a run while the CLI printed "Request refused", so a retry ran it twice.
+// Core marks that silence `unknown`; silence before the request, or no responder, stays refused.
+{
+  const sent = (command: string) => new EpEnvelopeError("deadline-exceeded", `no reply to manager.${command} within the 25000ms budget (SPEC 13.5)`,
+    [{ kind: EP_UNANSWERED, endpoint: "manager", command, rail: "ep.v1", requestId: "r1" }], "unknown");
+  for (const command of ["run-start", "run-resume", "run-answer", "run-amend"]) {
+    const f = unansweredHostFailure(command, "s", sent(command));
+    c(`${command} published and unanswered is unknown, exit 3, with the read-before-retry remedy`,
+      f.outcome === "unknown" && f.code === "OPERATION_UNKNOWN" && exitCode(f.outcome, f.code) === 3 && f.message.endsWith("; the manager may already have recorded it")
+      && String(f.remedy).startsWith("read the run with `cotal run show`, or list the runs with `cotal run`, before trying again"), { outcome: f.outcome, code: f.code, message: f.message });
+  }
+  const read = unansweredHostFailure("run-status", "s", sent("run-status"));
+  c("an unanswered read changed nothing and stays TARGET_UNAVAILABLE", read.outcome === "refused" && read.code === "TARGET_UNAVAILABLE", { outcome: read.outcome, code: read.code });
+  const described = unansweredHostFailure("run-start", "s", new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail",
+    [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", rail: "ep.v1" }]));
+  c("a start whose describe drew no answer sent nothing and stays TARGET_UNAVAILABLE", described.outcome === "refused" && described.code === "TARGET_UNAVAILABLE", { outcome: described.outcome, code: described.code });
+  const noResponder = unansweredHostFailure("run-start", "s", new EpEnvelopeError("unavailable", "no responder for manager.run-start (SPEC 13.5)",
+    [{ kind: EP_UNANSWERED, endpoint: "manager", command: "run-start", rail: "ep.v1" }], "not-executed"));
+  c("a start the broker saw no responder for was not executed and stays TARGET_UNAVAILABLE", noResponder.outcome === "refused" && noResponder.code === "TARGET_UNAVAILABLE", { outcome: noResponder.outcome, code: noResponder.code });
 }
 
 // A scripted checkpoint result is read by the simulator only for an `expired` status, so a

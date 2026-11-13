@@ -79,6 +79,11 @@ read with `PERMISSION_DENIED`, exit 2. A directory, device, FIFO or socket is re
 A `start` interrupted with Ctrl-C or `SIGTERM` after its request went out reports outcome `unknown`,
 because the manager may already have recorded the run, and exits 130 or 143. List the runs with
 `cotal run` before starting it again.
+A `start`, `resume`, `answer` or `amend` whose request went out and drew no reply before the
+deadline is also unknown, exit 3, and is not retried, because the manager may have recorded it. Read
+the run with `cotal run show` or list the runs with `cotal run` before running it again. When no
+manager answered before the request went out, or none was subscribed to receive it, the verb refuses
+`TARGET_UNAVAILABLE`, exit 2.
 `resume` asks the manager to take an existing run back and continue it from its step journal; the
 source is the recorded program, so no `--file` is taken. A run recorded `completed` or `failed` is
 refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue;
