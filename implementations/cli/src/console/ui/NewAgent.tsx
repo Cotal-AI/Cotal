@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { spawnNameError } from "@cotal-ai/core";
 import { Modal } from "./Modal.js";
-import type { AgentLaunchInput, AgentLaunchReply } from "../launch.js";
+import { shownJoinedName, type AgentLaunchInput, type AgentLaunchReply } from "../launch.js";
 
 const FIELDS = ["application", "persona", "model", "name", "prompt", "events", "launch"] as const;
 const LABELS = ["Application", "Persona", "Model", "Name", "Initial request", "Events"];
@@ -71,7 +71,7 @@ export function NewAgent({ space, width, height, applications, defaultPersona, o
   });
   const narrow = width < 56 || height < 23;
   if (locked && reply) return <Modal title={reply.ok ? "Agent joined" : "Check launch outcome"} subtitle={`Space: ${space}`} width={width}>
-    <Text color={reply.ok ? "green" : "yellow"}>{reply.ok ? `${reply.name} is running in the background.` : reply.message}</Text>
+    <Text color={reply.ok ? "green" : "yellow"}>{reply.ok ? `${shownJoinedName(reply.name, reply.id)} is running in the background.` : reply.message}</Text>
     {reply.ok ? <>
       <Text>Requested model: {reply.model ?? "native default"}</Text>
       <Text dimColor>Attach from the roster with a, where supported.</Text>

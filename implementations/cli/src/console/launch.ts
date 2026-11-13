@@ -14,8 +14,41 @@ export interface AgentLaunchInput {
 }
 
 export type AgentLaunchReply =
-  | { ok: true; name: string; managerInstanceId: string; model: string | null; warnings: string[] }
+  | { ok: true; name: string; id?: string; managerInstanceId: string; model: string | null; warnings: string[] }
   | { ok: false; message: string; remedy?: string; canRetry: boolean };
+
+/** The name the joined notice shows. A missing or whitespace-only name is the agent's id. */
+export function shownJoinedName(name: string, id: string | undefined): string {
+  if (name.trim()) return name;
+  if (id !== undefined && id.trim()) return id;
+  return "(unnamed)";
+}
+
+/** The palette reply for one spawn receipt. A joined receipt keeps its id so a blank name can be shown as that id. */
+export function replyFromSpawnOutput(code: number | null, output: string, bytes: number): AgentLaunchReply {
+  let receipt: Envelope<ManagedLaunchResult>;
+  try {
+    if (bytes > 128 * 1024) throw new Error("oversized receipt");
+    receipt = JSON.parse(output) as Envelope<ManagedLaunchResult>;
+    if (receipt.schemaVersion !== 1 || receipt.command !== "spawn") throw new Error("invalid receipt");
+  } catch {
+    return { ok: false, canRetry: false, message: "Launch outcome unconfirmed. Inspect the roster and `cotal ps` before starting another agent." };
+  }
+  const result = receipt.result;
+  if (code === 0 && receipt.outcome === "ok" && result?.kind === "managed-launch" &&
+      result.readiness === "joined" && typeof result.name === "string" && typeof result.managerInstanceId === "string") {
+    return {
+      ok: true, name: result.name, ...(typeof result.id === "string" ? { id: result.id } : {}),
+      managerInstanceId: result.managerInstanceId,
+      model: result.requestedModel, warnings: receipt.warnings.map((warning) => oneLine(warning.message)),
+    };
+  }
+  return {
+    ok: false, canRetry: receipt.outcome === "refused",
+    message: oneLine(receipt.error?.message ?? "The CLI did not confirm that the agent joined."),
+    remedy: receipt.error?.remedy ? oneLine(receipt.error.remedy) : undefined,
+  };
+}
 
 /** Execute the real CLI launch with argv, never a shell. Its structured receipt owns validation,
  * persona precedence, caller authority, readiness and uncertain outcomes for both interfaces. */
@@ -39,26 +72,6 @@ export async function launchAgent(ctx: ControlCtx, input: AgentLaunchInput): Pro
     // Diagnostics stay off Ink's terminal; only the CLI's structured, public receipt is rendered.
     child.stderr.resume();
     child.once("error", () => resolve({ ok: false, canRetry: true, message: "The launch command could not start. Check the Cotal executable." }));
-    child.once("close", (code) => {
-      let receipt: Envelope<ManagedLaunchResult>;
-      try {
-        if (bytes > 128 * 1024) throw new Error("oversized receipt");
-        receipt = JSON.parse(output) as Envelope<ManagedLaunchResult>;
-        if (receipt.schemaVersion !== 1 || receipt.command !== "spawn") throw new Error("invalid receipt");
-      } catch {
-        resolve({ ok: false, canRetry: false, message: "Launch outcome unconfirmed. Inspect the roster and `cotal ps` before starting another agent." });
-        return;
-      }
-      const result = receipt.result;
-      if (code === 0 && receipt.outcome === "ok" && result?.kind === "managed-launch" &&
-          result.readiness === "joined" && typeof result.name === "string" && typeof result.managerInstanceId === "string") {
-        resolve({ ok: true, name: result.name, managerInstanceId: result.managerInstanceId,
-          model: result.requestedModel, warnings: receipt.warnings.map((warning) => oneLine(warning.message)) });
-      } else {
-        resolve({ ok: false, canRetry: receipt.outcome === "refused",
-          message: oneLine(receipt.error?.message ?? "The CLI did not confirm that the agent joined."),
-          remedy: receipt.error?.remedy ? oneLine(receipt.error.remedy) : undefined });
-      }
-    });
+    child.once("close", (code) => resolve(replyFromSpawnOutput(code, output, bytes)));
   });
 }

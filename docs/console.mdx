@@ -82,7 +82,7 @@ Available controls include:
 
 | Action | Result |
 | --- | --- |
-| `D` on an agent | Confirm with `y` for graceful stop or `f` for force-kill. |
+| `D` on an agent | Confirm with `y` for graceful stop or `f` for force-kill. A name that is missing or only whitespace is shown as the agent's id. |
 | `spawn <persona> [name]` | Launch an agent and wait for it to join, as `cotal spawn --detach` does. |
 | `status <agent>` | Inspect that agent's manager status. |
 | `ps` | Inspect managed agents. |
@@ -106,7 +106,7 @@ Open Ctrl-P and choose **Spawn agent**. Search for `spawn` or `new agent` to fin
 Choose an application, persona, model, name, and optional first request, then choose **Launch agent**.
 Empty application, model, and name fields keep native CLI defaults.
 Events are off by default in the form; a space requiring events refuses that explicit opt-out.
-The form uses `spawn --detach` and reports its joined receipt or failure. Inspect an unconfirmed outcome before launching again.
+The form uses `spawn --detach` and reports its joined receipt or failure. A receipt name that is missing or only whitespace is shown as the agent's id. Inspect an unconfirmed outcome before launching again.
 Use the roster's attach action where supported. Esc returns to the palette.
 
 The modal palette replaces the `:` shortcut. Complete typed commands remain supported.
