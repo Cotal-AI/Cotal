@@ -12,6 +12,7 @@ import { renderReport } from "@cotal-ai/workspace";
 import { MeshView } from "../../../packages/workspace/dist/view/index.js";
 import { runLog } from "../src/render.js";
 import { feedLine, observedText, watchReport, WATCH_TEXT_LIMIT } from "../src/watch-data.js";
+import { joinPeerLabel } from "../src/commands/join.js";
 import {
   chatSubject,
   unicastSubject,
@@ -125,6 +126,13 @@ const endpointOnly = renderReport(watchReport({ ...s, agents: [] }, "roster"), "
 check("an endpoint-only roster is not reported empty", endpointOnly.includes("console") && !endpointOnly.includes("No participants"));
 const emptyRoster = renderReport(watchReport({ ...s, agents: [], endpoints: [] }, "roster"), "plain", 200);
 check("an empty roster names its participant scope", emptyRoster.includes("No participants in this observer snapshot."));
+for (const name of [" ", "", "\n", " \n\t"]) {
+  const label = joinPeerLabel({ name, id: "local.blank" });
+  check(`join shows the id for a participant named ${JSON.stringify(name)}`, label === "local.blank" && !label.includes("\n"));
+}
+check("join keeps a participant name", joinPeerLabel({ name: "ada", id: "local.ada" }) === "ada");
+check("join keeps a name and its role", joinPeerLabel({ name: "ada", id: "local.ada", role: "worker" }) === "ada/worker");
+check("join uses the id when a blank name has a role", joinPeerLabel({ name: " ", id: "local.blank", role: "worker" }) === "local.blank/worker");
 const waitingReport = renderReport(watchReport(s, "waiting"), "plain", 200);
 check("the waiting view keeps the agent-only signal scope", waitingReport.includes("bob") && !waitingReport.includes("console") && !waitingReport.includes("alice"));
 {
