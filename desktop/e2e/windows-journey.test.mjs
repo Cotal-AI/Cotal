@@ -20,9 +20,9 @@ test('workflow isolates two Windows acceptance cells and retains original cleanu
   assert.deepEqual(phases.map(step => step['timeout-minutes']), [12, 12, 12, 12]);
   assert.deepEqual(phases.map(step => step.if), [
     "runner.os == 'Windows'", "runner.os == 'Windows'",
-    "runner.os == 'Windows' && steps.windows-before-finish.outcome == 'success'",
-    "runner.os == 'Windows' && steps.windows-after-start.outcome == 'success'",
-  ], 'a second fixture cannot start before the first cleanup owner has exited successfully');
+    "!cancelled() && runner.os == 'Windows' && steps.windows-before-cleanup.outputs.clean == 'true'",
+    "!cancelled() && runner.os == 'Windows' && steps.windows-after-start.outcome == 'success'",
+  ], 'a second fixture requires original cleanup proof, not a passing link tail');
   for (const [index, cell, directory] of [[0, 'before-poll', 'before'], [2, 'after-poll', 'after']]) {
     assert.equal(phases[index].env?.COTAL_DAEMON_SMOKE_TMP, '${{ runner.temp }}', 'private fixture scratch must avoid the longer profile temp prefix');
     for (const [offset, action] of [[0, 'start'], [1, 'resume']]) {
@@ -38,7 +38,7 @@ test('workflow isolates two Windows acceptance cells and retains original cleanu
   assert.match(cleanup.run, /\$output = if \(\$cell -eq 'account-only'\) \{ "\$\{\{ runner\.temp \}\}\/desktop-account-e2e" \}/);
   const windowsAccount = steps.filter(step => /windows-journey.mjs account /.test(step.run ?? ''));
   assert.equal(windowsAccount.length, 1, 'one full account journey after both per-space cleanups');
-  assert.equal(windowsAccount[0].if, "runner.os == 'Windows' && steps.windows-after-finish.outcome == 'success'");
+  assert.equal(windowsAccount[0].if, "!cancelled() && runner.os == 'Windows' && steps.windows-before-cleanup.outputs.clean == 'true' && steps.windows-after-cleanup.outputs.clean == 'true'");
   assert.equal(phases[3].id, 'windows-after-finish');
   assert.ok(steps.indexOf(windowsAccount[0]) > steps.indexOf(phases[3]));
   assert.ok(steps.indexOf(cleanup) > steps.indexOf(windowsAccount[0]));

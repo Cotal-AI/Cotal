@@ -453,9 +453,18 @@ jobs:
         timeout-minutes: 12
         shell: pwsh
         run: node desktop/e2e/windows-journey.mjs resume "${{ runner.temp }}/desktop-windows-before" "${{ runner.temp }}/desktop-e2e/before-poll" before-poll
+      - name: Verify cell 1 original cleanup independently of its link tail
+        id: windows-before-cleanup
+        if: "!cancelled() && runner.os == 'Windows' && steps.windows-before-start.outcome == 'success'"
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          node desktop/e2e/windows-journey.mjs verify-cleanup "${{ runner.temp }}/desktop-windows-before" "${{ runner.temp }}/desktop-e2e/before-poll" before-poll
+          if ($LASTEXITCODE -ne 0) { throw 'Cell 1 original cleanup is not proven.' }
+          'clean=true' >> $env:GITHUB_OUTPUT
       - name: Windows stopped-service cell 2 reconnects through Start service
         id: windows-after-start
-        if: runner.os == 'Windows' && steps.windows-before-finish.outcome == 'success'
+        if: "!cancelled() && runner.os == 'Windows' && steps.windows-before-cleanup.outputs.clean == 'true'"
         timeout-minutes: 12
         shell: pwsh
         env:
@@ -463,12 +472,21 @@ jobs:
         run: node desktop/e2e/windows-journey.mjs start "${{ runner.temp }}/desktop-windows-after" "${{ runner.temp }}/desktop-e2e/after-poll" after-poll
       - name: Finish cell 2 through its original cleanup owner
         id: windows-after-finish
-        if: runner.os == 'Windows' && steps.windows-after-start.outcome == 'success'
+        if: "!cancelled() && runner.os == 'Windows' && steps.windows-after-start.outcome == 'success'"
         timeout-minutes: 12
         shell: pwsh
         run: node desktop/e2e/windows-journey.mjs resume "${{ runner.temp }}/desktop-windows-after" "${{ runner.temp }}/desktop-e2e/after-poll" after-poll
+      - name: Verify cell 2 original cleanup independently of its link tail
+        id: windows-after-cleanup
+        if: "!cancelled() && runner.os == 'Windows' && steps.windows-after-start.outcome == 'success'"
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          node desktop/e2e/windows-journey.mjs verify-cleanup "${{ runner.temp }}/desktop-windows-after" "${{ runner.temp }}/desktop-e2e/after-poll" after-poll
+          if ($LASTEXITCODE -ne 0) { throw 'Cell 2 original cleanup is not proven.' }
+          'clean=true' >> $env:GITHUB_OUTPUT
       - name: Windows connected account Ready, Settings and login-command lifecycle
-        if: runner.os == 'Windows' && steps.windows-after-finish.outcome == 'success'
+        if: "!cancelled() && runner.os == 'Windows' && steps.windows-before-cleanup.outputs.clean == 'true' && steps.windows-after-cleanup.outputs.clean == 'true'"
         timeout-minutes: 15
         shell: pwsh
         env:
