@@ -1,8 +1,8 @@
 ---
-"@cotal-ai/workspace": minor
-"@cotal-ai/auth": minor
-"@cotal-ai/cli": minor
-"cotal-ai": minor
+"@cotal-ai/workspace": patch
+"@cotal-ai/auth": patch
+"@cotal-ai/cli": patch
+"cotal-ai": patch
 ---
 
 Sign in through an issuer-authorized product discovery name.
