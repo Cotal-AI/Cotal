@@ -3745,8 +3745,8 @@ export class Manager {
   /** Tear down every managed agent's footprint on an explicit destructive {@link stop}, or only the
    *  in-process seats a default stop cannot detach. A manager exit is
    *  a mass agent-exit, and without this its agents' footprints (creds files + `dm_`/`dlv_` durables + ACL
-   *  rows) would orphan exactly as the per-agent exit path prevents. Hard-stop each child (an exit has no
-   *  time for the graceful grace window) and AWAIT its deprovision — bounded per agent (`withTimeout`) and
+   *  rows) would orphan exactly as the per-agent exit path prevents. Stop each child gracefully, so its
+   *  own shutdown runs before the runtime escalates, and AWAIT its deprovision — bounded per agent (`withTimeout`) and
    *  best-effort (`allSettled` + a loud log), so one slow/failed teardown can neither hang nor abort exit.
    *  The creds file is dropped even if the broker teardown fails (see {@link deprovision}). Deliberately
    *  touches NEITHER the lease NOR the endpoints — the caller owns those. */
