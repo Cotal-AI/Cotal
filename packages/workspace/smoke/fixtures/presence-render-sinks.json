@@ -115,7 +115,7 @@
     {
       "path": "extensions/connector-core/src/orientation.ts",
       "kind": "derived-output",
-      "anchor": "`${peerLabel(p.card)} (${honestStatus(p.status)})`",
+      "anchor": "`${peerLabel({ name, ...(p.card.role ? { role: p.card.role } : {}) })} (${honestStatus(p.status)})`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {

@@ -188,9 +188,10 @@ export function buildOrientation(
   }
 
   const peers = read.roster.filter((p) => p.card.id !== agent.id);
-  const shown = peers
-    .slice(0, 8)
-    .map((p) => `${peerLabel(p.card)} (${honestStatus(p.status)})`);
+  const shown = peers.slice(0, 8).map((p) => {
+    const name = p.card.name.trim() ? p.card.name : p.card.id;
+    return `${peerLabel({ name, ...(p.card.role ? { role: p.card.role } : {}) })} (${honestStatus(p.status)})`;
+  });
   const summary = peers.length
     ? shown.join(", ") + (peers.length > shown.length ? `, +${peers.length - shown.length} more` : "")
     : "no other peers present";

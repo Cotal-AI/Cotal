@@ -285,6 +285,21 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.equal(o.unread.total, 3);
 }
 
+// A blank name is not a peer label. The summary uses the id, and a role still follows it.
+{
+  const roster = [
+    presence("ALICEID0000000000000000000000000000000000000", "alice", "reviewer"),
+    presence("local.blank", " \n", "worker"),
+    presence("local.empty", ""),
+    presence("local.space", " ada"),
+  ];
+  const o = await orient(agentStub({ roster }), cfg({ creds: "CREDS" }), [], 1);
+  assert.match(o.peers.summary, /local\.blank\/worker \(idle\)/, o.peers.summary);
+  assert.match(o.peers.summary, /local\.empty \(idle\)/, o.peers.summary);
+  assert.match(o.peers.summary, / ada \(idle\)/, o.peers.summary);
+  assert.equal(o.peers.summary.includes("\n"), false, o.peers.summary);
+}
+
 // 5 — the shared connector bootstrap is exported and points agents at the tool.
 {
   assert.ok(ORIENTATION_BOOTSTRAP.length > 0, "bootstrap is non-empty");

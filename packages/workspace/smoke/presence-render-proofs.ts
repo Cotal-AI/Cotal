@@ -9,7 +9,7 @@ type Binding = { proof: SmokeProof; sites: { path: string; anchors: string[] }[]
 const smokeProofs: Binding[] = [
   {
     proof: { path: "extensions/connector-core/smoke/orientation.smoke.ts", anchor: "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/," },
-    sites: [{ path: "extensions/connector-core/src/orientation.ts", anchors: ['`${peerLabel(p.card)} (${honestStatus(p.status)})`', "honestStatus(p.status)"] }],
+    sites: [{ path: "extensions/connector-core/src/orientation.ts", anchors: ['`${peerLabel({ name, ...(p.card.role ? { role: p.card.role } : {}) })} (${honestStatus(p.status)})`', "honestStatus(p.status)"] }],
   },
   {
     proof: { path: "extensions/connector-core/smoke/orientation.smoke.ts", anchor: "assert.match(text, /status: working · progress unknown · attention: open/," },

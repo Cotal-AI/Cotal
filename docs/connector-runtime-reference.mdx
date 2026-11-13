@@ -128,6 +128,7 @@ The shared timestamp rules are in the [CotalEndpoint reference](embedding-endpoi
 Each printed condition code or activity stays on one line, escapes control characters and line separators as `\uXXXX`, and is limited to 200 characters.
 
 `cotal_orientation` and `cotal_roster` read presence on demand.
+A present peer whose name is only whitespace is named by id on the orientation card.
 If that read fails, both say `presence read failed` with its reason and label the retained roster last-known.
 A missing name in that result does not prove absence. These seat tools do not depend on an always-on presence watcher.
 Actual presence watchers retain their own current, unpopulated, and stale states.
