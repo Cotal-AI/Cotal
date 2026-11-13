@@ -511,9 +511,11 @@ Removing an extension or cleaning up a failed add keeps unrelated file-based ext
 installed copies, rather than turning them into links to their source or the built-in seed store.
 
 One command at a time changes the installed connectors and extensions. While `setup`, `ext add`,
-`ext seed` or an update does that, every other `cotal` command waits for it, `status` included.
-After one second of waiting the command says so on stderr:
+`ext seed` or an update does that, a command that needs a connector waits for it. After one second
+of waiting the command says so on stderr:
 `waiting for another cotal command (pid <id>) to finish changing this installation`.
+`cotal status` does not wait. It names that command, leaves the application rows unread and exits 4
+with a partial report: `another cotal command (pid <id>) is changing this installation, so the application rows were not read`.
 
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,
