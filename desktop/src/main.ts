@@ -5,7 +5,7 @@ import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, in
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -127,7 +127,7 @@ function renderSettings(): void {
   text("settings-versions", `App ${appVersion ?? "Unavailable"} · Service ${daemonVersion}`);
   text("settings-update-summary", updateSummary(updateStatus, appVersion ?? ""));
   text("settings-last-check", installerMessage ?? lastChecked(updateStatus?.lastCheck));
-  text("settings-spaces", disconnectSpaces(accountProvider()).map(space => accountSpaces.get(space)?.label ?? space).join(", ") || "No observed spaces for this provider");
+  text("settings-spaces", disconnectSpaces(accountProvider()).map(space => shownSpaceLabel(accountSpaces.get(space)?.label, space)).join(", ") || "No observed spaces for this provider");
   const policy = updatePolicy(updateStatus?.channel, appPlatform);
   text("update-preference-label", policy.label); text("update-policy", policy.description);
   el<HTMLInputElement>("update-preference").checked = policy.label === "Install updates automatically" ? updateStatus?.automatic === true : updateStatus?.notify !== false;
@@ -203,8 +203,8 @@ function confirmAccountAction(kind: AccountAction["kind"]): void {
   text("account-confirm-title", kind === "logout" ? `Sign out of ${accountHost(provider)}?` : `Disconnect this computer from ${accountHost(provider)}?`);
   text("account-confirm-copy", kind === "logout" ? "Existing connections keep running. Disconnect this computer first if you also want to stop its connections. Only this provider will be signed out." : "Stop the following spaces one by one. This does not remove this computer from the dashboard, uninstall the service, revoke provider authority or erase retained renewal records. Disconnect before signing out if you want both.");
   el("account-confirm-spaces").replaceChildren(...(kind === "disconnect" ? spaces : []).map(space => {
-    const li = document.createElement("li"); const label = accountSpaces.get(space)?.label;
-    li.textContent = label && label !== space ? `${label} (${space})` : space; return li;
+    const li = document.createElement("li"); const label = shownSpaceLabel(accountSpaces.get(space)?.label, space);
+    li.textContent = label !== space ? `${label} (${space})` : space; return li;
   }));
   text("account-confirm", kind === "logout" ? "Sign out" : "Disconnect listed spaces");
   renderSettings(); el("account-cancel").focus();
@@ -214,7 +214,7 @@ async function runAccountAction(): Promise<void> {
   if (!target || busy || loginActive) return;
   busy = true; refreshGeneration++; buttons(); renderSettings();
   const outcomes: string[] = [];
-  const spaceLabels = new Map(target.spaces.map(space => [space, accountSpaces.get(space)?.label ?? space]));
+  const spaceLabels = new Map(target.spaces.map(space => [space, shownSpaceLabel(accountSpaces.get(space)?.label, space)]));
   const spaceLabel = (space: string): string => spaceLabels.get(space) ?? space;
   const acknowledged = new Set<string>();
   let catalogRefreshed = false;
@@ -430,7 +430,7 @@ function showStage(next: Stage, focus = false): void {
     title = summary === "connected" ? connectionView("launch-ready").title : summary === "attention" ? "Connection needs attention" : summary === "starting" ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
     description = rows.length ? connectionView("launch-ready").description : "Turn on the spaces that can use it in the dashboard.";
   }
-  else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${accountSpaces.get(pending[0])?.label ?? pending[0]} needs to approve this computer. It connects by itself once they do.`; }
+  else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${shownSpaceLabel(accountSpaces.get(pending[0])?.label, pending[0])} needs to approve this computer. It connects by itself once they do.`; }
   else if (finished) { title = anyConnected ? connectionView("launch-ready").title : "Spaces using this computer"; description = connectionView("launch-ready").description; }
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
@@ -454,10 +454,10 @@ function showStage(next: Stage, focus = false): void {
   text("connection-title", title); text("connection-description", description);
   setIcon(el("connection-icon"), recovery ? issue === "APPROVAL_PENDING" ? "clock" : "warning" : finished ? "check" : next === "welcome" ? "computer" : next === "sign-in" ? "browser" : setupActive ? "spinner" : "connect");
   const target = accountSpaces.get(selectedSpace());
-  if (next === "connect" && !setupActive && !recovery) description = target ? `Connect this computer to ${target.kind === "personal" ? "your personal space, " : ""}${target.label}. You can add it to other spaces afterwards.` : "Choose which space can use this computer.";
+  if (next === "connect" && !setupActive && !recovery) description = target ? `Connect this computer to ${target.kind === "personal" ? "your personal space, " : ""}${shownSpaceLabel(target.label, target.space)}. You can add it to other spaces afterwards.` : "Choose which space can use this computer.";
   text("connection-description", description);
   el("selected-space").hidden = !addingSpace;
-  text("selected-space", target ? addingSpace ? `People authorized in ${target.label} will be able to launch agent applications on this computer as you.` : `Connect this computer to ${target.kind === "personal" ? "your personal space, " : ""}${target.label}. You can add it to other spaces afterwards.` : "Choose which space can use this computer.");
+  text("selected-space", target ? addingSpace ? `People authorized in ${shownSpaceLabel(target.label, target.space)} will be able to launch agent applications on this computer as you.` : `Connect this computer to ${target.kind === "personal" ? "your personal space, " : ""}${shownSpaceLabel(target.label, target.space)}. You can add it to other spaces afterwards.` : "Choose which space can use this computer.");
   el("connected-space").hidden = true;
   const formParent = addingSpace ? el("add-space-panel") : document.querySelector(".connection-card")!;
   if (el("space-panel").parentElement !== formParent) {
@@ -631,8 +631,8 @@ function renderConnections(): void {
   list.replaceChildren(...[...connections].map(([space, state]) => {
     const row = document.createElement("li"); row.dataset.testid = "connected-space-row"; row.dataset.space = space;
     const copy = document.createElement("span");
-    const name = document.createElement("strong"); name.textContent = accountSpaces.get(space)?.label ?? space;
-    const kind = document.createElement("small"); kind.className = "application-chip"; kind.textContent = accountSpaces.get(space)?.kind ?? "Space";
+    const name = document.createElement("strong"); name.textContent = shownSpaceLabel(accountSpaces.get(space)?.label, space);
+    const kind = document.createElement("small"); kind.className = "application-chip"; kind.textContent = shownSpaceKind(accountSpaces.get(space)?.kind);
     copy.append(name, kind);
     const accountRow = computerRows.get(space);
     if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow, state === "launch-ready"); copy.append(detail); }
@@ -657,7 +657,7 @@ function buttons(): void {
   el<HTMLButtonElement>("login").disabled = busy || loginActive || !isTauri();
   el<HTMLButtonElement>("other-host").disabled = busy;
   el<HTMLButtonElement>("connect").disabled = busy || !ready || !selectedSpace() || connected();
-  text("connect", addingSpace ? `Add to ${accountSpaces.get(selectedSpace())?.label ?? "space"}` : applicationRefusals.has(selectedSpace()) || el("notice").classList.contains("error") ? "Check again" : "Connect this computer");
+  text("connect", addingSpace ? `Add to ${shownSpaceLabel(accountSpaces.get(selectedSpace())?.label, selectedSpace() || "space")}` : applicationRefusals.has(selectedSpace()) || el("notice").classList.contains("error") ? "Check again" : "Connect this computer");
   el<HTMLButtonElement>("disconnect").disabled = busy || !ready || !selectedSpace();
   el<HTMLButtonElement>("dashboard").disabled = busy || !(connected() || computerAccount?.hostSupport === "supported");
   el<HTMLButtonElement>("sync").disabled = busy || !ready;
@@ -812,14 +812,14 @@ async function spaces(refreshCatalog: boolean): Promise<void> {
   for (const item of result.spaces) {
     if (!item || typeof item.space !== "string" || item.mode !== "user") continue;
     accountSpaces.set(item.space, { space: item.space, label: String(item.label ?? item.space), ...(typeof item.catalogId === "string" ? { catalogId: item.catalogId } : {}), ...(typeof item.kind === "string" ? { kind: item.kind } : {}), ...(typeof item.role === "string" ? { role: item.role } : {}) });
-    select.add(new Option(String(item.label ?? item.space), item.space));
+    select.add(new Option(shownSpaceLabel(typeof item.label === "string" ? item.label : undefined, item.space), item.space));
     if (typeof item.idp === "string") providers.set(item.space, item.idp);
     if (typeof item.catalogId === "string") catalogIds.set(item.space, item.catalogId);
   }
   for (const [space, entry] of retainedSpaces) if (!accountSpaces.has(space)) accountSpaces.set(space, { space, label: entry.label });
   for (const [space, provider] of connectedProviders) {
     if (!providers.has(space)) providers.set(space, provider);
-    if (![...select.options].some(option => option.value === space)) select.add(new Option(accountSpaces.get(space)?.label ?? space, space));
+    if (![...select.options].some(option => option.value === space)) select.add(new Option(shownSpaceLabel(accountSpaces.get(space)?.label, space), space));
   }
   const preferred = connections.has(previous) ? previous : initialSpace([...accountSpaces.values()], requestedSpace) ?? (accountSpaces.has(previous) ? previous : undefined) ?? observedReadySpaces.find(space => accountSpaces.has(space));
   if (preferred) select.value = preferred;
