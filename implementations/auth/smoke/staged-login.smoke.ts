@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { chmodSync, mkdtempSync, readdirSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { stageIdpSession, commitStagedIdpSession, fetchStagedIdpSpaceCatalog, establishIdpSession, loadIdpSession, saveIdpSession } from "../src/login.js";
+import { stageIdpSession, commitStagedIdpSession, fetchStagedIdpSpaceCatalog, establishIdpSession, loadIdpSession, saveIdpSession, prepareIdpSpaceCatalogs } from "../src/login.js";
 
 // Real HTTP device approval contract. No bearer or approval code is logged.
 const home = mkdtempSync(join(tmpdir(), "cotal-staged-login-"));
@@ -16,6 +16,7 @@ let redirect = false;
 let catalogRequests = 0;
 let approved = false;
 let sessionNumber = 0;
+const approvedSessions = new Set<string>();
 let base = "";
 const server = createServer((req, res) => {
   res.setHeader("content-type", "application/json");
@@ -26,7 +27,9 @@ const server = createServer((req, res) => {
   if (req.url === "/approve") { approved = true; return void res.end("{}"); }
   if (req.url === "/api/auth/device/token") {
     assert.ok(approved);
-    return void res.end(JSON.stringify({ access_token: `opaque-session-${++sessionNumber}`, expires_in: 600 }));
+    const token = `opaque-session-${++sessionNumber}`;
+    approvedSessions.add(`Bearer ${token}`);
+    return void res.end(JSON.stringify({ access_token: token, expires_in: 600 }));
   }
   if (req.url === "/api/auth/token") {
     const part = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
@@ -35,7 +38,7 @@ const server = createServer((req, res) => {
   }
   if (req.url === "/catalog") {
     catalogRequests++;
-    assert.ok(req.headers.authorization === `Bearer opaque-session-${sessionNumber}`, "catalog authentication matches the approved session");
+    assert.ok(approvedSessions.has(req.headers.authorization ?? ""), "catalog authentication uses an approved session");
     if (redirect) { res.statusCode = 302; res.setHeader("location", `${base}/unexpected`); return void res.end("{}"); }
     return void res.end(JSON.stringify({ v: 1, spaces: [] }));
   }
@@ -60,6 +63,19 @@ try {
   assert.throws(() => commitStagedIdpSession(candidate), /already committed/);
   audience = "mesh";
   await establishIdpSession(opts(join(home, "wrapper")));
+  const refreshDir = join(home, "refresh");
+  await establishIdpSession(opts(refreshDir));
+  const refreshing = await stageIdpSession(opts(refreshDir));
+  const beforeRefresh = catalogRequests;
+  await prepareIdpSpaceCatalogs({ dir: refreshDir, force: true, validate: () => {}, apply: () => {} });
+  assert.equal(catalogRequests, beforeRefresh + 1, "real catalog preparation fetched the existing account");
+  commitStagedIdpSession(refreshing);
+  assert.equal(loadIdpSession(refreshDir, `${base}/api/auth`)?.token, `opaque-session-${sessionNumber}`);
+  await establishIdpSession({ ...opts(refreshDir), onPrompt: async () => {
+    await prepareIdpSpaceCatalogs({ dir: refreshDir, force: true, validate: () => {}, apply: () => {} });
+    await fetch(`${base}/approve`);
+  } });
+  assert.equal(loadIdpSession(refreshDir, `${base}/api/auth`)?.token, `opaque-session-${sessionNumber}`);
   audience = "wrong";
   await assert.rejects(stageIdpSession(opts(join(home, "mismatch"))), /expected issuer, audience or subject/);
   assert.equal(readdirSync(home).includes("mismatch"), false);
@@ -74,10 +90,30 @@ try {
   assert.throws(() => commitStagedIdpSession(cancelled), /cancelled/);
   assert.equal(readdirSync(home).includes("cancelled"), false);
   const changedDir = join(home, "changed");
-  const changed = await stageIdpSession(opts(changedDir));
+  const changed = await stageIdpSession({ ...opts(changedDir), migrationFrom: `${base}/api/auth` });
   saveIdpSession(changedDir, `${base}/api/auth`, { token: "other-session", sub: "other", expiresAt: Date.now() / 1000 + 600 });
   assert.throws(() => commitStagedIdpSession(changed), /state changed/);
   assert.equal(loadIdpSession(changedDir, `${base}/api/auth`)?.sub, "other");
+  const migrationDir = join(home, "migration-refresh");
+  await establishIdpSession(opts(migrationDir));
+  await prepareIdpSpaceCatalogs({ dir: migrationDir, force: true, validate: () => {}, apply: () => {} });
+  const migration = await stageIdpSession({ ...opts(migrationDir), migrationFrom: `${base}/api/auth` });
+  const catalogPath = join(migrationDir, "space-catalogs.json");
+  const cache = JSON.parse(readFileSync(catalogPath, "utf8"));
+  for (const account of Object.values(cache.accounts) as { fetchedAt?: string }[]) account.fetchedAt = new Date(Date.now() + 1000).toISOString();
+  writeFileSync(catalogPath, JSON.stringify(cache));
+  saveIdpSession(migrationDir, "https://unrelated.example/api/auth", { token: "unrelated", sub: "other", expiresAt: Date.now() / 1000 + 600 });
+  commitStagedIdpSession(migration);
+  const catalogChanged = await stageIdpSession({ ...opts(migrationDir), migrationFrom: `${base}/api/auth` });
+  const altered = JSON.parse(readFileSync(catalogPath, "utf8"));
+  for (const account of Object.values(altered.accounts) as { issuer: string }[]) account.issuer = "https://changed.example";
+  writeFileSync(catalogPath, JSON.stringify(altered));
+  assert.throws(() => commitStagedIdpSession(catalogChanged), /state changed.*retry `cotal login --migrate-from/);
+  const damaged = await stageIdpSession(opts(migrationDir));
+  const saved = loadIdpSession(migrationDir, `${base}/api/auth`);
+  writeFileSync(catalogPath, "{");
+  assert.throws(() => commitStagedIdpSession(damaged), /catalog cache.*could not be read/);
+  assert.deepEqual(loadIdpSession(migrationDir, `${base}/api/auth`), saved);
   console.log("staged login HTTP smoke passed");
 } finally {
   if (priorHome === undefined) delete process.env.COTAL_HOME;

@@ -498,12 +498,12 @@ export interface StagedIdpSession {
 }
 
 interface StagedLoginState {
-  opts: DeviceLoginOpts & { dir: string; expectedPins?: IdpLoginPins };
+  opts: DeviceLoginOpts & { dir: string; expectedPins?: IdpLoginPins; migrationFrom?: string };
   session: IdpSession;
   claims: Record<string, unknown>;
   link: string | null;
   previousSub?: string;
-  baseline: string;
+  baseline?: string;
 }
 const stagedLogins = new WeakMap<StagedIdpSession, StagedLoginState>();
 
@@ -514,12 +514,14 @@ function assertLoginPins(claims: Record<string, unknown>, pins?: IdpLoginPins): 
     throw new Error("idp login: the approved account does not match the expected issuer, audience or subject; nothing was saved");
 }
 
-/** Approve and prove a fresh login without writing any local state. */
+/** Approve and prove a fresh login without writing any local state.
+ * `migrationFrom` fences the retained account used to validate a native migration. */
 export async function stageIdpSession(
-  opts: DeviceLoginOpts & { dir: string; expectedPins?: IdpLoginPins },
+  opts: DeviceLoginOpts & { dir: string; expectedPins?: IdpLoginPins; migrationFrom?: string },
 ): Promise<StagedIdpSession> {
   // Refuse damaged local state before asking the person to approve a sign-in.
-  const baseline = JSON.stringify(readCatalogPreparationState(opts.dir));
+  const initial = readCatalogPreparationState(opts.dir);
+  const baseline = opts.migrationFrom === undefined ? undefined : migrationDependency(initial, opts.migrationFrom);
   opts = { ...opts, ...(opts.expectedPins ? { expectedPins: { ...opts.expectedPins } } : {}) };
   if (opts.expectedPins?.idpUrl !== undefined && normalizeIdpUrl(opts.idpUrl) !== normalizeIdpUrl(opts.expectedPins.idpUrl))
     throw new Error("idp login: the provider URL does not match the expected login URL; nothing was saved");
@@ -585,10 +587,14 @@ export async function fetchStagedIdpSpaceCatalog(candidate: StagedIdpSession, va
 /** Persist a staged proof after the caller has checked its migration pins. Not a multi-file transaction. */
 export function commitStagedIdpSession(candidate: StagedIdpSession): { session: IdpSession; sub: string; previousSub?: string; label?: string } {
   const { opts, session, claims, previousSub, baseline, link } = stagedState(candidate);
+  // The persistence fence: a cancel that lands after approval, while the proof was in flight,
+  // must leave no session and no catalog entry on disk.
   throwIfCancelled(opts.signal);
   assertLoginPins(claims, opts.expectedPins);
-  if (JSON.stringify(readCatalogPreparationState(opts.dir)) !== baseline)
-    throw new Error("idp login: local sign-in or catalog state changed during approval; nothing was saved");
+  // Approval can take minutes. Recheck before writing if another process changed the cache.
+  const current = readCatalogPreparationState(opts.dir);
+  if (opts.migrationFrom !== undefined && migrationDependency(current, opts.migrationFrom) !== baseline)
+    throw new Error("idp login: the old account sign-in or catalog state changed during approval; nothing was saved; retry `cotal login --migrate-from " + normalizeIdpUrl(opts.migrationFrom) + "`");
   stagedLogins.delete(candidate);
   saveIdpSession(opts.dir, opts.idpUrl, session);
   saveCatalogAdvertisement(opts.dir, opts.idpUrl, claims.iss, candidate.sub, link);
@@ -751,6 +757,16 @@ function readCatalogPreparationState(dir: string) {
     });
   }
   return { sessions, file };
+}
+
+/** Only the retained account supplies migration authority. Refresh timing is not authority. */
+function migrationDependency(state: ReturnType<typeof readCatalogPreparationState>, from: string): string {
+  const idpUrl = normalizeIdpUrl(from);
+  const session = state.sessions[idpUrl];
+  const account = session?.sub ? state.file.accounts[ownerKey(idpUrl, session.sub)] : undefined;
+  const catalog = account ? { ...account } : undefined;
+  if (catalog) delete catalog.fetchedAt;
+  return JSON.stringify({ session, catalog });
 }
 
 const catalogPreparations = new Map<string, Promise<AuthSpaceCatalogResult[]>>();
