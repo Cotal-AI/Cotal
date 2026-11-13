@@ -23,7 +23,8 @@ import { App } from "../src/console/app.js";
 import { StatusBar } from "../src/console/ui/StatusBar.js";
 import { Detail, type DetailTarget } from "../src/console/ui/Detail.js";
 import { Topo, type TopoVariant } from "../src/console/ui/topo/Topo.js";
-import { MEMBERSHIP_STALE_MS } from "../src/console/ui/topo/model.js";
+import { MEMBERSHIP_STALE_MS, nodeLabel } from "../src/console/ui/topo/model.js";
+import { formatManagedRow } from "../src/console/commands.js";
 import { clipText, fmtTime, sidePaneSize, wrapFacts, wrapText } from "../src/console/ui/theme.js";
 import type { FeedEntry, MembershipView } from "@cotal-ai/workspace/view";
 
@@ -291,6 +292,10 @@ console.log("6. every topology lens labels a peer as the roster does");
       labels.every((l) => out.includes("○ " + l)), out.slice(0, 800));
     check(`...and never the bracketed role`, !out.includes("ops]x[y"), out.slice(0, 800));
   }
+  check("a topology node uses the id when the agent name is blank",
+    nodeLabel({ key: "a:local.blank", kind: "agent", name: "\n", id: "local.blank", lastTs: 0 }) === "local.blank");
+  check("a managed row uses the id when the seat name is blank",
+    formatManagedRow({ name: " ", id: "local.blank", agent: "claude", mode: "pty", status: "running", uptimeMs: 60_000, mesh: "idle", lifecycleUid: "u" }).startsWith("local.blank · claude"));
 }
 
 console.log("7. short detail overlays clip the tail without squeezing any rows");

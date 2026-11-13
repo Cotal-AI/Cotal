@@ -99,7 +99,8 @@ badge. The badge holds the first letter of the agent's name, plus its number whe
 one (`reviewer_2` reads R2), on one of eight colours chosen from the name. When two live agents land
 on one colour, the one later in name order takes the next free colour, so every browser draws the
 same colours for the same agents. When two live agents share a first letter, both badges take two
-letters (`lead` and `logic` read Le and Lo). An offline agent's badge turns grey and keeps its
+letters (`lead` and `logic` read Le and Lo). A name that is only whitespace is not used, so the
+letter and the colour come from the id. An offline agent's badge turns grey and keeps its
 letter. Below 26 pixels the badge is a colour dot with no letter. A message read from history has no
 verified sender, so its row gets no badge.
 

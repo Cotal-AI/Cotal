@@ -23,6 +23,7 @@ import { Prompt } from "./ui/Prompt.js";
 import { Detail, type DetailTarget } from "./ui/Detail.js";
 import { runCommand, type CommandCtx } from "./commands.js";
 import { offlineRecipientNotice } from "@cotal-ai/workspace";
+import { composeName, composePrompt } from "./compose-label.js";
 import { extensionNames } from "../ext-loader.js";
 import { spawnPersona } from "../lib/spawn-defaults.js";
 import { launchAgent } from "./launch.js";
@@ -328,11 +329,9 @@ export function App({
   );
 
   const composeLabel = (c: ComposeTarget): string =>
-    c.kind === "channel"
-      ? "→ #" + c.channel
-      : c.kind === "dm"
-        ? "→ @" + c.toName
-        : "↩ " + c.entry.from.name + (c.entry.delivery === "multicast" && c.entry.channel ? " #" + c.entry.channel : "");
+    c.kind === "reply"
+      ? composePrompt({ kind: "reply", fromName: c.entry.from.name, fromId: c.entry.from.id, delivery: c.entry.delivery, channel: c.entry.channel })
+      : composePrompt(c);
 
   // First time the operator sends anything, put the operator on the roster: start the presence
   // peer (root.tsx's makeParticipant, the observer's own card), so agents see the operator and
@@ -422,8 +421,10 @@ export function App({
     const ok = (label: string) => () => setNotice(label);
     const fail = (e: unknown) => setNotice("send: " + (e as Error).message);
     // A DM to a peer the roster shows offline at send also says what happens to it.
-    const dmLabel = (lead: string, id: string, name: string) =>
-      ep.getRoster().find((p) => p.card.id === id)?.status === "offline" ? `${lead}${name}  ${offlineRecipientNotice(name)}` : lead + name;
+    const dmLabel = (lead: string, id: string, name: string) => {
+      const shown = composeName(name, id);
+      return ep.getRoster().find((p) => p.card.id === id)?.status === "offline" ? `${lead}${shown}  ${offlineRecipientNotice(shown)}` : lead + shown;
+    };
     void ensureParticipant().then((ready) => {
       if (!ready) return;
       if (c.kind === "channel")
@@ -435,7 +436,7 @@ export function App({
         const send = channel
           ? ep.multicast(text, { channel, replyTo: e.id, mentions: mentionsIn(text) })
           : ep.unicast(e.from.id, text, { replyTo: e.id });
-        void send.then(ok(channel ? "↩ " + e.from.name : dmLabel("↩ ", e.from.id, e.from.name))).catch(fail);
+        void send.then(ok(channel ? "↩ " + composeName(e.from.name, e.from.id) : dmLabel("↩ ", e.from.id, e.from.name))).catch(fail);
       }
     }, fail); // a participant start that throws before its own catch must not drop the message silently
   };

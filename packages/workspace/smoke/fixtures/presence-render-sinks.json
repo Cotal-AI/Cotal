@@ -45,14 +45,14 @@
     {
       "path": "packages/core/src/resolve.ts",
       "kind": "derived-output",
-      "anchor": "`\"${target}\" is ambiguous - ${candidates.length} peers share that name: ` +\n        candidates.map((c) => `${c.name} (${c.id}, ${c.status})`).join(\"; \") +\n        `. Re-send to the exact instance id.`",
+      "anchor": "`\"${target}\" is ambiguous - ${candidates.length} peers share that name: ` +\n        candidates.map((c) => `${shownPeerName(c.name, c.id)} (${c.id}, ${c.status})`).join(\"; \") +\n        `. Re-send to the exact instance id.`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
       "path": "packages/core/src/resolve.ts",
       "kind": "derived-output",
-      "anchor": "`${c.name} (${c.id}, ${c.status})`",
+      "anchor": "`${shownPeerName(c.name, c.id)} (${c.id}, ${c.status})`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -115,7 +115,7 @@
     {
       "path": "extensions/connector-core/src/orientation.ts",
       "kind": "derived-output",
-      "anchor": "`${peerLabel(p.card)} (${honestStatus(p.status)})`",
+      "anchor": "`${peerLabel({ name, ...(p.card.role ? { role: p.card.role } : {}) })} (${honestStatus(p.status)})`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -216,7 +216,7 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`  • ${peerLabel(c)} (${c.status}) — id: ${c.id}`",
+      "anchor": "`  • ${c.name.trim() ? peerLabel(c) : c.id} (${c.status}) — id: ${c.id}`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
@@ -489,7 +489,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "`  ${cand.name} (${cand.status})  ${cand.id}`",
+      "anchor": "`  ${joinPeerLabel({ name: cand.name, id: cand.id })} (${cand.status})  ${cand.id}`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
@@ -2202,14 +2202,14 @@
     {
       "path": "implementations/web/client/src/lib/identity.ts",
       "kind": "status-token",
-      "anchor": " rows) if (r.status === \"offline\") out.set(r.id, slotOf(r",
+      "anchor": " rows) if (r.status === \"offline\") out.set(r.id, slotOf(b",
       "class": "non-render/control",
       "rationale": "Data shaping: only live rows probe for a free badge colour slot, offline rows keep their hashed slot; nothing is rendered from the status."
     },
     {
       "path": "implementations/web/client/src/lib/identity.ts",
       "kind": "status-token",
-      "anchor": " rows) if (r.status !== \"offline\") live.set(initials(r.na",
+      "anchor": " rows) if (r.status !== \"offline\") {\n    const one = init",
       "class": "non-render/control",
       "rationale": "Data shaping: only live rows clash on badge letters, so offline rows keep one letter; nothing is rendered from the status itself."
     },
@@ -3970,7 +3970,7 @@
     {
       "path": "implementations/cli/src/console/commands.ts",
       "kind": "derived-output",
-      "anchor": "`${peerLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${meshWord(a)} · up ${Math.round(a.uptimeMs / 60000)}m`",
+      "anchor": "`${consoleLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${meshWord(a)} · up ${Math.round(a.uptimeMs / 60000)}m`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -6247,7 +6247,7 @@
     {
       "path": "implementations/cli/src/watch-data.ts",
       "kind": "status-token",
-      "anchor": ".status === \"waiting\" ? \"waiting\" : \"hint\" }, activity: r",
+      "anchor": ".status === \"waiting\" ? \"waiting\" : \"hint\" }, activity: s",
       "class": "non-render/control",
       "rationale": "Watch roster table: \"waiting\" is the state cell's color tone name, not rendered text."
     },
@@ -6955,7 +6955,7 @@
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "{(pr) => (\n            <box flexShrink={0} marginBottom={1}>\n              <Show when={pr().status === \"waiting\"}>\n                <text fg={theme.text.feedback.warning.base}>{`◐ ${pr().card.name} is waiting`}</text>\n                <text fg={theme.text.base}>{pr().activity ? `“${pr().activity}”` : \"It reported no question.\"}</text>\n              </Show>\n              <Show when={layout().kind === \"two\" && !composing()}>\n                <For each={overview(pr(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.muted} />}</For>\n              </Show>\n            </box>\n          )}",
+      "anchor": "{(pr) => (\n            <box flexShrink={0} marginBottom={1}>\n              <Show when={pr().status === \"waiting\"}>\n                <text fg={theme.text.feedback.warning.base}>{`◐ ${tuiName(pr().card.name, pr().card.id)} is waiting`}</text>\n                <text fg={theme.text.base}>{pr().activity ? `“${pr().activity}”` : \"It reported no question.\"}</text>\n              </Show>\n              <Show when={layout().kind === \"two\" && !composing()}>\n                <For each={overview(pr(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.muted} />}</For>\n              </Show>\n            </box>\n          )}",
       "class": "honest-text",
       "rationale": "App peer header: a waiting agent's own question, then the overview fields whose status names working progress as unknown.",
       "proof": {
@@ -7195,7 +7195,7 @@
     {
       "path": "implementations/tui/src/composer.tsx",
       "kind": "derived-output",
-      "anchor": "`answering ${peer.card.name}${ends()}`",
+      "anchor": "`answering ${tuiName(peer.card.name, peer.card.id)}${ends()}`",
       "class": "honest-text",
       "rationale": "App input box line: names the waiting agent the message answers; it makes no progress claim, and the agent's status shows only in the overview.",
       "proof": {

@@ -391,8 +391,12 @@ export class MeshView extends EventEmitter {
     };
   }
 
-  // Stable identity across snapshots; reads the live byId map.
-  nameOf = (id: string): string => this.byId.get(id) ?? id.slice(0, 8);
+  // Stable identity across snapshots; reads the live byId map. A blank roster name is not a label.
+  nameOf = (id: string): string => {
+    const name = this.byId.get(id);
+    if (name === undefined) return id.slice(0, 8);
+    return name.trim() ? name : id;
+  };
 
   // ---- sources -------------------------------------------------------------
 

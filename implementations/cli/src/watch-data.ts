@@ -19,6 +19,11 @@ export function observedText(text: string): { text: string; omittedCodeUnits: nu
   return { text: shown, omittedCodeUnits: text.length - shown.length };
 }
 
+/** A name or activity that is safe to show. Blank text prints as nothing, or as a line break. */
+function shown(value: string | undefined, fallback: string): string {
+  return value !== undefined && value.trim() ? value : fallback;
+}
+
 /** A line's 24-hour local time. */
 function feedTime(ts: number | string): string {
   const date = new Date(ts);
@@ -44,7 +49,7 @@ export function wholeTextRead(entry: { channel?: string; events?: boolean; deliv
  *  cut carries that count as `omittedCodeUnits`. */
 export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }): string {
   const time = feedTime(entry.ts);
-  const sender = entry.from.name || entry.from.id;
+  const sender = shown(entry.from.name, entry.from.id);
   const destination = entry.channel ? `#${entry.channel}` : entry.toService ? `role ${entry.toService}` : `DM to ${entry.toIds?.join(", ") || "not attributed"}`;
   const body = observedText(entry.text);
   if (entry.events) {
@@ -65,7 +70,7 @@ export function watchReport(snapshot: MeshSnapshot, filter: WatchFilter): Report
     const rows = filter === "waiting" ? snapshot.signals.waiting : [...snapshot.agents, ...snapshot.endpoints];
     return { sections: [{ title: filter === "waiting" ? "Reported waiting" : "Participant roster", blocks: [rows.length ? {
       kind: "table", columns: [{ key: "name", label: filter === "roster" ? "Participant" : "Agent" }, ...(filter === "roster" ? [{ key: "kind", label: "Kind" }] : []), { key: "role", label: "Role" }, { key: "state", label: "Reported state" }, { key: "activity", label: "Reported activity" }, { key: "id", label: "Identity" }],
-      rows: rows.map((row) => ({ name: row.card.name, kind: row.card.kind, role: row.card.role ?? "none", state: { text: row.status === "working" ? "working · progress unknown" : row.status, tone: row.status === "waiting" ? "waiting" : "hint" }, activity: row.activity || "not reported", id: row.card.id })),
+      rows: rows.map((row) => ({ name: shown(row.card.name, row.card.id), kind: row.card.kind, role: row.card.role ?? "none", state: { text: row.status === "working" ? "working · progress unknown" : row.status, tone: row.status === "waiting" ? "waiting" : "hint" }, activity: shown(row.activity, "not reported"), id: row.card.id })),
     } : { kind: "lines", lines: [filter === "waiting" ? "No waiting report in this observer snapshot." : "No participants in this observer snapshot."] },
     { kind: "lines", lines: [{ text: filter === "waiting" ? "Presence carries heartbeat time, not how long a task has waited. No blocked-duration estimate is made." : hint, tone: "hint" }] }] }] };
   }
@@ -75,10 +80,10 @@ export function watchReport(snapshot: MeshSnapshot, filter: WatchFilter): Report
   } : { kind: "lines", lines: ["No channels in the current observer model."] }, { kind: "lines", lines: [{ text: "Counts come from MeshView's broker reads and this observer's arrivals. Retention may cap a count; arrivals are not a complete history count.", tone: "hint" }] }] }] };
   if (filter === "topology") {
     const feed = snapshot.membership.snapshot;
-    const names = new Map([...snapshot.agents, ...snapshot.endpoints].map((row) => [row.card.id, row.card.name]));
+    const names = new Map([...snapshot.agents, ...snapshot.endpoints].map((row) => [row.card.id, shown(row.card.name, "")]));
     return { sections: [{ title: "Observed subscription topology", blocks: [
       { kind: "fields", rows: [["Membership poll", feed?.asOf === undefined ? "not established" : new Date(feed.asOf).toISOString()], ["Latest membership read", snapshot.membership.unreadable ? "failed; last snapshot retained" : feed?.asOf === undefined ? "not established" : "snapshot available"]] },
-      feed?.members.length ? { kind: "table", columns: [{ key: "name", label: "Participant" }, { key: "id", label: "Identity" }, { key: "live", label: "Observed live patterns" }, { key: "durable", label: "Durable channels" }], rows: feed.members.map((row) => ({ name: names.get(row.id) ?? "name not observed", id: row.id, live: row.live.join(", ") || "none recorded", durable: row.durable.join(", ") || "none recorded" })) } : { kind: "lines", lines: [feed?.asOf === undefined ? "Membership is not established; an empty graph cannot be inferred." : "No member rows in the last successful membership snapshot."] },
+      feed?.members.length ? { kind: "table", columns: [{ key: "name", label: "Participant" }, { key: "id", label: "Identity" }, { key: "live", label: "Observed live patterns" }, { key: "durable", label: "Durable channels" }], rows: feed.members.map((row) => ({ name: names.get(row.id) || "name not observed", id: row.id, live: row.live.join(", ") || "none recorded", durable: row.durable.join(", ") || "none recorded" })) } : { kind: "lines", lines: [feed?.asOf === undefined ? "Membership is not established; an empty graph cannot be inferred." : "No member rows in the last successful membership snapshot."] },
       { kind: "lines", lines: [{ text: "Broker-derived subscription patterns and durable membership, not authorization grants, task dependencies or agent success. Wildcards remain patterns rather than invented edges.", tone: "hint" }] },
     ] }] };
   }

@@ -19,7 +19,9 @@ cotal endpoints [--space <s>] [--server <url>] [--creds <path>]
 Lists the mesh presence roster: agents, the manager, and any other protocol endpoint, with each
 endpoint's role, kind, status, and current activity. Unlike `ps`, this is a read-only presence view;
 it is not limited to child processes owned by the manager. The Participant column holds the name
-that `endpoint describe` takes, and the role has its own column.
+that `endpoint describe` takes, and the role has its own column. A name that is only whitespace is
+shown as the id, and a role or activity that is only whitespace is shown as none or not reported.
+`result.items` keeps the name, role, and activity from the presence record.
 
 
 ## who [#who]
@@ -36,7 +38,8 @@ cotal who [--waiting] [--all] [--json | --plain] [--space <s>] [--server <url>] 
 | `--plain` | off | The same report without color or marks |
 
 Reads the live presence roster of the selected space. Each row has the participant's name, role, kind, status and condition,
-activity, attention mode, harness, model and host, as its presence reports them. A name that two or
+activity, attention mode, harness, model and host, as its presence reports them. A name that is only
+whitespace is shown as the participant id. `result.items[].name` stays the name on the presence record. A name that two or
 more live participants share is not an address, so each of those rows appends its instance id in
 brackets. A lone offline participant beside a live one of the same name does not, because a direct
 message by that name reaches the live one. `cotal_roster` marks the same rows, leaving out the

@@ -62,12 +62,13 @@ function endpointsView(items: readonly Row[], space: string): Report {
       kind: "table",
       columns: [{ key: "name", label: "Participant" }, { key: "role", label: "Role" }, { key: "kind", label: "Kind" }, { key: "state", label: "Reported state" }, { key: "activity", label: "Activity" }, { key: "id", label: "Identity" }],
       rows: items.map((item) => ({
-        // The bare name, which `endpoint describe` takes; the role has its own column.
-        name: { text: peerLabel({ name: item.name }), tone: "command" },
-        role: item.role === null ? "none" : peerLabel({ name: item.role }),
+        // The bare name, which `endpoint describe` takes; the role has its own column. A blank
+        // name or role is not a label.
+        name: { text: item.name.trim() ? peerLabel({ name: item.name }) : item.id, tone: "command" },
+        role: item.role !== null && item.role.trim() ? peerLabel({ name: item.role }) : "none",
         kind: item.kind ?? "not reported",
         state: { text: `${item.reportedStatus === "working" ? "working · progress unknown" : item.reportedStatus}${factsText(item)}`, tone: item.reportedStatus === "waiting" ? "waiting" : "hint" },
-        activity: item.activity ? `${presenceText(item.activity)}${activityAge(stampsOf(item))}` : "not reported",
+        activity: item.activity && item.activity.trim() ? `${presenceText(item.activity)}${activityAge(stampsOf(item))}` : "not reported",
         id: item.id,
       })),
     } : { kind: "lines", lines: ["No participants in this presence snapshot."] },
