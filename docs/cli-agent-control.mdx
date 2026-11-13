@@ -366,7 +366,7 @@ Each reconnect also hands the abandoned session back to the manager, over the fi
 carry the message, so an attach that flaps does not eat the manager's session slots one outage at a
 time. If that message never gets a link, the attach says so when it ends. The live-session ceiling
 defaults to 64 concurrent sessions (`--max-sessions`); the browser console opens one session per
-pane, so a dashboard over a large mesh should size for agents × panes. Hitting the ceiling refuses
+pane, so a dashboard over a large mesh should size for agents × panes. A pane whose agent name is missing or only whitespace is labelled with that agent's id. Hitting the ceiling refuses
 before a credential is minted and names `--max-sessions`.
 
 

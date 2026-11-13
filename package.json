@@ -795,6 +795,7 @@
     "smoke:lease-loss-keeps-serving": "tsx implementations/manager/smoke/lease-loss-keeps-serving.smoke.ts",
     "smoke:serve-stop-outage": "tsx implementations/manager/smoke/serve-stop-outage.smoke.ts",
     "smoke:preserve-state": "tsx implementations/manager/smoke/preserve-state.smoke.ts",
+    "smoke:manager-console-label": "tsx implementations/manager/smoke/console-blank-label.smoke.ts",
     "smoke:manager-status-observation": "tsx implementations/manager/smoke/status-observation.smoke.ts",
     "smoke:manager-launch-admission": "tsx implementations/manager/smoke/launch-admission.smoke.ts",
     "smoke:maintenance-controller": "tsx packages/workspace/smoke/maintenance-controller.smoke.ts",
