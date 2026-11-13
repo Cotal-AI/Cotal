@@ -897,8 +897,8 @@ el("open-approval").addEventListener("click", () => { if (approval) void invoke(
 function beginSignIn(): void {
   if (busy) return;
   editing = true;
-  const provider = providers.get(selectedSpace()) ?? computerAccount?.idpUrl ?? COTAL_CLOUD_IDP;
-  el<HTMLInputElement>("provider").value = provider;
+  const provider = providers.get(selectedSpace()) ?? (!customHost && !linked ? computerAccount?.idpUrl : undefined);
+  if (provider) el<HTMLInputElement>("provider").value = provider;
   customHost = !isCotalCloudIdp(el<HTMLInputElement>("provider").value);
   notice(""); clearDetails(); progress = progressNames.map(() => "waiting"); showStage("sign-in", true);
 }

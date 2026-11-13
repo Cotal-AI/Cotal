@@ -259,6 +259,37 @@ test("legacy computer account without a selected space retains its provider on s
   } finally { a.dom.window.close(); }
 });
 
+for (const source of ["typed host", "onboarding link", "typed host with saved legacy account"] as const) {
+  test(`denied sign-in retry preserves ${source}`, async () => {
+    const provider = "https://example.com/api/auth";
+    const a = await app({
+      installed: true, count: 0, loginReason: "denied",
+      ...(source === "onboarding link" ? { link: `cotal://connect?idp=${encodeURIComponent(provider)}` } : {}),
+      ...(source === "typed host with saved legacy account" ? { account: { idpUrl: "https://cloud.cotal.ai/api/auth", sub: "legacy-user", mode: "sign-in-required", hostSupport: "supported", spaces: [] } } : {}),
+    });
+    try {
+      if (source === "typed host with saved legacy account") {
+        await a.click("sign-in-again"); await a.login();
+        await a.click("retry-login");
+      }
+      if (source !== "onboarding link") {
+        await a.click("other-host");
+        a.node<HTMLInputElement>("provider").value = provider;
+      }
+      await a.click("login"); await a.login();
+      assert.equal(a.node("recovery-panel").hidden, false);
+      assert.match(a.node("refusal-detail").textContent ?? "", /denied/);
+      const loginsBeforeRetry = a.calls.filter(r => r.op === "login").length;
+      await a.click("recover");
+      const logins = a.calls.filter(r => r.op === "login");
+      assert.equal(logins.length, loginsBeforeRetry + 1);
+      assert.deepEqual(logins.slice(-2).map(r => r.idp), [provider, provider]);
+      assert.equal(a.node<HTMLInputElement>("provider").value, provider);
+      await a.login();
+    } finally { a.dom.window.close(); }
+  });
+}
+
 for (const provider of [COTAL_CLOUD_IDP, "https://cloud.cotal.ai/api/auth"]) {
   test(`Cloud retry sign-in keeps the custom host form hidden for ${provider}`, async () => {
     const a = await app({ installed: true, provider });
