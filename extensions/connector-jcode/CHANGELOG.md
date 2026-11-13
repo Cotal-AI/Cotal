@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.163.4
+
+### Patch Changes
+
+- d127034: A jcode seat that arms an optional event plane reports `ai.cotal.events: on` after it removes `COTAL_EVENTS` from the process environment. The card follows the decision the connector already made.
+
 ## 0.163.3
 
 No changes in this release.
