@@ -30,7 +30,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { open, readFile, unlink, type FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
-import { ensureDirNoSymlink } from "@cotal-ai/core";
+import { ensureDirNoSymlink, eventPrincipalLocation } from "@cotal-ai/core";
+export { eventPrincipalLocation } from "@cotal-ai/core";
 import { openExclusiveNoFollow } from "./event-wal.js";
 
 /**
@@ -121,16 +122,6 @@ export function eventWalLocation(opts: {
   const principal = eventPrincipalLocation(opts);
   const threadDir = join(principal.principalDir, h(opts.threadId));
   return { ...principal, threadDir, walPath: join(threadDir, "wal.json") };
-}
-
-/** Resolve the shared state before a native thread exists. Does not touch disk. */
-export function eventPrincipalLocation(opts: {
-  workspaceRoot: string;
-  space: string;
-  principal: string;
-}): Pick<EventWalLocation, "principalDir" | "lockPath" | "subjectPath"> {
-  const principalDir = join(opts.workspaceRoot, ".cotal", "events", h(opts.space), h(opts.principal));
-  return { principalDir, lockPath: join(principalDir, ".lock"), subjectPath: join(principalDir, "subject.json") };
 }
 
 /** Every refusal on the lock path is one of these, so a caller never mistakes it for an I/O blip. */

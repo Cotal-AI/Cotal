@@ -188,8 +188,14 @@ terminal and never accepted again: a `succeeded` terminal names the agent, so it
 acceptance, and any other outcome refuses it `failed-precondition` with that terminal attached.
 
 The name is the one actually allocated: a persona-derived collision is auto-numbered
-(`reviewer`, then `reviewer_2`), while a hard-pinned `--name` that collides with a live
-agent is refused at accept, before anything is minted. Auto-numbering never hands out a numbered
+(`reviewer`, then `reviewer_2`). On a user-auth mesh with events enabled, numbering also skips a
+principal whose retained transcript this state root cannot continue. The manager uses the same
+acknowledged-frontier and retained-count check as the connector. A hard-pinned `--name` refuses
+instead of changing names. An unreadable local frontier or retained count refuses the spawn before
+launch rather than treating the name as free. On an older host that denies CHAT `STREAM.INFO`,
+the manager logs that permission and launches unchanged; the agent's startup check remains the
+authority. The prelaunch check does not inspect delegated runtimes' destination roots.
+A live occupant also refuses a pinned name before anything is minted. Auto-numbering never hands out a numbered
 name it has already issued in that manager process, even after the agent holding it is gone, so
 a collision takes the next number. Only numbering consults that history: a hard-pinned `--name`,
 or a persona whose own name is a numbered string, takes that name whenever it is free, and

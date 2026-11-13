@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { drainAndClose, requestSafeReconnect } from "@cotal-ai/core";
+import { checkEventStartup, EventStateConflictError, isPermissionDenied, chatStream, drainAndClose, requestSafeReconnect } from "@cotal-ai/core";
 import { hostname, homedir } from "node:os";
 import { listDirectory } from "./list-dir.js";
 import { credsAuthenticator, RequestError } from "@nats-io/transport-node";
@@ -1412,6 +1412,8 @@ export interface SpawnHooks {
   onOnce?: (task: { seat: { name: string; owner: string; actor: string; uid: string }; prompt: string; spawner: string; deadlineMs: number | undefined; readinessDeadlineMs: number; retire?: string }) => Promise<{ ref: GoalRef; deadlineAt?: number }>;
 }
 
+class LegacyEventCountPermissionError extends Error {}
+
 const TURN_PARTICIPATION_TTL_MS = 5 * 60_000;
 
 /** One native personal lifecycle that may receive workflow turns through this manager. */
@@ -2272,10 +2274,10 @@ export class Manager {
 
   /** The CHAT stream frontier at a preservation cut (issue #545), read through whichever local
    *  authority this mesh mode holds: open mode's own endpoint already has `$JS.API.STREAM.INFO`
-   *  on the CHAT stream ({@link supervisorPermissions} grants it there); static/user mode's own
-   *  supervisor credential does NOT (it holds that grant only on the manager/presence/delivery
-   *  buckets), so those modes borrow the same ephemeral `provisioner` profile the manager already
-   *  mints per spawn, which DOES hold it under space auth. A remote-authority manager (`this.auth`
+   *  on the CHAT stream. Local and remote supervisor credentials also hold this metadata grant
+   *  for transcript startup checks, but this preservation path retains its existing local-authority
+   *  boundary. Static/user modes borrow the ephemeral `provisioner` profile the manager already
+   *  mints per spawn. A remote-authority manager (`this.auth`
    *  undefined in static/user mode) has no local space authority to mint that provisioner with, so
    *  it prints one line and returns no floor — the inventory then carries none and resumed seats
    *  behave exactly as before this fix, not a silent partial degrade. */
@@ -6561,13 +6563,12 @@ export class Manager {
    *  ({@link issuedNumberedNames}), even after its holder retired. The requested base is exempt
    *  from that history: it is the persona's own name, which stays reusable even when it once came
    *  out of another persona's numbering. */
-  private uniqueName(base: string): string {
+  private uniqueName(base: string, unavailable: ReadonlySet<string> = new Set()): string {
     const live = this.liveRosterNames();
     // The cap belongs to user mode alone: only there is the numbered name the actor. Static and open
     // mode key the actor on the minted nkey, so a numbered name there has no length to fit.
-    const name = firstFreeName(base, (n) => this.nameInUse(n, live) || (n !== base && this.issuedNumberedNames.has(n)),
+    const name = firstFreeName(base, (n) => unavailable.has(n) || this.nameInUse(n, live) || (n !== base && this.issuedNumberedNames.has(n)),
       this.userMode ? { actorBound: true } : undefined);
-    if (name !== base) this.issuedNumberedNames.add(name);
     return name;
   }
 
@@ -7354,9 +7355,8 @@ export class Manager {
     let configPath = persona.configPath;
     const where = configPath ?? `inline persona "${ref}"`;
 
-    // Materialize the requested connector up front — the ONE async step in the spawn path (a lazy
-    // `cotal ext` manifest import on the published binary). It runs BEFORE the capacity/reserve span
-    // below so that span stays fully SYNCHRONOUS and atomic. On the manifest binary this also honors a
+    // Materialize the requested connector before the capacity/reserve span so its lazy import
+    // cannot interleave that synchronous allocation. On the manifest binary this also honors a
     // live `cotal ext remove`: a removed connector is rejected here even if an earlier spawn already
     // imported it. A broken/missing connector fails loud here with a clear name + install hint.
     let connector: Connector;
@@ -7722,25 +7722,59 @@ export class Manager {
     // base name (no pin) keeps uniqueName's collision numbering, so multi-peer `spawn reviewer` twice
     // still yields reviewer + reviewer_2. The alias-reuse gate above is orthogonal and already fired.
     const hardPinned = opts.identity !== undefined || opts.resolved !== undefined;
+    const owner = this.launchOwner(opts, spawner);
+    const unavailable = new Set<string>();
     let name: string;
-    if (hardPinned) {
-      // The collision check consults THE SAME liveness source uniqueName uses ({@link nameInUse}:
-      // this manager's agents/reserved/retiring PLUS the roster-live set) - a hard-pinned name
-      // colliding with ANY live incarnation (managed, unmanaged foreground/connector, or another
-      // manager's agent) refuses cleanly at accept, rather than minting the collision and black-
-      // holing on the broker/auth refusal (a pinned name live under another manager MUST refuse).
-      if (this.nameInUse(identityName))
-        return { ok: false, code: "already-exists", error: `the name "${identityName}" is hard-pinned (${opts.resolved ? "manifest-declared" : "--name/identity override"}) but is already held by a live incarnation (managed here, an unmanaged foreground/connector session, or another manager's agent); a pinned same-name collision refuses at accept - pick another name or despawn the existing one` };
-      name = identityName;
-    } else {
-      // Numbering appends `_<n>` and stops at the actor bound, so a base whose every fitting
-      // candidate is taken throws rather than naming an actor the exchange refuses. That refusal
-      // lands here, before the reservation below, so the spawn starts nothing.
-      try {
-        name = this.uniqueName(identityName);
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
+    for (;;) {
+      if (hardPinned) {
+        if (this.nameInUse(identityName))
+          return { ok: false, code: "already-exists", error: `the name "${identityName}" is hard-pinned (${opts.resolved ? "manifest-declared" : "--name/identity override"}) but is already held by a live incarnation (managed here, an unmanaged foreground/connector session, or another manager's agent); a pinned same-name collision refuses at accept - pick another name or despawn the existing one` };
+        name = identityName;
+      } else {
+        try {
+          name = this.uniqueName(identityName, unavailable);
+        } catch (e) {
+          return { ok: false, error: rejectionText(e) };
+        }
       }
+      // In user mode the name is the principal's actor. A fresh nkey in static/open mode
+      // cannot collide with an earlier transcript. Use the connector's own startup proof.
+      const eventOwner = opts.owner ?? (spawner === undefined ? undefined : parsePrincipalKey(spawner)?.owner);
+      if (events && this.userMode && !runtime.spawnDelegated && eventOwner?.startsWith("u_")) {
+        try {
+          await checkEventStartup({
+            workspaceRoot: this.workspaceRoot,
+            space: this.space,
+            principal: { owner: eventOwner, actor: name },
+            retainedMessages: async () => {
+              try {
+                return (await this.ep.chatRetention()).senders;
+              } catch (e) {
+                // Older hosts do not issue this metadata grant. Do not infer that the name is
+                // free or renumber it: preserve the requested candidate and let the launched
+                // agent's existing startup check decide. Every other read failure stays loud.
+                if (!isPermissionDenied(e)) throw e;
+                console.error(`! event startup name check: missing $JS.API.STREAM.INFO.${chatStream(this.space)} permission; launching "${name}" unchanged so the agent checks its transcript state`);
+                throw new LegacyEventCountPermissionError();
+              }
+            },
+          });
+        } catch (e) {
+          if (e instanceof EventStateConflictError && !hardPinned) {
+            unavailable.add(name);
+            continue;
+          }
+          if (!(e instanceof LegacyEventCountPermissionError))
+            return { ok: false, code: "failed-precondition", error: `cannot check event startup for ${eventOwner}.${name}: ${rejectionText(e)}` };
+        }
+        // Another spawn may have reserved the candidate while the disk/broker proof awaited.
+        // Recheck in the same synchronous window as the cap and reservation below.
+        if (this.nameInUse(name) || (!hardPinned && name !== identityName && this.issuedNumberedNames.has(name))) {
+          if (!hardPinned) continue;
+          return { ok: false, code: "already-exists", error: `the hard-pinned name "${name}" became occupied while checking event startup; pick another name` };
+        }
+      }
+      break;
     }
     // The `chat_` prefix belongs to static chat sessions, whose aliases only `chat-session-open`
     // draws. Checked once the name is fixed by either branch above, so a persona name, a numbered
@@ -7753,7 +7787,6 @@ export class Manager {
     // before any of the others reserved, and they all pass. Nothing between here and the reserve
     // awaits. It refuses BEFORE `onEffect`, so the launch states `not-executed` and leaves no
     // name, no mint and no footprint behind.
-    const owner = this.launchOwner(opts, spawner);
     const overCap = this.seatCapRefusal(owner);
     if (overCap) return { ok: false, code: overCap.code, error: overCap.message, ...(overCap.details ? { details: overCap.details } : {}) };
     // Set once the agent's footprint (durables + creds, or the user-mode grant + secret files)
@@ -7775,6 +7808,7 @@ export class Manager {
     // Taken right before the try so its finally is the only release; a refusal belongs above the
     // allocation, where there is no name to give back.
     hooks?.onEffect?.();
+    if (!hardPinned && name !== identityName) this.issuedNumberedNames.add(name);
     this.reserved.set(name, owner);
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
