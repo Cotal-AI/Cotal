@@ -64,7 +64,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent, spaceSegment } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent, setAdoptedCurrent, readCurrentSelection, spaceSegment } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 await import("../src/lib/broker-service.js");
@@ -254,8 +254,8 @@ setCurrent("keep");
   check("a port that takes no connection says so, with the port check as its remedy",
     (dead.env?.error?.message ?? "").endsWith(`nothing accepted a connection at 127.0.0.1:${deadPort}`) && dead.env?.error?.remedy === `check that the mesh is up and listening on port ${deadPort} of 127.0.0.1, or pass --server with the port it listens on; pass --force to add "dead1" unchecked, as for a space that is down right now`, shown(dead));
   const otherScheme = await json(["space", "add", "open", "--server", `tls://127.0.0.1:${brokerPort}`, "--mode", "open", "--root", root]);
-  check("a broker that answers under another scheme is named, with that address as the Next",
-    refused(otherScheme, 2, "TARGET_UNAVAILABLE") && otherScheme.env?.error?.message === `no broker answered at tls://127.0.0.1:${brokerPort}, but one answers at ${LIVE}, without TLS` && otherScheme.env.error.remedy === `run it again with --server ${LIVE}; pass --force to add "open" unchecked, as for a space that is down right now`, shown(otherScheme));
+  check("a TLS-required address refuses a plaintext listener without downgrading",
+    refused(otherScheme, 2, "DEPENDENCY_UNAVAILABLE") && otherScheme.env?.error?.message === `the listener at tls://127.0.0.1:${brokerPort} does not offer the required TLS - check the address and configure TLS on the broker`, shown(otherScheme));
   const unserved = await json(["space", "add", "open", "--server", LIVE, "--mode", "open", "--root", root]);
   check("an open name the broker does not serve is TARGET_NOT_FOUND, exit 2, naming the spaces it serves",
     refused(unserved, 2, "TARGET_NOT_FOUND") && unserved.env?.error?.message === `the broker at ${LIVE} serves no space named "open"; it serves ${SERVED.map((space) => `"${space}"`).join(", ")}` && /--force/.test(unserved.env?.error?.remedy ?? ""), shown(unserved));
@@ -591,7 +591,7 @@ if (process.platform === "linux") {
   {
     const selected = getCurrent();
     recordMesh({ space: "awaysel", server: DEAD, root: home, mode: "open", origin: "manual", ts });
-    setCurrent("awaysel");
+    setAdoptedCurrent("awaysel");
     const read = await json(["ps"], awayRoot), text = await run(["who"], {}, awayRoot);
     if (selected === undefined) clearCurrent(); else setCurrent(selected);
     removeMesh("awaysel");
@@ -600,9 +600,14 @@ if (process.platform === "linux") {
   }
   // A space this home prepared at the root does not hide the other home.
   recordPreparedSpace({ space: "away", root: awayRoot, ts });
+  const previousSelection = readCurrentSelection();
+  clearCurrent();
   const status = await json(["status"], awayRoot);
+  if (previousSelection) {
+    if (previousSelection.source === "adopted") setAdoptedCurrent(previousSelection.space); else setCurrent(previousSelection.space);
+  }
   check("status there names the other home even when this home prepared a space at the root",
-    status.status === 0 && status.env?.result?.selected?.code === "not-started" && /member records are missing/.test(status.env.result.selected.message ?? ""), shown(status));
+    status.status === 4 && status.env?.error?.code === "OPERATION_PARTIAL" && status.env?.warnings?.some((warning: { code: string }) => warning.code === "FOLDER_BROKER_UNAVAILABLE") && status.env?.result?.selected?.code === "not-started" && /member records are missing/.test(status.env.result.selected.message ?? ""), { status: status.status, selected: status.env?.result?.selected, warnings: status.env?.warnings, error: status.env?.error });
   removePreparedSpace("away");
   await new Promise((done) => { awayManager.once("exit", done); awayManager.kill("SIGKILL"); });
   rmSync(awayRecord);
@@ -669,13 +674,13 @@ if (process.platform === "linux") {
   const sandbox = recordSmokeSandbox({ root: first, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, first);
   check("with nothing selected, up selects the space it started and says so",
-    up.status === 0 && getCurrent() === "selfirst" && up.stdout.includes(`selected "selfirst": a command without --space targets it, except in another space's project folder`), shown(up));
+    up.status === 0 && getCurrent() === "selfirst" && up.stdout.includes(`automatically selected "selfirst"`), shown(up));
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: first, env: runEnv });
   await run(["down", "--yes"], {}, first);
   const secondSandbox = recordSmokeSandbox({ root: second, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
   const kept = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, second);
   check("with another space selected, up keeps it and says it stays selected outside this folder",
-    kept.status === 0 && getCurrent() === "selfirst" && kept.stdout.includes(`"selsecond" up; "selfirst" stays selected for commands run outside this folder - \`cotal use selsecond\` to switch`) && !kept.stdout.includes(`selected "selsecond"`), shown(kept));
+    kept.status === 0 && getCurrent() === "selfirst" && kept.stdout.includes(`"selsecond" up; "selfirst" stays automatically selected outside this folder`) && !kept.stdout.includes(`selected "selsecond"`), shown(kept));
   assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: second, env: runEnv });
   const stopped = await run(["down", "--yes"], {}, second);
   check("and down stops it", stopped.status === 0, shown(stopped));
@@ -895,7 +900,9 @@ if (process.platform === "linux") {
   // anything is written.
   // Outside the home folder, whose .cotal up would otherwise refuse to inherit first.
   const { oneLine } = await import("@cotal-ai/core");
-  const outside = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-odd-")));
+  const outsideBase = process.platform === "linux" ? "/var/tmp" : tmpdir();
+  if (process.platform === "linux") for (const parent of [outsideBase, "/var", "/"]) if (existsSync(join(parent, ".cotal"))) throw new Error(`unsafe fixture ancestor: ${parent}`);
+  const outside = realpathSync(mkdtempSync(join(outsideBase, "cotal-space-registration-odd-")));
   for (const [label, name] of [["a tab", "tab\tfolder"], ["a newline", "line\nfolder"], ["an escape character", "esc\u001bfolder"], ["a delete character", "del\u007ffolder"], ["the bidirectional formatting mark U+202E", "rlo\u202efolder"]]) {
     const odd = join(outside, name);
     mkdirSync(odd);
@@ -996,7 +1003,9 @@ if (process.platform === "linux") {
   const endpoints = await json(["endpoints", "--space", "demo"]);
   check("each of those refusals names the space and its root under target",
     [named, inRoot, endpoints].every((r) => refused(r, 2, "TARGET_UNAVAILABLE") && JSON.stringify(r.env?.target) === JSON.stringify({ space: "demo", root: fresh })), [named, inRoot, endpoints].map((r) => r.env?.target ?? shown(r)));
+  setAdoptedCurrent("demo");
   const selected = await json(["use", "demo"]);
+  check("use promotes the same adopted selection to explicit", selected.status === 0 && readCurrentSelection()?.source === "explicit" && selected.env?.outcome === "ok", shown(selected));
   check("use selects it and names its root", selected.status === 0 && getCurrent() === "demo" && selected.env?.result.preparedRoot === fresh && selected.env.result.currentRecorded === false, shown(selected));
   // The default report says it under Spaces; the recorded-meshes diagnostics say it again under --verbose.
   const status = await run(["status", "--plain"]);

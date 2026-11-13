@@ -46,7 +46,8 @@ import {
   removeIssuedStoresBeforeRetention,
   IssuedStoreBeforeRetentionError,
   IssuedStoreRecreateRefusal,
-  reconcileSpaceTtls,
+  reconcileSpaceMemoryBuckets,
+  membershipStoreDefinition,
   ttlBuckets,
   standaloneConnectOpts,
   requireBrokerFloor,
@@ -140,7 +141,7 @@ import {
   meshesForRoot,
   removeMesh,
   rotateSystemCreds,
-  setCurrent,
+  setAdoptedCurrent,
   staleSystemCreds,
   SYSTEM_CREDS_FILES,
   userAuthStateDir,
@@ -391,6 +392,7 @@ export const upFlags: FlagSpec[] = [
   { name: "service-endpoints", type: "boolean", description: "with --user-auth: the auth service also hosts service endpoints (the registration door and the owner-decision host route)" },
   { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises" },
   { name: "rotate-sys", type: "boolean", description: "renew the expired/expiring $SYS creds by rotating the system account (agents, data and creds survive; needs a stopped mesh)" },
+  { name: "recreate-membership-store", type: "boolean", description: "replace a stopped space's legacy File-backed derived membership feed with the current Memory-backed store" },
   { name: "recreate-issued-stores", type: "string", value: "<backup-dir>", description: "back up this space's issued-authority stores created before 0.111.0 into a new <backup-dir>, delete them and create them again (needs a stopped stack and every other issuer of the space stopped)" },
   { name: "detach", type: "boolean", short: "d", description: "run in the background (the default; stop with `cotal down`)" },
   { name: "foreground", type: "boolean", description: "keep a non-manifest native stack in this terminal; -f currently refuses" },
@@ -517,6 +519,8 @@ export function validateUpArguments(args: ParsedArgs): void {
     if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--recreate-issued-stores cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}; nothing was started`, { remedy: "run `cotal up --space <space> --recreate-issued-stores <backup-dir>` on its own first" });
     assertIssuedBackupDirArgument(String(args.values["recreate-issued-stores"]));
   }
+  if (args.values["recreate-membership-store"] === true && (args.values.file !== undefined || args.values.restore !== undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", `--recreate-membership-store cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}; nothing was started`, { remedy: "run `cotal up --space <space> --recreate-membership-store` on its own first" });
   if (args.values.root !== undefined) preparedUpRoot(String(args.values.root));
   else if (!(args.values.file && args.values["dry-run"] === true)) {
     const inheritedRoot = inheritedMachineHomeRoot();
@@ -961,7 +965,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     server?: string; "store-dir"?: string; "max-file-store"?: string; "log-file"?: string; "logfile-size-limit"?: string; "logfile-max-num"?: string; "auth-timeout"?: string; "max-payload"?: string; "account-resolver"?: string; space?: string; root?: string; open?: boolean; "user-auth"?: boolean; "service-endpoints"?: boolean; idp?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
     channels?: string; detach?: boolean; foreground?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
-    restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean; "recreate-issued-stores"?: string;
+    restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean; "recreate-membership-store"?: boolean; "recreate-issued-stores"?: string;
     "accept-stale-checkpoint"?: boolean;
     "tls-cert"?: string; "tls-key"?: string;
     "max-sessions"?: string;
@@ -1558,7 +1562,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
-          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
+          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
       if (values.foreground) await holdForegroundStack(meshRoot, start);
@@ -1864,6 +1868,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       }
       if (values["recreate-issued-stores"] !== undefined)
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running at ${server}, and its issued-authority stores are recreated only on a fresh broker start, before any issuer runs; nothing was changed`, { target: { space: held.space }, remedy: "stop the stack first, then run `cotal up --recreate-issued-stores <backup-dir>` again" });
+      if (values["recreate-membership-store"])
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `mesh "${held.space}" is already running at ${server}, and membership storage conversion deletes the derived feed before recreating it; nothing was changed`, { target: { space: held.space }, remedy: "stop the stack first, then run `cotal up --recreate-membership-store` again" });
       // `--foreground` asks this terminal to hold the stack's lifetime, but this branch starts
       // nothing here: it used to print `✓ already running`, restart a missing manager detached and
       // exit 0. A service unit relying on `--foreground` read that exit as the stack ending, stopped
@@ -2036,7 +2042,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (held.mode !== "open") {
           spaceAuth = await getSpaceAuth(workspaceSecretStore(root), held.space);
           if (!spaceAuth) {
-            stderrLine("✗ ", `mesh "${held.space}" has no trust material under ${authDir(root)} - cannot reconcile its presence/lease TTLs; restore or re-provision \`.cotal/auth\``, c.red);
+            stderrLine("✗ ", `mesh "${held.space}" has no trust material under ${authDir(root)} - cannot reconcile its Memory buckets and lease TTLs; restore or re-provision \`.cotal/auth\``, c.red);
             process.exit(1);
           }
           // Ephemeral, reconcile-only, discarded with the connection. Same enumerated `provisioner`
@@ -2051,14 +2057,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
               `! nats-server ${v.version} is below 2.14.5 and the presence bucket of "${held.space}" is file-backed: it can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
             ),
           );
-        for (const r of await reconcileSpaceTtls({ servers: server, space: held.space, creds: reconcileCreds }))
+        for (const r of await reconcileSpaceMemoryBuckets({ servers: server, space: held.space, creds: reconcileCreds }))
           console.log(c.dim(r.recreated
-            ? `  re-created ${r.stream}: it is memory-backed and was lost when the broker restarted`
+            ? `  re-created ${r.stream}: it is Memory-backed and was lost when the broker restarted`
             : `  reconciled ${r.stream} TTL ${r.fromMs === 0 ? "none" : `${r.fromMs}ms`} -> ${r.toMs}ms`));
         // The dashboard cred is minted on a refresh too: a space that predates it may never boot again.
         if (held.mode === "auth" && spaceAuth) await provisionWebCreds(spaceAuth, root, held.space);
       } catch (e) {
-        stderrLine("✗ ", `mesh "${held.space}" is running at ${server} but its presence/lease TTLs could not be reconciled: ${(e as Error).message}`, c.red);
+        stderrLine("✗ ", `mesh "${held.space}" is running at ${server} but its Memory buckets and lease TTLs could not be reconciled: ${(e as Error).message}`, c.red);
         process.exit(1);
       }
       // A refresh is a receipt like any other start: it names its mesh before it says anything
@@ -2230,6 +2236,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       userAuth: wantUser ? { idpUrl: values.idp } : undefined,
       rotateSys: values["rotate-sys"],
       ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
+      ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       publicExchange,
       channels: values.channels,
       // The RAW flag, not the loopback-defaulted `host` above: `startMeshDetached` applies the same
@@ -2503,6 +2510,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const { authService, controlPlane } = await serveReadyListener({
       child, server, space, storeDir, setup, seedFile, transport,
       ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
+      ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       host: values.host,
       maxSessions,
       maxFileStore,
@@ -3508,7 +3516,7 @@ export function controllerStackNative(): StackUpNative {
       const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.logFile !== undefined ? { logFile: opts.logFile } : {}), ...(opts.logfileSizeLimit !== undefined ? { logfileSizeLimit: opts.logfileSizeLimit } : {}), ...(opts.logfileMaxNum !== undefined ? { logfileMaxNum: opts.logfileMaxNum } : {}), ...(opts.authTimeout !== undefined ? { authTimeout: opts.authTimeout } : {}), ...(opts.maxPayload !== undefined ? { maxPayload: opts.maxPayload } : {}), ...(opts.accountResolver !== undefined ? { accountResolver: opts.accountResolver } : {}), ...(opts.noManager ? { noManager: true } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
       return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}), ...(prepared.setup?.maxPayload !== undefined ? { maxPayload: prepared.setup.maxPayload } : {}), ...(prepared.setup?.accountResolver !== undefined ? { accountResolver: prepared.setup.accountResolver } : {}) };
     },
-    initializeStreams: (server, space, setup, seedFile, recreateIssuedStores) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined, recreateIssuedStores),
+    initializeStreams: (server, space, setup, seedFile, recreateIssuedStores, recreateMembershipStore) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined, recreateIssuedStores, recreateMembershipStore),
     recreateDeletedStreams: ({ seed, ...opts }) => recreateDeletedStreams({ ...opts, ...(seed !== undefined ? { seed: seed as ChannelRegistryFile } : {}) }),
     recordMesh: (entry) => recordOurMesh({ ...entry, ts: new Date().toISOString() }, "started", true),
     commitTransport: (root, chosen, limits) => commitTransportPolicy(root, chosen, true, undefined, limits),
@@ -4069,6 +4077,8 @@ async function serveReadyListener(l: {
   seedFile?: ChannelRegistryFile;
   /** `--recreate-issued-stores`: the new backup directory the fresh boot's stream setup uses. */
   recreateIssuedStores?: string;
+  /** `--recreate-membership-store`: explicit stopped-space File to Memory conversion. */
+  recreateMembershipStore?: boolean;
   transport: BrokerTransport;
   /** The raw `--host` flag, so the record can tell an operator's address from the loopback default. */
   host?: string;
@@ -4089,7 +4099,7 @@ async function serveReadyListener(l: {
   if (l.resumeAttempt) await recreateMemoryBuckets(server, space, setup);
   else {
     try {
-      await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores);
+      await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores, l.recreateMembershipStore);
     } catch (e) {
       await stopFailedListener(child);
       throw e;
@@ -4197,6 +4207,8 @@ export interface DetachOpts {
   /** `--recreate-issued-stores`: back up and delete the space's pre-retention issued-authority stores
    *  into this new directory before the fresh boot's stream setup creates them again. */
   recreateIssuedStores?: string;
+  /** Explicitly replace the stopped space's legacy File membership feed during setup. */
+  recreateMembershipStore?: boolean;
   channels?: string;
   host?: string;
   /** Channel-registry seed in memory (the `cotal up -f` manifest path), used instead of reading a
@@ -4321,6 +4333,7 @@ export async function startMeshDetached(
   const { authService, controlPlane } = await serveReadyListener({
     child, server, space, storeDir, setup, seedFile, transport,
     ...(opts.recreateIssuedStores !== undefined ? { recreateIssuedStores: opts.recreateIssuedStores } : {}),
+    ...(opts.recreateMembershipStore ? { recreateMembershipStore: true } : {}),
     host: opts.host,
     maxSessions: opts.maxSessions,
     maxFileStore: opts.maxFileStore,
@@ -4663,7 +4676,7 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   recordMesh(provenance === "refresh" ? { ...prior, ...m, origin } : { ...m, origin });
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
-    setCurrent(m.space);
+    setAdoptedCurrent(m.space);
     if (!quietBoot) for (const line of hang("", selectedOnUp(m.space), terminalWidth(process.stdout), c.dim)) console.log(line);
     return;
   }
@@ -4979,10 +4992,22 @@ async function postStart(
   setup?: { creds: string },
   seedFile?: ChannelRegistryFile,
   recreateIssuedStores?: string,
+  recreateMembershipStore?: boolean,
 ): Promise<void> {
   if (recreateIssuedStores !== undefined) await recreateIssuedStoresBeforeSetup(server, space, setup !== undefined, recreateIssuedStores);
+  let recreateCreds: string | undefined;
+  if (recreateMembershipStore && setup !== undefined) {
+    const auth = await getSpaceAuth(workspaceSecretStore(cotalRoot()), space);
+    if (!auth) throw new Error(`space "${space}" has no trust material under ${authDir(cotalRoot())}; its membership store was not touched`);
+    recreateCreds = await mintCreds(auth, newIdentity(), "membership-store-recreate");
+  }
   try {
-    await setupSpaceStreams({ servers: server, space, creds: setup?.creds });
+    await setupSpaceStreams({
+      servers: server,
+      space,
+      creds: setup?.creds,
+      ...(recreateMembershipStore ? { recreateFileMembership: { creds: recreateCreds } } : {}),
+    });
   } catch (error) {
     // Nothing of the stack runs yet, and the caller stops this broker again, so this is a refusal.
     if (error instanceof IssuedStoreBeforeRetentionError)
@@ -5051,6 +5076,8 @@ async function recreateMemoryBuckets(server: string, space: string, setup?: { cr
     const kvm = new Kvm(nc);
     for (const [bucket, ttl, storage] of ttlBuckets(space))
       if (storage === StorageType.Memory) await kvm.create(bucket, { ttl, storage });
+    const membership = membershipStoreDefinition(space);
+    await kvm.create(membership.bucket, membership.createOptions);
   } finally {
     await drainAndClose(nc);
   }
@@ -5824,7 +5851,7 @@ async function provisionWebCreds(auth: SpaceAuth, root: string, space: string, q
     const key = webCredsKey(space, { injected: false, root });
     if ((await store.get(key)) !== undefined) return;
     await store.put(key, await mintCreds(auth, newIdentity(), "observer"));
-    if (!quietBoot) console.log(c.dim(`• web: provisioned ${WEB_CREDS_KIND} - the dashboard's read-only credential, the \`service start web\` default`));
+    if (!quietBoot) for (const line of hang("• ", `web: provisioned ${WEB_CREDS_KIND} - the dashboard's read-only credential, the \`service start web\` default`, terminalWidth(process.stdout))) console.log(c.dim(line));
   } catch (e) {
     console.error(c.dim(`• web dashboard credential not provisioned: ${(e as Error).message}`));
   }

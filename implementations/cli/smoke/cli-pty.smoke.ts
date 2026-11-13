@@ -249,7 +249,7 @@ try {
     f.exitCode === 2 && fit(f.text(), 40).length === 0 &&
       failLines.join("\n") === [
         "Request refused", "  no mesh running", "  Outcome", "    refused", "  Code", "    TARGET_NOT_FOUND",
-        "Next", "  run `cotal up` in a project, or pass", "  `--server`",
+        "Next", "  sign in to Cotal Cloud with", "  `cotal login`, run `cotal up` in a", "  project, or pass `--server`",
       ].join("\n"),
     failLines,
   );

@@ -343,6 +343,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
         l.flush = () => nc.flush();
         void nc.closed().then(() => handle.stop()).catch(() => {}).finally(() => { l.serving.delete(handle); });
       },
+      overlapOnConnectionRenewal: true,
       card: { name: "cotal-daemon", kind: "endpoint", owner: witness.principal.owner, actor: witness.principal.actor },
       channels: [], registerPresence: false, watchPresence: false, watchChannels: false, consume: false,
     });

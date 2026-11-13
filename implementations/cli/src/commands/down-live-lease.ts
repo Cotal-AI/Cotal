@@ -84,7 +84,8 @@ async function liveUnrecordedDaemonNames(
   if (!watched.length) return [];
   const mesh = findMesh(context.space);
   if (!mesh?.server || !(await isReachable(mesh.server))) return [];
-  let auth: Parameters<typeof standaloneConnectOpts>[0];
+  let userCreds: string | undefined;
+  let resolved: Awaited<ReturnType<typeof connectOrExit>> | undefined;
   if (mesh.mode === "user") {
     // This is a hosting-folder infrastructure check, not a user operation. Use only this
     // root's own signer, never a login or a signer from another registered root.
@@ -93,14 +94,17 @@ async function liveUnrecordedDaemonNames(
     const trust = await getSpaceAuth(workspaceSecretStore(context.root), context.space);
     if (!trust)
       throw new CommandFailure("refused", "PERMISSION_DENIED", "this root has no signing authority for the daemon lease check; nothing was stopped");
-    auth = { creds: await mintCreds(trust, newIdentity(), "deployer", { lifecycleUid: mintLifecycleUid() }), tls: mesh.tlsRequired === true };
+    userCreds = await mintCreds(trust, newIdentity(), "deployer", { lifecycleUid: mintLifecycleUid() });
   } else {
-    const resolved = await connectOrExit({ space: context.space, server: mesh.server }, "deployer");
-    auth = { creds: resolved.creds, tls: resolved.tls };
+    resolved = await connectOrExit({ space: context.space, server: mesh.server }, "deployer");
   }
   const nc = await dialerFor(mesh.server)({
     servers: mesh.server,
-    ...standaloneConnectOpts(auth),
+    ...standaloneConnectOpts(
+      mesh.mode === "user"
+        ? { creds: userCreds, tls: mesh.tlsRequired === true }
+        : { creds: resolved!.creds, tls: resolved!.tls },
+    ),
     maxReconnectAttempts: 0,
   });
   try {

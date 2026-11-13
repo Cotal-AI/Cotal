@@ -61,6 +61,17 @@ export function catalogRefreshNotice(result: Record<string, unknown>, provider?:
   return failed?.length ? `Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.` : "";
 }
 
+/** The notice for a sign-in that replaced an account but could not delete some of that account's
+ *  discovered-space credential files. The daemon has already switched, so the sign-in stands and the
+ *  notice names each kept file, why it stayed, and the cleanup. Empty when every file was deleted. */
+export function keptCredentialsNotice(result: Record<string, unknown>): string {
+  const kept = (Array.isArray(result.credentialsKept) ? result.credentialsKept : []).filter((item): item is { space: string; path: string; reason: string } =>
+    typeof item === "object" && item !== null && typeof item.space === "string" && typeof item.path === "string" && typeof item.reason === "string");
+  if (!kept.length) return "";
+  const files = kept.map(item => `${item.path} (${item.space}: ${item.reason})`).join(", ");
+  return `Signed in, but ${kept.length === 1 ? "a credential file" : `${kept.length} credential files`} of the previous account's spaces could not be deleted: ${files}. Delete each file named. The previous account's spaces are already removed.`;
+}
+
 export interface AccountSpace { space: string; label: string; catalogId?: string; kind?: string; role?: string }
 
 /** Discovery selects a target, but never grants consent to connect. */
@@ -114,8 +125,13 @@ export function requireResult(frame: Frame): Record<string, unknown> {
 
 /** A dashboard link can prefill public onboarding coordinates, never authenticate or connect. */
 export function onboardingLink(value: string): { idp: string; space?: string } {
-  const u = new URL(value);
-  if (u.protocol !== "cotal:" || u.hostname !== "connect" || !["", "/"].includes(u.pathname) || u.username || u.password || u.port || u.hash) throw new Error("Unsupported Cotal onboarding link.");
+  // Validate before a special-scheme parser can normalize authority, ports or paths.
+  // Some WebViews treat custom schemes as opaque paths, so never parse cotal: itself.
+  const prefix = /^cotal:\/\//i.exec(value);
+  const remainder = prefix ? value.slice(prefix[0].length) : "";
+  const route = remainder.split(/[?#]/, 1)[0];
+  if (!prefix || !["connect", "connect/"].includes(route) || value.includes("#") || /[\u0000-\u0020\u007f]/.test(value)) throw new Error("Unsupported Cotal onboarding link.");
+  const u = new URL(`https://${remainder}`);
   const keys = [...u.searchParams.keys()];
   if (keys.some((key) => key !== "idp" && key !== "space") || new Set(keys).size !== keys.length) throw new Error("The onboarding link contains unsupported fields.");
   const idp = approvalUrl(u.searchParams.get("idp"));

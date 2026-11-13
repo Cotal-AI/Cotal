@@ -123,6 +123,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       // `--service-endpoints` (2026-10, #4396): hosts the service endpoint authority door and host
       // route, threaded to the auth-service daemon; every auth-service inventory carries it.
       "service-endpoints:boolean",
+      // `--recreate-membership-store` (2026-11): explicitly convert a stopped space's derived
+      // membership feed from legacy File storage to Memory.
+      "recreate-membership-store:boolean",
       // `--recreate-issued-stores` (2026-10): on a fresh broker start, back up the space's pre-0.111.0
       // issued-authority stores into a new directory, delete them and create them again.
       "recreate-issued-stores:string",
@@ -288,7 +291,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: true,
   },
-  login: { flags: ["client-id:string", "idp:string", "plain:boolean"], positionals: false },
+  login: { flags: ["client-id:string", "cloud:boolean", "idp:string", "no-browser:boolean", "plain:boolean"], positionals: false },
   logout: { flags: ["idp:string", "json:boolean:j", "local:boolean", "plain:boolean"], positionals: false },
   // Account metadata, actor grants (the actor ledger's flags), credential mint (`--endpoint` mints an
   // endpoint caller), signer export and `retire --yes`, which refuses until its native path exists.

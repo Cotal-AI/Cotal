@@ -1,5 +1,23 @@
 # @cotal-ai/linear
 
+## 0.163.3
+
+No changes in this release.
+
+## 0.163.2
+
+No changes in this release.
+
+## 0.163.1
+
+### Patch Changes
+
+- 093e70d: Re-confirm service readiness when a Linear user-auth endpoint swaps onto a renewed bearer token. `serveLinearUserAuth` now listens for `transport` reconnect events in addition to `connection` rebuilds so live in-place bearer swaps report `ready` to the space authority.
+
+## 0.163.0
+
+No changes in this release.
+
 ## 0.162.0
 
 No changes in this release.

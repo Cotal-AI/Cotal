@@ -56,7 +56,7 @@ import { REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsIn
 import { listRegistryEndpoints, registryListingCaller } from "./registry-client.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { lastKvEntries } from "./kv-scan.js";
-import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
+import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing, isStreamNotFound } from "./jetstream-missing.js";
 import { isRestoredConsumer } from "./backup.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidKind } from "./agent-file.js";
@@ -354,6 +354,14 @@ export interface EndpointOptions {
   /** Trusted composition custody of each opened transport, including replacement epochs.
    * Called before binding so the owner can await its terminal closed signal on bind failure. */
   onConnection?: (nc: NatsConnection) => void;
+  /** A planned credential swap dials a second connection, calls {@link onConnection}, and flushes
+   *  before it reconnects the resident connection. The second connection closes after that
+   *  reconnect. `onConnection` must accept a connection that exists only for the swap. Serve
+   *  subscriptions that share an incarnation queue keep dispatch while the resident connection
+   *  is down. Without this option the resident connection reconnects in place. */
+  overlapOnConnectionRenewal?: boolean;
+  /** Await local admission checks before presence, consumers and the ready event on each bind. */
+  beforeBind?: () => Promise<void>;
   /** The collaboration to join. */
   space: string;
   /** Identity. `id` is generated if omitted. */
@@ -439,6 +447,11 @@ export interface EndpointOptions {
    *  empty ⇒ NO channels: the endpoint joins nothing, and {@link CotalEndpoint.multicast} refuses
    *  a call with no explicit channel rather than picking one. */
   channels?: string[];
+  /** The credential's complete channel read ACL when the composition has it. An explicit empty list
+   * means provisioning omitted the DLV durable. When omitted, static credentials select the optional
+   * bind from their presented publish permissions; bearer callers need the resolved ACL. A denied
+   * bind still refuses startup. */
+  allowSubscribe?: string[];
   /** Presence heartbeat interval (ms). */
   heartbeatMs?: number;
   /** Presence liveness window (ms); a peer is considered gone after this. */
@@ -681,6 +694,7 @@ export class CotalEndpoint extends EventEmitter {
   readonly card: AgentCard;
   readonly space: string;
   readonly channels: string[];
+  private readonly allowSubscribe?: string[];
 
   private readonly servers: string;
   private readonly token?: string;
@@ -741,6 +755,8 @@ export class CotalEndpoint extends EventEmitter {
   private nc?: NatsConnection;
   private readonly requestsAwaitingReply = new Map<NatsConnection, Set<(error: Error) => void>>();
   private readonly onConnection?: (nc: NatsConnection) => void;
+  private readonly overlapOnConnectionRenewal: boolean;
+  private readonly beforeBind?: () => Promise<void>;
   private js?: JetStreamClient;
   private jsm?: JetStreamManager;
   private kv?: KV;
@@ -1208,11 +1224,14 @@ export class CotalEndpoint extends EventEmitter {
     if ((opts.transportPingIntervalMs === undefined) !== (opts.transportMaxPingOut === undefined))
       throw new Error("EndpointOptions transportPingIntervalMs and transportMaxPingOut must be configured together");
     this.onConnection = opts.onConnection;
+    this.overlapOnConnectionRenewal = opts.overlapOnConnectionRenewal === true;
+    this.beforeBind = opts.beforeBind;
     this.transportPingIntervalMs = opts.transportPingIntervalMs ?? 10_000;
     this.transportMaxPingOut = opts.transportMaxPingOut ?? 2;
     this.transportConnectTimeoutMs = opts.transportConnectTimeoutMs;
     // No implicit channel: an endpoint reads exactly what its caller lists. Omitted means none.
     this.channels = opts.channels ?? [];
+    this.allowSubscribe = opts.allowSubscribe;
     this.heartbeatMs = opts.heartbeatMs ?? 2000;
     this.ttlMs = opts.ttlMs ?? 6000;
     this.doRegister = opts.registerPresence ?? true;
@@ -1549,9 +1568,48 @@ export class CotalEndpoint extends EventEmitter {
    *  reconnect succeeds, re-arm the expiry fence for the credential now authenticated on the wire. */
   private async swapConnectionOntoFreshCreds(): Promise<void> {
     const nc = this.nc;
-    if (nc && !this.stopped) {
+    if (!(nc && !this.stopped)) return;
+    const overlap = this.overlapOnConnectionRenewal && this.onConnection
+      ? await this.openRenewalOverlap().catch(() => undefined)
+      : undefined;
+    try {
+      // reconnect() resolves when the disconnect is requested, before subscriptions return.
+      // A flush started now is sent after those subscriptions, so it resolves only once they
+      // are on the broker. The overlap stays up until then.
       await nc.reconnect().catch(() => {});
+      if (overlap && !nc.isClosed())
+        await withDeadline(nc.flush(), 10_000, () => new Error("resident renewal flush did not finish")).catch(() => {});
       if (this.nc === nc && !this.stopped) this.armAuthExpiryReconnectFence(nc);
+    } finally {
+      if (overlap && !overlap.isClosed()) await this.closeWithoutLibraryReconnect(overlap).catch(() => {});
+    }
+  }
+
+  /** A second connection whose `onConnection` subscriptions are flushed before the resident
+   *  reconnect. Its inbox is not the resident connection's inbox. A flush that does not finish
+   *  closes it and leaves the caller to reconnect in place. */
+  private async openRenewalOverlap(): Promise<NatsConnection> {
+    const overlap = await dialerFor(this.servers)({
+      servers: this.servers,
+      noAsyncTraces: true,
+      name: `cotal:${this.card.name}:renewal`,
+      inboxPrefix: `_INBOX_renew_${randomUUID()}`,
+      maxReconnectAttempts: 0,
+      ...authOpts({
+        token: this.token, user: this.user, pass: this.pass,
+        creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined,
+        bearer: this.userMode ? () => this.presentBearer() : undefined,
+        sentinelCreds: this.sentinelCreds, tls: this.tls,
+      }),
+    });
+    this.ownedConnections.add(overlap);
+    try {
+      this.onConnection?.(overlap);
+      await withDeadline(overlap.flush(), 5_000, () => new Error("renewal overlap flush did not finish"));
+      return overlap;
+    } catch (error) {
+      await this.closeWithoutLibraryReconnect(overlap).catch(() => {});
+      throw error;
     }
   }
 
@@ -1899,6 +1957,8 @@ export class CotalEndpoint extends EventEmitter {
     // no accepted-row read, presence, channel registry, JetStream manager, lease, membership,
     // Plane-3 or liveness responder, so the credential needs no row for any of them.
     if (this.dmOnly) {
+      await this.beforeBind?.();
+      if (this.stopped) return;
       await this.bindDmOnly(this.dmOnly);
       if (this.stopped) return;
       this.emit("connection", { connected: true });
@@ -1917,6 +1977,9 @@ export class CotalEndpoint extends EventEmitter {
         throw new Error(`the accepted row names ${ref.owner}.${ref.actor} (uid ${ref.uid}), not this endpoint ${this.owner}.${this.actor} (uid ${uid}); refusing to ride a foreign issuance (SPEC 13.15)`);
       this.issuedGeneration = ref.generation;
     }
+
+    await this.beforeBind?.();
+    if (this.stopped) return;
 
     if (this.doWatch || this.doRegister) {
       const kvm = new Kvm(this.nc);
@@ -7477,12 +7540,21 @@ export class CotalEndpoint extends EventEmitter {
   private async pumpDlv(): Promise<void> {
     if (!this.js) return;
     if (!this.ownLifecycleUid) return; // no lifecycle uid — never provisioned for Plane-3 (its durable is lifecycle-keyed)
+    if (this.allowSubscribe?.length === 0) return; // known channel-less grant: no DLV durable or bind rows exist
     const durable = dlvDurable(this.owner, this.actor, this.ownLifecycleUid);
+    if (this.allowSubscribe === undefined && !this.userMode && this.nc) {
+      // Native credential-only clients have no separate ACL option. Use the publish permissions
+      // captured when THIS connection authenticated; a callout sentinel does not carry the grant.
+      const permission = this.watchDeletePermissions.get(this.nc)?.();
+      // Only an absent allow selects no binding. A declared bind with a deny still reaches the
+      // broker and fails, so a refusal cannot masquerade as a channel-less credential.
+      if (permission && !issuedPermitsSubject({ ...permission, deny: [] }, `$JS.API.CONSUMER.INFO.${dlvStream(this.space)}.${durable}`)) return;
+    }
     let consumer;
     try { consumer = await this.js.consumers.get(dlvStream(this.space), durable); }
     catch (e) {
       if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) return;
-      throw e; // a denied bind is not proof Plane-3 is absent
+      throw e; // a denied bind is not evidence that the read ACL is empty or the durable is absent
     }
     const lease = await this.readDeliveryLease(0);
     const liveDeliveryPlane = lease?.ready === true;
@@ -8121,6 +8193,18 @@ export class CotalEndpoint extends EventEmitter {
   async chatFrontier(): Promise<number> {
     const jsm = await this.manager();
     return (await jsm.streams.info(chatStream(this.space))).state.last_seq;
+  }
+
+  /** Whether this connection's account has a JetStream stream of this name. A missing stream is
+   *  false. Any other failure is thrown, so a caller does not treat an unread broker as absence. */
+  async streamRecorded(name: string): Promise<boolean> {
+    try {
+      await (await this.manager()).streams.info(name);
+      return true;
+    } catch (e) {
+      if (isStreamNotFound(e)) return false;
+      throw e;
+    }
   }
 
   /** The bytes this connection's account holds in JetStream file storage, as `$JS.API.INFO`

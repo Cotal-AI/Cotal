@@ -38,23 +38,51 @@ try {
   const hidden = await browser.newContext();
   try {
     const page = await hidden.newPage();
-    await page.addInitScript(nativeStub, { loading: true });
-    await page.addInitScript(() => {
+    page.on("pageerror", error => console.error("hidden page:", error.message));
+    await page.addInitScript({ content: `(${nativeStub.toString()})({ loading: true }); (${(() => {
       Object.defineProperty(document, "visibilityState", { get: () => "hidden" });
       Object.defineProperty(document, "hidden", { get: () => true });
       // Emulate a hidden webview's suspended frame clock, not a foreground tab.
       window.requestAnimationFrame = () => 1;
-      window.__paintStart = performance.now();
+      const proof = window.__paintProof = { events: [], daemonPending: false, fontsResolved: false };
+      const fonts = new Promise(() => {});
+      Object.defineProperty(document.fonts, "ready", { get: () => fonts });
+      fonts.then(() => { proof.fontsResolved = true; });
+      const decode = HTMLImageElement.prototype.decode;
+      HTMLImageElement.prototype.decode = async function () {
+        await decode.call(this);
+        if (!this.matches(".brand-mark")) return;
+        proof.events.push("decoded");
+        await new Promise(resolve => { window.__releaseBrandDecode = resolve; });
+      };
+      const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+      Object.defineProperty(HTMLElement.prototype, "offsetHeight", { get() {
+        const value = height.get.call(this);
+        if (this.matches(".sidebar")) proof.events.push("layout");
+        return value;
+      } });
       const invoke = window.__TAURI_INTERNALS__.invoke;
       window.__TAURI_INTERNALS__.invoke = async (command, args) => {
-        if (command === "first_paint") window.__paintDelay = performance.now() - window.__paintStart;
-        return invoke(command, args);
+        if (command === "daemon_request" && args.request.op === "about") proof.daemonPending = true;
+        if (command === "first_paint") proof.events.push("report");
+        const result = await invoke(command, args);
+        if (command === "daemon_request" && args.request.op === "about") proof.daemonPending = false;
+        return result;
       };
-    });
+    }).toString()})();` });
     await page.goto(address);
-    await page.waitForFunction(() => window.__renderState.paintReports === 1, null, { polling: 5, timeout: 1000 });
-    assert.equal(await page.evaluate(() => document.visibilityState), "hidden");
-    assert.ok(await page.evaluate(() => window.__paintDelay < 100), "hidden page reports within 100 ms without a frame clock");
+    // Watchdogs detect hangs only. Scheduling latency is not a paint contract.
+    await page.waitForFunction(() => window.__releaseBrandDecode, null, { polling: 5, timeout: 30000 });
+    assert.equal(await page.evaluate(() => window.__renderState.paintReports ?? 0), 0, "decode must finish before reporting");
+    await page.evaluate(() => window.__releaseBrandDecode());
+    await page.waitForFunction(() => window.__renderState.paintReports === 1 && window.__paintProof.daemonPending, null, { polling: 5, timeout: 30000 });
+    assert.deepEqual(await page.evaluate(() => ({
+      hidden: document.hidden && document.visibilityState === "hidden",
+      daemonPending: window.__paintProof.daemonPending,
+      fontsResolved: window.__paintProof.fontsResolved,
+      events: window.__paintProof.events,
+      reports: window.__renderState.paintReports,
+    })), { hidden: true, daemonPending: true, fontsResolved: false, events: ["decoded", "layout", "report"], reports: 1 });
   } finally { await hidden.close(); }
   for (const theme of ["light"]) for (const width of [880, 560]) for (const scenario of cases) {
       const motionModes = process.env.MOTION ? ["no-preference", "reduce"] : ["no-preference"];

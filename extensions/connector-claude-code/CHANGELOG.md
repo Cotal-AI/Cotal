@@ -1,5 +1,23 @@
 # @cotal-ai/connector-claude-code
 
+## 0.163.3
+
+No changes in this release.
+
+## 0.163.2
+
+No changes in this release.
+
+## 0.163.1
+
+No changes in this release.
+
+## 0.163.0
+
+### Patch Changes
+
+- 2040519: Explain conversation agent limits with safe usage, plan comparison and agent-management links. Stop native approval polling on permanent refusals, distinguish them from a person's denial, and recover stuck unissued requests only after a request-bound terminal refusal.
+
 ## 0.162.0
 
 No changes in this release.

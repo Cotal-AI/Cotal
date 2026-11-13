@@ -46,7 +46,8 @@ positive.runs.push({
 });
 check(
   "path-filtered workflows are included only when a changed path matches their declaration",
-  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Cold setup", "Mutation reproof", "Remotion typecheck", "Windows"]) &&
+  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Cold setup", "Docs", "Mutation reproof", "Remotion typecheck", "Windows"]) &&
+    JSON.stringify(expectedPullRequestWorkflows(workflows, ["remotion/src/Root.tsx"])) === JSON.stringify(["CI", "Cold setup", "Mutation reproof", "Remotion typecheck", "Windows"]) &&
     JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["CI", "Cold setup", "Installer", "Mutation reproof", "Windows"]),
 );
 let repositoryWorkflowsParsed = false;

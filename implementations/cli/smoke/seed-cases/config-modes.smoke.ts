@@ -52,6 +52,15 @@ try {
   }
 
   {
+    const cfg = track(freshCfg());
+    chmodSync(cfg, 0o775);
+    const run = cotal(cfg, ["ext", "seed"], env);
+    check("config modes: seed refusal keeps its permission code and readable next command",
+      run.status === 1 && run.stderr.includes("PERMISSION_DENIED") && run.stderr.includes("\n  Next\n") && run.stderr.includes(`chmod g-w ${realpathSync(cfg)}`) && !run.stderr.includes("\\u000a"), run.stderr);
+    check("config modes: seed refusal does not relax the unsafe ancestor", mode(cfg) === 0o775, mode(cfg));
+  }
+
+  {
     // An owned private config root may be reached through a symlink. The seed resolves that
     // physical directory before its protection walk, and update follows the same path.
     const real = track(freshCfg());

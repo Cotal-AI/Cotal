@@ -1,5 +1,114 @@
 # cotal-ai
 
+## 0.163.3
+
+### Patch Changes
+
+- 0d10441: The issued-profile census models the anycast records bucket and treats a publish of one key as not covering that stream. The smoke runs in the CI suite.
+- b486b50: Manual self-updates fence empty hosted Managers before replacing packages. The updater acquires the daemon's caller-owned preparation claim, refuses seats admitted after its custody report, and holds admission through reconciliation and the installed-generation handoff.
+- cc11f40: A serving endpoint can keep command dispatch across a planned credential swap. With overlapOnConnectionRenewal, the endpoint subscribes on a second connection and flushes it before reconnecting the resident connection. The daemon's machine-status serve uses this. Endpoints that do not set the option still reconnect in place.
+- Updated dependencies [ec3de95]
+- Updated dependencies [b41c7e0]
+- Updated dependencies [0d10441]
+- Updated dependencies [68a9227]
+- Updated dependencies [7c950c1]
+- Updated dependencies [cc11f40]
+- Updated dependencies [4cef4bb]
+  - @cotal-ai/cli@0.163.3
+  - @cotal-ai/auth@0.163.3
+  - @cotal-ai/core@0.163.3
+  - @cotal-ai/connector-core@0.163.3
+  - @cotal-ai/manager@0.163.3
+  - @cotal-ai/runtime@0.163.3
+  - @cotal-ai/delivery@0.163.3
+  - @cotal-ai/registry@0.163.3
+  - @cotal-ai/workspace@0.163.3
+  - @cotal-ai/seat@0.163.3
+
+## 0.163.2
+
+### Patch Changes
+
+- 4e65a2a: Fresh CLI guidance points to Cotal Cloud sign-in when no space is known.
+  Correct sign-in help and empty-space guidance, avoid connector installation during login, and point status at the shipped default launch without warnings about nonexistent folder personas. Keep multiline seed refusals readable while preserving permission checks and local broker alternatives.
+- 4f19d7c: Keep concrete recovery commands when a manually registered space cannot connect this computer. Manual service requests use their registration flow without requiring account-catalog intent, preserving the selected daemon and space in JSON and plain refusals.
+- 869bc76: Keep Manager restart preparation held until every preparing caller releases it. Local requests are attributed to their authenticated process identity, so another updater cannot release a caller's admission fence.
+- 5d54679: Updates refuse unreadable seed journals and invalid installed daemon receipts before replacing packages or reconciling connectors.
+- Updated dependencies [7c965d7]
+- Updated dependencies [4e65a2a]
+- Updated dependencies [5712551]
+- Updated dependencies [5d54679]
+- Updated dependencies [7c965d7]
+- Updated dependencies [7c11c40]
+- Updated dependencies [0c372d5]
+- Updated dependencies [5d54679]
+  - @cotal-ai/auth@0.163.2
+  - @cotal-ai/cli@0.163.2
+  - @cotal-ai/workspace@0.163.2
+  - @cotal-ai/core@0.163.2
+  - @cotal-ai/connector-core@0.163.2
+  - @cotal-ai/manager@0.163.2
+  - @cotal-ai/delivery@0.163.2
+  - @cotal-ai/runtime@0.163.2
+  - @cotal-ai/registry@0.163.2
+  - @cotal-ai/seat@0.163.2
+
+## 0.163.1
+
+### Patch Changes
+
+- ed58f6f: The daemon update smoke suite covers fresh Cloud setup before exercising updates.
+  Separate supported bare setup from invalid usage and verify service refusal writes no connector or daemon state.
+- 7d4973c: Linux self-updates check every local Manager sharing the installation before replacing packages.
+  
+  Continuity reads use each local instance identity and no longer follow only the selected space or ask the authority to choose a Manager on another computer. When no newer version exists and the installed package closure is current, Linux self-updates report custody without repairing connector integrations or restarting the daemon. Plain `cotal update` still repairs integrations. macOS and Windows keep their existing behavior.
+- Updated dependencies [18905f9]
+- Updated dependencies [3b0377e]
+- Updated dependencies [7d4973c]
+  - @cotal-ai/cli@0.163.1
+  - @cotal-ai/connector-core@0.163.1
+  - @cotal-ai/auth@0.163.1
+  - @cotal-ai/delivery@0.163.1
+  - @cotal-ai/manager@0.163.1
+  - @cotal-ai/registry@0.163.1
+  - @cotal-ai/runtime@0.163.1
+  - @cotal-ai/core@0.163.1
+  - @cotal-ai/seat@0.163.1
+  - @cotal-ai/workspace@0.163.1
+
+## 0.163.0
+
+### Patch Changes
+
+- ef6651a: Signing in as a different account at the same provider now deletes the previous account's discovered-space credential files along with their registrations.
+  This applies to `cotal login` and to the default daemon's `cotal daemon login` and `setup`. Only the sentinel file each discovered registration kept in its catalog folder is deleted, and never one reached through a symbolic link below the account's catalog folder; manual registrations and their files stay. A file that cannot be deleted is named and the run exits 4 (`OPERATION_PARTIAL`) after signing in; `daemon login` JSON lists such files in `credentialsKept`, and the desktop app keeps the new sign-in while showing the same files and cleanup. A separate `--daemon-home` still never changes the shared registry or its credentials.
+- fcdcfdd: Reject invalid daemon sign-in provider URLs with a typed usage refusal before selecting a provider.
+  
+  Keep fresh daemon setup and login checks aligned with the Cotal Cloud default, while preserving explicit providers and refusing before service changes when the user service manager is unavailable.
+- 56ab4ea: Keep daemon command discovery from loading the Manager implementation before an operation needs it. Load the vitals sampler and registration cleanup helper at their existing asynchronous operation boundaries.
+- f8801fc: Sign in to Cotal Cloud from the terminal without knowing its provider URL.
+  
+  Default fresh sign-in to Cotal Cloud, add the same --cloud shorthand to account and daemon sign-in, select a personal or sole space after approval, and open approval in a browser when a desktop terminal supports it. Keep custom providers and printed approval instructions available.
+- Updated dependencies [ef6651a]
+- Updated dependencies [2040519]
+- Updated dependencies [85a09e4]
+- Updated dependencies [4c53a5c]
+- Updated dependencies [f8801fc]
+- Updated dependencies [94985e3]
+- Updated dependencies [d1b321c]
+- Updated dependencies [4d2d755]
+- Updated dependencies [9da8da8]
+  - @cotal-ai/auth@0.163.0
+  - @cotal-ai/workspace@0.163.0
+  - @cotal-ai/cli@0.163.0
+  - @cotal-ai/manager@0.163.0
+  - @cotal-ai/connector-core@0.163.0
+  - @cotal-ai/delivery@0.163.0
+  - @cotal-ai/runtime@0.163.0
+  - @cotal-ai/registry@0.163.0
+  - @cotal-ai/core@0.163.0
+  - @cotal-ai/seat@0.163.0
+
 ## 0.162.0
 
 ### Patch Changes

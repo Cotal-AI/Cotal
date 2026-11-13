@@ -51,6 +51,7 @@ import {
   renderOnceTask,
 } from "@cotal-ai/core";
 import { eventPlaneArmed, type AgentConfig } from "./config.js";
+import { checkEventStartup, EventStateConflictError } from "./event-startup.js";
 import { TURN_PULL_RETRY_MS } from "./turn-poll.js";
 import { ONCE_HANDOFF_MS, claimOnceHandoff, confirmOnceHandoff, endOnceHandoff, exitOnceSeat, onOnceHandoffTimeout, onceHandoffState, sealOnceHandoff, stopOnceHandoffTimer } from "./once.js";
 import { attributionSafe } from "./framing.js";
@@ -93,7 +94,7 @@ export const EVENTS_META_KEY = "ai.cotal.events";
 
 /** The display-only `AgentCard.meta` for a session. Agent-file metadata is preserved, then
  *  connector-owned fields are overlaid so files cannot spoof the hosting harness. */
-function buildMeta(config: AgentConfig, processCwd: boolean): Record<string, string> | undefined {
+function buildMeta(config: AgentConfig, processCwd: boolean, eventsArmed?: boolean): Record<string, string> | undefined {
   const meta: Record<string, string> = { ...(config.meta ?? {}) };
   if (config.model) meta.model = config.model;
   if (config.variant) meta.variant = config.variant;
@@ -109,7 +110,7 @@ function buildMeta(config: AgentConfig, processCwd: boolean): Record<string, str
   if (config.managerInstanceId) meta["ai.cotal.manager.instance"] = config.managerInstanceId;
   // Whether the session arms its event plane, from the predicate the emitting connectors branch on.
   // Overlaid with the other connector-owned keys, so an agent file cannot declare it. Advisory.
-  meta[EVENTS_META_KEY] = eventPlaneArmed(config) ? "on" : "off";
+  meta[EVENTS_META_KEY] = (eventsArmed ?? eventPlaneArmed(config)) ? "on" : "off";
   // Snapshot the connector process directory when the session is constructed. This is display
   // metadata, not a model harness's later shell directory or a routing/authorization input. A
   // connector whose process directory is not the session's leaves it unknown until the harness
@@ -124,6 +125,9 @@ export interface MeshAgentOptions {
   /** The connector process directory is not this session's (one process hosts several sessions),
    *  so `meta.cwd` stays unknown until the harness reports it through {@link MeshAgent.setCwd}. */
   withholdProcessCwd?: boolean;
+  /** The connector already decided to arm the event plane, then removed `COTAL_EVENTS` from the
+   *  process environment. The card follows this decision instead of reading the scrubbed environment. */
+  eventsArmed?: boolean;
   /** A once task this seat pulled and did not claim within {@link ONCE_HANDOFF_MS} is sealed and
    *  reported. For a connector whose wake for the task is a push it cannot confirm, so a dead push
    *  cannot hold a served task. */
@@ -711,10 +715,27 @@ export class MeshAgent extends EventEmitter {
       tls: config.tls,
       ackWaitMs: config.ackWaitMs, // undefined → endpoint default (60s); shortened in tests to observe redelivery
       channels: config.subscribe, // the endpoint's live filter = the active read set
+      allowSubscribe: config.allowSubscribe, // the complete ACL decides whether a DLV durable exists
       channelModes: Object.fromEntries(this.channelModes), // seed presence so file defaults are visible at boot
       // A seat reads the roster when it acts (readRoster) instead of watching it: a watch delivers
       // every member's heartbeat to every member, K² per heartbeat in a space of K (SPEC §6).
       watchPresence: false,
+      beforeBind: async () => {
+        const env = this.launchEnv ?? process.env;
+        if (this.eventStartupChecked || !eventPlaneArmed(config, env)) return;
+        try {
+          await checkEventStartup(this.ep, env);
+          this.eventStartupChecked = true;
+        } catch (error) {
+          // A space that requires events cannot admit a seat whose transcript cannot start.
+          // Where events are optional the seat still starts: the plane stays down and the reason
+          // is kept, which is what a stopped event plane already does after startup.
+          if (config.eventsRequired === true) throw error;
+          this.eventStartupChecked = true;
+          this.eventPlaneBlocked = error instanceof Error ? error.message : String(error);
+          this.lastConnectionError = this.eventPlaneBlocked;
+        }
+      },
       card: {
         id: config.id,
         name: config.name,
@@ -728,7 +749,7 @@ export class MeshAgent extends EventEmitter {
         actor: config.userAuth?.actor,
         // Display-only discovery metadata so observers can show which harness an agent runs on
         // and (when pinned) which model. Each is omitted when unset rather than faked.
-        meta: buildMeta(config, !options.withholdProcessCwd),
+        meta: buildMeta(config, !options.withholdProcessCwd, options.eventsArmed),
       },
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => {
@@ -776,7 +797,7 @@ export class MeshAgent extends EventEmitter {
       if (this._stopping) return;
       this._connected = e.connected;
       if (e.connected) {
-        this.lastConnectionError = undefined;
+        this.lastConnectionError = this.eventPlaneBlocked;
         this.endpointNoticeLog.clear();
       }
       this.emit("connection", e);
@@ -1076,6 +1097,8 @@ export class MeshAgent extends EventEmitter {
 
   private consumerClaim?: HeldLock;
   private connectFlight?: Promise<void>;
+  private eventStartupChecked = false;
+  private eventPlaneBlocked?: string;
 
   private async connectLoop(retryMs: number): Promise<void> {
     while (!this._stopping && !this._connected) {
@@ -1101,6 +1124,12 @@ export class MeshAgent extends EventEmitter {
         // session, and there is no next retry to explain or sleep toward.
         if (this._stopping) return;
         this.lastConnectionError = error.message;
+        if (error instanceof EventStateConflictError) {
+          await this.ep.stop();
+          this.consumerClaim?.release();
+          this.consumerClaim = undefined;
+          throw error;
+        }
         // #1356: "mesh unreachable" was asserted unconditionally, including while this same object
         // held `transportConnected: true` — measured against a presence bucket whose writes the
         // broker refuses: broker up, TCP connected, every sibling stream writable, and the operator
@@ -1169,7 +1198,8 @@ export class MeshAgent extends EventEmitter {
     await this.ep.stop();
     await departure;
     // A late initial bind must finish its stopped teardown before custody is released.
-    await this.connectFlight;
+    // A permanent startup refusal is reported by start(); stop must still release its custody.
+    await this.connectFlight?.catch(() => {});
     this.consumerClaim?.release();
     this.consumerClaim = undefined;
   }

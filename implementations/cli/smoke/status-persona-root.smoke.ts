@@ -112,6 +112,9 @@ try {
 try {
   recordMesh({ space: "macfleet", server: "nats://127.0.0.1:4222", root: meshRoot, mode: "open", ts: "2026-06-22T00:00:00.000Z" });
   setCurrent("macfleet"); // `cotal use macfleet` — spawn resolves here from ANY cwd
+  const emptyFolder = mkdtempSync(join(scratch, "empty-folder-"));
+  const emptyStatus = strip(await runStatus(emptyFolder));
+  check("an empty folder does not warn that nonexistent personas will not launch", !emptyStatus.includes("will not launch"), emptyStatus);
 
   // ── DIVERGENT ────────────────────────────────────────────────────────────────────────────────
   const divergentOut = await runStatus(folderRoot);

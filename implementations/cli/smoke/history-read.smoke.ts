@@ -23,10 +23,14 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
+  chatStream,
   createSpaceAuth,
+  idFromCreds,
   isReachable,
   mintCreds,
   mintLifecycleUid,
@@ -665,6 +669,40 @@ try {
     check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
     const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
+  }
+
+  // Only the chat stream is gone. Channel history cannot be read. A stored DM must still come back,
+  // and the refusal that says to create every stream again, empty, would delete it. The clear above
+  // purged the earlier note, so this cell stores a new one first.
+  {
+    const keptNote = `dm-after-clear-${randomUUID().slice(0, 8)}`;
+    await alice.unicast(`${bob.principal.owner}.${bob.principal.actor}`, keptNote);
+    await wait(400);
+    const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try {
+      await (await jetstreamManager(nc)).streams.delete(chatStream(space));
+    } finally {
+      await nc.close();
+    }
+    const kept = await run(["history", "--dms", "--json"]);
+    const keptText = `${kept.stdout}${kept.stderr}`;
+    check(
+      "history --dms returns a stored DM when only the chat stream is gone, and does not say to create every stream again",
+      kept.status === 4 && kept.envelope?.outcome === "partial" && kept.envelope.warnings.some((w) => w.code === "CHAT_STREAM_ABSENT") && (kept.envelope.result?.items ?? []).some((i) => i.text === keptNote && i.channel === null) && !keptText.includes("create them again"),
+      shown(kept),
+    );
+    const channelGone = await run(["history", "general", "--json"]);
+    check(
+      "channel history still refuses TARGET_UNAVAILABLE when the chat stream is gone",
+      channelGone.status === 2 && channelGone.envelope?.error?.code === "TARGET_UNAVAILABLE" && channelGone.envelope.error.message?.startsWith(`the streams of ${space} are not on its broker`) === true,
+      shown(channelGone),
+    );
   }
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});

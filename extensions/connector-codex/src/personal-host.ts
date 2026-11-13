@@ -20,7 +20,7 @@ const WATCH = { pollMs: 10_000, graceMs: 60_000 };
 const THREAD = /^[A-Za-z0-9_-]{1,128}$/;
 
 /** What the person decided about the conversation's pending request. */
-export interface ApprovalNotice { name: string; status: "approved" | "denied" | "expired"; id: string }
+export interface ApprovalNotice { name: string; status: "approved" | "denied" | "expired" | "refused"; id: string }
 
 export interface CodexPersonalHostOptions {
   cotal: () => readonly string[];
@@ -51,7 +51,7 @@ interface Held {
 
 type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant }
   | ({ ok: false; pending: true } & ConversationPending)
-  | { ok: false; pending?: false; taken?: true; error?: string; refused?: "denied" | "expired" | "refused" };
+  | { ok: false; pending?: false; taken?: true; error?: string; refused?: "denied" | "expired" | "refused"; retryable?: boolean };
 
 interface Watch {
   name: string;
@@ -102,6 +102,7 @@ function launchEnv(base: NodeJS.ProcessEnv, printed: Record<string, string>): No
 export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPersonalHost {
   const held = new Map<string, Held>();
   const watches = new Map<string, Watch>();
+  const refusals = new Map<string, { name: string; id: string; error: string }>();
   /** Identities whose retirement did not finish, by thread. */
   const pending = new Map<string, string>();
   const watch = o.watch ?? WATCH;
@@ -160,9 +161,11 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
         tell(thread, w, "approved");
         return;
       }
-      if (reply && !reply.ok && !reply.pending && reply.refused) {
+      if (reply && !reply.ok && !reply.pending && (reply.refused || reply.retryable === false)) {
         stopWatch(thread);
-        tell(thread, w, reply.refused === "expired" ? "expired" : "denied");
+        const status = reply.refused === "denied" || reply.refused === "expired" ? reply.refused : "refused";
+        if (status === "refused") refusals.set(thread, { name: w.name, id: w.approval.id, error: reply.error ?? "The mesh refused this connection. No automatic retry will be made." });
+        tell(thread, w, status);
         return;
       }
       if (reply && !reply.ok && reply.pending) w.approval = reply.approval;
@@ -184,6 +187,11 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
     next.timer.unref();
   };
   const open = async (thread: string, name: string, selection?: ConversationSelection, approvalId?: string, space?: string): Promise<GatewayConnection> => {
+    const refusal = refusals.get(thread);
+    if (approvalId !== undefined && refusal) {
+      if (refusal.id !== approvalId || refusal.name !== name) throw new Error("approval_id does not name this conversation's refused request");
+      throw new Error(refusal.error);
+    }
     const watched = watches.get(thread);
     if (approvalId !== undefined && watched && watched.approval.id !== approvalId)
       throw new Error("approval_id does not name this conversation's pending request; nothing was connected. Call cotal_connect with the approval_id from this conversation's own pending result, or without one");
@@ -209,13 +217,14 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
         catch (error) { pending.set(thread, watched.issued); throw error; }
       }
     }
+    refusals.delete(thread);
     const reply = await plumbing(args, facts.cwd);
     if (!reply.ok) {
       if (reply.pending) {
         startWatch(thread, { name, args, cwd: facts.cwd, approval: reply.approval });
         throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed });
       }
-      if (reply.refused) stopWatch(thread);
+      if (reply.refused || reply.retryable === false) stopWatch(thread);
       if (reply.taken) throw new NameTaken(name);
       throw new Error(reply.error ?? "identity provisioning failed");
     }
@@ -288,6 +297,7 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
     close: (account, id) => (owned(account, id) ? close(id) : Promise.resolve(false)),
     threadFor: (id) => held.get(id)?.thread,
     async closeAll() {
+      refusals.clear();
       const issued: string[] = [];
       for (const thread of [...watches.keys()]) { const w = stopWatch(thread); if (w?.issued) issued.push(w.issued); }
       const results = await Promise.allSettled([...held.keys()].map(close));

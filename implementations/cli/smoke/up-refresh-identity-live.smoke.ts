@@ -240,8 +240,8 @@ async function storeRecordRepair(): Promise<void> {
     check("(1) a fresh --store-dir start succeeds", started, `${up1.stdout}${up1.stderr}`);
     if (!started) return;
     check("(1) the record carries the resolved --store-dir", findMesh(space)?.storeDir === resolve(storeA), findMesh(space));
-    check("(1) off a terminal its selected note is one stdout line, not on stderr",
-      up1.stdout.replace(/\x1b\[[0-9;]*m/g, "").split("\n").includes(`selected "${space}": a command without --space targets it, except in another space's project folder`) && !/selected "/.test(up1.stderr),
+    check("(1) off a terminal its automatically selected note is one stdout line, not on stderr",
+      up1.stdout.replace(/\x1b\[[0-9;]*m/g, "").split("\n").includes(`automatically selected "${space}": commands target it except in another space's running project; cotal use ${space} selects it in every folder`) && !/selected "/.test(up1.stderr),
       { stdout: up1.stdout, stderr: up1.stderr });
 
     let railsUp = false;
@@ -356,7 +356,7 @@ async function detachedLinesWrap(): Promise<void> {
     assertEphemeralBroker(server);
     return { ...fixture, root, server, sandbox };
   };
-  const keptNote = (named: string) => `"${named}" up; "${space}" stays selected for commands run outside this folder - \`cotal use ${named}\` to switch`;
+  const keptNote = (named: string) => `"${named}" up; "${space}" stays automatically selected outside this folder - cotal use ${named} selects this space in every folder`;
   const folderNote = (named: string) => `This new project's space is named after its folder, "${named}"; pass --space <name> to start another`;
   const persona = (root: string) => join(realpathSync(root), ".cotal", "agents", "default.md");
   const running: Fixture[] = [];
@@ -367,7 +367,7 @@ async function detachedLinesWrap(): Promise<void> {
     check("on 80 columns a fresh detached start exits 0", started, first.lines);
     check("...its Started line breaks before the bundled nats-server's path, which keeps a whole line of its own", startedWraps(first.lines), first.lines);
     check("...and its summary wraps under its text past the ✓, with `cotal down` whole", summaryWraps(first.lines), first.lines);
-    check("...and its selected note wraps at spaces within 80 columns", fits(shownAs(first.lines, "", `selected "${space}": a command without --space targets it, except in another space's project folder`)), first.lines);
+    check("...and its automatically selected note wraps at spaces within 80 columns", fits(shownAs(first.lines, "", `automatically selected "${space}": commands target it except in another space's running project; cotal use ${space} selects it in every folder`)), first.lines);
 
     process.kill(Number(readFileSync(join(fixture.root, ".cotal", "nats.pid"), "utf8").trim()), "SIGKILL");
     await sleep(1_000);
@@ -382,9 +382,9 @@ async function detachedLinesWrap(): Promise<void> {
     if (off.status === 0) running.push(piped);
     check("off a terminal a second start with no --space in a new folder exits 0", off.status === 0, `${off.stdout}${off.stderr}`);
     const offLines = off.stdout.replace(/\x1b\[[0-9;]*m/g, "").split("\n");
-    check("...and its stays-selected, persona and folder notes are each one stdout line, none on stderr",
+    check("...and its stays-automatically-selected, persona and folder notes are each one stdout line, none on stderr",
       offLines.includes(keptNote("notice-pipe")) && offLines.includes(`  wrote default persona: ${persona(piped.root)}`) && offLines.includes(`  ${folderNote("notice-pipe")}`) &&
-        !/stays selected|wrote default persona|named after its folder/.test(off.stderr),
+        !/stays automatically selected|wrote default persona|named after its folder/.test(off.stderr),
       { stdout: off.stdout, stderr: off.stderr });
 
     const named = await folderNamed("notice-wrap");
@@ -395,7 +395,7 @@ async function detachedLinesWrap(): Promise<void> {
     if (second.exit === 0) running.push(named);
     check("on 80 columns a second start with no --space in a new folder exits 0", second.exit === 0, second.lines);
     const kept = shownAs(second.lines, "", keptNote("notice-wrap"));
-    check("...its note that the first stays selected wraps within 80 columns, with `cotal use notice-wrap` whole", fits(kept) && kept.some((l) => l.includes("`cotal use notice-wrap`")), second.lines);
+    check("...its note that the first stays automatically selected wraps within 80 columns, with cotal use notice-wrap whole", fits(kept) && kept.some((l) => l.includes("cotal use notice-wrap")), second.lines);
     check("...its wrote default persona line breaks before the path, which takes the next line whole",
       shownAs(second.lines, "  ", `wrote default persona: ${persona(named.root)}`).join("\n") === `  wrote default persona:\n  ${persona(named.root)}`, second.lines);
     check("...and its folder-named space note wraps under its indent within 80 columns", fits(shownAs(second.lines, "  ", folderNote("notice-wrap"))), second.lines);
@@ -526,7 +526,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
     check("(control) the second foreground fixture answers channel set within the poll budget", railsUp);
     control.kill("SIGINT");
     const controlExit = await new Promise<number | null>((res) => control.once("exit", (code) => res(code)));
-    check("(control) SIGINT (intended stop) exits 0", controlExit === 0, controlExit);
+    check("(control) SIGINT (intended stop) exits 130", controlExit === 130, controlExit);
     check("(control) SIGINT drops the record", findMesh(space) === undefined, findMesh(space));
   } finally {
     if (control.exitCode === null) { try { control.kill("SIGKILL"); } catch { /* already gone */ } }

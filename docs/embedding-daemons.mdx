@@ -233,6 +233,7 @@ connection. Both use the same incarnation's queue groups, so overlap does not ex
 twice. The old connection has five seconds to drain in-flight handlers and flush replies before
 closing. If that deadline expires, the manager reports the unfinished drain and closes only the
 retired transport. An unfinished request's outcome is unknown and must not be retried blindly.
+An endpoint that serves on its resident connection can ask for the same overlap with `overlapOnConnectionRenewal`. A planned credential swap dials a second connection, calls `onConnection`, and flushes before it reconnects the resident connection. It closes the second connection after the resident connection has flushed the subscriptions it restored. `onConnection` must accept a connection that exists only for the swap. The daemon's machine-status serve sets this. An endpoint that does not set it still reconnects in place.
 The supervisor, goal writer and session ledger retain their connections during planned renewal.
 They wait up to five seconds for outgoing requests to finish before requesting a native reconnect.
 If requests stay busy, the manager reports the deferred refresh and retries after one second.

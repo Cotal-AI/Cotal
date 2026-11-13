@@ -113,6 +113,8 @@ export {
   ensurePinnedIdp,
   loadAuthServiceInfo,
   loadCalloutAuth,
+  renewCalloutCredentials,
+  saveCalloutAccountJwt,
   loadIssuer,
   loadOwnerSecret,
   loadPinnedIdp,
@@ -197,6 +199,7 @@ export {
 export type { EndpointDeregisterGranter } from "./endpoint-deregister.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./service-adapter.js"; // self-registers the native auth service preset and child
+export { chooseAccount } from "./commands.js";
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
 // NB: writeEndpointGate (the D14 endpoint-registration stand-in) is deliberately NOT
 // re-exported here (import it directly from the module in smokes/provisioning). The public

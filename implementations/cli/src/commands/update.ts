@@ -34,7 +34,7 @@ import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
 import { cliVersion } from "../lib/version.js";
-import { runSeed, compareSemver } from "../seed/reconcile.js";
+import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedState } from "../seed/reconcile.js";
 import { operatorInstallDiffers } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { refreshConnectorInstalls } from "./setup.js";
@@ -60,6 +60,10 @@ import { legacyManagerReport, type LegacyManagerReport } from "../lib/legacy-man
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl, onFlag } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
+import { localUpdateManagers, type UpdateManager } from "../lib/update-managers.js";
+export { localUpdateManagers } from "../lib/update-managers.js";
+export { managerPin as updateManagerPin } from "../lib/manager-choice.js";
+import { assertRecordIdentity, brokerAddressKey } from "@cotal-ai/workspace";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
 const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
@@ -87,6 +91,8 @@ export interface UpdateRuntime {
   readonly parentPid: number;
   readonly nodePath: string;
   version(): string;
+  /** Read package consistency only, without refreshing external harness integrations. */
+  isCurrent?(): boolean;
   reconcile(): Promise<void>;
   /** Preserve native custody of an authenticated automatic update child before reconciliation. */
   adoptUpdateChild?(): Promise<void>;
@@ -104,6 +110,8 @@ export interface UpdateRuntime {
   preparedRestart?(): boolean;
   /** Reserve empty hosted Manager admission after continuity checks, before replacement. */
   prepareReplacement?(): Promise<() => Promise<void>>;
+  /** Validate recorded local service ownership before replacing packages or reconciling connectors. */
+  preflightReplacement?(): Promise<void>;
   claimGlobalUpdate(root: string): () => void;
   selfArgv(): string[];
   /** Whether this CLI runs from a source checkout, where `--self` installs a separate global copy. */
@@ -134,6 +142,16 @@ export const updateRuntime: UpdateRuntime = {
   parentPid: process.ppid,
   nodePath: process.execPath,
   version: cliVersion,
+  isCurrent: () => {
+    if (process.platform !== "linux") return false;
+    if (!seedInstallationCurrent()) return false;
+    try {
+      const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg));
+      return updateRuntime.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg))
+        .every(entry => operatorInstallDiffers(entry, cliVersion()) === undefined);
+    } catch { return false; }
+  },
+  preflightReplacement: async () => { assertReadableSeedState(); },
   refreshConnectors: refreshConnectorInstalls,
   reconcile: async () => {
     await runSeed({ verify: true });
@@ -339,6 +357,19 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
   if (self) {
     const latest = latestVersion(rt);
     if (latest.ok && compareSemver(latest.version, current) > 0) return upgradeAndReconcile(latest.version, current, rt, target);
+    if (latest.ok && rt.isCurrent?.()) {
+      try {
+        const custody = await rt.reportRunningManager(target);
+        rt.out("No newer CLI version; installed package closure is current. No connector reconciliation was run.");
+        if (custody === "legacy") rt.out("A later update will require stopping the agents listed above before replacing packages.");
+        rt.out("Run `cotal update` to repair connector integrations.");
+        reportVersion(current, latest.version, rt, false);
+        return 0;
+      } catch (error) {
+        rt.err(c.red(`✗ running manager continuity check: ${refusal(error)}`));
+        return 1;
+      }
+    }
 
     return reconcileCurrent(current, rt, target, (reconciled) => {
       if (!latest.ok) {
@@ -377,6 +408,12 @@ async function reconcileCurrent(
     if (await rt.reportRunningManager(target) === "legacy") return finish(false);
   } catch (e) {
     rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
+    return finish(false);
+  }
+
+  try { await rt.preflightReplacement?.(); }
+  catch (error) {
+    rt.err(c.red(`✗ installed daemon preflight: ${refusal(error)}`));
     return finish(false);
   }
 
@@ -559,7 +596,26 @@ function runningSpaces(e: unknown): string[] | undefined {
 export async function reportRunningManagers(
   flags: Record<string, unknown>,
   readOne: (flags: Record<string, unknown>) => Promise<"none" | "legacy"> = readManagerContinuity,
+  census: (flags: Record<string, unknown>) => readonly UpdateManager[] = localUpdateManagers,
 ): Promise<"none" | "legacy"> {
+  // Raw credentials are an explicit off-registry target, not an install-wide discovery request.
+  if (typeof flags.creds === "string") return readOne(flags);
+  const on = typeof flags.on === "string" ? await managerPin(flags, "cotal update") : undefined;
+  const local = process.platform === "linux" ? census({ ...flags, on }) : [];
+  const selected = local.filter(manager =>
+    (typeof flags.space !== "string" || manager.space === flags.space) &&
+    (typeof flags.server !== "string" || brokerAddressKey(manager.server) === brokerAddressKey(flags.server)) &&
+    (on === undefined || manager.instanceId === on));
+  if (selected.length) {
+    let verdict: "none" | "legacy" = "none";
+    for (const manager of selected) {
+      if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before its continuity read`);
+      console.log(c.dim(`  ${manager.space}: reading local Manager ${manager.instanceId} (pid ${manager.pid})`));
+      if (await readOne({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") verdict = "legacy";
+    }
+    return verdict;
+  }
+  if (on !== undefined && local.length) throw new Error(`--on ${on} does not name a local Manager sharing this installation`);
   try {
     return await readOne(flags);
   } catch (e) {
@@ -586,7 +642,6 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
   // and it has to reach the MINT below, since a credential cannot gain an instance rail after it is
   // issued. A name or host resolves to an instance id the same way `ps` resolves it.
   const on = await managerPin(flags, "cotal update");
-  let remote = false;
   // #2158: a remote user mesh's manager runs under another install, on another machine. Replacing
   // THIS machine's binary interrupts no manager there, so there is no custody here to preserve and
   // no answer from that mesh's exchange can change what this install does. Peek the mode the same
@@ -629,7 +684,6 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
         console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));
         return "none";
       }
-      remote = true;
       console.log(c.dim(`  ${peek.space}: a manager for this mesh runs on this machine; reading its custody`));
     }
     // #3559: `cotal down` then `cotal update` is the cold path past a `legacy` verdict, so a stopped
@@ -647,7 +701,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       ...(typeof flags.server === "string" ? { server: flags.server } : {}),
       ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
       offline,
-    }, "control-caller-admin", on, { onRefusal: "throw" });
+    }, "control-caller-admin", on, { onRefusal: "throw", readOnly: true });
   } catch (e) {
     // No running manager means no custody to preserve and nothing this update could interrupt. Only
     // the "no mesh running" refusal reads as "none": no recorded mesh, or every recorded mesh down
@@ -678,25 +732,26 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       : [],
   );
   if (!report) return "none";
-  printLegacyReport(report, target.space, remote ? `cotal manager stop --space ${target.space}` : `cotal down --space ${target.space}`);
+  printLegacyReport(report, target.space, undefined, console.log, on);
   return "legacy";
 }
 
-/** What a `legacy` verdict prints: the verdict, each seat's continuity class, and the cold path past
- *  it as the next step. The verdict alone left the operator with no way on (#5027): the update exits
- *  nonzero, and the path the docs name, `cotal down` then `cotal update`, was nowhere on the screen.
- *  `stop` is the command that ends that manager: `cotal down` for a mesh this machine runs, and
- *  `cotal manager stop` for a remote mesh whose manager this machine runs. */
+/** Name legacy custody and the cold update sequence without guessing its hosting lifecycle.
+ *  An endpoint identity is not a saved service instance or proof of its original starter.
+ *  The third argument is retained for callers, but an unverified stop command is not a remedy. */
 export function printLegacyReport(
   report: LegacyManagerReport,
   space: string,
-  stop: string = `cotal down --space ${space}`,
+  _stop: string | undefined = undefined,
   out: (line: string) => void = console.log,
+  manager?: string,
 ): void {
   out(c.yellow("! legacy manager custody: PTY continuity is impossible; this update is not a hot update"));
+  out(`  Manager ${manager ?? "(instance unavailable)"} in space ${JSON.stringify(space)}: ${report.seats.length} seats`);
   for (const seat of report.seats)
     out(c.dim(`  ${seat.name}: ${seat.continuity}`));
-  out(`  Next: stop that mesh with \`${stop}\`, then run this update again; the stop ends the seats above, and the update after it is a cold one`);
+  out("  Cannot determine this Manager's original hosting command. Obtain its exact stop and start commands before stopping it; do not infer a service instance from its Manager identity.");
+  out("  Next: stop this Manager through its original host, ending any seats listed above; run `cotal update --self`, then restart through that host with the original start command. This is a cold update, including for a Manager with 0 seats.");
 }
 
 /** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
@@ -796,6 +851,12 @@ function assertConfigAncestorProtected(): void {
 }
 
 async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>): Promise<number> {
+  try { await rt.preflightReplacement?.(); }
+  catch (error) {
+    recordUpdateDeferral(targetVersion, "installed daemon preflight refused");
+    rt.err(c.red(`✗ installed daemon preflight: ${refusal(error)}`));
+    return 1;
+  }
   try {
     if (await rt.reportRunningManager(target) === "legacy") { recordUpdateDeferral(targetVersion, "waiting for agents to stop"); return 1; }
   } catch (e) {

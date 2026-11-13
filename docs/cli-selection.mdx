@@ -5,7 +5,9 @@ kind: Reference
 audience: operators
 ---
 
-`space` manages this machine's space records. `use` selects a default target across directories.
+`space` manages this machine's space records. `cotal use <space>` selects the target in every
+folder until another `use` or `use --clear`. Explicit `--space`, `--server` and `--creds` keep their
+own target rules. A selection Cotal adopts automatically does not override another project's running space.
 `status` reads infrastructure and local records without starting or repairing components.
 
 
@@ -351,18 +353,18 @@ broker restart brings the history back. To drop
 the space instead, run `cotal down --yes` in its root, then `space forget`. On a legacy root, run
 `cotal down`, then `cotal up` to start it again with empty streams.
 
-`use <space>` selects the space commands target when none is named, outside another space's
+`use <space>` selects the space commands target when none is named, in every
 project folder. It changes only the selection:
 it starts nothing and does not check the broker, so a stopped or prepared space can be selected and
-the command that targets it reports that. Selecting the selected space again is a `no-op`. A name that is not
+the command that targets it reports that. Selecting the explicit selection again is a `no-op`; selecting an adopted selection promotes it to explicit. A name that is not
 registered or prepared is refused with `TARGET_NOT_FOUND`, exit 2, naming the known spaces, and the
 selection stays. That refusal has no `Mesh:` heading, and its remedy names `cotal use --clear` only
 while a space is selected. Bare `use` reports
-the selection. Inside a project whose root has one registered space other than the selection, `use`
-also says that commands in the folder target that space while it runs, and `--json` gives it as
-`folder`; `use` reads no broker, so it does not say whether that space runs. `cotal space` and
-`cotal status`, which read its broker, give `folder` and `meshes.folder` as null when it does not
-answer, and the listing does not mark it as this folder's. A selection that names a space no longer registered is reported with a
+the selection and whether Cotal adopted it automatically. Inside a project, it names the folder's
+space and how to reach it with `--space <name>` or `cotal use --clear`. `use --json` keeps its keys;
+`folder` identifies the local folder's space, not an override of explicit intent. `cotal space` and
+`cotal status` mark the folder as the target only when no explicit selection overrides it.
+A selection that names a space no longer registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
 `use --clear` removes the selection, so a command targets its folder's space again. Its receipt
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With
@@ -379,6 +381,11 @@ when this `up` selected its own space because no space was selected.
 A command run without `--space` targets the selection. When the selected space's broker is down it
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
 it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
+
+A selection made with `cotal use` wins over every folder state, including a running, stopped,
+prepared or copied project. The note under `Mesh:` names that choice, including native `spawn`.
+The following folder precedence rules apply only when the selection was adopted automatically
+by the first `up`, registration or sign-in, or when nothing is selected.
 
 A folder's space captures the commands run there only while it runs. Inside a project whose root has
 one registered space other than the selection, and whose broker answers, the command targets that

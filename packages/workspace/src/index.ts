@@ -5,6 +5,7 @@ export * from "./auth-paths.js";
 export * from "./agent-secrets.js";
 export * from "./agent-health.js";
 export * from "./bin-path.js";
+export * from "./cloud-login.js";
 export * from "./colors.js";
 export * from "./connect.js";
 export * from "./cotal-config.js";
@@ -65,6 +66,7 @@ export { darwinProcessBinding, type DarwinProcess, type DarwinProcessBinding } f
 export { win32ProcessBinding, type Win32ProcessBinding } from "./win32-process.js";
 export { custodyRequest, custodyStatus, isCustodyPipe, startWin32Custodian, type CustodyRequest, type CustodyStatus, type Win32Custody } from "./win32-custody.js";
 export * from "./progress.js";
+export * from "./service-login-stores.js";
 export * from "./service-definition.js";
 export * from "./service-adapter.js";
 export * from "./service-preset.js";

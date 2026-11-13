@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createSpaceAuth, mintCreds, mintMembershipObserverCreds, newIdentity,
-  serverConfig, startMembershipFeed,
+  isReachable, serverConfig, setupSpaceStreams, startMembershipFeed,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+const { check, finish } = createSuite();
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async (cond: () => boolean | Promise<boolean>, budgetMs: number, stepMs: number): Promise<boolean> => {
@@ -45,6 +47,8 @@ const expiringLog: string[] = [];
 let feed: Awaited<ReturnType<typeof startMembershipFeed>> | undefined;
 
 try {
+  await awaitBrokerReady(() => isReachable(SERVERS), { servers: SERVERS, attempts: 75, delayMs: 200, output: () => brokerLog });
+  await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   feed = await startMembershipFeed({
     servers: SERVERS, space, accountId, observerCreds, intervalMs: 60_000,
     log: (m) => { expiringLog.push(m); },
@@ -56,7 +60,8 @@ try {
   });
 
   // Wait for expiry to be detected
-  await until(() => expiringLog.some((m) => /rw creds have expired/.test(m)), 12_000, 100);
+  check("the scoped writer credential reaches expiry", await until(() => expiringLog.some((m) => /rw creds have expired/.test(m)), 12_000, 100));
+  check("the feed attempts renewal against the offline source", expiringReads > 1);
 
   const expiryLogMark = expiringLog.find((m) => /rw creds have expired/.test(m)) ?? "";
   const claimedRetry = /retrying with backoff/.test(expiryLogMark);
@@ -74,12 +79,9 @@ try {
 
   // The defect is present if the feed claims "retrying with backoff" while conn B closes permanently (0 dials)
   const defectPresent = claimedRetry && redials.length === 0;
-  if (defectPresent) {
-    console.log("DEFECT PRESENT: conn B closed permanently on credential expiry while logging that it is retrying");
-    process.exitCode = 1;
-  } else {
-    console.log("DEFECT NOT PRESENT");
-  }
+  check("a permanently closed writer does not claim transport retries", !defectPresent);
+} catch (error) {
+  check(`harness: ${error instanceof Error ? error.message : "unknown failure"}`, false);
 } finally {
   if (feed) {
     try { await feed.stop(); } catch { /* ignore */ }
@@ -87,4 +89,5 @@ try {
   releaseBroker();
   try { srv.kill(); } catch { /* ignore */ }
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  finish();
 }

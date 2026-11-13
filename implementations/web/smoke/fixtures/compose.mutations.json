@@ -464,8 +464,8 @@
     {
       "name": "K58 the DM command pastes the agent id bare, so a hostile id runs as shell",
       "file": "implementations/web/client/src/lib/compose.ts",
-      "find": "`cotal send dm ${shellArg(t.to)} \"<text>\"`",
-      "replace": "`cotal send dm ${t.to} \"<text>\"`",
+      "find": "`cotal send -t ${shellArg(t.to)} \"<text>\"`",
+      "replace": "`cotal send -t ${t.to} \"<text>\"`",
       "expectRed": "1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself",
       "cell": "1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself"
     },
@@ -632,8 +632,8 @@
     {
       "name": "K79 the channel command pastes the name bare",
       "file": "implementations/web/client/src/lib/compose.ts",
-      "find": "`cotal send msg ${shellArg(t.channel)} \"<text>\"`",
-      "replace": "`cotal send msg ${t.channel} \"<text>\"`",
+      "find": "`cotal send -c ${shellArg(t.channel)} \"<text>\"`",
+      "replace": "`cotal send -c ${t.channel} \"<text>\"`",
       "expectRed": "1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself",
       "cell": "1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself"
     },
@@ -650,16 +650,16 @@
       "file": "implementations/web/client/src/ui/NeedsCard.tsx",
       "find": "{post?.mode === \"off\" ? (",
       "replace": "{false ? (",
-      "expectRed": "4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send dm with the agent's id",
-      "cell": "4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send dm with the agent's id"
+      "expectRed": "4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send -t with the agent's id",
+      "cell": "4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send -t with the agent's id"
     },
     {
       "name": "K82 Copy command copies the agent's name instead of the command",
       "file": "implementations/web/client/src/ui/NeedsCard.tsx",
       "find": "copy(sendCommand({ kind: \"dm\", to: row.id }))",
       "replace": "copy(row.name)",
-      "expectRed": "4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send dm with the agent's id",
-      "cell": "4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send dm with the agent's id"
+      "expectRed": "4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send -t with the agent's id",
+      "cell": "4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send -t with the agent's id"
     },
     {
       "name": "K83 the Needs card's Message ignores the operator's id",

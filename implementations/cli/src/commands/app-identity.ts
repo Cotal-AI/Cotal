@@ -30,7 +30,7 @@ import { activateTerminalSeat, defaultPersonaRef, homeCotalDir, issueTerminalSea
 import { withProvisioner } from "../lib/provisioner.js";
 import { defaultPersonaFix } from "../lib/default-persona.js";
 import { liveMeshNames } from "../lib/live-names.js";
-import { ConversationRefusal, isUserAppDir, provisionUserApp, retireDeadUserApps, retireUserApp } from "../lib/app-user-identity.js";
+import { ConversationRefusal, ConversationRequestError, isUserAppDir, provisionUserApp, retireDeadUserApps, retireUserApp } from "../lib/app-user-identity.js";
 
 /** Every conversation identity on an open or static mesh has a fresh `mkdtemp` directory under the
  *  OS temp dir with this prefix, which retire removes. */
@@ -77,12 +77,13 @@ interface IdentityRecord {
 /** `pending` names the request a person has not decided yet and the page where they decide it. It
  *  carries no credential, secret or path. Provisioning again replays that same request. `refused`
  *  says the authority recorded a decision that issued nothing and the saved request is gone; any
- *  other error leaves the request saved for the next replay. */
+ *  other error leaves the request saved for the next replay. `retryable: false` stops automatic
+ *  polling without asserting that the identity was never issued. */
 export type AppIdentityReply =
   | { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant }
   | ({ ok: false; pending: true } & ConversationPending)
   | { ok: false; taken: true }
-  | { ok: false; error: string; refused?: ConversationRefusal["decision"] };
+  | { ok: false; error: string; refused?: ConversationRefusal["decision"]; retryable?: boolean };
 
 function reply(r: AppIdentityReply | { ok: true }): void {
   process.stdout.write(`${JSON.stringify(r)}\n`);
@@ -102,7 +103,8 @@ export async function appIdentity(args: ParsedArgs): Promise<void> {
     if (verb === "reap" && args.positionals.length === 1) return reply(await reap(values));
     reply({ ok: false, error: "usage: cotal app-identity provision --name <name> [--space <space>] | retire --dir <dir> | reap [--space <space>]" });
   } catch (e) {
-    reply({ ok: false, error: errorText(e), ...(e instanceof ConversationRefusal ? { refused: e.decision } : {}) });
+    reply({ ok: false, error: errorText(e), ...(e instanceof ConversationRefusal ? { refused: e.decision } : {}),
+      ...(e instanceof ConversationRequestError ? { retryable: e.retryable } : {}) });
   }
 }
 

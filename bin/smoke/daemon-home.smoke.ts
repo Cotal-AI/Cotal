@@ -51,7 +51,8 @@
  *  H6 managed catalog refresh keeps shared registrations, sentinel files and selection unchanged,
  *     including on provider failure; default refresh still applies additions and removals. An
  *     account switch drops the old catalog cache in either home, but only the default daemon
- *     removes the old account's shared registrations and selection. Credential files stay.
+ *     removes the old account's shared registrations, their credential files and selection. A
+ *     manual registration and its credential file stay.
  *     An unrelated damaged registration stays untouched while healthy entries refresh.
  *
  * Not covered here, and still to add: register approval carry-over (needs the stock auth service
@@ -148,10 +149,10 @@ function track(child: ChildProcess): ChildProcess {
 
 type Doc = { command?: string; target?: { space?: string; idp?: string } | null; outcome?: string; result?: Record<string, any>; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
 /** One CLI invocation to completion. A command string exercises copied guidance through the built CLI. */
-async function cli(args: string[] | string, timeoutMs = 30_000): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
+async function cli(args: string[] | string, timeoutMs = 30_000, env: NodeJS.ProcessEnv = childEnv): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
   const child = track(typeof args === "string"
-    ? spawn("/bin/sh", ["-c", `cotal() { exec "$DAEMON_COPY_NODE" "$DAEMON_COPY_ENTRY" "$@"; }\n${args} --json`], { cwd: root, env: { ...childEnv, DAEMON_COPY_NODE: process.execPath, DAEMON_COPY_ENTRY: join(repo, "bin", "dist", "cotal.js") }, stdio: ["ignore", "pipe", "pipe"] })
-    : spawn(process.execPath, daemonArgv(args), { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] }));
+    ? spawn("/bin/sh", ["-c", `cotal() { exec "$DAEMON_COPY_NODE" "$DAEMON_COPY_ENTRY" "$@"; }\n${args} --json`], { cwd: root, env: { ...env, DAEMON_COPY_NODE: process.execPath, DAEMON_COPY_ENTRY: join(repo, "bin", "dist", "cotal.js") }, stdio: ["ignore", "pipe", "pipe"] })
+    : spawn(process.execPath, daemonArgv(args), { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] }));
   let out = "", err = "";
   child.stdout!.on("data", (b) => { out += String(b); });
   child.stderr!.on("data", (b) => { err += String(b); });
@@ -226,16 +227,23 @@ try {
     check("G0 the remedy names help, not a live status read", missing.err.includes("cotal help daemon") && !missing.err.split("\n")[1]!.includes("cotal daemon status"), missing.err.slice(0, 400));
     const help = await cli(["--help"]);
     check("G0 scoped help succeeds before any daemon starts", help.status === 0 && help.out.includes("desktop"), { status: help.status });
-    for (const mode of ["setup", "connect-check", "register", "service-connect", "service-disconnect", "service-status"]) {
+    for (const mode of ["connect-check", "register", "service-connect", "service-disconnect", "service-status"]) {
       const scoped = await cli([mode, "--help"]);
       check(`G0 ${mode} help requires an explicit space without promising a resolved default`, scoped.status === 0 && scoped.out.includes(`cotal daemon ${mode} --space <s>`) && scoped.out.includes("target space (required") && !scoped.out.includes("the resolved mesh"), scoped.out);
       const missingSpace = await cli([mode, "--json"]);
       check(`G0 ${mode} still refuses an omitted space`, missingSpace.status === 1 && missingSpace.doc.error?.code === "USAGE_INVALID" && missingSpace.doc.error.message?.includes("needs --space <s>") === true, missingSpace.doc);
     }
     const setupHelp = await cli(["setup", "--help"]);
+    check("G0 setup permits account-only setup and describes its scoped space flags", setupHelp.status === 0 && setupHelp.out.includes("[--space <s>]") && setupHelp.out.includes("--no-manager and --wait require --space") && !setupHelp.out.includes("the resolved mesh"), setupHelp.out);
+    const missingProvider = await cli(["setup", "--json"], 30_000, { ...childEnv, DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(root, "absent-bus")}` });
+    check("G0 fresh account-only setup selects Cloud before the unavailable service manager", missingProvider.status === 2 && missingProvider.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && missingProvider.err.includes("Signing in to Cotal Cloud. For another host, use cotal login --idp <url>.") && !missingProvider.out.includes("pass --idp"), missingProvider.doc);
+    for (const flags of [["--no-manager"], ["--wait", "0"]]) {
+      const scoped = await cli(["setup", ...flags, "--json"]);
+      check(`G0 setup ${flags[0]} still requires an explicit space`, scoped.status === 1 && scoped.doc.error?.code === "USAGE_INVALID" && scoped.doc.error.message === "--no-manager and --wait require --space <s>", scoped.doc);
+    }
     check("G0 setup provider options do not claim to be login-only", !setupHelp.out.includes("login:") && setupHelp.out.includes("--idp <auth base URL>") && setupHelp.out.includes("--client-id <id>"), setupHelp.out);
     const loginHelp = await cli(["login", "--help"]);
-    check("G0 login usage requires a provider", loginHelp.status === 0 && loginHelp.out.includes("cotal daemon login --idp <auth base URL>"), loginHelp.out);
+    check("G0 login usage permits Cloud or another provider", loginHelp.status === 0 && loginHelp.out.includes("cotal daemon login [--cloud | --idp <auth base URL>]"), loginHelp.out);
     const statusHelp = await cli(["status", "--help"]);
     check("G0 local status keeps its optional space selector", statusHelp.status === 0 && statusHelp.out.includes("cotal daemon status [--space <s>]"), statusHelp.out);
     for (const mode of ["spaces", "start", "desktop"]) {
@@ -496,6 +504,9 @@ try {
       const sentinels = oldSpaces.map((m) => m.userAuth?.sentinelCredsPath).filter((p): p is string => typeof p === "string");
       check("H6 switch fixture has two discovered spaces and their sentinel files", oldSpaces.length === 2 && sentinels.length === 2 && sentinels.every((p) => existsSync(p)));
       const manual = userMesh("catalog-manual"); recordMesh(manual);
+      const manualSentinel = manual.userAuth!.sentinelCredsPath!;
+      mkdirSync(dirname(manualSentinel), { recursive: true, mode: 0o700 });
+      writeFileSync(manualSentinel, "manual-sentinel", { mode: 0o600 });
       setCurrent("catalog-kept");
       const beforeSwitch = sharedState();
       sub = "catalog-next";
@@ -512,9 +523,10 @@ try {
       const switched = await cli(["login", "--idp", idp, "--json"]);
       check("H6 default account switch removes its old catalog entry", switched.status === 0 && switched.doc.result?.previousSub === "catalog-account" && subjects(home).join() === "catalog-next", switched.doc);
       check("H6 default account switch removes its old registrations", oldSpaces.every((old) => !loadMeshes().some((m) => m.space === old.space)));
-      check("H6 account cleanup retains credential files", sentinels.every((p) => existsSync(p)));
+      check("H6 default account switch deletes its old credential files and reports none kept", sentinels.every((p) => !existsSync(p)) && switched.doc.result?.credentialsKept === undefined, switched.doc);
       check("H6 default account switch clears the removed selection", getCurrent() === undefined);
       check("H6 default account switch preserves manual registration", JSON.stringify(loadMeshes().find((m) => m.space === manual.space)) === JSON.stringify(manual));
+      check("H6 default account switch preserves the manual registration's credential file", readFileSync(manualSentinel, "utf8") === "manual-sentinel");
       slugs = ["catalog-next-space"];
       const next = await cli(["spaces", "--refresh", "--json"]);
       check("H6 refreshing the new account discovers only its own spaces", next.status === 0 && loadMeshes().filter((m) => m.origin === "catalog").map((m) => m.space).join() === "catalog-next-space", next.doc);

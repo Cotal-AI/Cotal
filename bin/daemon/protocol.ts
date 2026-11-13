@@ -154,7 +154,9 @@ export interface LoginPrompt {
 
 /** The single terminal outcome of one sign-in attempt. */
 export type LoginResult =
-  | { readonly outcome: "signed-in"; readonly idp: string; readonly sub: string; readonly label?: string; readonly previousSub?: string }
+  | { readonly outcome: "signed-in"; readonly idp: string; readonly sub: string; readonly label?: string; readonly previousSub?: string;
+      /** The previous account's discovered-space credential files an account switch could not delete. */
+      readonly credentialsKept?: readonly { readonly space: string; readonly path: string; readonly reason: string }[] }
   | { readonly outcome: "cancelled" }
   | { readonly outcome: "failed"; readonly reason: "local-state-error"; readonly message: string; readonly remedy?: string }
   | { readonly outcome: "failed"; readonly reason: "denied" | "expired" | "unreachable" | "authorization-refused" | "refused"; readonly message: string };

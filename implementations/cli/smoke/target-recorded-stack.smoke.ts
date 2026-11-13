@@ -105,18 +105,17 @@ const refusedWith = (r: ReturnType<typeof run>, code: string, message: string, r
   ? r.envelope.error?.code === code && r.envelope.error.message === message && r.envelope.error.remedy === remedy
   : new RegExp(`Code:\\s+${code}\\n`).test(r.stderr) && r.stderr.includes(`  ${message}\n`) && r.stderr.includes(`Next\n  ${remedy}\n`));
 const noDefault = (r: ReturnType<typeof run>) => !`${r.stdout}${r.stderr}`.includes(":4222");
-/** Whether `status`, run where the folder holds the records of a stack that runs from another folder,
- *  reports under the space they name, as the reads there refuse under it: its `Mesh:` heading and
- *  `target.space`, its marked row, a `This folder` section that says what the folder holds rather than
- *  a `Selected space` one, and the step the reads name under Next. */
-const statusOnRecords = (text: ReturnType<typeof run>, json: ReturnType<typeof run>, space: string, recordedRoot: string, holds: string, step: string) =>
-  text.status === 0 && new RegExp(`^Mesh: ${space}$`, "m").test(text.stdout) && !/→ sel07/.test(text.stdout) && /^This folder$/m.test(text.stdout) && !/^Selected space/m.test(text.stdout) &&
-    text.stdout.includes(` ${holds}\n`) && text.stdout.includes(`\n  ${step}\n`) &&
-    json.envelope?.target?.space === space && json.envelope.result?.selected?.space === space && json.envelope.result.selected.recordedRoot === recordedRoot &&
-    json.envelope.result.selected.message === holds && (json.envelope.result.hints ?? []).includes(step);
+/** An explicit selection stays the status target in copied and moved folders. */
+const statusOnSelection = (text: ReturnType<typeof run>, json: ReturnType<typeof run>) =>
+  text.status === 0 && /^Mesh: sel07$/m.test(text.stdout) && /^Selected space  → sel07$/m.test(text.stdout) &&
+    !/^This folder$/m.test(text.stdout) && json.envelope?.target?.space === "sel07" &&
+    json.envelope.result?.selected?.space === "sel07" && json.envelope.result.selected.resolved === true;
+const selectedRefusal = (r: ReturnType<typeof run>) => refusedWith(r, "TARGET_UNAVAILABLE",
+  'no broker answered at nats://127.0.0.1:24712; "sel07" is registered here but its mesh is not up',
+  'start it where it runs, or `cotal space forget sel07` to unregister it') && r.envelope?.target?.space === "sel07";
 
 const before = run(["whoami", "--json"]);
-check("control: with nothing recorded, the root still resolves, so the journal is what changes it", before.status === 0 && before.envelope?.outcome === "ok", shown(before));
+check("control: with nothing recorded, the root names no space and borrows none", before.status === 2 && before.envelope?.error?.code === "TARGET_NOT_FOUND" && before.envelope.error.message === `no space is registered or prepared here for ${root}`, shown(before));
 
 const now = new Date().toISOString();
 const member = (role: string, definition: string, state: string) => ({ role, definition, instanceId: null, state });
@@ -244,8 +243,8 @@ check("up in a copied folder refuses CONFLICT, exit 2, naming the folder its jou
   check("rig: sel07 is selected again", run(["use", "sel07"], copy).status === 0);
   for (const command of ["ps", "whoami"]) {
     const r = run([command, "--json"], copy);
-    check(`${command} in a copy with another space selected still refuses TARGET_UNAVAILABLE and names the original`,
-      refusedWith(r, "TARGET_UNAVAILABLE", `the stack journal in ${copy} was recorded at ${root}, so this folder is a copy or was moved from there`, `use the stack from ${root}, which holds it; this copy does not`), shown(r));
+    check(`${command} in a copy targets the explicit selection`,
+      command === "ps" ? selectedRefusal(r) : r.status === 0 && r.envelope?.outcome === "ok" && r.envelope.target?.space === "sel07", shown(r));
   }
   // Bare cotal reads no broker, so it names what the folder holds from its records, with the step the
   // reads name, and status reports under the space they name, as the reads refuse under it.
@@ -253,8 +252,8 @@ check("up in a copied folder refuses CONFLICT, exit 2, naming the folder its jou
   const entry = run([], copy), status = run(["status"], copy), statusJson = run(["status", "--json"], copy);
   check("bare cotal there says the folder holds a copy of la07 with the step the reads name, and offers no cotal up for it",
     entry.status === 0 && /^sel07 · /m.test(entry.stdout) && entry.stdout.includes(`\n${holds}; ${step}\n`) && !/this folder holds the stopped space/.test(entry.stdout) && !/Start this folder's space/.test(entry.stdout), shown(entry));
-  check("status there heads with la07 as the reads do, says the folder holds a copy of it, and names the same step",
-    statusOnRecords(status, statusJson, "la07", root, holds, step), { text: status.stdout.slice(0, 1400), json: statusJson.envelope?.result?.selected });
+  check("status there heads with the explicit selection, not the copied records",
+    statusOnSelection(status, statusJson), { text: status.stdout.slice(0, 1400), json: statusJson.envelope?.result?.selected });
   check("rig: the selection is cleared again", run(["use", "--clear"], copy).status === 0);
 }
 renameSync(root, moved);
@@ -279,14 +278,14 @@ check("up in a moved folder whose space this machine does not record refuses CON
   movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === adoptOnly, shown(movedUp));
 check("status and whoami there name the same next step",
   (movedStatus.envelope?.result?.hints ?? []).includes(adoptOnly) && movedWho.status === 2 && movedWho.envelope?.error?.remedy === adoptOnly, { status: shown(movedStatus), whoami: shown(movedWho) });
-check("ps there with another space selected refuses TARGET_UNAVAILABLE with the same step, not the selection",
-  refusedWith(movedSelected, "TARGET_UNAVAILABLE", `the stack journal in ${moved} was recorded at ${root}, so this folder is a copy or was moved from there`, adoptOnly), shown(movedSelected));
+check("ps in a moved folder targets the explicit selection",
+  selectedRefusal(movedSelected), shown(movedSelected));
 {
   const holds = `this folder holds the records of "la07" and was moved from ${root}`;
   check("bare cotal there says the folder was moved from the recorded folder, with the same step",
     movedEntry.status === 0 && /^sel07 · /m.test(movedEntry.stdout) && movedEntry.stdout.includes(`\n${holds}; ${adoptOnly}\n`), shown(movedEntry));
-  check("status there heads with la07, says the folder was moved from the recorded folder, and names the same step",
-    statusOnRecords(movedStatusText, movedStatusSelected, "la07", root, holds, adoptOnly), { text: movedStatusText.stdout.slice(0, 1400), json: movedStatusSelected.envelope?.result?.selected });
+  check("status in a moved folder reports the explicit selection",
+    statusOnSelection(movedStatusText, movedStatusSelected), { text: movedStatusText.stdout.slice(0, 1400), json: movedStatusSelected.envelope?.result?.selected });
 }
 check("clean store in that moved folder refuses TARGET_UNAVAILABLE with the same step, and the store stays",
   refusedWith(movedClean, "TARGET_UNAVAILABLE", `the stack journal in ${moved} was recorded at ${root}, so this folder is a copy or was moved from there; nothing was removed`, adoptOnly) && movedStore, shown(movedClean));
@@ -600,10 +599,10 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   {
     check("rig: sel07 is selected again", run(["use", "sel07"], legacyAuth).status === 0);
     const r = run(["ps", "--json"], legacyAuth), text = run(["who"], legacyAuth), shownHere = run(["space", "show"], legacyAuth);
-    check("ps in that folder with another space selected still names the folder \"lg01\" is registered for",
-      refusedWith(r, "TARGET_UNAVAILABLE", `${lastRan}, and "lg01" is registered for ${holder}, not for this folder`, useHolder), shown(r));
+    check("ps in a legacy copy targets the explicit selection",
+      selectedRefusal(r), shown(r));
     check("who there names no stopped space of this folder and no cotal up that would restart it",
-      refusedWith(text, "TARGET_UNAVAILABLE", `${lastRan}, and "lg01" is registered for ${holder}, not for this folder`, useHolder) && !/this folder holds|restart it with `cotal up`/.test(text.stdout + text.stderr), shown(text));
+      refusedWith(text, "TARGET_UNAVAILABLE", 'no broker answered at nats://127.0.0.1:24712; "sel07" is registered here but its mesh is not up', 'start it where it runs, or `cotal space forget sel07` to unregister it') && !/this folder holds|restart it with `cotal up`/.test(text.stdout + text.stderr), shown(text));
     check("space show there shows the selection, not \"lg01\" as this folder's stopped space",
       shownHere.status === 0 && /^ {2}space: +sel07 \(selected\)$/m.test(shownHere.stdout) && !/lg01/.test(shownHere.stdout), shown(shownHere));
     // A copy and a folder whose name a later `up` took over hold the same records, so both are named
@@ -612,8 +611,8 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
     const entry = run([], legacyAuth), status = run(["status"], legacyAuth), statusJson = run(["status", "--json"], legacyAuth);
     check("bare cotal there names the records the folder holds and the folder they are registered for, with the step the reads name",
       entry.status === 0 && /^sel07 · /m.test(entry.stdout) && entry.stdout.includes(`\n${holds}; ${useHolder}\n`) && !/Start this folder's space/.test(entry.stdout), shown(entry));
-    check("status there heads with lg01 as the reads do, names those records, and names the same step",
-      statusOnRecords(status, statusJson, "lg01", holder, holds, useHolder), { text: status.stdout.slice(0, 1400), json: statusJson.envelope?.result?.selected });
+    check("status in a legacy copy reports the explicit selection",
+      statusOnSelection(status, statusJson), { text: status.stdout.slice(0, 1400), json: statusJson.envelope?.result?.selected });
     check("rig: the selection is cleared again", run(["use", "--clear"], legacyAuth).status === 0);
   }
 
@@ -636,14 +635,14 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   const movedSelected = run(["ps", "--json"], legacyAuth);
   const movedEntry = run([], legacyAuth), movedStatusText = run(["status"], legacyAuth), movedStatusSelected = run(["status", "--json"], legacyAuth);
   run(["use", "--clear"], legacyAuth);
-  check("with another space selected it is still told to move back there, not sent to the selection",
-    refusedWith(movedSelected, "TARGET_UNAVAILABLE", `${lastRan}, and "lg01" is registered for ${gone}, not for this folder`, `move this folder back to ${gone}, then run the command again there`), shown(movedSelected));
+  check("a moved legacy folder targets the explicit selection",
+    selectedRefusal(movedSelected), shown(movedSelected));
   {
     const holds = `this folder holds the records of "lg01" and was moved from ${gone}`, back = `move this folder back to ${gone}, then run the command again there`;
     check("bare cotal in that moved legacy folder says it was moved from the recorded folder, with the same step",
       movedEntry.status === 0 && /^sel07 · /m.test(movedEntry.stdout) && movedEntry.stdout.includes(`\n${holds}; ${back}\n`), shown(movedEntry));
-    check("status there heads with lg01, says the folder was moved from the recorded folder, and names the same step",
-      statusOnRecords(movedStatusText, movedStatusSelected, "lg01", gone, holds, back), { text: movedStatusText.stdout.slice(0, 1400), json: movedStatusSelected.envelope?.result?.selected });
+    check("status in a moved legacy folder reports the explicit selection",
+      statusOnSelection(movedStatusText, movedStatusSelected), { text: movedStatusText.stdout.slice(0, 1400), json: movedStatusSelected.envelope?.result?.selected });
   }
   // A moved folder's bare up no longer takes the name over: it names moving back, and the --space that
   // takes the name over to run the stack from here, since that folder is gone and its broker is silent.

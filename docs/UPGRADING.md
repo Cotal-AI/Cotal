@@ -7,6 +7,49 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Memory-backed derived membership after 0.163.0
+
+New spaces create `KV_cotal_membership_<space>` in Memory because the feed is rebuilt from the
+broker connection view and durable members registry. Existing File-backed membership stores are not
+deleted during an ordinary upgrade. From that deployment's project root, explicitly name its
+recorded space when stopping the stack and converting the derived feed:
+
+```bash
+cotal down --space <space> --yes
+cotal up --space <space> --recreate-membership-store
+```
+
+The command uses one exact short-lived credential to inspect and delete only the membership stream,
+then the ordinary provisioner creates and verifies the empty Memory replacement. Delivery and
+manager lease buckets remain File-backed. A missing File lease bucket refuses rather than being
+treated as empty state. The membership display remains stale until its writer completes a full
+authoritative rebuild and stamps a fresh heartbeat.
+
+A broker restart drops both Memory presence and membership stores. No background component restores
+them after a broker-only systemd/Docker restart or reboot. From the deployment's project root, run
+`cotal up --space <space>` to recreate them with provisioner authority. A reconnect alone does not
+recreate either stream. A new membership feed refuses missing storage and names that command; an
+already-running feed logs the same repair and its view stays stale. Embedded platforms must invoke
+`reconcileSpaceMemoryBuckets` after their broker restart or wake before treating these views as
+ready; standing membership credentials cannot create streams.
+
+## Explicit space selections apply in every folder
+
+`cotal use <space>` now wins over a project's running space until another selection or
+`cotal use --clear`. Pass `--space <name>` to target that project's space for one command.
+Automatically adopted selections still yield to another project's running space.
+
+Old bare-name selection pointers are treated as explicit. An old pointer adopted by the first
+`up` therefore also becomes global after upgrading. Clear it to restore folder-based targeting,
+or select the space you want. The pointer remains a bare name readable by older versions.
+A sibling `current-mesh.adopted` file records an automatic selection only while its name matches
+the pointer. Explicit selection and clear remove that marker.
+
+JSON keys are unchanged. `use`'s `folder` identifies the folder's local space, not a target
+override. `status`'s `meshes.folder` and space-list target markers no longer mark that space as
+the target when an explicit selection wins. Foreground `spawn` uses this terminal without a
+Manager-place question and lists the live Managers with their `--on` selectors.
+
 ## Full actor grants include workflow scope
 
 A new `cotal actor grant --full` with no `--scope` now grants `spawn,run,role:default`.

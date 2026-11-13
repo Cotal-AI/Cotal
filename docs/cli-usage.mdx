@@ -7,6 +7,12 @@ audience: operators
 
 The CLI reports its selected space, discovers commands, and returns receipts for operations.
 Its help describes the flags and output formats each command supports.
+On a fresh machine, run `cotal login` to sign in to Cotal Cloud. When no space is known,
+`cotal use`, `cotal space`, a spawn refusal and the status next steps point to sign-in.
+Login does not install connectors. The first launch prepares the connectors it needs.
+When a selected space has no default persona, `cotal spawn` creates the shipped default.
+Status warns about a different folder's personas only when that folder contains personas.
+You can still run `cotal up` in a project or pass `--server` for a local or custom broker.
 
 `--server` takes one broker URL with a `nats://`, `tls://`, `ws://` or `wss://` scheme.
 Scheme names are case-insensitive. Missing or unsupported schemes, inline credentials, queries,
@@ -14,6 +20,8 @@ fragments and TCP paths refuse with `USAGE_INVALID` before connecting. WebSocket
 for proxy routes. Commands using the shared target connection, including `send`, `history` and
 `who`, require TLS for `tls://` and `wss://`, including with an unregistered space or explicit
 `--creds`. Registry-resolved connections also keep the registered space's TLS requirement.
+For `up -f`, a comma-separated list is checked entry by entry, then refused with the instruction
+to pass one URL for the new broker to listen on. The refusal does not repeat the addresses.
 
 
 ## Invocation [#running-it]
@@ -42,7 +50,8 @@ They do not require a source checkout or pnpm. PATH invocations keep `cotal`, np
 `npx cotal-ai`, and checkout invocations keep `pnpm cotal`.
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
-the space this folder has registered, else the selected space, else, with nothing selected, the space
+the explicit `cotal use` selection first, else the space this folder has registered, else an
+automatically adopted selection, else, with nothing selected, the space
 this folder prepared, and lists common commands. It reads no
 broker. When this folder's own records show the stack of its registered space stopped, as after
 `cotal down` there, and another space is selected, it names the selected space, which the commands

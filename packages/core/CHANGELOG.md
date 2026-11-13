@@ -1,5 +1,26 @@
 # @cotal-ai/core
 
+## 0.163.3
+
+### Patch Changes
+
+- cc11f40: A serving endpoint can keep command dispatch across a planned credential swap. With overlapOnConnectionRenewal, the endpoint subscribes on a second connection and flushes it before reconnecting the resident connection. The daemon's machine-status serve uses this. Endpoints that do not set the option still reconnect in place.
+
+## 0.163.2
+
+### Patch Changes
+
+- 5712551: Block the event plane when a fresh state root reuses a principal with retained transcript frames and no local acknowledged frontier. The launch refuses only on a space that requires events; elsewhere the seat starts and the connection status keeps the reason. OpenCode waits for the mesh join before announcing its managed session. Existing append expectations and broker permissions are preserved.
+- 7c965d7: Hosts can hibernate inactive data and auth-callout accounts on a full-resolver broker, then wake them without changing account identity or authority. The stock claim helpers preserve signing keys and per-user revocations, distinguish hibernation from retirement, and reject invalid transition templates.
+
+## 0.163.1
+
+No changes in this release.
+
+## 0.163.0
+
+No changes in this release.
+
 ## 0.162.0
 
 ### Patch Changes

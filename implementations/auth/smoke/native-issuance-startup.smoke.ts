@@ -1,7 +1,8 @@
 /** Real hosted startAuthService over an owned broker and delayed TCP link. Ordinary receipt
  * fixtures exercise startup, continuation, expiry and shutdown. The separate service callout
  * suites cover authentic service receipts and their retention. No daemon or OS service is used. */
-import assert from "node:assert/strict";
+import { strict as nodeAssert } from "node:assert";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { connect as connectTcp, createServer, type Socket } from "node:net";
 import { setTimeout as wait } from "node:timers/promises";
 import { Kvm } from "@nats-io/kv";
@@ -13,6 +14,9 @@ import { openLifecycleRegistry, registryStores } from "../src/lifecycle-registry
 import { CorruptNativeIssuanceEvidence, pruneNativeIssuance } from "../src/native-issuance.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 const fixture = await startHostedAuthFixture("natstart", 1);
 const account = fixture.accounts[0]!;
 const { space, store, stateDir, accountPublicKey, auth } = account;
@@ -155,3 +159,4 @@ try {
   await fixture.stopBroker();
 }
 console.log("native issuance startup smoke passed");
+emitSentinel({ passed: cells(), failed: 0 });

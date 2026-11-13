@@ -34,15 +34,16 @@
  * Cell 2's last assertion is the P7 failure. It is written as the property P7 must establish - each
  * tenant's boot leaves the bundle naming ITS OWN account - so it flips to green when P7 lands.
  *
- * Sandboxes COTAL_HOME under a scratch base; kills only its own children. Needs `nats-server`.
+ * Sandboxes COTAL_HOME under a scratch base. The mesh root is watched, and the cleanup kills every
+ * process still working in that root, including a broker the controller stack detached. Needs `nats-server`.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
-import { freePort } from "@cotal-ai/smoke-kit";
+import { freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const scratch = makeScratch("cotal-p7-membership-");
 const home = mkdtempSync(join(scratch, "home-"));
@@ -52,8 +53,12 @@ const root = mkdtempSync(join(scratch, "root-"));
 // inherited keys; the one the children need (COTAL_HOME) is set explicitly right after.
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 process.env.COTAL_HOME = home;
-process.env.XDG_CONFIG_HOME = join(scratch, "xdg");
+const xdg = join(scratch, "xdg");
+process.env.XDG_CONFIG_HOME = xdg;
 process.env.COTAL_SKIP_CONNECTOR_SEED = "1";
+// The broker's working directory is this root. The watch covers a signal that never reaches the
+// cleanup below, which is what stops the detached broker on the way out.
+recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: xdg });
 
 const { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, mintCreds, newIdentity } = await import("@cotal-ai/core");
 const { authDir, saveBrokerAuth, saveSpaceAccountAuth, spaceMaterialDir } = await import("@cotal-ai/workspace");
@@ -190,6 +195,23 @@ try {
 } finally {
   for (const cp of kids) if (cp.exitCode === null) cp.kill("SIGKILL");
   await sleep(500);
+  // A controller stack's broker is not a child of this process and is not named by the pid files
+  // below once a later boot replaces the root's one record. Kill whatever is still working here.
+  const swept = new Set<string>();
+  let again = true;
+  while (again) {
+    again = false;
+    let procs: string[] = [];
+    try { procs = readdirSync("/proc"); } catch { /* not Linux */ }
+    for (const name of procs) {
+      if (!/^[0-9]+$/.test(name) || name === String(process.pid) || swept.has(name)) continue;
+      let cwd = "";
+      try { cwd = readlinkSync(join("/proc", name, "cwd")); } catch { continue; }
+      if (cwd !== root && !cwd.startsWith(`${root}/`) && cwd !== `${root} (deleted)`) continue;
+      swept.add(name);
+      try { process.kill(Number(name), "SIGKILL"); again = true; } catch { /* already gone */ }
+    }
+  }
   // Every runtime record this root holds, whatever space each belongs to. The records are
   // space-keyed now (`manager.<hex>.pid`), and a teardown running after a failure cannot assume
   // which spaces got as far as writing one, so it matches the SHAPE rather than a fixed name list.

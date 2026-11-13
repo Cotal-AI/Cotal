@@ -112,8 +112,8 @@ process.exitCode = 1;
     request.on("data", (chunk: Buffer) => { body += chunk.toString(); });
     request.on("end", () => {
       contacts.push((JSON.parse(body) as { email: string }).email);
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ id: "fixture-only", published: true }));
+      response.writeHead(202, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, id: "fixture-only", published: true }));
     });
   });
   feedback.listen(0, "127.0.0.1");

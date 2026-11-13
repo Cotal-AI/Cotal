@@ -387,7 +387,7 @@ try {
   await point("(e) spec written, no reopen", "org.example.stop-e", async (s) => {
     const id = await simIntent(ownerA, s.proposal); eStop = await simSpec(s, s.proposal, id); return { r: s.proposal, who: "a" };
   }, { at: "registering:barrier", resumed: "registered", cancelled: "revoking:deny-new-landed" });
-  c.check("E(e) the stop came from the stopped reopen, which left the gate frozen", /sim stop before reopen/.test(eStop) && /left frozen/.test(eStop), eStop);
+  c.check("E(e) the stop came from the stopped reopen, which left the gate frozen", /sim stop before reopen/.test(eStop) && /reopen's outcome is unknown.*gate is still frozen/.test(eStop), eStop);
   const f = await point("(f) registered, reply lost", ordersEp, async (s) => { await registered(s); return { r: s.proposal, who: "a" }; },
     { at: "registered", resumed: "registered", cancelled: "revoking:deny-new-landed" });
   const gf = await gate(ordersEp, f.sr.instanceId), fAgain = await viaProvider("a", f.run.r), gf2 = await gate(ordersEp, f.sr.instanceId);

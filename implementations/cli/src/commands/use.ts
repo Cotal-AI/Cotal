@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
-import { boundedValue, clearCurrent, CommandFailure, findMesh, findPreparedSpace, folderSpaceOverSelection, getCurrent, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, presentationOf, readCurrent, setCurrent, SHOWN_VALUE_MAX, writeResult, type Cell, type OutputWarning, type PreparedSpace, type Report } from "@cotal-ai/workspace";
+import { boundedValue, clearCurrent, CommandFailure, findMesh, findPreparedSpace, folderSpace, getCurrent, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, presentationOf, readCurrent, setCurrent, SHOWN_VALUE_MAX, writeResult, type Cell, type OutputWarning, type PreparedSpace, type Report } from "@cotal-ai/workspace";
 
 export const useFlags = [
   { name: "clear", type: "boolean", description: "clear the selection, so a command targets its folder's space again" },
@@ -23,7 +23,7 @@ interface Selection {
   readonly preparedState: "prepared" | "stopped" | "unsettled" | null;
   /** That last operation and how it ended, such as `` `cotal down`, completed ``, or null. */
   readonly lastOperation: string | null;
-  /** This folder's space when a command without `--space` targets it here instead of `current`, or null. */
+  /** The space recorded for this folder, or null. It does not override explicit selection. */
   readonly folder: string | null;
 }
 
@@ -43,7 +43,7 @@ export async function use(args: ParsedArgs): Promise<void> {
   if (name === undefined) {
     const m = previous === null ? undefined : findMesh(previous);
     const p = previous === null || m ? undefined : findPreparedSpace(previous);
-    const result: Selection = { kind: "selection", current: previous, previous, currentRecorded: previous === null || m !== undefined, server: m?.server ?? null, ...prepared(p), folder: folderSpaceOverSelection(process.cwd(), previous) ?? null };
+    const result: Selection = { kind: "selection", current: previous, previous, currentRecorded: previous === null || m !== undefined, server: m?.server ?? null, ...prepared(p), folder: folderSpace(process.cwd()) ?? null };
     const warnings: OutputWarning[] = previous !== null && !m && !p
       ? [{ code: "SELECTION_NOT_REGISTERED", target: { space: previous }, message: `the selected space "${previous}" is not registered here - select another with \`cotal use <name>\`` }]
       : [];
@@ -60,9 +60,9 @@ export async function use(args: ParsedArgs): Promise<void> {
       remedy: `see the registered and prepared spaces with \`cotal space\`${previous === null ? "" : ", or clear the selection with `cotal use --clear`"}`,
     });
   }
-  const changed = previous !== name;
+  const changed = previous !== name || readCurrentSelection()?.source !== "explicit";
   if (changed) setCurrent(name);
-  const result: Selection = { kind: "selection", current: name, previous, currentRecorded: m !== undefined, server: m?.server ?? null, ...prepared(p), folder: folderSpaceOverSelection(process.cwd(), name) ?? null };
+  const result: Selection = { kind: "selection", current: name, previous, currentRecorded: m !== undefined, server: m?.server ?? null, ...prepared(p), folder: folderSpace(process.cwd()) ?? null };
   writeResult(presentation, { command: "use", target: { space: name }, result, noOp: !changed }, selectionView);
 }
 
@@ -88,7 +88,9 @@ function clearSelection(named: boolean, presentation: ReturnType<typeof presenta
 }
 
 function selectionView(s: Selection): Report {
-  if (s.current === null) return { sections: [{ blocks: [{ kind: "lines", lines: [{ text: "no space is selected - select one with `cotal use <name>`; `cotal space` lists them", tone: "hint" }] }] }] };
+  if (s.current === null) return { sections: [{ blocks: [{ kind: "lines", lines: [{ text: loadMeshes().length === 0 && loadPreparedSpaces().length === 0
+    ? "no spaces are known here - sign in to Cotal Cloud with `cotal login`"
+    : "no space is selected - select one with `cotal use <name>`; `cotal space` lists them", tone: "hint" }] }] }] };
   const head: Cell = s.current === s.previous
     ? { text: `selected: ${s.current}`, tone: "selected" }
     : { text: `selected ${s.current}${s.previous ? ` (was ${s.previous})` : ""}`, tone: "ok", mark: "✓" };
@@ -99,7 +101,10 @@ function selectionView(s: Selection): Report {
     : s.preparedState === "unsettled" ? { text: `  its last operation, ${s.lastOperation} - run \`cotal status\` in ${s.preparedRoot}, which names the step that finishes or settles it`, tone: "waiting" }
     : { text: `  prepared, not started - start it with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" });
   // `use` reads no broker, so it says when this folder's space is the target rather than whether it is.
-  if (s.folder) lines.push({ text: `  commands in this folder target its space "${s.folder}" while it runs; the selection applies outside it and while it is stopped`, tone: "hint" });
+  if (s.folder && s.folder !== s.current) lines.push({ text: readCurrentSelection()?.source === "adopted"
+    ? `  commands here target this folder's space "${s.folder}" while it runs; use --space ${s.current} to reach the adopted selection`
+    : `  commands here target "${s.current}"; reach this folder's space with --space ${s.folder} or cotal use --clear`, tone: "hint" });
+  if (readCurrentSelection()?.source === "adopted") lines.push({ text: "  Cotal adopted this selection automatically; another folder's running space takes precedence", tone: "hint" });
   return { sections: [{ blocks: [{ kind: "lines", lines }] }] };
 }
 

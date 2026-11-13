@@ -29,6 +29,18 @@ and rebuilt. A clean connector stop clears both states locally.
 If a binding fails after transport connection, the endpoint closes the partial
 connection. Both states become false before the connector retries.
 
+`EndpointOptions.beforeBind` is an optional asynchronous admission check. Each bind awaits it before
+presence registration, consumers and readiness. A rejection closes the partial connection.
+`onConnection` remains a synchronous notification that the transport opened.
+
+When events are enabled, `MeshAgent.start()` checks the selected root's acknowledged transcript state.
+A zero local frontier with retained events from that principal blocks the event plane. The launch
+refuses only when the space requires events. Where events are optional the seat starts and
+`connectionIssue` keeps the reason, the same outcome as an event plane that stops after startup.
+Reuse the previous state root or choose a new principal to publish again. Successful initial
+validation is retained across reconnects; the emitter's existing compare-and-set checks still detect
+concurrent writers.
+
 The endpoint's `transport` event reports state changes. It does not replay earlier
 events to a listener added later. A connector reads `transportConnected` for the
 current state and subscribes to the event for later changes.

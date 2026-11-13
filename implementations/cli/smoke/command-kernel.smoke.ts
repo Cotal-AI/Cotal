@@ -805,12 +805,16 @@ async function completionOut(positionals: string[]): Promise<string> {
   const lines: string[] = [];
   printLegacyReport({ custody: "legacy", seats: [{ name: "linkedin-animator", agent: "claude", continuity: "fork" }] }, "alpha", undefined, (line) => lines.push(line));
   assert.ok(lines[0]?.includes("this update is not a hot update"), "the verdict line comes first");
-  assert.ok(lines[1]?.includes("linkedin-animator: fork"), "each seat's continuity class is printed");
-  assert.ok(lines[2]?.startsWith("  Next: stop that mesh with `cotal down --space alpha`"), `the next step names the stop for that space: ${lines[2]}`);
-  assert.ok(lines[2]?.includes("then run this update again"), "and the rerun after it");
+  assert.ok(lines[1]?.includes('space "alpha": 1 seats'), "space and seat count are printed");
+  assert.ok(lines[2]?.includes("linkedin-animator: fork"), "each seat's continuity class is printed");
+  assert.ok(!lines.some(line => line.includes("cotal down") || line.includes("manager stop --")), "unknown lifecycle commands are not guessed");
   const remote: string[] = [];
-  printLegacyReport({ custody: "legacy", seats: [] }, "alpha", "cotal manager stop --space alpha", (line) => remote.push(line));
-  assert.ok(remote[1]?.startsWith("  Next: stop that mesh with `cotal manager stop --space alpha`"), `a remote mesh's manager is stopped through the manager verb: ${remote[1]}`);
+  printLegacyReport({ custody: "legacy", seats: [] }, "alpha", "cotal manager stop --space alpha", (line) => remote.push(line), "exact-manager-id");
+  assert.ok(remote.some(line => line.includes('Manager exact-manager-id in space "alpha": 0 seats')), "a known Manager is named without treating it as a service instance");
+  assert.ok(!remote.some(line => line.includes("cotal manager stop")), "a supplied unverified stop is not advertised as safe");
+  assert.ok(remote.some(line => line.includes("0 seats")), "an empty legacy Manager still names its seat count");
+  assert.ok(remote.some(line => line.includes("cotal update --self")), "the cold path names the update command");
+  assert.ok(remote.some(line => line.includes("original hosting command")), "unknown starters are not guessed");
 }
 
 // --- #1879: the continuity refusal carries the workspace renderer's remedy ------------------------

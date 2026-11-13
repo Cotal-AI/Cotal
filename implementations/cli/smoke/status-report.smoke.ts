@@ -24,6 +24,7 @@ import { assertSmokeSandboxDown, createSuite, freePort } from "@cotal-ai/smoke-k
 import { acquireMaintenanceLock, beginMaintenanceCut, canonicalLocalProcessPath, findMesh, recordMesh, releaseMaintenanceLock, renderReport, WEB_PIDFILE, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { statusView } from "../src/commands/status.js";
 import { restoreNextStep } from "../src/lib/restore.js";
+import { displayCmd } from "../src/lib/self-exec.js";
 
 const BIN = process.argv.find(arg => arg.startsWith("--bin="))?.slice("--bin=".length) ?? join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -46,7 +47,7 @@ type Envelope = {
   command: string;
   result: {
     kind: string;
-    machine: { nats: string; natsServer: { path: string; version: string | null } | null; natsProblem: string | null };
+    machine: { nats: string; natsServer: { path: string; version: string | null; skipped?: { path: string; reason: string } } | null; natsProblem: string | null };
     extensions?: { items: { label: string; version: string }[] | null };
     folder: { auth: { state: string }; personas: { root: string; default: string; error: string | null }; processes: { name: string; state: string }[] | null };
     meshes: { current: string | null; folder?: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
@@ -163,7 +164,9 @@ if (!brokerDisplayOnly) {
   const machine = env?.result?.machine;
   const natsRow = verbose.stdout.split("\n").find((line) => /^ {2}NATS: /.test(line))?.replace(/^ {2}NATS: +/, "");
   const version = machine?.natsServer?.version ? `nats-server ${machine.natsServer.version}` : "nats-server, version not reported";
-  const expected = machine?.nats === "missing" ? "missing" : machine?.natsProblem ?? (machine?.nats === "path" ? `${version} on PATH at ${machine.natsServer?.path}` : `bundled ${version} at ${machine?.natsServer?.path}`);
+  const baseExpected = machine?.nats === "missing" ? "missing" : machine?.natsProblem ?? (machine?.nats === "path" ? `${version} on PATH at ${machine.natsServer?.path}` : `bundled ${version} at ${machine?.natsServer?.path}`);
+  const skipped = machine?.natsServer?.skipped;
+  const expected = skipped ? `${baseExpected}; the one on PATH at ${skipped.path} is not protected against other local writers, so it was not used` : baseExpected;
   check("the NATS row names the nats-server it would run, where it came from and its version", natsRow === expected && ["path", "bundled", "missing"].includes(machine?.nats ?? ""), { machine, natsRow });
   check("each hint in the result is printed under Next", (env?.result?.hints ?? []).every((hint) => plain.stdout.split("\nNext\n")[1]?.includes(ascii(hint))), { hints: env?.result?.hints, out: plain.stdout });
   check("no report line ends in padding", [plain.stdout, verbose.stdout].every((out) => out.split("\n").every((line) => !line.endsWith(" "))), plain.stdout);
@@ -257,7 +260,7 @@ if (!brokerDisplayOnly) {
     check(`control: ${label} gets no bare up`, !/(^|\s)cotal up(\s{2}|$)/m.test(next), next);
   check("control: a controller stack is not read from legacy pidfiles", !/(^|\s)cotal up(\s{2}|$)/m.test(legacyNext(["manager"], { controllerStack: true })), legacyNext(["manager"], { controllerStack: true }));
   const plain = run(["status", "--space", "alpha", "--plain"]);
-  const NOT_DIALED = "Unselected spaces are not dialed - `pnpm cotal status --all` dials each";
+  const NOT_DIALED = `Unselected spaces are not dialed - \`${displayCmd()} status --all\` dials each`;
   check("the other registration carries no connection state, and one note says why, once",
     /^ {2}beta +open$/m.test(plain.stdout) && !/^ {2}\S+ +not checked/m.test(plain.stdout) &&
       (plain.stdout.match(/are not dialed/g) ?? []).length === 1 && plain.stdout.includes(NOT_DIALED), plain.stdout);
@@ -510,7 +513,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const store = failed.envelope?.result?.store;
   check("status --json names this broker's store write failure with its time, cause and file", store?.state === "write-failed" && store.at === "2026/10/23 19:38:44" && store.cause === "no space left on device" && store.path === "/store/msgs/1.blk", shown(failed));
   const plain = run(["status", ...server, "--plain"]);
-  check("the report shows a Store row and leads Next with down, after freeing space on the disk for a full one", /Store: +write failed at 2026\/10\/23 19:38:44: no space left on device - \/store\/msgs\/1\.blk/.test(plain.stdout) && /cotal down +First free space on the disk that holds \S+; then .*`pnpm cotal up` starts the broker again with the history it kept/.test(plain.stdout), plain.stdout);
+  check("the report shows a Store row and leads Next with down, after freeing space on the disk for a full one", /Store: +write failed at 2026\/10\/23 19:38:44: no space left on device - \/store\/msgs\/1\.blk/.test(plain.stdout) && /cotal down +First free space on the disk that holds \S+; then /.test(plain.stdout) && plain.stdout.includes(`then \`${displayCmd()} up\` starts the broker again with the history it kept`), plain.stdout);
   // The repair follows the cause: a permission is given back, not disk space freed.
   appendFileSync(log, `[${pid}] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: open /store/msgs/2.blk: permission denied\n`);
   const denied = run(["status", ...server, "--plain"]);
@@ -588,7 +591,7 @@ if (process.platform !== "win32") {
   const plain = run(["status", "--space", "nosuch", "--plain"], onPath);
   const machine = plain.stdout.split("\n\n")[0] ?? "";
   check("the applications line names what is set up and counts the rest behind cotal setup",
-    /^ {2}Agent applications: +aa - 1 more with `pnpm cotal setup`$/m.test(plain.stdout), shown(plain));
+    ascii(`  Agent applications: aa · 1 more with \`${displayCmd()} setup\``) === plain.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)), shown(plain));
   check("no row is printed per known application",
     !/^ {2}aa: /m.test(plain.stdout) && !/^ {2}bb: /m.test(plain.stdout) && !/not on PATH/.test(plain.stdout), machine);
   check("the extensions line is one count at the version they share",
@@ -645,9 +648,9 @@ if (process.platform !== "win32") {
     });
     const runningText = running.run(["status", "--plain"]);
     const runningJson = running.run(["status", "--json"]);
-    check("a running folder space is the target, and the heading says the selection applies outside it",
-      runningJson.envelope?.target.space === "held" && runningJson.envelope.result?.meshes.current === "sel" &&
-        /^Mesh: held\n {2}this folder's space; the selected space "sel" applies outside it$/m.test(runningText.stdout), shown(runningText));
+    check("an explicit selection wins over a running folder and names its concrete override",
+      runningJson.envelope?.target.space === "sel" && runningJson.envelope.result?.meshes.current === "sel" &&
+        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or cotal use --clear$/m.test(runningText.stdout), shown(runningText));
 
     const stopped = await folderRig((project, run) => {
       check("rig: this folder's space is registered at a broker that does not answer",
@@ -655,10 +658,9 @@ if (process.platform !== "win32") {
     });
     const stoppedText = stopped.run(["status", "--plain"]);
     const stoppedJson = stopped.run(["status", "--json"]);
-    check("a stopped folder space is not the target: the selection is, with what this folder holds under it",
+    check("an explicit selection remains the target over a stopped folder and names its override",
       stoppedJson.envelope?.target.space === "sel" &&
-        /^Mesh: sel\n {2}this folder holds the stopped space "held"; restart it with `cotal up`$/m.test(stoppedText.stdout) &&
-        !/this folder's space/.test(stoppedText.stdout), shown(stoppedText));
+        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or cotal use --clear$/m.test(stoppedText.stdout), shown(stoppedText));
 
     const prepared = await folderRig((project, run) => {
       const created = run(["space", "create", "held", "--root", project]);
@@ -666,9 +668,9 @@ if (process.platform !== "win32") {
     });
     const preparedText = prepared.run(["status", "--plain"]);
     const preparedJson = prepared.run(["status", "--json"]);
-    check("a prepared folder space is not the target either, and its up is named under the selection",
+    check("an explicit selection remains the target over a prepared folder and names its override",
       preparedJson.envelope?.target.space === "sel" && preparedJson.envelope.result?.meshes.folder === null &&
-        /^Mesh: sel\n {2}this folder holds the prepared space "held"; start it with `cotal up`$/m.test(preparedText.stdout), shown(preparedText));
+        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or cotal use --clear$/m.test(preparedText.stdout), shown(preparedText));
   } finally {
     if (greeter.exitCode === null && greeter.signalCode === null) {
       const exited = once(greeter, "exit");

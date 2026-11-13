@@ -1,7 +1,7 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
-import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot } from "./auth-paths.js";
+import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot, userAuthStateDir } from "./auth-paths.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
 
@@ -444,6 +444,71 @@ export function removeCatalogMeshes(ownerKey: string): string[] {
   return removed.sort();
 }
 
+/** A discovered space's sentinel credential file that {@link removeCatalogAccount} did not delete. */
+export interface KeptCatalogCredential {
+  readonly space: string;
+  readonly path: string;
+  /** Why the file stays: an errno code such as `EACCES`, or what was found at the path instead. */
+  readonly reason: string;
+}
+
+/** {@link removeCatalogMeshes} for an account switch at the same provider: each discovered entry's
+ *  sentinel credential file is deleted with its registration. Files are deleted before any
+ *  registration is removed, so an interrupted switch never leaves a credential that no record names.
+ *  Only a regular file inside the entry's catalog custody folder, where catalog application wrote it,
+ *  and reached through no symbolic link below this account's catalog folder, is deleted, so a record
+ *  cannot name another file for removal. A file that cannot be deleted is
+ *  returned for the caller to report. Its registration is removed regardless: the switched-away
+ *  account no longer refreshes it and `space forget` refuses a catalog entry. Manual and local
+ *  entries and their credentials are never touched. */
+export function removeCatalogAccount(ownerKey: string): { removed: string[]; credentialsKept: KeptCatalogCredential[] } {
+  const owned = loadMeshes().filter((m) => m.origin === "catalog" && m.catalogOwner === ownerKey);
+  const credentialsKept = owned.flatMap((m) => {
+    const kept = removeCatalogCredential(m, ownerKey);
+    return kept ? [kept] : [];
+  });
+  const removed = owned.map((m) => m.space);
+  removeMeshesReleasingCurrent(removed);
+  return { removed: removed.sort(), credentialsKept };
+}
+
+/** The partial outcome of a sign-in that replaced an account but could not delete some of that
+ *  account's discovered-space credential files. The session and the registrations are already
+ *  switched, so only the named files are left to remove. */
+export function keptCatalogCredentials(kept: readonly KeptCatalogCredential[]): { message: string; remedy: string } {
+  const files = kept.map((k) => `${k.path} (${k.space}: ${k.reason})`).join(", ");
+  return {
+    message: `signed in, but ${kept.length === 1 ? "a credential file" : `${kept.length} credential files`} of the previous account's discovered spaces could not be deleted: ${files}`,
+    remedy: "delete each file named; the previous account's registrations are already removed",
+  };
+}
+
+/** Delete one discovered entry's sentinel credential file, or say why it stays. An absent file is
+ *  already gone. Catalog application writes custody folders under `<Cotal home>/catalog/<ownerKey>`,
+ *  so the file's real folder must be its path below the real location of that account folder. A
+ *  symbolic link anywhere below it, which a lexical check and a leaf lstat both miss, leaves the
+ *  file in place. */
+function removeCatalogCredential(entry: MeshEntry, ownerKey: string): KeptCatalogCredential | undefined {
+  const path = entry.userAuth?.sentinelCredsPath;
+  if (path === undefined) return undefined;
+  const kept = (reason: string): KeptCatalogCredential => ({ space: entry.space, path, reason });
+  try {
+    const custody = userAuthStateDir(entry.catalogRoot ?? entry.root, entry.space, { readOnly: true });
+    if (!resolve(path).startsWith(resolve(custody) + sep)) return kept("it is outside the space's catalog credential folder");
+    const account = join(homeCotalDir(), "catalog", ownerKey);
+    const below = relative(resolve(account), resolve(dirname(path)));
+    if (below === ".." || below.startsWith(`..${sep}`) || isAbsolute(below)) return kept("it is outside this account's catalog folder");
+    const stat = lstatSync(path, { throwIfNoEntry: false });
+    if (!stat) return undefined;
+    if (!stat.isFile()) return kept(stat.isSymbolicLink() ? "it is a symbolic link" : "it is not a regular file");
+    if (realpathSync(dirname(path)) !== join(realpathSync(account), below)) return kept("a folder above it is a symbolic link");
+    rmSync(path);
+    return undefined;
+  } catch (e) {
+    return kept((e as NodeJS.ErrnoException).code ?? (e as Error).message);
+  }
+}
+
 /** Validate one parsed registry document as a {@link MeshEntry} a consumer can actually use, or
  *  throw naming the file. Required are the fields every consumer dereferences blindly — the
  *  renderer pads `server`/`mode` (a missing one was the `reading 'length'` TypeError), the target
@@ -599,6 +664,17 @@ export function getCurrent(): string | undefined {
  *  as unset. {@link setCurrent} writes a name and {@link clearCurrent} removes the file, so an empty
  *  pointer is damage, not a cleared selection. */
 export function readCurrent(): string | undefined {
+  return readCurrentSelection()?.space;
+}
+
+/** How the current space was selected. Legacy bare-name pointers record explicit intent. */
+export interface CurrentSelection {
+  readonly space: string;
+  readonly source: "explicit" | "adopted";
+}
+
+/** Read the bare-name pointer and its optional matching adoption marker. */
+export function readCurrentSelection(): CurrentSelection | undefined {
   let space: string;
   try {
     space = readFileSync(currentFile(), "utf8").trim();
@@ -607,14 +683,33 @@ export function readCurrent(): string | undefined {
     throw new MeshRegistryError(currentFile(), `${currentFile()} could not be read: ${(e as Error).message}`, { cause: e });
   }
   if (!space) throw new MeshRegistryError(currentFile(), `${currentFile()} is empty - select a mesh with \`cotal use <space>\` or remove the file`);
-  return space;
+  try {
+    return { space, source: readFileSync(`${currentFile()}.adopted`, "utf8").trim() === space ? "adopted" : "explicit" };
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return { space, source: "explicit" };
+    throw new MeshRegistryError(`${currentFile()}.adopted`, `the selection source could not be read: ${(cause as Error).message}`, { cause });
+  }
 }
 
+/** Record a selection made by the person, including promotion of an adopted selection. */
 export function setCurrent(space: string): void {
+  writeCurrentSelection(space, "explicit");
+}
+
+/** Record an automatic selection, which does not override another project's running space. */
+export function setAdoptedCurrent(space: string): void {
+  writeCurrentSelection(space, "adopted");
+}
+
+function writeCurrentSelection(space: string, source: CurrentSelection["source"]): void {
+  if (!space.trim()) throw new Error("a selection needs a space name");
   prepareCotalHomeForWrite();
+  rmSync(`${currentFile()}.adopted`, { force: true });
   writeSecretFile(currentFile(), space);
+  if (source === "adopted") writeSecretFile(`${currentFile()}.adopted`, space);
 }
 
 export function clearCurrent(): void {
+  rmSync(`${currentFile()}.adopted`, { force: true });
   rmSync(currentFile(), { force: true });
 }

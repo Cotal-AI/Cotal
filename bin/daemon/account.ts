@@ -1,4 +1,4 @@
-import { measureComputerVitals, type ComputerVitals } from "@cotal-ai/manager";
+import type { ComputerVitals } from "@cotal-ai/manager";
 import { defaultComputerName, readComputerName, saveComputerName } from "./computer-name.js";
 import { findMesh } from "@cotal-ai/workspace";
 import { loadIdpSession, requestAccountMachine, signedInMachineAccounts, withIdpSessionDir } from "@cotal-ai/auth";
@@ -6,14 +6,13 @@ import { validateCatalogSnapshot, type SpaceCatalogSnapshot } from "@cotal-ai/cl
 import { accountComputerId } from "./account-identity.js";
 import type { AccountComputerStatus } from "./account-state.js";
 import type { createAccountReconciler } from "./account-reconcile.js";
-import { hasDaemonConnectIntent } from "./service.js";
 
 /** Poll account intent without interpreting transport failure as an empty desired set. */
 export function createAccountComputer(home: string, version: string, reconciler: ReturnType<typeof createAccountReconciler>) {
   let vitals: ComputerVitals | undefined;
   let vitalsError: string | undefined;
   let sampling: Promise<void> | undefined;
-  const sample = () => sampling ??= measureComputerVitals().then(value => { vitals = value; vitalsError = undefined; }).catch(() => { vitalsError = "Computer vitals could not be measured; no new sample was sent."; }).finally(() => { sampling = undefined; });
+  const sample = () => sampling ??= import("@cotal-ai/manager").then(({ measureComputerVitals }) => measureComputerVitals()).then(value => { vitals = value; vitalsError = undefined; }).catch(() => { vitalsError = "Computer vitals could not be measured; no new sample was sent."; }).finally(() => { sampling = undefined; });
   let name: string;
   let nameWarning: string | undefined;
   try { name = readComputerName(home); }
@@ -108,9 +107,9 @@ export function createAccountComputer(home: string, version: string, reconciler:
     const entry = findMesh(space);
     if (!entry) throw new Error("Refresh your spaces before changing this computer's connection.");
     if (entry.mode !== "user") return false;
-    // Reconnecting an existing manual service does not change an account's desired spaces.
-    // Its own renewal proof, not a human session, authorizes that connection.
-    if (enabled && !entry.catalogOwner && !entry.catalogId && hasDaemonConnectIntent(space, home)) return false;
+    // Manual service registrations use their own prerequisite and renewal flow.
+    // Only catalog-owned spaces change an account computer's desired spaces.
+    if (!entry.catalogOwner && !entry.catalogId) return false;
     const candidates = signedInMachineAccounts(home).filter(item => entry.catalogOwner ? item.ownerKey === entry.catalogOwner : item.idpUrl === entry.userAuth?.idp.url);
     const account = candidates.length === 1 ? candidates[0] : undefined;
     if (!account) throw new Error("Sign in again and refresh your spaces before changing this computer's connection.");

@@ -237,30 +237,6 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   let pendingMention = false;
   let submitting: Promise<void> | undefined; // the prompt POST in flight; what it carries settles when it answers
 
-  /** Create the session this agent owns and announce its id to the serve shim, exactly as
-   *  plugin.ts's `sessionReady` does (the shim scans stderr for this exact line to find which
-   *  session to open). 2.x wraps the response in `{data:...}` (measured), unlike 1.x's bare
-   *  `{id:...}`. */
-  const sessionReady: Promise<string | undefined> = (async () => {
-    try {
-      await modelReady;
-      const res = await opencodeApi<{ data?: { id?: string } }>(
-        "/api/session",
-        { method: "POST", body: JSON.stringify({ title: `cotal:${config.space}:${config.name}` }) },
-        10_000,
-      );
-      const id = res.data?.id;
-      if (id) {
-        sessionID = id;
-        agent.setContextId(id);
-        process.stderr.write(`[cotal-session] ${id}\n`);
-      } else log("session.create returned no id");
-    } catch (e) {
-      log(`session.create failed: ${(e as Error).message}`);
-    }
-    return sessionID;
-  })();
-
   async function ensureSession(): Promise<string | undefined> {
     return sessionID ?? (await sessionReady);
   }
@@ -467,17 +443,37 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   // targets. Refuse loud and exit rather than wait forever or join with an unverified model. A
   // teardown that lands before the check settles owns what is queued here: it must neither start
   // the stopped agent nor exit the host process over a refusal nobody is waiting for.
-  void modelReady.then(
-    () => {
-      if (controller.signal.aborted) return;
-      return agent.start();
-    },
-    (error: Error) => {
-      if (controller.signal.aborted) return;
-      log(error.message);
-      process.exit(1);
-    },
-  );
+  const meshReady = modelReady.then(() => {
+    if (controller.signal.aborted) return;
+    return agent.start();
+  });
+  void meshReady.catch((error: Error) => {
+    if (controller.signal.aborted) return;
+    log(error.message);
+    process.exit(1);
+  });
+
+  /** Announce a managed session only after admission. 2.x wraps its id in `{data:...}`. */
+  const sessionReady: Promise<string | undefined> = (async () => {
+    try {
+      await meshReady;
+      if (controller.signal.aborted) return undefined;
+      const res = await opencodeApi<{ data?: { id?: string } }>(
+        "/api/session",
+        { method: "POST", body: JSON.stringify({ title: `cotal:${config.space}:${config.name}` }) },
+        10_000,
+      );
+      const id = res.data?.id;
+      if (id) {
+        sessionID = id;
+        agent.setContextId(id);
+        process.stderr.write(`[cotal-session] ${id}\n`);
+      } else log("session.create returned no id");
+    } catch (e) {
+      log(`session.create failed: ${(e as Error).message}`);
+    }
+    return sessionID;
+  })();
   // The event plane is bound here for the same reason: a refused setup must leave no emitter waiting
   // on an agent that never starts. The source reads the session from its first record and the flush
   // reads it at once, so binding after a prompt has landed loses nothing.

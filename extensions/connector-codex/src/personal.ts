@@ -30,6 +30,8 @@ export function wakeNotice(connection: string): string {
 export function approvalNotice(n: ApprovalNotice): string {
   if (n.status === "approved")
     return `${NOTICE} The person approved this conversation's Cotal connection request. Finish it now: call cotal_connect with name ${JSON.stringify(n.name)}, approval_id ${JSON.stringify(n.id)} and the same requested permissions.`;
+  if (n.status === "refused")
+    return `${NOTICE} The mesh refused this conversation's Cotal connection. Read the saved refusal: call cotal_connect with name ${JSON.stringify(n.name)} and approval_id ${JSON.stringify(n.id)}. This read makes no new request. Show the reason and its available actions, and do not retry the connection automatically.`;
   return `${NOTICE} This conversation's Cotal connection request ${n.status === "denied" ? "was denied by the person" : "expired before the person decided"}. Nothing was connected. Do not ask again unless the person asks you to.`;
 }
 

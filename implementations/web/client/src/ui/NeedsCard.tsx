@@ -87,7 +87,7 @@ export function needsCondition(row: RosterRow, now = Date.now()): string {
  *  report. View agent opens the Agent tab when the shell has one (`onViewAgent`) and is disabled
  *  until then. Message opens the operator's conversation with the agent (`messageRoute`, by the
  *  operator's id `selfId` once known) with its composer focused. When posting is off (`post`) it is
- *  Copy command instead, which copies `cotal send dm <id> "<text>"`. Dismiss hides the card until the
+ *  Copy command instead, which copies `cotal send -t <id> "<text>"`. Dismiss hides the card until the
  *  status changes. */
 export function NeedsCard({ row, onViewAgent, onDismiss, post = null, selfId = null }: {
   row: RosterRow;

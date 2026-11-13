@@ -159,6 +159,10 @@ operator default when that preference is absent. `cotal space forget` removes th
 | `editor` | an editor command, such as `code --wait` | no | `VISUAL`, then `EDITOR` | none | `persona edit`, `personas edit` |
 | `name` | 1 to 128 letters, digits, `_`, `.` or `-`, starting and ending with a letter, digit or `_` | no | none | on a user-auth space, the handle `cotal login` recorded; on an open or static space, your OS login | `chat` |
 
+`personas edit` reports a missing editor before resolving a space. A local `persona create`
+reports an unknown `--harness` before resolving its catalog. A valid editor still needs a prepared
+or registered space's catalog. Neither command borrows another folder's space.
+
 Preference precedence, highest first, is:
 
 1. An explicit flag.

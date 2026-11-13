@@ -19,9 +19,9 @@ import { chmodSync, closeSync, linkSync, unlinkSync, lstatSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
-import { listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
+import { localPeerCredentials, listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
-import { claimSocketPath, generationOf, holdLifetime, type HeldLifetime } from "./lifetime.js";
+import { claimSocketPath, generationOf, holdLifetime, processBirth, type HeldLifetime } from "./lifetime.js";
 import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
@@ -181,7 +181,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     sock.on("error", () => {});
   };
   // One connection whose peer the kernel already reported as this user: decode its requests.
-  const serveConnection = (sock: Socket): void => {
+  const daemonRestartOwner = `daemon:${process.pid}:${processBirth(process.pid)}`;
+  const serveConnection = (sock: Socket, restartOwner: () => string): void => {
     counters.accepted++;
     let buf = "";
     let bufBytes = 0;
@@ -273,8 +274,9 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "managers-prepare-restart" || req.op === "managers-abort-restart") {
         managerResult(async () => {
-          if (req.op === "managers-prepare-restart") await managers.prepareGenerationRestart();
-          else await managers.abortGenerationRestart();
+          const owner = restartOwner();
+          if (req.op === "managers-prepare-restart") await managers.prepareGenerationRestart(owner);
+          else await managers.abortGenerationRestart(owner);
           return status();
         });
         return;
@@ -471,7 +473,13 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
 
   let endpoint: Endpoint;
   if (paths.dir === undefined) {
-    endpoint = publishPipe(paths, counters, log, (sock) => { track(sock); serveConnection(sock); });
+    endpoint = publishPipe(paths, counters, log, (sock, peer) => {
+      track(sock);
+      serveConnection(sock, () => {
+        if (!Number.isSafeInteger(peer.pid) || peer.pid <= 0 || !peer.birth) throw new Error("restart owner process identity is unavailable");
+        return JSON.stringify(["peer", peer.user, peer.pid, peer.birth]);
+      });
+    });
   } else {
     const peerUid = opts.peerUid ?? defaultPeerUid;
     endpoint = await publishSocket(paths, uid!, lock, counters, log, (sock) => {
@@ -491,7 +499,18 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         sock.destroy();
         return;
       }
-      serveConnection(sock);
+      let owner: string | undefined;
+      try {
+        const identity = localPeerCredentials(sock);
+        const birth = processBirth(identity.pid);
+        if (identity.uid === uid && Number.isSafeInteger(identity.pid) && identity.pid > 0 && birth) {
+          owner = JSON.stringify(["peer", identity.uid, identity.pid, birth]);
+        }
+      } catch { /* Ordinary requests do not require restart ownership. */ }
+      serveConnection(sock, () => {
+        if (!owner) throw new Error("restart owner process identity is unavailable");
+        return owner;
+      });
     });
   }
 
@@ -536,7 +555,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   return { paths, counters, dirOutcome, status, close, stopped,
     generationSeats: () => managers.generationSeats(),
     generationPending(installed, waiting = "preparing activation") { generation = installed ? { installed, running: opts.version, waiting } : undefined; },
-    async prepareGenerationRestart() { await resumed; await managers.prepareGenerationRestart(); }, abortGenerationRestart: () => managers.abortGenerationRestart() };
+    async prepareGenerationRestart() { await resumed; await managers.prepareGenerationRestart(daemonRestartOwner); }, abortGenerationRestart: () => managers.abortGenerationRestart(daemonRestartOwner) };
 }
 
 /** Linux and macOS: publish the unix socket, and on close remove it only if it is still ours. */
@@ -622,7 +641,7 @@ async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime
  * client process token it read; this keeps those whose user is this one. The name needs no cleanup:
  * it ends when the last instance closes.
  */
-function publishPipe(paths: DaemonPaths, counters: ServerCounters, log: (line: string) => void, accept: (sock: Socket) => void): Endpoint {
+function publishPipe(paths: DaemonPaths, counters: ServerCounters, log: (line: string) => void, accept: (sock: Socket, peer: PipePeer) => void): Endpoint {
   let listener: PipeListener;
   try {
     listener = listenPipe(paths.socket);
@@ -663,7 +682,7 @@ function publishPipe(paths: DaemonPaths, counters: ServerCounters, log: (line: s
         log(`daemon: could not adopt an authenticated pipe connection (${(e as Error).message}); dropped`);
         continue;
       }
-      accept(sock);
+      accept(sock, peer);
     }
   })();
   return {

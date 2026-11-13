@@ -1,8 +1,13 @@
 /** Update keeps recovery guidance and suggests an upgrade only after successful reconciliation. */
 import "./update-isolation.js";
-import assert from "node:assert/strict";
+import rawAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
+
+const counted = countedAssert(rawAssert);
+const assert: typeof rawAssert = counted.assert;
+const cells = counted.cells;
 
 for (const [self, latest] of [[false, "0.13.2"], [true, "0.13.2"], [true, "0.13.1"]] as const) {
   for (const outcome of ["classified", "error", "legacy", "ready"] as const) {
@@ -74,3 +79,4 @@ for (const denied of [false, true]) {
     assert.match(errors.join("\n"), /scope denied.*package replacement already occurred.*parent may retry or restore/);
   } else assert.ok(effects.includes("reconcile"));
 }
+emitSentinel({ passed: cells(), failed: 0 });

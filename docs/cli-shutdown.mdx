@@ -232,6 +232,9 @@ them. Run `cotal down --dry-run` in that project to inspect the recovery stop, t
 machine, boot, account and each member's process creation pin. A different home, an older journal
 without these pins, partial record loss, an unresolved replacement or a maintenance operation
 refuses before any member stops. Restore the original records in those cases.
+A replacement is unresolved when its instance record does not carry the launch the journal
+recorded. When that record matches, `down` adopts it and stops it by the normal route, and
+this recovery is not used.
 
 Recovery sends SIGTERM to each exact pinned member, manager first and broker last, and records
 each confirmed exit in the project journal. It does not use a bare PID, recreate service records

@@ -25,8 +25,9 @@ terminal it wraps like any other warning. A run given
 says to keep `supervise` for that run instead. It keeps its flags and its run for existing units,
 scripts and containers. The manager that `cotal up` starts
 runs the same code through a hidden entry. Without `--space` it
-supervises the space other commands target here: `COTAL_SPACE`, else the running space this folder
-hosts or is registered for, else the one `cotal use` selected, else the space this folder holds or
+supervises the space other commands target here: `COTAL_SPACE`, else the explicit `cotal use`
+selection, else the running space this folder hosts or is registered for, else an adopted selection,
+else the space this folder holds or
 hosts. A space the folder only holds, such as a prepared or stopped one or one a `cotal up` in a
 folder above it left, does not take the run from the selection. With nothing selected, a prepared or
 stopped space is refused as not started, and the refusal names the `cotal up` that starts it. A
@@ -536,6 +537,9 @@ without treating an option's value as another command word.
 
 ## daemon [#daemon]
 
+Daemon command discovery does not load the Manager implementation. Computer vitals sampling and
+hosted Manager registration cleanup load their Manager helpers when those operations run.
+
 A recorded native machine daemon checks for updates daily with up to one hour of jitter.
 A newly seen release waits one hour before installation. Automatic installation uses
 `cotal update --self` and waits until every hosted Manager is empty, then holds its admission
@@ -573,14 +577,14 @@ The desktop's confirmed disconnect action uses `service-disconnect` for each nam
 It reports incomplete outcomes per space and does not claim credential erasure or remote revocation.
 
 ```bash
-cotal daemon setup [--idp <url>] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
+cotal daemon setup [--cloud | --idp <url>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon setup --space <s> [--idp <auth base URL>] [--client-id <id>] [--no-manager] [--wait <seconds>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]
 cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]
 cotal daemon start [--daemon-home <dir>] [--json|--plain]
 cotal daemon serve [--daemon-home <dir>] [--json|--plain]
 cotal daemon status [--space <s>] [--daemon-home <dir>] [--json|--plain]
-cotal daemon login --idp <auth base URL> [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
+cotal daemon login [--cloud | --idp <auth base URL>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon name [<name>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon spaces [--refresh] [--daemon-home <dir>] [--json|--plain]
 cotal daemon desktop [--daemon-home <dir>]
@@ -591,16 +595,21 @@ cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plai
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
-Connect this computer once with `cotal daemon setup --idp <url>`. It installs or uses the
+Connect this computer to Cotal Cloud with `cotal daemon setup --cloud`, or use
+`cotal daemon setup --idp <url>` for another host. With no known provider, bare
+`cotal daemon setup` selects Cotal Cloud in a terminal or a pipe and prints how to choose another host. `--no-browser` keeps approval in the terminal.
+It installs or uses the
 recorded daemon service, asks for one device approval when needed, and registers the computer
 with your account without turning on a space. The result names your account and computer.
 Turn on the spaces that can use it in the provider's dashboard.
 
 Run `cotal daemon setup` from a terminal that finds newly installed agent applications to
 refresh the service's PATH when the daemon is signed in to one provider. The provider comes
-from the daemon's reply; the CLI does not open the sign-in. With no installed daemon, no
-sign-in or several signed-in providers, pass `--idp <url>`; the several-provider refusal lists
-the choices. An explicit `--idp` keeps the installation and sign-in flow. The result lists
+from the daemon's reply; the CLI does not open the sign-in. With no installed daemon,
+the CLI selects Cloud when no provider is known. Known providers retain their selection flow;
+use `--cloud` or `--idp <url>` to select one explicitly. With an installed daemon and no sign-in or
+several signed-in providers, pass an explicit provider; the several-provider refusal lists
+the choices. An explicit provider keeps the installation and sign-in flow. The result lists
 spaces already turned on for this computer, or asks you to turn them on in the dashboard.
 Hosted Managers pick up newly installed applications after the guarded service restart.
 Active seats block that restart until they stop. When a desired space has no available
@@ -844,6 +853,11 @@ Missing `supervise` scope refuses with the Manager's reason and next step.
 The daemon supervises each Manager as a separate child, restarts it with bounded backoff after a
 crash, and resumes recorded hosting intents after its own restart. A child that exits while a
 generation fence is pending is marked restarting with its exit cause, then rescheduled after rollback.
+Restart preparation belongs to the authenticated caller's process identity across local connections.
+Another caller's abort cannot release that preparation. The daemon releases the shared Manager fence
+only after every owner has aborted and the Managers have acknowledged release. Closing a connection
+does not abort preparation. A caller that exits without aborting leaves admission blocked until the
+daemon restarts. This process ownership does not establish installer completion or crash recovery.
 It records intent only after
 status answers. During startup, status names initialization and registration as the pending work.
 The Manager logs remote authority, contract publication and activation stages. Contract artifacts
@@ -1015,8 +1029,8 @@ replacing the previous launch's log and retaining at most 64 KiB of output. When
 not answer on Windows, `status` names that log and Task Scheduler's state and last result. If the
 entry cannot load at all, Task Scheduler's last result is the diagnostic and no new log exists.
 Install refuses before preparing a task if its launch entry is missing or is not a file.
-Task lookup imports the ScheduledTasks PowerShell module directly so a new profile does not need
-command discovery across installed modules before checking the task.
+Task lookup imports ScheduledTasks and Microsoft.PowerShell.Utility by name before querying the
+task and serializing its result, avoiding automatic module discovery for those commands.
 Native service tools have a 30-second budget. A tool that cannot complete refuses
 `DEPENDENCY_UNAVAILABLE` and names a timeout, output overflow, startup error code or terminating
 signal with elapsed time. JSON output includes the native code, elapsed milliseconds and budget
@@ -1175,8 +1189,13 @@ HTTP loopback IP URL; `--client-id` defaults to `cotal-cli`.
 
 Signing in as a different account at the same provider removes the previous account's catalog
 cache from the selected daemon home. The default daemon also removes that account's discovered
-space registrations, clearing a selection that named a removed space. Manual registrations and
-credential files stay. This cleanup does not revoke credentials or stop existing connections.
+space registrations, clearing a selection that named a removed space, and deletes the sentinel
+credential file each of those registrations kept in its catalog folder. Manual registrations and
+their credential files stay. A file reached through a symbolic link below the account's catalog
+folder is not deleted. A credential file that cannot be deleted stays on disk while its
+registration is still removed: the run is partial (exit 4, `OPERATION_PARTIAL`), its message names
+each file and why, and JSON lists them in `credentialsKept`. A `setup` that signs in this way stops
+there as partial. The desktop app keeps the new sign-in and shows the same files and cleanup. This cleanup does not revoke credentials or stop existing connections.
 A separate `--daemon-home` never changes the shared registry or its credentials. Signing in as the
 same account or failing before a replacement session is saved does not remove registrations.
 
@@ -1300,8 +1319,10 @@ the responder subscriptions are flushed and the space accepts the daemon as read
 `<COTAL_HOME>/daemon/<space segment>/service-store/`, mode `0600`, and reused after a restart.
 A current service renewal proof lets an approved daemon resume after a restart or reconnect even
 when the human sign-in expired or was removed locally. Explicit `service-connect` for an existing
-manual connection also uses that proof without changing account intent. Catalog-managed spaces
-still require human sign-in to change the account's desired connections. Missing or expired renewal
+manual connection also uses that proof without changing account intent. Manual spaces without a
+connection use the service registration flow too. Their refusals name the selected daemon and the
+space's concrete registration command, and `service-status` retains that recovery step.
+Catalog-managed spaces still require human sign-in to change the account's desired connections. Missing or expired renewal
 material requires sign-in to register or reactivate. Revoked service authority still refuses.
 
 A damaged `daemon-ready/*.json` or `auth/<space segment>/service-renewal/*.json` record in that

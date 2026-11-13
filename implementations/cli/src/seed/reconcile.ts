@@ -96,9 +96,35 @@ export interface ReconcileResult {
   readonly removedKept: string[];
 }
 
+export class SeedChildFailure extends Error {
+  constructor(readonly summary: string, readonly lines: readonly string[]) {
+    super(`${summary}: ${lines.join("\n")}`);
+  }
+}
+
 /** Auto reconcile for the boot gate: silent no-op when the stamp is current and healthy. */
 export async function reconcileSeededConnectors(): Promise<void> {
   await reconcile("auto");
+}
+
+/** Whether the seed journal, authority and installed built-in payloads need no package repair. */
+export function seedInstallationCurrent(): boolean {
+  try {
+    const generation = seedGeneration();
+    if (readCursor() || readRecovery() || seedChildStatus().kind !== "none" || reconcileLockActive()) return false;
+    if (!readWitness() || !authorityIntact() || !builtinsAccounted() || !builtinsMetadataCurrent() || readStamp()?.generation !== generation) return false;
+    const entries = SEED_BUILTINS.map(name => ({ name, entry: installedEntry(name) }));
+    if (entries.some(({ entry }) => entry !== undefined) && prefixLockDiffers() !== undefined) return false;
+    return entries.every(({ name, entry }) => entry === undefined || seededInstallDiffers(name, generation, entry) === undefined);
+  } catch {
+    return false;
+  }
+}
+
+/** Validate persisted seed journals without repairing them or rejecting valid recovery obligations. */
+export function assertReadableSeedState(): void {
+  readCursor();
+  readRecovery();
 }
 
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
@@ -667,7 +693,7 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   // runs this ahead of whatever command was typed, so on stdout it would land in front of that
   // command's result (a first-boot `cotal meshes --json` printed seven non-JSON lines).
   if (r.stdout) process.stderr.write(r.stdout);
-  if (r.status !== 0) throw new Error(`failed to seed connector "${name}" from ${storePath}: ${childFailure(r)}`);
+  if (r.status !== 0) throw new SeedChildFailure(`failed to seed connector "${name}" from ${storePath}`, childFailure(r).split("\n"));
 }
 
 /** Why a seed child failed. It writes its progress and then its `✗` failure to stderr: the progress

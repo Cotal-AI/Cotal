@@ -226,8 +226,7 @@ const ansi = /\x1b\[/;
   const folderAgain = run(["config", "set", "harness", "codex", "--user", "--json"], {}, join(home, "demo"));
   check("with nothing selected, a --user write in a prepared folder reports that folder's value",
     folderWrite.status === 0 && (folderAgain.envelope?.result as { effective?: Setting } | null)?.effective?.value === "opencode" && folderAgain.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED") === true, folderAgain.envelope);
-  // A folder whose space is only prepared does not capture the read. The selection does, and the
-  // receipt says that folder's space is not running.
+  // The explicit selection wins without inspecting the prepared folder's running state.
   mkdirSync(join(home, "other"), { recursive: true });
   const other = run(["space", "create", "other", "--root", join(home, "other"), "--json"]);
   check("setup: other is prepared", other.status === 0 && other.envelope?.outcome === "ok", shown(other));
@@ -235,8 +234,8 @@ const ansi = /\x1b\[/;
   run(["config", "set", "harness", "codex", "--space", "other"]);
   const captured = run(["config", "get", "harness", "--json"], {}, join(home, "demo"));
   const capturedScope = (captured.envelope?.result as { scope?: { space: string; from: string }; setting?: Setting } | null);
-  check("in a prepared folder, a selected space still wins, and the read says this folder's space is not running",
-    captured.status === 0 && capturedScope?.scope?.space === "other" && capturedScope.scope.from === "selected" && capturedScope.setting?.value === "codex" && captured.envelope?.warnings.some((w) => w.code === "FOLDER_SPACE_NOT_RUNNING" && /prepared space "demo"/.test(w.message)) === true, captured.envelope);
+  check("in a prepared folder, a selected space wins without a folder-running warning",
+    captured.status === 0 && capturedScope?.scope?.space === "other" && capturedScope.scope.from === "selected" && capturedScope.setting?.value === "codex" && captured.envelope?.warnings.some((w) => w.code === "FOLDER_SPACE_NOT_RUNNING") === false, captured.envelope);
   const capturedWrite = run(["config", "set", "harness", "claude", "--json"], {}, join(home, "demo"));
   check("a write there still saves your defaults, and its receipt names the selected value",
     saved().defaults.harness === "claude" && (capturedWrite.envelope?.result as { effective?: Setting } | null)?.effective?.value === "codex" && capturedWrite.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED") === true, capturedWrite.envelope);
@@ -248,7 +247,7 @@ const ansi = /\x1b\[/;
   run(["config", "unset", "persona", "--space", "demo"]);
 }
 
-// ── a registered folder's space wins over a different selection ──────────────────────────────────
+// ── an explicit selection wins over a registered folder ──────────────────────────────────────────
 {
   const demoRoot = join(home, "demo");
   // Read-only resolution uses registrations without connecting. The live reproduction separately
@@ -261,21 +260,21 @@ const ansi = /\x1b\[/;
     writeFileSync(join(cotalHome, "current-mesh"), "other");
     const get = run(["config", "get", "harness", "--json"], {}, demoRoot);
     const result = get.envelope?.result as { scope?: { space: string; from: string }; setting?: Setting } | null;
-    check("a registered folder beats a different selection for config get",
-      get.status === 0 && result?.scope?.space === "demo" && result.scope.from === "folder" && result.setting?.value === "codex", get.envelope);
+    check("a selection beats the registered folder for config get",
+      get.status === 0 && result?.scope?.space === "other" && result.scope.from === "selected" && result.setting?.value === "opencode", get.envelope);
     const all = run(["config", "--json"], {}, demoRoot);
-    check("the full config view uses the registered folder too", all.status === 0 && settingOf(all, "harness")?.value === "codex", all.envelope);
+    check("the full config view uses the selected space too", all.status === 0 && settingOf(all, "harness")?.value === "opencode", all.envelope);
     const explicit = run(["config", "get", "harness", "--space", "other", "--json"], {}, demoRoot);
     const user = run(["config", "get", "harness", "--user", "--json"], {}, demoRoot);
     check("explicit space and user reads still override the registered folder",
       explicit.status === 0 && (explicit.envelope?.result as { setting?: Setting } | null)?.setting?.value === "opencode" &&
       user.status === 0 && (user.envelope?.result as { setting?: Setting } | null)?.setting?.value === "claude", { explicit: explicit.envelope, user: user.envelope });
     const write = run(["config", "set", "harness", "claude", "--user", "--json"], {}, demoRoot);
-    check("a user write saves defaults but reports the registered folder's effective value",
-      write.status === 0 && saved().defaults.harness === "claude" && (write.envelope?.result as { effective?: Setting } | null)?.effective?.value === "codex" && write.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED") === true, write.envelope);
+    check("a user write saves defaults but reports the selected space's effective value",
+      write.status === 0 && saved().defaults.harness === "claude" && (write.envelope?.result as { effective?: Setting } | null)?.effective?.value === "opencode" && write.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED") === true, write.envelope);
     const persona = run(["config", "set", "persona", "./agents/missing.md", "--user", "--json"], {}, demoRoot);
-    check("a persona warning names the registered folder's path, not the selected space's",
-      persona.status === 0 && persona.envelope?.warnings.some((w) => w.code === "PERSONA_NOT_FOUND" && w.message.startsWith(`no persona file ${join(realpathSync(demoRoot), "agents", "missing.md")};`)) === true, persona.envelope);
+    check("a persona warning names the selected space's path, not the command folder's",
+      persona.status === 0 && persona.envelope?.warnings.some((w) => w.code === "PERSONA_NOT_FOUND" && w.message.startsWith(`no persona file ${join(realpathSync(join(home, "other")), "agents", "missing.md")};`)) === true, persona.envelope);
     const clear = run(["use", "--clear", "--json"]);
     const control = run(["config", "get", "harness", "--json"], {}, demoRoot);
     check("clearing the selection leaves the registered folder's value unchanged",
@@ -353,6 +352,10 @@ const ansi = /\x1b\[/;
 
   const mark = join(home, "edited");
   const marker = (who: string) => `node -e "require('fs').writeFileSync(process.env.EDIT_MARK, '${who}')"`;
+  const none = run(["personas", "edit", "x"], {}, project);
+  check("with no editor anywhere, personas edit names both ways to set one", none.status === 2 && none.stderr.includes("set VISUAL or EDITOR, or run `cotal config set editor vim`"), shown(none));
+  const preparedEditor = run(["space", "create", "editor-catalog", "--root", project, "--json"]);
+  check("the editor fixture prepares its own persona catalog", preparedEditor.status === 0, shown(preparedEditor));
   run(["config", "set", "editor", marker("saved")]);
   rmSync(mark, { force: true });
   const edited = run(["personas", "edit", "x"], { EDIT_MARK: mark }, project);
@@ -361,9 +364,6 @@ const ansi = /\x1b\[/;
   const envEditor = run(["personas", "edit", "x"], { EDIT_MARK: mark, EDITOR: marker("env") }, project);
   check("EDITOR beats the saved editor", envEditor.status === 0 && readFileSync(mark, "utf8") === "env", shown(envEditor));
   run(["config", "unset", "editor"]);
-  const none = run(["personas", "edit", "x"], {}, project);
-  check("with no editor anywhere, personas edit names both ways to set one", none.status === 2 && none.stderr.includes("set VISUAL or EDITOR, or run `cotal config set editor vim`"), shown(none));
-
   // The detach key is read by the attach client before it connects; drive that function in-process.
   process.env.XDG_CONFIG_HOME = xdg;
   for (const k of ["COTAL_DETACH_KEY"]) delete process.env[k];

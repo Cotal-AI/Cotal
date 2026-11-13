@@ -9,6 +9,7 @@ import {
   EpEnvelopeError,
   formatAge,
   isReachable,
+  isStreamNotFound,
   mintCreds,
   mintLifecycleUid,
   resolveService,
@@ -127,7 +128,6 @@ import { selectResetTarget } from "./reset-store-apply.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { readPersonas, type PersonaEntry } from "../lib/personas.js";
-import { defaultPersonaFix } from "../lib/default-persona.js";
 import { c } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { agentStatus } from "./agents.js";
@@ -997,7 +997,9 @@ function folderPersonas(root: string, selected: Selected, values: FlagValues<typ
   const personas = personaCatalog(root, gaps);
   if (!selected.ok) return { personas, launches: null };
   if (sameDir(personaDir(root), selected.target.personaRoot)) return { personas, launches: true };
-  hints.push(
+  let folderHasPersonas = false;
+  try { folderHasPersonas = readPersonas(root).length > 0; } catch { /* personaCatalog already reports the unreadable catalog */ }
+  if (folderHasPersonas) hints.push(
     `a bare \`${displayCmd()} spawn\` uses the selected mesh, NOT this folder - personas in ${personaDir(root)} will not launch until you run it from that mesh's root or select it (\`${displayCmd()} use <space>\`${values.space ? "" : ", or pass `--space`"})`,
   );
   return { personas, launches: false };
@@ -1090,8 +1092,8 @@ function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, ga
  *
  *  Three outcomes:
  *  - answered: `running` with the delivery-aware detail.
- *  - a DEFINITIVE no-answer — `managerNoService`, the predicate `managerHealth`'s not-serving branch also uses
- *    (`unansweredRequest`, or the service-registry-missing text): `not-serving` with
+ *  - a DEFINITIVE no-answer: `managerNoService`, the predicate `managerHealth`'s not-serving branch also uses
+ *    (`unansweredRequest`, or an `EpEnvelopeError` whose `cause` satisfies `isStreamNotFound`): `not-serving` with
  *    `service endpoint not answering`, plus the marker error when the marker could not be read.
  *  - any other failure (a refused probe, an `unavailable` user-mode credential): `running` with
  *    `service unchecked`, so a failed probe never reads as a dead rail.
@@ -1170,8 +1172,8 @@ async function userManagerStatus(target: MeshTarget, instanceId?: string): Promi
 
 /** A no-responder service rail or an absent manager registry: the definitive no-service evidence
  *  that both the manager row and the manager health check grade on, kept in one place (#3046). */
-function managerNoService(e: unknown): boolean {
-  return e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test(e.message));
+export function managerNoService(e: unknown): boolean {
+  return e instanceof EpEnvelopeError && (unansweredRequest(e) || isStreamNotFound(e.cause));
 }
 
 /** One probe of the space's manager service endpoint. Only a definitive no-answer is
@@ -1355,7 +1357,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     }
     // `up` and `down` refuse a root whose `.cotal` is a link, so the step that would start it there is
     // the one their refusal names.
-    const unstarted = e instanceof UnregisteredRoot ? e.root : isWorkspaceTargetError(e) && e.code === "not-started" ? e.details.root : undefined;
+    const unstarted = e instanceof UnregisteredRoot ? e.root : isWorkspaceTargetError(e) && (e.code === "not-started" || e.code === "no-meshes") ? e.details.root : undefined;
     const link = unstarted === undefined ? undefined : cotalDirLink(unstarted);
     if (unstarted !== undefined && link !== undefined) {
       hints.push(linkedCotalRemedy(unstarted, link));
@@ -1935,7 +1937,7 @@ function spacesOverview(r: StatusResult, wide: boolean): Section {
     detail: cell(signsInText(entry, wide), "hint"),
   });
   const columns = [{ key: "space", label: "Space" }, { key: "state", label: "Connection" }, { key: "detail", label: "Signs in" }];
-  if (!r.meshes.items.length && !r.meshes.unreadable.length) blocks.push({ kind: "lines", lines: [cell("No spaces registered", "hint")] });
+  if (!r.meshes.items.length && !r.meshes.unreadable.length) blocks.push({ kind: "lines", lines: [cell("No spaces registered", "hint"), cell("Sign in to Cotal Cloud with `cotal login`.", "hint")] });
   else if (wide) {
     const groups = new Map<string, StatusResult["meshes"]["items"]>();
     for (const entry of r.meshes.items) {
@@ -2075,15 +2077,16 @@ function nextActions(r: StatusResult): Section {
   const items: { command: string; description: string }[] = [];
   const extra: string[] = [];
   const noApplication = !r.machine.connectors?.length;
+  if (!r.selected.resolved && !r.meshes.items.length && !r.meshes.unreadable.length) {
+    items.push({ command: `${cmd} login`, description: "Sign in to Cotal Cloud" });
+  }
   if (r.selected.resolved) {
     const s = r.selected;
     // A space that already resolves needs only the application to spawn into it.
     if (noApplication) items.push({ command: `${cmd} setup`, description: "Set up an agent application" });
     // Name what fixes the default persona alone; setup does far more than that.
-    else if (s.personas.default === "missing") {
-      const fix = defaultPersonaFix({ space: s.space, root: s.root, origin: r.meshes.items.find((m) => m.space === s.space)?.origin }, cmd);
-      items.push({ command: fix.command, description: fix.cwd ? `Write the default persona; run it in ${fix.cwd}` : "Create the default persona" });
-    } else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${s.space}`, description: "See what is wrong with the default persona" });
+    else if (s.personas.default === "missing") items.push({ command: `${cmd} spawn`, description: "Open your default agent; creates the shipped default persona" });
+    else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${s.space}`, description: "See what is wrong with the default persona" });
     else items.push({ command: `${cmd} spawn`, description: "Open your default agent" });
     items.push({ command: `${cmd} ps`, description: "See the agent roster" });
   } else if (noApplication) items.push({ command: `${cmd} setup`, description: r.selected.code === "not-started" ? "Set up an agent application" : "Set up an agent application and a space" });
@@ -2598,6 +2601,11 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
   }
 }
 
+/** True when a delivery-lease read failed because the lease stream/bucket is absent (#3046). */
+export function deliveryLeaseAbsent(e: unknown): boolean {
+  return isStreamNotFound(e);
+}
+
 /** Delivery owns two answers: its ready lease is its liveness/control surface; its latest explicit
  * adoption report is the renewal record it writes through the manager-owned renewal pass.  The
  * latter is intentionally not inferred from credential mtime or process output. */
@@ -2664,8 +2672,9 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
     // A live recorded daemon with no delivery lease bucket cannot be serving this build's delivery
     // control surface.  A denied/timed-out read is different: it is a refusal and must never read
     // as a clean absence.
-    const noLeaseSurface = /stream not found/i.test((e as Error).message);
-    facts.push(noLeaseSurface ? "ready lease absent" : `lease probe refused: ${(e as Error).message}`);
+    const noLeaseSurface = deliveryLeaseAbsent(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    facts.push(noLeaseSurface ? "ready lease absent" : `lease probe refused: ${msg}`);
     return { name: "delivery", verdict: noLeaseSurface ? "not-serving" : "refused", facts };
   } finally {
     await close?.();

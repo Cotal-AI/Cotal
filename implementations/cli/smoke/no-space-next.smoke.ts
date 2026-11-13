@@ -96,7 +96,7 @@ try {
     assert.ok(failure, "auth mint with no mesh refuses");
     assert.equal(failure!.code, "TARGET_NOT_FOUND", `auth mint with no mesh: code (${failure!.message})`);
     assert.equal(exitCode(failure!.outcome, failure!.code), 2, "auth mint with no mesh: exit 2");
-    assert.equal(failure!.remedy, "run `cotal up` in a project, or pass `--server`", "auth mint with no mesh: the remedy names the next step");
+    assert.equal(failure!.remedy, "sign in to Cotal Cloud with `cotal login`, run `cotal up` in a project, or pass `--server`", "auth mint with no mesh: the remedy names the next step");
     assert.deepEqual(readdirSync(bare), [], "auth mint with no mesh writes nothing");
   }
 

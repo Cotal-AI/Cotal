@@ -630,6 +630,17 @@ rejects("but the name does not leak into the enclosing scope", "L2001",
 rejects("and a builtin's name cannot be taken as the inner name", "L2002",
   "const f = function sort(n) { return n; }; log(f(1));");
 
+// ---- a program with no statements is refused (L1031) --------------------------------------------
+//
+// Comments and whitespace parse as an empty body. An empty file is refused before validation
+// because its bytes are empty; these files have bytes and used to validate, then a hosted start
+// recorded a completed run with no steps.
+
+rejects("whitespace alone is not a program", "L1031", "  \n\n\t\n");
+rejects("a line comment alone is not a program", "L1031", "// comment only\n");
+rejects("a block comment alone is not a program", "L1031", "/* block comment */\n");
+accepts("a lone empty statement is still a statement", ";");
+
 // ---- bigint literals are refused (L1030) -------------------------------------------------------
 //
 // Numbers here are IEEE doubles with a canonical JSON form; a bigint has neither, so it could not

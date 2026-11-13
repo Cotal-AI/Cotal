@@ -54,6 +54,21 @@ jobs:
           if errorlevel 1 exit /b 1
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter "cotal-ai..." build
+      - name: Build the daemon host primitives
+        if: runner.os != 'Windows'
+        run: pnpm --filter @cotal-ai/seat build:native
+      - name: Build the daemon host primitives in the MSVC developer environment
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 1
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
       - name: Run the suite
         if: runner.os != 'Windows' || inputs.suite != 'packages/core/smoke/secret-fs-long-path.smoke.ts'
         shell: bash

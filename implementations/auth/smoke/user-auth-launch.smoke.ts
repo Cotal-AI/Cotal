@@ -966,7 +966,7 @@ try {
     const added = await cotal(["space", "add", "--file", bundleFile, "--root", joinRoot], { cwd: joinRoot, env: joinEnv });
     check("a participant under its own home registers the space from its bundle", added.status === 0, added.out);
     const { sub: joinSub } = await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
-    const joinGrant = await cotal(["actor", "grant", "cli", "--sub", joinSub, "--full", "--scope", "spawn,role:default,supervise"], { cwd: hostRoot, env: hostEnv });
+    const joinGrant = await cotal(["actor", "grant", "cli", "--sub", joinSub, "--full", "--scope", "spawn,run,role:default,supervise"], { cwd: hostRoot, env: hostEnv });
     check("the host grants the participant's signed-in CLI supervise", joinGrant.status === 0, joinGrant.out);
     const trusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: joinEnv });
     check("with NODE_EXTRA_CA_CERTS set, as docs/cli.mdx says, the participant's manager start comes up",
@@ -974,6 +974,48 @@ try {
     const childPid = /^\s*PID:\s+(\d+)$/m.exec(plain(trusted.out))?.[1];
     const childEnvironment = childPid ? readFileSync(`/proc/${childPid}/environ`, "utf8").split("\0") : [];
     check("…and the native child it launched carries NODE_EXTRA_CA_CERTS from that command", childEnvironment.includes(`NODE_EXTRA_CA_CERTS=${caFile}`), { childPid, names: childEnvironment.map((entry) => entry.split("=")[0]) });
+    // Placement needs two actual owned Managers, not synthetic presence rows.
+    const secondHome = mkdtempSync(join(tmpdir(), "cotal-ua-placement-home-"));
+    const secondRoot = mkdtempSync(join(tmpdir(), "cotal-ua-placement-root-"));
+    const secondEnv = { HOME: secondHome, COTAL_HOME: secondHome, XDG_CONFIG_HOME: join(secondHome, "xdg"), NODE_EXTRA_CA_CERTS: caFile, COTAL_NAME: undefined, COTAL_ID: undefined };
+    try {
+      const secondAdded = await cotal(["space", "add", "--file", bundleFile, "--root", secondRoot], { cwd: secondRoot, env: secondEnv });
+      check("placement participant registers the real TLS space", secondAdded.status === 0, secondAdded.out);
+      await establishIdpSession({ dir: secondHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
+      const secondStarted = await cotal(["manager", "start", "--name", "placement-second"], { cwd: secondRoot, env: secondEnv });
+      check("placement has a second actual owned Manager", secondStarted.status === 0, secondStarted.out);
+      const selected = await cotal(["use", CA_SPACE], { cwd: secondRoot, env: secondEnv });
+      check("placement participant explicitly selects its space", selected.status === 0, selected.out);
+      await establishIdpSession({ dir: hostHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
+      const hostSelected = await cotal(["use", CA_SPACE], { cwd: hostRoot, env: hostEnv });
+      check("native placement host explicitly selects the signed-in space", hostSelected.status === 0, hostSelected.out);
+      const installed = await cotal(["ext", "add", CLAUDE], { cwd: hostRoot, env: hostEnv });
+      check("placement installs the actual native connector", installed.status === 0, installed.out);
+      const nativeBin = join(secondHome, "bin");
+      mkdirSync(nativeBin);
+      writeFileSync(join(nativeBin, "claude"), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 2.1.0; exit 0; fi\necho COTAL_PLACEMENT_NATIVE_REACHED\n', { mode: 0o700 });
+      const { cotalPty, clean } = await import("../../cli/smoke/_console-pty.js");
+      const terminalEnv = Object.fromEntries(Object.entries({ ...childEnv, ...hostEnv, HOME: hostHome, COTAL_NAME: undefined, COTAL_ID: undefined, PATH: `${nativeBin}:${childEnv.PATH}` }).filter((entry): entry is [string, string] => entry[1] !== undefined));
+      const terminal = cotalPty(["spawn", "--name", "placement_local"], { cwd: hostRoot, env: terminalEnv, cols: 120 });
+      let terminalOutput = "", terminalExit: number | undefined;
+      terminal.onData((data) => { terminalOutput += data; });
+      terminal.onExit(({ exitCode }) => { terminalExit = exitCode; });
+      try {
+        await until(() => terminalExit !== undefined || /Where should the agent run\?|Which one\?/.test(clean(terminalOutput)), 60_000);
+        const output = clean(terminalOutput);
+        check("foreground spawn with two owned Managers runs in this terminal without a question",
+          terminalExit === 0 && output.includes("COTAL_PLACEMENT_NATIVE_REACHED") && output.includes(`Mesh: ${CA_SPACE}`) &&
+            output.includes("--on joined") && output.includes("--on placement-second") && !/Where should the agent run\?|Which one\?/.test(output), output);
+      } finally { if (terminalExit === undefined) terminal.kill(); }
+      const detached = await cotal(["spawn", "--detach", "--json"], { cwd: secondRoot, env: secondEnv });
+      check("detached spawn with two owned Managers refuses genuine ambiguity in a script",
+        detached.status === 2 && /TARGET_AMBIGUOUS|PERMISSION_DENIED/.test(detached.out) && /manager/i.test(detached.out), detached.out);
+    } finally {
+      const stopped = await cotal(["manager", "stop", "--yes"], { cwd: secondRoot, env: secondEnv });
+      check("placement participant Manager stops", stopped.status === 0, stopped.out);
+      // Keep these private fixture roots for the suite's scratch owner to retire.
+      // A successful stop alone is not a barrier against a new process entering them.
+    }
     const joinStop = await cotal(["manager", "stop", "--yes"], { cwd: joinRoot, env: joinEnv });
     check("…and the participant stops it", joinStop.status === 0 && plain(joinStop.out).includes("Service stopped"), joinStop.out);
     const untrusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: { ...joinEnv, NODE_EXTRA_CA_CERTS: undefined } });

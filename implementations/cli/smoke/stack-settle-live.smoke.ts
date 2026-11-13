@@ -415,8 +415,8 @@ try {
     const [brokerConfig, brokerBinary] = stackLaunch?.type === "adapter" ? [String(stackLaunch.options.config), String(stackLaunch.options.binary)] : ["", ""];
     const addBroker = (name: string, server: string) => cli(root, "service", "add", name, "--preset", "broker", "--root", root, "--config", brokerConfig, "--binary", brokerBinary, "--server", server, "--json");
     const word = addBroker("bad-word", "hallo welt");
-    check('service add --preset broker refuses --server "hallo welt" USAGE_INVALID, exit 1, quoting it, and saves nothing',
-      word.status === 1 && word.env?.error?.code === "USAGE_INVALID" && word.env.error.message === '--server "hallo welt": the broker address must be one nats:// or tls:// URL; nothing was saved' && serviceDefinitionStore(space).read("bad-word") === undefined, shown(word));
+    check('service add --preset broker refuses --server "hallo welt" USAGE_INVALID, exit 1, without echoing it, and saves nothing',
+      word.status === 1 && word.env?.error?.code === "USAGE_INVALID" && word.env.error.message === '--server is not a valid URL (expected something like nats://127.0.0.1:4222); the command did not run' && serviceDefinitionStore(space).read("bad-word") === undefined, shown(word));
     const credential = addBroker("bad-cred", "nats://user:secret@127.0.0.1:4999");
     check("an address with a credential is refused without printing it",
       credential.status === 1 && credential.env?.error?.code === "USAGE_INVALID" && credential.env.error.message === "--server must not embed credentials; the command did not run" && !`${credential.stdout}${credential.stderr}`.includes("secret") && serviceDefinitionStore(space).read("bad-cred") === undefined, shown(credential));
@@ -1151,7 +1151,7 @@ try {
     check("while the frozen manager runs, down refuses naming its instance and request", names(whileRunning) && pid !== null && alive(pid) && held(), shown(whileRunning));
     // A public start on the live retained instance refuses before any readiness probe or record write.
     const serviceStart = cli(root, "service", "start", "stack-manager", "--space", space, "--json");
-    check("while the frozen manager runs, service start refuses naming the retained request and leaves the record stopping", serviceStart.status === 2 && serviceStart.env?.outcome === "refused" && serviceStart.env.error?.code === "LIFECYCLE_BLOCKED" && serviceStart.env.target?.instanceId === manager?.name && serviceStart.env.target?.requestId === request && serviceStart.env.target?.stopPublication === "published" && Boolean(serviceStart.env.error.remedy?.includes(`cotal service status stack-manager --instance ${manager?.name} --space ${space}`)) && pid !== null && alive(pid) && held(), { ...shown(serviceStart), target: serviceStart.env?.target, record: record() });
+    check("while the frozen manager runs, service start refuses the controller member and leaves its retained stop unchanged", serviceStart.status === 2 && serviceStart.env?.outcome === "refused" && serviceStart.env.error?.code === "LIFECYCLE_BLOCKED" && serviceStart.env.error.message === "stack-manager is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started" && serviceStart.env.error.remedy === 'start the stack with `cotal up`' && pid !== null && alive(pid) && held(), { ...shown(serviceStart), target: serviceStart.env?.target, record: record() });
     const abandonLive = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
     check("while the frozen manager runs, down --abandon-stop refuses and abandons nothing", abandonLive.status === 2 && abandonLive.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(abandonLive.env.error.message.includes("still runs")) && pid !== null && alive(pid) && held(), shown(abandonLive));
     if (pid !== null) process.kill(pid, "SIGKILL");
@@ -1798,7 +1798,7 @@ try {
       switched.status === 0 && new RegExp(`^This folder's space .* ${space}$`, "m").test(away.stdout) && away.stdout.includes("Stack blocked · ") && awayNext.split("\n")[0]!.includes(`cotal down --abandon-stop ${request} --yes`),
       { request, stdout: away.stdout.slice(-2500) });
     // The folder note sends to status, which is this report, so status leaves it out.
-    const heldNote = `this folder holds the space "${space}", and the last down of its stack has no recorded outcome; run \`cotal status\` here, which names the step that finishes or settles it`;
+    const selectionNote = `the selected space applies here; this folder's space "${space}" is reached with --space ${space} or cotal use --clear`;
     check(`${space}: with another space selected, status there does not send to cotal status, still names the block under this folder's space with --abandon-stop first in Next, and offers no cotal up for it`,
       !away.stdout.includes(`this folder holds the space "${space}"`) && !away.stdout.includes("run `cotal status`") && new RegExp(`^This folder's space .* ${space}$`, "m").test(away.stdout) && away.stdout.includes("Stack blocked · ")
         && awayNext.split("\n")[0]!.includes(`cotal down --abandon-stop ${request} --yes`) && !away.stdout.includes("restart it with") && awayNext.split("\n").filter((line) => /cotal up\b/.test(line)).every((line) => line.includes(otherRoot)),
@@ -1810,8 +1810,8 @@ try {
       { note, folder: awayJson.env?.result?.folder });
     // ps shows no block, so its folder note still names status.
     const listed = cli(root, "ps");
-    check(`${space}: ps there still heads with the folder note that names cotal status`,
-      listed.stderr.includes(`Mesh: ${other}\n  ${heldNote}\n`), { ...shown(listed), stdout: listed.stdout.slice(0, 600) });
+    check(`${space}: ps preserves the explicit selection and names how to reach the folder space`,
+      listed.stderr.includes(`Mesh: ${other}\n  ${selectionNote}\n`), { ...shown(listed), stdout: listed.stdout.slice(0, 600) });
     const up = cli(root, "up", "--json"), down = cli(root, "down", "--yes", "--json");
     check(`${space}: up and down --yes there refuse LIFECYCLE_BLOCKED naming that --abandon-stop`,
       [up, down].every((run) => run.status === 2 && run.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(run.env.error.remedy?.includes(`cotal down --abandon-stop ${request} --yes`))) && gone(space, "stack-broker"),
@@ -1820,7 +1820,7 @@ try {
     check(`${space}: down --abandon-stop abandons that stop with a warning and records the broker failed`,
       abandoned.status === 0 && Boolean(abandoned.env?.warnings?.some((warning) => warning.code === "STOP_ABANDONED" && warning.target?.requestId === request)) && record()?.state === "failed", shown(abandoned));
     const after = cli(root, "status");
-    check(`${space}: status there then names the stopped space and its cotal up`, after.stdout.includes(`this folder holds the stopped space "${space}"; restart it with \`cotal up\``) && !after.stdout.includes("Stack blocked"), { stdout: after.stdout.slice(0, 1500) });
+    check(`${space}: status preserves the explicit selection after the folder stop settles`, after.stdout.includes(selectionNote) && after.stdout.includes(`Selected space '${other}' is prepared, not started`) && !after.stdout.includes("Stack blocked"), { stdout: after.stdout.slice(0, 1500) });
     const restarted = cli(root, "up", "--json");
     track(space);
     const final = cli(root, "down", "--yes", "--json");

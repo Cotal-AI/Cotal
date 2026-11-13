@@ -1,5 +1,66 @@
 # @cotal-ai/auth
 
+## 0.163.3
+
+### Patch Changes
+
+- 0d10441: The issued-profile census models the anycast records bucket and treats a publish of one key as not covering that stream. The smoke runs in the CI suite.
+- Updated dependencies [6f00d97]
+- Updated dependencies [cc11f40]
+  - @cotal-ai/lang@0.163.3
+  - @cotal-ai/core@0.163.3
+  - @cotal-ai/workspace@0.163.3
+
+## 0.163.2
+
+### Patch Changes
+
+- 7c965d7: Hosted auth planes can persist callout account claim transitions and renew callout credentials without changing account or user identities. The auth store now validates claim authority continuity and atomically stores same-key callout and sentinel generations.
+- 4e65a2a: Fresh CLI guidance points to Cotal Cloud sign-in when no space is known.
+  Correct sign-in help and empty-space guidance, avoid connector installation during login, and point status at the shipped default launch without warnings about nonexistent folder personas. Keep multiline seed refusals readable while preserving permission checks and local broker alternatives.
+- 7c11c40: Refused or expired sign-ins now tell you how to sign in again, including when a space catalog refuses your session. Recovery uses `cotal login` for Cotal Cloud and names `--idp` only for another provider.
+- Updated dependencies [4e65a2a]
+- Updated dependencies [5712551]
+- Updated dependencies [7c965d7]
+- Updated dependencies [7c11c40]
+  - @cotal-ai/workspace@0.163.2
+  - @cotal-ai/core@0.163.2
+  - @cotal-ai/lang@0.163.2
+
+## 0.163.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.163.1
+  - @cotal-ai/lang@0.163.1
+  - @cotal-ai/workspace@0.163.1
+
+## 0.163.0
+
+### Minor Changes
+
+- 94985e3: Selections made with `cotal use` now apply in every folder, overriding the folder's running space.
+  
+  Automatically adopted selections preserve running-project targeting. Older selection pointers are treated as explicit until cleared. Native foreground spawn prints its target and uses this terminal without asking again, while detached launches still require a Manager choice when no default exists.
+
+### Patch Changes
+
+- ef6651a: Signing in as a different account at the same provider now deletes the previous account's discovered-space credential files along with their registrations.
+  This applies to `cotal login` and to the default daemon's `cotal daemon login` and `setup`. Only the sentinel file each discovered registration kept in its catalog folder is deleted, and never one reached through a symbolic link below the account's catalog folder; manual registrations and their files stay. A file that cannot be deleted is named and the run exits 4 (`OPERATION_PARTIAL`) after signing in; `daemon login` JSON lists such files in `credentialsKept`, and the desktop app keeps the new sign-in while showing the same files and cleanup. A separate `--daemon-home` still never changes the shared registry or its credentials.
+- f8801fc: Sign in to Cotal Cloud from the terminal without knowing its provider URL.
+  
+  Default fresh sign-in to Cotal Cloud, add the same --cloud shorthand to account and daemon sign-in, select a personal or sole space after approval, and open approval in a browser when a desktop terminal supports it. Keep custom providers and printed approval instructions available.
+- d1b321c: Hosted manager reads refuse promptly when their authorization dependencies stall.
+  One five-second budget covers token acquisition, the authority request and response-body
+  completion. Pending HTTP work is aborted without cancelling other callers' token reads,
+  and no stale authorization is reused.
+- Updated dependencies [ef6651a]
+- Updated dependencies [f8801fc]
+- Updated dependencies [94985e3]
+  - @cotal-ai/workspace@0.163.0
+  - @cotal-ai/core@0.163.0
+  - @cotal-ai/lang@0.163.0
+
 ## 0.162.0
 
 ### Minor Changes

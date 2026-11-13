@@ -1,5 +1,79 @@
 # @cotal-ai/cli
 
+## 0.163.3
+
+### Patch Changes
+
+- ec3de95: Update refusals identify local Managers whose launch entry is missing and explain how to proceed.
+  The refusal includes the process start time, working directory and launch entry path. Missing paths remain subject to the existing ownership checks because a deleted launcher symlink may have pointed into the current installation.
+- b41c7e0: Wait for an interrupted native service startup before stopping its stack.
+  
+  The stop preview waits briefly for the same creation-bound launch to become ready, then uses its normal verified native stop policy.
+- 68a9227: A bare down after an interrupted stack redefinition adopts the journaled replacement when its instance record matches that launch, and stops it by the normal route. Missing-record recovery still refuses a replacement it cannot resolve.
+- 7c950c1: Report invalid persona inputs before resolving a space.
+  
+  Unknown local harness values and missing editors now name their input problem even in an unprepared folder. Status preserves link-removal guidance for an empty linked control directory.
+- 4cef4bb: The dashboard credential notice from `cotal up` now fits the terminal width.
+  It uses the startup output's word wrapping, keeps `service start web` together and stays on one line outside a terminal.
+- Updated dependencies [cc11f40]
+  - @cotal-ai/core@0.163.3
+  - @cotal-ai/workspace@0.163.3
+
+## 0.163.2
+
+### Patch Changes
+
+- 4e65a2a: Fresh CLI guidance points to Cotal Cloud sign-in when no space is known.
+  Correct sign-in help and empty-space guidance, avoid connector installation during login, and point status at the shipped default launch without warnings about nonexistent folder personas. Keep multiline seed refusals readable while preserving permission checks and local broker alternatives.
+- 5d54679: Legacy Manager update reports now name the Manager, space, and seat count without guessing lifecycle commands.
+  
+  The cold update guidance names `cotal update --self` and asks operators to recover the original host's stop and start commands before stopping a Manager.
+- 0c372d5: `cotal update` on Linux no longer needs `ps` on PATH. Since 0.163.1 the update listed local Managers with `ps` and refused with "the process table could not be listed" where it was missing, as in slim container images or a narrow service PATH. It now reads `/proc` directly.
+- 5d54679: Updates refuse unreadable seed journals and invalid installed daemon receipts before replacing packages or reconciling connectors.
+- Updated dependencies [4e65a2a]
+- Updated dependencies [5712551]
+- Updated dependencies [7c965d7]
+- Updated dependencies [7c11c40]
+  - @cotal-ai/workspace@0.163.2
+  - @cotal-ai/core@0.163.2
+
+## 0.163.1
+
+### Patch Changes
+
+- 18905f9: Status checks classify missing manager registries and delivery lease streams by their structured JetStream absence code rather than matching message text. Both `managerNoService` and the delivery lease absence check now rely on `isStreamNotFound` instead of `stream not found` regular expressions.
+- 3b0377e: Restore the single-broker remedy when a manifest start receives several server URLs.
+  
+  Validate each address before the existing manifest refusal so credential and malformed-address checks still run without echoing the addresses.
+- 7d4973c: Linux self-updates check every local Manager sharing the installation before replacing packages.
+  
+  Continuity reads use each local instance identity and no longer follow only the selected space or ask the authority to choose a Manager on another computer. When no newer version exists and the installed package closure is current, Linux self-updates report custody without repairing connector integrations or restarting the daemon. Plain `cotal update` still repairs integrations. macOS and Windows keep their existing behavior.
+- @cotal-ai/core@0.163.1
+  - @cotal-ai/workspace@0.163.1
+
+## 0.163.0
+
+### Minor Changes
+
+- 94985e3: Selections made with `cotal use` now apply in every folder, overriding the folder's running space.
+  
+  Automatically adopted selections preserve running-project targeting. Older selection pointers are treated as explicit until cleared. Native foreground spawn prints its target and uses this terminal without asking again, while detached launches still require a Manager choice when no default exists.
+
+### Patch Changes
+
+- 2040519: Explain conversation agent limits with safe usage, plan comparison and agent-management links. Stop native approval polling on permanent refusals, distinguish them from a person's denial, and recover stuck unissued requests only after a request-bound terminal refusal.
+- 85a09e4: The daemon lease check in `cotal down` passes an explicit object literal to `standaloneConnectOpts`. The resolved `creds` and `tls` bindings are passed directly at the call site so the required-argument seam reader can verify the `tls` decision statically.
+- 4c53a5c: `cotal down` now names a logged store write failure when the manager's stop gets no answer, instead of failing with a bare timeout.
+  When the broker's store cannot take the stop credential's issuance record and JetStream stays enabled, as under a file-size limit, `down` refuses `DEPENDENCY_UNAVAILABLE` (exit 2), stops no member, and gives the way out: `kill -TERM` the manager on its host, run `cotal down`, fix the logged cause and run `cotal up`.
+- f8801fc: Sign in to Cotal Cloud from the terminal without knowing its provider URL.
+  
+  Default fresh sign-in to Cotal Cloud, add the same --cloud shorthand to account and daemon sign-in, select a personal or sole space after approval, and open approval in a browser when a desktop terminal supports it. Keep custom providers and printed approval instructions available.
+- Updated dependencies [ef6651a]
+- Updated dependencies [f8801fc]
+- Updated dependencies [94985e3]
+  - @cotal-ai/workspace@0.163.0
+  - @cotal-ai/core@0.163.0
+
 ## 0.162.0
 
 ### Minor Changes
