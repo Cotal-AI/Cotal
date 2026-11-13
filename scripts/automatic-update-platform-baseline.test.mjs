@@ -182,8 +182,14 @@ import { exclusion, requiresManualStep, sources, states, methods, coordinates } 
 test('funding suggestions do not require upgrade intervention', () => {
   assert.equal(requiresManualStep('61 packages are looking for funding\n  run `npm fund` for details\n✓ cotal-ai@0.164.0 installed globally and reconciled'), false);
 });
+test('pre-existing installer PATH notice does not require installation repair', () => {
+  const notice = 'Your PATH does not select the Cotal just installed.\nUse /private/bin/cotal instead of plain cotal.\nCheck `type -a cotal` in your shell.';
+  assert.equal(requiresManualStep(notice), false);
+  assert.equal(requiresManualStep(notice + '\nRun `cotal update --self` to repair installation.'), true);
+});
+
 test('actual upgrade remedies and unknown outcomes stay red', () => {
-  for (const text of ['run `cotal update --self`', 'Outcome unconfirmed', 'Code: OPERATION_UNKNOWN', 'an interrupted update needs restoration', 'manual intervention', 'Your PATH does not select the Cotal just installed.\nUse /private/bin/cotal instead of plain cotal.\nCheck `type -a cotal` in your shell.']) assert.equal(requiresManualStep(text), true, text);
+  for (const text of ['run `cotal update --self`', 'Outcome unconfirmed', 'Code: OPERATION_UNKNOWN', 'an interrupted update needs restoration', 'manual intervention']) assert.equal(requiresManualStep(text), true, text);
 });
 test('matrix includes each requested source, state and method', () => {
   assert.equal(coordinates('linux').length, 252);

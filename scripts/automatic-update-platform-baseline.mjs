@@ -15,7 +15,7 @@ export const states = ['fresh', 'configured', 'daemon', 'agent', 'stale-extensio
 export const methods = ['self', 'scheduler', 'installer'];
 const hosted = process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
-export const requiresManualStep = output => /run `cotal|run cotal|manual (?:step|intervention)|interrupted update|OPERATION_UNKNOWN|Outcome unconfirmed|needs restoration|refused|Your PATH does not select the Cotal just installed/i.test(output);
+export const requiresManualStep = output => /run `cotal|run cotal|manual (?:step|intervention)|interrupted update|OPERATION_UNKNOWN|Outcome unconfirmed|needs restoration|refused/i.test(output);
 export function completionAdvisory(output) {
   const advisory = [], required = [];
   let completion = false;
