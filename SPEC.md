@@ -392,7 +392,7 @@ Live clients MUST NOT heartbeat as `offline`. A graceful disconnect MAY publish 
 from KV delete/purge events. Offline peers MAY remain in local rosters for observability.
 An instance MUST write only its own presence key, and the key MUST equal `card.id`.
 Readers MUST drop a record whose `card.id` differs from its KV key, whose `card.name` is
-empty or does not have the type given above, whose `status` does not have the type given
+blank or does not have the type given above, whose `status` does not have the type given
 above, whose `ts` is not a finite number, whose
 `card.role`, `activity` or `attention` is present and not a string, or whose `condition` is present
 and is not an object with a string `code`, and SHOULD report the rejection on their recoverable
