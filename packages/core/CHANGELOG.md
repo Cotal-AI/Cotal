@@ -1,5 +1,23 @@
 # @cotal-ai/core
 
+## 0.164.0
+
+### Minor Changes
+
+- 471b464: Publish bounded tool inputs and results to permitted event readers and show them in interactive console details and dashboard Work turns.
+  
+  Payloads use a separate owner-scoped rail. Owners and space admins can read them by default, while another owner needs an explicit concrete event-channel grant. Cotal tool payloads are excluded. Use `--no-event-payloads` or a persona's `eventPayloads: false` to retain names and times without publishing inputs or results. The credential grant enforces withholding. The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads` input.
+  
+  Full backups retain payload frames and their owner-scoped subjects. Registry-only restores leave payloads empty. New backups use format v3, and restore continues to accept the exact v1 and v2 inventories. A space without the payload stream keeps publishing tool names and times and reports that payloads are unavailable until its broker setup is upgraded.
+
+### Patch Changes
+
+- f01f90a: An agent with no read channels can still be started by a client older than 0.163.0. The credential may ask whether its own delivery durable exists. The durable stays absent, and the credential still cannot fetch or ack it.
+- 471b464: Agents on older hosts keep publishing tool names and times when their credentials cannot inspect the payload stream.
+  
+  Only a broker publish-permission refusal for the payload stream info request disables new payload publication. Other failures remain errors, and previously frozen payloads remain pending until their rail is available.
+- b16460a: Readers drop a presence row whose name is only whitespace. A blank name cannot identify the participant a refusal prints.
+
 ## 0.163.5
 
 ### Patch Changes
