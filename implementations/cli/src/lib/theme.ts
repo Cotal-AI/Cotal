@@ -64,6 +64,9 @@ const WORDMARK = String.raw`
 /** First-run splash: brand wordmark + tagline + rule. No-op detail when ANSI is off
  *  still prints the plain wordmark so piped logs stay legible. */
 export function splash(): void {
-  const rule = "─".repeat(Math.min(44, (process.stdout.columns ?? 80) - 2));
+  // A terminal that has not been sized reports 0. `??` leaves that in place, and repeat of a negative count throws.
+  const reported = process.stdout.columns;
+  const columns = reported !== undefined && reported > 2 ? reported : 80;
+  const rule = "─".repeat(Math.min(44, columns - 2));
   process.stdout.write(`${brand(WORDMARK)}\n\n   ${dim("the web for agents")}\n  ${brand(rule)}\n\n`);
 }

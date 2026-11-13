@@ -21,6 +21,8 @@ cotal setup [--destination <local|self-hosted>] [-H|--harness <connector>] [--ru
 cotal setup --skills
 ```
 
+A terminal that reports 0 columns gets the splash drawn for 80 columns.
+
 | Flag | Default | Meaning |
 |---|---|---|
 | `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server, including a Cloud space `cotal login` discovered. `cloud` is refused before anything is written or contacted, and the refusal names that route: `cotal login`, then `--destination self-hosted --space <name>`. |
