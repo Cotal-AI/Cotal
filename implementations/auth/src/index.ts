@@ -67,6 +67,9 @@ export {
   CATALOG_FRESH_MS,
   deviceLogin,
   establishIdpSession,
+  stageIdpSession,
+  commitStagedIdpSession,
+  fetchStagedIdpSpaceCatalog,
   fetchIdpJwt,
   revokeIdpSession,
   loadIdpSession,
@@ -90,6 +93,8 @@ export {
   IdpSessionRejectedError,
   IdpRateLimitedError,
   type IdpSession,
+  type IdpLoginPins,
+  type StagedIdpSession,
   type DeviceLoginOpts,
   type DeviceLoginPrompt,
 } from "./login.js";

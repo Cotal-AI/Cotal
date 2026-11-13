@@ -13,6 +13,11 @@ import * as prompts from "@clack/prompts";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import { CommandFailure, resolvePreference, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, writeResult, findCotalRoot, getSpaceAuth, homeCotalDir, keptCatalogCredentials, loadMeshes, removeCatalogAccount, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
 import {
+  type DeviceLoginPrompt,
+  stageIdpSession,
+  commitStagedIdpSession,
+  fetchStagedIdpSpaceCatalog,
+  signedInMachineAccounts,
   deleteIdpSpaceCatalog,
   establishIdpSession,
   IdpUnreachableError,
@@ -29,7 +34,7 @@ import { findInteractiveActor, findManagedActor, loadActorLedger, withManagedGra
 import { INTERACTIVE_RETIRE_PATH, runAuthService } from "./service.js";
 import { loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp } from "./store.js";
 
-import { COTAL_CLOUD_IDP, cloudAuthUrl, openLoginBrowser, readCurrent, setAdoptedCurrent } from "@cotal-ai/workspace";
+import { resolveNativeMigration, COTAL_CLOUD_IDP, cloudAuthUrl, openLoginBrowser, readCurrent, setAdoptedCurrent } from "@cotal-ai/workspace";
 
 const DEFAULT_CLIENT_ID = "cotal-cli";
 
@@ -113,6 +118,12 @@ function canChooseAccount(): boolean {
 
 function validateAccountArguments(args: ParsedArgs, mode: "login" | "logout"): void {
   presentationOf(args.values);
+  if (args.values["migrate-from"] !== undefined) {
+    if (mode !== "login" || args.values.cloud || args.values.idp !== undefined)
+      throw new CommandFailure("refused", "USAGE_INVALID", "--migrate-from cannot be combined with --cloud or --idp");
+    const old = normalizeIdpUrl(String(args.values["migrate-from"]));
+    if (!old.startsWith("https://")) throw new CommandFailure("refused", "USAGE_INVALID", "--migrate-from requires an HTTPS auth URL");
+  }
   if (args.values.cloud && args.values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
   if (args.values.idp !== undefined) {
     try { normalizeIdpUrl(String(args.values.idp)); }
@@ -160,10 +171,53 @@ export async function chooseAccount(args: ParsedArgs, mode: "login" | "logout"):
   return prompts.isCancel(answer) ? undefined : normalizeIdpUrl(cloudAuthUrl(answer));
 }
 
+async function runNativeMigration(args: ParsedArgs, from: string): Promise<void> {
+  const dir = homeCotalDir();
+  const oldUrl = normalizeIdpUrl(from);
+  const entries = loadMeshes().filter(entry => entry.origin === "catalog" && entry.userAuth && normalizeIdpUrl(entry.userAuth.idp.url) === oldUrl);
+  const pins = new Map(entries.map(entry => {
+    const idp = entry.userAuth!.idp;
+    return [JSON.stringify([idp.issuer, idp.audience]), idp];
+  }));
+  if (!entries.length || pins.size !== 1)
+    throw new Error("native migration requires registered catalog spaces with one trusted issuer and audience for the old auth URL");
+  const trusted = [...pins.values()][0]!;
+  const accounts = signedInMachineAccounts(dir).filter(account => account.idpUrl === oldUrl);
+  const oldAccount = accounts[0];
+  if (accounts.length !== 1 || !oldAccount || oldAccount.issuer !== trusted.issuer || entries.some(entry => entry.catalogOwner !== oldAccount.ownerKey))
+    throw new Error("native migration requires one saved account matching the old registered catalog spaces");
+  const consumer = resolveSpaceCatalogConsumer();
+  if (!consumer.prepareMigration) throw new Error("the registered space catalog consumer does not support native migration");
+  const resolution = await resolveNativeMigration({ url: oldUrl, issuer: trusted.issuer, audience: trusted.audience });
+  const idp = resolution.bundle.userAuth.idp.url;
+  const presentation = presentationOf(args.values);
+  const candidate = await stageIdpSession({
+    dir, idpUrl: idp, clientId: String(args.values["client-id"] ?? DEFAULT_CLIENT_ID),
+    expectedPins: { idpUrl: idp, issuer: trusted.issuer, audience: trusted.audience, sub: oldAccount.sub },
+    onPrompt: (p: DeviceLoginPrompt) => {
+      console.error(renderReport({ sections: [{ title: "Approve native migration", blocks: [
+        { kind: "fields", rows: [["From", oldUrl], ["Provider", idp], ["Open", p.verificationUriComplete], ["Or open", p.verificationUri], ["Approval code", p.userCode], ["Expires", `in ${Math.ceil(p.expiresInSec / 60)} minutes`]] },
+        { kind: "lines", lines: ["Waiting for fresh provider approval. Ctrl-C aborts. Do not share the approval link or code."] },
+      ] }] }, presentation === "plain" ? "plain" : "rich", process.stderr));
+      openLoginBrowser(p.verificationUriComplete, args.values);
+    },
+  });
+  const catalog = await fetchStagedIdpSpaceCatalog(candidate, consumer.validate);
+  const commit = consumer.prepareMigration(oldAccount, catalog.account, catalog.snapshot);
+  // Validation precedes writes. These commits are separate local writes, not a cross-file transaction.
+  commitStagedIdpSession(candidate);
+  commit();
+  console.log(`Migrated ${entries.length} registered spaces to ${idp}. Legacy sessions and authority records were retained. No manager service sessions were refreshed.`);
+}
+
 async function runLogin(args: ParsedArgs): Promise<void> {
   const values = args.values as { idp?: string; "client-id"?: string };
   validateAccountArguments(args, "login");
   const presentation = presentationOf(args.values);
+  if (typeof args.values["migrate-from"] === "string") {
+    await legibly(() => runNativeMigration(args, args.values["migrate-from"] as string));
+    return;
+  }
   const idpArg = await chooseAccount(args, "login");
   if (idpArg === undefined) { console.error("Sign-in cancelled. No provider session was requested."); return; }
   await legibly(async () => {
@@ -597,13 +651,14 @@ const authCommands: Command[] = [
     group: "Identity",
     summary: "sign in to Cotal Cloud or another host with device approval",
     examples: [{ command: "cotal login", note: "sign in to Cotal Cloud and approve sign-in" }, { command: "cotal login --idp <url>", note: "sign in to one provider" }],
-    usage: "cotal login [--cloud | --idp <auth base URL>] [--client-id <id>] [--no-browser] [--plain]",
+    usage: "cotal login [--cloud | --idp <auth base URL> | --migrate-from <old auth URL>] [--client-id <id>] [--no-browser] [--plain]",
     prepareMeshTarget: false,
     outputs: ["plain"],
     validate: (args) => validateAccountArguments(args, "login"),
     flags: [
       plainFlag,
       { name: "cloud", type: "boolean", description: "Sign in to Cotal Cloud" },
+      { name: "migrate-from", type: "string", value: "<old auth URL>", description: "Approve an endorsed native origin migration for a registered account" },
       { name: "no-browser", type: "boolean", description: "Print approval instructions without opening a browser" },
       { name: "idp", type: "string", value: "<auth base URL>", description: "Auth base URL, e.g. <origin>/api/auth" },
       { name: "client-id", type: "string", value: "<id>", description: "OAuth device-flow client id" },

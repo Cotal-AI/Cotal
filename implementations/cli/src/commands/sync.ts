@@ -541,6 +541,7 @@ const spaceCatalogConsumer: SpaceCatalogConsumer = {
   kind: "space-catalog-consumer",
   name: "workspace",
   validate: validateCatalogSnapshot,
+  prepareMigration: prepareCatalogMigration,
   apply: (result) => void consume(result, true),
 };
 
