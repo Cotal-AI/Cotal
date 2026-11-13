@@ -31,6 +31,10 @@ writeFileSync(conf, serverConfig(broker, [account], {
 }));
 const child = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
 const release = teardownOnSignal(child, dir);
+const openPort = await pickFreePort(), openServers = `nats://127.0.0.1:${openPort}`;
+const openDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+const openBroker = spawn("nats-server", ["-js", "-sd", openDir, "-p", String(openPort), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseOpen = teardownOnSignal(openBroker, openDir);
 let provisioner: CotalEndpoint | undefined;
 const agents: CotalEndpoint[] = [];
 try {
@@ -91,11 +95,10 @@ try {
   let refused = false;
   try { await inconsistent.start(); }
   catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    refused = isPermissionDenied(error) || message.includes("is not on this broker");
+    refused = error instanceof Error && error.message.includes("the read list and the credential disagree");
     if (!refused) throw error;
   }
-  check("an explicit nonempty ACL with no DLV durable refuses instead of silently degrading", refused);
+  check("an explicit nonempty ACL on a channel-less credential refuses instead of silently degrading", refused);
   await inconsistent.stop();
 
   await provisionAgentDurables(provisioner, principal, { subscribe: [], allowSubscribe: ["general"] });
@@ -121,12 +124,24 @@ try {
   const dmInfo = await jsm.consumers.info(dmStream(space), dmDurable(principal.owner, principal.actor, uid));
   check("DM durable remains present and independently configured", dmInfo.config.ack_policy === AckPolicy.Explicit);
   await nc.close();
+
+  for (let i = 0; i < 100 && !(await isReachable(openServers)); i++) await wait(50);
+  const open = new CotalEndpoint({ space, servers: openServers, channels: ["general"], allowSubscribe: ["general"],
+    watchPresence: false, card: { name: "open-agent", kind: "agent" } });
+  open.on("error", () => {});
+  agents.push(open);
+  await open.start();
+  check("an open-mode endpoint with a read list starts without a DLV durable", true);
+  await open.stop();
 } finally {
   for (const agent of agents) await agent.stop();
   await provisioner?.stop().catch(() => {});
   await killAndAwaitExit(child, "SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   release();
+  await killAndAwaitExit(openBroker, "SIGKILL");
+  rmSync(openDir, { recursive: true, force: true });
+  releaseOpen();
 }
 console.log(`\nCONDITIONAL-DLV SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"} (${pass} passed, ${fail} failed)`);
-process.exit(fail === 0 && pass === 11 ? 0 : 1);
+process.exit(fail === 0 && pass === 12 ? 0 : 1);

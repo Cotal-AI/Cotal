@@ -7234,8 +7234,8 @@ export class CotalEndpoint extends EventEmitter {
    *  delivery-daemon-written (DLV is delivery-write-only, broker-enforced) and is a CHANNEL message by contract
    *  (the backstop never carries DMs), so `kind=channel` is path-derived (SPEC §4) and the body is
    *  trusted (no spoof-guard). `durable:true` — real JetStream ack, coalesced with the core-sub live
-   *  copy by `MeshAgent.ingest`. No-op when the durable isn't present and this connection did not declare
-   *  a read list. A declared read list with no durable refuses. */
+   *  copy by `MeshAgent.ingest`. No-op when the durable isn't present (open mode / not provisioned). A read
+   *  list declared on a credential that cannot fetch the durable refuses. */
   private async pumpDlv(): Promise<void> {
     if (!this.js) return;
     if (!this.ownLifecycleUid) return; // no lifecycle uid — never provisioned for Plane-3 (its durable is lifecycle-keyed)
@@ -7253,8 +7253,12 @@ export class CotalEndpoint extends EventEmitter {
     try { consumer = await this.js.consumers.get(dlvStream(this.space), durable); }
     catch (e) {
       if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) {
-        if ((this.allowSubscribe?.length ?? 0) > 0)
-          throw new Error(`delivery durable "${durable}" for space "${this.space}" is not on this broker; this connection declared a read list, so it cannot start without it`);
+        // A channel-less credential may ask about its durable but holds no fetch row for it. A read
+        // list declared on such a credential disagrees with the grant, so the start refuses.
+        const issued = this.nc && this.watchDeletePermissions.get(this.nc)?.();
+        if ((this.allowSubscribe?.length ?? 0) > 0 && issued
+          && !issuedPermitsSubject({ ...issued, deny: [] }, `$JS.API.CONSUMER.MSG.NEXT.${dlvStream(this.space)}.${durable}`))
+          throw new Error(`this connection declared a read list, but its credential cannot fetch delivery durable "${durable}" for space "${this.space}"; the read list and the credential disagree`);
         return;
       }
       throw e; // a denied bind is not evidence that the read ACL is empty or the durable is absent
