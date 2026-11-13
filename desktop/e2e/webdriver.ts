@@ -24,8 +24,8 @@ export class WindowDriver {
   private receipt(value: Record<string, unknown>): void {
     if (this.launchLog) writeFileSync(this.launchLog, `${JSON.stringify({ at: new Date().toISOString(), ...value })}\n`, { flag: "a", mode: 0o600 });
   }
-  async call(method: string, path: string, body?: unknown): Promise<any> {
-    const response = await fetch(`${this.url}${path}`, { method, signal: AbortSignal.timeout(120_000),
+  async call(method: string, path: string, body?: unknown, timeoutMs = 120_000): Promise<any> {
+    const response = await fetch(`${this.url}${path}`, { method, signal: AbortSignal.timeout(timeoutMs),
       ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
     const reply = await response.json() as { value: any };
     if (!response.ok || reply.value?.error) throw new Error(`${method} ${path}: ${JSON.stringify(reply.value)}`);
@@ -120,7 +120,17 @@ export class WindowDriver {
   }
   async displayed(id: string): Promise<boolean> { return this.call("GET", this.path(`element/${await this.element(id)}/displayed`)); }
   async enabled(id: string): Promise<boolean> { return this.call("GET", this.path(`element/${await this.element(id)}/enabled`)); }
-  async click(id: string): Promise<void> {
+  async click(id: string, deadlineUnixMs?: number): Promise<void> {
+    if (deadlineUnixMs !== undefined) {
+      assert.match(id, /^[a-z][a-z0-9-]*$/);
+      const remaining = () => { const ms = deadlineUnixMs - Date.now(); assert.ok(ms > 0, "native input deadline elapsed"); return ms; };
+      const result = await this.call("POST", this.path("element"), { using: "css selector", value: `#${id}` }, remaining());
+      const key = result["element-6066-11e4-a52e-4f735466cecf"];
+      assert.equal(await this.call("GET", this.path(`element/${key}/displayed`), undefined, remaining()), true);
+      assert.equal(await this.call("GET", this.path(`element/${key}/enabled`), undefined, remaining()), true);
+      await this.call("POST", this.path(`element/${key}/click`), {}, remaining());
+      return;
+    }
     await until(`${id} actionable`, async () => await this.displayed(id) && await this.enabled(id), Boolean);
     await this.call("POST", this.path(`element/${await this.element(id)}/click`), {});
   }

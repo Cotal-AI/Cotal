@@ -11,9 +11,10 @@ import { MacWindowDriver } from "./macos-driver.js";
 import { nativeLifecycle, type LifecycleAction, type NativeObservation } from "./native-lifecycle.js";
 import { startCleanupTrace } from "./windows-cleanup-trace.mjs";
 import { captureWindowsInstallSnapshot } from "./windows-install-snapshot.mjs";
-import { windowsJourneyCheckpoint } from "./windows-journey.mjs";
+import { windowsJourneyCheckpoint, windowsJourneyProgress } from "./windows-journey.mjs";
 import { startReceiptMirror } from "./receipt-mirror.mjs";
 import { windowsPhaseReceipt } from "./windows-phase-receipt.mjs";
+import { heldBeforePoll, nativeRequestRows, recoveryCells, recoveryWaitMs, requestSummary, stoppedPoll } from "./windows-recovery-cell.mjs";
 
 interface Fixture {
   root: string; idpUrl: string; space: string; catalogId: string;
@@ -25,9 +26,16 @@ export async function firstRun(fixture: Fixture): Promise<void> {
   assert.ok(["linux", "win32", "darwin"].includes(process.platform), "native window automation requires a supported desktop");
   assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted", "real service E2E requires a disposable runner");
   const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-  const output = process.env.RUNNER_TEMP ? join(process.env.RUNNER_TEMP, fixture.account ? "desktop-account-e2e" : "desktop-e2e") : resolve(repo, "desktop/e2e-results");
+  const recoveryCell = process.argv.find(arg => arg.startsWith("--desktop-recovery-cell="))?.split("=")[1];
+  assert.ok(recoveryCell === undefined || process.platform === "win32" && recoveryCells.includes(recoveryCell) && !fixture.account, "recovery cells require the isolated Windows per-space fixture");
+  const output = process.env.RUNNER_TEMP ? join(process.env.RUNNER_TEMP, fixture.account ? "desktop-account-e2e" : "desktop-e2e", ...(recoveryCell ? [recoveryCell] : [])) : resolve(repo, "desktop/e2e-results");
   mkdirSync(output, { recursive: true });
-  const windowsPhase = windowsPhaseReceipt(output);
+  const receiptPhase = windowsPhaseReceipt(output);
+  const windowsPhase: ReturnType<typeof windowsPhaseReceipt> = async (label, operation, observation) => {
+    windowsJourneyProgress({ phase: label, waitingOn: label, status: "start" });
+    try { return await receiptPhase(label, operation, observation); }
+    finally { windowsJourneyProgress({ phase: label, status: "complete" }); }
+  };
   const binary = realpathSync(process.env.DESKTOP_E2E_BINARY ?? join(repo, "desktop/src-tauri/target/debug", process.platform === "win32" ? "cotal-desktop.exe" : "cotal-desktop"));
   const { mkSecretDir } = await import("@cotal-ai/core");
   const root = fixture.root;
@@ -52,9 +60,15 @@ export async function firstRun(fixture: Fixture): Promise<void> {
   writeFileSync(join(home, ".bash_profile"), `export PATH=${JSON.stringify(env.PATH)}\n`, { mode: 0o600 });
   if (process.platform === "darwin") writeFileSync(join(home, ".zprofile"), `export PATH=${JSON.stringify(env.PATH)}\n`, { mode: 0o600 });
   const browserLog = join(root, "browser.jsonl"), context = join(daemonHome, "desktop-e2e.json");
-  writeFileSync(context, JSON.stringify({ env: supervisorEnv, traceHome: daemonHome }), { mode: 0o600 });
+  writeFileSync(context, JSON.stringify({ env: supervisorEnv, traceHome: process.platform === "win32" ? output : daemonHome }), { mode: 0o600 });
   if (process.platform === "win32") copyFileSync(context, join(dirname(binary), "desktop-e2e.json"));
-  if (process.platform === "win32") for (const file of ["windows-native-trace.mjs", "windows-manager-path.mjs", "windows-bridge-trace.mjs", "windows-peer-trace.mjs", "windows-install-tool-trace.mjs"]) copyFileSync(join(repo, "desktop/e2e", file), join(daemonHome, file));
+  if (process.platform === "win32") {
+    for (const file of ["native-tool-timings.jsonl", "native-errors.jsonl", "daemon-native.log", "native-setup-progress.jsonl", "windows-bridge-progress.jsonl"]) writeFileSync(join(output, file), "", { flag: "ax", mode: 0o600 });
+    for (const file of ["windows-native-trace.mjs", "windows-manager-path.mjs", "windows-bridge-trace.mjs", "windows-peer-trace.mjs", "windows-install-tool-trace.mjs"]) {
+      copyFileSync(join(repo, "desktop/e2e", file), join(daemonHome, file));
+      copyFileSync(join(repo, "desktop/e2e", file), join(output, file));
+    }
+  }
   env.COTAL_DESKTOP_E2E_CONTEXT = context;
   env.COTAL_DESKTOP_E2E_BROWSER_LOG = browserLog;
   env.COTAL_DESKTOP_E2E_NATIVE_LOG = join(output, "native-errors.jsonl");
@@ -75,6 +89,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     const peerPaths = daemonPaths(supervisorEnv, machineHome);
     const peerContext = { pipe: peerPaths.socket, lock: peerPaths.lock, output: join(output, "windows-peer-identity.jsonl") };
     writeFileSync(join(daemonHome, "windows-peer-context.json"), JSON.stringify({ ...peerContext, cliPath: join(dirname(binary), "runtime/dist/cotal.js") }), { mode: 0o600 });
+    writeFileSync(join(output, "windows-peer-context.json"), JSON.stringify({ ...peerContext, cliPath: join(dirname(binary), "runtime/dist/cotal.js") }), { mode: 0o600 });
     const cliTrace = join(root, "peer-client"); mkSecretDir(cliTrace);
     copyFileSync(join(repo, "desktop/e2e/windows-peer-trace.mjs"), join(cliTrace, "windows-peer-trace.mjs"));
     writeFileSync(join(cliTrace, "windows-peer-context.json"), JSON.stringify({ ...peerContext, cliPath: cli }), { mode: 0o600 });
@@ -148,6 +163,121 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       await windowsApplication("install");
       check("fixture application installed on the account User PATH", true);
     } else writeFileSync(join(appBin, "desktop-fixture-app"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  };
+  let preparationOutstanding = false;
+  const recoveryDiagnostic = async () => {
+    assert.ok(recoveryCell && driver instanceof WindowDriver);
+    const nativeLog = join(output, "native-errors.jsonl");
+    const artifact = join(output, "windows-recovery-cell.json");
+    const evidence: any = { schema: 1, cell: recoveryCell, startedAt: new Date().toISOString(), counted: false, outcome: "incomplete" };
+    const save = () => writeFileSync(artifact, JSON.stringify(evidence, null, 2));
+    const rows = () => nativeRequestRows(nativeLog);
+    const snapshot = async (stage: string, timeoutMs = 5000) => {
+      const value = await driver.call("POST", driver.path("execute/sync"), { script: `
+        const b=document.getElementById('recover'), p=document.getElementById('recovery-panel');
+        return {atUnixMs:Date.now(),buttonText:b.textContent.trim(),action:b.dataset.action,
+          disabled:b.disabled,connectionTitle:document.getElementById('connection-title').textContent,
+          detailsText:document.getElementById('details').textContent,detailsHidden:document.getElementById('details').hidden,
+          recoveryShown:!p.hidden && getComputedStyle(p).display!=='none',
+          frames:window.__desktopSetupFrames??[]};`, args: [] }, timeoutMs);
+      // The fixture uses synthetic local coordinates. Still never retain bearer-shaped Details.
+      value.detailsText = String(value.detailsText).slice(0, 16_384).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>");
+      writeFileSync(join(output, `recover-${stage}.json`), JSON.stringify({ observedAt: new Date().toISOString(), ...value }, null, 2));
+      return value;
+    };
+    save();
+    const restartArtifact = join(output, "windows-restart-lifetime.json");
+    const helper = spawn(join(dirname(binary), "node.exe"), [join(repo, "desktop/e2e/windows-restart.mjs"), repo, machineHome,
+      restartArtifact, join(dirname(binary), "runtime"), "prepare-disabled-staged"],
+    { env: cliEnv, cwd: home, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    let helperError: Error | undefined;
+    helper.once("error", error => { helperError = error; });
+    let helperExited = false;
+    const helperExit = new Promise<number | null>(resolveExit => helper.once("exit", (code) => { helperExited = true; resolveExit(code); }));
+    for (const pipe of [helper.stdout, helper.stderr]) pipe?.on("data", bytes => writeFileSync(join(output, "windows-restart.log"), bytes, { flag: "a" }));
+    try {
+      await windowsPhase("cell-owned-preparation", () => until("owned helper prepared before timed native pause", async () => {
+        assert.ifError(helperError);
+        assert.ok(!helperExited, "owned preparation helper exited before readiness");
+        return existsSync(restartArtifact) ? JSON.parse(readFileSync(restartArtifact, "utf8")) : undefined;
+      }, value => value?.disabledFixture?.phase === "await-native-pause", 240_000));
+      evidence.preparedAtUnixMs = Date.now(); save();
+      // Observe the application's own next status poll. Never invoke refresh or change its timer.
+      evidence.baseline = await windowsPhase("cell-observe-healthy-poll", () => until("fresh successful application status poll", async () => {
+        try { return rows().filter(row => row.phase === "result" && row.request?.op === "status" && row.ok === true && row.atUnixMs >= evidence.preparedAtUnixMs).at(-1); }
+        catch { return undefined; }
+      }, Boolean, 45_000));
+      evidence.beforeDisable = await snapshot("before-disable");
+      evidence.disableAtUnixMs = Date.now(); save();
+      helper.stdin!.end(`${JSON.stringify({ op: "pause" })}\n`);
+      const exit = await windowsPhase("cell-owned-native-pause", async () => {
+        await until("owned native pause helper exits", async () => helperExited, Boolean, 180_000);
+        return helperExit;
+      });
+      assert.equal(exit, 0, "receipt-verified native pause and zero-instance proof completed");
+      evidence.preparation = JSON.parse(readFileSync(restartArtifact, "utf8"));
+      assert.equal(evidence.preparation.disabledFixture.phase, "disabled-zero-confirmed");
+      save();
+      if (recoveryCell === "after-poll") {
+        evidence.stoppedPoll = await windowsPhase("cell-observe-stopped-poll", () => until("app poll reports stopped service", async () => {
+          try { return stoppedPoll(rows(), evidence.disableAtUnixMs); } catch { return undefined; }
+        }, Boolean, 60_000));
+        await windowsPhase("cell-observe-stopped-panel", () => until("app displays stopped service refusal", async () => snapshot("stopped-panel"),
+          value => value.recoveryShown && value.action === "refresh" && /not running|background service/i.test(value.detailsText), 15_000));
+      }
+      evidence.before = await snapshot("before-click");
+      evidence.clickStartedAtUnixMs = Date.now();
+      let beforeRows: any[];
+      try { beforeRows = rows(); evidence.requests = requestSummary(beforeRows, evidence.disableAtUnixMs); }
+      catch (error) { evidence.outcome = "race-not-held"; evidence.admissionError = String(error); save(); return; }
+      if (recoveryCell === "before-poll") {
+        evidence.race = heldBeforePoll(beforeRows, evidence.baseline, evidence.disableAtUnixMs, evidence.clickStartedAtUnixMs, evidence.before);
+        if (!evidence.race.held) { evidence.outcome = "race-not-held"; save(); return; }
+      }
+      const deadline = evidence.clickStartedAtUnixMs + recoveryWaitMs;
+      evidence.postClickDeadlineUnixMs = deadline;
+      save();
+      await windowsPhase("cell-recover-click", () => driver.click("recover", deadline));
+      evidence.clickCompletedAtUnixMs = Date.now();
+      evidence.after = await snapshot("after-click", Math.max(1, Math.min(5000, deadline - Date.now()))); save();
+      // Admission includes everything through the real driver's completed input and immediate readback.
+      if (recoveryCell === "before-poll") {
+        try { evidence.race = heldBeforePoll(rows(), evidence.baseline, evidence.disableAtUnixMs, evidence.clickCompletedAtUnixMs, evidence.before); }
+        catch (error) { evidence.outcome = "race-not-held"; evidence.admissionError = String(error); save(); return; }
+        if (!evidence.race.held) { evidence.outcome = "race-not-held"; save(); return; }
+      }
+      evidence.counted = true;
+      await windowsPhase("cell-post-click-observation", async () => {
+        while (Date.now() < deadline) {
+          const remaining = deadline - Date.now();
+          try {
+            const value = await snapshot("latest", Math.max(1, Math.min(5000, remaining)));
+            evidence.latest = value;
+            evidence.requests = requestSummary(rows(), evidence.clickStartedAtUnixMs);
+            const fresh = value.frames.slice(evidence.before.frames.length);
+            if (fresh.some((row: any) => row.frame.progress?.step === "applications" && row.frame.progress?.outcome === "unavailable") && !value.disabled) {
+              evidence.outcome = "setup-settled"; save(); return;
+            }
+            save();
+          } catch (error) { evidence.lastObservationError = String(error); save(); }
+          await delay(Math.min(250, Math.max(0, deadline - Date.now())));
+        }
+        evidence.outcome = "observation-window-ended-no-setup";
+      });
+      evidence.requests = requestSummary(rows(), evidence.clickStartedAtUnixMs);
+      evidence.afterWait = evidence.latest ?? evidence.after;
+    } finally {
+      // This only closes this fixture's staged helper control, never a task or daemon.
+      if (!helper.stdin?.destroyed) helper.stdin?.end();
+      if (!helperExited) {
+        try { await windowsPhase("cell-preparation-owner-exit", () => until("owned preparation helper terminal before native cleanup", async () => helperExited, Boolean, 30_000)); }
+        catch {
+          preparationOutstanding = true;
+          evidence.cleanupOwnership = { state: "outstanding", helperPid: helper.pid, reason: "preparation helper not terminal; native cleanup must not race it" };
+        }
+      }
+      evidence.completedAt = new Date().toISOString(); save();
+    }
   };
   const proveWindowsRestart = async (prepareDisabled = false) => {
     if (process.platform !== "win32") return;
@@ -318,8 +448,8 @@ export async function firstRun(fixture: Fixture): Promise<void> {
   };
   const title = async (expected: string) => until(expected, () => driver.text("connection-title"), value => value === expected);
   const phase = (name: string) => writeFileSync(join(output, "journey-phases.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), monotonicMs: performance.now(), phase: name })}\n`, { flag: "a" });
-  const stopReceiptMirror = startReceiptMirror(join(daemonHome, "deep-link-receipts.jsonl"), join(output, "deep-link-receipts.jsonl"));
-  const stopLoginReceiptMirror = startReceiptMirror(join(daemonHome, "login-preference-receipts.jsonl"), join(output, "login-preference-receipts.jsonl"));
+  const stopReceiptMirror = process.platform === "win32" ? () => {} : startReceiptMirror(join(daemonHome, "deep-link-receipts.jsonl"), join(output, "deep-link-receipts.jsonl"));
+  const stopLoginReceiptMirror = process.platform === "win32" ? () => {} : startReceiptMirror(join(daemonHome, "login-preference-receipts.jsonl"), join(output, "login-preference-receipts.jsonl"));
   try {
     phase("journey-start");
     if (process.platform === "darwin") {
@@ -501,6 +631,12 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     check("daemon does not claim launch-ready without an application", !((await status()).managers ?? []).some((m: any) => m.space === fixture.space && m.state === "answering" && m.connectors.some((c: any) => c.state === "available")));
     await shot("03-no-application");
     phase("service-recovery-start");
+    if (recoveryCell) {
+      await recoveryDiagnostic();
+      phase("service-recovery-complete");
+      await windowsJourneyCheckpoint("service-recovery-complete");
+      return; // A diagnostic result is not full onboarding or account acceptance.
+    }
     await proveWindowsRestart(true);
     phase("service-recovery-complete");
     await windowsJourneyCheckpoint("service-recovery-complete");
@@ -596,6 +732,10 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     throw error;
   } finally {
     phase("cleanup-start");
+    if (preparationOutstanding) {
+      windowsJourneyProgress({ phase: "cleanup-preparation-owner-outstanding", waitingOn: "owned-preparation-helper", status: "start" });
+      throw new Error("Windows preparation owner remains live; cleanup outstanding, runner must not be reused");
+    }
     if (process.platform === "win32") cleanupTrace = await windowsPhase("cleanup-observer-start", () => startCleanupTrace({ home: daemonHome, receipt, output: join(output, "windows-cleanup-timings.jsonl") }));
     try {
     if (clientDiagnostic && clientDiagnostic.exitCode === null && clientDiagnostic.signalCode === null) {
@@ -678,16 +818,19 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     stopReceiptMirror();
     phase("cleanup-final-evidence");
     for (const [key, value] of priorLaunchd) native("/bin/launchctl", value === undefined ? ["unsetenv", key] : ["setenv", key, value]);
-    for (const file of ["native-tool-timings.jsonl", "manager-path.jsonl", "windows-bridge-progress.jsonl", "native-setup-progress.jsonl", "deep-link-receipts.jsonl", "login-preference-receipts.jsonl"]) if (existsSync(join(daemonHome, file))) copyFileSync(join(daemonHome, file), join(output, file));
+    for (const file of process.platform === "win32" ? [] : ["native-tool-timings.jsonl", "manager-path.jsonl", "windows-bridge-progress.jsonl", "native-setup-progress.jsonl", "deep-link-receipts.jsonl", "login-preference-receipts.jsonl"]) if (existsSync(join(daemonHome, file))) copyFileSync(join(daemonHome, file), join(output, file));
     if (existsSync(join(daemonHome, "native-launcher-stderr.log"))) {
       const log = readFileSync(join(daemonHome, "native-launcher-stderr.log"), "utf8").slice(-64 * 1024).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>");
       writeFileSync(join(output, "native-launcher-stderr.log"), log);
     }
-    if (existsSync(join(daemonHome, "daemon.log"))) {
+    if (process.platform !== "win32" && existsSync(join(daemonHome, "daemon.log"))) {
       const log = readFileSync(join(daemonHome, "daemon.log"), "utf8").slice(-64 * 1024).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>");
       writeFileSync(join(output, "daemon-native.log"), log);
     }
-    writeFileSync(join(output, "result.json"), JSON.stringify({ platform: process.platform, binary, checks, calls, failure, outcome: failure ? "failed" : "passed" }, null, 2));
+    writeFileSync(join(output, "result.json"), JSON.stringify({ platform: process.platform, binary, checks, calls, failure,
+      ...(recoveryCell ? { diagnosticCell: recoveryCell, acceptance: false,
+        diagnostic: existsSync(join(output, "windows-recovery-cell.json")) ? JSON.parse(readFileSync(join(output, "windows-recovery-cell.json"), "utf8")) : { outcome: "incomplete" } } : {}),
+      outcome: failure ? "failed" : recoveryCell ? "diagnostic-complete" : "passed" }, null, 2));
     for (const child of desktopProcesses.reverse()) {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill();
