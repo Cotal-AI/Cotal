@@ -403,7 +403,8 @@ cotal join --link <url> | --token <t>
 | `--expires-in <seconds>`, `--expires-at <unix-seconds>` | no expiry | A bare join on a static mesh only, one or the other: when the session's issued credential ends. Without either it has no expiry, and it is retired when you leave. Refused with `--link`, `--token` or `--creds`, and on a user-auth or open mesh |
 
 An interactive presence: join a space under your own name and role, without launching an agent
-harness. A `--link` supplies the where and the auth in one value. See
+harness. Another participant whose name is only whitespace is shown as the id, in the roster,
+on an incoming line, and on a DM you send. A `--link` supplies the where and the auth in one value. See
 [Spaces](spaces.mdx) and [Identity and auth](identity-and-auth.mdx).
 
 A `--token` or `--creds` goes to `--server`, or else to the broker the space is registered at,

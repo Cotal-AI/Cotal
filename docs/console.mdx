@@ -59,6 +59,7 @@ The console has a roster, live feed, channel tabs, signal tiles, and optional vi
 | `?`, `b`, or `q` | Open help, return to the overview, or quit. |
 
 The roster and DM list sit beside content on wide terminals and above it below 80 columns.
+An agent suggestion whose name is only whitespace shows that agent's id.
 Enter opens a selected agent or message detail card. A short terminal clips the bottom; enlarge the terminal or press a key to close it.
 Selections stay within the current rows when lists shrink or empty. The topology swimlane follows traffic at the final row; moving up pauses it.
 
@@ -135,6 +136,7 @@ User authentication redeems the session through the identity plane's session-bea
 
 On an open mesh, your first send registers the operator in presence.
 This applies to `dm`, `call`, `ask`, `msg`, or a composed message, and requires `canWrite`.
+A composed message to a participant whose name is only whitespace names that participant by id.
 A watch-only session stays invisible.
 
 The console starts a presence-only endpoint with the observer's id, name, and `operator` role.

@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
-import { peerLabel } from "@cotal-ai/core";
+import { consoleLabel } from "../label.js";
 import type { FeedEntry } from "../mesh.js";
 import { agentColor, fmtTime, wrapText } from "./theme.js";
 
@@ -60,7 +60,7 @@ function targetText(e: FeedEntry): string {
 }
 
 function HeadRow({ entry, selected }: { entry: FeedEntry; selected: boolean }) {
-  const label = peerLabel(entry.from);
+  const label = consoleLabel(entry.from);
   // Selected: one uniform cyan bar (like the tabs) — no per-segment colors to invert into a
   // multi-color mess. Unselected: the normal colored composition.
   if (selected) {

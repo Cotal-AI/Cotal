@@ -12,6 +12,7 @@ import {
   eventChannelPrincipal,
   resolvePeer as resolvePeerInRoster,
   peerLabel,
+  shownPeerName,
   CotalEndpoint,
   acquireLocalConsumer,
   type HeldLock,
@@ -2557,7 +2558,7 @@ export class MeshAgent extends EventEmitter {
     if (matches.length > 1)
       throw new Error(
         `"${target}" is ambiguous - ${matches.length} known peers share that name; ` +
-          `DM by instance id instead: ${matches.map(([id, n]) => `${n} (${id})`).join("; ")}`,
+          `DM by instance id instead: ${matches.map(([id, n]) => `${shownPeerName(n, id)} (${id})`).join("; ")}`,
       );
     const match = matches[0];
     return match && match[0] !== peer?.card.id ? { id: match[0], name: match[1] } : undefined;

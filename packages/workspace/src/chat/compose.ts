@@ -64,7 +64,10 @@ export function recipientLabel(r: Recipient | undefined, choose: string): string
   if (!r) return `no recipient (${choose})`;
   if (r.kind === "channel") return `#${oneLine(r.channel)}${r.replyTo ? " (reply)" : ""}`;
   if (r.kind === "role") return `role ${oneLine(r.role)}`;
-  if (r.kind === "peer") return `DM ${oneLine(r.name)} (${oneLine(r.principal)})${r.replyTo ? " (reply)" : ""}`;
+  if (r.kind === "peer") {
+    const who = r.name.trim() ? `${oneLine(r.name)} (${oneLine(r.principal)})` : oneLine(r.principal);
+    return `DM ${who}${r.replyTo ? " (reply)" : ""}`;
+  }
   return `DM ${oneLine(r.to)}`;
 }
 
@@ -344,8 +347,10 @@ export function sharedNames(people: Iterable<Person>): ReadonlyMap<string, reado
 }
 
 /** A person's display name, followed by their principal when another principal shares the name.
- *  Unescaped: the caller escapes it like any other untrusted text. */
+ *  A blank name is not one, so the label is the principal. Unescaped: the caller escapes it like
+ *  any other untrusted text. */
 export function personLabel(p: Person, shared: ReadonlyMap<string, readonly string[]>): string {
+  if (!p.name.trim()) return p.id;
   return shared.has(nameKey(p.name)) ? `${p.name} (${p.id})` : p.name;
 }
 

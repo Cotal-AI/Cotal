@@ -4,7 +4,8 @@
 // they are gated on `canWrite` (open mode, or a privileged --creds). Control commands go through
 // `ctx.control` (one per-action call on the CLI's control path, console/control.ts), gated on
 // `canControl`; the observer endpoint never carries control.
-import { mentionsIn, resolvePeer, AmbiguousPeerError, peerLabel, type CotalEndpoint, type Presence } from "@cotal-ai/core";
+import { mentionsIn, resolvePeer, AmbiguousPeerError, type CotalEndpoint, type Presence } from "@cotal-ai/core";
+import { consoleLabel } from "./label.js";
 import type { MeshSnapshot } from "@cotal-ai/workspace/view";
 import { offlineRecipientNotice } from "@cotal-ai/workspace";
 import type { ManagerReply, ControlOp, ManagedRow, PsReply } from "@cotal-ai/workspace/control";
@@ -63,7 +64,7 @@ export const meshWord = (a: Pick<ManagedRow, "mesh">): string => a.mesh === "wor
  *  presence ({@link meshWord}), and they disagree in the common failure (running for days, offline
  *  on the mesh). */
 export function formatManagedRow(a: ManagedRow): string {
-  return `${peerLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${meshWord(a)} · up ${Math.round(a.uptimeMs / 60000)}m`;
+  return `${consoleLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${meshWord(a)} · up ${Math.round(a.uptimeMs / 60000)}m`;
 }
 
 /** Resolve an agent/endpoint name (with or without a leading @) to its instance id. Fail-loud:
