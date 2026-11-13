@@ -78,6 +78,13 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
       throw new Error(`Unexpected ${r.op}`);
     },
   };
+  const NativeURL = win.URL;
+  win.URL = class extends NativeURL {
+    constructor(value: string | URL, base?: string | URL) {
+      if (/^cotal:/i.test(String(value))) throw new Error("Custom-scheme URL parsing unavailable");
+      super(value, base);
+    }
+  };
   win.eval(await bundle); await settle();
   const node = <T extends HTMLElement = HTMLElement>(id: string) => doc.getElementById(id) as T;
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };

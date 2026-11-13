@@ -36,7 +36,7 @@ On account-computer hosts, Open dashboard opens the signed-in provider's `/machi
 
 The app does not replace existing daemon identities, change grants, or claim remote vitals that the registered service does not expose. Sign-out, identity-contract migration, remote management and signed automatic updates remain separate from these controls.
 
-A dashboard can open `cotal://connect?idp=<encoded-provider-url>&space=<space>`. The installer registers this scheme. It only fills public provider/space fields; it does not start sign-in, approve a grant or connect. Unknown fields, secrets and duplicate parameters are refused. Development runs do not register a protocol handler on the host.
+A dashboard can open `cotal://connect?idp=<encoded-provider-url>&space=<space>`. The installer registers this scheme. It only fills public provider/space fields; it does not start sign-in, approve a grant or connect. The route must be `connect` with no path or a single `/`. User information, explicit ports, fragments, unknown fields, secrets and duplicate parameters are refused before URL normalization. Provider URLs cannot contain a query or fragment. Parsing does not require the WebView to support custom-scheme URL objects. Development runs do not register a protocol handler on the host.
 
 The equivalent terminal controls are `cotal daemon install`, `cotal daemon start`, `cotal daemon login --idp <url>`, `cotal daemon spaces --refresh`, and `cotal daemon setup --space <space> --idp <url>`. The app does not maintain a second configuration or login store. The lower-level `register` and `service-connect` adapter requests remain available for machine-service connections.
 

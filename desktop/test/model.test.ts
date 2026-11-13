@@ -45,6 +45,39 @@ test("dashboard links prefill only public coordinates and reject secrets or dupl
   for (const value of ["cotal://connect?idp=https://example.com/auth&token=secret", "cotal://connect?idp=https://example.com&idp=https://other.example", "cotal://exec?idp=https://example.com", "cotal://connect?idp=file:///tmp/auth", "cotal://connect?idp=https://example.com&space=bad%20space"]) assert.throws(() => onboardingLink(value));
 });
 
+test("onboarding links never require custom-scheme URL support", () => {
+  const NativeURL = globalThis.URL;
+  globalThis.URL = class extends NativeURL {
+    constructor(value: string | URL, base?: string | URL) {
+      if (/^cotal:/i.test(String(value))) throw new Error("Custom-scheme URL parsing unavailable");
+      super(value, base);
+    }
+  };
+  try {
+    for (const path of ["", "/"]) {
+      assert.deepEqual(onboardingLink(`cotal://connect${path}?idp=https%3A%2F%2Fexample.com%2Fauth&space=sp_team`), { idp: "https://example.com/auth", space: "sp_team" });
+    }
+    assert.deepEqual(onboardingLink("COTAL://connect?idp=http%3A%2F%2F127.0.0.1%3A8080%2Fauth"), { idp: "http://127.0.0.1:8080/auth" });
+  } finally { globalThis.URL = NativeURL; }
+});
+
+test("onboarding boundaries survive special-scheme normalization", () => {
+  const query = "?idp=https%3A%2F%2Fexample.com%2Fauth";
+  for (const target of ["CONNECT", "con%6Eect", "", "/connect", "connect:443", "connect:80", "connect:0", "connect:", "user@connect", "@connect", "user:pass@connect", "connect/path", "connect/..", "connect/%2e", "connect/a/..", "connect//", "connect\\", "connect\\..", "con\tnect", "connect."]) {
+    assert.throws(() => onboardingLink(`cotal://${target}${query}`), Error, target);
+  }
+  for (const value of [
+    `https://connect${query}`, `cotal:connect${query}`, `cotal:/connect${query}`,
+    `cotal://connect${query}#fragment`, `cotal://connect${query}#`,
+    `cotal://connect${query}&token=secret`, `cotal://connect${query}&idp=https://other.example`,
+    `cotal://connect${query}&space=a&space=b`, `cotal://connect${query}&space=`,
+    `cotal://connect${query}&space=bad%20space`, `cotal://connect${query}&space=${"x".repeat(65)}`,
+    "cotal://connect", "cotal://connect?idp=javascript:alert(1)",
+    "cotal://connect?idp=https%3A%2F%2Fexample.com%2Fauth%3Fx%3D1",
+    "cotal://connect?idp=https%3A%2F%2Fexample.com%2Fauth%23fragment",
+  ]) assert.throws(() => onboardingLink(value), Error, value);
+});
+
 test("expired credentials and pending approval refusals map to their recovery actions", () => {
   assert.deepEqual(refusalView("CREDENTIAL_EXPIRED"), {
     title: "Sign in again",
