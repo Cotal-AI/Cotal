@@ -159,10 +159,10 @@ try {
       } finally { holdPrompt = false; releasePrompt?.(); releasePrompt = undefined; }
     });
   }
-  await cell("missing --idp still prints usage", async () => {
-    const result = await run(["login"]).done;
+  await cell("unknown login flag still prints usage", async () => {
+    const result = await run(["login", "--signal-smoke-unknown"]).done;
     assert.equal(result.code, 1);
-    assert.match(result.err, /needs --idp/);
+    assert.match(result.err, /signal-smoke-unknown/);
     assert.match(result.err, /Usage\n/);
   });
   await cell("approval still signs in and saves a session", async () => {
