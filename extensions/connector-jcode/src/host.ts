@@ -899,16 +899,15 @@ export async function runJcodeHost(): Promise<void> {
   const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> => {
     if (stopping) return;
     stopping = true;
-    // A once seat's tree goes first, before the event joins, the broker or the client close can hold
-    // the teardown. What this misses, its manager's retireAfterExit finds.
+    // The private tree goes first for every seat. A runtime stop SIGTERMs the seat and SIGKILLs it
+    // after a short grace, and the event drain or the broker close can use that whole grace. What
+    // this misses, its manager's retireAfterExit finds.
     let exit = code;
-    if (onceUid) {
-      try {
-        await stopPrivateJcode({ skipClientClose: true });
-      } catch (error) {
-        writeJcodeDiagnostic(`[cotal-jcode] ${(error as Error).message}\n`);
-        exit = 1;
-      }
+    try {
+      await stopPrivateJcode({ skipClientClose: true });
+    } catch (error) {
+      writeJcodeDiagnostic(`[cotal-jcode] ${(error as Error).message}\n`);
+      exit = 1;
     }
     agent.releaseInFlight(surfacedIds);
     surfacedIds = [];

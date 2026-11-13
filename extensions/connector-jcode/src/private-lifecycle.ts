@@ -540,6 +540,16 @@ export async function stopPrivateTree(options: StopPrivateTreeOptions): Promise<
     // Stop the bridge by exact PID. It is not a daemon group leader, and its death is the event after
     // which a launch already in flight can publish the registry record the next phase must catch.
     signalPid(launch.pid, "SIGTERM");
+  }
+  // A daemon setsid's into its own group. Signal the ones already recorded before waiting out the
+  // bridge, so a seat killed at the end of its grace has already reached them.
+  refreshOwned();
+  const early = recordedTreePids(jcodeHome)
+    .map((pid) => owned.get(pid))
+    .filter((identity): identity is ProcessIdentity => identity !== undefined && identity.pid !== launch.pid && processMatches(identity) && alive(identity.pid))
+    .map((identity) => identity.pid);
+  if (early.length) signalTree(early, "SIGTERM");
+  if (processMatches(launch)) {
     if (!(await waitGone([launch.pid], gracefulWaitMs))) {
       signalPid(launch.pid, "SIGKILL");
       if (!(await waitGone([launch.pid], killWaitMs)))

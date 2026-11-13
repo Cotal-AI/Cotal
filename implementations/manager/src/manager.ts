@@ -3754,12 +3754,15 @@ export class Manager {
     const failures: string[] = [];
     const stopped: ManagedAgent[] = [];
     for (const a of managed) {
-      // Free the slot + hard-stop each; `stopHandle` is best-effort (never throws — see it), so one bad
-      // stop can't strand the rest, and every snapshot entry is deprovisioned below regardless.
+      // Free the slot and stop each the way an operator stop does. `stopHandle` is best-effort (never
+      // throws — see it), so one bad stop can't strand the rest, and every snapshot entry is
+      // deprovisioned below regardless. A hard kill never runs the seat's shutdown, so a helper that
+      // has left the process group keeps running after `cotal down`. The runtime still escalates to
+      // SIGKILL after its grace.
       this.recordContinuityAtStop(a, "shutdown");
       this.agents.delete(a.name);
       this.dropSeatRecord(a);
-      const refused = this.stopHandle(a, false);
+      const refused = this.stopHandle(a, true);
       if (refused === undefined) stopped.push(a);
       else failures.push(`${a.name}: stop failed: ${refused}`);
     }
