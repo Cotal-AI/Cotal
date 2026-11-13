@@ -98,6 +98,8 @@ export interface DeviceLoginOpts {
   idpUrl: string;
   /** The OAuth client id this CLI presents; the IdP may pin it via its validateClient hook. */
   clientId: string;
+  /** Retained auth URL when this approval is part of a native migration. */
+  migrationFrom?: string;
   /** Shows the human the verification URL + code. Called exactly once; polling starts only after
    *  it settles, a rejection fails the login, and the device code's lifetime bounds it. */
   onPrompt: (prompt: DeviceLoginPrompt) => void | Promise<void>;
@@ -314,7 +316,8 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     (grant.interval !== undefined && !sane(grant.interval, 300))
   )
     throw new Error(`idp login: ${base} returned a malformed device grant - refusing to poll on it`);
-  const expired = `idp login: the device code expired after ${grant.expires_in}s without approval - run \`cotal login\` again`;
+  const retry = opts.migrationFrom === undefined ? "cotal login" : `cotal login --migrate-from ${normalizeIdpUrl(opts.migrationFrom)}`;
+  const expired = `idp login: the device code expired after ${grant.expires_in}s without approval - run \`${retry}\` again`;
   // The code's lifetime runs from the grant, so a prompt that never settles fails the login at
   // expiry instead of holding it open.
   const deadline = Date.now() + grant.expires_in * 1000;
@@ -374,7 +377,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     }
     if (e.error === "access_denied") throw new Error("idp login: the sign-in was denied at the verification page");
     if (e.error === "expired_token")
-      throw new Error("idp login: the device code expired before the sign-in was approved - run `cotal login` again");
+      throw new Error(`idp login: the device code expired before the sign-in was approved - run \`${retry}\` again`);
     throw new Error(
       `idp login: ${base} rejected the poll (${e.error ?? `HTTP ${poll.status}`}: ${e.error_description ?? "no detail"})`,
     );
