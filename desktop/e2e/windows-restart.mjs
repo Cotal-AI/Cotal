@@ -3,15 +3,28 @@ import { execFile, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { readStopReply } from "./windows-stop-reply.mjs";
+
+// The parent's private stdin pipe is the only control channel. No pathname reconnect.
+async function awaitNativePause(input, ready) {
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  try {
+    const next = lines[Symbol.asyncIterator]().next();
+    await ready();
+    const command = await next;
+    assert.equal(command.done, false, "parent must authorize native pause before closing stdin");
+    assert.deepEqual(JSON.parse(command.value), { op: "pause" }, "only native pause is accepted");
+  } finally { lines.close(); }
+}
 
 // Run only as a companion to the real app journey on a disposable Windows runner.
 assert.equal(process.platform, "win32", "native restart proof requires Windows");
 assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted", "native restart proof requires a disposable runner");
 const [repo, machineHome, artifact, runtime, preparation] = process.argv.slice(2);
-assert.ok(preparation === undefined || preparation === "prepare-disabled" || preparation === "verify-recovered", "only explicit native fixture modes are supported");
+assert.ok(preparation === undefined || preparation === "prepare-disabled" || preparation === "prepare-disabled-staged" || preparation === "verify-recovered", "only explicit native fixture modes are supported");
 assert.ok(repo && machineHome && artifact && runtime, "repo, private machine home, artifact and installed runtime are required");
 // Ownership checks must compare the installed launch vector, not this test helper's filename.
 process.argv = [process.execPath, join(runtime, "dist/cotal.js")];
@@ -113,7 +126,7 @@ try {
   check("recorded installation source and receipt are unchanged", true);
   evidence.taskAfter = await taskState(evidence.installationAfter.plan.unit);
   check("recorded task is Running after restart", evidence.taskAfter === "Running");
-  if (preparation === "prepare-disabled") {
+  if (preparation === "prepare-disabled" || preparation === "prepare-disabled-staged") {
     // Test preparation only. Recovery must come from the parent's actual app Check again.
     const fixture = evidence.disabledFixture = { phase: "manager-fence", startedAt: new Date().toISOString() };
     await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
@@ -143,6 +156,20 @@ try {
       fixture.stopPrepared = prepared.ok === true;
       assert.deepEqual(installation(), fixture.installation, "owned native provenance unchanged before pause");
       const receipt = JSON.parse(readFileSync(unitReceiptFile(paths), "utf8"));
+      if (preparation === "prepare-disabled-staged") {
+        fixture.phase = "await-native-pause";
+        fixture.readyAt = new Date().toISOString();
+        await awaitNativePause(process.stdin, () => {
+          writeFileSync(artifact, JSON.stringify(evidence, null, 2));
+          process.stdout.write(`${JSON.stringify({ phase: "prepared", at: fixture.readyAt })}\n`);
+        });
+        fixture.authorizedAt = new Date().toISOString();
+        writeFileSync(artifact, JSON.stringify(evidence, null, 2));
+        // Waiting must not turn the pinned listener into permission to stop a replacement.
+        assert.deepEqual(readLifetimeRecord(paths.lock), fixture.before.lifetime, "pinned lifetime unchanged after parent authorization");
+        assert.equal(processBirth(fixture.before.lifetime.pid), fixture.before.kernelStart);
+        assert.ok(!socket.destroyed, "prepared listener remains connected");
+      }
       fixture.phase = "native-pause";
       const task = scheduledTaskService((file, args, env) => {
         const result = spawnSync(file, args, { env, encoding: "utf8", windowsHide: true, timeout: 30_000, maxBuffer: 256 * 1024 });
