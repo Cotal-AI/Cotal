@@ -30,8 +30,11 @@ const realFetch = globalThis.fetch;
 const realError = console.error;
 let approved = false;
 let badCatalog = true;
+let changeOldSession = false;
 const requests: string[] = [];
+const errors: string[] = [];
 console.error = (...args: unknown[]) => {
+  errors.push(args.map(String).join(" "));
   // Fixture human approval occurs only after the command displays the approval prompt.
   if (args.some(value => String(value).includes("Approve native migration"))) approved = true;
 };
@@ -51,7 +54,10 @@ globalThis.fetch = async (input, init) => {
     const part = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
     return json({ token: `${part({ alg: "none" })}.${part({ iss: issuer, sub, aud: audience })}.fixture` }, { link: '<https://native.example/catalog>; rel="https://cotal.ai/relations/space-catalog"' });
   }
-  if (url === "https://native.example/catalog") return json({ v: 1, account: { idpUrl: nextUrl, issuer, sub }, spaces: badCatalog ? [] : [row(nextUrl)] });
+  if (url === "https://native.example/catalog") {
+    if (changeOldSession) saveIdpSession(homeCotalDir(), oldUrl, { token: "changed-old-bearer", sub, expiresAt: Date.now() / 1000 + 600 });
+    return json({ v: 1, account: { idpUrl: nextUrl, issuer, sub }, spaces: badCatalog ? [] : [row(nextUrl)] });
+  }
   throw new Error(`unexpected request ${url}`);
 };
 try {
@@ -66,6 +72,19 @@ try {
   assert.deepEqual(readMesh("alpha"), before, "catalog mismatch leaves registry unchanged");
   assert.equal(loadIdpSession(homeCotalDir(), nextUrl), undefined, "catalog mismatch does not save candidate session");
   badCatalog = false;
+  changeOldSession = true;
+  errors.length = 0;
+  approved = false;
+  process.exit = (() => { throw new Error("fixture intercepted command refusal"); }) as typeof process.exit;
+  try {
+    await assert.rejects(login.run(args), /fixture intercepted command refusal/);
+  } finally { process.exit = realExit; }
+  assert.ok(errors.some(line => line.includes("old account sign-in or catalog state changed") && line.includes("retry `cotal login --migrate-from")), "actual migration caller reports actionable old-account dependency refusal");
+  assert.deepEqual(readMesh("alpha"), before, "old-session change during approval prevents registry migration");
+  assert.equal(loadIdpSession(homeCotalDir(), nextUrl), undefined, "old-session change prevents candidate persistence");
+  assert.equal(loadIdpSession(homeCotalDir(), oldUrl)!.token, "changed-old-bearer");
+  changeOldSession = false;
+  saveIdpSession(homeCotalDir(), oldUrl, { token: "old-bearer-canary", sub, expiresAt: Date.now() / 1000 + 600 });
   approved = false;
   requests.length = 0;
   await login.run(args);

@@ -601,7 +601,13 @@ export function commitStagedIdpSession(candidate: StagedIdpSession): { session: 
   return { session, sub: candidate.sub, ...(previousSub && previousSub !== candidate.sub ? { previousSub } : {}), ...(session.label ? { label: session.label } : {}) };
 }
 
-/** Existing login callers approve, prove and then persist through the same cancellation fence. */
+/** The whole login operation, in the only safe order: device sign-in, then PROVE the session
+ *  mints a user JWT, and only then persist it. A session that can't produce a JWT must never
+ *  land on disk, because it would pass {@link requireIdpSession}'s no-fallback gate as a dud and
+ *  defer the failure to some later connect. Returns the session plus the JWT's `sub`, and a human
+ *  `label` (email/name/preferred_username when the IdP mints one). Both are display-only: the
+ *  operator must be able to read which human signed in, but verification is the bridge/callout's
+ *  job, server-side. */
 export async function establishIdpSession(opts: DeviceLoginOpts & { dir: string; expectedPins?: IdpLoginPins }): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
   return commitStagedIdpSession(await stageIdpSession(opts));
 }
