@@ -1140,7 +1140,7 @@ export function cotalToolSpecs(
       name: "cotal_roster",
       title: "Cotal: who's present",
       description:
-        "List the agents currently present in your Cotal space, with their role, status, and current activity.",
+        "List the agents currently present in your Cotal space, with their role, status, and current activity. A name that is only whitespace is shown as that participant's id.",
       async run(agent) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
         // #1229: rendering never refuses, but it must not present a last-known roster as a
@@ -1154,7 +1154,8 @@ export function cotalToolSpecs(
         // The session's own row is not one of them: a DM to its name reaches the other peer.
         const shared = sharedNameIds(roster, { selfId: agent.id });
         const lines = roster.map((p) => {
-          const who = peerLabel(p.card);
+          const name = p.card.name.trim() ? p.card.name : p.card.id;
+          const who = peerLabel({ name, ...(p.card.role ? { role: p.card.role } : {}) });
           const isMe = p.card.id === agent.id;
           const me = isMe ? ` (you${agent.attention !== "open" ? `, ${agent.attention}` : ""})` : "";
           const id = shared.has(p.card.id) ? ` — id: ${p.card.id}` : "";
