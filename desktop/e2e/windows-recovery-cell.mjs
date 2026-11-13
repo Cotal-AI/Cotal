@@ -35,6 +35,20 @@ export function stoppedPoll(rows, afterUnixMs) {
     && row.error?.code === 'NOT_RUNNING' && row.atUnixMs >= afterUnixMs);
 }
 
+export function restartRecovery(rows, startedAtUnixMs, restart, observed) {
+  const stopped = rows.find(row => row.phase === 'result' && ['status', 'service-status'].includes(row.request?.op)
+    && row.ok === false && row.error?.code === 'NOT_RUNNING' && row.atUnixMs >= startedAtUnixMs);
+  const healthy = stopped && rows.find(row => row.phase === 'result' && row.request?.op === 'status'
+    && row.ok === true && row.atUnixMs > stopped.atUnixMs);
+  const from = Date.parse(restart?.calledAt), to = Date.parse(restart?.returnedAt);
+  const noInputRequests = !rows.some(row => row.phase === 'start' && row.atUnixMs >= startedAtUnixMs
+    && ['install', 'setup', 'login'].includes(row.request?.op));
+  return { stopped, healthy, noInputRequests, passed: Boolean(stopped && healthy && noInputRequests
+    && stopped.atUnixMs >= from && stopped.atUnixMs <= to
+    && healthy.atUnixMs <= observed.atUnixMs && observed.recoveryShown === false
+    && observed.connectedShown === true && observed.connectionTitle === 'This computer is connected') };
+}
+
 export function requestSummary(rows, afterUnixMs) {
   return rows.filter(row => row.atUnixMs >= afterUnixMs).map(row => ({
     atUnixMs: row.atUnixMs, requestId: row.requestId, phase: row.phase,
