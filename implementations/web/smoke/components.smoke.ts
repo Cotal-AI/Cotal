@@ -208,9 +208,9 @@ const TIP = "Anycast: one free agent with this role takes it.";
   await shown.unmount();
   ok("6.1 the stale marker is a note that names the sources in its title, reads each reason to a screen reader, and shows them a line each in its Tooltip",
     drawn?.role === "note" && drawn.text === staleLabel(marks) && drawn.content.includes(reasons) && tip === reasons, { drawn, tip });
-  const cmd = renderToString(createElement(CopyCommand, { command: 'cotal send msg review "<text>"' }));
+  const cmd = renderToString(createElement(CopyCommand, { command: 'cotal send -c review "<text>"' }));
   ok("6.2 the command is shown as code beside a Copy button",
-    unescapeHtml(/<code>([^<]*)<\/code>/.exec(cmd)?.[1] ?? "") === 'cotal send msg review "<text>"' && text(/<button[\s\S]*<\/button>/.exec(cmd)?.[0] ?? "") === "Copy"
+    unescapeHtml(/<code>([^<]*)<\/code>/.exec(cmd)?.[1] ?? "") === 'cotal send -c review "<text>"' && text(/<button[\s\S]*<\/button>/.exec(cmd)?.[0] ?? "") === "Copy"
       && startTags(cmd, "span")[0]?.class === "ui-cmd", cmd);
   const written: string[] = [];
   const nav = globalThis.navigator as unknown as { clipboard?: unknown };

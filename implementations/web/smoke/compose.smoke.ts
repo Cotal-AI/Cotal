@@ -9,6 +9,8 @@
  *  the page learning the operator's id when the operator joins after it loaded. */
 import { closeDom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
+import { parseCommandArgs, type Command } from "@cotal-ai/core";
+import { sendArguments, sendFlags } from "../../cli/src/commands/send.js";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { createElement, useState } from "react";
@@ -164,9 +166,17 @@ const draftOf = (text: string, extra: Partial<Draft> = {}): Draft => ({ text, ou
   };
   const hostile = "local.x'; true; echo $(echo hi) `echo hi` \"q\"";
   same("1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself",
-    [sendCommand({ kind: "dm", to: "local.rv2" }), sendCommand({ kind: "msg", channel: "review" }), words(shellArg(hostile)), words(sendCommand({ kind: "dm", to: hostile }).slice("cotal send dm ".length, -' "<text>"'.length)),
-      words(sendCommand({ kind: "msg", channel: "rev;iew" }).slice("cotal send msg ".length, -' "<text>"'.length))],
-    ['cotal send dm local.rv2 "<text>"', 'cotal send msg review "<text>"', [hostile], [hostile], ["rev;iew"]]);
+    [sendCommand({ kind: "dm", to: "local.rv2" }), sendCommand({ kind: "msg", channel: "review" }), words(shellArg(hostile)), words(sendCommand({ kind: "dm", to: hostile }).slice("cotal send -t ".length, -' "<text>"'.length)),
+      words(sendCommand({ kind: "msg", channel: "rev;iew" }).slice("cotal send -c ".length, -' "<text>"'.length))],
+    ['cotal send -t local.rv2 "<text>"', 'cotal send -c review "<text>"', [hostile], [hostile], ["rev;iew"]]);
+  const sendSpec: Command = { kind: "command", name: "send", summary: "send", flags: sendFlags, positionals: '"<message>"', run: async () => {} };
+  const accepted = (command: string) => {
+    const input = sendArguments(parseCommandArgs(sendSpec, words(command).slice(2)));
+    return [input.mode, input.target, input.text];
+  };
+  same("1.18 the copied send command is accepted by the send command's own flags",
+    [accepted(sendCommand({ kind: "dm", to: "local.rv2" })), accepted(sendCommand({ kind: "msg", channel: "review" }))],
+    [["dm", "local.rv2", "<text>"], ["msg", "review", "<text>"]]);
   same("1.17 a server sentence ending in a question or exclamation mark gets no period after it",
     [refusalText("#review", new SendRefused(400, "is this a channel?")), refusalText("#review", new SendRefused(400, "no!"))],
     ["Couldn't post to #review. is this a channel? Your message is still here.", "Couldn't post to #review. no! Your message is still here."]);
@@ -289,7 +299,7 @@ const tipOf = async (m: Mounted, trigger: Element | null | undefined): Promise<s
   const send = sendOf(m.container);
   same("3.8 the command that posts from a terminal, and a disabled send whose tooltip is the reason",
     [textOf(box(c).querySelector(".ui-cmd code")), send?.disabled, await tipOf(m, send?.parentElement)],
-    ['cotal send msg review "<text>"', true, POST_OFF_CREDS]);
+    ['cotal send -c review "<text>"', true, POST_OFF_CREDS]);
   await m.unmount();
   same("3.9 and the note says to restart without --creds, with both as code",
     [textOf(note(c)), [...note(c).querySelectorAll("code")].map((x) => x.textContent)], ["Restart cotal web without --creds to post here.", ["cotal web", "--creds"]]);
@@ -348,7 +358,7 @@ const tipOf = async (m: Mounted, trigger: Element | null | undefined): Promise<s
   same("3.18 a DM view posts to its agent: Message reviewer_2, to reviewer_2, with the orange dot",
     [box(c).querySelector("textarea")?.placeholder, rowParts(c)[1]?.[1], (row(c).querySelector(".ui-mode-dot") as HTMLElement | null)?.getAttribute("style")?.includes("var(--uni)")],
     ["Message reviewer_2", "to reviewer_2", true]);
-  same("3.19 posting off there, the command is cotal send dm with the agent's id, which the CLI resolves exactly", textOf(box(centre({ post: CREDS_OFF }, rv2Route)).querySelector(".ui-cmd code")), 'cotal send dm local.rv2 "<text>"');
+  same("3.19 posting off there, the command is cotal send -t with the agent's id, which the CLI resolves exactly", textOf(box(centre({ post: CREDS_OFF }, rv2Route)).querySelector(".ui-cmd code")), 'cotal send -t local.rv2 "<text>"');
   ok("3.20 a conversation between two agents has no composer", centre({}, { view: "dm", peer: "local.rev", with: "local.rv2" }).querySelector("textarea") === null);
   const header = centre({ operatorId: OP, dms: [{ msg: msg("d1", OP, "hi", { to: "local.rv2" }), senderId: OP }] }, { view: "dm", peer: "local.rv2", with: OP }).querySelector("header") ?? none();
   ok("3.21 the conversation with the operator says operator (you) while the roster does not name it", textOf(header).includes("with operator (you)"), textOf(header));
@@ -485,8 +495,8 @@ const key = (el: Element, k: string, shiftKey = false) =>
   const buttons = [...needs.querySelectorAll('[data-slot="card-footer"] > *')].map((b) => [b.tagName, textOf(b)]);
   const copy = [...needs.querySelectorAll("button")].find((b) => textOf(b) === "Copy command") as HTMLButtonElement | undefined;
   await m.run(() => copy?.click());
-  same("4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send dm with the agent's id",
-    [buttons, copied], [[["BUTTON", "View agent"], ["BUTTON", "Copy command"]], ['cotal send dm local.rv2 "<text>"']]);
+  same("4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send -t with the agent's id",
+    [buttons, copied], [[["BUTTON", "View agent"], ["BUTTON", "Copy command"]], ['cotal send -t local.rv2 "<text>"']]);
   await m.unmount();
 }
 

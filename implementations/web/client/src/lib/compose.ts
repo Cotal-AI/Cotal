@@ -46,9 +46,9 @@ export function shellArg(value: string): string {
 }
 
 /** The command that posts the same thing from a terminal, for a composer that cannot. A DM names
- *  the agent by id, which `cotal send dm` resolves exactly; a display name can be a shortened id. */
+ *  the agent by id, which `cotal send -t` resolves exactly; a display name can be a shortened id. */
 export function sendCommand(t: ComposeTarget): string {
-  return t.kind === "msg" ? `cotal send msg ${shellArg(t.channel)} "<text>"` : `cotal send dm ${shellArg(t.to)} "<text>"`;
+  return t.kind === "msg" ? `cotal send -c ${shellArg(t.channel)} "<text>"` : `cotal send -t ${shellArg(t.to)} "<text>"`;
 }
 
 /** The route a Message button opens: the operator's conversation with `id` once the operator's id is
