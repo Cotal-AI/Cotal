@@ -15,7 +15,7 @@ export const states = ['fresh', 'configured', 'daemon', 'agent', 'stale-extensio
 export const methods = ['self', 'scheduler', 'installer'];
 const hosted = process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
-export const requiresManualStep = output => /run `cotal|run cotal|manual (?:step|intervention)|interrupted update|OPERATION_UNKNOWN|Outcome unconfirmed|needs restoration|refused/i.test(output);
+export const requiresManualStep = output => /run `cotal|run cotal|manual (?:step|intervention)|interrupted update|OPERATION_UNKNOWN|Outcome unconfirmed|needs restoration|refused|Your PATH does not select the Cotal just installed/i.test(output);
 export function completionAdvisory(output) {
   const advisory = [], required = [];
   let completion = false;
@@ -62,6 +62,33 @@ export function verifyCandidateInstaller(directory, script) {
   return result;
 }
 
+export function verifyPublishedInstaller(options) {
+  assert(!options.candidate && !options['candidate-installer'], 'script override requires published tier');
+  assert(options.layout === 'installer' && options.method === 'installer', 'script override requires installer rerun');
+  assert.match(options['installer-source'] ?? '', /^[a-f0-9]{40}$/, 'installer source must be an immutable commit');
+  assert.match(options['installer-sha256'] ?? '', /^[a-f0-9]{64}$/, 'installer hash must be SHA-256');
+  const path = resolve(options['published-installer']);
+  const sha256 = digest(readFileSync(path));
+  assert.equal(sha256, options['installer-sha256'], 'published installer hash differs from receipt');
+  return { path, source: options['installer-source'], sha256 };
+}
+
+export const cellExitCode = report => report.expectedRefusal
+  ? (report.expectedRefusal.passed ? 0 : 1)
+  : (['passed', 'excluded'].includes(report.result) ? 0 : 1);
+
+export function expectedRecoveryRefusal(report) {
+  const update = report.update;
+  const allowed = ['upgrade exits successfully', 'no paused recovery record', 'no manual step or refusal'];
+  return report.result === 'failed' && update?.exit === 1
+    && update.stdout.includes('reconciliation did not complete')
+    && update.stdout.includes('update --self to finish this update.')
+    && update.stderr.includes('OPERATION_UNKNOWN')
+    && !/installed in /i.test(update.stdout)
+    && allowed.every(name => report.assertions.some(row => row.name === name && !row.passed))
+    && report.assertions.filter(row => !row.passed).every(row => allowed.includes(row.name));
+}
+
 export function coordinates(platform = process.platform) {
   return sources.flatMap(source => ['npm', 'installer'].flatMap(layout => states.flatMap(state => methods.map(method => {
     const cell = { platform, source, layout, state, method };
@@ -102,6 +129,8 @@ function safeRoot(output) {
 export async function matrixCell(options) {
   const { source = 'latest', state = 'fresh', method = 'self', layout = 'npm' } = options;
   assert((sources.includes(source) || /^\d+\.\d+\.\d+$/.test(source)) && states.includes(state) && methods.includes(method) && ['npm', 'installer'].includes(layout), 'unknown matrix coordinate');
+  const publishedInstaller = options['published-installer'] ? verifyPublishedInstaller({ ...options, layout, method }) : undefined;
+  if (options['expect-recovery-refusal'] === 'true') assert(publishedInstaller && state === 'recovery', 'expected refusal requires a published installer override and recovery state');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
   const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : ''].filter(Boolean).join('-');
   const id = `${options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}`;
@@ -171,18 +200,23 @@ export async function matrixCell(options) {
   function ok(result, label) { assert.equal(result.exit, 0, `${label}: ${result.stdout}${result.stderr}`); return result; }
   function check(name, passed, observed) { report.assertions.push({ name, passed, observed }); }
   async function installer(version, candidateTarget = false) {
-    let script;
-    if (candidateTarget && options['candidate-installer']) {
+    let script, label = 'public installer';
+    if (candidateTarget && publishedInstaller) {
+      report.publishedInstaller = verifyPublishedInstaller({ ...options, layout, method });
+      script = report.publishedInstaller.path;
+      label = 'receipt-bound published installer';
+    } else if (candidateTarget && options['candidate-installer']) {
       assert(options.candidate, 'candidate installer is forbidden in published tier');
       script = resolve(options['candidate-installer']);
       report.candidateInstaller = verifyCandidateInstaller(resolve(options.candidate), script);
+      label = 'candidate source installer';
     } else {
       const fetched = ok(await call('download public installer', 'curl', ['-fsSL', 'https://get.cotal.ai']), 'installer download');
       script = join(root, 'public-installer.sh');
       writeFileSync(script, fetched.stdout, { mode: 0o600 });
       report.installerSha256 = digest(fetched.stdout);
     }
-    return call(candidateTarget && options['candidate-installer'] ? 'candidate source installer' : 'public installer', 'sh', [script, '--version', version, '--no-setup', '--no-modify-path']);
+    return call(label, 'sh', [script, '--version', version, '--no-setup', '--no-modify-path']);
   }
   try {
     const target = ok(await npmCall('resolve public latest', ['view', 'cotal-ai@latest', 'version', '--json']), 'public latest');
@@ -432,12 +466,13 @@ export async function matrixCell(options) {
     }
     if (overlay) report.registryRequests = await overlay.close();
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
+    if (options['expect-recovery-refusal'] === 'true') report.expectedRefusal = { kind: 'paused-snapshot reconciliation', passed: expectedRecoveryRefusal(report) };
     report.root = root;
     report.finishedAt = new Date().toISOString();
     report.retentionOwner = hosted ? 'disposable runner teardown' : 'lane owner after process quiescence';
     save(join(output, `${id}.json`), report);
     writeFileSync(join(output, `${id}.sha256`), `${digest(readFileSync(join(output, `${id}.json`)))}  ${id}.json\n${digest(readFileSync(join(output, `${id}.log`)))}  ${id}.log\n`);
-    console.log(JSON.stringify({ tier: report.tier, cell: id, target: report.target, result: report.result, refusal: report.refusal, evidence: join(output, `${id}.json`) }));
+    console.log(JSON.stringify({ tier: report.tier, cell: id, target: report.target, result: report.result, expectedRefusal: report.expectedRefusal, refusal: report.refusal, evidence: join(output, `${id}.json`) }));
     if (process.env.GITHUB_STEP_SUMMARY) writeFileSync(process.env.GITHUB_STEP_SUMMARY, `| Cell | Target | Result | Exact refusal |\n|---|---|---|---|\n| ${id} | ${report.target ?? 'unresolved'} | ${report.result} | ${(report.refusal ?? '').replaceAll('|', '\\|').replaceAll('\n', '<br>')} |\n`, { flag: 'a' });
   }
   return report;
@@ -589,6 +624,6 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     await packCandidate(options.pack, options.version);
   } else {
     const result = await matrixCell(args());
-    process.exitCode = ['passed', 'excluded'].includes(result.result) ? 0 : 1;
+    process.exitCode = cellExitCode(result);
   }
 }

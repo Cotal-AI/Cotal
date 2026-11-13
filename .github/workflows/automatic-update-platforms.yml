@@ -20,7 +20,7 @@ permissions:
   actions: read
 jobs:
   scheduler-proof:
-    if: github.event_name == 'push' && contains(github.event.head_commit.message, '[scheduler-only]')
+    if: "github.event_name == 'push' && contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -50,8 +50,52 @@ jobs:
           name: scheduler-proof-0.160.7-linux
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
+  installer-proof:
+    if: "github.event_name == 'push' && contains(github.event.head_commit.message, '[installer-only]') && !contains(github.event.head_commit.message, '[scheduler-only]')"
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Fetch immutable installer and verify its receipt
+        shell: bash
+        run: |
+          source=237e81045f6546e9955ed85b20a073eaae284dd8
+          curl -fsSL "https://raw.githubusercontent.com/Cotal-AI/Cotal/$source/install.sh" -o "$RUNNER_TEMP/fixed-installer.sh"
+          node --input-type=module - "$RUNNER_TEMP/fixed-installer.sh" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          assert.equal(createHash('sha256').update(readFileSync(process.argv[2])).digest('hex'), 'c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c');
+          NODE
+      - name: Published stale-installer reruns and fail-closed recovery
+        shell: bash
+        run: |
+          failed=0
+          for source in 0.164.0 0.160.7; do
+            node scripts/automatic-update-platform-baseline.mjs --source "$source" --layout installer --state stale-extensions --method installer --published-installer "$RUNNER_TEMP/fixed-installer.sh" --installer-source 237e81045f6546e9955ed85b20a073eaae284dd8 --installer-sha256 c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+          done
+          if [ '${{ runner.os }}' = Linux ]; then
+            node scripts/automatic-update-platform-baseline.mjs --source 0.164.0 --layout installer --state recovery --method installer --published-installer "$RUNNER_TEMP/fixed-installer.sh" --installer-source 237e81045f6546e9955ed85b20a073eaae284dd8 --installer-sha256 c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c --expect-recovery-refusal true --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+          fi
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer-proof-${{ matrix.os }}
+          path: ${{ runner.temp }}/upgrade-evidence
+          if-no-files-found: error
   priority:
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]')"
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -114,7 +158,7 @@ jobs:
           if-no-files-found: error
   desktop-beside-cli:
     needs: priority
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure')"
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure')"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -152,13 +196,13 @@ jobs:
           if-no-files-found: error
   workspace-native:
     needs: desktop-beside-cli
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')"
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')"
     uses: ./.github/workflows/workspace-native.yml
     with:
       darwin: true
   seat-native:
     needs: workspace-native
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && needs.workspace-native.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.workspace-native.result == 'success'"
     strategy:
       max-parallel: 6
       fail-fast: false
@@ -187,7 +231,7 @@ jobs:
           if-no-files-found: error
   candidate-pack:
     needs: [workspace-native, seat-native]
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && needs.workspace-native.result == 'success' && needs.seat-native.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.workspace-native.result == 'success' && needs.seat-native.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -236,7 +280,7 @@ jobs:
           if-no-files-found: error
   candidate-B:
     needs: candidate-pack
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && needs.candidate-pack.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-pack.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -268,7 +312,7 @@ jobs:
           if-no-files-found: error
   candidate-B-expanded:
     needs: candidate-A
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && needs.candidate-A.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-A.result == 'success'"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -313,7 +357,7 @@ jobs:
           if-no-files-found: error
   candidate-native:
     needs: candidate-B-expanded
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && (needs.candidate-B-expanded.result == 'success' || needs.candidate-B-expanded.result == 'failure')"
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.candidate-B-expanded.result == 'success' || needs.candidate-B-expanded.result == 'failure')"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -378,7 +422,7 @@ jobs:
           if-no-files-found: error
   candidate-A:
     needs: candidate-B
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && needs.candidate-B.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-B.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -404,7 +448,7 @@ jobs:
           if-no-files-found: error
   published:
     needs: candidate-native
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && github.event_name != 'push'"
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && github.event_name != 'push'"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -433,7 +477,7 @@ jobs:
           done
           exit "$failed"
       - name: Published installer rerun states
-        if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && matrix.layout == 'installer'"
+        if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && matrix.layout == 'installer'"
         shell: bash
         run: |
           failed=0
@@ -449,7 +493,7 @@ jobs:
           if-no-files-found: error
   native:
     needs: published
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && github.event_name != 'push'"
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && github.event_name != 'push'"
     strategy:
       fail-fast: false
       max-parallel: 6

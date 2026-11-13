@@ -71,7 +71,16 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
   assert.deepEqual(workflow.jobs['candidate-B-expanded'].strategy.matrix.source, sources);
   assert.equal(workflow.jobs['scheduler-proof'].strategy, undefined, 'narrow proof is one runner, not a matrix');
   assert(workflow.jobs['scheduler-proof'].steps.some(step => step.run?.includes('--source 0.160.7 --layout installer --state daemon --method scheduler')));
-  for (const [name, job] of Object.entries(workflow.jobs)) if (name !== 'scheduler-proof') assert(job.if.startsWith("!contains(github.event.head_commit.message, '[scheduler-only]')"), `${name} could run during narrow proof`);
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    if (name !== 'scheduler-proof') assert(job.if.includes("!contains(github.event.head_commit.message, '[scheduler-only]')"), `${name} could run during scheduler proof`);
+    if (name !== 'installer-proof') assert(job.if.includes("!contains(github.event.head_commit.message, '[installer-only]')"), `${name} could run during installer proof`);
+  }
+  const installer = workflow.jobs['installer-proof'];
+  assert.deepEqual(installer.strategy.matrix.os, ['ubuntu-24.04', 'macos-15']);
+  assert.equal(installer.strategy['max-parallel'], 1);
+  assert(installer.steps.some(step => step.run?.includes('237e81045f6546e9955ed85b20a073eaae284dd8') && step.run.includes('c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c')));
+  assert(installer.steps.some(step => step.run?.includes('for source in 0.164.0 0.160.7') && step.run.includes('--published-installer')));
+  assert(installer.steps.some(step => step.run?.includes('--expect-recovery-refusal true') && step.run.includes("runner.os")));
   const expanded = workflow.jobs['candidate-B-expanded'];
   assert(expanded.steps.some(step => step.run?.includes('for state in fresh configured stale-extensions recovery concurrent agent')));
   assert.deepEqual(workflow.jobs['candidate-native'].strategy.matrix.source, sources);
@@ -83,7 +92,7 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
     if (job.strategy) assert(job.strategy['max-parallel'] <= 6, `${name} is not bounded to six`);
-    if (!['priority', 'scheduler-proof'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
+    if (!['priority', 'scheduler-proof', 'installer-proof'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);
     visiting.delete(name);
@@ -128,6 +137,45 @@ test('candidate overlay serves packed closure, stock metadata and read-only poli
   } finally { await sourceOverlay.close(); }
 });
 
+test('published installer override requires explicit source/hash and cannot enter candidate tiers', async () => {
+  const { verifyPublishedInstaller } = await import('./automatic-update-platform-baseline.mjs');
+  const parent = '/var/tmp/upgrade-matrix';
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const root = mkdtempSync(join(parent, 'published-script-proof-'));
+  const script = join(root, 'install.sh'), source = 'b'.repeat(40), bytes = '#!/bin/sh\nexit 0\n';
+  writeFileSync(script, bytes);
+  const options = { 'published-installer': script, 'installer-source': source, 'installer-sha256': createHash('sha256').update(bytes).digest('hex'), layout: 'installer', method: 'installer' };
+  assert.equal(verifyPublishedInstaller(options).source, source);
+  assert.throws(() => verifyPublishedInstaller({ ...options, candidate: root }), /published tier/);
+  assert.throws(() => verifyPublishedInstaller({ ...options, layout: 'npm' }), /installer rerun/);
+  assert.throws(() => verifyPublishedInstaller({ ...options, 'installer-source': undefined }), /source/);
+  writeFileSync(script, '#!/bin/sh\nexit 1\n');
+  assert.throws(() => verifyPublishedInstaller(options), /hash/);
+});
+
+test('expected recovery refusal stays a failed upgrade and requires exact fail-closed boundary', async () => {
+  const { expectedRecoveryRefusal } = await import('./automatic-update-platform-baseline.mjs');
+  const report = { update: { exit: 1, stdout: 'Cotal was installed, but reconciliation did not complete.\nRun cotal update --self to finish this update.\n', stderr: 'Outcome unconfirmed\nCode: OPERATION_UNKNOWN\n' }, assertions: [
+    { name: 'upgrade exits successfully', passed: false }, { name: 'CLI version is target', passed: true },
+    { name: 'no paused recovery record', passed: false }, { name: 'no manual step or refusal', passed: false },
+  ], result: 'failed' };
+  assert(expectedRecoveryRefusal(report));
+  assert.equal(report.result, 'failed');
+  assert(!expectedRecoveryRefusal({ ...report, update: { ...report.update, exit: 0 } }));
+  assert(!expectedRecoveryRefusal({ ...report, update: { ...report.update, stdout: report.update.stdout + 'Cotal 0.164.0 → 0.164.4\n~/.local/bin/cotal · installed in 2s\n' } }));
+  assert(!expectedRecoveryRefusal({ ...report, update: { ...report.update, stderr: 'unrelated failure' } }));
+  assert(!expectedRecoveryRefusal({ ...report, assertions: [...report.assertions, { name: 'CLI version is target', passed: false }] }));
+});
+
+test('explicit refusal control cannot accept an unexpected successful upgrade', async () => {
+  const { cellExitCode } = await import('./automatic-update-platform-baseline.mjs');
+  assert.equal(cellExitCode({ result: 'passed', expectedRefusal: { passed: false } }), 1);
+  assert.equal(cellExitCode({ result: 'failed', expectedRefusal: { passed: true } }), 0);
+  assert.equal(cellExitCode({ result: 'failed', expectedRefusal: { passed: false } }), 1);
+  assert.equal(cellExitCode({ result: 'passed' }), 0);
+  assert.equal(cellExitCode({ result: 'failed' }), 1);
+});
+
 import { test } from 'node:test';
 import { exclusion, requiresManualStep, sources, states, methods, coordinates } from './automatic-update-platform-baseline.mjs';
 
@@ -135,7 +183,7 @@ test('funding suggestions do not require upgrade intervention', () => {
   assert.equal(requiresManualStep('61 packages are looking for funding\n  run `npm fund` for details\n✓ cotal-ai@0.164.0 installed globally and reconciled'), false);
 });
 test('actual upgrade remedies and unknown outcomes stay red', () => {
-  for (const text of ['run `cotal update --self`', 'Outcome unconfirmed', 'Code: OPERATION_UNKNOWN', 'an interrupted update needs restoration', 'manual intervention']) assert.equal(requiresManualStep(text), true, text);
+  for (const text of ['run `cotal update --self`', 'Outcome unconfirmed', 'Code: OPERATION_UNKNOWN', 'an interrupted update needs restoration', 'manual intervention', 'Your PATH does not select the Cotal just installed.\nUse /private/bin/cotal instead of plain cotal.\nCheck `type -a cotal` in your shell.']) assert.equal(requiresManualStep(text), true, text);
 });
 test('matrix includes each requested source, state and method', () => {
   assert.equal(coordinates('linux').length, 252);

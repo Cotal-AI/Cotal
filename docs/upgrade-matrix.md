@@ -33,6 +33,19 @@ the daemon. Only cached clock fields are changed, with before and after evidence
 calls the updater on behalf of the scheduler. Receipt checks guard service removal. Unknown native
 outcomes are retained for runner teardown rather than retried blindly.
 
+## Qualify an installer change
+
+For shell-only changes, keep the installed CLI and npm target published. Pass an inspected script
+with `--published-installer <path> --installer-source <commit> --installer-sha256 <sha256>` on an
+installer-layout rerun. The source must be a full commit ID and the script digest must match.
+The initial installation still uses the public installer. The result records the override separately.
+This option refuses candidate tiers and does not change their source-matching checks.
+
+A paused-snapshot refusal control may add `--expect-recovery-refusal true`. It requires exit 1,
+the reconciliation failure and repair command, `OPERATION_UNKNOWN`, and no final installation
+summary. The upgrade result stays `failed`; a separate `expectedRefusal.passed` field records the
+fail-closed check. Only that explicit control may exit zero for an expected failed upgrade.
+
 ## Test a packed candidate
 
 Build the workspace and assemble source-matched native artifacts as the workflow does. The same
@@ -74,7 +87,8 @@ A cell passes only when the CLI and recorded extensions reach the target, `cotal
 no paused recovery remains, an existing daemon stays ready and no manual remedy is printed.
 The JSON identifies failed assertions and the transcript preserves the text a person saw.
 Optional shell-completion profile notices are retained verbatim in `advisory`. They do not fail an
-otherwise consistent installation. Required repair commands still fail the no-manual-step assertion.
+otherwise consistent installation. Required repair commands and a warning that PATH does not select
+the installed CLI still fail the no-manual-step assertion.
 Combine downloaded cell artifacts with `node scripts/automatic-update-platform-baseline.mjs --summary ./upgrade-evidence`.
 For a release that supports scripted stop consent, add `--stop-agents true` to the harness command.
 This passes the public updater flag without answering a prompt on the person's behalf.
