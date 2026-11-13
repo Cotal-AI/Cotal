@@ -1,5 +1,12 @@
 # @cotal-ai/connector-core
 
+## 0.164.4
+
+### Patch Changes
+
+- 7b4f4b4: A `cotal_inbox` peek shows a newer direct message before an older one that fills the receivable window. A clearing read still delivers the older message first.
+- 1013fed: `cotal_yield` for a turn this seat already yielded now says so. Ending a session turn yields `done` for every turn it was shown, so a worker that yields afterwards, for example after a workflow reminder, was told `no active turn "<id>" on this seat`, or `no turn is active` without an id, as if it had never held the turn. It now reads `turn "<id>" was already yielded done by this seat (ending a session turn yields done), so this yield was not recorded`, with or without the id.
+
 ## 0.164.3
 
 ### Patch Changes

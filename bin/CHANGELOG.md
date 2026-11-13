@@ -1,5 +1,31 @@
 # cotal-ai
 
+## 0.164.4
+
+### Patch Changes
+
+- d779cec: Move fresh Cloud sign-ins to cotal.cloud and support deliberate migration of existing account registrations with fresh approval.
+  
+  The old issuer must endorse the new native origin. Migration checks the same issuer, subject, audience and catalog spaces before replacing registrations. Existing service sessions and native authority records retain their saved endpoints, and upgrading alone leaves legacy registrations unchanged.
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [7b4f4b4]
+- Updated dependencies [d779cec]
+- Updated dependencies [1013fed]
+  - @cotal-ai/core@0.164.4
+  - @cotal-ai/cli@0.164.4
+  - @cotal-ai/connector-core@0.164.4
+  - @cotal-ai/workspace@0.164.4
+  - @cotal-ai/auth@0.164.4
+  - @cotal-ai/delivery@0.164.4
+  - @cotal-ai/manager@0.164.4
+  - @cotal-ai/registry@0.164.4
+  - @cotal-ai/runtime@0.164.4
+  - @cotal-ai/seat@0.164.4
+
 ## 0.164.3
 
 ### Patch Changes
