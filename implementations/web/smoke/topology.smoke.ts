@@ -41,6 +41,11 @@ const ROSTER = [agent("A", "ana", "working", { meta: { connector: "claude" } }),
   const m = model({ roster: [agent("A", "same"), agent("B", "same")], channels: [chan("alerts")] });
   ok("agent nodes are keyed by roster id, so two agents with one name stay two nodes", ids(m).filter((i) => i === "A" || i === "B").length === 2, ids(m));
   ok("an agent node is labelled by its roster name", node(m, "A")?.label === "same" && node(m, "A")?.kind === "agent");
+  for (const name of [" ", "", "\n", " \n\t"]) {
+    const blank = model({ roster: [agent("local.blank", name)] });
+    ok(`an agent named ${JSON.stringify(name)} is labelled by its id`, node(blank, "local.blank")?.label === "local.blank" && !String(node(blank, "local.blank")?.label).includes("\n"));
+  }
+  ok("an agent with a real name keeps that name on the graph", node(model({ roster: [agent("local.ada", " ada")] }), "local.ada")?.label === " ada");
   const v = model({ roster: ROSTER });
   ok("an agent node carries its vendor from the card's connector", node(v, "A")?.vendor === "claude" && node(v, "B")?.vendor === undefined, v.nodes);
   ok("an agent node carries its roster status", node(v, "A")?.status === "working" && node(v, "B")?.status === "idle");
