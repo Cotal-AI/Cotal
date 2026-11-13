@@ -367,7 +367,12 @@ export function renderInbox(opts: {
   const budget = opts.budget ?? INBOX_WINDOW_CHARS;
   const peek = opts.peek ?? false;
   const warning = opts.warning ?? "";
-  const rank = (i: InboxItem): number => (i.kind !== "channel" ? 0 : i.historical ? 2 : 1);
+  const rank = (i: InboxItem): number => {
+    // A peek does not clear, so an old direct message that fills the window must not hide a current
+    // mention. A clearing read keeps direct messages ahead of channel traffic.
+    if (peek && i.mentionsMe && !i.historical) return -1;
+    return i.kind !== "channel" ? 0 : i.historical ? 2 : 1;
+  };
   const ordered = [...opts.items].sort((a, b) => rank(a) - rank(b)); // stable: receive order within a rank
 
   // WHY THIS AGREES WITH THE ASSEMBLED REPLY, and what would break the agreement. Deliverability is
@@ -1183,7 +1188,7 @@ export function cotalToolSpecs(
       name: "cotal_inbox",
       title: "Cotal: read incoming messages",
       description:
-        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. If exclusion tracking makes a channel's focus recall unsafe, new non-historical mentions on that unmuted channel wake to pull their buffered bodies, never automatic injection, including on quiet channels. Ambient handling is unchanged, and the incomplete-recall warning still names unsafe channels. " +
+        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. A peek shows a current mention of you before older direct messages that fill that window, and still clears nothing. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. If exclusion tracking makes a channel's focus recall unsafe, new non-historical mentions on that unmuted channel wake to pull their buffered bodies, never automatic injection, including on quiet channels. Ambient handling is unchanged, and the incomplete-recall warning still names unsafe channels. " +
         "When the connection is not ready, the reply says so and still returns locally buffered messages; an empty local buffer does not prove no new mesh messages exist. Exhausted channel drop tracking is reported even with an empty inbox; non-historical mentions on unmuted channels wake to pull their buffered bodies while ambient traffic stays suppressed. " +
         "If your stored copies reached their limit, 1000 unless an operator set another, the reply says earlier channel posts may have been dropped and that channel history may still hold them. A peek keeps that line for the next read.",
       schema: {
