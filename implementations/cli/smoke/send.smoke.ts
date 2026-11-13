@@ -32,11 +32,15 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
   channelBucket,
+  chatStream,
   CotalEndpoint,
+  dmStream,
+  taskStream,
   createSpaceAuth,
   credsProblem,
   DEV_OWNER,
   dmDurable,
+  idFromCreds,
   isReachable,
   mintCreds,
   mintLifecycleUid,
@@ -55,7 +59,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 106;
+const EXPECTED = 113;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -802,6 +806,53 @@ try {
     got.some((g) => g.route === "DM" && g.text === offlineText),
     got.filter((g) => g.route === "DM").map((g) => g.text),
   );
+
+  // #6528: absence is per destination. Deleting the chat stream refuses a channel post and leaves
+  // a direct message and a role send stored. Deleting the DM stream then refuses only the direct
+  // message. Recreating the streams stores a channel post again.
+  const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+  const dropStream = async (name: string) => {
+    const nc = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try {
+      await (await jetstreamManager(nc)).streams.delete(name);
+    } finally {
+      await nc.close();
+    }
+  };
+  const gone = `the streams of ${space} are not on its broker`;
+  const refusedGone = (result: { code: number; stdout: string; stderr: string }) =>
+    result.code === 2 && result.stdout.includes('"code":"TARGET_UNAVAILABLE"') && `${result.stdout}${result.stderr}`.includes(gone);
+  const stored = (result: { code: number; stdout: string; stderr: string }) =>
+    result.code === 0 && !`${result.stdout}${result.stderr}`.includes(gone);
+  await dropStream(chatStream(space));
+  const channelGone = await run(["send", "-c", "general", "chat-gone", "--json"]);
+  check("a channel send refuses TARGET_UNAVAILABLE when only the chat stream is gone", refusedGone(channelGone), channelGone);
+  const dmTextWhileChatGone = `dm-while-chat-gone-${randomUUID().slice(0, 6)}`;
+  const dmWhileChatGone = await run(["send", "-t", "bob", dmTextWhileChatGone]);
+  for (let i = 0; i < 50 && !got.some((g) => g.route === "DM" && g.text === dmTextWhileChatGone); i++) await wait(100);
+  check(
+    "a direct message is stored and delivered while only the chat stream is gone",
+    stored(dmWhileChatGone) && got.some((g) => g.route === "DM" && g.text === dmTextWhileChatGone),
+    { code: dmWhileChatGone.code, stderr: dmWhileChatGone.stderr, got: got.filter((g) => g.route === "DM").map((g) => g.text) },
+  );
+  const roleWhileChatGone = await run(["send", "-r", "planner", "role-while-chat-gone"]);
+  check("a role send is stored while only the chat stream is gone", stored(roleWhileChatGone), roleWhileChatGone);
+  await dropStream(dmStream(space));
+  const dmGone = await run(["send", "-t", "bob", "dm-gone", "--json"]);
+  check("a direct message refuses TARGET_UNAVAILABLE when the DM stream is gone", refusedGone(dmGone), dmGone);
+  const roleWhileDmGone = await run(["send", "-r", "planner", "role-while-dm-gone"]);
+  check("a role send is stored while the DM stream is gone and the task stream remains", stored(roleWhileDmGone), roleWhileDmGone);
+  await dropStream(taskStream(space));
+  const roleGone = await run(["send", "-r", "planner", "role-gone", "--json"]);
+  check("a role send refuses TARGET_UNAVAILABLE when the task stream is gone", refusedGone(roleGone), roleGone);
+  await setupSpaceStreams({ servers, space, creds: provisionerCreds });
+  const restored = await run(["send", "-c", "general", `restored-${randomUUID().slice(0, 6)}`]);
+  check("a channel send is stored again after the chat stream is created", stored(restored), restored);
 } finally {
   await bob?.stop().catch(() => {});
   await carol?.stop().catch(() => {});

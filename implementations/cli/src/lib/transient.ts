@@ -1,9 +1,9 @@
-import { CotalEndpoint, DEV_OWNER, channelBucket, credsClaims, isPublishPermissionDenied, mintCreds, newIdentity, presenceBucket, subjectMatches } from "@cotal-ai/core";
+import { CotalEndpoint, DEV_OWNER, channelBucket, chatStream, credsClaims, dmStream, isPublishPermissionDenied, mintCreds, newIdentity, presenceBucket, subjectMatches, taskStream } from "@cotal-ai/core";
 import { CommandFailure, endpointAuth, type Connection } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { connectOrExit, connectOrThrow } from "./connect.js";
 import { brokerStoreWrite, storeWriteRepair } from "./broker-store-health.js";
-import { chatStreamGone, streamsAbsent } from "./space-streams.js";
+import { streamGone, streamsAbsent } from "./space-streams.js";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, notAdmittedRefusal } from "@cotal-ai/workspace/control";
 
 /**
@@ -47,26 +47,33 @@ function noResponders(e: unknown): boolean {
   return e instanceof Error && e.name === "JetStreamStatusError" && String((e as { code?: unknown }).code) === "503";
 }
 
-/** Whether the chat stream of `conn`'s space is gone, asked over a connection of its own that reads
- *  nothing else: an endpoint whose start failed keeps no connection to ask on. The stream's info is
- *  an observer's read, which a sender may not ask, so this machine mints an observer from the
- *  space's trust material as `status` does; without it the connection's own credential asks. A
- *  connection that cannot start or ask answers no. */
-async function chatStreamGoneAt(conn: Connection): Promise<boolean> {
+/** Whether `name` is gone, asked over a connection of its own that reads nothing else: an endpoint
+ *  whose start failed keeps no connection to ask on. A sender may not read a stream's info. The
+ *  chat stream's info is an observer's read. The DM and task streams are not: an observer has no
+ *  info grant on either, so those are read with the provisioner, which may check that the stream
+ *  exists and holds no message-body read and no delete. Without trust material the connection's
+ *  own credential asks. A connection that cannot start or ask answers no. */
+export async function streamGoneAt(conn: Connection, name: string): Promise<boolean> {
   let probe: CotalEndpoint | undefined;
   try {
     const id = newIdentity();
-    const auth = conn.auth ? { creds: await mintCreds(conn.auth, id, "observer"), ...(conn.tls ? { tls: true } : {}) } : endpointAuth(conn);
+    const profile = name === dmStream(conn.space) || name === taskStream(conn.space) ? "provisioner" : "observer";
+    const auth = conn.auth ? { creds: await mintCreds(conn.auth, id, profile), ...(conn.tls ? { tls: true } : {}) } : endpointAuth(conn);
     probe = new CotalEndpoint({ space: conn.space, servers: conn.server, ...auth, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { ...(conn.auth ? { id: id.id } : {}), name: "stream-probe", kind: "endpoint" } });
     probe.on("error", () => {});
     probe.on("warning", () => {});
     await probe.start();
-    return await chatStreamGone(probe);
+    return await streamGone(probe, name);
   } catch {
     return false;
   } finally {
     await probe?.stop().catch(() => {});
   }
+}
+
+/** Whether the chat stream of `conn`'s space is gone. Same read as {@link streamGoneAt}. */
+async function chatStreamGoneAt(conn: Connection): Promise<boolean> {
+  return streamGoneAt(conn, chatStream(conn.space));
 }
 
 /** The refusal for a space whose broker answered no read of it while its chat stream was not found
