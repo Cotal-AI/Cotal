@@ -700,6 +700,13 @@ subject `cotal.<space>.evp.<owner>.<actor>` and stream `EVP_<space>`. The ordina
 still carries no tool inputs or outputs. It keeps tool boundaries and the `CUSTOM` event
 `cotal.toolResult` with `{ toolCallId, isError }`, so metadata-only readers keep completion status.
 
+On an older host, a missing payload stream or a publish permission refusal on
+`$JS.API.STREAM.INFO.EVP_<space>` keeps the emitter publishing names and times only.
+It logs one warning naming the missing stream or permission and does not retry that read while
+pumping events. Upgrade the host's broker setup and credentials to enable payloads. Other
+authorization, transport and configuration errors remain failures. A frozen sibling payload
+still halts recovery until its rail is available, without discarding or publishing its contents.
+
 On an authenticated space, an owner reads its own actors' payloads and an admin reads all payloads.
 A foreign reader needs a concrete `events.<owner>.<actor>` read grant. Chat wildcards and patterns
 such as `events.<owner>.>` do not grant payload access. An open broker has no isolation. Payload

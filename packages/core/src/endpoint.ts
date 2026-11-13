@@ -2780,14 +2780,20 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Verify the sibling stream and learn its actual message ceiling. A pre-upgrade space without
-   *  the stream returns null and emits a warning; authorization, transport and config errors throw. */
+   *  the stream or its info-read permission returns null and emits a warning. Other authorization,
+   *  transport and config errors throw. */
   async eventPayloadLimit(): Promise<number | null> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
     const stream = eventPayloadStream(this.space);
     const info = await this.jsm.streams.info(stream).catch((err: unknown) => {
-      if (!isJetStreamMissing(err, JetStreamApiCodes.StreamNotFound)) throw err;
+      const denial = err instanceof PermissionViolationError ? err
+        : (err as { cause?: unknown } | null)?.cause;
+      const infoDenied = denial instanceof PermissionViolationError && denial.operation === "publish"
+        && denial.subject === `$JS.API.STREAM.INFO.${stream}`;
+      if (!infoDenied && !isJetStreamMissing(err, JetStreamApiCodes.StreamNotFound)) throw err;
+      const reason = infoDenied ? `missing publish permission on $JS.API.STREAM.INFO.${stream}` : `stream ${stream} is absent`;
       this.emitRecoverable(new Error(
-        `event payloads unavailable: stream ${stream} is absent; publishing tool names and times only. Upgrade the space's broker setup and credentials to enable payloads`,
+        `event payloads unavailable: ${reason}; publishing tool names and times only. Upgrade the space's broker setup and credentials to enable payloads`,
       ));
       return null;
     });
