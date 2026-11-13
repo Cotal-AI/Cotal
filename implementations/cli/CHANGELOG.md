@@ -1,5 +1,16 @@
 # @cotal-ai/cli
 
+## 0.163.5
+
+### Patch Changes
+
+- 9f933ce: `cotal logout` signs out without seeding connectors. A connector install refusal no longer keeps the cached login.
+- Updated dependencies [a1cef07]
+- Updated dependencies [23e3171]
+- Updated dependencies [aa9d3c8]
+  - @cotal-ai/core@0.163.5
+  - @cotal-ai/workspace@0.163.5
+
 ## 0.163.4
 
 ### Patch Changes

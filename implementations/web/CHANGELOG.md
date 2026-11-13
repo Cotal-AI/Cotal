@@ -1,5 +1,12 @@
 # @cotal-ai/web
 
+## 0.163.5
+
+### Patch Changes
+
+- cbd0340: The dashboard's copyable command for a static mesh event grant is `cotal auth mint`. `cotal mint` no longer issues a credential.
+- 798a8d2: A read-only dashboard's composer keeps its disabled send inside the row. A long copyable command shrinks instead of pushing the button past the screen.
+
 ## 0.163.4
 
 ### Patch Changes
