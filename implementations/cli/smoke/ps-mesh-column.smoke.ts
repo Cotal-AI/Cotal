@@ -11,7 +11,7 @@
  * Run: pnpm smoke:ps-mesh-column
  */
 import assert from "node:assert/strict";
-import { meshCell } from "../src/commands/agents.js";
+import { meshCell, psSeatLabel } from "../src/commands/agents.js";
 import { MANAGER_CONTRACTS } from "../../manager/src/manager-service-contract.js";
 let pass = 0, fail = 0;
 const check = (name: string, actual: { text: string }, expected: string): void => {
@@ -65,5 +65,12 @@ judge("--json: a degraded join diagnostic passes the closed ps contract",
   validates({ ...baseRow, joinHealth: { state: "degraded", reason: "launch status uncertain" } }), psOut.validate.errors);
 judge("--json: a join diagnostic cannot claim a terminal process exit",
   !validates({ ...baseRow, joinHealth: { state: "exited", reason: "not observed" } }));
+for (const name of [" ", "", "\n", " \n\t"]) {
+  const label = psSeatLabel({ name, id: "local.blank" });
+  judge(`a seat named ${JSON.stringify(name)} is shown as its id`, label === "local.blank" && !label.includes("\n"));
+}
+judge("a seat keeps its name", psSeatLabel({ name: "ada", id: "local.ada" }) === "ada");
+judge("a seat keeps its name and role", psSeatLabel({ name: "ada", id: "local.ada", role: "worker" }) === "ada/worker");
+judge("a blank seat name with a role uses the id", psSeatLabel({ name: " ", id: "local.blank", role: "worker" }) === "local.blank/worker");
 console.log(`\nps mesh column smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
