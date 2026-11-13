@@ -60,6 +60,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     delivery: () => one("delivery"), "membership-rw": () => one("membership-rw"),
     probe: () => one("probe"), "channel-writer": () => one("channel-writer"), "channel-purger": () => one("channel-purger"),
     teardown: () => one("teardown"), "issued-store-recreate": () => one("issued-store-recreate"),
+    "membership-store-recreate": () => one("membership-store-recreate"),
     "control-caller-privileged": () => one("control-caller-privileged"),
     "control-caller-admin": () => one("control-caller-admin"),
     deployer() { one("deployer"); one("deployer", { controlTier: "privileged" }, "privileged-tier"); },
@@ -263,6 +264,9 @@ export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "issuer", "run-admitter", "transfer-writer", "transfer-reader",
   // The registry's reads: the evidence store stream-wide, so never a peer's.
   "registry-reader",
+  // The operator/embedding host holds this one-shot credential only for a stopped-space
+  // derived-store conversion. Its exact stream DELETE authority never belongs to a peer.
+  "membership-store-recreate",
   // Manager-only infrastructure duties, like remote-manager. This classification is not
   // an isolation proof; host admission and the child UID boundary remain separate requirements.
   "environment-bootstrap", "environment-manager-supervisor", "environment-manager-executor",
