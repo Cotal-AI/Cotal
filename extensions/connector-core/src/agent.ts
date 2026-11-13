@@ -328,13 +328,19 @@ const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
 const MAX_ENDPOINT_NOTICES = 16;
 /** How many present names a DM miss lists before it starts counting them instead. */
 const NAMED_SIMILAR = 5;
-/** How many turns the run settled before this seat yielded them one session remembers. The
- *  manager serves a seat one turn at a time, so a short memory covers every late yield. */
+/** How many settled turns one session remembers. The manager serves a seat one turn at a time, so
+ *  a short memory covers every late yield. */
 const MAX_SETTLED_TURNS = 32;
 
-/** The refusal for a yield on a turn the run settled first, so a seat that was shown the turn
- *  learns why the run will not take its result instead of being told no turn exists. */
-function settledTurnError(goalId: string, t: { deadlineAt?: number; once?: unknown }): string {
+/** A turn that left this seat: the run settled it (its deadline, or its manager for a once task),
+ *  or this seat yielded it. */
+type SettledTurn = { deadlineAt?: number; once?: true; yielded?: "done" | "blocked" | "handoff" };
+
+/** The refusal for a yield on a turn that already settled, so a seat that was shown the turn
+ *  learns why the run will not take this result instead of being told no turn exists. */
+function settledTurnError(goalId: string, t: { deadlineAt?: number; once?: unknown; yielded?: SettledTurn["yielded"] }): string {
+  if (t.yielded !== undefined)
+    return `turn "${goalId}" was already yielded ${t.yielded} by this seat${t.yielded === "done" ? " (ending a session turn yields done)" : ""}, so this yield was not recorded`;
   const deadline = t.deadlineAt !== undefined ? ` (deadline ${new Date(t.deadlineAt).toISOString()})` : "";
   return `turn "${goalId}" was already settled ${t.once !== undefined ? "by its manager" : "by the run"}${deadline}, so this yield was not recorded`;
 }
@@ -605,9 +611,10 @@ export class MeshAgent extends EventEmitter {
    *  `done`). The pull is also the reconciler: a turn settled elsewhere (deadline, another yield
    *  path) vanishes from `turn-pending`, and the manager's notice for it brings the pull that drops it. */
   private activeTurns = new Map<string, ActiveTurn>();
-  /** Deadlines of turns the run settled before this seat yielded them, by goal id, so a late yield
-   *  is refused with {@link settledTurnError}. Bounded by {@link MAX_SETTLED_TURNS}. */
-  private settledTurns = new Map<string, { deadlineAt?: number; once?: true }>();
+  /** Turns that left this seat, by goal id: the run's settlement with its deadline, or this seat's
+   *  own yield, so a late yield is refused with {@link settledTurnError}. Bounded by
+   *  {@link MAX_SETTLED_TURNS}. */
+  private settledTurns = new Map<string, SettledTurn>();
   /** Goals whose yield the manager answered since the current pull began. That pull may have
    *  snapshotted a goal before its answer; taking it back would surface the settled turn again, and
    *  the next pull would record it as the run's settlement. */
@@ -3397,8 +3404,9 @@ export class MeshAgent extends EventEmitter {
     }
     this.activeTurns.delete(t.goalId);
     // A poll that ran while this yield was in flight saw the turn gone and took it for the run's
-    // settlement; the manager's answer says this yield settled it.
-    this.settledTurns.delete(t.goalId);
+    // settlement; the manager's answer says this yield settled it. Remembering the yield tells a
+    // later one, such as a worker's own after its session turn ended, that the turn already settled.
+    this.rememberSettled(t.goalId, { yielded: status });
     return r;
   }
 
@@ -3407,7 +3415,13 @@ export class MeshAgent extends EventEmitter {
     // A once task settled without this seat (its deadline, or a stop) ends its handoff too.
     if (t.once !== undefined) endOnceHandoff(this.onceUid(), t.goalId);
     this.activeTurns.delete(t.goalId);
-    this.settledTurns.set(t.goalId, { ...(t.deadlineAt !== undefined ? { deadlineAt: t.deadlineAt } : {}), ...(t.once !== undefined ? { once: true as const } : {}) });
+    this.rememberSettled(t.goalId, { ...(t.deadlineAt !== undefined ? { deadlineAt: t.deadlineAt } : {}), ...(t.once !== undefined ? { once: true as const } : {}) });
+  }
+
+  /** Record a settled turn as the newest, which a yield naming no turn reports. */
+  private rememberSettled(goalId: string, settled: SettledTurn): void {
+    this.settledTurns.delete(goalId);
+    this.settledTurns.set(goalId, settled);
     if (this.settledTurns.size > MAX_SETTLED_TURNS) this.settledTurns.delete(this.settledTurns.keys().next().value!);
   }
 
