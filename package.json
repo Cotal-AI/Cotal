@@ -1014,6 +1014,7 @@
     "smoke:claude-registration-home:live": "pnpm build && tsx extensions/connector-claude-code/smoke/registration-home-live.smoke.ts",
     "smoke:mint-provision:auth": "tsx implementations/cli/smoke/mint-provision.smoke.ts",
     "smoke:down-lease-tombstone": "tsx implementations/cli/smoke/down-lease-tombstone.smoke.ts",
+    "smoke:console-shown-name": "tsx implementations/cli/smoke/console-shown-name.smoke.ts",
     "smoke:down-target": "tsx implementations/cli/smoke/down-target.smoke.ts",
     "smoke:down-pidfile-liveness:live": "tsx implementations/cli/smoke/down-pidfile-liveness-live.smoke.ts",
     "smoke:down-host-auth:live": "tsx implementations/cli/smoke/down-host-auth-live.smoke.ts",

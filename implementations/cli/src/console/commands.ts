@@ -80,7 +80,14 @@ function peerOf(snap: MeshSnapshot, name: string): Presence | undefined {
 
 /** One-line note for the transient status bar when a name matched several peers. */
 function ambiguityNote(e: AmbiguousPeerError): string {
-  return `"${e.target}" is ambiguous - dm by id: ${e.candidates.map((c) => `${c.name} ${c.id}`).join(", ")}`;
+  return `"${e.target}" is ambiguous - dm by id: ${e.candidates.map((c) => (c.name.trim() ? `${c.name} ${c.id}` : c.id)).join(", ")}`;
+}
+
+/** A name the console's ps list and spawn notice show. A missing or whitespace-only name is the id, then `fallback`. */
+export function consoleShownName(name: string | undefined, id?: string, fallback = ""): string {
+  if (typeof name === "string" && name.trim()) return name;
+  if (typeof id === "string" && id.trim()) return id;
+  return fallback;
 }
 
 export const COMMANDS: ConsoleCommand[] = [
@@ -173,7 +180,7 @@ export const COMMANDS: ConsoleCommand[] = [
         ...(r.silent.length ? [`${r.silent.length} manager instance(s) gave no answer: ${r.silent.join(", ")}`] : []),
       ];
       const partial = issues.length ? ` (${issues.join("; ")})` : "";
-      ctx.notify((r.rows.length ? "agents: " + r.rows.map((a) => a.name).join(", ") : "no managed agents") + partial);
+      ctx.notify((r.rows.length ? "agents: " + r.rows.map((a) => consoleShownName(a.name, a.id, a.id)).join(", ") : "no managed agents") + partial);
     },
   },
   {
@@ -191,7 +198,10 @@ export const COMMANDS: ConsoleCommand[] = [
       // watched and driven here, and the plane is the connector's own concern.
       const r = await ctx.control("start", identity ? { name: persona, identity, events: false } : { name: persona, events: false });
       if (!r.ok) return ctx.notify("spawn: " + why(r));
-      ctx.notify(`spawned ${(r.data as { name?: string })?.name ?? persona}`);
+      const spawned = (r.data ?? {}) as { name?: unknown; id?: unknown };
+      const spawnedName = typeof spawned.name === "string" ? spawned.name : undefined;
+      const spawnedId = typeof spawned.id === "string" ? spawned.id : undefined;
+      ctx.notify(`spawned ${consoleShownName(spawnedName, spawnedId, persona)}`);
     },
   },
   {
