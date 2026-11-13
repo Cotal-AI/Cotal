@@ -87,7 +87,7 @@ test("expired credentials and pending approval refusals map to their recovery ac
   });
   assert.deepEqual(refusalView("NOT_RUNNING"), {
     title: "The background service is not running",
-    description: "Start it again to continue. This is the same install step setup uses.",
+    description: "Start it again to continue.",
     action: "install",
     label: "Start service",
   });

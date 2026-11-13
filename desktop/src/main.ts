@@ -326,10 +326,13 @@ function clearDetails(): void {
   text("refusal-detail", ""); el("setup-lines").replaceChildren(); el("details").hidden = true;
   el<HTMLDetailsElement>("details").open = false;
 }
-function refusal(error: unknown): void {
+/** `fromStatus` marks an error the background status check raised, which the next good check clears.
+ *  Any other error stays until the person acts on it. */
+function refusal(error: unknown, fromStatus = false): void {
   const exact = error instanceof Error ? error.message : String(error);
   text("refusal-detail", exact); el("details").hidden = false;
   problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
+  statusProblem = fromStatus;
   notice("", true);
   showStage(stage);
 }
@@ -798,10 +801,7 @@ async function refresh(): Promise<void> {
   } catch (error) {
     if (!current()) return;
     ready = false; state("unavailable");
-    if (!(error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && (stage === "welcome" || stage === "sign-in") && !loginActive)) {
-      refusal(error);
-      statusProblem = true;
-    }
+    if (!(error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
   }
   buttons();
 }
@@ -889,6 +889,7 @@ el("recover").addEventListener("click", () => {
     await request({ op: "install" });
     await refresh();
     if (!ready) throw new Error("The background service is not ready.");
+    notice("");
   });
   else void action(async () => { clearDetails(); await refresh(); });
 });
@@ -916,13 +917,7 @@ el("another-space").addEventListener("click", () => {
 el("retry-login").addEventListener("click", beginSignIn);
 el("sign-in-again").addEventListener("click", () => { beginSignIn(); if (computerAccount?.mode === "sign-in-required") el<HTMLFormElement>("login-form").requestSubmit(); });
 el("connect").addEventListener("click", () => void action(async () => {
-  if (connected() || !selectedSpace()) return;
-  if (!ready) {
-    notice("Preparing the background service…");
-    await request({ op: "install" });
-    await refresh();
-    if (!ready) throw new Error("The background service is not ready.");
-  }
+  if (connected() || !ready || !selectedSpace()) return;
   const space = selectedSpace(); const idp = providers.get(space) ?? el<HTMLInputElement>("provider").value.trim();
   setupActive = true; editing = false; applications = []; clearDetails(); notice("");
   progress = ["running", "waiting", "waiting", "waiting", "waiting"]; renderProgress(); showStage("connect", true);
