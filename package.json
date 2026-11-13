@@ -9,7 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
-    "smoke:login-service-stores": "tsx packages/workspace/smoke/service-login-stores.smoke.ts && tsx implementations/auth/smoke/service-session-isolation.smoke.ts && tsx implementations/auth/smoke/logout-session-race.smoke.ts && tsx implementations/auth/smoke/login-service-stores.smoke.ts",
+    "smoke:login-service-stores": "tsx implementations/auth/smoke/login-private-group.smoke.ts && tsx packages/workspace/smoke/service-login-stores.smoke.ts && tsx implementations/auth/smoke/service-session-isolation.smoke.ts && tsx implementations/auth/smoke/logout-session-race.smoke.ts && tsx implementations/auth/smoke/login-service-stores.smoke.ts",
     "smoke:cloud-login": "tsx packages/workspace/smoke/cloud-login.smoke.ts && tsx implementations/auth/smoke/cloud-login.smoke.ts && tsx bin/smoke/fresh-cloud-guidance.smoke.ts",
     "smoke:daemon-desktop-account": "tsx bin/smoke/daemon-desktop-account.smoke.ts",
     "smoke:daemon-update-settings": "tsx bin/smoke/daemon-update-settings.smoke.ts && tsx bin/smoke/update-auto-service.smoke.ts",
