@@ -304,7 +304,7 @@ way, one registration at a time. A selector flag still reports
 one manager. A manager without a
 custody generation is reported as `legacy`: it cannot preserve its manager-owned PTYs, so the
 command says that this is not a hot update and prints `exact`, `fork`, `fresh`, or `drain-only`
-for every seat. This report sends no stop, preservation-commit, or replacement command.
+for every seat. A seat whose name is missing or only whitespace is listed by its id, or as `(unnamed)` when the inventory has no id. This report sends no stop, preservation-commit, or replacement command.
 It does not preserve a running PTY on a legacy manager. The built-in pty runtime spawns
 in-process on every platform and reports `legacy`. On Linux it still adopts seats that an earlier
 manager left under a detached custodian, but it starts no new custodian. An incompatible native
