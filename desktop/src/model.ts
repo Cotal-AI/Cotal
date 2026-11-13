@@ -77,6 +77,14 @@ export function canonicalProvider(value: string): string {
 }
 
 export interface ComputerAccount { idpUrl?: string; sub?: string; label?: string; mode: string; hostSupport: string; spaces: ComputerSpace[] }
+
+/** The name the settings account line shows beside the host. A missing or whitespace-only label is not
+ *  one, so the line uses the subject. Both blank leaves the host by itself. */
+export function shownAccountLabel(label: string | undefined, sub: string | undefined): string | undefined {
+  if (label && label.trim()) return label;
+  if (sub && sub.trim()) return sub;
+  return undefined;
+}
 export function activeComputerAccount(account: ComputerAccount & { accounts?: ComputerAccount[] } | undefined, provider?: string): ComputerAccount | undefined {
   if (!account?.accounts) return account;
   if (provider) return account.accounts.find(item => item.idpUrl !== undefined && canonicalProvider(item.idpUrl) === canonicalProvider(provider));
