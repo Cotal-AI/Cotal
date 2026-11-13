@@ -1,5 +1,14 @@
 # @cotal-ai/workspace
 
+## 0.163.5
+
+### Patch Changes
+
+- 23e3171: Manager service sign-ins now accept configuration paths protected by a proven user private group. Discovery reuses the protected-path ownership and ACL checks on pinned physical entries. When proof is unavailable, the skipped-service report offers a mode change or installation of the ACL utility without changing the service store.
+- Updated dependencies [a1cef07]
+- Updated dependencies [aa9d3c8]
+  - @cotal-ai/core@0.163.5
+
 ## 0.163.4
 
 ### Patch Changes

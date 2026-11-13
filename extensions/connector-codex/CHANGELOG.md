@@ -1,5 +1,11 @@
 # @cotal-ai/connector-codex
 
+## 0.163.5
+
+### Patch Changes
+
+- 5dcfb75: A pending `cotal_connect` names the space the connection would join when the host knows it. The approval text and `structuredContent.space` both carry that name.
+
 ## 0.163.4
 
 No changes in this release.
