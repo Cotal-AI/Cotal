@@ -69,6 +69,9 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
   assert(desktop.steps.some(step => step.run?.includes('--desktop-runtime') && step.run.includes('--desktop-node')));
   assert.deepEqual(workflow.jobs['candidate-B'].strategy.matrix.source, ['0.164.0']);
   assert.deepEqual(workflow.jobs['candidate-B-expanded'].strategy.matrix.source, sources);
+  assert.equal(workflow.jobs['scheduler-proof'].strategy, undefined, 'narrow proof is one runner, not a matrix');
+  assert(workflow.jobs['scheduler-proof'].steps.some(step => step.run?.includes('--source 0.160.7 --layout installer --state daemon --method scheduler')));
+  for (const [name, job] of Object.entries(workflow.jobs)) if (name !== 'scheduler-proof') assert(job.if.startsWith("!contains(github.event.head_commit.message, '[scheduler-only]')"), `${name} could run during narrow proof`);
   const expanded = workflow.jobs['candidate-B-expanded'];
   assert(expanded.steps.some(step => step.run?.includes('for state in fresh configured stale-extensions recovery concurrent agent')));
   assert.deepEqual(workflow.jobs['candidate-native'].strategy.matrix.source, sources);
@@ -80,7 +83,7 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
     if (job.strategy) assert(job.strategy['max-parallel'] <= 6, `${name} is not bounded to six`);
-    if (name !== 'priority') assert(job.needs, `${name} bypasses priority ordering`);
+    if (!['priority', 'scheduler-proof'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);
     visiting.delete(name);

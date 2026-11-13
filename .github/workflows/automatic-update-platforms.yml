@@ -19,7 +19,39 @@ permissions:
   contents: read
   actions: read
 jobs:
+  scheduler-proof:
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, '[scheduler-only]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Prepare disposable user manager
+        shell: bash
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(id -u)" -ne 0
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          systemctl --user show-environment > /dev/null
+          printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+      - name: Published installer 0.160.7 through daemon scheduler only
+        shell: bash
+        run: node scripts/automatic-update-platform-baseline.mjs --source 0.160.7 --layout installer --state daemon --method scheduler --output "$RUNNER_TEMP/upgrade-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scheduler-proof-0.160.7-linux
+          path: ${{ runner.temp }}/upgrade-evidence
+          if-no-files-found: error
   priority:
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]')"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -82,7 +114,7 @@ jobs:
           if-no-files-found: error
   desktop-beside-cli:
     needs: priority
-    if: always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure')
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure')"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -120,13 +152,13 @@ jobs:
           if-no-files-found: error
   workspace-native:
     needs: desktop-beside-cli
-    if: always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')"
     uses: ./.github/workflows/workspace-native.yml
     with:
       darwin: true
   seat-native:
     needs: workspace-native
-    if: always() && !cancelled() && needs.workspace-native.result == 'success'
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && needs.workspace-native.result == 'success'"
     strategy:
       max-parallel: 6
       fail-fast: false
@@ -155,7 +187,7 @@ jobs:
           if-no-files-found: error
   candidate-pack:
     needs: [workspace-native, seat-native]
-    if: always() && !cancelled() && needs.workspace-native.result == 'success' && needs.seat-native.result == 'success'
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && needs.workspace-native.result == 'success' && needs.seat-native.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -204,7 +236,7 @@ jobs:
           if-no-files-found: error
   candidate-B:
     needs: candidate-pack
-    if: always() && !cancelled() && needs.candidate-pack.result == 'success'
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && needs.candidate-pack.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -236,7 +268,7 @@ jobs:
           if-no-files-found: error
   candidate-B-expanded:
     needs: candidate-A
-    if: always() && !cancelled() && needs.candidate-A.result == 'success'
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && needs.candidate-A.result == 'success'"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -281,7 +313,7 @@ jobs:
           if-no-files-found: error
   candidate-native:
     needs: candidate-B-expanded
-    if: always() && !cancelled() && (needs.candidate-B-expanded.result == 'success' || needs.candidate-B-expanded.result == 'failure')
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && (needs.candidate-B-expanded.result == 'success' || needs.candidate-B-expanded.result == 'failure')"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -346,7 +378,7 @@ jobs:
           if-no-files-found: error
   candidate-A:
     needs: candidate-B
-    if: always() && !cancelled() && needs.candidate-B.result == 'success'
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && needs.candidate-B.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -372,7 +404,7 @@ jobs:
           if-no-files-found: error
   published:
     needs: candidate-native
-    if: always() && !cancelled() && github.event_name != 'push'
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && github.event_name != 'push'"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -401,7 +433,7 @@ jobs:
           done
           exit "$failed"
       - name: Published installer rerun states
-        if: always() && matrix.layout == 'installer'
+        if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && matrix.layout == 'installer'"
         shell: bash
         run: |
           failed=0
@@ -417,7 +449,7 @@ jobs:
           if-no-files-found: error
   native:
     needs: published
-    if: always() && !cancelled() && github.event_name != 'push'
+    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && always() && !cancelled() && github.event_name != 'push'"
     strategy:
       fail-fast: false
       max-parallel: 6
