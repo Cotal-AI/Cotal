@@ -20,6 +20,10 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
   assert.equal(workflow.concurrency['cancel-in-progress'], true);
   assert(workflow.concurrency.group.includes('github.ref'));
   assert(workflow.jobs.priority);
+  const expanded = workflow.jobs['candidate-B-expanded'];
+  assert(expanded.steps.some(step => step.run?.includes('for state in fresh configured stale-extensions recovery concurrent agent')));
+  assert.deepEqual(workflow.jobs['candidate-native'].strategy.matrix.source, sources);
+  assert.deepEqual(workflow.jobs['candidate-native'].strategy.matrix.method, methods);
   const visiting = new Set(), done = new Set();
   function visit(name) {
     assert(!visiting.has(name), `workflow dependency cycle at ${name}`);
