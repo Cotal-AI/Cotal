@@ -1,10 +1,23 @@
 import assert from 'node:assert/strict';
-import { candidateRegistry, bootstrapVersion, selectedTargets, cliReportsVersion } from './automatic-update-platform-baseline.mjs';
+import { candidateRegistry, bootstrapVersion, selectedTargets, cliReportsVersion, verifyCandidateInstaller } from './automatic-update-platform-baseline.mjs';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { create } from 'tar';
 import { parse as parseYaml } from 'yaml';
+
+test('candidate installer binds exact bytes and source to packed closure', () => {
+  const parent = '/var/tmp/upgrade-matrix';
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const root = mkdtempSync(join(parent, 'installer-proof-'));
+  const script = join(root, 'installer.sh'), source = 'a'.repeat(40), bytes = '#!/bin/sh\nexit 0\n';
+  writeFileSync(script, bytes);
+  writeFileSync(join(root, 'manifest.json'), JSON.stringify({ source }));
+  writeFileSync(join(root, 'installer.json'), JSON.stringify({ source, sha256: createHash('sha256').update(bytes).digest('hex') }));
+  assert.equal(verifyCandidateInstaller(root, script).source, source);
+  writeFileSync(script, '#!/bin/sh\nexit 1\n');
+  assert.throws(() => verifyCandidateInstaller(root, script), /differs from packed source receipt/);
+});
 
 test('configured version inventory preserves the selected CLI header', () => {
   assert(cliReportsVersion('cotal-ai 0.164.1\n  tmux 0.164.1\n', '0.164.1'));

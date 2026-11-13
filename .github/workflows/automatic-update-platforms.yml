@@ -223,7 +223,7 @@ jobs:
           for state in fresh configured stale-extensions recovery concurrent agent; do
             node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate-B" --direction B --source '${{ matrix.source }}' --layout '${{ matrix.layout }}' --state "$state" --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
             if [ '${{ matrix.layout }}' = installer ]; then
-              node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate-B" --direction B --source '${{ matrix.source }}' --layout installer --state "$state" --method installer --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+              node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate-B" --direction B --source '${{ matrix.source }}' --layout installer --state "$state" --method installer --candidate-installer "$RUNNER_TEMP/candidate-B/installer.sh" --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
             fi
           done
           exit "$failed"

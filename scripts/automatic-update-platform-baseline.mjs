@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, statfsSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, statfsSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createServer } from 'node:http';
@@ -27,6 +27,16 @@ export function exclusion({ layout, method, state }, platform = process.platform
   if (method === 'scheduler' && state !== 'daemon') return 'Scheduler rows require the pre-existing automatic daemon state.';
   return undefined;
 }
+export function verifyCandidateInstaller(directory, script) {
+  const identity = json(join(directory, 'installer.json'));
+  const candidate = json(join(directory, 'manifest.json'));
+  const result = { path: resolve(script), sha256: digest(readFileSync(script)), source: identity.source };
+  assert.match(identity.source, /^[a-f0-9]{40}$/);
+  assert.equal(identity.source, candidate.source, 'candidate installer and packed closure source differ');
+  assert.equal(result.sha256, identity.sha256, 'candidate installer differs from packed source receipt');
+  return result;
+}
+
 export function coordinates(platform = process.platform) {
   return sources.flatMap(source => ['npm', 'installer'].flatMap(layout => states.flatMap(state => methods.map(method => {
     const cell = { platform, source, layout, state, method };
@@ -125,12 +135,19 @@ export async function matrixCell(options) {
   const cotal = (label, argv) => layout === 'installer' ? call(label, launcher, argv) : call(label, process.execPath, [cli, ...argv]);
   function ok(result, label) { assert.equal(result.exit, 0, `${label}: ${result.stdout}${result.stderr}`); return result; }
   function check(name, passed, observed) { report.assertions.push({ name, passed, observed }); }
-  async function installer(version) {
-    const fetched = ok(await call('download public installer', 'curl', ['-fsSL', 'https://get.cotal.ai']), 'installer download');
-    const script = join(root, 'public-installer.sh');
-    writeFileSync(script, fetched.stdout, { mode: 0o600 });
-    report.installerSha256 = digest(fetched.stdout);
-    return call('public installer', 'sh', [script, '--version', version, '--no-setup', '--no-modify-path']);
+  async function installer(version, candidateTarget = false) {
+    let script;
+    if (candidateTarget && options['candidate-installer']) {
+      assert(options.candidate, 'candidate installer is forbidden in published tier');
+      script = resolve(options['candidate-installer']);
+      report.candidateInstaller = verifyCandidateInstaller(resolve(options.candidate), script);
+    } else {
+      const fetched = ok(await call('download public installer', 'curl', ['-fsSL', 'https://get.cotal.ai']), 'installer download');
+      script = join(root, 'public-installer.sh');
+      writeFileSync(script, fetched.stdout, { mode: 0o600 });
+      report.installerSha256 = digest(fetched.stdout);
+    }
+    return call(candidateTarget && options['candidate-installer'] ? 'candidate source installer' : 'public installer', 'sh', [script, '--version', version, '--no-setup', '--no-modify-path']);
   }
   try {
     const target = ok(await npmCall('resolve public latest', ['view', 'cotal-ai@latest', 'version', '--json']), 'public latest');
@@ -249,7 +266,7 @@ export async function matrixCell(options) {
     }
     let update;
     if (method === 'self') update = await cotal('upgrade under test', ['update', '--self', ...(options['stop-agents'] === 'true' ? ['--stop-agents'] : [])]);
-    else if (method === 'installer') update = await installer(report.target);
+    else if (method === 'installer') update = await installer(report.target, true);
     else {
       assert.equal(report.daemonBefore.update.automatic, true, report.daemonBefore.update.lastResult);
       // Wait for the daemon's normal timer to populate the registry cache. Do not invoke an updater.
@@ -400,6 +417,9 @@ export async function packCandidate(output, version) {
     }
     const { packColdCandidate } = await import('./pack-cold-candidate.mjs');
     const manifest = packColdCandidate({ root, output });
+    const installerFile = join(resolve(output), 'installer.sh');
+    copyFileSync(join(root, 'install.sh'), installerFile);
+    save(join(resolve(output), 'installer.json'), { source: manifest.source, sha256: digest(readFileSync(installerFile)) });
     save(join(resolve(output), 'bootstrap.json'), { source: manifest.source, version, label: 'candidate-only version metadata; no installed file edits; never publish', changes });
     return manifest;
   } finally {

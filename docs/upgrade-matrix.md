@@ -49,6 +49,9 @@ Each cell checks the required ordering again before installation.
 Every result labels its local registry as synthetic. Third-party dependencies come from npm, while
 every first-party package comes from the candidate archives. Archive hashes and temporary manifest
 changes are recorded. Installed files are never rewritten. Never publish these bootstrap archives.
+The pack also records `installer.sh` and its source/hash receipt. For a candidate installer rerun,
+pass `--candidate-installer ./candidate-B/installer.sh`. The harness verifies that receipt against
+the packed closure before execution. Published rows always download the public installer.
 
 A tests whether the candidate can update itself later. Pack it separately with a stable numeric
 version below public latest, then pass `--direction A`. The overlay supplies metadata and archives
