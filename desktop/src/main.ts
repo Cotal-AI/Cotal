@@ -5,7 +5,7 @@ import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, in
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, spaceAttention, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -426,7 +426,8 @@ function showStage(next: Stage, focus = false): void {
   else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in to keep this computer connected"; description = "Approve this computer in your browser to keep managing its spaces."; }
   else if (finished && computerAccount?.hostSupport === "supported") {
     const rows = computerSpaces(computerAccount);
-    title = anyConnected ? connectionView("launch-ready").title : rows.some(row => row.observed === "refusal" || spaceAttention(row.observed)) ? "Connection needs attention" : rows.some(row => row.desired && row.observed !== "removed on this computer") ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
+    const summary = computerSummary(rows, anyConnected);
+    title = summary === "connected" ? connectionView("launch-ready").title : summary === "attention" ? "Connection needs attention" : summary === "starting" ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
     description = rows.length ? connectionView("launch-ready").description : "Turn on the spaces that can use it in the dashboard.";
   }
   else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${accountSpaces.get(pending[0])?.label ?? pending[0]} needs to approve this computer. It connects by itself once they do.`; }
@@ -487,16 +488,14 @@ function showStage(next: Stage, focus = false): void {
   if (finished && computerAccount?.hostSupport === "supported") {
     const signInRequired = computerAccount.mode === "sign-in-required";
     el("spaces-heading").hidden = signInRequired || !anyConnected;
-    const rows = computerSpaces(computerAccount);
-    const refused = rows.some(row => row.observed === "refusal" || spaceAttention(row.observed));
-    const starting = rows.some(row => row.desired && row.observed !== "removed on this computer" && !refused);
-    text("tray-label", signInRequired ? "Sign in required" : anyConnected ? "Connected" : refused ? "Needs attention" : starting ? "Starting" : "Ready");
-    el("tray-indicator").classList.toggle("connected", anyConnected || !starting && !signInRequired && !refused);
-    el("tray-indicator").classList.toggle("error", signInRequired || refused);
+    const summary = computerSummary(computerSpaces(computerAccount), anyConnected);
+    text("tray-label", signInRequired ? "Sign in required" : summary === "connected" ? "Connected" : summary === "attention" ? "Needs attention" : summary === "starting" ? "Starting" : "Ready");
+    el("tray-indicator").classList.toggle("connected", summary === "connected" || !signInRequired && summary === "idle");
+    el("tray-indicator").classList.toggle("error", signInRequired || summary === "attention");
     if (!anyConnected) {
       const empty = computerSpaces(computerAccount).length === 0;
-      el("connection-icon").dataset.tone = signInRequired || refused ? "error" : starting ? "waiting" : empty ? "success" : "neutral";
-      setIcon(el("connection-icon"), signInRequired ? "browser" : refused ? "warning" : starting ? "clock" : empty ? "check" : "computer");
+      el("connection-icon").dataset.tone = signInRequired || summary === "attention" ? "error" : summary === "starting" ? "waiting" : empty ? "success" : "neutral";
+      setIcon(el("connection-icon"), signInRequired ? "browser" : summary === "attention" ? "warning" : summary === "starting" ? "clock" : empty ? "check" : "computer");
     }
   } else el("spaces-heading").hidden = connections.size === 0;
   document.querySelector<HTMLElement>(".connected-spaces-scroll")!.hidden = connections.size === 0;
