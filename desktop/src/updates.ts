@@ -1,3 +1,5 @@
+import { isCotalCloudIdp } from "./model";
+
 export interface UpdateStatus {
   channel?: "desktop" | "npm";
   current: string;
@@ -18,7 +20,7 @@ export function lastChecked(value: string | undefined, now = new Date()): string
 export function accountHost(provider: string | undefined): string {
   if (!provider) return "No account selected";
   const host = new URL(provider).host;
-  return host === "cloud.cotal.ai" ? "Cotal Cloud, cloud.cotal.ai" : host;
+  return isCotalCloudIdp(provider) ? `Cotal Cloud, ${host}` : host;
 }
 
 const repository = "https://github.com/Cotal-AI/Cotal";

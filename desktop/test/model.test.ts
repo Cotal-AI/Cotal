@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel } from "../src/model.ts";
+import { COTAL_CLOUD_IDP, isCotalCloudIdp, initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel } from "../src/model.ts";
 
 test("a blank space label is the space id and a label with a character stays", () => {
   assert.equal(shownSpaceLabel(" ", "team"), "team");
@@ -25,6 +25,14 @@ test("a blank account label is the subject and a label with a character stays", 
   assert.equal(shownAccountLabel(" ", " "), undefined);
   assert.equal(shownAccountLabel(" ada", "user-1"), " ada");
   assert.equal(shownAccountLabel("Ada", "user-1"), "Ada");
+});
+
+test("Cloud identity recognizes only the canonical and legacy auth URLs", () => {
+  assert.equal(isCotalCloudIdp(COTAL_CLOUD_IDP), true);
+  assert.equal(isCotalCloudIdp("https://cloud.cotal.ai/api/auth"), true);
+  for (const provider of [undefined, "https://cotal.cloud/other", "https://cloud.cotal.ai/other", "http://cotal.cloud/api/auth", "https://cotal.cloud.evil.test/api/auth", "https://example.com/api/auth"]) {
+    assert.equal(isCotalCloudIdp(provider), false);
+  }
 });
 
 test("account targeting prefers the link, personal space, only space, then asks", () => {
