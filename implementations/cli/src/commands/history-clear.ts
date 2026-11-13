@@ -1,5 +1,5 @@
 import * as prompts from "../lib/prompts.js";
-import { chatStream, dmStream, dialerFor, isPublishPermissionDenied, standaloneConnectOpts } from "@cotal-ai/core";
+import { chatStream, dmStream, dialerFor, isPublishPermissionDenied, isStreamNotFound, standaloneConnectOpts } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, credentialRefusalMessage, isConnectRefusal, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
@@ -51,28 +51,35 @@ export async function historyClear(values: Values): Promise<void> {
     const material = user ? { bearer: user.bearer, sentinelCreds: user.sentinelCreds } : conn.creds ? { creds: conn.creds } : {};
     const nc = await dialerFor(conn.server)({ servers: conn.server, ...standaloneConnectOpts({ ...material, tls: conn.tls }), maxReconnectAttempts: 0 });
     const streams = [chatStream(conn.space), ...(values.dms ? [dmStream(conn.space)] : [])];
+    const absent: string[] = [];
     try {
       const jsm = await jetstreamManager(nc, { checkAPI: false });
       for (const stream of streams) {
         submitted = stream;
-        const reply = await jsm.streams.purge(stream);
-        if (reply.success !== true || !Number.isSafeInteger(reply.purged) || reply.purged < 0) throw new Error("unconfirmed purge reply");
-        acknowledged.push({ stream, purged: reply.purged });
-        submitted = undefined;
+        try {
+          const reply = await jsm.streams.purge(stream);
+          if (reply.success !== true || !Number.isSafeInteger(reply.purged) || reply.purged < 0) throw new Error("unconfirmed purge reply");
+          acknowledged.push({ stream, purged: reply.purged });
+          submitted = undefined;
+        } catch (error) {
+          // A missing stream has nothing left to purge. A permission denial stays a denial.
+          if (!isStreamNotFound(error)) throw error;
+          absent.push(stream);
+          submitted = undefined;
+        }
       }
     } catch (error) {
       if (submitted === undefined && !acknowledged.length) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the native purge client could not be prepared; no purge request was submitted", { target, native: { outcome: "not-executed" } });
       const api = error && typeof error === "object" && "api_error" in error ? (error as { api_error?: { code?: unknown; err_code?: unknown } }).api_error : undefined;
       // The client reports a refused publish as the cause of the request error it raises.
       const denied = isPublishPermissionDenied(error) || api?.code === 403;
-      const absent = api?.code === 404;
-      const knownRefusal = denied || absent;
       const detail = { acknowledged, unconfirmedStream: submitted ?? null, notSubmitted: streams.filter((stream) => !acknowledged.some((row) => row.stream === stream) && stream !== submitted) };
       if (denied && !acknowledged.length) throw deniedWrite(conn, values.creds !== undefined, "purge retained history", "purged", error, { target, native: { code: "permission-denied", outcome: "not-executed", detail } });
-      if (knownRefusal && !acknowledged.length) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the native broker refused the purge before executing it", { target, native: { code: "not-found", outcome: "not-executed", detail } });
-      if (knownRefusal) throw new CommandFailure("partial", "OPERATION_PARTIAL", "some history purges were acknowledged, but the next stream was refused; no retry was made", { target, changed: acknowledged, native: { outcome: "not-executed", detail } });
+      if (denied) throw new CommandFailure("partial", "OPERATION_PARTIAL", "some history purges were acknowledged, but the next stream was refused; no retry was made", { target, changed: acknowledged, native: { outcome: "not-executed", detail } });
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "a history purge was submitted without a confirmed outcome; it was not retried", { target, changed: acknowledged, native: { outcome: "unknown", detail }, remedy: "inspect retained history on the original broker before another purge; an unknown result does not mean nothing changed" });
     } finally { await nc.close(); }
-    writeResult(presentation, { command: "history", target, result: { kind: "history-clear", acknowledged, includeDms: values.dms === true, agentsStopped: false, identityReset: false } }, (result): Report => ({ sections: [{ title: "History purge acknowledged", blocks: [{ kind: "fields", rows: [["Space", conn.space], ["Broker", target.broker], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"]] }, { kind: "table", columns: [{ key: "stream", label: "Native stream" }, { key: "purged", label: "Messages purged" }], rows: result.acknowledged.map((row) => ({ stream: row.stream, purged: String(row.purged) })) }, { kind: "lines", lines: ["These counts come from native purge acknowledgements. Agents were not stopped and identity was not reset. New messages may arrive after the purge."] }] }] }));
+    if (absent.length === streams.length) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the streams this clear asked for are not on the broker, so nothing was purged", { target, native: { code: "not-found", outcome: "not-executed", detail: { acknowledged, absent } } });
+    const warnings = absent.length === 0 ? undefined : [{ code: "HISTORY_STREAM_ABSENT", target, message: `these streams are not on the broker, so they were not purged: ${absent.join(", ")}` }];
+    writeResult(presentation, { command: "history", target, warnings, result: { kind: "history-clear", acknowledged, includeDms: values.dms === true, agentsStopped: false, identityReset: false } }, (result): Report => ({ sections: [{ title: "History purge acknowledged", blocks: [{ kind: "fields", rows: [["Space", conn.space], ["Broker", target.broker], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"]] }, { kind: "table", columns: [{ key: "stream", label: "Native stream" }, { key: "purged", label: "Messages purged" }], rows: result.acknowledged.map((row) => ({ stream: row.stream, purged: String(row.purged) })) }, { kind: "lines", lines: ["These counts come from native purge acknowledgements. Agents were not stopped and identity was not reset. New messages may arrive after the purge."] }] }] }));
   } finally { release?.(); }
 }

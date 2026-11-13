@@ -16,6 +16,7 @@ import { standaloneConnectOpts } from "./streams.js";
 import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
 import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
 import { isCasLoss } from "./endpoint-records.js";
+import { isStreamNotFound } from "./jetstream-missing.js";
 
 /** A registry key holds bytes that do not decode, so a write did not replace them. */
 export class UndecodableRegistryEntry extends Error {
@@ -303,9 +304,10 @@ export async function ensureDefaultDeliveryClass(opts: {
 
 /** Connect (privileged/open), delete the given channel-registry keys, disconnect. Used by
  *  `cotal down -f` to remove ONLY the cards a `spawn -f` run created (ownership-scoped); the caller is
- *  responsible for the members-present safety check. The bucket must already exist (no create on a
- *  delete path); a key that's already absent is a no-op. The space-wide defaults key is never a
- *  channel name, so it can't be removed here. Returns the channels that had an entry to remove. */
+ *  responsible for the members-present safety check. This path never creates the bucket. A key that is
+ *  already absent is a no-op, and so is a missing bucket: there is no entry to remove. Any other
+ *  failure is raised. The space-wide defaults key is never a channel name, so it can't be removed
+ *  here. Returns the channels that had an entry to remove. */
 export async function deleteChannels(opts: {
   servers: string;
   space: string;
@@ -316,15 +318,18 @@ export async function deleteChannels(opts: {
   channels: string[];
 }): Promise<string[]> {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
+  const removed: string[] = [];
   try {
     const kv = await openChannelRegistry(nc, opts.space, { create: false });
-    const removed: string[] = [];
     for (const channel of opts.channels) {
       // A key whose last write is a delete or a purge has no entry.
       if ((await kv.get(channel))?.operation !== "PUT") continue;
       await kv.delete(channel);
       removed.push(channel);
     }
+    return removed;
+  } catch (error) {
+    if (!isStreamNotFound(error)) throw error;
     return removed;
   } finally {
     await drainAndClose(nc);
