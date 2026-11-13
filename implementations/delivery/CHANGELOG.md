@@ -1,5 +1,16 @@
 # @cotal-ai/delivery
 
+## 0.163.5
+
+### Patch Changes
+
+- 0aa6f6a: `cotal pending` reports that the DM stream is not on the broker when it is already gone. It no longer says the read's outcome is unknown.
+- Updated dependencies [a1cef07]
+- Updated dependencies [23e3171]
+- Updated dependencies [aa9d3c8]
+  - @cotal-ai/core@0.163.5
+  - @cotal-ai/workspace@0.163.5
+
 ## 0.163.4
 
 ### Patch Changes

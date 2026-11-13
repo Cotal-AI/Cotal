@@ -38,7 +38,8 @@ export const channelNodeId = (channel: string): string => `#${channel}`;
 
 /** The mesh as nodes and links, under the two hide toggles.
  *
- *  Agent nodes are keyed by roster id and labelled by roster name. A chat message may add its sender
+ *  Agent nodes are keyed by roster id and labelled by roster name. A name that is only whitespace
+ *  labels the node by its id. A chat message may add its sender
  *  and its channel. A unicast or an anycast adds nothing, and a message payload's own name is never a
  *  label. A channel node comes from the channel list, a chat message or a membership subscription,
  *  never from a unicast or an anycast. An unreadable membership feed contributes no links, no wide
@@ -62,7 +63,7 @@ export function topologyModel(input: {
     agents.set(p.card.id, {
       id: p.card.id,
       kind: "agent",
-      label: p.card.name,
+      label: p.card.name.trim() ? p.card.name : p.card.id,
       ...(typeof connector === "string" ? { vendor: connector } : {}),
       status: p.status,
     });

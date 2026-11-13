@@ -176,6 +176,11 @@ const entry = (id: string, name: string, status: RosterEntry["status"], extra: P
     displayNameOf(`own1.${actor}`, idx));
   ok("3.6 a legacy base32 id of 32+ characters is cut to 6 plus an ellipsis",
     displayNameOf(actor, idx) === "ABCDEF…" && displayNameOf("ABCDEF", idx) === "ABCDEF");
+  const blank = entry("local.blank", " \n", "idle");
+  ok("3.7 a blank roster name is not shown: the row and the resolved name use the id",
+    nameIndex([blank]).has("local.blank") === false
+      && displayNameOf("local.blank", nameIndex([blank])) === "local.blank"
+      && rosterRows([blank], { includeOffline: true })[0]?.name === "local.blank");
 
   // History rows: no verified sender, so the payload's from.id is all there is to group by.
   const dms: StoredMessage[] = [

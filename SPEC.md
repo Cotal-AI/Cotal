@@ -392,7 +392,7 @@ Live clients MUST NOT heartbeat as `offline`. A graceful disconnect MAY publish 
 from KV delete/purge events. Offline peers MAY remain in local rosters for observability.
 An instance MUST write only its own presence key, and the key MUST equal `card.id`.
 Readers MUST drop a record whose `card.id` differs from its KV key, whose `card.name` is
-empty or does not have the type given above, whose `status` does not have the type given
+blank or does not have the type given above, whose `status` does not have the type given
 above, whose `ts` is not a finite number, whose
 `card.role`, `activity` or `attention` is present and not a string, or whose `condition` is present
 and is not an object with a string `code`, and SHOULD report the rejection on their recoverable
@@ -7201,7 +7201,10 @@ single-function profiles, each granting only the verbs its function needs and no
   joins and leaves of that lifecycle already running have finished.
 - `supervisor`: the always-on agent-lifecycle daemon (the manager process's own connection). It
   is the manager endpoint's serve credential (§13.9) and the ONLY holder of the capabilities for
-  the delivery endpoint's admin commands (below).
+  the delivery endpoint's admin commands (below). The local supervisor and a remote manager's
+  supervisor actor MAY read CHAT stream metadata (`STREAM.INFO`) to check retained event counts
+  before allocating a principal. This grants no message-body read or consumer creation. The remote
+  executor does not receive this metadata grant.
 - `delivery`: the server-side Plane-3 infra: fan-out, trusted-reader re-authorization, and the
   membership/ACL records the durable backstop authorizes against (§7). One process MAY hold this role
   for several spaces as one lane per space. Each lane presents only its own space's `delivery`
