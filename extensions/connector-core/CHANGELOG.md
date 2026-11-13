@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.164.3
+
+### Patch Changes
+
+- 688601b: The inbox warning about messages stamped ahead of the session clock names a sender by id when that sender's name is missing or only whitespace.
+
 ## 0.164.2
 
 No changes in this release.

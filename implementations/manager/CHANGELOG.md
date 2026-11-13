@@ -1,5 +1,14 @@
 # @cotal-ai/manager
 
+## 0.164.3
+
+### Patch Changes
+
+- 31efd24: `cotal down` stops a process-bound seat gracefully, and a jcode seat signals its private daemon before the rest of its shutdown. A hard kill left that daemon running after the seat's terminal process was gone.
+- @cotal-ai/core@0.164.3
+  - @cotal-ai/seat@0.164.3
+  - @cotal-ai/workspace@0.164.3
+
 ## 0.164.2
 
 ### Patch Changes

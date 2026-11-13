@@ -1,5 +1,25 @@
 # cotal-ai
 
+## 0.164.3
+
+### Patch Changes
+
+- 688601b: The desktop app no longer shows a blank where a label is missing or only whitespace: a space shows its id, a space kind shows Space, the settings account line shows the account subject, and a running agent with no name shows (unnamed).
+- 1a73aea: The desktop app recovers when its background service restarts or stops. An error that a background status check raised clears on the next check that succeeds, and a stopped service offers Start service, which starts it and returns to the view the person was on.
+- Updated dependencies [31efd24]
+- Updated dependencies [688601b]
+- Updated dependencies [f775e30]
+  - @cotal-ai/manager@0.164.3
+  - @cotal-ai/connector-core@0.164.3
+  - @cotal-ai/cli@0.164.3
+  - @cotal-ai/auth@0.164.3
+  - @cotal-ai/delivery@0.164.3
+  - @cotal-ai/registry@0.164.3
+  - @cotal-ai/runtime@0.164.3
+  - @cotal-ai/core@0.164.3
+  - @cotal-ai/seat@0.164.3
+  - @cotal-ai/workspace@0.164.3
+
 ## 0.164.2
 
 ### Patch Changes
