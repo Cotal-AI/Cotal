@@ -540,7 +540,9 @@ without treating an option's value as another command word.
 Daemon command discovery does not load the Manager implementation. Computer vitals sampling and
 hosted Manager registration cleanup load their Manager helpers when those operations run.
 
-A recorded native machine daemon checks for updates daily with up to one hour of jitter.
+A CLI-owned native machine daemon on Linux, macOS or Windows checks for updates daily with up to
+one hour of jitter. The service is a systemd user unit, launchd agent or Scheduled Task respectively.
+A desktop-owned daemon does not automatically update a separate standalone CLI installation.
 A newly seen release waits one hour before installation. Automatic installation uses
 `cotal update --self` and waits until every hosted Manager is empty, then holds its admission
 fence through the update. Running agents are not stopped to make room for an update.

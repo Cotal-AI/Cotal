@@ -22,13 +22,13 @@ try {
  assert.equal(updater.status().automatic, false);
  assert.match(updater.status().lastResult, /installed 2.0.0.*repair failed/);
  clearUpdateRecovery();
- assert.equal(updater.status().automatic, process.platform === "linux" && process.env.COTAL_NO_UPDATE_CHECK !== "1");
+ assert.equal(updater.status().automatic, ["linux", "darwin", "win32"].includes(process.platform) && process.env.COTAL_NO_UPDATE_CHECK !== "1");
  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
  try {
   for (const value of ["darwin", "win32", "freebsd"]) {
    Object.defineProperty(process, "platform", { value });
-   assert.equal(updater.status().automatic, false, `${value} must not install automatically`);
-   assert.match(updater.status().lastResult, /Automatic installation is available on Linux in this release\. Run `cotal update --self` here/);
+   assert.equal(updater.status().automatic, value !== "freebsd" && process.env.COTAL_NO_UPDATE_CHECK !== "1", `${value} native platform eligibility`);
+   if (value === "freebsd") assert.match(updater.status().lastResult, /Automatic installation is unavailable on this platform/);
   }
  } finally { Object.defineProperty(process, "platform", platform); }
  emitSentinel({ passed: counted.cells(), failed: 0 });

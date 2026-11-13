@@ -42,11 +42,11 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     try {
       const settings = readUpdateSettings();
       notify = settings.notify;
-      automatic = process.platform === "linux" && !desktop && settings.auto && process.env.COTAL_NO_UPDATE_CHECK !== "1" && host.eligible();
+      automatic = ["linux", "darwin", "win32"].includes(process.platform) && !desktop && settings.auto && process.env.COTAL_NO_UPDATE_CHECK !== "1" && host.eligible();
       const recovery = readUpdateRecovery();
       if (recovery) { automatic = false; reason = `automatic updates paused: installed ${recovery.installed}; ${recovery.reason}; run \`cotal update --self\``; }
     } catch (error) { automatic = false; reason = `automatic updates paused: ${String(error)}`; }
-    if (process.platform !== "linux") reason = `${reason}. Automatic installation is available on Linux in this release. Run \`cotal update --self\` here`;
+    if (!["linux", "darwin", "win32"].includes(process.platform)) reason = `${reason}. Automatic installation is unavailable on this platform. Run \`cotal update --self\` here`;
     if (desktop) reason = "update the desktop app with its signed platform installer";
     return { channel: desktop ? "desktop" : "npm", current: host.version, latest: cached?.latest, lastCheck: cached?.checkedAt ? new Date(cached.checkedAt).toISOString() : undefined, automatic, notify, failures: state.failures, lastResult: reason, ...(state.next < Number.MAX_SAFE_INTEGER ? { nextAttempt: new Date(state.next).toISOString() } : {}) };
   };
