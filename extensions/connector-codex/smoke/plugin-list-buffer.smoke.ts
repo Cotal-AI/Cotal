@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { codexSetupProvider } from "../src/setup.js";
 
 const root = mkdtempSync(join(tmpdir(), "cotal-codex-enobufs-"));
@@ -21,6 +22,7 @@ try {
   assert.equal(rows[0]!.text, "current");
   assert.equal(rows[0]!.text.includes("ENOBUFS"), false);
   console.log("codex plugin list buffer: 1 check passed");
+  emitSentinel({ passed: 1, failed: 0 });
 } finally {
   if (previous === undefined) delete process.env.PATH;
   else process.env.PATH = previous;
