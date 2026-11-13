@@ -267,6 +267,7 @@
     "smoke:persona-templates": "tsx implementations/cli/smoke/persona-templates.smoke.ts",
     "smoke:setup-start:live": "tsx implementations/cli/smoke/setup-start-live.smoke.ts",
     "smoke:setup-destination": "pnpm --filter cotal-ai... --filter @cotal-ai/tmux --filter @cotal-ai/herdr build && tsx implementations/cli/smoke/setup-destination.smoke.ts",
+    "smoke:setup-zero-columns": "tsx implementations/cli/smoke/setup-zero-columns.smoke.ts",
     "smoke:persona-root": "tsx implementations/cli/smoke/persona-root.smoke.ts",
     "smoke:control-auth": "tsx packages/core/smoke/control-auth.smoke.ts",
     "smoke:control-request-close": "tsx packages/core/smoke/control-request-close.smoke.ts",
