@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
-import { candidateRegistry, bootstrapVersion, selectedTargets, cliReportsVersion, verifyCandidateInstaller, completionAdvisory } from './automatic-update-platform-baseline.mjs';
+import { candidateRegistry, bootstrapVersion, selectedTargets, cliReportsVersion, verifyCandidateInstaller, completionAdvisory, nativeGenerationReady } from './automatic-update-platform-baseline.mjs';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { create } from 'tar';
 import { parse as parseYaml } from 'yaml';
+
+test('old ready daemon verifying installed generation is not target readiness', () => {
+  assert(!nativeGenerationReady({ state: 'ready', version: '0.160.7', generation: { installed: '0.164.2', running: '0.160.7', waiting: 'verifying the installed entry' } }, '0.164.2'));
+  assert(!nativeGenerationReady(undefined, '0.164.2'));
+  assert(nativeGenerationReady({ state: 'ready', version: '0.164.2' }, '0.164.2'));
+});
 
 test('only optional shell completion section becomes exact advisory', () => {
   const text = 'Owned shell completion\n  Changed files: 0\n  Preserved integrations: 1\n  powershell: the shell did not return a usable current-user profile\n  Startup files were not rewritten. Run `cotal completion` to inspect local integration.\nRun `cotal update --self` to repair installation.';

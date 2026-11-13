@@ -28,6 +28,7 @@ export function completionAdvisory(output) {
   }
   return { advisory: advisory.join('\n'), required: required.join('\n') };
 }
+export const nativeGenerationReady = (result, target) => result?.state === 'ready' && result?.version === target;
 export const cliReportsVersion = (output, target) => output.trim().split(/\r?\n/, 1)[0] === `cotal-ai ${target}`;
 export const selectedTargets = output => [...new Set([...output.matchAll(/(?:installing cotal-ai@|(?:repaired and )?updated to |updating to )(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/gi)].map(match => match[1]))];
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
@@ -340,7 +341,7 @@ export async function matrixCell(options) {
         catch (error) { if (error.code === 'ENOENT') { report.schedulerReplacementObserved = true; continue; } throw error; }
         const status = await cotal('scheduler observation', ['daemon', 'status', '--json']);
         report.schedulerLastStatus = status;
-        if (installedVersion === report.target && status.exit === 0 && JSON.parse(status.stdout).result?.state === 'ready') {
+        if (installedVersion === report.target && status.exit === 0 && nativeGenerationReady(JSON.parse(status.stdout).result, report.target)) {
           const attempt = json(join(cotalHome, 'update-attempt.json'));
           if (report.source === report.target ? attempt.result === 'up to date' : /^(?:repaired and )?updated to /i.test(attempt.result)) break;
         }
@@ -377,8 +378,14 @@ export async function matrixCell(options) {
     const recovery = existsSync(join(cotalHome, 'update-recovery.json')) ? json(join(cotalHome, 'update-recovery.json')) : null;
     check('no paused recovery record', recovery === null, recovery);
     if (installedService) {
-      const active = await daemon('native status after', ['daemon', 'status', '--json']);
-      check('native daemon remains active', active.exit === 0 && JSON.parse(active.stdout).result?.state === 'ready', active);
+      let active = await daemon('native status after', ['daemon', 'status', '--json']);
+      const expectedDaemonVersion = desktopInventory?.version ?? report.target;
+      for (let i = 0; i < 60; i++) {
+        if (active.exit === 0 && nativeGenerationReady(JSON.parse(active.stdout).result, expectedDaemonVersion)) break;
+        await delay(1000);
+        active = await daemon('wait for target native generation', ['daemon', 'status', '--json']);
+      }
+      check('native daemon remains active at its expected generation', active.exit === 0 && nativeGenerationReady(JSON.parse(active.stdout).result, expectedDaemonVersion), active);
       if (desktopRuntime) {
         const after = JSON.parse(active.stdout).result;
         check('CLI update preserves desktop daemon version and channel', after?.version === desktopInventory.version && after?.update?.channel === 'desktop' && after?.update?.automatic === false, after);
