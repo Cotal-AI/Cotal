@@ -396,6 +396,7 @@ membership cannot be read. Its output includes the read failure, rather than cal
 an absent feed. A user-auth teardown uses the signed-in user's control authority and an admin read
 view, plus the channel-writer view for deletion. Run it from the registered checkout as the owner
 who deployed the agents, with the admin scope needed to inspect membership and remove channels.
+Teardown lines show an agent's id when that agent's name is missing or only whitespace.
 It does not use the local static signer to stand in for that user's identity. If the issuer predates
 the membership snapshot read, upgrade it and obtain a new credential before retrying the retained
 run. See [membership snapshot reads](UPGRADING.md#membership-snapshot-reads-after-01154).
