@@ -267,9 +267,14 @@ static void Export(napi_env env, napi_value exports, const char* name, napi_call
   napi_set_named_property(env, exports, name, fn);
 }
 
+#include "linux-process.h"
+
 static napi_value Init(napi_env env, napi_value exports) {
   Export(env, exports, "peercred", Peercred);
   Export(env, exports, "flockExclusiveNb", FlockExclusiveNb);
+#ifdef __linux__
+  ExportProcesses(env, exports);
+#endif
 #ifdef __APPLE__
   Export(env, exports, "processStartTime", ProcessStartTime);
   Export(env, exports, "userCacheDir", UserCacheDir);
