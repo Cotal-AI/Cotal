@@ -11,28 +11,31 @@ import { spawn, spawnSync } from 'node:child_process';
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
 const originalEnv = { ...process.env }, originalCwd = process.cwd();
-for (const scenario of ['retry', 'rollback', 'paused', 'preflight', 'notarget-manual', 'notarget-auto']) {
+const terminal = process.argv.includes('--terminal-output');
+for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused', 'preflight', 'notarget-manual', 'notarget-auto', 'closure-auto']) {
  const root = mkdtempSync(join(tmpdir(), 'autoupd-repair-'));
  const home = join(root, 'home'), prefix = join(root, 'prefix');
  for (const dir of [home, prefix, join(root, 'config/cotal'), join(root, '.cotal'), join(root, 'payload/package/dist')]) mkdirSync(dir, { recursive: true, mode: 0o700 });
  const notarget = scenario.startsWith('notarget');
+ const closure = scenario === 'closure-auto';
  const archives = {};
  for (const version of ['99.0.0', previous]) {
   writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
-  const code = version === previous ? (scenario === 'paused' ? 'process.exit(43)' : 'console.log("previous reconciled")') : notarget ? 'console.log("release reconciled")' : scenario === 'retry' ? `const fs=require('node:fs');const p=${JSON.stringify(join(root, 'once'))};if(!fs.existsSync(p)){fs.writeFileSync(p,'1');process.exit(42)}console.log('retry reconciled')` : 'process.exit(42)';
+  const code = version === previous ? (scenario === 'paused' ? 'process.exit(43)' : 'console.log("previous reconciled")') : notarget || closure || terminal ? 'console.log("release reconciled")' : scenario === 'retry' ? `const fs=require('node:fs');const p=${JSON.stringify(join(root, 'once'))};if(!fs.existsSync(p)){fs.writeFileSync(p,'1');process.exit(42)}console.log('retry reconciled')` : 'process.exit(42)';
   writeFileSync(join(root, 'payload/package/dist/cotal.js'), '#!/usr/bin/env node\n' + code + '\n', { mode: 0o755 });
   assert.equal(spawnSync('tar', ['-czf', join(root, version + '.tgz'), '-C', join(root, 'payload'), 'package']).status, 0);
   archives[version] = readFileSync(join(root, version + '.tgz'));
  }
  let origin, missing = false, arriving = notarget, armed = false;
  const server = createServer((req, res) => {
+  if (closure && decodeURIComponent(req.url ?? '').includes('@cotal-ai/')) return res.writeHead(404).end(JSON.stringify({ error: 'Not found' }));
   if (req.url?.endsWith('.tgz')) {
    const version = req.url.slice(1, -4);
    if (scenario === 'preflight' && version === '99.0.0') return res.writeHead(503).end();
    if (armed && arriving && version === previous) missing = true;
    return res.end(archives[version]);
   }
-  const versions = Object.fromEntries(Object.entries(archives).map(([version, bytes]) => [version, { name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' }, dist: { tarball: `${origin}/${version}.tgz`, integrity: 'sha512-' + createHash('sha512').update(bytes).digest('base64') } }]));
+  const versions = Object.fromEntries(Object.entries(archives).map(([version, bytes]) => [version, { name: 'cotal-ai', version, ...(terminal ? { deprecated: 'terminal warning fixture' } : {}), bin: { cotal: 'dist/cotal.js' }, dist: { tarball: `${origin}/${version}.tgz`, integrity: 'sha512-' + createHash('sha512').update(bytes).digest('base64') } }]));
   if (missing) delete versions['99.0.0'];
   res.end(JSON.stringify({ name: 'cotal-ai', 'dist-tags': { latest: '99.0.0' }, versions }));
  });
@@ -52,7 +55,22 @@ for (const scenario of ['retry', 'rollback', 'paused', 'preflight', 'notarget-ma
  const recovery = () => JSON.parse(readFileSync(join(home, 'update-recovery.json'), 'utf8'));
  let updater;
  try {
-  if (notarget) {
+  if (terminal) {
+   const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
+   const record = async (label, argv) => {
+    const result = await run('script', ['-q', '-e', '-c', argv.map(quote).join(' '), '/dev/null']);
+    console.log(label + ':', result.code, JSON.stringify(result.output));
+    assert.equal(result.code, 0, result.output);
+    const plain = result.output.replace(/\x1b\[[0-9;]*m/g, '');
+    assert.match(plain, /npm warn deprecated cotal-ai@99\.0\.0: terminal warning fixture/);
+    return plain;
+   };
+   await record('BEFORE INHERITED NPM TERMINAL', ['npm', 'install', '-g', 'cotal-ai@99.0.0']);
+   const after = await record('AFTER UPDATE TERMINAL', [process.execPath, join(repo, 'bin/dist/cotal.js'), 'update', '--self']);
+   assert.match(after, /installed globally and reconciled/);
+   assert.doesNotMatch(after, /"(?:added|removed|changed|audited|funding|error)"\s*:/, 'npm JSON stays captured');
+   assert.equal(installedVersion(), '99.0.0');
+  } else if (notarget || closure) {
    const initial = await run('npm', ['install', '-g', `cotal-ai@${previous}`]);
    assert.equal(initial.code, 0, initial.output);
    const installedPath = join(prefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
@@ -60,7 +78,12 @@ for (const scenario of ['retry', 'rollback', 'paused', 'preflight', 'notarget-ma
    // A marker absent from the archive detects an unnecessary rollback reinstall.
    writeFileSync(join(prefix, 'lib/node_modules/cotal-ai/preserve'), 'unchanged');
    armed = true;
-   if (scenario === 'notarget-auto') {
+   if (scenario === 'notarget-auto' || closure) {
+    if (closure) {
+     const dir = join(root, 'config/cotal/extensions');
+     mkdirSync(dir, { recursive: true, mode: 0o700 });
+     writeFileSync(join(dir, 'extensions.json'), JSON.stringify({ extensions: [{ pkg: '@cotal-ai/closure-fixture', version: previous, spec: `@cotal-ai/closure-fixture@${previous}`, commands: [] }] }));
+    }
     Object.assign(process.env, env);
     process.chdir(root);
     const attempt = join(home, 'update-attempt.json');
@@ -77,9 +100,28 @@ for (const scenario of ['retry', 'rollback', 'paused', 'preflight', 'notarget-ma
      }
      throw new Error(`scheduler did not settle: ${readFileSync(attempt, 'utf8')}`);
     }
-    const deferred = await settled('not available yet');
+    const started = Date.now();
+    const deferred = await settled(closure ? 'waiting for registry or extension closure availability' : 'not available yet');
     console.log('SCHEDULER DEFERRED:', JSON.stringify(deferred));
     assert.equal(deferred.failures, 1, 'registry lag preserves the prior failure budget');
+    if (closure) {
+     console.log('CLOSURE BEFORE:', JSON.stringify({ version: '99.0.0', failures: 1, next: 0 }));
+     console.log('CLOSURE AFTER:', JSON.stringify(deferred));
+     const log = readFileSync(join(home, 'update-attempt.log'), 'utf8');
+     console.log('CLOSURE LOG:', log.trim());
+     assert.match(log, /release is not ready: installed extension dependency closure is unavailable:[\s\S]*npm error code E404/);
+     assert.match(log, /no global install was attempted/);
+     assert.ok(deferred.next >= started + 3600000 && deferred.next <= Date.now() + 3600000, 'closure retry is one hour later');
+     assert.equal(existsSync(join(home, 'update-recovery.json')), false, 'preflight creates no recovery record');
+     assert.equal(updater.status().automatic, true);
+     assert.equal(installedVersion(), previous);
+     assert.equal(readFileSync(join(prefix, 'lib/node_modules/cotal-ai/preserve'), 'utf8'), 'unchanged');
+     const manual = await command();
+     assert.equal(manual.code, 1, manual.output);
+     assert.match(manual.output, /release is not ready: installed extension dependency closure is unavailable:[\s\S]*npm error code E404/);
+     assert.match(manual.output, /no global install was attempted/);
+     continue;
+    }
     assert.match(deferred.result, /release is still arriving.*next update check/);
     assert.ok(deferred.next > Date.now());
     assert.equal(updater.status().automatic, true);
