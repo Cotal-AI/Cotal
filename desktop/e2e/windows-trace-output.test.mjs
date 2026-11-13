@@ -19,6 +19,9 @@ import {spawnSync} from 'node:child_process';
 if (!existsSync(join(process.env.COTAL_DESKTOP_E2E_TRACE_HOME,'native-tool-timings.jsonl'))) throw Error('trace missing before first native call');
 const child=spawnSync(process.execPath,[...process.execArgv,${JSON.stringify(childEntry)}, '__machine-manager'],{env:process.env});
 if(child.status!==0) throw Error(String(child.stderr));
+process.stdout.write('daemon online\\n');
+process.stderr.write('eyJprivate.payload.signature\\n', () => process.stdout.write('callback-delivered\\n'));
+process.stdout.write('x'.repeat(70000));
 `);
   const wrapper = join(runtime, "windows-native-trace.mjs");
   for (const file of ["windows-native-trace.mjs", "windows-manager-path.mjs"]) {
@@ -28,6 +31,14 @@ if(child.status!==0) throw Error(String(child.stderr));
     env: { ...process.env, COTAL_DESKTOP_E2E_TRACE_HOME: output }, encoding: "utf8", timeout: 10000,
   });
   assert.equal(result.status, 0, result.stderr);
+  const daemonLog = readFileSync(join(output, "daemon-native.log"), "utf8");
+  assert.match(daemonLog, /daemon service launch /);
+  assert.match(daemonLog, /daemon online/);
+  assert.match(daemonLog, /<redacted>/);
+  assert.doesNotMatch(daemonLog, /eyJprivate/);
+  assert.equal(Buffer.byteLength(daemonLog), 64 * 1024);
+  assert.match(result.stdout, /callback-delivered/);
+  assert.match(result.stderr, /eyJprivate.payload.signature/);
   const managerRows = readFileSync(join(output, "manager-path.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
   assert.equal(managerRows.length, 1);
   assert.equal(managerRows[0].path, process.env.PATH ?? "");
