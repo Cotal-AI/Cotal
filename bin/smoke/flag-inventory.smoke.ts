@@ -171,7 +171,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
       "config:string", "creds:string", "cwd:string:C", "detach:boolean:d", "dry-run:boolean",
       "enrollment-file:string", "events:boolean", "expect-lifecycle-uid:string", "expect-owner:string",
       "expires-at:string", "expires-in:string", "file:string:f", "foreground:boolean", "harness:string:H", "json:boolean:j", "live-only:boolean",
-      "model:string:m", "name:string:n", "no-events:boolean", "on:string", "opt:string", "plain:boolean",
+      "model:string:m", "name:string:n", "no-event-payloads:boolean", "no-events:boolean", "on:string", "opt:string", "plain:boolean",
       "prompt:string:p", "restart-window:string", "restarts:string", "resume:string", "role:string",
       "runtime:string", "server:string", "share-tools:string", "space:string:s", "subscribe:string",
       "variant:string",
