@@ -4,6 +4,29 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { create } from 'tar';
+import { parse as parseYaml } from 'yaml';
+
+test('workflow is priority-first, six-wide and cancels superseded branch runs', () => {
+  const workflow = parseYaml(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));
+  assert.equal(workflow.concurrency['cancel-in-progress'], true);
+  assert(workflow.concurrency.group.includes('github.ref'));
+  assert(workflow.jobs.priority);
+  const visiting = new Set(), done = new Set();
+  function visit(name) {
+    assert(!visiting.has(name), `workflow dependency cycle at ${name}`);
+    if (done.has(name)) return;
+    const job = workflow.jobs[name];
+    assert(job, `unknown dependency ${name}`);
+    if (job.strategy) assert(job.strategy['max-parallel'] <= 6, `${name} is not bounded to six`);
+    if (name !== 'priority') assert(job.needs, `${name} bypasses priority ordering`);
+    visiting.add(name);
+    for (const dependency of [job.needs ?? []].flat()) visit(dependency);
+    visiting.delete(name);
+    done.add(name);
+  }
+  for (const name of Object.keys(workflow.jobs)) visit(name);
+});
+
 
 test('candidate overlay serves packed closure, stock metadata and read-only policy', async () => {
   const parent = '/var/tmp/upgrade-matrix';
