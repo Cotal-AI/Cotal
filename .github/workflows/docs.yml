@@ -13,6 +13,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'install.sh'
       - 'website/**'
       - 'tools/docs-content/**'
       - 'docs/**'
@@ -37,6 +38,7 @@ on:
       - '.github/workflows/docs.yml'
   pull_request:
     paths:
+      - 'install.sh'
       - 'website/**'
       - 'tools/docs-content/**'
       - 'docs/**'
@@ -111,6 +113,40 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: website
           command: pages deploy dist --project-name=cotal-docs --branch=${{ steps.target.outputs.branch }}
+
+      - name: Verify live installer hosts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          deadline=$((SECONDS + 360))
+          pending=(get.cotal.ai install.cotal.ai)
+          body=$(mktemp)
+          trap 'rm -f "$body"' EXIT
+          while ((${#pending[@]})); do
+            retry=()
+            for host in "${pending[@]}"; do
+              remaining=$((deadline - SECONDS))
+              if ((remaining <= 0)); then
+                echo "::error::Installer hosts did not match website/dist/install.sh within six minutes: ${pending[*]}"
+                exit 1
+              fi
+              timeout=$((remaining < 20 ? remaining : 20))
+              if curl --fail --silent --show-error --location --max-time "$timeout" "https://$host/" -o "$body" &&
+                cmp -s website/dist/install.sh "$body"; then
+                echo "$host matches website/dist/install.sh"
+              else
+                echo "$host has not served the deployed installer yet"
+                retry+=("$host")
+              fi
+            done
+            pending=("${retry[@]}")
+            if ((${#pending[@]})); then
+              remaining=$((deadline - SECONDS))
+              if ((remaining > 0)); then
+                sleep "$((remaining < 10 ? remaining : 10))"
+              fi
+            fi
+          done
 
       - name: Summary
         if: steps.deploy.outcome == 'success'
