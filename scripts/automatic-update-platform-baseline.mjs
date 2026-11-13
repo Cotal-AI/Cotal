@@ -597,16 +597,22 @@ export async function candidateRegistry(directory, direction, upstream) {
 }
 
 export function summarize(directory) {
+  const admissions = [];
   const reports = readdirSync(directory, { recursive: true }).filter(name => String(name).endsWith('.json')).flatMap(name => {
     const row = json(join(directory, name));
+    if (String(name).endsWith('runner-admission.json')) {
+      assert(['admitted', 'unrun'].includes(row.result) && typeof row.runner === 'string', 'invalid runner admission receipt');
+      admissions.push(row);
+    }
     return row.id && row.tier && row.result ? [row] : [];
   });
-  assert(reports.length > 0, 'no upgrade cell evidence found');
+  assert(reports.length > 0 || admissions.length > 0, 'no upgrade cell or runner admission evidence found');
   const escape = value => String(value ?? '').replaceAll('|', '\\|').replaceAll('\n', '<br>');
   const table = ['| Tier | Cell | Source | Target | Result | Exact refusal |', '|---|---|---|---|---|---|',
     ...reports.map(row => `| ${[row.tier, row.id, row.source, row.target, row.result, row.refusal].map(escape).join(' | ')} |`)];
+  if (admissions.length) table.push('', '| Runner | Admission | Reason |', '|---|---|---|', ...admissions.map(row => `| ${[row.runner, row.result, row.reason].map(escape).join(' | ')} |`));
   const counts = reports.reduce((counts, row) => ({ ...counts, [row.result]: (counts[row.result] ?? 0) + 1 }), {});
-  const summary = { counts, cells: reports.map(({ tier, id, result, target, harnessSource, harnessSha256, refusal }) => ({ tier, id, result, target, harnessSource, harnessSha256, refusal })) };
+  const summary = { counts, admissions, cells: reports.map(({ tier, id, result, target, harnessSource, harnessSha256, refusal }) => ({ tier, id, result, target, harnessSource, harnessSha256, refusal })) };
   save(join(directory, 'summary.json'), summary);
   writeFileSync(join(directory, 'summary.md'), table.join('\n') + '\n');
   console.log(table.join('\n'));

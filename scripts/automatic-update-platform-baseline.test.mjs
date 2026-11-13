@@ -76,11 +76,15 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
     if (name !== 'installer-proof') assert(job.if.includes("!contains(github.event.head_commit.message, '[installer-only]')"), `${name} could run during installer proof`);
   }
   const installer = workflow.jobs['installer-proof'];
-  assert.deepEqual(installer.strategy.matrix.os, ['ubuntu-24.04', 'macos-15']);
-  assert.equal(installer.strategy['max-parallel'], 1);
+  assert.deepEqual(installer.strategy.matrix.os, ['macos-15-intel', 'macos-15']);
+  assert.equal(installer.strategy['max-parallel'], 2);
+  assert.equal(installer.steps[0].id, 'admission');
+  assert.equal(installer.steps[0].uses, 'actions/github-script@v8');
+  assert(installer.steps[0].with.script.includes('15 * 60 * 1000'));
+  for (const step of installer.steps.slice(1).filter(step => !step.uses?.startsWith('actions/upload-artifact'))) assert.equal(step.if, "steps.admission.outputs.admitted == 'true'");
   assert(installer.steps.some(step => step.run?.includes('237e81045f6546e9955ed85b20a073eaae284dd8') && step.run.includes('c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c')));
   assert(installer.steps.some(step => step.run?.includes('for source in 0.164.0 0.160.7') && step.run.includes('--published-installer')));
-  assert(installer.steps.some(step => step.run?.includes('--expect-recovery-refusal true') && step.run.includes("runner.os")));
+  assert(installer.steps.some(step => step.run?.includes('--expect-recovery-refusal true') && !step.run.includes("runner.os")));
   const expanded = workflow.jobs['candidate-B-expanded'];
   assert(expanded.steps.some(step => step.run?.includes('for state in fresh configured stale-extensions recovery concurrent agent')));
   assert.deepEqual(workflow.jobs['candidate-native'].strategy.matrix.source, sources);
@@ -174,6 +178,63 @@ test('explicit refusal control cannot accept an unexpected successful upgrade', 
   assert.equal(cellExitCode({ result: 'failed', expectedRefusal: { passed: false } }), 1);
   assert.equal(cellExitCode({ result: 'passed' }), 0);
   assert.equal(cellExitCode({ result: 'failed' }), 1);
+});
+
+test('Mac admission gate records late arm64 unrun before any installation', async () => {
+  const workflow = parseYaml(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));
+  const script = workflow.jobs['installer-proof'].steps[0].with?.script;
+  assert(script, 'first step must be admission, before checkout');
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  for (const [label, age, admitted] of [['macos-15', 900000, true], ['macos-15', 900001, false], ['macos-15-intel', 1800000, true]]) {
+    const outputs = {}, files = {};
+    const now = Date.parse('2026-11-13T21:00:00Z');
+    const fakeRequire = name => {
+      if (name === 'node:assert/strict') return assert;
+      if (name === 'node:path') return { join };
+      assert.equal(name, 'node:fs');
+      return { mkdirSync() {}, writeFileSync(path, text) { files[path] = text; } };
+    };
+    await new AsyncFunction('github', 'context', 'core', 'require', 'process', 'Date', script)(
+      { rest: { actions: { getWorkflowRun: async () => ({ data: { created_at: new Date(now - age).toISOString() } }) } } },
+      { repo: { owner: 'test', repo: 'test' }, runId: 1, sha: 'a'.repeat(40) },
+      { setOutput(key, value) { outputs[key] = value; }, info() {} }, fakeRequire,
+      { env: { RUNNER_TEMP: '/fixture', QUALIFICATION_RUNNER: label } }, { now: () => now, parse: Date.parse },
+    );
+    assert.equal(outputs.admitted, String(admitted));
+    const receipt = JSON.parse(Object.values(files)[0]);
+    assert.equal(receipt.result, admitted ? 'admitted' : 'unrun');
+    assert.equal(receipt.ageMs, age);
+  }
+  let outputWritten = false;
+  await assert.rejects(new AsyncFunction('github', 'context', 'core', 'require', 'process', 'Date', script)(
+    { rest: { actions: { getWorkflowRun: async () => ({ data: { created_at: 'invalid' } }) } } },
+    { repo: {}, runId: 1 }, { setOutput() { outputWritten = true; } },
+    name => {
+      if (name === 'node:assert/strict') return assert;
+      if (name === 'node:path') return { join };
+      assert.equal(name, 'node:fs');
+      return { mkdirSync() {}, writeFileSync() {} };
+    },
+    { env: {} }, { now: () => 1, parse: Date.parse },
+  ), /run creation time unavailable/);
+  assert.equal(outputWritten, false);
+});
+
+test('summary preserves unrun runner receipts separately from product verdicts', async () => {
+  const { summarize } = await import('./automatic-update-platform-baseline.mjs');
+  const parent = '/var/tmp/upgrade-matrix';
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const root = mkdtempSync(join(parent, 'admission-summary-'));
+  writeFileSync(join(root, 'runner-admission.json'), JSON.stringify({ run: 1, head: 'a'.repeat(40), runner: 'macos-15', ageMs: 900001, result: 'unrun', reason: 'late arm64' }));
+  const alone = summarize(root);
+  assert.deepEqual(alone.counts, {});
+  assert.equal(alone.admissions.length, 1);
+  assert.equal(alone.admissions[0].result, 'unrun');
+  writeFileSync(join(root, 'cell.json'), JSON.stringify({ id: 'intel-cell', tier: 'published', result: 'passed', target: '0.164.5' }));
+  const mixed = summarize(root);
+  assert.deepEqual(mixed.counts, { passed: 1 });
+  assert.equal(mixed.admissions.length, 1);
+  assert(readFileSync(join(root, 'summary.md'), 'utf8').includes('macos-15 | unrun'));
 });
 
 import { test } from 'node:test';

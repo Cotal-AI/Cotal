@@ -54,19 +54,46 @@ jobs:
     if: "github.event_name == 'push' && contains(github.event.head_commit.message, '[installer-only]') && !contains(github.event.head_commit.message, '[scheduler-only]')"
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 2
       matrix:
-        os: [ubuntu-24.04, macos-15]
+        os: [macos-15-intel, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
+      - name: Record Mac runner admission before any install
+        id: admission
+        uses: actions/github-script@v8
+        env:
+          QUALIFICATION_RUNNER: ${{ matrix.os }}
+        with:
+          script: |
+            const assert = require('node:assert/strict');
+            const { mkdirSync, writeFileSync } = require('node:fs');
+            const { join } = require('node:path');
+            const observedAt = Date.now();
+            const { data: run } = await github.rest.actions.getWorkflowRun({ ...context.repo, run_id: context.runId });
+            const createdAt = Date.parse(run.created_at);
+            assert(Number.isFinite(createdAt) && observedAt >= createdAt, 'run creation time unavailable');
+            const ageMs = observedAt - createdAt;
+            const runner = process.env.QUALIFICATION_RUNNER;
+            assert(['macos-15-intel', 'macos-15'].includes(runner), 'unexpected qualification runner');
+            const admitted = runner === 'macos-15-intel' || ageMs <= 15 * 60 * 1000;
+            const directory = join(process.env.RUNNER_TEMP, 'upgrade-evidence');
+            mkdirSync(directory, { recursive: true });
+            const receipt = { run: context.runId, head: context.sha, runner, createdAt: run.created_at, observedAt, ageMs, result: admitted ? 'admitted' : 'unrun', reason: admitted ? 'runner admitted' : 'arm64 runner was not admitted within 15 minutes' };
+            writeFileSync(join(directory, 'runner-admission.json'), JSON.stringify(receipt, null, 2) + '\n');
+            core.info(JSON.stringify(receipt));
+            core.setOutput('admitted', String(admitted));
       - uses: actions/checkout@v6
+        if: steps.admission.outputs.admitted == 'true'
         with:
           persist-credentials: false
       - uses: actions/setup-node@v6
+        if: steps.admission.outputs.admitted == 'true'
         with:
           node-version: 24
       - name: Fetch immutable installer and verify its receipt
+        if: steps.admission.outputs.admitted == 'true'
         shell: bash
         run: |
           source=237e81045f6546e9955ed85b20a073eaae284dd8
@@ -78,15 +105,14 @@ jobs:
           assert.equal(createHash('sha256').update(readFileSync(process.argv[2])).digest('hex'), 'c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c');
           NODE
       - name: Published stale-installer reruns and fail-closed recovery
+        if: steps.admission.outputs.admitted == 'true'
         shell: bash
         run: |
           failed=0
           for source in 0.164.0 0.160.7; do
             node scripts/automatic-update-platform-baseline.mjs --source "$source" --layout installer --state stale-extensions --method installer --published-installer "$RUNNER_TEMP/fixed-installer.sh" --installer-source 237e81045f6546e9955ed85b20a073eaae284dd8 --installer-sha256 c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           done
-          if [ '${{ runner.os }}' = Linux ]; then
-            node scripts/automatic-update-platform-baseline.mjs --source 0.164.0 --layout installer --state recovery --method installer --published-installer "$RUNNER_TEMP/fixed-installer.sh" --installer-source 237e81045f6546e9955ed85b20a073eaae284dd8 --installer-sha256 c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c --expect-recovery-refusal true --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
-          fi
+          node scripts/automatic-update-platform-baseline.mjs --source 0.164.0 --layout installer --state recovery --method installer --published-installer "$RUNNER_TEMP/fixed-installer.sh" --installer-source 237e81045f6546e9955ed85b20a073eaae284dd8 --installer-sha256 c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c --expect-recovery-refusal true --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           exit "$failed"
       - uses: actions/upload-artifact@v4
         if: always()

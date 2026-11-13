@@ -46,6 +46,13 @@ the reconciliation failure and repair command, `OPERATION_UNKNOWN`, and no final
 summary. The upgrade result stays `failed`; a separate `expectedRefusal.passed` field records the
 fail-closed check. Only that explicit control may exit zero for an expected failed upgrade.
 
+The narrow Mac installer job runs two stale-source cells and one expected-refusal control per
+admitted architecture. Its first step records runner admission before checkout or installation.
+An arm64 runner arriving more than 15 minutes after workflow creation records `unrun` and skips
+all upgrade steps. A job that never acquires a runner is also unrun. Neither case is a product
+result, even when the infrastructure job itself finishes successfully or is cancelled. The summary
+keeps these receipts in `admissions` and a separate runner table, outside product pass/failure counts.
+
 ## Test a packed candidate
 
 Build the workspace and assemble source-matched native artifacts as the workflow does. The same
