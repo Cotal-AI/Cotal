@@ -30,6 +30,14 @@ test('candidate overlay serves packed closure, stock metadata and read-only poli
     assert.equal(createHash('sha256').update(archive).digest('hex'), packages.find(pkg => pkg.name === 'cotal-ai').sha256);
     assert.equal((await fetch(`${overlay.url}/cotal-ai`, { method: 'PUT', body: '{}' })).status, 405);
   } finally { await overlay.close(); }
+  const sourceOverlay = await candidateRegistry(root, 'A', 'https://registry.npmjs.org/');
+  try {
+    const metadata = await (await fetch(`${sourceOverlay.url}/cotal-ai`)).json();
+    assert.notEqual(metadata['dist-tags'].latest, '0.999.0');
+    assert.equal(metadata.versions['0.999.0'].version, '0.999.0');
+    const installedMetadata = await (await fetch(`${sourceOverlay.url}/cotal-ai/0.999.0`)).json();
+    assert(installedMetadata.dist.integrity.startsWith('sha512-'));
+  } finally { await sourceOverlay.close(); }
 });
 
 import { test } from 'node:test';

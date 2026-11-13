@@ -126,6 +126,7 @@ export async function matrixCell(options) {
   try {
     const target = ok(await npmCall('resolve public latest', ['view', 'cotal-ai@latest', 'version', '--json']), 'public latest');
     report.target = JSON.parse(target.stdout);
+    report.resolvedBeforeCell = report.target;
     report.source = source === 'latest' ? report.target : source;
     report.registry = ok(await npmCall('record npm registry', ['config', 'get', 'registry']), 'registry').stdout.trim();
     if (options.candidate) {
@@ -271,12 +272,19 @@ export async function matrixCell(options) {
         }
       } while (Date.now() < deadline);
       const attempt = json(join(cotalHome, 'update-attempt.json'));
+      if (/^updating to /.test(attempt.result)) {
+        uncertain = true;
+        throw new Error(`scheduler outcome unknown after observation deadline: ${attempt.result}; native service retained for runner teardown`);
+      }
       check('scheduler completed within observation deadline', report.source === report.target ? attempt.result === 'up to date' : json(join(pkg, 'package.json')).version === report.target && /^(?:repaired and )?updated to /i.test(attempt.result), attempt);
       update = { exit: 0, stdout: existsSync(join(cotalHome, 'update-attempt.log')) ? readFileSync(join(cotalHome, 'update-attempt.log'), 'utf8') : '', stderr: '' };
       save(join(output, `${id}-scheduler-after.json`), { check: json(join(cotalHome, 'update-check.json')), attempt: json(join(cotalHome, 'update-attempt.json')) });
       check('daemon scheduler performed a replacement or reported up to date', report.source === report.target || update.stdout.length > 0, update.stdout);
     }
     report.update = update;
+    const selectedVersions = [...(update.stdout + update.stderr).matchAll(/(?:installing cotal-ai@|updated to |cotal-ai@)(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/g)].map(match => match[1]);
+    report.updaterSelectedVersions = [...new Set(selectedVersions)];
+    report.updaterSelectedVersion = selectedVersions[0];
     check('upgrade exits successfully', update.exit === 0, update);
     check('CLI version is target', json(join(pkg, 'package.json')).version === report.target, json(join(pkg, 'package.json')).version);
     const manifest = join(config, 'extensions/extensions.json');
@@ -284,6 +292,12 @@ export async function matrixCell(options) {
     report.extensionsAfter = extensions;
     check('every prior extension remains recorded', report.extensionsBefore.every(before => extensions.some(after => after.pkg === before.pkg)), extensions.map(entry => entry.pkg));
     check('every recorded extension is at target', extensions.every(entry => entry.version === report.target), extensions.map(({ pkg, version }) => ({ pkg, version })));
+    const version = await cotal('selected CLI version assertion', ['--version']);
+    check('selected CLI reports target', version.exit === 0 && version.stdout.trim() === `cotal-ai ${report.target}`, version);
+    check('recorded extension package versions match target', extensions.every(entry => {
+      const path = join(config, 'extensions/node_modules', entry.pkg, 'package.json');
+      return existsSync(path) && json(path).version === report.target;
+    }), extensions.map(entry => ({ pkg: entry.pkg, path: join(config, 'extensions/node_modules', entry.pkg, 'package.json') })));
     const status = await cotal('status assertion', ['status']);
     check('cotal status exits zero', status.exit === 0, status);
     const recovery = existsSync(join(cotalHome, 'update-recovery.json')) ? json(join(cotalHome, 'update-recovery.json')) : null;
@@ -296,6 +310,10 @@ export async function matrixCell(options) {
     report.result = report.assertions.every(row => row.passed) ? 'passed' : 'failed';
     if (report.result === 'failed') report.refusal = report.assertions.filter(row => !row.passed).map(row => `${row.name}: ${typeof row.observed === 'string' ? row.observed : JSON.stringify(row.observed)}`).join('\n');
   } catch (error) {
+    if (method === 'scheduler' && report.daemonBefore) {
+      try { if (/^updating to /.test(json(join(cotalHome, 'update-attempt.json')).result)) uncertain = true; }
+      catch { uncertain = true; }
+    }
     report.result = 'failed'; report.refusal = error.message;
   } finally {
     if (releaseHolder) releaseHolder();
@@ -305,7 +323,7 @@ export async function matrixCell(options) {
       if (holderResult.exit !== 0) report.result = 'failed';
     }
     if (stackStarted && !uncertain) {
-      try { ok(await cotal('stop owned local stack', ['down']), 'local stack cleanup'); }
+      try { ok(await cotal('stop owned local stack', ['down', '--yes']), 'local stack cleanup'); }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (installedService) {
