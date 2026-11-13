@@ -12,6 +12,7 @@ import { renderReport } from "@cotal-ai/workspace";
 import { MeshView } from "../../../packages/workspace/dist/view/index.js";
 import { runLog } from "../src/render.js";
 import { feedLine, observedText, watchReport, WATCH_TEXT_LIMIT } from "../src/watch-data.js";
+import { printEndpoints } from "../src/commands/endpoints.js";
 import {
   chatSubject,
   unicastSubject,
@@ -125,6 +126,21 @@ const endpointOnly = renderReport(watchReport({ ...s, agents: [] }, "roster"), "
 check("an endpoint-only roster is not reported empty", endpointOnly.includes("console") && !endpointOnly.includes("No participants"));
 const emptyRoster = renderReport(watchReport({ ...s, agents: [], endpoints: [] }, "roster"), "plain", 200);
 check("an empty roster names its participant scope", emptyRoster.includes("No participants in this observer snapshot."));
+{
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  try {
+    printEndpoints([
+      { card: { id: "local.blank", name: " \n", kind: "agent", role: " \t" }, status: "idle", ts: Date.now(), activity: " \n" },
+      { card: { id: "local.ada", name: "ada", kind: "agent", role: "worker" }, status: "idle", ts: Date.now(), activity: "writing" },
+    ] as never, "demo");
+  } finally { console.log = log; }
+  const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  check("endpoints shows the id for a blank participant name and none for a blank role", text.includes("local.blank") && /local\.blank\s+none\s+agent/.test(text) && !text.includes("\\u000a"));
+  check("endpoints keeps a real participant name and role", /ada\s+worker\s+agent/.test(text));
+  check("endpoints says a blank activity was not reported", text.includes("not reported") && text.includes("writing"));
+}
 const waitingReport = renderReport(watchReport(s, "waiting"), "plain", 200);
 check("the waiting view keeps the agent-only signal scope", waitingReport.includes("bob") && !waitingReport.includes("console") && !waitingReport.includes("alice"));
 {
