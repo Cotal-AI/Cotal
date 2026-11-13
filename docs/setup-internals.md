@@ -34,8 +34,15 @@ Without a terminal, or with `--yes`, `--no-input`, or `--json`, `scriptedInputs`
 from the flags and refuses a missing one. That refusal (`MissingFlags`) prints the scripted form
 without the command help.
 
-Setup refuses `--destination cloud` before anything else. The refusal gives the route a Cloud space
-takes. `cotal login` registers the space, and setup then runs with `--destination self-hosted`.
+On a terminal the destination question also offers Cloud. `askCloud` lists the registered spaces
+whose catalog came from the Cotal Cloud sign-in. With none it runs the registered `login` command
+with `--cloud` and reads the list again. It asks which space when there are several, and it asks for
+the project folder when the space is not bound to one. The answer is saved as a self-hosted
+destination, so the rest of setup is the same as for any registered space.
+
+Setup refuses the flag value `--destination cloud` before anything else, because a script cannot
+approve a sign-in. The refusal gives the scripted route. `cotal login` registers the space, and
+setup then runs with `--destination self-hosted`.
 
 `runtimeChoices` lists `pty`, every official runtime with its host tools from
 `OFFICIAL_RUNTIME_TOOLS`, and each installed third-party runtime. A script's runtimes are its

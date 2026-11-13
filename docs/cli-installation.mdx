@@ -23,7 +23,7 @@ cotal setup --skills
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server, including a Cloud space `cotal login` discovered. `cloud` is refused before anything is written or contacted, and the refusal names that route: `cotal login`, then `--destination self-hosted --space <name>`. |
+| `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server, including a Cloud space `cotal login` discovered. The flag value `cloud` is refused before anything is written or contacted, because the Cloud sign-in needs a terminal. The refusal names the scripted route: `cotal login`, then `--destination self-hosted --space <name>`. |
 | `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. When you have no `harness` preference of your own, it becomes yours too. |
 | `--runtime` | asked; none in a script | A runtime to set up besides the built-in `pty`: `tmux`, `cmux`, `orca`, `herdr` or an installed third-party one. Repeat it for each. |
 | `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. A script's folder must exist; a terminal offers to create it. |
@@ -42,8 +42,13 @@ Setup saves preparation before a separate startup decision. Configure-only is th
 `--yes` never turns it into startup. On a terminal it asks for each input no flag gave: destination,
 application, runtimes, project folder and space.
 It shows the answers before it writes: Save writes them, Change asks every question again with the
-answers kept, and Cancel saves nothing. Cloud is listed but cannot be chosen. Its hint says to sign
-in with `cotal login` and choose Self-hosted, because a Cloud space is registered here when you sign in.
+answers kept, and Cancel saves nothing.
+
+Choose Cloud to set up a space of your Cotal Cloud account. When no Cloud space is registered on
+this machine, setup signs you in first: it prints the approval link and code, opens your browser,
+and waits for your approval, as `cotal login` does. With several spaces it asks which one. A space
+that no project uses yet asks for the project folder your agents work in. A space already set up in
+a project keeps that project.
 
 Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
 is `USAGE_INVALID` naming each missing flag, before anything is written. The refusal prints the

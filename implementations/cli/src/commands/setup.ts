@@ -2,8 +2,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import * as p from "../lib/prompts.js";
-import { registry, token, writePrivateRecord, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
+import { parseCommandArgs, registry, token, writePrivateRecord, type Command, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
 import {
+  COTAL_CLOUD_IDP,
   CommandFailure,
   OFFICIAL_CONNECTORS,
   isCommandFailure,
@@ -11,6 +12,7 @@ import {
   assertPreferencesFolderProtected,
   canonicalRoot,
   checkUserBundle,
+  cloudAuthUrl,
   extensionPackageDir,
   findMesh,
   homeCotalDir,
@@ -27,6 +29,7 @@ import {
   preparedSpaceAt,
   presentationOf,
   provenance,
+  readCurrent,
   readPreferences,
   recordMesh,
   resolveOnPath,
@@ -35,6 +38,7 @@ import {
   writeResult,
   type Cell,
   type ErrorCode,
+  type MeshEntry,
   type Outcome,
   type OutputWarning,
   type Presentation,
@@ -230,7 +234,8 @@ export function validateSetupArguments(args: ParsedArgs): void {
 
 /**
  * Setup prepares a space before a separate, explicit startup decision. Its inputs are the
- * destination (a local space this machine starts, or a self-hosted one registered here), the
+ * destination (a local space this machine starts, or a self-hosted one registered here, which on a
+ * terminal can be a Cotal Cloud space chosen after its sign-in), the
  * application (the connector your agents run in), the runtimes to set up besides the built-in
  * `pty`, the project folder (the space's root) and the space name. On a terminal it asks for each
  * one no flag gave and shows the answers before it writes; in a script every one is a flag, and a
@@ -268,8 +273,9 @@ async function runSkillsOnly(): Promise<void> {
   seedAgentSkills();
 }
 
-/** A destination this cut can prepare. A Cloud space is a registered space, so `cloud` is refused
- *  with the self-hosted route before anything is written or any endpoint is contacted. */
+/** A destination a flag can name. A Cloud space is a registered space, and its sign-in needs a
+ *  terminal, so the flag value `cloud` is refused with the self-hosted route before anything is
+ *  written or any endpoint is contacted. */
 function destinationOf(value: string): Destination {
   if (value === "local" || value === "self-hosted") return value;
   if (value === "cloud")
@@ -306,16 +312,21 @@ async function askInputs(v: SetupValues, choices: readonly RuntimeChoice[]): Pro
     ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }),
   };
   let again = false;
+  let cloud = false;
   for (;;) {
     const ask = <K extends keyof SetupInputs>(key: K): boolean => again || given[key] === undefined;
-    const destination = ask("destination") ? await askDestination(given.destination) : given.destination!;
+    const where: Destination | "cloud" = ask("destination") ? await askDestination(cloud ? "cloud" : given.destination) : given.destination!;
+    cloud = where === "cloud";
+    const destination = where === "cloud" ? "self-hosted" : where;
+    // The sign-in follows the choice that needs it, before the questions it does not change.
+    const cloudPlace = where === "cloud" ? await askCloud(given, ask) : undefined;
     const harness = ask("harness") ? await askHarness(candidates, given.harness) : given.harness!;
     const runtimes = ask("runtimes") ? await askRuntimes(choices, given.runtimes) : given.runtimes!;
-    const place = destination === "local" ? await askLocal(given, ask) : await askSelfHosted(given, ask);
+    const place = cloudPlace ?? (where === "local" ? await askLocal(given, ask) : await askSelfHosted(given, ask));
     const inputs: SetupInputs = { destination, harness, runtimes, ...place };
     note(
       [
-        `destination  ${destination === "local" ? "Local" : "Self-hosted"}`,
+        `destination  ${where === "local" ? "Local" : where === "cloud" ? "Cloud" : "Self-hosted"}`,
         `application  ${harness}`,
         `runtimes     ${["pty", ...runtimes].join(", ")}`,
         `project      ${inputs.project}${inputs.createProject ? " (created on save)" : ""}`,
@@ -342,18 +353,59 @@ async function askInputs(v: SetupValues, choices: readonly RuntimeChoice[]): Pro
   }
 }
 
-async function askDestination(initial: Destination | undefined): Promise<Destination> {
+/** Cloud is a choice of this question only: its space is a registered one, so the answer is saved
+ *  as a self-hosted destination. */
+async function askDestination(initial: Destination | "cloud" | undefined): Promise<Destination | "cloud"> {
   return abortIfCancel(
     await p.select<Destination | "cloud">({
       message: "Where does your space run?",
       options: [
         { value: "local", label: "Local", hint: "this machine starts it" },
         { value: "self-hosted", label: "Self-hosted", hint: "it runs on a server and is registered here" },
-        { value: "cloud", label: "Cloud", hint: "sign in with `cotal login` to select your Cloud space", disabled: true },
+        { value: "cloud", label: "Cloud", hint: cloudSpaces().length > 0 ? "a space of your Cotal Cloud account" : "sign in to Cotal Cloud and choose your space" },
       ],
       initialValue: initial ?? "local",
     }),
-  ) as Destination;
+  );
+}
+
+/** The Cotal Cloud spaces a sign-in registered here. */
+function cloudSpaces(): MeshEntry[] {
+  return loadMeshes()
+    .filter((m) => m.origin === "catalog" && m.userAuth !== undefined && cloudAuthUrl(m.userAuth.idp.url.replace(/\/$/, "")) === COTAL_CLOUD_IDP)
+    .sort((a, b) => a.space.localeCompare(b.space));
+}
+
+/** A Cotal Cloud space. With none registered here, the sign-in runs first in this terminal. A space
+ *  bound to a project keeps that project. One that is not asks for the project folder. */
+async function askCloud(given: Partial<SetupInputs>, ask: (key: keyof SetupInputs) => boolean): Promise<Omit<SetupInputs, "destination" | "harness" | "runtimes">> {
+  let spaces = cloudSpaces();
+  if (spaces.length === 0) {
+    const login = registry.resolve<Command>("command", "login");
+    await login.run(parseCommandArgs(login, ["--cloud"]));
+    spaces = cloudSpaces();
+    if (spaces.length === 0)
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the sign-in registered no Cloud space here; nothing was set up", { remedy: "create a space in Cotal Cloud, then run `cotal setup` again" });
+  }
+  let entry = spaces.find((m) => m.space === given.space);
+  if (ask("space") || entry === undefined) {
+    const current = readCurrent();
+    const picked = spaces.length === 1
+      ? spaces[0]!.space
+      : abortIfCancel(
+          await p.select({
+            message: "Which Cloud space?",
+            options: spaces.map((m) => ({ value: m.space, label: m.catalogName ?? m.space, hint: [m.catalogName === undefined ? undefined : m.space, m.catalogRole].filter(Boolean).join(" · ") })),
+            initialValue: (entry ?? spaces.find((m) => m.space === current))?.space ?? spaces[0]!.space,
+          }),
+        );
+    entry = spaces.find((m) => m.space === picked)!;
+  }
+  const flagged = ask("project") ? undefined : given.project;
+  if (canonicalRoot(entry.root) !== canonicalRoot(entry.catalogRoot ?? entry.root)) return { project: flagged ?? entry.root, createProject: false, space: entry.space };
+  const project = flagged
+    ?? resolve(abortIfCancel(await p.text({ message: "Project folder (your agents work in it)", initialValue: given.project ?? process.cwd(), validate: (s) => (isDir(resolve(s?.trim() ?? "")) ? undefined : "name a folder that exists") })).trim());
+  return { project, createProject: false, space: entry.space };
 }
 
 async function askHarness(candidates: readonly SetupConnectorCandidate[], initial: string | undefined): Promise<string> {
