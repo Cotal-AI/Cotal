@@ -172,6 +172,12 @@ const groupBy = (root: ParentNode) => Array.from(root.querySelectorAll("[role=ra
   ok("2.14 an offline row is dimmed", rowByName(d, "scout").classList.contains("v3-arow-off") && !david.classList.contains("v3-arow-off") && d.querySelector(".v3-arow-off .ui-av-off") !== null);
   const hostless = view({ roster: [entry("local.h", "hollow", "idle", { connector: "pi" })] });
   ok("2.15 an agent that reports no host shows none", rowByName(hostless, "hollow").querySelector(".v3-meta") === null);
+  const blankRole = view({ roster: [entry("local.b", "blank", "idle", { connector: "claude-code", role: " " }), entry("local.n", "newline", "idle", { role: "\n" }),
+    entry("local.e", "edge", "idle", { kind: "endpoint", role: " ", host: "mbp-david" })] });
+  same("2.15b a whitespace role reads as no role: no empty text and no separator in front of the harness or host",
+    [textOf(rowByName(blankRole, "blank").querySelector(".v3-aname span")), textOf(rowByName(blankRole, "newline").querySelector(".v3-aname span")),
+      Array.from(blankRole.querySelectorAll(".v3-epsec .v3-eprow")).map((r) => textOf(r.querySelector("span:not(.ui-av)")))],
+    ["Claude Code", "", ["mbp-david"]]);
   const picked = parse(renderToString(inShell(createElement(AgentsView, { store: seed(), selected: "local.rev", clock: () => NOW }))));
   ok("2.16 the row an address or the panel selected is marked, and no other", rowByName(picked, "reviewer").getAttribute("aria-current") === "true"
     && picked.querySelectorAll('.v3-arow[aria-current="true"]').length === 1 && david.getAttribute("aria-current") === null);

@@ -3,7 +3,7 @@ import type { RosterEntry } from "../api/types.js";
 
 export type NameIndex = Map<string, string>;
 
-/** A roster name that can be shown. A blank name is not one: it prints as nothing, or as a line break. */
+/** A roster name or role that can be shown. A blank one is not: it prints as nothing, or as a line break. */
 export function visibleName(name: string | undefined): string | undefined {
   return typeof name === "string" && name.trim() ? name : undefined;
 }

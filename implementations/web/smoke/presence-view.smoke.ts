@@ -181,6 +181,9 @@ const entry = (id: string, name: string, status: RosterEntry["status"], extra: P
     nameIndex([blank]).has("local.blank") === false
       && displayNameOf("local.blank", nameIndex([blank])) === "local.blank"
       && rosterRows([blank], { includeOffline: true })[0]?.name === "local.blank");
+  const roleRows = rosterRows([" ", "\n", "", "reviewer"].map((role, i) => entry(`local.r${i}`, `r${i}`, "idle", {}, { role })), { includeOffline: true });
+  ok("3.7b a blank roster role is no role on the row, and a role with a character stays",
+    JSON.stringify(roleRows.map((r) => r.role ?? null)) === JSON.stringify([null, null, null, "reviewer"]), roleRows.map((r) => r.role));
 
   // History rows: no verified sender, so the payload's from.id is all there is to group by.
   const dms: StoredMessage[] = [
