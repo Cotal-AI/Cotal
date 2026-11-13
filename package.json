@@ -369,6 +369,7 @@
     "smoke:history-mention:live": "tsx extensions/connector-core/smoke/history-mention-live.smoke.ts",
     "smoke:empty-id-ingest": "tsx extensions/connector-core/smoke/empty-id-ingest.smoke.ts",
     "smoke:inbox-window": "tsx extensions/connector-core/smoke/inbox-window.smoke.ts",
+    "smoke:inbox-ahead-blank": "tsx extensions/connector-core/smoke/ahead-blank-name.smoke.ts",
     "smoke:feedback": "tsx extensions/connector-core/smoke/feedback.smoke.ts",
     "smoke:feedback-command": "tsx implementations/cli/smoke/feedback-command.smoke.ts",
     "smoke:claude-wake": "tsx extensions/connector-claude-code/smoke/wake-path.smoke.ts",
