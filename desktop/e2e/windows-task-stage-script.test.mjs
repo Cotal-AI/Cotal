@@ -26,7 +26,7 @@ test("cold preflight precedes setup actions and cleanup precedes the unchanged s
   const workflow = readFileSync(new URL("../../.github/workflows/desktop.yml", import.meta.url), "utf8").split("  native-build:")[1];
   assert.match(workflow, /steps:\n      - uses: actions\/checkout@v6\n      - name: Measure cold Windows task stages before setup or scenario\n        if: runner.os == 'Windows'\n        shell: cmd\n        timeout-minutes: 21\n        run: node desktop\/e2e\/windows-task-stage-preflight.mjs measure/);
   assert.ok(workflow.indexOf("windows-task-stage-preflight.mjs measure") < workflow.indexOf("pnpm/action-setup"));
-  const scenario = workflow.indexOf("Windows recovery cell 1 before an app poll sees the disabled service");
+  const scenario = workflow.indexOf("Windows restart recovery cell 1 reconnects without input");
   assert.ok(scenario > 0 && workflow.indexOf("windows-task-stage-preflight.mjs cleanup") < scenario);
   const preflight = readFileSync(new URL("./windows-task-stage-preflight.mjs", import.meta.url), "utf8");
   assert.ok(preflight.includes('["/Create", "/XML", unitPath, "/TN", unit]'));
