@@ -708,8 +708,10 @@ marker is refused rather than frozen, and a frame holding one from an older vers
 the marker halts at its brackets on a write-ahead log that already holds one.
 
 The agent's card carries `meta["ai.cotal.events"]`: `on` when the session arms its event plane and
-`off` when it does not. Like every card meta key it is advisory, so a viewer can tell an agent that
-publishes no events from one that has not started a turn. An agent file cannot set it.
+`off` when it does not. A connector that removes `COTAL_EVENTS` from the process environment before
+it builds the session still reports `on` when it has already armed the plane. Like every card meta
+key it is advisory, so a viewer can tell an agent that publishes no events from one that has not
+started a turn. An agent file cannot set it.
 
 The channel is **`events.<owner>.<actor>`**, named after the session's principal. What the actor
 half is depends on the mesh, and the difference matters when you go looking for it: on a static mesh

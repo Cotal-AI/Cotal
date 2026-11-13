@@ -83,6 +83,22 @@ const spoofAgent = constructWithEvents(
   { ...cfg, name: "Spoof", id: "spoof_agent", meta: { "ai.cotal.events": "on" } },
   false,
 );
+// Jcode reads COTAL_EVENTS, then deletes every COTAL_ variable, then builds the session.
+// The card must follow the decision it already made, not the scrubbed process environment.
+function constructArmedAfterScrub(config: AgentConfig): MeshAgent {
+  const had = Object.prototype.hasOwnProperty.call(process.env, "COTAL_EVENTS");
+  const before = process.env.COTAL_EVENTS;
+  delete process.env.COTAL_EVENTS;
+  try {
+    const a = new MeshAgent(config, undefined, { eventsArmed: true });
+    a.on("error", () => {});
+    return a;
+  } finally {
+    if (had) process.env.COTAL_EVENTS = before;
+    else delete process.env.COTAL_EVENTS;
+  }
+}
+const scrubbedAgent = constructArmedAfterScrub({ ...cfg, name: "Scrubbed", id: "scrubbed_agent", meta: undefined });
 
 // A separate endpoint, so every assertion below reads the card as it arrived OVER THE WIRE.
 const peer = new CotalEndpoint({
@@ -102,7 +118,7 @@ try {
   await agent.waitUntilConnected(10_000);
   check("agent connected", agent.connected === true);
 
-  for (const extra of [armedAgent, unarmedAgent, spoofAgent]) {
+  for (const extra of [armedAgent, unarmedAgent, spoofAgent, scrubbedAgent]) {
     extra.start();
     await extra.waitUntilConnected(10_000);
   }
@@ -138,6 +154,10 @@ try {
     "an agent file declaring ai.cotal.events on cannot arm an unarmed session",
     (await eventsOf("Spoof")) === "off",
   );
+  check(
+    "a session built after COTAL_EVENTS was removed still reads on when the connector already armed it",
+    (await eventsOf("Scrubbed")) === "on",
+  );
 
   console.log(`\n✓ card-host smoke passed (${pass} checks)`);
 } finally {
@@ -145,6 +165,7 @@ try {
   await armedAgent.stop?.();
   await unarmedAgent.stop?.();
   await spoofAgent.stop?.();
+  await scrubbedAgent.stop?.();
   await peer.stop?.();
   await killAndAwaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
