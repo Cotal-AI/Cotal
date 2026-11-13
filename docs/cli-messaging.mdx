@@ -256,6 +256,7 @@ shows them.
 `/reply` answers the latest direct message or role task the session received. It addresses the
 sender's principal and quotes the message id, with no name lookup. A sender shows by display name,
 and with its principal when another principal in the session carries the same name, ignoring case.
+A display name that is only whitespace is shown as the principal.
 `--plain` cannot relabel a line it already printed, so it prints one line naming those principals
 when a name becomes shared. A typed `@<name>` must name one principal among the present peers and
 the senders the session heard from. A name that more than one of them carries refuses and lists

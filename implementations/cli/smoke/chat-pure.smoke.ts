@@ -355,6 +355,9 @@ const task = msg({ id: "t1", kind: "anycast", service: "reviewer", from: { id: "
 {
   let s = applyEvent(s0(), { type: "message", message: msg({ id: "a1", from: { id: "u_a.alice", name: "alice" } }) });
   check("a name one principal carries shows alone", transcriptRows(s, 200)[0].text.includes(" DM alice: "), transcriptRows(s, 200));
+  const blank = applyEvent(s0(), { type: "message", message: msg({ id: "blank1", from: { id: "local.blank", name: " \n" } }) });
+  check("a blank sender name is shown as the principal", transcriptRows(blank, 200)[0].text.includes(" DM local.blank: ") && !transcriptRows(blank, 200)[0].text.includes("\n"), transcriptRows(blank, 200));
+  check("a reply to a blank sender is addressed by principal", headerRows(replyToLatest(blank)).some((row) => row.text.includes("to DM local.blank (reply)")), headerRows(replyToLatest(blank)));
   s = applyEvent(s, { type: "message", message: msg({ id: "a2", from: { id: "u_b.alice", name: "ALICE" } }) });
   const rows = transcriptRows(s, 200).map((row) => row.text);
   check("two principals sharing a name, compared case-insensitively, each show their principal",
