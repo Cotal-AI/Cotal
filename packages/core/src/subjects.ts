@@ -871,12 +871,51 @@ export function livenessServeFilter(space: string, plane: string): string {
 export function livenessReplyGrant(space: string, plane: string): string {
   return `${spacePrefix(space)}.${LIVENESS_ROUTE}.${routeToken(plane)}.*.*.reply.>`;
 }
+
 // The AUTH service's rail is NO LONGER a `ctl` control service. §13.11 retires the v0 ctl rail in
 // full and "MUST NOT be handled"; the auth-admin rows that served on it were spec defects written
 // onto a deleted rail, and they are rewritten onto the v0.4 endpoint surface (Cotal #350). The
 // generic "retire a lifecycle" op now rides `ep.one.auth.retire-lifecycle.handle.…` — see
 // `AUTH_ENDPOINT` / `EP_CMD_RETIRE_LIFECYCLE` in `endpoint-subjects.ts`. No `CONTROL_AUTH_ADMIN`
 // token survives: a vocabulary constant is how a retired rail gets re-minted by the next lane.
+
+// ---- the permission answer rail ----
+
+/** The route token of the PERMISSION ANSWER rail:
+ *  `perm.<agentOwner>.<agentActor>.<holderRuntimeId>.<owner>.<actor>`. An owner's interactive
+ *  principal asks the one process holding a prompt to apply an answer, and the holder replies beneath
+ *  `<request>.reply.`. Not a delivery: {@link parseSubject} recovers no sender from it. */
+export const PERMISSION_ROUTE = "perm" as const;
+
+const RUNTIME_TOKEN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Validate a holder's runtime id as one subject token: the presence `runtime.id` of the process
+ *  holding a prompt (SPEC §6), at most 64 characters of `[A-Za-z0-9_-]`. */
+export function assertRuntimeToken(v: string): string {
+  if (typeof v !== "string" || !RUNTIME_TOKEN.test(v)) throw new Error(`runtime id "${v}" is not a single subject token ([A-Za-z0-9_-]{1,64})`);
+  return v;
+}
+
+/** The answer REQUEST subject: the agent whose prompt it answers, the runtime id of the process
+ *  holding it, then the answering principal, which a publish grant forge-locks as it does a
+ *  {@link unicastSubject} sender. Every slot accepts `*` for grant rules. */
+export function permissionAnswerSubject(space: string, agentOwner: string, agentActor: string, runtimeId: string, owner: string, actor: string): string {
+  const runtime = runtimeId === "*" ? "*" : assertRuntimeToken(runtimeId);
+  return `${spacePrefix(space)}.${PERMISSION_ROUTE}.${ownerToken(agentOwner)}.${ownerToken(agentActor)}.${runtime}.${ownerToken(owner)}.${ownerToken(actor)}`;
+}
+
+/** What one holder process serves: answers addressed to its own runtime, from any principal of the
+ *  agent's own owner and from no other owner. With `*` for the runtime it is the agent's grant. */
+export function permissionServeFilter(space: string, owner: string, actor: string, runtimeId: string): string {
+  return permissionAnswerSubject(space, owner, actor, runtimeId, owner, "*");
+}
+
+/** The holder's reply-PUBLISH grant, bounded to the `.reply.` leaf beneath an answer addressed to its
+ *  agent, the shape of {@link livenessReplyGrant}. It cannot express a request subject, so no agent
+ *  can answer its own prompt or a sibling's. */
+export function permissionReplyGrant(space: string, owner: string, actor: string): string {
+  return `${permissionServeFilter(space, owner, actor, "*")}.reply.>`;
+}
 
 export function traceSubject(space: string, agentId: string): string {
   return `${spacePrefix(space)}.trace.${token(agentId)}`;
@@ -1205,6 +1244,26 @@ export function deliveryBucket(space: string): string {
  *  writes it; agents learn a request's status through the daemon. */
 export function anycastBucket(space: string): string {
   return `cotal_anycast_${token(space)}`;
+}
+
+/** Name of the KV bucket holding harness permission prompts: one record per prompt, keyed
+ *  `<owner>.<actor>.<id>` by the agent that asked. Only that agent writes its keys, and only its
+ *  owner's interactive principals read them. */
+export function permissionBucket(space: string): string {
+  return `cotal_permissions_${token(space)}`;
+}
+
+/** `$KV.cotal_permissions_<space>.<owner>.>`: every record of one owner's agents, the one filter its
+ *  interactive principals may read through. */
+export function permissionOwnerFilter(space: string, owner: string): string {
+  return `$KV.${permissionBucket(space)}.${ownerToken(owner)}.>`;
+}
+
+/** The permission reader of one interactive lifecycle: `perm_<owner>-<actor>-<lifecycleUid>`, a pull
+ *  consumer on the records bucket that trusted infra creates and the reader only binds (SPEC §8.2).
+ *  The name carries the owner, so the reader's filter derives from the same token. */
+export function permissionReaderDurable(owner: string, actor: string, lifecycleUid: string): string {
+  return `perm_${lifecycleNameKey(owner, actor, lifecycleUid)}`;
 }
 
 /** KV key for one shard's delivery lease/readiness (N=1 → `lease.0`). */

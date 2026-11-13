@@ -41,9 +41,10 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   `cotal status` reports the entry under `Claude wake channel`.
 
 - **Tool permissions.** A managed seat has no human at its terminal, so it launches with
-  `--permission-mode bypassPermissions`: a prompt under the default mode would stop its first mesh
-  tool call until someone answered it, and nobody can. To get prompts back, pass
-  `--opt permission-mode=default` (or another mode); the connector adds the default only when the
+  `--permission-mode bypassPermissions`: a prompt under the default mode stops its tool call until
+  someone answers it. To get prompts back, pass `--opt permission-mode=default` (or another mode).
+  On a signed-in space the agent's owner can then answer each prompt from another session
+  ([SPEC §8.2](../SPEC.md#82-permission-requests)). The connector adds the default only when the
   launch options carry neither `permission-mode` nor `dangerously-skip-permissions`. A foreground
   `cotal spawn` runs in your terminal, so it keeps Claude's own permission mode and you answer its
   prompts there. Claude refuses
@@ -619,6 +620,27 @@ still can't drive presence or stop the agent. Claude Code's own
 [hooks reference](https://code.claude.com/docs/en/hooks) lists every hook event. The hooks the
 plugin registers, with their matchers, are listed in the
 [adapter README](../extensions/connector-claude-code/README.md#claude-code-hooks).
+
+## Permission prompts
+
+A seat launched in a permission mode that asks holds each of Claude's prompts for the agent's
+owner ([SPEC §8.2](../SPEC.md#82-permission-requests)) on a signed-in space. The seat registers
+`PermissionRequest` with a 2147483-second timeout, the longest Claude accepts, and the hook relay
+waits on it with no deadline of its own. The seat sets no deadline on a record. Claude's dialog
+stays open meanwhile, and the first answer applies.
+
+Claude's prompt names no tool call, so the seat settles a Yes at the terminal from the hooks that
+follow it. Each of them carries Claude's `agent_id` when it fires inside a subagent or a teammate,
+and none when it fires in the main thread, and the seat keeps each prompt's scope from it:
+
+- `PostToolBatch` lists the calls a scope ran. Each run settles one prompt still held in that scope
+  for the same tool and input, the oldest first.
+- `Stop` and `StopFailure` end the main thread's turn and settle the main thread's prompts still
+  held. `SubagentStop` does the same for that subagent's prompts.
+
+A Yes at the terminal leaves the hook process running until one of these settles it. A subagent
+Claude runs in the background asks with its own `agent_id`, so its prompt stays held while the main
+thread finishes turns, and its owner can still answer it.
 
 ## Event plane
 

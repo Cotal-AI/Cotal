@@ -1,7 +1,7 @@
 import {
   aclBucket, anycastBucket, artifactBucket, channelBucket, chatStream, deliveryBucket, dlvStream, dmStream,
   inboxStream, isTransferStream, managerBucket, membershipBucket, membersBucket,
-  objectStoreStream, presenceBucket, taskStream,
+  objectStoreStream, permissionBucket, presenceBucket, taskStream,
 } from "./subjects.js";
 import { endpointPlaneStreamNames } from "./endpoint-binding.js";
 
@@ -12,7 +12,7 @@ export function spaceDeletionStreams(space: string, observedNames: readonly stri
     chatStream(space), dmStream(space), taskStream(space), inboxStream(space), dlvStream(space),
     `KV_${presenceBucket(space)}`, `KV_${channelBucket(space)}`, `KV_${membersBucket(space)}`,
     `KV_${aclBucket(space)}`, `KV_${membershipBucket(space)}`, `KV_${anycastBucket(space)}`,
-    `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
+    `KV_${permissionBucket(space)}`, `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
     ...endpointPlaneStreamNames(space), objectStoreStream(artifactBucket(space)),
   ];
   return [...base, ...observedNames.filter((name) => isTransferStream(space, name))];

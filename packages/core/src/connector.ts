@@ -301,6 +301,9 @@ export interface Connector extends Extension {
    *  `eventChannel`, so the grant the manager mints here and the subject the session publishes to
    *  are the same derivation and cannot drift. */
   eventChannel?(principal: { owner: string; actor: string }): string;
+  /** The connector relays its harness's permission prompts to the agent's owner (SPEC §8.2), so a
+   *  seat launched in a mode that asks can be answered from the owner's other sessions. */
+  readonly permissionRequests?: true;
   /** External executables this connector invokes beyond `LaunchSpec.command` (e.g. the
    *  `claude` / `opencode` CLI). A preflight PATH hint, not a full environment validator: the
    *  manager resolves each at boot, passes the absolute path through {@link LaunchOpts.resolvedBinaries},

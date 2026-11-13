@@ -1,0 +1,2 @@
+# The permission record's state machine, boundary parser, CotalMessage exclusion and gone rule.
+smoke:permission-record

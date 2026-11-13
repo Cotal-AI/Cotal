@@ -1,0 +1,2 @@
+# The permission records bucket on a real broker: its declared shape, and every write but a plain put refused.
+smoke:permission-store

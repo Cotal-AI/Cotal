@@ -6760,14 +6760,14 @@ export class Manager {
     this.bootNotes = [];
     if (this.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
-    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean }>;
+    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; permissionRequests?: boolean }>;
     if (this.installedExtensions) {
       try {
         declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext));
       } catch (error) {
         const reason = rejectionText(error);
         this.bootNotes.push(`! manager boot: connector inventory unavailable - ${reason}`);
-        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, reason }];
+        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, permissionRequests: false, reason }];
         this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
         return;
       }
@@ -6776,20 +6776,30 @@ export class Manager {
         name: connector.name,
         requires: connector.requires ?? [],
         eventPlane: connector.eventChannel !== undefined,
+        permissionRequests: connector.permissionRequests === true,
       }));
     }
-    for (const { name, requires, eventPlane } of declared) {
+    for (const { name, requires, eventPlane, permissionRequests = false } of declared) {
       const { binaries, reason } = resolveHarness(name, requires);
       if (reason) {
-        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, reason });
+        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, permissionRequests, reason });
         this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
       } else {
-        rows.push({ agent: name, state: "available", binaries, eventPlane });
+        rows.push({ agent: name, state: "available", binaries, eventPlane, permissionRequests });
       }
     }
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
     if (!this.classSpawnEnabled())
       this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
+  }
+
+  /** The connector rows a status read serves. A connector relays permission prompts only where an
+   *  owner can answer them, and only a user-auth mesh mints the interactive ledger rows that answer
+   *  (SPEC §8.2), so on an open or static mesh every row reads false. The mode is known only after
+   *  boot inspects the connectors, so it is applied here. */
+  private servedConnectorStatuses(): ManagerConnectorStatus[] {
+    const answerable = this.meshMode === "user";
+    return this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries }, permissionRequests: answerable && row.permissionRequests }));
   }
 
   /** True when at least one declared connector is available. Empty inventory (or a failed
@@ -9635,7 +9645,7 @@ export class Manager {
       terminalSessions: this.execution !== "none",
       agentCount: ownerFilter === undefined ? this.agents.size : [...this.agents.values()].filter((a) => a.userOwner === ownerFilter).length,
       uptimeMs: Date.now() - this.startedAtMs,
-      connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
+      connectors: this.servedConnectorStatuses(),
       classSpawn: this.classSpawnEnabled(),
       staticReconciliation: this.staticReconciliationStatus(),
       stopImpact: {
@@ -10015,7 +10025,7 @@ export class Manager {
         // reopened past the slot's stamp.
         observeHolderGeneration: (holderInstanceId) =>
           readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
-        status: { connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })) },
+        status: { connectors: this.servedConnectorStatuses() },
       });
       const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
       // Open mesh: NO mint - the §13.1 fence is issuance-only and nothing is ever issued, so the

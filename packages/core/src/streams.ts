@@ -4,6 +4,7 @@ import {
   jetstreamManager,
   AckPolicy,
   DeliverPolicy,
+  DiscardPolicy,
   JetStreamApiError,
   StorageType,
   type ConsumerConfig,
@@ -37,6 +38,9 @@ import {
   aclKey,
   membershipBucket,
   anycastBucket,
+  permissionBucket,
+  permissionOwnerFilter,
+  permissionReaderDurable,
   deliveryBucket,
   managerBucket,
   inboxStream,
@@ -66,10 +70,12 @@ import {
   historyLimitProblem,
   historyLimitStreamName,
   historyLimitStreamOf,
+  spaceStreamCreationBase,
   validateCanonicalBackupStreamConfig,
   type HistoryLimit,
   type HistoryLimitStream,
 } from "./backup-config.js";
+import { PERMISSION_RECORD_MAX_BYTES, PERMISSION_RETENTION_MS, type PermissionReaderRef } from "./permissions.js";
 
 /** Default presence-bucket entry TTL (ms) — matches the endpoint's default liveness window. */
 const PRESENCE_TTL_MS = 6_000;
@@ -326,6 +332,73 @@ export async function ensureMembershipStore(
  *  space setup and the daemon create it, the daemon for a mesh that predates the bucket. */
 export function anycastStoreDefinition(space: string) {
   return { bucket: anycastBucket(space), createOptions: { history: 1, max_bytes: -1, maxValueSize: ANYCAST_RECORD_MAX_VALUE_SIZE } };
+}
+
+/** The permission records bucket, created in its final shape by one native STREAM.CREATE. Agents
+ *  write it, so it takes nothing but plain puts: one `Nats-Rollup: all` header would purge every
+ *  owner's records, and purge, message delete and direct gets are refused as well. One revision per
+ *  key, the record size limit and the retention age bound it without reserving storage. */
+export function permissionStoreConfig(space: string) {
+  const bucket = permissionBucket(space);
+  return {
+    ...spaceStreamCreationBase(`KV_${bucket}`, [`$KV.${bucket}.>`]),
+    max_msgs_per_subject: 1,
+    max_msg_size: PERMISSION_RECORD_MAX_BYTES,
+    max_age: nanos(PERMISSION_RETENTION_MS),
+    discard: DiscardPolicy.New,
+    allow_rollup_hdrs: false,
+    allow_direct: false,
+    deny_delete: true,
+    deny_purge: true,
+  };
+}
+
+/** The most records one pull of a permission reader carries, which the broker enforces against the
+ *  pull request. It also caps a pull left parked after its reader lost its credential: such a pull
+ *  delivers at most this many records before it ends (SPEC §8.2). */
+export const PERMISSION_READER_BATCH = 4;
+/** The longest wait a permission reader's pull may ask for. A pull that sets no wait is bounded by
+ *  {@link PERMISSION_READER_BATCH} alone. */
+export const PERMISSION_READER_EXPIRES_MS = 30_000;
+/** A permission reader nobody pulls from is deleted by the broker after this long. */
+export const PERMISSION_READER_IDLE_MS = 300_000;
+
+/** The permission reader of one interactive lifecycle (SPEC §8.2): a pull consumer over its owner's
+ *  records, created by trusted infra, which the reader only binds. The name and the filter both come
+ *  from `reader.owner`. AckNone needs no ack grant. One waiting pull of at most
+ *  {@link PERMISSION_READER_BATCH} records is all any pull can hold. The bucket keeps one revision per
+ *  key, so a fresh reader's first pass is the current state. It is recreated on every open, so it
+ *  lives in memory. */
+export function permissionReaderConfig(space: string, reader: PermissionReaderRef) {
+  return {
+    durable_name: permissionReaderDurable(reader.owner, reader.actor, reader.lifecycleUid),
+    filter_subject: permissionOwnerFilter(space, reader.owner),
+    deliver_policy: DeliverPolicy.All,
+    ack_policy: AckPolicy.None,
+    max_waiting: 1,
+    max_batch: PERMISSION_READER_BATCH,
+    max_expires: nanos(PERMISSION_READER_EXPIRES_MS),
+    max_bytes: PERMISSION_READER_BATCH * PERMISSION_RECORD_MAX_BYTES,
+    inactive_threshold: nanos(PERMISSION_READER_IDLE_MS),
+    mem_storage: true,
+  } satisfies Partial<ConsumerConfig>;
+}
+
+/** nats-server's code for a STREAM.CREATE whose name is taken by a stream of another config. */
+const STREAM_NAME_IN_USE = 10058;
+
+/** Create the permission records bucket, or confirm it already holds {@link permissionStoreConfig}.
+ *  STREAM.CREATE succeeds for an equal config and refuses any other, so a reshaped bucket is
+ *  refused by name and never adopted. */
+export async function ensurePermissionStore(jsm: JetStreamManager, space: string): Promise<void> {
+  const config = permissionStoreConfig(space);
+  try {
+    await jsm.streams.add(config);
+  } catch (e) {
+    if (e instanceof JetStreamApiError && e.code === STREAM_NAME_IN_USE)
+      throw new Error(`permission store ${config.name} exists with another configuration; it is never adopted, so restore the declared shape or delete it`, { cause: e });
+    throw e;
+  }
 }
 
 /**
@@ -1040,6 +1113,7 @@ export async function setupSpaceStreams(opts: {
     await ensureMembershipStore(jsm, kvm, opts.space);
     const anycast = anycastStoreDefinition(opts.space);
     await kvm.create(anycast.bucket, anycast.createOptions);
+    await ensurePermissionStore(jsm, opts.space);
     // The two §13.12 AUTHORITY stores (records + auth): every auth-mode mesh now carries a
     // lifecycle registry — user mode's service re-ensures at its own boot, the STATIC manager's
     // start reconcile re-ensures for pre-existing spaces — and the up-time seed creates

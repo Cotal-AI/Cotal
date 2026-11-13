@@ -47,7 +47,7 @@ saveExtensionsManifest({
       commands: [],
       connectors: [
         { name: "boot-missing", requires: ["harness-that-does-not-exist-965"], eventPlane: false },
-        { name: "boot-present", requires: ["present-harness"], eventPlane: true },
+        { name: "boot-present", requires: ["present-harness"], eventPlane: true, permissionRequests: true },
       ],
     },
   ],
@@ -69,8 +69,10 @@ const oldPath = process.env.PATH;
 process.env.PATH = relative(process.cwd(), binDir);
 const manager = new Manager({ space: "harness-boot", servers, runtime: "pty", workspaceRoot, installedExtensions: true });
 const M = manager as unknown as {
-  connectorStatuses: Array<{ agent: string; state: string; binaries: Record<string, string>; eventPlane: boolean; reason?: string }>;
-  managerStatusData(): { connectors: Array<{ agent: string; state: string; binaries: Record<string, string>; eventPlane: boolean; reason?: string }> };
+  connectorStatuses: Array<{ agent: string; state: string; binaries: Record<string, string>; eventPlane: boolean; permissionRequests: boolean; reason?: string }>;
+  managerStatusData(): { connectors: Array<{ agent: string; state: string; binaries: Record<string, string>; eventPlane: boolean; permissionRequests: boolean; reason?: string }> };
+  userMode: boolean;
+  auth: unknown;
 };
 let bootErr = "";
 const oldError = console.error;
@@ -94,6 +96,8 @@ try {
   check("manager boot continues so unrelated connectors remain usable", missing?.state === "unavailable" && available?.state === "available", M.connectorStatuses);
   check("declared inventory event-plane facts survive without importing connector packages",
     missing?.eventPlane === false && available?.eventPlane === true, M.connectorStatuses);
+  check("declared inventory permission-prompt facts survive, and one cached without the fact reports false",
+    missing?.permissionRequests === false && available?.permissionRequests === true, M.connectorStatuses);
   check(
     "boot records the resolved absolute harness path from a relative PATH entry",
     available?.binaries["present-harness"] === present && isAbsolute(available.binaries["present-harness"]!),
@@ -101,6 +105,18 @@ try {
   );
   const status = M.managerStatusData();
   check("typed manager status retains the named boot-time unavailable reason", status.connectors.find((row) => row.agent === "boot-missing")?.reason === missing?.reason, status);
+  // Only a user-auth mesh has interactive ledger rows to answer a prompt, so the served fact follows
+  // the mesh mode. This mesh is open; the static and user modes are read from the same instance.
+  const served = (mode: "open" | "static" | "user") => {
+    const saved = { userMode: M.userMode, auth: M.auth };
+    M.userMode = mode === "user";
+    M.auth = mode === "open" ? undefined : {};
+    try { return M.managerStatusData().connectors.find((row) => row.agent === "boot-present")?.permissionRequests; }
+    finally { Object.assign(M, saved); }
+  };
+  const byMode = { open: served("open"), static: served("static"), user: served("user") };
+  check("a relaying connector reports permission prompts only on a user-auth mesh, never on an open or static one",
+    byMode.open === false && byMode.static === false && byMode.user === true && status.connectors.find((row) => row.agent === "boot-present")?.permissionRequests === false, byMode);
 
   let launchOpts: LaunchOpts | undefined;
   const connector: Connector = {

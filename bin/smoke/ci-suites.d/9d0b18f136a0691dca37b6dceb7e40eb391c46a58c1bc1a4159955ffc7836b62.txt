@@ -1,0 +1,2 @@
+# The permission desk on a real broker: an unconfirmed verdict reads answered, an answer reaches only its holder process, and a native Yes settles one prompt in its own scope.
+smoke:permission-desk

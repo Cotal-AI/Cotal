@@ -61,6 +61,7 @@ For containers, see the current [deployment limits](deploy.mdx).
 Jcode requires Node 22.13 or later; Node 23 requires 23.4 or later.
 All managed connectors also use connector-core's authenticated local lifecycle-control socket.
 The Manager reports event support in `status.connectors[].eventPlane`. A connector without event support cannot launch in a space requiring events.
+It reports in `status.connectors[].permissionRequests` whether the connector relays its harness's permission prompts to the agent's owner on this mesh ([SPEC §8.2](../SPEC.md#82-permission-requests)). Claude Code does, and only a signed-in space has the owner's sessions that answer, so the fact reads true only there. When a Claude seat launches in a permission mode that asks, its owner can answer each prompt from another session.
 Native queue acceptance does not prove the model consumed the message.
 See [Running release](connector-runtime-reference.mdx#running-release) when installed and running versions differ.
 

@@ -23,10 +23,12 @@ import {
   type InboxItem,
   type HookEvent,
   type HookHandle,
+  type PermissionDesk,
 } from "@cotal-ai/connector-core";
 import type { AguiEmitterHolder } from "@cotal-ai/connector-core";
 import type { ClaudeEntry } from "./agui-map.js";
 import { recordCarriedFork } from "./carried.js";
+import { claudeAsk, claudeScope, claudeToolCalls, claudeVerdict } from "./permission-hook.js";
 
 /**
  * The failure a `StopFailure` hook reports, or `undefined` for any other turn end.
@@ -109,6 +111,8 @@ export interface ClaudeHandleDeps {
    *  every session start (startup, resume, fork, clear, compact), so the model has its bearings
    *  without asking for them; a card not ready at the start is owed to the next prompt. */
   orientation?: () => Promise<string | undefined>;
+  /** This seat's permission desk, or undefined where its prompts stay with the terminal. */
+  permissions?: () => PermissionDesk | undefined;
 }
 
 /** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */
@@ -255,6 +259,8 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  only thing that correlates a verdict to the reply that carried the batch. A WeakMap so an
    *  event whose verdict never arrives is collected rather than leaked. */
   const inFlight = new WeakMap<HookEvent, { ids: string[]; agent: MeshAgent; turnIds?: string[]; onceIds?: string[] }>();
+  /** Each held prompt's delivery receipt, keyed per frame for the same reason as `inFlight`. */
+  const confirms = new WeakMap<HookEvent, (delivered: boolean) => void>();
   /** Once tasks this session's frames claimed whose delivery verdict has not arrived. A turn end,
    *  a session end or a replaced session before the verdict seals them, so a late receipt cannot
    *  confirm a task whose turn already ended. */
@@ -415,10 +421,18 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
   };
 
-  const handle: HookHandle = async (agent: MeshAgent, ev: HookEvent): Promise<Record<string, unknown>> => {
+  const handle: HookHandle = async (agent, ev, ctx): Promise<Record<string, unknown>> => {
     const event = ev.hook_event_name ?? "";
     try {
       switch (event) {
+        case "PermissionRequest": {
+          const desk = deps.permissions?.();
+          const ask = claudeAsk(ev);
+          if (!desk || !ask) return {};
+          const hold = desk.hold(ask, ctx?.signal ?? new AbortController().signal);
+          confirms.set(ev, hold.confirm);
+          return claudeVerdict(await hold.verdict);
+        }
         // A new session replaces the one an earlier frame's once task rode on. That task is sealed
         // before anything here awaits, so a late receipt for the old frame cannot confirm it.
         case "SessionStart": {
@@ -487,6 +501,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           flushEvents(ev.transcript_path); // near-live: each tool boundary ships the turn so far
           return {};
         case "PostToolBatch":
+          deps.permissions?.()?.toolsRan(claudeToolCalls(ev), claudeScope(ev));
           // Every tool in the batch resolved, so a prompt raised during it was answered and the turn
           // went on. Left `waiting`, its Stop would be `waiting → idle`, which is no turn boundary:
           // the run turn never yields and the condition outlives the turn. `working` also clears it.
@@ -506,19 +521,29 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // `working` behind the condition; queued between them, the condition would outlive the turn.
           const writes = [safeStatus(agent, "waiting", activity)];
           const notificationType = typeof ev.notification_type === "string" ? ev.notification_type : undefined;
+          const request = notificationType === "permission_prompt" ? deps.permissions?.()?.waiting() : undefined;
           if (notificationType === "permission_prompt" || notificationType === "agent_needs_input")
             writes.push(safeCondition(agent, {
               code: notificationType === "permission_prompt" ? "approval" : "input",
               source: notificationType,
               ...(msg ? { message: msg } : {}),
               since: Date.now(),
+              ...(request ? { request } : {}),
             }));
           await Promise.all(writes);
+          return {};
+        }
+        // A subagent finished, so a prompt it still holds was allowed at the terminal. Claude's own
+        // internal agents end this way too, each under its own id, so they settle nothing else.
+        case "SubagentStop": {
+          const scope = claudeScope(ev);
+          if (scope) deps.permissions?.()?.turnEnded(scope);
           return {};
         }
         // StopFailure: the turn died on an API error, so Stop won't fire; it resets here too.
         case "Stop":
         case "StopFailure":
+          deps.permissions?.()?.turnEnded(claudeScope(ev));
           sealAwaiting();
           turnOpen = false;
           promptOpen = false;
@@ -584,6 +609,8 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    * again — a dropped reply costs a round trip, never the message.
    */
   const onReply = (ev: HookEvent, delivered: boolean, handoff = false): void => {
+    confirms.get(ev)?.(delivered && handoff);
+    confirms.delete(ev);
     const batch = inFlight.get(ev);
     if (!batch) return; // this frame carried no peer messages or turns (PreToolUse, Notification, Stop, …)
     inFlight.delete(ev);

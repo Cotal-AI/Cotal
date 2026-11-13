@@ -73,7 +73,7 @@ type UngatedExemption = { reason: string; recheckBy: string };
 // directory as arguments, which no CI job supplies.
 // The personal Codex native suite also needs an installed Codex CLI; its model is local and scripted.
 // The personal Codex local-mesh suite needs the same Codex CLI.
-const EXPECTED_EXEMPTIONS = 20;
+const EXPECTED_EXEMPTIONS = 21;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
 /** Each BROKEN backup entry below names its issue, commit and failed assertion, with a review
  *  date tied to that investigated debt. Premise
@@ -94,6 +94,7 @@ const UNGATED: Record<string, UngatedExemption> = {
   "smoke:down-manifest-usermode:live": standing("needs a claude CLI on PATH to boot a real connector child"),
   "smoke:claude-plugin-refresh:live": standing("drives the real claude CLI on PATH against a scratch Claude config"),
   "smoke:claude-registration-home:live": standing("drives the real claude CLI against isolated profiles and Cotal homes"),
+  "smoke:claude-permission-requests:live": standing("drives a logged-in claude CLI in tmux against a scratch Claude config, and spends model tokens"),
   "smoke:auth-oracle-order:live": standing("takes an installed npm prefix and a new evidence directory as arguments"),
   "smoke:backup-usermode:live": brokenExemption("BROKEN: red; cause unconfirmed (measured on a host with a live stack); #1285; already-red so it cannot enter CI"),
   // These four are #643's to fix (backup live coverage that can fail), not an inventory mystery.

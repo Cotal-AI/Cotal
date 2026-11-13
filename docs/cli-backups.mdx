@@ -275,7 +275,8 @@ ledger files are excluded. The other endpoint stores are nonportable control sta
 submissions, facts, events, timer requests and fires, work pools, contract artifacts, and the
 auth, session and issued-authority stores. Restore recreates those streams empty with their
 canonical configs before exposing the normal listener, so endpoint sessions do not cross a backup.
-The delivery daemon's anycast request records are control state too and come back empty. A full
+The delivery daemon's anycast request records are control state too and come back empty, and so
+do permission prompt records ([SPEC §8.2](../SPEC.md#82-permission-requests)). A full
 restore brings back the requests the TASK queue held at the cut and recreates its durables from
 checkpoints, so a role request a holder had taken and not yet acked at the cut is on its role's
 queue again, even if that holder finished and acked it after the cut. The broker delivers it again
