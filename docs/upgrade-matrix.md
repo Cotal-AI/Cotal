@@ -1,5 +1,7 @@
 # Run the upgrade matrix
 
+> **Project** (non-normative maintainer notes) · **For:** maintainers qualifying Cotal releases
+
 The [workflow](../.github/workflows/automatic-update-platforms.yml) runs published upgrades on
 Ubuntu 24.04, macOS 15 and Windows 2022. It records the selected release, each command's output,
 assertions and SHA-256 evidence. A failed or unsupported setup is never a passing upgrade.
@@ -54,6 +56,9 @@ the stock version comparison and the updater's installed-version metadata lookup
 A cell passes only when the CLI and recorded extensions reach the target, `cotal status` succeeds,
 no paused recovery remains, an existing daemon stays ready and no manual remedy is printed.
 The JSON identifies failed assertions and the transcript preserves the text a person saw.
+Combine downloaded cell artifacts with `node scripts/automatic-update-platform-baseline.mjs --summary ./upgrade-evidence`.
+For a release that supports scripted stop consent, add `--stop-agents true` to the harness command.
+This passes the public updater flag without answering a prompt on the person's behalf.
 A same-version run is recorded separately from a version-changing upgrade. Keep red results when
 qualifying a release and route product defects to their owners rather than repairing product code
 inside the harness.

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, statfsSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, statfsSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createServer } from 'node:http';
@@ -60,7 +60,7 @@ export async function matrixCell(options) {
   assert(sources.includes(source) && states.includes(state) && methods.includes(method) && ['npm', 'installer'].includes(layout), 'unknown matrix coordinate');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
   const id = `${options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}`;
-  const report = { tier: options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString() };
+  const report = { tier: options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString(), harnessSource: process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim(), harnessSha256: digest(readFileSync(import.meta.filename)) };
   const omit = exclusion({ layout, method, state });
   if (omit) {
     mkdirSync(output, { recursive: true, mode: 0o700 });
@@ -91,6 +91,10 @@ export async function matrixCell(options) {
   let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay;
   const transcript = [];
   async function call(label, file, argv, timeout = 180000) {
+    if (/install|seed|upgrade under test/.test(label)) {
+      const disk = statfsSync(root);
+      assert(disk.bavail * disk.bsize >= 20 * 1024 ** 3, 'STOP: less than 20 GiB free before installation action');
+    }
     const startedAt = new Date().toISOString();
     const result = await new Promise(resolveCall => {
       const child = spawn(file, argv, { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -234,7 +238,7 @@ export async function matrixCell(options) {
       report.versionChanging = report.source !== report.target;
     }
     let update;
-    if (method === 'self') update = await cotal('upgrade under test', ['update', '--self']);
+    if (method === 'self') update = await cotal('upgrade under test', ['update', '--self', ...(options['stop-agents'] === 'true' ? ['--stop-agents'] : [])]);
     else if (method === 'installer') update = await installer(report.target);
     else {
       assert.equal(report.daemonBefore.update.automatic, true, report.daemonBefore.update.lastResult);
@@ -250,10 +254,24 @@ export async function matrixCell(options) {
       const deadline = Date.now() + 300000;
       do {
         await delay(5000);
+        // npm reify temporarily removes the old package directory. Absence mid-replacement
+        // is an observation, not a terminal verdict or permission to stop the updater.
+        if (!existsSync(join(pkg, 'package.json')) || !existsSync(cli)) {
+          report.schedulerReplacementObserved = true;
+          continue;
+        }
+        let installedVersion;
+        try { installedVersion = json(join(pkg, 'package.json')).version; }
+        catch (error) { if (error.code === 'ENOENT') { report.schedulerReplacementObserved = true; continue; } throw error; }
         const status = await cotal('scheduler observation', ['daemon', 'status', '--json']);
         report.schedulerLastStatus = status;
-        if (json(join(pkg, 'package.json')).version === report.target && (report.source !== report.target || existsSync(join(cotalHome, 'update-attempt.log')))) break;
+        if (installedVersion === report.target && status.exit === 0 && JSON.parse(status.stdout).result?.state === 'ready') {
+          const attempt = json(join(cotalHome, 'update-attempt.json'));
+          if (report.source === report.target ? attempt.result === 'up to date' : /^(?:repaired and )?updated to /i.test(attempt.result)) break;
+        }
       } while (Date.now() < deadline);
+      const attempt = json(join(cotalHome, 'update-attempt.json'));
+      check('scheduler completed within observation deadline', report.source === report.target ? attempt.result === 'up to date' : json(join(pkg, 'package.json')).version === report.target && /^(?:repaired and )?updated to /i.test(attempt.result), attempt);
       update = { exit: 0, stdout: existsSync(join(cotalHome, 'update-attempt.log')) ? readFileSync(join(cotalHome, 'update-attempt.log'), 'utf8') : '', stderr: '' };
       save(join(output, `${id}-scheduler-after.json`), { check: json(join(cotalHome, 'update-check.json')), attempt: json(join(cotalHome, 'update-attempt.json')) });
       check('daemon scheduler performed a replacement or reported up to date', report.source === report.target || update.stdout.length > 0, update.stdout);
@@ -304,7 +322,7 @@ export async function matrixCell(options) {
         } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
       }
     }
-    if (overlay) await overlay.close();
+    if (overlay) report.registryRequests = await overlay.close();
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
     report.root = root;
     report.finishedAt = new Date().toISOString();
@@ -382,7 +400,11 @@ export async function candidateRegistry(directory, direction, upstream) {
         if (!bytes) { response.writeHead(404).end('unknown candidate archive'); return; }
         response.writeHead(200, { 'content-type': 'application/octet-stream' }).end(bytes); return;
       }
-      const name = path.startsWith('@') ? path.split('/').slice(0, 2).join('/') : path.split('/')[0];
+        if (path.includes('/-/')) {
+          const archiveResponse = await fetch(`${upstream.replace(/\/$/, '')}/${request.url.slice(1)}`, { signal: AbortSignal.timeout(30000) });
+          response.writeHead(archiveResponse.status, { 'content-type': 'application/octet-stream' }).end(Buffer.from(await archiveResponse.arrayBuffer())); return;
+        }
+        const name = path.startsWith('@') ? path.split('/').slice(0, 2).join('/') : path.split('/')[0];
       const selector = path.slice(name.length + 1);
       if (!cache.has(name)) {
         const upstreamResponse = await fetch(`${upstream.replace(/\/$/, '')}/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(30000) });
@@ -403,11 +425,31 @@ export async function candidateRegistry(directory, direction, upstream) {
   await new Promise((resolveListen, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolveListen); });
   url = `http://127.0.0.1:${server.address().port}`;
   return { url, identity: { source: manifest.source, version, manifestSha256: digest(readFileSync(join(directory, 'manifest.json'))), direction, registry: 'synthetic candidate overlay', archives: manifest.packages.map(({ name, sha256 }) => ({ name, sha256 })) },
-    close: async () => { save(join(directory, `registry-requests-${process.pid}.json`), requests); await new Promise(done => server.close(done)); } };
+    close: async () => { save(join(directory, `registry-requests-${process.pid}.json`), requests); await new Promise(done => server.close(done)); return requests; } };
+}
+
+export function summarize(directory) {
+  const reports = readdirSync(directory, { recursive: true }).filter(name => String(name).endsWith('.json')).flatMap(name => {
+    const row = json(join(directory, name));
+    return row.id && row.tier && row.result ? [row] : [];
+  });
+  assert(reports.length > 0, 'no upgrade cell evidence found');
+  const escape = value => String(value ?? '').replaceAll('|', '\\|').replaceAll('\n', '<br>');
+  const table = ['| Tier | Cell | Source | Target | Result | Exact refusal |', '|---|---|---|---|---|---|',
+    ...reports.map(row => `| ${[row.tier, row.id, row.source, row.target, row.result, row.refusal].map(escape).join(' | ')} |`)];
+  const counts = reports.reduce((counts, row) => ({ ...counts, [row.result]: (counts[row.result] ?? 0) + 1 }), {});
+  const summary = { counts, cells: reports.map(({ tier, id, result, target, harnessSource, harnessSha256, refusal }) => ({ tier, id, result, target, harnessSource, harnessSha256, refusal })) };
+  save(join(directory, 'summary.json'), summary);
+  writeFileSync(join(directory, 'summary.md'), table.join('\n') + '\n');
+  console.log(table.join('\n'));
+  return summary;
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  if (process.argv[2] === '--pack') {
+  if (process.argv[2] === '--summary') {
+    const summary = summarize(resolve(process.argv[3]));
+    process.exitCode = summary.counts.failed || summary.counts.unsupported ? 1 : 0;
+  } else if (process.argv[2] === '--pack') {
     const options = args();
     await packCandidate(options.pack, options.version);
   } else {

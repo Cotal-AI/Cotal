@@ -10,6 +10,7 @@ on:
     paths:
       - .github/workflows/automatic-update-platforms.yml
       - scripts/automatic-update-platform-baseline.mjs
+      - docs/upgrade-matrix.md
 permissions:
   contents: read
 jobs:
