@@ -16,6 +16,7 @@ import {
   ORIENTATION_BOOTSTRAP,
   REPLY_ETIQUETTE,
   REPLY_GUIDANCE,
+  TOOL_STEER,
   WORKFLOW_STEER,
   type BriefingHarness,
 } from "../src/index.js";
@@ -49,8 +50,26 @@ cell("the identity line omits the role when there is none", () => {
 
 cell("every harness carries the shared paragraphs", () => {
   for (const [h, text] of all)
-    for (const p of [ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER, CHANNEL_GUIDANCE, REPLY_GUIDANCE, ATTENTION_GUIDANCE])
+    for (const p of [ORIENTATION_BOOTSTRAP, TOOL_STEER, MESH_FIRST_STEER, WORKFLOW_STEER, CHANNEL_GUIDANCE, REPLY_GUIDANCE, ATTENTION_GUIDANCE])
       assert.ok(text.includes(p), `${h} lacks: ${p.slice(0, 50)}`);
+});
+
+cell("every harness tells agents to use their tools and not the cotal command line", () => {
+  for (const [h, text] of all) {
+    assert.ok(text.includes(TOOL_STEER), `${h}: missing TOOL_STEER`);
+    assert.ok(text.includes("Use your cotal_* tools for work on the mesh."), `${h}: missing tool guidance`);
+    assert.ok(text.includes("Don't run the `cotal` command line unless the user says you may."), `${h}: missing CLI guidance`);
+    assert.ok(text.includes("If no tool gives you what you need, tell the user what's missing."), `${h}: missing tell-user guidance`);
+  }
+});
+
+cell("the workflow steer points agents at cotal_run and not cotal run start", () => {
+  assert.ok(WORKFLOW_STEER.includes("driven with `cotal_run`"), WORKFLOW_STEER);
+  assert.ok(!WORKFLOW_STEER.includes("cotal run start"), WORKFLOW_STEER);
+  for (const [h, text] of all) {
+    assert.ok(text.includes("driven with `cotal_run`"), `${h}: missing cotal_run in workflow steer`);
+    assert.ok(!text.includes("cotal run start"), `${h}: still contains cotal run start`);
+  }
 });
 
 // Claude Code loads a tool's description only after picking the tool by name, so this sentence is
@@ -118,7 +137,7 @@ cell("the gateway briefing leaves the arrival sentence out", () => {
 cell("the paragraphs split cleanly on blank lines, so a harness that takes a list gets whole paragraphs", () => {
   for (const [h, text] of all) {
     const parts = text.split("\n\n");
-    assert.equal(parts.length, 9, h);
+    assert.equal(parts.length, 10, h);
     assert.ok(parts.every((p) => p.length > 0 && p.trim() === p), h);
   }
 });
