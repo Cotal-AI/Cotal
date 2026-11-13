@@ -224,7 +224,9 @@ export async function matrixCell(options) {
     if (state === 'stale-extensions') {
       const old = options['stale-version'] ?? (report.source === '0.155.0' ? '0.154.0' : '0.155.0');
       assert(/^\d+\.\d+\.\d+$/.test(old), 'stale extension version must be an exact release');
-      ok(await cotal('install older recorded extension', ['ext', 'add', `@cotal-ai/tmux@${old}`]), 'older runtime');
+      const runtimes = options['stale-version'] ? ['tmux', 'cmux', 'orca', 'herdr'] : ['tmux'];
+      for (const runtime of runtimes) ok(await cotal(`install older recorded runtime ${runtime}`, ['ext', 'add', `@cotal-ai/${runtime}@${old}`]), `older runtime ${runtime}`);
+      report.staleRuntimes = runtimes;
       report.staleVersion = old;
     }
     if (state === 'recovery') {
