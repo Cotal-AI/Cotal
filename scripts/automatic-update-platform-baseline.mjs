@@ -16,6 +16,18 @@ export const methods = ['self', 'scheduler', 'installer'];
 const hosted = process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 export const requiresManualStep = output => /run `cotal|run cotal|manual (?:step|intervention)|interrupted update|OPERATION_UNKNOWN|Outcome unconfirmed|needs restoration|refused/i.test(output);
+export function completionAdvisory(output) {
+  const advisory = [], required = [];
+  let completion = false;
+  for (const line of output.split('\n')) {
+    if (line.trim() === 'Owned shell completion') completion = true;
+    if (completion && (line.trim() === 'Owned shell completion' || /^\s*(?:Changed files|Preserved integrations|(?:bash|zsh|fish|powershell):|Startup files were not rewritten\.)/.test(line))) {
+      advisory.push(line);
+    } else required.push(line);
+    if (completion && line.includes('Startup files were not rewritten.')) completion = false;
+  }
+  return { advisory: advisory.join('\n'), required: required.join('\n') };
+}
 export const cliReportsVersion = (output, target) => output.trim().split(/\r?\n/, 1)[0] === `cotal-ai ${target}`;
 export const selectedTargets = output => [...new Set([...output.matchAll(/(?:installing cotal-ai@|(?:repaired and )?updated to |updating to )(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/gi)].map(match => match[1]))];
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
@@ -333,7 +345,9 @@ export async function matrixCell(options) {
       const active = await cotal('native status after', ['daemon', 'status', '--json']);
       check('native daemon remains active', active.exit === 0 && JSON.parse(active.stdout).result?.state === 'ready', active);
     }
-    check('no manual step or refusal', update.exit === 0 && !requiresManualStep(update.stdout + update.stderr), update.stdout + update.stderr);
+    const completion = completionAdvisory(update.stdout + update.stderr);
+    report.advisory = completion.advisory;
+    check('no manual step or refusal', update.exit === 0 && !requiresManualStep(completion.required), completion.required);
     report.result = report.assertions.every(row => row.passed) ? 'passed' : 'failed';
     if (report.result === 'failed') report.refusal = report.assertions.filter(row => !row.passed).map(row => `${row.name}: ${typeof row.observed === 'string' ? row.observed : JSON.stringify(row.observed)}`).join('\n');
   } catch (error) {

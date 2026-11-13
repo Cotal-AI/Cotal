@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict';
-import { candidateRegistry, bootstrapVersion, selectedTargets, cliReportsVersion, verifyCandidateInstaller } from './automatic-update-platform-baseline.mjs';
+import { candidateRegistry, bootstrapVersion, selectedTargets, cliReportsVersion, verifyCandidateInstaller, completionAdvisory } from './automatic-update-platform-baseline.mjs';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { create } from 'tar';
 import { parse as parseYaml } from 'yaml';
+
+test('only optional shell completion section becomes exact advisory', () => {
+  const text = 'Owned shell completion\n  Changed files: 0\n  Preserved integrations: 1\n  powershell: the shell did not return a usable current-user profile\n  Startup files were not rewritten. Run `cotal completion` to inspect local integration.\nRun `cotal update --self` to repair installation.';
+  const split = completionAdvisory(text);
+  assert(split.advisory.includes('powershell: the shell did not return a usable current-user profile'));
+  assert(!split.required.includes('cotal completion'));
+  assert(requiresManualStep(split.required));
+  assert(!requiresManualStep(completionAdvisory(text.split('\nRun `cotal update')[0]).required));
+});
 
 test('candidate installer binds exact bytes and source to packed closure', () => {
   const parent = '/var/tmp/upgrade-matrix';
