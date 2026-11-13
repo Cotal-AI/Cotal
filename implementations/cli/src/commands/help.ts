@@ -5,6 +5,7 @@ import { printCommandList, printHelpPath } from "../help.js";
 import { unknownCommandMessage } from "../lib/nearest-word.js";
 import { cliVersion, extensionVersions, readExtensionVersions } from "../lib/version.js";
 import { managerServiceCommand } from "./manager-service.js";
+import { readUpdatePending } from "../lib/update-pending.js";
 
 /** `--all`, the older way to ask for every command, which help now always lists. It is accepted and
  *  changes nothing, and neither help nor completion offers it. */
@@ -37,7 +38,7 @@ export async function version(args: ParsedArgs): Promise<void> {
       {
         command: "version",
         target: null,
-        result: { version: cliVersion(), update: cachedUpdateSummary(cliVersion()), extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
+        result: { version: cliVersion(), update: cachedUpdateSummary(cliVersion()), reconciliation: readUpdatePending(cliVersion()), extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
         ...(unreadable === undefined
           ? {}
           : {
@@ -54,7 +55,8 @@ export async function version(args: ParsedArgs): Promise<void> {
   // The human form adds an update line only when there is something to act on. The JSON form
   // always carries the state.
   const update = cachedUpdateSummary(cliVersion());
-  const lines = [`cotal-ai ${cliVersion()}`, ...(update === "update status unknown" || update === "up to date" ? [] : [`  ${update}`])];
+  const pending = readUpdatePending(cliVersion());
+  const lines = [`cotal-ai ${cliVersion()}`, ...(pending.kind === "none" ? [] : [`  ${pending.instruction}`]), ...(update === "update status unknown" || update === "up to date" ? [] : [`  ${update}`])];
   if (exts.length) {
     const pad = Math.max(...exts.map((e) => e.label.length));
     for (const e of exts) lines.push(`  ${e.label.padEnd(pad)}  ${e.version}`);

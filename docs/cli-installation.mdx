@@ -313,8 +313,20 @@ manager left under a detached custodian, but it starts no new custodian. An inco
 
 ### CLI upgrade
 
-With `--self`, the selected running manager is reported before any global install. When a newer
-release exists, Cotal first downloads and integrity-checks its `cotal-ai` archive and the archives
+With `--self`, the selected running manager is reported before any global install.
+For daemon-hosted Managers whose agents cannot survive replacement, a terminal lists the agents
+and their reported idle times, then asks once whether to stop them and continue. Missing activity
+measurements are shown as unavailable. Save their work before answering yes. Use
+`cotal update --self --stop-agents` to give the same consent without a prompt. Without a terminal
+or this flag, the update refuses without stopping agents. Automatic updates always defer and name
+the blocking agents.
+
+If a previous update replaced the CLI but left first-party extensions on older versions,
+`cotal --version` and `cotal update --check` report pending reconciliation and the repair command.
+Run `cotal update --self` again to reconcile the installed generation. The same agent-consent
+checks apply even when no newer CLI is available.
+
+When a newer release exists, Cotal first downloads and integrity-checks its `cotal-ai` archive and the archives
 of its first-party runtime dependency closure through npm, using a temporary cache and no install
 scripts. Each registry request has a 15-second timeout and no retries. Missing archives or invalid
 metadata refuse before global installation or connector reconciliation, with a registry propagation
