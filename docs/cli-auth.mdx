@@ -220,8 +220,24 @@ this standalone caller. User-auth issuance and managed static launch are not sup
 
 If a provider refuses an expired or revoked sign-in, run `cotal login` for Cotal Cloud.
 For another provider, run `cotal login --idp <url>` with its auth base URL, then approve
-the new sign-in in your browser. Catalog reads and mesh connections report this recovery
-without replacing your cached credentials.
+the new sign-in in your browser. On Linux, the same approval refreshes existing sign-ins
+for Manager user services whose protected unit names their sign-in store and whose
+existing session names the same provider and account. Login lists the services it refreshed.
+It never changes a store for another account or provider. A service with local overrides
+or an unprovable store is skipped, without writing credentials to a guessed path.
+Account sign-in still completes, including space discovery and selection. The report
+lists skipped services and points to their own log for the sign-in command when the store
+cannot be proved. Skipped services do not change the command's successful exit status.
+Logout also clears the local account login even when a service must be skipped.
+Hand-made units are not updated automatically;
+their refusal names the selected sign-in store and a command such as
+`COTAL_HOME=<store> cotal login --idp <url>`.
+
+These services share the approved provider session, including its expiry and revocation.
+`cotal logout` revokes that session. `cotal logout --local` removes matching shared copies
+on this machine without contacting the provider. Independently approved service sessions
+are not cleared. Machine daemons connected with their own service proof keep the separate
+disconnect behavior described below.
 
 ```bash
 cotal login [--cloud | --idp <auth base URL>] [--client-id <id>] [--no-browser] [--plain]
