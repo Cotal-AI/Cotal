@@ -12,7 +12,7 @@ const repo = resolve(dirname(here), '../..');
 const checkpoint = 'service-recovery-complete';
 const phaseFlag = '--desktop-service-phase';
 const requestTimeout = 5_000;
-const validateCell = cell => assert.ok(cell === undefined || ['before-poll', 'after-poll'].includes(cell), 'unknown Windows recovery diagnostic cell');
+const validateCell = cell => assert.ok(cell === undefined || ['before-poll', 'after-poll', 'account-only'].includes(cell), 'unknown Windows recovery diagnostic cell');
 const label = value => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9-]{0,127}$/.test(value);
 const progressRow = row => row?.kind === 'progress' && label(row.phase) &&
   ['start', 'complete'].includes(row.status) && (row.waitingOn === undefined || label(row.waitingOn)) &&
@@ -89,7 +89,7 @@ export async function runController(directory, output, { spawnFixture = spawn, r
   const { mkSecretDir, writeSecretFileAtomic } = await import('@cotal-ai/core');
   mkSecretDir(directory);
   const token = randomBytes(32).toString('hex');
-  let state = 'service-recovery', code = null, child, cancelled = false;
+  let state = cell === 'account-only' ? 'account' : 'service-recovery', code = null, child, cancelled = false;
   let phaseStarted = Date.now();
   const active = new Map();
   let cleanupStarted = false, fixturePid = null, fixtureExited = false;
@@ -156,6 +156,13 @@ export async function runController(directory, output, { spawnFixture = spawn, r
   });
   record('start');
   try {
+    if (cell === 'account-only') {
+      const result = await run(['--desktop-account']);
+      record('fixture-exit', result);
+      assert.equal(cancelled, false, 'journey cancelled during account lifecycle');
+      code = result.code;
+      return;
+    }
     let result = await run([phaseFlag, ...(cell ? [`--desktop-recovery-cell=${cell}`] : [])]);
     record('fixture-exit', result);
     assert.equal(result.code, 0, 'per-space fixture failed, account fixture not started');
@@ -183,6 +190,8 @@ export async function runController(directory, output, { spawnFixture = spawn, r
 
 async function command(action, directory, output, cell) {
   validateCell(cell);
+  assert.ok(action !== 'account' || cell === 'account-only', 'account command requires account-only mode');
+  assert.ok(cell !== 'account-only' || ['account', 'run', 'cancel'].includes(action), 'account-only mode has no checkpoint');
   assert.equal(process.platform, 'win32', 'Windows journey controller requires Windows');
   assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted', 'requires disposable hosted runner');
   assert.ok(directory && output);
@@ -200,8 +209,8 @@ async function command(action, directory, output, cell) {
   const stateFile = join(directory, 'controller.json');
   const resultFile = join(directory, 'result.json');
   if (action === 'run') return runController(directory, output, { cell });
-  assert.ok(['start', 'resume', 'cancel'].includes(action));
-  if (action === 'start') {
+  assert.ok(['start', 'account', 'resume', 'cancel'].includes(action));
+  if (action === 'start' || action === 'account') {
     assert.ok(!existsSync(stateFile) && !existsSync(resultFile), 'refuse stale controller state');
     const log = openSync(join(output, 'suite.log'), 'ax', 0o600);
     try {
@@ -228,7 +237,7 @@ async function command(action, directory, output, cell) {
       }
       if (!existsSync(stateFile)) { await delay(250); continue; }
       const controller = JSON.parse(readFileSync(stateFile, 'utf8'));
-      const row = await requestState(controller, !activated && action !== 'start' ? action : 'status');
+      const row = await requestState(controller, !activated && ['resume', 'cancel'].includes(action) ? action : 'status');
       lastStatus = row;
       observe('controller-status', { controller: row });
       activated = true;

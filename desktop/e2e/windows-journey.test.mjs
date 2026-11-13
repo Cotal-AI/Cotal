@@ -10,7 +10,7 @@ import { privateChildEnv, requestState, runController, transition, waitForResume
 
 const workflow = parseDocument(readFileSync(new URL('../../.github/workflows/desktop.yml', import.meta.url), 'utf8'));
 
-test('workflow isolates two Windows diagnostic cells and retains original cleanup custody and other platform checks', () => {
+test('workflow isolates two Windows acceptance cells and retains original cleanup custody and other platform checks', () => {
   assert.deepEqual(workflow.errors, []);
   const job = workflow.toJS().jobs['native-build'];
   assert.equal(job['timeout-minutes'], 150, 'job includes the separately bounded PowerShell diagnostic');
@@ -32,9 +32,21 @@ test('workflow isolates two Windows diagnostic cells and retains original cleanu
   const cleanup = steps.find(step => step.run?.includes('windows-journey.mjs cancel'));
   assert.equal(cleanup.if, "always() && runner.os == 'Windows'");
   assert.equal(cleanup['timeout-minutes'], 2);
-  assert.match(cleanup.run, /foreach \(\$cell in @\('before-poll', 'after-poll'\)\)/);
+  assert.match(cleanup.run, /foreach \(\$cell in @\('before-poll', 'after-poll', 'account-only'\)\)/);
   assert.match(cleanup.run, /Test-Path -LiteralPath \(Join-Path \$directory 'controller\.json'\)/);
-  assert.match(cleanup.run, /windows-journey\.mjs cancel \$directory "\$\{\{ runner\.temp \}\}\/desktop-e2e\/\$cell" \$cell/);
+  assert.match(cleanup.run, /windows-journey\.mjs cancel \$directory \$output \$cell/);
+  assert.match(cleanup.run, /\$output = if \(\$cell -eq 'account-only'\) \{ "\$\{\{ runner\.temp \}\}\/desktop-account-e2e" \}/);
+  const windowsAccount = steps.filter(step => /windows-journey.mjs account /.test(step.run ?? ''));
+  assert.equal(windowsAccount.length, 1, 'one full account journey after both per-space cleanups');
+  assert.equal(windowsAccount[0].if, "runner.os == 'Windows' && steps.windows-after-finish.outcome == 'success'");
+  assert.equal(phases[3].id, 'windows-after-finish');
+  assert.ok(steps.indexOf(windowsAccount[0]) > steps.indexOf(phases[3]));
+  assert.ok(steps.indexOf(cleanup) > steps.indexOf(windowsAccount[0]));
+  assert.equal(windowsAccount[0].run, 'node desktop/e2e/windows-journey.mjs account "${{ runner.temp }}/desktop-windows-account" "${{ runner.temp }}/desktop-account-e2e" account-only');
+  assert.equal(windowsAccount[0].env.COTAL_DAEMON_SMOKE_TMP, '${{ runner.temp }}');
+  const accountUpload = steps.find(step => step.name === 'Upload connected account native lifecycle observations');
+  assert.equal(accountUpload.if, 'always()');
+  assert.equal(accountUpload.with.path, '${{ runner.temp }}/desktop-account-e2e/\n${{ runner.temp }}/desktop-e2e-lifecycle/\n');
   assert.match(cleanup.run, /if \(\$failed\) \{ throw/);
   const service = steps.find(step => step.name === 'Real-window onboarding, recovery and app-installed service lifecycle');
   assert.equal(service.if, "runner.os == 'Linux'");
