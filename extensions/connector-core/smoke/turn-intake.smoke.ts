@@ -168,6 +168,15 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
     (invokes.find((i) => i.command === "turn-yield")?.opts as { target?: { mode?: string } })?.target?.mode === "self",
     JSON.stringify(invokes.find((i) => i.command === "turn-yield")?.opts));
   check("the boundary sends no pull: the manager's notice for the yield brings the next turn", !invokes.slice(invokesBefore).some((i) => i.command === "turn-pending"));
+  // A worker that yields after its session turn ended, as one does after a reminder, is told the
+  // turn already settled as done rather than that it never held one.
+  const yieldTool = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_yield")!;
+  const late = await yieldTool.run(a, cfg, { status: "done", note: "claim", turn: "g3" });
+  const lateBare = await yieldTool.run(a, cfg, { status: "done", note: "claim" });
+  check("a yield after the turn end yielded done says the turn already settled, by id and without one",
+    late.isError === true && late.text === 'Couldn\'t yield: turn "g3" was already yielded done by this seat (ending a session turn yields done), so this yield was not recorded'
+      && lateBare.text === late.text && state.yields.filter((y) => y.goalId === "g3").length === 1,
+    { late: late.text, lateBare: lateBare.text, yields: state.yields });
   check("waiting is not a boundary: a blocked seat yields nothing", await (async () => {
     state.pending = [row("g3b", "more")];
     await poll();
@@ -1501,7 +1510,7 @@ await spawn(
   }
 }
 
-const EXPECTED_CELLS = 59;
+const EXPECTED_CELLS = 60;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
