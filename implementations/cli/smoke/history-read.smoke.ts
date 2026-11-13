@@ -30,6 +30,7 @@ import {
   CotalEndpoint,
   chatStream,
   createSpaceAuth,
+  dmStream,
   idFromCreds,
   isReachable,
   mintCreds,
@@ -679,17 +680,23 @@ try {
     await alice.unicast(`${bob.principal.owner}.${bob.principal.actor}`, keptNote);
     await wait(400);
     const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
-    const nc = await connect({
+    const open = async () => connect({
       servers,
       authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
       inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
       maxReconnectAttempts: 0,
     });
-    try {
-      await (await jetstreamManager(nc)).streams.delete(chatStream(space));
-    } finally {
-      await nc.close();
-    }
+    const messages = async (name: string) => {
+      const nc = await open();
+      try { return (await (await jetstreamManager(nc)).streams.info(name)).state.messages; }
+      finally { await nc.close(); }
+    };
+    const drop = async (name: string) => {
+      const nc = await open();
+      try { await (await jetstreamManager(nc)).streams.delete(name); }
+      finally { await nc.close(); }
+    };
+    await drop(chatStream(space));
     const kept = await run(["history", "--dms", "--json"]);
     const keptText = `${kept.stdout}${kept.stderr}`;
     check(
@@ -703,6 +710,26 @@ try {
       channelGone.status === 2 && channelGone.envelope?.error?.code === "TARGET_UNAVAILABLE" && channelGone.envelope.error.message?.startsWith(`the streams of ${space} are not on its broker`) === true,
       shown(channelGone),
     );
+
+    // The chat stream is gone and direct messages are still stored. A clear must purge those messages
+    // instead of stopping on the missing stream and reporting the purge unknown.
+    const before = await messages(dmStream(space));
+    const chatOnly = await run(["history", "clear", "--yes", "--json"]);
+    const dmKept = await messages(dmStream(space));
+    check("history clear with only the chat stream gone refuses TARGET_NOT_FOUND and leaves direct messages",
+      chatOnly.status === 2 && chatOnly.envelope?.error?.code === "TARGET_NOT_FOUND" && chatOnly.envelope.error.message === "the streams this clear asked for are not on the broker, so nothing was purged" && before > 0 && dmKept === before,
+      { chatOnly: shown(chatOnly), before, dmKept });
+    const cleared = await run(["history", "clear", "--yes", "--dms", "--json"]);
+    const dmAfter = await messages(dmStream(space));
+    const acked = (cleared.envelope?.result as { acknowledged?: { stream: string; purged: number }[] } | null)?.acknowledged ?? [];
+    check("history clear --dms purges the direct messages when the chat stream is gone and names that stream",
+      cleared.status === 0 && cleared.envelope?.outcome === "ok" && cleared.envelope.warnings.some((w) => w.code === "HISTORY_STREAM_ABSENT" && w.message.includes(chatStream(space))) && acked.some((row) => row.stream === dmStream(space) && row.purged >= 1) && !acked.some((row) => row.stream === chatStream(space)) && dmAfter === 0,
+      { cleared: shown(cleared), dmAfter });
+    await drop(dmStream(space));
+    const none = await run(["history", "clear", "--yes", "--dms", "--json"]);
+    check("history clear --dms refuses TARGET_NOT_FOUND when the chat and direct-message streams are both gone",
+      none.status === 2 && none.envelope?.outcome === "refused" && none.envelope.error?.code === "TARGET_NOT_FOUND" && none.envelope.error.message === "the streams this clear asked for are not on the broker, so nothing was purged",
+      shown(none));
   }
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});

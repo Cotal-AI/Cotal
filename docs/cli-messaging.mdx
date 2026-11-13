@@ -780,8 +780,11 @@ On a user-auth mesh whose grant lacks scope `admin`, the purger view is not issu
 is `PERMISSION_DENIED` (exit 2). Its remedy is the identity provider's own sentence, which names
 the missing scope and the whole-row re-grant that adds it.
 
-JSON and plain receipts retain each native stream acknowledgement and message count. A later
-refusal after an acknowledged purge is partial. An unconfirmed submitted purge is unknown and is
+JSON and plain receipts retain each native stream acknowledgement and message count. A stream
+that is not on the broker holds no retained history. The clear purges the streams that are there
+and warns `HISTORY_STREAM_ABSENT` for the ones that are not. When every stream the clear asked
+for is absent, it refuses with `TARGET_NOT_FOUND` (exit 2): `the streams this clear asked for are not on the broker, so nothing was purged`.
+A later refusal after an acknowledged purge is partial. An unconfirmed submitted purge is unknown and is
 not retried. A confirmed clear interrupted by SIGINT, SIGTERM or SIGHUP exits 130, 143 or 129 and
 says which purges were acknowledged or submitted, or that none was submitted and no history was
 cleared. Clearing history does not stop agents, remove stream definitions or reset identity;
