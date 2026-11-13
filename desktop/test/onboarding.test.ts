@@ -88,7 +88,7 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
   win.eval(await bundle); await settle();
   const node = <T extends HTMLElement = HTMLElement>(id: string) => doc.getElementById(id) as T;
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };
-  return { dom, doc, node, click, calls, urls, options, emit: async (event: string) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload: null }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
+  return { dom, doc, node, click, calls, urls, options, arm: () => { installed = true; }, stop: () => { installed = false; }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
 }
 
 test("computer name edits save, cancel and reject invalid input before request", async () => {
@@ -107,6 +107,60 @@ test("computer name edits save, cancel and reject invalid input before request",
     await a.click("edit-computer-name");
     a.node("computer-name-input").dispatchEvent(new a.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     assert.equal(a.node("computer-name-form").hidden, true);
+  } finally { a.dom.window.close(); }
+});
+
+test("a later status check clears a daemon-not-running error", async () => {
+  const a = await app({ installed: true });
+  try {
+    await a.click("login"); await a.login();
+    const before = a.node("connection-title").textContent;
+    a.stop();
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, "The background service is not running");
+    assert.equal(a.node("details").hidden, false);
+    a.arm();
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, before);
+    assert.equal(a.node("details").hidden, true);
+    assert.equal(a.node("refusal-detail").textContent, "");
+  } finally { a.dom.window.close(); }
+});
+
+test("a later status check keeps an error the status check did not raise", async () => {
+  const a = await app({ installed: true });
+  try {
+    await a.click("login"); await a.login();
+    a.stop();
+    await a.tick();
+    a.arm();
+    await a.emit("deep-link://new-url", ["cotal://one", "cotal://two"]);
+    assert.equal(a.node("connection-title").textContent, "This operation could not finish");
+    assert.equal(a.node("refusal-detail").textContent, "Open one computer-connection link at a time.");
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, "This operation could not finish");
+    assert.equal(a.node("refusal-detail").textContent, "Open one computer-connection link at a time.");
+  } finally { a.dom.window.close(); }
+});
+
+test("Start service starts a stopped background service and leaves no notice", async () => {
+  const a = await app({ installed: true });
+  try {
+    await a.click("login"); await a.login();
+    const before = a.node("connection-title").textContent;
+    a.stop();
+    await a.tick();
+    assert.equal(a.node("recover").textContent, "Start service");
+    assert.equal(a.node("connection-description").textContent, "Start it again to continue.");
+    assert.equal(a.node<HTMLButtonElement>("connect").disabled, true);
+    const from = a.calls.length;
+    await a.click("recover");
+    assert.deepEqual(a.calls.slice(from).map(call => call.op).filter(op => op === "install"), ["install"]);
+    assert.equal(a.node("connection-title").textContent, before);
+    assert.equal(a.node("notice").textContent, "");
+    assert.equal(a.node("notice").hidden, true);
+    assert.equal(a.node("details").hidden, true);
+    assert.equal(a.node<HTMLButtonElement>("connect").disabled, false);
   } finally { a.dom.window.close(); }
 });
 

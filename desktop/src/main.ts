@@ -306,6 +306,7 @@ const welcome = "Connect this computer to your Cotal account. People authorized 
 const progressNames = ["Background service", "Sign-in", "Space", "Agent applications", "Ready"];
 type ProgressState = "waiting" | "running" | "done" | "failed";
 let problem: string | undefined;
+let statusProblem = false;
 let progress: ProgressState[] = progressNames.map(() => "waiting");
 const progressDetails = ["Starting your background service.", "Checking your sign-in.", "Finding your account’s spaces.", "Checking installed agent applications.", "Verifying your connection."];
 let lastView = "";
@@ -321,13 +322,17 @@ function notice(message: string, error = false): void {
 }
 function clearDetails(): void {
   problem = undefined;
+  statusProblem = false;
   text("refusal-detail", ""); el("setup-lines").replaceChildren(); el("details").hidden = true;
   el<HTMLDetailsElement>("details").open = false;
 }
-function refusal(error: unknown): void {
+/** `fromStatus` marks an error the background status check raised, which the next good check clears.
+ *  Any other error stays until the person acts on it. */
+function refusal(error: unknown, fromStatus = false): void {
   const exact = error instanceof Error ? error.message : String(error);
   text("refusal-detail", exact); el("details").hidden = false;
   problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
+  statusProblem = fromStatus;
   notice("", true);
   showStage(stage);
 }
@@ -746,6 +751,7 @@ async function refresh(): Promise<void> {
   try {
     const status = await request({ op: "status" });
     if (!current()) return;
+    if (statusProblem) clearDetails();
     ready = status.state === "ready";
     renderAgents(status, el("running-agents"));
     requestAnimationFrame(sizeSpaceList);
@@ -795,7 +801,7 @@ async function refresh(): Promise<void> {
   } catch (error) {
     if (!current()) return;
     ready = false; state("unavailable");
-    if (!(error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error);
+    if (!(error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
   }
   buttons();
 }
@@ -877,6 +883,14 @@ el("recover").addEventListener("click", () => {
   if (recovery === "login") { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
   else if (recovery === "connect") el<HTMLButtonElement>("connect").click();
   else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
+  else if (recovery === "install") void action(async () => {
+    clearDetails();
+    notice("Preparing the background service…");
+    await request({ op: "install" });
+    await refresh();
+    if (!ready) throw new Error("The background service is not ready.");
+    notice("");
+  });
   else void action(async () => { clearDetails(); await refresh(); });
 });
 el("open-approval").addEventListener("click", () => { if (approval) void invoke("open_browser", { url: approval }).catch(refusal); });
