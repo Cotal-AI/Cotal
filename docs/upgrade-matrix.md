@@ -60,6 +60,14 @@ version below public latest, then pass `--direction A`. The overlay supplies met
 for that installed candidate version while keeping npm's real latest target. This satisfies both
 the stock version comparison and the updater's installed-version metadata lookup.
 
+## Keep desktop custody separate
+
+The Linux desktop-beside-CLI job uses the existing v0.164.2 release workflow's desktop package,
+verifies its published digest and every bundled runtime file, then installs that runtime's real
+native daemon on the disposable runner. A separate npm CLI updates through its own prefix.
+The cell requires the desktop service source, runtime bytes, version and desktop update channel
+to stay unchanged. It does not build a desktop or substitute a desktop marker fixture.
+
 ## Read the result
 
 A cell passes only when the CLI and recorded extensions reach the target, `cotal status` succeeds,

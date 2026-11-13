@@ -39,6 +39,18 @@ export function exclusion({ layout, method, state }, platform = process.platform
   if (method === 'scheduler' && state !== 'daemon') return 'Scheduler rows require the pre-existing automatic daemon state.';
   return undefined;
 }
+export function verifyDesktopRuntime(directory) {
+  const manifest = json(join(directory, 'desktop-runtime.json'));
+  assert.equal(manifest.schema, 1);
+  assert.equal(manifest.version, '0.164.2', 'ownership proof uses approved desktop release');
+  for (const file of manifest.files) {
+    const path = resolve(directory, file.path);
+    assert(path.startsWith(resolve(directory) + '/'), 'desktop inventory path escapes runtime');
+    assert.equal(digest(readFileSync(path)), file.sha256, `released desktop runtime bytes changed: ${file.path}`);
+  }
+  return { version: manifest.version, target: manifest.target, files: manifest.files.length, sha256: digest(readFileSync(join(directory, 'desktop-runtime.json'))) };
+}
+
 export function verifyCandidateInstaller(directory, script) {
   const identity = json(join(directory, 'installer.json'));
   const candidate = json(join(directory, 'manifest.json'));
@@ -114,6 +126,11 @@ export async function matrixCell(options) {
   for (const key of ['XDG_RUNTIME_DIR', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) if (env[key] && env[key].startsWith(root)) mkdirSync(env[key], { recursive: true, mode: 0o700 });
   const cotalHome = env.COTAL_HOME ?? (process.platform === 'win32' ? join(env.LOCALAPPDATA, 'Cotal') : join(home, '.cotal'));
   const config = env.XDG_CONFIG_HOME ? join(env.XDG_CONFIG_HOME, 'cotal') : process.platform === 'win32' ? join(env.APPDATA, 'Cotal') : join(home, '.config/cotal');
+  const desktopRuntime = options['desktop-runtime'] ? resolve(options['desktop-runtime']) : undefined;
+  const desktopNode = options['desktop-node'] ? resolve(options['desktop-node']) : undefined;
+  if (desktopRuntime) assert(hosted && state === 'daemon' && method === 'self' && desktopNode, 'real desktop ownership cell requires disposable runner, daemon state, self method and released bundled Node');
+  const desktopInventory = desktopRuntime ? verifyDesktopRuntime(desktopRuntime) : undefined;
+  const desktopHash = desktopInventory?.sha256;
   const modules = join(prefix, ...(process.platform === 'win32' ? [] : ['lib']), 'node_modules');
   const pkg = join(modules, 'cotal-ai');
   const cli = join(pkg, 'dist/cotal.js');
@@ -146,6 +163,9 @@ export async function matrixCell(options) {
   }
   const npmCall = (label, argv) => call(label, npm, [...npmPrefix, ...argv]);
   const cotal = (label, argv) => layout === 'installer' ? call(label, launcher, argv) : call(label, process.execPath, [cli, ...argv]);
+  const daemon = (label, argv) => desktopRuntime
+    ? call(label, desktopNode, [join(desktopRuntime, 'dist/cotal.js'), ...argv])
+    : cotal(label, argv);
   function ok(result, label) { assert.equal(result.exit, 0, `${label}: ${result.stdout}${result.stderr}`); return result; }
   function check(name, passed, observed) { report.assertions.push({ name, passed, observed }); }
   async function installer(version, candidateTarget = false) {
@@ -247,18 +267,18 @@ export async function matrixCell(options) {
       }
     }
     if (state === 'daemon') {
-      const planned = ok(await cotal('native install plan', ['daemon', 'install', '--dry-run', '--json']), 'native plan');
+      const planned = ok(await daemon('native install plan', ['daemon', 'install', '--dry-run', '--json']), 'native plan');
       plan = JSON.parse(planned.stdout).result;
       assert.equal(plan.state, 'would-install', 'native service must be absent before this cell');
       report.daemonHome = plan.daemonHome ?? join(cotalHome, 'daemon');
       ok(await cotal('enable automatic updates', ['update', '--auto', 'on']), 'automatic settings');
       installedService = true;
-      ok(await cotal('native install', ['daemon', 'install', '--json']), 'native installation');
+      ok(await daemon('native install', ['daemon', 'install', '--json']), 'native installation');
       receipt = json(join(report.daemonHome, 'service-unit.json'));
       assert.equal(receipt.unit, plan.unit);
       assert.equal(receipt.unitSha256, digest(readFileSync(plan.unitPath)));
       for (let i = 0; i < 60; i++) {
-        const status = await cotal('native status before', ['daemon', 'status', '--json']);
+        const status = await daemon('native status before', ['daemon', 'status', '--json']);
         if (status.exit === 0 && JSON.parse(status.stdout).result?.state === 'ready') {
           report.daemonBefore = JSON.parse(status.stdout).result;
           break;
@@ -266,6 +286,13 @@ export async function matrixCell(options) {
         await delay(1000);
       }
       assert(report.daemonBefore, 'native daemon ready before update');
+      if (desktopRuntime) {
+        report.desktop = { runtime: desktopRuntime, inventory: desktopInventory, nodeSha256: digest(readFileSync(desktopNode)), release: 'v0.164.2', workflowRun: 43456519342 };
+        assert.equal(report.daemonBefore.version, '0.164.2');
+        assert.equal(report.daemonBefore.update.channel, 'desktop');
+        assert.equal(report.daemonBefore.update.automatic, false);
+        assert(readFileSync(plan.unitPath, 'utf8').includes(desktopRuntime), 'native service source must name actual released desktop runtime');
+      }
       if (method === 'scheduler' && process.platform === 'linux') {
         // Native custody observation runs asynchronously after the socket first becomes ready.
         for (let i = 0; i < 90 && !report.daemonBefore.update?.automatic; i++) {
@@ -347,8 +374,15 @@ export async function matrixCell(options) {
     const recovery = existsSync(join(cotalHome, 'update-recovery.json')) ? json(join(cotalHome, 'update-recovery.json')) : null;
     check('no paused recovery record', recovery === null, recovery);
     if (installedService) {
-      const active = await cotal('native status after', ['daemon', 'status', '--json']);
+      const active = await daemon('native status after', ['daemon', 'status', '--json']);
       check('native daemon remains active', active.exit === 0 && JSON.parse(active.stdout).result?.state === 'ready', active);
+      if (desktopRuntime) {
+        const after = JSON.parse(active.stdout).result;
+        check('CLI update preserves desktop daemon version and channel', after?.version === desktopInventory.version && after?.update?.channel === 'desktop' && after?.update?.automatic === false, after);
+        check('released desktop inventory unchanged', verifyDesktopRuntime(desktopRuntime).sha256 === desktopHash, desktopHash);
+        const current = json(join(report.daemonHome, 'service-unit.json'));
+        check('CLI update preserves original desktop service source', current.unit === receipt.unit && current.unitPath === receipt.unitPath && current.unitSha256 === receipt.unitSha256, current);
+      }
     }
     const completion = completionAdvisory(update.stdout + update.stderr);
     report.advisory = completion.advisory;
@@ -380,7 +414,7 @@ export async function matrixCell(options) {
           assert.equal(current.unit, receipt.unit);
           assert.equal(current.unitPath, receipt.unitPath);
           assert.equal(digest(readFileSync(current.unitPath)), current.unitSha256);
-          ok(await cotal('native uninstall', ['daemon', 'uninstall', '--yes', '--json']), 'native removal');
+          ok(await daemon('native uninstall', ['daemon', 'uninstall', '--yes', '--json']), 'native removal');
           assert(!existsSync(join(report.daemonHome, 'service-unit.json')) && !existsSync(plan.unitPath));
           report.cleanup = 'receipt-guarded native removal confirmed';
         } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }

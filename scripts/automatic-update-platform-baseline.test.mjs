@@ -58,6 +58,9 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
     assert(workflow.jobs[name].if.includes("== 'success'"), `${name} must verify its direct predecessor succeeded`);
   }
   assert(workflow.jobs.priority.steps.some(step => step.run?.includes('--stale-version 0.161.1 --method self')));
+  const desktop = workflow.jobs['desktop-beside-cli'];
+  assert(desktop.steps.some(step => step.with?.['run-id'] === 43456519342 && step.with?.name === 'desktop-release-Linux-X64'));
+  assert(desktop.steps.some(step => step.run?.includes('--desktop-runtime') && step.run.includes('--desktop-node')));
   const expanded = workflow.jobs['candidate-B-expanded'];
   assert(expanded.steps.some(step => step.run?.includes('for state in fresh configured stale-extensions recovery concurrent agent')));
   assert.deepEqual(workflow.jobs['candidate-native'].strategy.matrix.source, sources);

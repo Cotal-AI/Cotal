@@ -17,6 +17,7 @@ concurrency:
   cancel-in-progress: true
 permissions:
   contents: read
+  actions: read
 jobs:
   priority:
     strategy:
@@ -78,9 +79,47 @@ jobs:
             ${{ runner.temp }}/upgrade-consent-evidence
             ${{ runner.temp }}/owner-mac-evidence
           if-no-files-found: error
-  workspace-native:
+  desktop-beside-cli:
     needs: priority
-    if: always() && (needs.priority.result == 'success' || needs.priority.result == 'failure' || needs.priority.result == 'skipped')
+    if: always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-release-Linux-X64
+          run-id: 43456519342
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/desktop-release
+      - name: Verify released desktop package and prepare disposable user manager
+        shell: bash
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          package=$(find "$RUNNER_TEMP/desktop-release" -name 'Cotal_0.164.2_amd64.deb' -print -quit)
+          test -n "$package"
+          printf '%s  %s\n' 87921721f6dcdf01a454a8d62f8d15f12dee8fd2934a470f435e034f60ca5e9d "$package" | sha256sum -c -
+          dpkg-deb -x "$package" "$RUNNER_TEMP/released-desktop"
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
+      - name: Real released desktop daemon beside separate CLI
+        shell: bash
+        run: node scripts/automatic-update-platform-baseline.mjs --source 0.164.0 --layout npm --state daemon --method self --desktop-runtime "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" --desktop-node "$RUNNER_TEMP/released-desktop/usr/bin/cotal-node" --output "$RUNNER_TEMP/upgrade-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-beside-cli-linux
+          path: ${{ runner.temp }}/upgrade-evidence
+          if-no-files-found: error
+  workspace-native:
+    needs: desktop-beside-cli
+    if: always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')
     uses: ./.github/workflows/workspace-native.yml
     with:
       darwin: true
