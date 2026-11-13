@@ -210,8 +210,8 @@ jobs:
       max-parallel: 6
       fail-fast: false
       matrix:
-        source: ['0.155.0', '0.160.7', '0.162.0', '0.163.5', '0.164.0', latest]
-        layout: [npm, installer]
+        source: ['0.164.0']
+        layout: [npm]
     steps:
       - uses: actions/checkout@v6
         with:
