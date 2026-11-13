@@ -121,6 +121,16 @@ check("signals.waiting surfaces the blocked agent", s.signals.waiting.length ===
 const watchRoster = renderReport(watchReport(s, "roster"), "plain", 200).split("\n");
 check("the watch roster names a working agent's progress as unknown", watchRoster.some((line) => /\balice\b.*working - progress unknown/.test(line)) && !watchRoster.some((line) => /\bbob\b.*progress unknown/.test(line)));
 check("the watch roster includes endpoint kind and identity alongside agents", watchRoster.some((line) => /console.*endpoint.*ID_CON/.test(line)) && watchRoster.some((line) => /alice.*agent.*ID_ALICE/.test(line)));
+  const blankSender = feedLine({ id: "blank", ts: 1_700_000_000_000, from: { id: "local.blank", name: " \n" }, delivery: "multicast", channel: "general", text: "hello" });
+  check("a blank sender name is replaced by the id", blankSender.includes("local.blank") && !blankSender.includes("\\u000a"));
+  const blankRoster = watchReport({
+    ...s,
+    agents: [{ ...s.agents[0]!, card: { ...s.agents[0]!.card, id: "local.blank", name: " " }, activity: " \n" }],
+    endpoints: [],
+  }, "roster");
+  const blankBlock = blankRoster.sections[0]?.blocks[0];
+  const blankRow = blankBlock && "rows" in blankBlock ? blankBlock.rows[0] : undefined;
+  check("a blank roster name and activity use the id and not reported", blankRow?.name === "local.blank" && blankRow?.activity === "not reported");
 const endpointOnly = renderReport(watchReport({ ...s, agents: [] }, "roster"), "plain", 200);
 check("an endpoint-only roster is not reported empty", endpointOnly.includes("console") && !endpointOnly.includes("No participants"));
 const emptyRoster = renderReport(watchReport({ ...s, agents: [], endpoints: [] }, "roster"), "plain", 200);
