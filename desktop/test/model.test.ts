@@ -1,6 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice } from "../src/model.ts";
+import { initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownAccountLabel } from "../src/model.ts";
+
+test("a blank account label is the subject and a label with a character stays", () => {
+  assert.equal(shownAccountLabel(" ", "user-1"), "user-1");
+  assert.equal(shownAccountLabel("", "user-1"), "user-1");
+  assert.equal(shownAccountLabel("\n", "user-1"), "user-1");
+  assert.equal(shownAccountLabel(undefined, "user-1"), "user-1");
+  assert.equal(shownAccountLabel(" ", " "), undefined);
+  assert.equal(shownAccountLabel(" ada", "user-1"), " ada");
+  assert.equal(shownAccountLabel("Ada", "user-1"), "Ada");
+});
 
 test("account targeting prefers the link, personal space, only space, then asks", () => {
   const personal = { space: "mine", catalogId: "sp_mine", label: "Mine", kind: "personal" };

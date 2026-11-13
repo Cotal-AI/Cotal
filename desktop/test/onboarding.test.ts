@@ -13,7 +13,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { personal?: boolean; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { personal?: boolean; link?: string; installed?: boolean; connected?: boolean; count?: number; account?: { label?: string; sub?: string }; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -53,7 +53,7 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
       if (r.op === "status") {
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
-        return ok({ state: "ready", version: options.mismatch ? "old" : "test", managers: connected ? [manager] : [] });
+        return ok({ state: "ready", version: options.mismatch ? "old" : "test", managers: connected ? [manager] : [], ...(options.account ? { account: { idpUrl: COTAL_CLOUD_IDP, sub: options.account.sub ?? "user-1", label: options.account.label, mode: "static", hostSupport: "none", spaces: [] } } : {}) });
       }
       if (r.op === "spaces") return ok({ ...((options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon) && r.refresh ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: [options.ownProviderFailed ? COTAL_CLOUD_IDP : "https://hack.cotal.ai/api/auth"] }) } : {}), spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : "My team", kind: options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: COTAL_CLOUD_IDP })) });
       if (r.op === "name") return ok({ computer: r.name ?? "My computer" });
@@ -241,6 +241,19 @@ test("unlinked accounts choose among spaces but skip a single space", async () =
       }
     } finally { a.dom.window.close(); }
   }
+});
+
+test("a blank account label shows the subject", async () => {
+  const a = await app({ installed: true, connected: true, account: { label: " ", sub: "user-1" } });
+  try {
+    await a.click("open-settings");
+    assert.equal(a.node("settings-account").textContent, "Cotal Cloud, cloud.cotal.ai · user-1");
+  } finally { a.dom.window.close(); }
+  const kept = await app({ installed: true, connected: true, account: { label: " ada", sub: "user-1" } });
+  try {
+    await kept.click("open-settings");
+    assert.equal(kept.node("settings-account").textContent, "Cotal Cloud, cloud.cotal.ai ·  ada");
+  } finally { kept.dom.window.close(); }
 });
 
 test("later open shows connection and secondary controls, never sign-in or space forms", async () => {
