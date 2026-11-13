@@ -28,6 +28,8 @@ jobs:
         include:
           - os: ubuntu-24.04
             source: latest
+          - os: ubuntu-24.04
+            source: '0.160.7'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
@@ -48,6 +50,9 @@ jobs:
         shell: bash
         run: |
           failed=0
+          if [ '${{ matrix.source }}' = '0.160.7' ]; then
+            node scripts/automatic-update-platform-baseline.mjs --source 0.160.7 --layout npm --state fresh --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+          fi
           node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state stale-extensions --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state concurrent --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state agent --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
