@@ -204,6 +204,21 @@ try {
     check("...and it says what it is holding back", text.includes("held ("), text.slice(-160));
   }
 
+  // An older direct message that fills the window must not hide a newer one on a peek.
+  // A clearing read still delivers the older one first.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    agent.ep.emit("message", dmMsg("old-dm", "x".repeat(46_000)), noop(), dmMeta);
+    agent.ep.emit("message", { ...dmMsg("new-dm", "CURRENT-DM-BODY " + "y".repeat(3_000)), ts: 20_000 }, noop(), dmMeta);
+    const peeked = textOf(await inboxSpec().run(agent, cfg, { peek: true }));
+    check("peek shows the newer direct message when an older one fills the window",
+      peeked.includes("CURRENT-DM-BODY") && agent.inboxCount() === 2, { chars: peeked.length, inbox: agent.inboxCount() });
+    const cleared = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("a clearing read still delivers the older direct message first",
+      cleared.includes("xxxxx") && !cleared.includes("CURRENT-DM-BODY"), { chars: cleared.length });
+  }
+
   // ── 6) FOCUS: the response carries two lanes, and only one of them is destructive ──────────────
   //
   // In focus mode the reply mixes the live buffer (DMs/anycast, clearable) with read-only channel
