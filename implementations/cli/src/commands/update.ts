@@ -29,6 +29,7 @@ import {
   resolveControlTarget,
 } from "@cotal-ai/workspace";
 import { readUpdatePending } from "../lib/update-pending.js";
+import { recoverySnapshotProblem, recoveryRepairCommand, retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
@@ -72,6 +73,7 @@ const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
 export const updateFlags: readonly FlagSpec[] = [
   { name: "auto", type: "boolean", description: "show automatic updates, or set them with --auto off|on" },
   { name: "notify", type: "boolean", description: "show update notices, or set them with --notify off|on" },
+  { name: "set-aside-recovery", type: "boolean", description: "retain an unusable interrupted-update record separately before repairing this installation" },
   { name: "self", type: "boolean", description: "install the validated latest cotal-ai globally, then reconcile through it" },
   { name: "stop-agents", type: "boolean", description: "stop agents this computer cannot preserve, then continue the update" },
   { name: "check", type: "boolean", description: "read version availability and the recorded extension inventory; install and restart nothing" },
@@ -206,7 +208,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
       remedy: "update the desktop app with its signed platform installer; no npm self-update was attempted",
     });
   }
-  if (await recoverInterruptedUpdate(rt)) return;
+  if (await recoverInterruptedUpdate(rt, args.values["set-aside-recovery"] === true)) return;
   // A folder above the config folder is not one this command repairs. Refuse it before the mode
   // repair and before seeding, so a refusal writes nothing and does not replace the binary.
   try {
@@ -234,13 +236,28 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
 }
 
 /** Resume an abandoned replacement before a command or daemon can activate its closure. */
-export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime): Promise<boolean> {
+export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime, setAside = false): Promise<boolean> {
   const record = readUpdateRecovery();
   if (!record?.owner || childBinding(rt).kind === "bound") return false;
   const start = processStartToken(record.owner.pid);
   if (start !== undefined && start === record.owner.start) return false;
   const release = claimUpdateClosureAccess(true);
   try {
+    const fresh = readUpdateRecovery();
+    if (JSON.stringify(fresh) !== JSON.stringify(record)) throw new Error("update recovery changed while waiting for its writer barrier");
+    const problem = recoverySnapshotProblem(record);
+    if (problem) {
+      let consent = setAside;
+      if (!consent && rt.env.COTAL_AUTO_UPDATE !== "1" && process.stdin.isTTY && process.stdout.isTTY) {
+        const prompts = await import("@clack/prompts");
+        const answer = await prompts.confirm({ message: `${problem}. Retain the unusable update records separately and repair this installation?`, initialValue: false });
+        consent = !prompts.isCancel(answer) && answer === true;
+      }
+      if (!consent || rt.env.COTAL_AUTO_UPDATE === "1") throw new CommandFailure("refused", "UPDATE_RECOVERY_REQUIRED", problem, { remedy: recoveryRepairCommand });
+      const retained = retainUnusableRecovery(record);
+      rt.out(`Retained unusable update records at ${retained}. No snapshot files were changed.`);
+      return false;
+    }
     if (!record.snapshot) throw new Error("interrupted update has no closure snapshot");
     writeUpdateRecovery({ ...record, owner: updateClosureOwner(), phase: "restoring" });
     const snapshot = snapshotUpdateClosure(record.snapshot);
@@ -265,13 +282,17 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
       return true;
     } finally { releaseGlobal(); }
   } catch (error) {
-    writeUpdateRecovery({ ...readUpdateRecovery()!, phase: "paused", reason: `interrupted update restore failed: ${message(error)}` });
-    throw error;
+    if (error instanceof CommandFailure) throw error;
+    const remaining = readUpdateRecovery();
+    if (remaining) writeUpdateRecovery({ ...remaining, phase: "paused", reason: `interrupted update restore failed: ${message(error)}` });
+    throw new CommandFailure("refused", "UPDATE_RECOVERY_REQUIRED", `interrupted update restoration failed: ${message(error)}`, { remedy: recoveryRepairCommand });
   } finally { release(); }
 }
 
 /** Check mode is installation metadata only; target and mutation inputs are never ignored. */
 export function validateUpdateArguments(args: ParsedArgs): void {
+  if (args.values["set-aside-recovery"] && (args.values.self !== true || args.values.check || args.values.auto || args.values.notify))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--set-aside-recovery requires --self without --check, --auto or --notify");
   presentationOf(args.values);
   if (args.values["stop-agents"] && args.values.self !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--stop-agents requires cotal update --self");
   if (args.values.auto || args.values.notify) {
