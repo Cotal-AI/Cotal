@@ -58,6 +58,19 @@ const statusBlank = await status(" ");
 ok(statusBlank.includes("taken by local.blank at ") && statusBlank.includes("Ask local.blank with cotal_dm"), "a blank taker is the id in the status and the follow-up", statusBlank);
 const statusKept = await status(" ada");
 ok(statusKept.includes("taken by  ada (local.blank) at ") && statusKept.includes("Ask  ada with cotal_dm"), "a taker name with a leading space stays", statusKept);
+async function previous(name: string): Promise<string> {
+  const agent = new MeshAgent(cfg);
+  (agent as unknown as { anycastStatus: unknown }).anycastStatus = async () => ({
+    state: "taken", seq: 4, role: "reviewer", at: Date.parse("2026-11-13T00:00:00.000Z"),
+    taker: { id: "local.ada", name: "ada" },
+    previous: { id: "local.blank", name },
+  });
+  return (await anycast.run(agent, authed, { seq: 4 })).text;
+}
+const previousBlank = await previous(" ");
+ok(previousBlank.includes("local.blank took it") && previousBlank.includes("so local.blank may also have started it"), "a blank previous holder is the id in both clauses", previousBlank);
+const previousKept = await previous(" ada");
+ok(previousKept.includes("so  ada may also have started it") && !previousKept.includes("so local.blank"), "a previous holder name with a leading space stays", previousKept);
 
 async function sent(name: string, recipientStatusAtSend: "offline" | "unrostered"): Promise<string> {
   const agent = new MeshAgent(cfg);

@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1031,
+    "total": 1034,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 10,
-    "non-render/control": 812
+    "non-render/control": 815
   },
   "renderers": [
     {
@@ -4422,7 +4422,28 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "` Before that, ${holderLabel(status.previous)} took it and did not confirm it before its ack wait ran out, so ${attributionSafe(status.previous.name)} may also have started it.`",
+      "anchor": "` ${who} has no roster row: it messaged you from a connection that never joined the roster or has left it, so the space's DM history keeps this DM under its id and it may never reach an inbox.`",
+      "class": "non-render/control",
+      "rationale": "Direct-message receipt names the recipient from the send result, not an agent's presence status."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "` ${who} is offline: the DM is delivered when ${who} reconnects, and a new agent spawned as ${who} does not receive it.`",
+      "class": "non-render/control",
+      "rationale": "Direct-message receipt names the recipient from the send result, not an agent's presence status."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Sent to ${who}.${unrostered}${offline} Other agents can't read it. If others could use it, post it on the task's channel.${dup}`",
+      "class": "non-render/control",
+      "rationale": "Direct-message receipt names the recipient from the send result, not an agent's presence status."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "` Before that, ${holderLabel(status.previous)} took it and did not confirm it before its ack wait ran out, so ${shownParticipant(status.previous.name, status.previous.id)} may also have started it.`",
       "class": "non-render/control",
       "rationale": "Anycast request status view: the request record's own state (waiting, taken, cancelled), role, seq and holder, from the delivery daemon's status or cancel reply; not an agent's presence."
     },

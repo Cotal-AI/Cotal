@@ -85,7 +85,7 @@ function renderAnycastStatus(status: AnycastStatus, holders?: { id: string; name
     return `Request seq ${seq} on @${status.role} is waiting on the queue, and no holder has taken it (${holdersLine(holders, "now")}). ` +
       `A busy holder may already have it. If that holder does not confirm it in time, it goes back on the queue for a holder. Cancel it with seq ${seq} and cancel: true.`;
   const before = status.previous
-    ? ` Before that, ${holderLabel(status.previous)} took it and did not confirm it before its ack wait ran out, so ${attributionSafe(status.previous.name)} may also have started it.`
+    ? ` Before that, ${holderLabel(status.previous)} took it and did not confirm it before its ack wait ran out, so ${shownParticipant(status.previous.name, status.previous.id)} may also have started it.`
     : "";
   return `Request seq ${seq} on @${status.role} was taken by ${holderLabel(status.taker)} at ${new Date(status.at).toISOString()}.${before} ` +
     `${TAKEN_MEANS} ${takenFollowUp(status.taker)}`;
