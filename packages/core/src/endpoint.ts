@@ -8530,7 +8530,7 @@ export class CotalEndpoint extends EventEmitter {
     }
     if (!isPresenceRow(p, e.key)) {
       this.presenceBindingDrops++;
-      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: not a usable presence row (a record with card.id equal to its KV key, a string card.name, a known status, a finite ts, string display fields and a condition with a string code)`));
+      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: not a usable presence row (a record with card.id equal to its KV key, a non-blank string card.name, a known status, a finite ts, string display fields and a condition with a string code)`));
       return undefined;
     }
     // isPresenceRow is the one gate: it refuses a row whose card.id disagrees with the KV key, so a
