@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict';
-import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
+import { candidateRegistry, bootstrapVersion } from './automatic-update-platform-baseline.mjs';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { create } from 'tar';
 import { parse as parseYaml } from 'yaml';
+
+test('bootstrap versions bracket stable published releases', () => {
+  assert.equal(bootstrapVersion('0.164.1', 'B'), '0.164.2');
+  assert.equal(bootstrapVersion('0.164.1', 'A'), '0.164.0');
+  assert.equal(bootstrapVersion('0.164.0', 'A'), '0.163.0');
+  assert.equal(bootstrapVersion('1.0.0', 'A'), '0.0.0');
+  assert.throws(() => bootstrapVersion('0.0.0', 'A'));
+  assert.throws(() => bootstrapVersion('0.164.2-beta.1', 'B'));
+});
 
 test('workflow is priority-first, six-wide and cancels superseded branch runs', () => {
   const workflow = parseYaml(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));

@@ -39,11 +39,13 @@ Build the workspace and assemble source-matched native artifacts as the workflow
 script calls the existing complete-closure packer, preserving its native release guards.
 
 ```bash
-node scripts/automatic-update-platform-baseline.mjs --pack ./candidate-B --version 0.999.0
+node scripts/automatic-update-platform-baseline.mjs --pack ./candidate-B --version B
 node scripts/automatic-update-platform-baseline.mjs --candidate ./candidate-B --direction B --source 0.164.0 --layout npm --state fresh --method self --output ./candidate-evidence
 ```
 
-B tests a published source updating to the packed head. Its temporary version must exceed the source.
+B tests a published source updating to the packed head. `--version B` derives the next patch above public latest.
+`--version A` derives a lower stable version for the later self-upgrade proof. Numeric versions may also be supplied.
+Each cell checks the required ordering again before installation.
 Every result labels its local registry as synthetic. Third-party dependencies come from npm, while
 every first-party package comes from the candidate archives. Archive hashes and temporary manifest
 changes are recorded. Installed files are never rewritten. Never publish these bootstrap archives.

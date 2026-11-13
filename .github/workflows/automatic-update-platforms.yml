@@ -138,8 +138,8 @@ jobs:
           WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/native-inputs/workspace-native-darwin-arm64
       - name: Pack candidate B and A bootstrap versions without publishing
         run: |
-          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidate-B" --version 0.999.0
-          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidate-A" --version 0.13.1
+          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidate-B" --version B
+          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidate-A" --version A
       - uses: actions/upload-artifact@v4
         if: always()
         with:

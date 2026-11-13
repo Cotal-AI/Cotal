@@ -360,7 +360,25 @@ export async function matrixCell(options) {
   return report;
 }
 
+export function bootstrapVersion(latest, direction) {
+  assert(/^\d+\.\d+\.\d+$/.test(latest), 'published latest must be stable numeric semver');
+  assert(['A', 'B'].includes(direction));
+  const [major, minor, patch] = latest.split('.').map(Number);
+  assert([major, minor, patch].every(Number.isSafeInteger), 'published version exceeds safe numeric ordering');
+  if (direction === 'B') return `${major}.${minor}.${patch + 1}`;
+  if (patch > 0) return `${major}.${minor}.${patch - 1}`;
+  if (minor > 0) return `${major}.${minor - 1}.0`;
+  assert(major > 0, 'no lower stable bootstrap exists below 0.0.0');
+  return `${major - 1}.0.0`;
+}
+
 export async function packCandidate(output, version) {
+  if (['A', 'B'].includes(version)) {
+    const [npm, prefix] = npmCommand();
+    const env = cleanEnvironment();
+    const latest = JSON.parse(execFileSync(npm, [...prefix, 'view', 'cotal-ai@latest', 'version', '--json'], { env, encoding: 'utf8' }));
+    version = bootstrapVersion(latest, version);
+  }
   assert(/^\d+\.\d+\.\d+$/.test(version), 'candidate bootstrap uses stable numeric semver for stock newerUpdate ordering');
   const root = resolve(import.meta.dirname, '..');
   const rows = JSON.parse(execFileSync('pnpm', ['list', '-r', '--depth', '-1', '--json'], { cwd: root, encoding: 'utf8' }));
