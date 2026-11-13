@@ -493,6 +493,11 @@ without metadata, or a dangling package link, is damaged and still refuses.
 Removing an extension or cleaning up a failed add keeps unrelated file-based extensions as
 installed copies, rather than turning them into links to their source or the built-in seed store.
 
+One command at a time changes the installed connectors and extensions. While `setup`, `ext add`,
+`ext seed` or an update does that, every other `cotal` command waits for it, `status` included.
+After one second of waiting the command says so on stderr:
+`waiting for another cotal command (pid <id>) to finish changing this installation`.
+
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,
 `cotal ext` (or the Extensions section of `cotal status`) is the canonical inventory. `cotal ext root`
