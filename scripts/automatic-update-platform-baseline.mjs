@@ -18,7 +18,9 @@ const evidence = join(process.env.RUNNER_TEMP, 'automatic-update-baseline-eviden
 mkdirSync(evidence, { mode: 0o700 });
 const root = realpathSync(mkdtempSync(join(process.env.RUNNER_TEMP, 'cotal-baseline-')));
 const prefix = join(root, 'prefix'), home = join(root, 'private-home'), daemonHome = join(root, 'daemon');
-for (const dir of [prefix, home, daemonHome]) mkdirSync(dir, { mode: 0o700 });
+// Leave daemonHome absent. The shipped CLI creates it with its native private ACLs.
+// POSIX mode alone on a precreated Windows directory does not establish that boundary.
+for (const dir of [prefix, home]) mkdirSync(dir, { mode: 0o700 });
 for (const dir of ['config', 'cache', 'data', 'state', 'runtime', 'tmp']) mkdirSync(join(home, dir), { mode: 0o700 });
 const report = { platform: process.platform, version: '0.164.0', calls: [],
   scope: 'explicit daemon-home native baseline plus separate eligible:true native-OS policy probe; no transition',
