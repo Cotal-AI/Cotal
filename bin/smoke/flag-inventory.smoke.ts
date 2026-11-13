@@ -69,7 +69,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   setup: { flags: ["configure-only:boolean", "connection-file:string", "demo:boolean", "destination:string", "detach:boolean:d", "full:boolean", "harness:string:H", "json:boolean:j", "on:string", "plain:boolean", "project:string", "runtime:string", "skills:boolean", "space:string:s", "start:boolean", "yes:boolean:y"], positionals: false },
   // `--space`/`--server`/`--creds` (2026-09): after disk reconciliation, `update` reports the
   // selected running manager's custody generation. `--check` reads without changing anything.
-  update: { flags: [...TARGET, "auto:boolean", "check:boolean", "json:boolean:j", "notify:boolean", "on:string", "plain:boolean", "self:boolean"], positionals: true },
+  update: { flags: [...TARGET, "auto:boolean", "check:boolean", "json:boolean:j", "notify:boolean", "on:string", "plain:boolean", "self:boolean", "stop-agents:boolean"], positionals: true },
   // The command kernel's local entries (2026-10): `help [command…] [--all]` and `version`.
   help: { flags: ["all:boolean"], positionals: true },
   version: { flags: ["json:boolean:j"], positionals: false },
