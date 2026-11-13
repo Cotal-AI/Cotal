@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { heldBeforePoll, stoppedPoll, requestSummary, recoveryWaitMs } from './windows-recovery-cell.mjs';
+import { heldBeforePoll, stoppedPoll, requestSummary, recoveryWaitMs, restartRecovery } from './windows-recovery-cell.mjs';
 const row=(phase, atUnixMs, requestId=1, op='status', extra={})=>({phase,atUnixMs,requestId,request:{op},...extra});
 const baseline=row('result',1000,1,'status',{ok:true});
 const ui={action:'connect',buttonText:'Check again',recoveryShown:true,disabled:false};
@@ -29,14 +29,35 @@ test('public summary excludes complete requests and error details and keeps actu
   assert.equal(recoveryWaitMs,180_000);
 });
 
-test('actual entry keeps diagnostic result separate from native acceptance and product timers untouched',async()=>{
+test('restart acceptance needs a stopped reply during restart then healthy poll and connected readback without setup input',()=>{
+  const stopped=row('result',1500,2,'status',{ok:false,error:{code:'NOT_RUNNING'}});
+  const healthy=row('result',2500,3,'status',{ok:true});
+  const restart={calledAt:new Date(1200).toISOString(),returnedAt:new Date(2000).toISOString()};
+  const observed={atUnixMs:2600,recoveryShown:false,connectedShown:true,connectionTitle:'This computer is connected'};
+  assert.equal(restartRecovery([stopped,healthy],1100,restart,observed).passed,true);
+  assert.equal(restartRecovery([{...stopped,request:{op:'service-status'}},healthy],1100,restart,observed).passed,true);
+  for(const rows of [[healthy],[stopped],[stopped,healthy,row('start',2400,4,'install')],[stopped,healthy,row('start',2400,4,'setup')]]){
+    assert.equal(restartRecovery(rows,1100,restart,observed).passed,false);
+  }
+  assert.equal(restartRecovery([stopped,healthy],1100,{...restart,calledAt:new Date(1600).toISOString()},observed).passed,false);
+  assert.equal(restartRecovery([stopped,healthy],1100,restart,{...observed,recoveryShown:true}).passed,false);
+  assert.equal(restartRecovery([stopped,healthy],1100,restart,{...observed,connectionTitle:'Ready to connect'}).passed,false);
+});
+
+test('actual entry requires connected acceptance, preserves ownership and does not force product timers',async()=>{
   const {readFileSync}=await import('node:fs');
   const src=readFileSync(new URL('./first-run.ts',import.meta.url),'utf8');
-  const block=src.slice(src.indexOf('const recoveryDiagnostic'),src.indexOf('const proveWindowsRestart'));
+  const block=src.slice(src.indexOf('const recoveryAcceptance'),src.indexOf('const proveWindowsRestart'));
   assert.match(block,/prepare-disabled-staged/);
-  assert.match(block,/value\.recoveryShown && value\.action === "refresh"/);
+  assert.match(block,/value\.recoveryShown && value\.action === "install"/);
   assert.match(block,/Math\.min\(5000, remaining\)/);
-  assert.match(block,/outcome = "race-not-held"/);
-  assert.match(src,/return; \/\/ A diagnostic result is not full onboarding or account acceptance/);
+  assert.match(block,/evidence\.inputs\.length === 0 && evidence\.restartRecovery\.passed/);
+  assert.match(block,/throw new Error\("Start service did not return/);
+  assert.match(block,/evidence\.connectedAtUnixMs <= deadline/);
+  assert.match(block,/evidence\.connectedReceivedAtUnixMs <= deadline && evidence\.observationCompletedAtUnixMs <= deadline/);
+  assert.match(block,/row\.requestId === evidence\.installStart\.requestId && row\.phase === "result" && row\.ok === true/);
+  assert.match(block,/"verify-recovered"/);
+  assert.match(src,/recoveryCell, acceptance: true/);
+  assert.doesNotMatch(src,/diagnostic-complete|A diagnostic result is not full onboarding/);
   assert.doesNotMatch(block,/window\.(?:setTimeout|setInterval)\s*=|window\.clearTimeout|\.invoke\(/);
 });

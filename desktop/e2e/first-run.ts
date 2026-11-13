@@ -14,7 +14,7 @@ import { captureWindowsInstallSnapshot } from "./windows-install-snapshot.mjs";
 import { windowsJourneyCheckpoint, windowsJourneyProgress } from "./windows-journey.mjs";
 import { startReceiptMirror } from "./receipt-mirror.mjs";
 import { windowsPhaseReceipt } from "./windows-phase-receipt.mjs";
-import { heldBeforePoll, nativeRequestRows, recoveryCells, recoveryWaitMs, requestSummary, stoppedPoll } from "./windows-recovery-cell.mjs";
+import { nativeRequestRows, recoveryCells, recoveryWaitMs, requestSummary, restartRecovery, stoppedPoll } from "./windows-recovery-cell.mjs";
 
 interface Fixture {
   root: string; idpUrl: string; space: string; catalogId: string;
@@ -165,11 +165,13 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     } else writeFileSync(join(appBin, "desktop-fixture-app"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   };
   let preparationOutstanding = false;
-  const recoveryDiagnostic = async () => {
+  const recoveryAcceptance = async () => {
     assert.ok(recoveryCell && driver instanceof WindowDriver);
     const nativeLog = join(output, "native-errors.jsonl");
     const artifact = join(output, "windows-recovery-cell.json");
-    const evidence: any = { schema: 1, cell: recoveryCell, startedAt: new Date().toISOString(), counted: false, outcome: "incomplete" };
+    const evidence: any = { schema: 2, cell: recoveryCell, acceptance: true,
+      scenario: recoveryCell === "before-poll" ? "restart-without-input" : "stopped-service-start",
+      startedAt: new Date().toISOString(), outcome: "incomplete", inputs: [] };
     const save = () => writeFileSync(artifact, JSON.stringify(evidence, null, 2));
     const rows = () => nativeRequestRows(nativeLog);
     const snapshot = async (stage: string, timeoutMs = 5000) => {
@@ -179,16 +181,21 @@ export async function firstRun(fixture: Fixture): Promise<void> {
           disabled:b.disabled,connectionTitle:document.getElementById('connection-title').textContent,
           detailsText:document.getElementById('details').textContent,detailsHidden:document.getElementById('details').hidden,
           recoveryShown:!p.hidden && getComputedStyle(p).display!=='none',
+          connectedShown:!document.getElementById('connected-panel').hidden,
+          notice:document.getElementById('notice').textContent,
           frames:window.__desktopSetupFrames??[]};`, args: [] }, timeoutMs);
       // The fixture uses synthetic local coordinates. Still never retain bearer-shaped Details.
       value.detailsText = String(value.detailsText).slice(0, 16_384).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>");
       writeFileSync(join(output, `recover-${stage}.json`), JSON.stringify({ observedAt: new Date().toISOString(), ...value }, null, 2));
       return value;
     };
-    save();
+    evidence.beforeRestart = await snapshot("before-restart");
+    assert.equal(evidence.beforeRestart.connectionTitle, "This computer is connected");
+    assert.equal(evidence.beforeRestart.recoveryShown, false);
+    evidence.restartStartedAtUnixMs = Date.now(); save();
     const restartArtifact = join(output, "windows-restart-lifetime.json");
     const helper = spawn(join(dirname(binary), "node.exe"), [join(repo, "desktop/e2e/windows-restart.mjs"), repo, machineHome,
-      restartArtifact, join(dirname(binary), "runtime"), "prepare-disabled-staged"],
+      restartArtifact, join(dirname(binary), "runtime"), ...(recoveryCell === "after-poll" ? ["prepare-disabled-staged"] : [])],
     { env: cliEnv, cwd: home, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     let helperError: Error | undefined;
     helper.once("error", error => { helperError = error; });
@@ -196,7 +203,28 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     const helperExit = new Promise<number | null>(resolveExit => helper.once("exit", (code) => { helperExited = true; resolveExit(code); }));
     for (const pipe of [helper.stdout, helper.stderr]) pipe?.on("data", bytes => writeFileSync(join(output, "windows-restart.log"), bytes, { flag: "a" }));
     try {
-      await windowsPhase("cell-owned-preparation", () => until("owned helper prepared before timed native pause", async () => {
+      if (recoveryCell === "before-poll") {
+        // This is the app's ordinary background poll during a real owned restart.
+        // No refresh, input, product timer or renderer state is forced.
+        evidence.restartStoppedPoll = await windowsPhase("cell-restart-stopped-poll", () => until("app poll sees the restarting service stopped", async () => {
+          assert.ifError(helperError);
+          return rows().find(row => row.phase === "result" && ["status", "service-status"].includes(row.request?.op)
+            && row.ok === false && row.error?.code === "NOT_RUNNING" && row.atUnixMs >= evidence.restartStartedAtUnixMs);
+        }, Boolean, 90_000));
+        evidence.duringRestart = await windowsPhase("cell-restart-error-panel", () => until("native window displays the background-check error", () => snapshot("during-restart"),
+          value => value.recoveryShown && value.action === "install" && value.buttonText === "Start service", 10_000));
+        await windowsPhase("cell-owned-restart-exit", () => until("owned restart helper exits", async () => helperExited, Boolean, 180_000));
+        assert.equal(await helperExit, 0);
+        evidence.preparation = JSON.parse(readFileSync(restartArtifact, "utf8"));
+        assert.equal(evidence.preparation.outcome, "passed");
+        evidence.healthyPoll = await windowsPhase("cell-restart-healthy-poll", () => until("app status succeeds after its stopped reply", async () =>
+          rows().find(row => row.phase === "result" && row.request?.op === "status" && row.ok === true && row.atUnixMs > evidence.restartStoppedPoll.atUnixMs), Boolean, 45_000));
+        evidence.after = await windowsPhase("cell-error-clears-without-input", () => until("background error clears and connected view returns without input", () => snapshot("after-restart"),
+          value => !value.recoveryShown && value.connectedShown && value.connectionTitle === "This computer is connected" && !value.notice, 45_000));
+        evidence.restartRecovery = restartRecovery(rows(), evidence.restartStartedAtUnixMs, evidence.preparation, evidence.after);
+        check("restart background error clears after a good poll without input", evidence.inputs.length === 0 && evidence.restartRecovery.passed);
+      } else {
+      await windowsPhase("cell-owned-preparation", () => until("owned helper prepared before native pause", async () => {
         assert.ifError(helperError);
         assert.ok(!helperExited, "owned preparation helper exited before readiness");
         return existsSync(restartArtifact) ? JSON.parse(readFileSync(restartArtifact, "utf8")) : undefined;
@@ -218,54 +246,69 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       evidence.preparation = JSON.parse(readFileSync(restartArtifact, "utf8"));
       assert.equal(evidence.preparation.disabledFixture.phase, "disabled-zero-confirmed");
       save();
-      if (recoveryCell === "after-poll") {
         evidence.stoppedPoll = await windowsPhase("cell-observe-stopped-poll", () => until("app poll reports stopped service", async () => {
           try { return stoppedPoll(rows(), evidence.disableAtUnixMs); } catch { return undefined; }
         }, Boolean, 60_000));
         await windowsPhase("cell-observe-stopped-panel", () => until("app displays stopped service refusal", async () => snapshot("stopped-panel"),
-          value => value.recoveryShown && value.action === "refresh" && /not running|background service/i.test(value.detailsText), 15_000));
-      }
+          value => value.recoveryShown && value.connectionTitle === "The background service is not running" && value.action === "install" && value.buttonText === "Start service" && !value.disabled, 15_000));
       evidence.before = await snapshot("before-click");
       evidence.clickStartedAtUnixMs = Date.now();
-      let beforeRows: any[];
-      try { beforeRows = rows(); evidence.requests = requestSummary(beforeRows, evidence.disableAtUnixMs); }
-      catch (error) { evidence.outcome = "race-not-held"; evidence.admissionError = String(error); save(); return; }
-      if (recoveryCell === "before-poll") {
-        evidence.race = heldBeforePoll(beforeRows, evidence.baseline, evidence.disableAtUnixMs, evidence.clickStartedAtUnixMs, evidence.before);
-        if (!evidence.race.held) { evidence.outcome = "race-not-held"; save(); return; }
-      }
+      evidence.requests = requestSummary(rows(), evidence.disableAtUnixMs);
       const deadline = evidence.clickStartedAtUnixMs + recoveryWaitMs;
       evidence.postClickDeadlineUnixMs = deadline;
       save();
+      evidence.inputs.push({ action: "Start service", atUnixMs: evidence.clickStartedAtUnixMs });
       await windowsPhase("cell-recover-click", () => driver.click("recover", deadline));
       evidence.clickCompletedAtUnixMs = Date.now();
       evidence.after = await snapshot("after-click", Math.max(1, Math.min(5000, deadline - Date.now()))); save();
-      // Admission includes everything through the real driver's completed input and immediate readback.
-      if (recoveryCell === "before-poll") {
-        try { evidence.race = heldBeforePoll(rows(), evidence.baseline, evidence.disableAtUnixMs, evidence.clickCompletedAtUnixMs, evidence.before); }
-        catch (error) { evidence.outcome = "race-not-held"; evidence.admissionError = String(error); save(); return; }
-        if (!evidence.race.held) { evidence.outcome = "race-not-held"; save(); return; }
-      }
-      evidence.counted = true;
       await windowsPhase("cell-post-click-observation", async () => {
         while (Date.now() < deadline) {
           const remaining = deadline - Date.now();
           try {
             const value = await snapshot("latest", Math.max(1, Math.min(5000, remaining)));
+            const receivedAtUnixMs = Date.now();
             evidence.latest = value;
             evidence.requests = requestSummary(rows(), evidence.clickStartedAtUnixMs);
-            const fresh = value.frames.slice(evidence.before.frames.length);
-            if (fresh.some((row: any) => row.frame.progress?.step === "applications" && row.frame.progress?.outcome === "unavailable") && !value.disabled) {
-              evidence.outcome = "setup-settled"; save(); return;
+            if (!value.recoveryShown && value.connectedShown && value.connectionTitle === "This computer is connected" && !value.notice) {
+              evidence.connectedAtUnixMs = value.atUnixMs;
+              evidence.connectedReceivedAtUnixMs = receivedAtUnixMs; save(); return;
             }
             save();
           } catch (error) { evidence.lastObservationError = String(error); save(); }
           await delay(Math.min(250, Math.max(0, deadline - Date.now())));
         }
-        evidence.outcome = "observation-window-ended-no-setup";
+        throw new Error("Start service did not return the native window to connected within the 180-second input budget");
       });
+      evidence.observationCompletedAtUnixMs = Date.now();
       evidence.requests = requestSummary(rows(), evidence.clickStartedAtUnixMs);
       evidence.afterWait = evidence.latest ?? evidence.after;
+      assert.ok(evidence.connectedAtUnixMs <= deadline, "connected readback is inside the input-and-observation budget");
+      assert.ok(evidence.connectedReceivedAtUnixMs <= deadline && evidence.observationCompletedAtUnixMs <= deadline,
+        "native input and completed observation stay inside the 180-second budget");
+      const nativeRows = rows();
+      evidence.installStart = nativeRows.find(row => row.phase === "start" && row.request?.op === "install" && row.atUnixMs >= evidence.clickStartedAtUnixMs);
+      assert.ok(evidence.installStart, "stock Start service input invokes install/start");
+      evidence.installResult = nativeRows.find(row => row.requestId === evidence.installStart.requestId && row.phase === "result" && row.ok === true && row.request?.op === "install");
+      assert.ok(evidence.installResult && evidence.installResult.atUnixMs >= evidence.installStart.atUnixMs && evidence.installResult.atUnixMs <= evidence.connectedAtUnixMs,
+        "the same native install request succeeds before connected readback");
+      const verifyArtifact = join(output, "windows-recovered-task.json");
+      await windowsPhase("cell-native-recovery-verification", () => new Promise<void>((resolveExit, reject) => {
+        execFile(join(dirname(binary), "node.exe"), [join(repo, "desktop/e2e/windows-restart.mjs"), repo, machineHome, verifyArtifact, join(dirname(binary), "runtime"), "verify-recovered"],
+          { env: cliEnv, cwd: home, windowsHide: true, timeout: 90_000 }, error => error ? reject(error) : resolveExit());
+      }));
+      evidence.nativeVerification = JSON.parse(readFileSync(verifyArtifact, "utf8"));
+      assert.equal(evidence.nativeVerification.outcome, "passed");
+      assert.deepEqual(evidence.nativeVerification.installation, evidence.preparation.disabledFixture.installation, "recovery preserves the owned task source and receipt");
+      check("Start service re-enables the owned task and returns the window to connected", true);
+      }
+      const answering = await status();
+      const manager = answering.managers?.find((row: any) => row.space === fixture.space);
+      check("recovery cell native window and daemon agree on connected Manager", manager?.state === "answering" && manager.connectors?.some((row: any) => row.state === "available"));
+      evidence.answering = { pid: answering.pid, manager };
+      evidence.requests = requestSummary(rows(), evidence.restartStartedAtUnixMs);
+      evidence.outcome = "passed";
+    } catch (error) {
+      evidence.outcome = "failed"; evidence.error = String(error); throw error;
     } finally {
       // This only closes this fixture's staged helper control, never a task or daemon.
       if (!helper.stdin?.destroyed) helper.stdin?.end();
@@ -632,11 +675,14 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     await shot("03-no-application");
     phase("service-recovery-start");
     if (recoveryCell) {
-      await recoveryDiagnostic();
+      await installApplication();
+      await discoveryEvidence("before-acceptance-connect");
+      await driver.click("recover");
+      await title("This computer is connected");
+      await recoveryAcceptance();
       phase("service-recovery-complete");
       await windowsJourneyCheckpoint("service-recovery-complete");
-      return; // A diagnostic result is not full onboarding or account acceptance.
-    }
+    } else {
     await proveWindowsRestart(true);
     phase("service-recovery-complete");
     await windowsJourneyCheckpoint("service-recovery-complete");
@@ -647,6 +693,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     phase("application-refresh-start");
     try { await driver.click("recover"); await until("This computer is connected after application installation", () => driver.text("connection-title"), value => value === "This computer is connected", process.platform === "win32" ? 1_200_000 : 200_000); }
     finally { phase("application-refresh-settled"); await discoveryEvidence("after-check-again"); }
+    }
     const connected = await status();
     const manager = connected.managers.find((m: any) => m.space === fixture.space);
     check("window and daemon agree on launch-ready Manager", manager?.state === "answering" && manager.connectors.some((c: any) => c.state === "available"));
@@ -828,9 +875,9 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       writeFileSync(join(output, "daemon-native.log"), log);
     }
     writeFileSync(join(output, "result.json"), JSON.stringify({ platform: process.platform, binary, checks, calls, failure,
-      ...(recoveryCell ? { diagnosticCell: recoveryCell, acceptance: false,
-        diagnostic: existsSync(join(output, "windows-recovery-cell.json")) ? JSON.parse(readFileSync(join(output, "windows-recovery-cell.json"), "utf8")) : { outcome: "incomplete" } } : {}),
-      outcome: failure ? "failed" : recoveryCell ? "diagnostic-complete" : "passed" }, null, 2));
+      ...(recoveryCell ? { recoveryCell, acceptance: true,
+        recovery: existsSync(join(output, "windows-recovery-cell.json")) ? JSON.parse(readFileSync(join(output, "windows-recovery-cell.json"), "utf8")) : { outcome: "incomplete" } } : {}),
+      outcome: failure ? "failed" : "passed" }, null, 2));
     for (const child of desktopProcesses.reverse()) {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill();
