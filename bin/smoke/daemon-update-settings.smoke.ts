@@ -13,7 +13,7 @@ import { parseDesktopRequest } from "../daemon/desktop.js";
 import { updateViaDaemon } from "../daemon/client.js";
 import { automaticUpdates } from "../daemon/auto-update.js";
 
-const root = mkdtempSync(join(tmpdir(), "cotal-update-settings-"));
+const root = mkdtempSync(join(tmpdir(), "uds-"));
 Object.assign(process.env, { HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_HOME: join(root, "cotal") });
 for (const dir of [process.env.HOME!, process.env.XDG_CONFIG_HOME!, process.env.COTAL_HOME!]) mkdirSync(dir, { mode: 0o700 });
 const runtime = join(root, "rt"); mkdirSync(runtime, { recursive: true, mode: 0o700 });

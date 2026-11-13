@@ -18,5 +18,24 @@ const updater=automaticUpdates({version:"1.0.0",eligible:()=>true,prepare:async(
 try {
  await new Promise(resolve=>setTimeout(resolve,31000));
  assert.equal(readFileSync(victim,"utf8"),"preserve-me","updater must refuse a symlink log without overwriting its target");
+} finally { await updater.close(); }
+const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+let mac: ReturnType<typeof automaticUpdates> | undefined;
+try {
+ Object.defineProperty(process, "platform", { value: "darwin" });
+ writeFileSync(join(home,"update-attempt.json"),JSON.stringify({version:"99.0.0",failures:0,result:"due",next:0}));
+ mac = automaticUpdates({version:"1.0.0",eligible:()=>true,prepare:async()=>{},abort:async()=>{},report:()=>{}});
+ await new Promise(resolve=>setTimeout(resolve,31000));
+ const result = JSON.parse(readFileSync(join(home,"update-attempt.json"),"utf8"));
+ assert.match(result.result, /launchd automatic update handoff refused: .*Run `cotal update --self`/);
+ assert.match(mac.status().lastResult, /launchd automatic update handoff refused/);
+ assert.equal(readFileSync(victim,"utf8"),"preserve-me","failed native handoff must never fall back to child installation");
+ await mac.close();
+ writeFileSync(join(home,"update-launchd-result.json"),"{unreadable",{mode:0o600});
+ mac = automaticUpdates({version:"1.0.0",eligible:()=>true,prepare:async()=>{},abort:async()=>{},report:()=>{}});
+ assert.equal(mac.updating(),true,"unknown retained custody fences activation immediately on startup");
+ await new Promise(resolve=>setTimeout(resolve,31000));
+ assert.equal(mac.updating(),true,"unreadable custody remains fenced after scheduler observation fails");
+ assert.match(mac.status().lastResult,/custody unresolved: .*retrying observation automatically/);
  emitSentinel({ passed: counted.cells(), failed: 0 });
-} finally { await updater.close(); rmSync(home, { recursive: true, force: true }); }
+} finally { await mac?.close(); Object.defineProperty(process,"platform",platform); rmSync(home, { recursive: true, force: true }); }

@@ -141,11 +141,13 @@ stale Claude skills and out-of-date `.agents` skills at `cotal setup --skills`. 
 ## update [#update]
 
 Update preferences are saved in the Cotal home. `cotal update --auto off` disables automatic
-installation and `cotal update --auto on` enables it on eligible Linux installs. Automatic
-installation is available on Linux in this release. On macOS, Windows and other platforms,
-run `cotal update --self` to install manually. Daily checks, update notices and their settings
-remain available on every platform. Bare `cotal update --auto` reports the saved setting and
-the platform limit. On Linux, enabling or reading an enabled setting also checks the daemon's
+installation and `cotal update --auto on` enables it on eligible Linux and macOS installs.
+Automatic installation is on by default and requires the machine daemon service.
+A Mac on a version before this one needs one `cotal update --self`, and updates itself from then on.
+On Windows and other unsupported platforms, run `cotal update --self` to install manually.
+Daily checks, update notices and their settings remain available on every platform.
+Bare `cotal update --auto` reports the saved setting and the platform limit.
+On Linux and macOS, enabling or reading an enabled setting also checks the daemon's
 schedule. If no daemon answers, it names `cotal daemon install` and `cotal daemon status`.
 An answering daemon without an active automatic schedule is reported separately, including one
 paused by an unreadable update-attempt record with no next attempt. The preference stays saved;

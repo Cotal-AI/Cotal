@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { openPrivateAppend, writeSecretFileAtomic } from "@cotal-ai/core";
 import { checkForUpdate, homeCotalDir, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
 import type { DaemonUpdateStatus } from "./protocol.js";
+import { cleanLaunchUpdate, startLaunchUpdate } from "./update-launchd.js";
 
 interface Attempt { version?: string; failures: number; result: string; next: number; }
 interface UpdateHost {
@@ -27,7 +28,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") state = { ...state, result: "automatic updates paused: unreadable attempt record", next: Number.MAX_SAFE_INTEGER };
   }
-  let child: ChildProcess | undefined, busy: Promise<void> | undefined, closed = false;
+  let child: ChildProcess | undefined, busy: Promise<void> | undefined, closed = false, launchdPending = process.platform === "darwin" && (existsSync(join(homeCotalDir(), "update-launchd.json")) || existsSync(join(homeCotalDir(), "update-launchd-result.json")));
   const persist = () => writeSecretFileAtomic(file, `${JSON.stringify(state)}\n`);
   try { persist(); } catch (error) { host.report(`automatic updates paused: ${String(error)}`); state.next = Number.MAX_SAFE_INTEGER; }
   const status = (): DaemonUpdateStatus => {
@@ -42,16 +43,29 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     try {
       const settings = readUpdateSettings();
       notify = settings.notify;
-      automatic = process.platform === "linux" && !desktop && settings.auto && process.env.COTAL_NO_UPDATE_CHECK !== "1" && host.eligible();
+      automatic = ["linux", "darwin"].includes(process.platform) && !desktop && settings.auto && process.env.COTAL_NO_UPDATE_CHECK !== "1" && host.eligible();
       const recovery = readUpdateRecovery();
       if (recovery) { automatic = false; reason = `automatic updates paused: installed ${recovery.installed}; ${recovery.reason}; run \`cotal update --self\``; }
     } catch (error) { automatic = false; reason = `automatic updates paused: ${String(error)}`; }
-    if (process.platform !== "linux") reason = `${reason}. Automatic installation is available on Linux in this release. Run \`cotal update --self\` here`;
+    if (!["linux", "darwin"].includes(process.platform)) reason = `${reason}. Automatic installation is unavailable on ${process.platform === "win32" ? "Windows" : process.platform} in this release. Run \`cotal update --self\` here`;
     if (desktop) reason = "update the desktop app with its signed platform installer";
     return { channel: desktop ? "desktop" : "npm", current: host.version, latest: cached?.latest, lastCheck: cached?.checkedAt ? new Date(cached.checkedAt).toISOString() : undefined, automatic, notify, failures: state.failures, lastResult: reason, ...(state.next < Number.MAX_SAFE_INTEGER ? { nextAttempt: new Date(state.next).toISOString() } : {}) };
   };
   const tick = async (): Promise<void> => {
     if (closed) return;
+    if (process.platform === "darwin") {
+      try {
+        launchdPending = true;
+        if (cleanLaunchUpdate() === "pending") return;
+        launchdPending = false;
+        state = JSON.parse(readFileSync(file, "utf8")) as Attempt;
+      } catch (error) {
+        launchdPending = true;
+        state = { ...state, result: `launchd automatic update custody unresolved: ${error instanceof Error ? error.message : String(error)}; retrying observation automatically`, next: Date.now() + UPDATE_HOUR_MS };
+        persist(); host.report(state.result);
+        return;
+      }
+    }
     const settings = readUpdateSettings();
     const cached = process.env.COTAL_NO_UPDATE_CHECK !== "1" && (settings.auto || settings.notify) ? await checkForUpdate() : readUpdateCheck();
     if (closed || Date.now() < state.next) return;
@@ -73,6 +87,14 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       if (closed || !status().automatic) return;
       state = { ...state, failures: state.failures, result: `updating to ${cached.latest}`, next: Date.now() + UPDATE_HOUR_MS };
       persist();
+      if (process.platform === "darwin") {
+        try { launchdPending = true; startLaunchUpdate(state.failures); }
+        catch (error) {
+          state = { ...state, result: `launchd automatic update handoff refused: ${error instanceof Error ? error.message : String(error)}. Run \`cotal update --self\``, next: Date.now() + UPDATE_HOUR_MS };
+          persist(); host.report(state.result);
+        }
+        return;
+      }
       await new Promise<{ code: number | null; output: string }>(resolve => {
         const logPath = join(homeCotalDir(), "update-attempt.log");
         const outputFd = openPrivateAppend(logPath);
@@ -94,7 +116,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     busy = tick().catch(error => { host.report(`automatic update: ${String(error)}`); }).finally(() => { busy = undefined; });
   }, 30_000);
   timer.unref();
-  return { status, async check() { await checkForUpdate(); return status(); }, updating: () => child !== undefined, async close() {
+  return { status, async check() { await checkForUpdate(); return status(); }, updating: () => child !== undefined || launchdPending, async close() {
     closed = true; clearInterval(timer);
     if (child) {
       child.stdout?.destroy(); child.stderr?.destroy(); child.unref();
