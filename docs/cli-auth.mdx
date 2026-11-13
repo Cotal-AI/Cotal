@@ -229,6 +229,11 @@ Account sign-in still completes, including space discovery and selection. The re
 lists skipped services and prints `journalctl --user -u <unit>` to find their sign-in
 command when the store cannot be proved. Skipped services do not change the command's successful exit status.
 Logout also clears the local account login even when a service must be skipped.
+Group-writable configuration ancestors are accepted only under the same
+[private-group proof](cli-selection.mdx) used for protected local paths, with no extended ACL.
+If that proof is unavailable, the skip report names a mode change. When `getfacl` is missing,
+it also offers installing the `acl` package. World-writable paths, foreign owners and
+unproved groups remain refused.
 Hand-made units are not updated automatically;
 their refusal names the selected sign-in store and a command such as
 `COTAL_HOME=<store> cotal login --idp <url>`.
