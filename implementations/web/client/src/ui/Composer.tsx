@@ -52,7 +52,8 @@ const BLANK: Draft = { text: "", outgoing: [] };
  *
  *  - Nothing until `/api/meta` has said what the dashboard can post as.
  *  - Posting off: the reason with a lock, the command that posts from a terminal, a disabled send
- *    whose tooltip is the reason, and the note from `composerNote`.
+ *    whose tooltip is the reason, and the note from `composerNote`. The command shrinks so the
+ *    send stays inside the row.
  *  - Live: the box (`Message <where>`), Mention, the mode dot with `to`, "as operator", and send.
  *    Enter sends and Shift+Enter starts a new line.
  *  - Sending: send is disabled and spins until the server answers.
@@ -92,13 +93,13 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
             <Icon icon={SquareLock02Icon} />
             <InputGroupText>{post.reason === POST_OFF_CREDS ? withCode("This dashboard was started with `--creds`, which can only read.") : post.reason}</InputGroupText>
           </InputGroupAddon>
-          <InputGroupAddon align="block-end">
+          <InputGroupAddon align="block-end" className="min-w-0">
             <CopyCommand command={sendCommand(target)} />
             <Tooltip>
               {/* A disabled button fires no pointer events, so the Tooltip hangs on a span around it,
                   which takes the focus instead. The reason is also the box's first line. */}
               <TooltipTrigger asChild>
-                <span className="ml-auto inline-flex" tabIndex={0}>
+                <span className="inline-flex shrink-0" tabIndex={0}>
                   <InputGroupButton variant="default" size="icon-xs" disabled aria-label="Send">
                     <Icon icon={ArrowUp02Icon} />
                   </InputGroupButton>

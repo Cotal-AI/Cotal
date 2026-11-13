@@ -549,9 +549,10 @@ const SEAMS: Seam[] = [
   // 432/344 -> 438/348: #6554 adds two stream setup/conversion connections and four smoke
   // connections in conditional-dlv-chat (1), conditional-dlv (1), and membership-store-no-reserve (2).
   // Each states its transport decision explicitly. Bundled sidecars are counted separately below.
-  // 438/348 -> 439/349: the missing DM stream case adds one in delivery/smoke/deliver-pending-sender.
+  // 438/348 -> 439/349: admission-store-atomic adds one owned fixture connection with tls: false.
+  // 439/349 -> 440/350: the missing DM stream case adds one in delivery/smoke/deliver-pending-sender.
   // It states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 439, untypecheckedSites: 349 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 440, untypecheckedSites: 350 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

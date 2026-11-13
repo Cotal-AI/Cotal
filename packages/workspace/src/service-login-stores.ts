@@ -1,5 +1,7 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { assertProtectedEntry, shellPath } from "./protected-records.js";
+import { CommandFailure } from "./output.js";
 import { spaceFromKey } from "./auth-paths.js";
 import { homedir } from "node:os";
 import { loginRecoveryCommand } from "./cloud-login.js";
@@ -15,6 +17,7 @@ export interface ServiceLoginStore {
 export interface SkippedServiceLoginStore {
   readonly service?: string;
   readonly reason: "local-overrides" | "unproven";
+  readonly remedy?: string;
 }
 export interface ServiceLoginStoresReport {
   readonly stores: ServiceLoginStore[];
@@ -42,7 +45,17 @@ function physical<T>(path: string, directory: boolean, use: (fd: number) => T, c
       const st = fstatSync(fd);
       if ((!last || directory) ? !st.isDirectory() : !st.isFile()) refuse();
       if (last ? st.uid !== uid : st.uid !== uid && st.uid !== 0) refuse();
-      if (!(candidate && last && !directory) && (st.mode & 0o022) !== 0 && !(st.uid === 0 && st.isDirectory() && (st.mode & 0o1000))) refuse();
+      if (!(candidate && last && !directory)) {
+        // ACL reads follow the pinned inode, never a replaceable pathname.
+        const pinned = `/proc/${process.pid}/fd/${fd}`;
+        try { assertProtectedEntry("Manager service configuration", pinned, st, { ancestor: !last }); }
+        catch (error) {
+          if (error instanceof CommandFailure && error.remedy) {
+            throw new CommandFailure("refused", "PERMISSION_DENIED", "Manager service configuration is not protected", { remedy: error.remedy.replaceAll(pinned, shellPath(join("/", ...parts.slice(0, i + 1)))) });
+          }
+          throw error;
+        }
+      }
     }
     return use(fd);
   } finally { for (const fd of fds.reverse()) closeSync(fd); }
@@ -157,9 +170,9 @@ export function serviceLoginStoresReport(): ServiceLoginStoresReport {
       if (entries.length > 1024) refuse();
       candidates.push({ root, entries });
     }
-  } catch {
+  } catch (error) {
     // An unreadable search root could conceal an override of any candidate.
-    return { stores: [], skipped: [{ reason: "unproven" }] };
+    return { stores: [], skipped: [{ reason: "unproven", ...(error instanceof CommandFailure && error.remedy ? { remedy: error.remedy } : {}) }] };
   }
   for (const { root, entries } of candidates) {
     for (const service of entries.sort()) {
@@ -175,7 +188,7 @@ export function serviceLoginStoresReport(): ServiceLoginStoresReport {
         const store = inspect(join(root, service), service, roots);
         if (store) stores.push(store);
       } catch (error) {
-        skipped.push({ service, reason: error instanceof LocalOverrides ? "local-overrides" : "unproven" });
+        skipped.push({ service, reason: error instanceof LocalOverrides ? "local-overrides" : "unproven", ...(error instanceof CommandFailure && error.remedy ? { remedy: error.remedy } : {}) });
       }
     }
   }
