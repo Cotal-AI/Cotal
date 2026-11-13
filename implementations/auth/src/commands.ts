@@ -153,7 +153,7 @@ export async function chooseAccount(args: ParsedArgs, mode: "login" | "logout"):
   if (!canChooseAccount() || presentationOf(args.values) === "json") throw new CommandFailure("refused", "USAGE_INVALID", "select Cotal Cloud with --cloud or another provider with --idp outside an interactive terminal");
   if (mode === "login") {
     const chosen = await untilInputEnds(signal => prompts.select({ message: "Choose a sign-in provider", initialValue: COTAL_CLOUD_IDP, options: [
-      { value: COTAL_CLOUD_IDP, label: "Cotal Cloud (cloud.cotal.ai)" },
+      { value: COTAL_CLOUD_IDP, label: "Cotal Cloud (cotal.cloud)" },
       ...[...providers].filter(([idp]) => idp !== COTAL_CLOUD_IDP).map(([idp, sub]) => ({ value: idp, label: oneLine(idp), ...(sub ? { hint: oneLine(sub) } : {}) })),
       { value: "custom", label: "Another host" },
     ], signal }));
