@@ -1,6 +1,8 @@
 name: Automatic update platforms
 on:
   workflow_dispatch:
+  push:
+    branches: [fix/cross-platform-auto-update]
 permissions:
   contents: read
 jobs:
@@ -14,9 +16,9 @@ jobs:
     env:
       DO_NOT_TRACK: '1'
       COTAL_TEST_REAL_SERVICE: '1'
-      # Native service inherits the runner account HOME, not the private npm/probe HOME.
-      # Leave COTAL_TEST_NATIVE_ACCOUNT_HOME unset until coordinator scope approval.
-      # Without it the private policy probe runs, then reports BLOCKED before native install.
+      # Approved disposable GitHub-hosted account HOME, never a self-hosted account.
+      # Native service does not inherit the private npm/probe HOME.
+      COTAL_TEST_NATIVE_ACCOUNT_HOME: '1'
     steps:
       - uses: actions/checkout@v6
         with:
