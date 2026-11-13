@@ -7234,7 +7234,8 @@ export class CotalEndpoint extends EventEmitter {
    *  delivery-daemon-written (DLV is delivery-write-only, broker-enforced) and is a CHANNEL message by contract
    *  (the backstop never carries DMs), so `kind=channel` is path-derived (SPEC §4) and the body is
    *  trusted (no spoof-guard). `durable:true` — real JetStream ack, coalesced with the core-sub live
-   *  copy by `MeshAgent.ingest`. No-op when the durable isn't present (open mode / not provisioned). */
+   *  copy by `MeshAgent.ingest`. No-op when the durable isn't present and this connection did not declare
+   *  a read list. A declared read list with no durable refuses. */
   private async pumpDlv(): Promise<void> {
     if (!this.js) return;
     if (!this.ownLifecycleUid) return; // no lifecycle uid — never provisioned for Plane-3 (its durable is lifecycle-keyed)
@@ -7251,7 +7252,11 @@ export class CotalEndpoint extends EventEmitter {
     let consumer;
     try { consumer = await this.js.consumers.get(dlvStream(this.space), durable); }
     catch (e) {
-      if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) return;
+      if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) {
+        if ((this.allowSubscribe?.length ?? 0) > 0)
+          throw new Error(`delivery durable "${durable}" for space "${this.space}" is not on this broker; this connection declared a read list, so it cannot start without it`);
+        return;
+      }
       throw e; // a denied bind is not evidence that the read ACL is empty or the durable is absent
     }
     const lease = await this.readDeliveryLease(0);

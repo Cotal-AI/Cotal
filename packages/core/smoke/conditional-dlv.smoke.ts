@@ -57,8 +57,13 @@ try {
   const rows = (allowSubscribe: string[]) =>
     ((permissionsFor("agent", space, { ...principal, connId: "connection" }, { lifecycleUid: uid, allowSubscribe }) as
       { pub: { allow: string[] } }).pub.allow);
-  check("empty ACL credential has no DLV bind or ACK rows",
-    !rows([]).some((row) => row.includes(`.${dlvStream(space)}.${dlvDurable(principal.owner, principal.actor, uid)}`) || row.startsWith(`$JS.ACK.${dlvStream(space)}.`)));
+  const dlvName = dlvDurable(principal.owner, principal.actor, uid);
+  const infoRow = `$JS.API.CONSUMER.INFO.${dlvStream(space)}.${dlvName}`;
+  const emptyRows = rows([]);
+  check("empty ACL credential can ask about its own DLV durable and cannot fetch or ack it",
+    emptyRows.includes(infoRow)
+    && !emptyRows.includes(`$JS.API.CONSUMER.MSG.NEXT.${dlvStream(space)}.${dlvName}`)
+    && !emptyRows.some((row) => row.startsWith(`$JS.ACK.${dlvStream(space)}.`)));
   check("nonempty ACL credential has the three DLV bind rows",
     rows(["general"]).filter((row) => row.includes(`.${dlvStream(space)}.${dlvDurable(principal.owner, principal.actor, uid)}`) || row.startsWith(`$JS.ACK.${dlvStream(space)}.`)).length === 3);
 
@@ -85,8 +90,12 @@ try {
   const inconsistent = agent(["general"]);
   let refused = false;
   try { await inconsistent.start(); }
-  catch (error) { if (!isPermissionDenied(error)) throw error; refused = true; }
-  check("an explicit nonempty ACL with denied DLV binding refuses instead of silently degrading", refused);
+  catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    refused = isPermissionDenied(error) || message.includes("is not on this broker");
+    if (!refused) throw error;
+  }
+  check("an explicit nonempty ACL with no DLV durable refuses instead of silently degrading", refused);
   await inconsistent.stop();
 
   await provisionAgentDurables(provisioner, principal, { subscribe: [], allowSubscribe: ["general"] });
