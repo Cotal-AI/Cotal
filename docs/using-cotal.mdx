@@ -36,8 +36,14 @@ local space; use `cotal spawn` there.
 
 The person approves the connection on the authority's web page. Read the proposed access
 before approving: the native connection shares activity after activation, including user
-messages, assistant replies and tool names with their start and end. Tool arguments and
-results are withheld from the public event channel. Presence shows the pending tool's name to roster readers, without its command or arguments. Earlier history is not shared
+messages, assistant replies and tool names with their start and end. Mapped tool inputs and
+results are published by default on a separate payload rail, unless the connection's policy
+withholds them. These can include local file content and command output. In authenticated spaces,
+the owner, admins and holders of concrete event-channel read grants can read that rail; chat
+wildcards alone do not grant access. The public event channel carries tool metadata without
+inputs or results. Presence shows the pending tool's name to roster readers, without its command
+or arguments. See [Tool payload publication](UPGRADING.md#tool-payload-publication) for
+availability and mapping limits. Earlier history is not shared
 and reasoning is not shared by default. Channel access and teammate/workflow capabilities
 need their own approved selection. Endpoint invocation is not offered through this connection.
 
