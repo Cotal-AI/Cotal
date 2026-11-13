@@ -84,6 +84,21 @@ export function privateChildEnv(directory, inherited = process.env) {
     XDG_STATE_HOME: join(directory, 'state'), XDG_CACHE_HOME: join(directory, 'cache'), XDG_RUNTIME_DIR: join(directory, 'runtime') };
 }
 
+/** Admit the next fixture only after the original owner exited and proved native cleanup. */
+export function verifyCleanup(directory, output) {
+  const controller = JSON.parse(readFileSync(join(directory, 'result.json'), 'utf8'));
+  assert.equal(controller.schema, 1);
+  assert.equal(controller.state, 'done', 'original fixture owner is not terminal');
+  assert.equal(controller.cancelled, false, 'cancelled fixture cannot admit another journey');
+  const phases = readFileSync(join(output, 'windows-journey-phases.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const exit = phases.findLast(row => row.kind === 'fixture-exit');
+  assert.ok(exit && Number.isInteger(exit.code) && exit.signal === null, 'original fixture must exit normally');
+  const result = JSON.parse(readFileSync(join(output, 'result.json'), 'utf8'));
+  for (const check of ['cleanup removes app-installed service', 'native supervisor reports app service absent', 'cleanup restores original account User PATH']) {
+    assert.ok(result.checks?.includes(check), `original cleanup did not prove: ${check}`);
+  }
+}
+
 export async function runController(directory, output, { spawnFixture = spawn, retainMs = 10_000, cell } = {}) {
   validateCell(cell);
   const { mkSecretDir, writeSecretFileAtomic } = await import('@cotal-ai/core');
@@ -208,6 +223,7 @@ async function command(action, directory, output, cell) {
   mkSecretDir(output);
   const stateFile = join(directory, 'controller.json');
   const resultFile = join(directory, 'result.json');
+  if (action === 'verify-cleanup') return verifyCleanup(directory, output);
   if (action === 'run') return runController(directory, output, { cell });
   assert.ok(['start', 'account', 'resume', 'cancel'].includes(action));
   if (action === 'start' || action === 'account') {
