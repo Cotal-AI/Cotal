@@ -81,9 +81,11 @@ because the manager may already have recorded the run, and exits 130 or 143. Lis
 `cotal run` before starting it again.
 A `start`, `resume`, `answer` or `amend` whose request went out and drew no reply before the
 deadline is also unknown, exit 3, and is not retried, because the manager may have recorded it. Read
-the run with `cotal run show` or list the runs with `cotal run` before running it again. When no
-manager answered before the request went out, or none was subscribed to receive it, the verb refuses
-`TARGET_UNAVAILABLE`, exit 2.
+the run with `cotal run show` or list the runs with `cotal run` before running it again. A list or
+`show` whose request drew no reply fails with `OPERATION_FAILED`, exit 5: the manager answered on the
+same rail just before, so it runs, and a read is safe to run again. When no manager answered before
+the request went out, or none was subscribed to receive it, the verb refuses `TARGET_UNAVAILABLE`,
+exit 2.
 `resume` asks the manager to take an existing run back and continue it from its step journal; the
 source is the recorded program, so no `--file` is taken. A run recorded `completed` or `failed` is
 refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue;

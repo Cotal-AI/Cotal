@@ -251,8 +251,18 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
       f.outcome === "unknown" && f.code === "OPERATION_UNKNOWN" && exitCode(f.outcome, f.code) === 3 && f.message.endsWith("; the manager may already have recorded it")
       && String(f.remedy).startsWith("read the run with `cotal run show`, or list the runs with `cotal run`, before trying again"), { outcome: f.outcome, code: f.code, message: f.message });
   }
-  const read = unansweredHostFailure("run-status", "s", sent("run-status"));
-  c("an unanswered read changed nothing and stays TARGET_UNAVAILABLE", read.outcome === "refused" && read.code === "TARGET_UNAVAILABLE", { outcome: read.outcome, code: read.code });
+  // The describe before a read was answered on the same rail, so the rail and skew wording does not
+  // apply: the read failed, and running it again is safe.
+  for (const command of ["run-status", "run-ps"]) {
+    const read = unansweredHostFailure(command, "s", sent(command));
+    c(`${command} published and unanswered failed, exit 5, and names neither the rail nor a restart`,
+      read.outcome === "failed" && read.code === "OPERATION_FAILED" && exitCode(read.outcome, read.code) === 5
+      && read.message.endsWith("The manager answered on this rail just before, so it runs and did not reply in time")
+      && !read.message.includes("disjoint at the broker") && read.remedy === "a read changes nothing, so it is safe to run again", { outcome: read.outcome, code: read.code, message: read.message });
+  }
+  const readDescribed = unansweredHostFailure("run-ps", "s", new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail",
+    [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", rail: "ep.v1" }]));
+  c("a read whose describe drew no answer stays TARGET_UNAVAILABLE", readDescribed.outcome === "refused" && readDescribed.code === "TARGET_UNAVAILABLE", { outcome: readDescribed.outcome, code: readDescribed.code });
   const described = unansweredHostFailure("run-start", "s", new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail",
     [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", rail: "ep.v1" }]));
   c("a start whose describe drew no answer sent nothing and stays TARGET_UNAVAILABLE", described.outcome === "refused" && described.code === "TARGET_UNAVAILABLE", { outcome: described.outcome, code: described.code });
