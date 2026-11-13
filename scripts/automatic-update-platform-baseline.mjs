@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, statfsSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, statfsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createServer } from 'node:http';
@@ -111,6 +111,19 @@ function cleanEnvironment() {
   for (const key of Object.keys(env)) if (key.startsWith('COTAL_')) delete env[key];
   return { ...env, DO_NOT_TRACK: '1', COTAL_TELEMETRY: 'off', NO_COLOR: '1' };
 }
+export function configureCandidateRegistry(home, registry) {
+  const path = join(home, '.npmrc');
+  if (existsSync(path)) assert(lstatSync(path).isFile() && !lstatSync(path).isSymbolicLink(), 'candidate npm config must be a regular file');
+  const prior = existsSync(path) ? { bytes: readFileSync(path) } : undefined;
+  const owned = Buffer.concat([prior?.bytes ?? Buffer.alloc(0), Buffer.from(`\nregistry=${registry}\n`)]);
+  writeFileSync(path, owned, { mode: 0o600 });
+  return () => {
+    assert(lstatSync(path).isFile() && !lstatSync(path).isSymbolicLink(), 'candidate npm config ownership changed');
+    assert.deepEqual(readFileSync(path), owned, 'candidate npm config changed during cell');
+    if (prior) writeFileSync(path, prior.bytes);
+    else unlinkSync(path);
+  };
+}
 function npmCommand() {
   if (process.platform !== 'win32') return ['npm', []];
   const cli = join(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
@@ -178,7 +191,7 @@ export async function matrixCell(options) {
   }
   env.PATH = [dirname(launcher), join(prefix, process.platform === 'win32' ? '' : 'bin'), join(home, '.local/bin'), env.PATH].join(delimiter);
   const [npm, npmPrefix] = npmCommand();
-  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, launchdObserver, offInventory, killControl, finalDaemon;
+  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon;
   const transcript = [];
   async function call(label, file, argv, timeout = 180000) {
     if (/install|seed|upgrade under test/.test(label)) {
@@ -244,7 +257,7 @@ export async function matrixCell(options) {
       if ((options.direction ?? 'B') === 'B') report.target = overlay.identity.version;
       else report.source = overlay.identity.version;
       // Native services read npm's normal per-account config, not the launching shell's registry env.
-      writeFileSync(join(home, '.npmrc'), `registry=${overlay.url}\n`, { mode: 0o600 });
+      restoreRegistry = configureCandidateRegistry(home, overlay.url);
     }
     const sourceInstall = ok(layout === 'installer' ? await installer(report.source) : await npmCall('install published source', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.source}`, '--no-audit', '--no-fund']), 'source install');
     assert.equal(json(join(pkg, 'package.json')).version, report.source, 'source installed version');
@@ -524,6 +537,10 @@ export async function matrixCell(options) {
           report.cleanup = 'receipt-guarded native removal confirmed';
         } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
       }
+    }
+    if (restoreRegistry && !uncertain && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed')) {
+      try { restoreRegistry(); report.registryConfig = 'restored before candidate registry stopped'; }
+      catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (overlay) report.registryRequests = await overlay.close();
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;

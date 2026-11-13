@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { candidateRegistry, bootstrapVersion, selectedTargets, cliReportsVersion, verifyCandidateInstaller, completionAdvisory, nativeGenerationReady } from './automatic-update-platform-baseline.mjs';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import * as baseline from './automatic-update-platform-baseline.mjs';
 
 function productCheckout() {
@@ -67,7 +67,7 @@ test('source-root refuses non-repositories and untracked product inputs', () => 
   const outside = mkdtempSync(join('/var/tmp/upgrade-matrix', 'not-git-'));
   assert.throws(() => baseline.resolveCandidateSourceRoot(outside));
 });
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { create } from 'tar';
 import { parse as parseYaml } from 'yaml';
@@ -165,7 +165,7 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
     if (job.strategy) assert(job.strategy['max-parallel'] <= 6, `${name} is not bounded to six`);
-    if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
+    if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);
     visiting.delete(name);
@@ -201,13 +201,52 @@ test('candidate overlay serves packed closure, stock metadata and read-only poli
     assert.equal((await fetch(`${overlay.url}/cotal-ai`, { method: 'PUT', body: '{}' })).status, 405);
   } finally { await overlay.close(); }
   const sourceOverlay = await candidateRegistry(root, 'A', 'https://registry.npmjs.org/');
+  const home = join(root, 'home');
+  mkdirSync(home, { mode: 0o700 });
+  const original = 'registry=https://registry.npmjs.org/\nfund=false\n';
+  writeFileSync(join(home, '.npmrc'), original);
+  const restore = baseline.configureCandidateRegistry(home, sourceOverlay.url);
+  const npmVersion = () => new Promise((resolve, reject) => {
+    const env = { ...process.env, HOME: home, USERPROFILE: home, npm_config_cache: join(root, 'cache'), npm_config_fetch_retries: '0' };
+    delete env.npm_config_registry;
+    delete env.NPM_CONFIG_REGISTRY;
+    const child = spawn('npm', ['view', 'cotal-ai@latest', 'version', '--json'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', b => { stdout += b; });
+    child.stderr.on('data', b => { stderr += b; });
+    child.once('error', reject);
+    child.once('close', exit => resolve({ exit, stdout, stderr }));
+  });
   try {
     const metadata = await (await fetch(`${sourceOverlay.url}/cotal-ai`)).json();
     assert.notEqual(metadata['dist-tags'].latest, '0.999.0');
     assert.equal(metadata.versions['0.999.0'].version, '0.999.0');
     const installedMetadata = await (await fetch(`${sourceOverlay.url}/cotal-ai/0.999.0`)).json();
     assert(installedMetadata.dist.integrity.startsWith('sha512-'));
-  } finally { await sourceOverlay.close(); }
+    assert.equal((await npmVersion()).exit, 0, 'real npm reaches active first-cell overlay');
+  } finally { restore(); await sourceOverlay.close(); }
+  assert.equal(readFileSync(join(home, '.npmrc'), 'utf8'), original);
+  const second = await npmVersion();
+  assert.equal(second.exit, 0, `second cell public latest after stopped first overlay: ${second.stderr}`);
+  assert.match(JSON.parse(second.stdout), /^\d+\.\d+\.\d+$/);
+});
+
+test('candidate registry configuration removes only unchanged owned bytes and preserves prior account settings', () => {
+  const home = mkdtempSync('/var/tmp/upgrade-matrix/npmrc-test-');
+  const file = join(home, '.npmrc');
+  const restoreAbsent = baseline.configureCandidateRegistry(home, 'http://127.0.0.1:1');
+  restoreAbsent();
+  assert(!existsSync(file));
+  const original = 'registry=https://registry.npmjs.org/\nfund=false\n';
+  writeFileSync(file, original);
+  const restore = baseline.configureCandidateRegistry(home, 'http://127.0.0.1:2');
+  assert(readFileSync(file, 'utf8').startsWith(original));
+  writeFileSync(file, 'foreign change');
+  assert.throws(restore, /changed during cell/);
+  assert.equal(readFileSync(file, 'utf8'), 'foreign change');
+  const other = mkdtempSync('/var/tmp/upgrade-matrix/npmrc-link-');
+  symlinkSync(file, join(other, '.npmrc'));
+  assert.throws(() => baseline.configureCandidateRegistry(other, 'http://127.0.0.1:3'), /regular file/);
 });
 
 test('published installer override requires explicit source/hash and cannot enter candidate tiers', async () => {

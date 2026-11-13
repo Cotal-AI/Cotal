@@ -103,6 +103,13 @@ requires the old installation to remain unchanged and no handoff receipt to appe
 cell must establish its exact pre-result runner identity before any signal. It is not accepted as a
 transition when that observation is missing.
 
+Each candidate cell starts its own registry. After confirmed native removal, it restores the prior
+account npm configuration before stopping that registry. Changed configuration or uncertain custody
+is retained for disposable-runner teardown. The `[mac-controls-only]` push mode runs the off and
+killed-before-result controls in separate disposable jobs, one at a time, with failure cancellation
+disabled. It reuses a pinned candidate artifact and verifies its archive digest and source manifest
+without rebuilding. A failed control cannot suppress the other or share its native custody.
+
 ## Keep desktop custody separate
 
 The Linux desktop-beside-CLI job uses the existing v0.164.2 release workflow's desktop package,

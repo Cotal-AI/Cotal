@@ -14,14 +14,43 @@ test('transition mode enables only the three focused jobs and excludes every old
   assert.deepEqual(Object.keys(workflow.jobs).filter(name => name.startsWith('transition-')), names);
   for (const [name, job] of Object.entries(workflow.jobs)) {
     if (names.includes(name)) {
-      assert.equal(job.if, "github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')");
+      assert.equal(job.if, "!contains(github.event.head_commit.message, '[mac-controls-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')");
     } else {
-      assert(job.if.startsWith("!contains(github.event.head_commit.message, '[mac-transition-only]') && "), name);
+      assert(job.if.includes("!contains(github.event.head_commit.message, '[mac-transition-only]')"), name);
     }
   }
   assert.equal(native.needs, undefined);
   assert.equal(pack.needs, 'transition-native');
   assert.equal(proof.needs, 'transition-pack');
+});
+
+test('controls run only the two unfinished cells with independent disposable custody and no rebuild', () => {
+  const job = workflow.jobs['mac-controls-proof'];
+  assert.equal(job.needs, undefined);
+  assert.equal(job['runs-on'], 'macos-15');
+  assert.equal(job.strategy['fail-fast'], false);
+  assert.equal(job.strategy['max-parallel'], 1);
+  assert.deepEqual(job.strategy.matrix, { mode: ['off-before-tick', 'killed-before-result'] });
+  for (const [name, other] of Object.entries(workflow.jobs)) {
+    assert(other.if.includes(name === 'mac-controls-proof'
+      ? "contains(github.event.head_commit.message, '[mac-controls-only]')"
+      : "!contains(github.event.head_commit.message, '[mac-controls-only]')"), name);
+  }
+  assert(!/--pack|workspace-concurrency|scripts\/build-native/.test(commands(job)));
+  const retrieve = job.steps.find(step => step.name === 'Retrieve original candidate without rebuilding');
+  assert.equal(retrieve.uses, 'actions/github-script@v8');
+  for (const token of ['14084125820', '43521878657', 'e10786970077b6e035606b37a81531a9f35137a8155345e53a275858cd387430', 'getArtifact', 'downloadArtifact', "createHash('sha256')"]) assert(retrieve.with.script.includes(token));
+  const verify = job.steps.find(step => step.name === 'Verify original candidate source and manifest');
+  assert(verify.run.includes('125e718555b1ec988cf50fcb4b362fb6a775072423466330e670031cb7ec1cb1'));
+  assert(verify.run.includes('process.env.PRODUCT_SOURCE'));
+  const capture = job.steps.find(step => step.name === 'Capture native launchd manuals before proof cell');
+  const cell = job.steps.find(step => step.name === 'Prove isolated scheduler control');
+  assert(job.steps.indexOf(capture) < job.steps.indexOf(cell));
+  assert.equal(cell.env.PROOF_MODE, '${{ matrix.mode }}');
+  assert(cell.run.includes('--launchd-proof "$PROOF_MODE"'));
+  const upload = uses(job, 'actions/upload-artifact')[0];
+  assert.equal(upload.if, 'always()');
+  assert.equal(upload.with.name, 'mac-control-${{ matrix.mode }}');
 });
 
 test('six native builders compile the immutable product checkout with at most three workers', () => {
