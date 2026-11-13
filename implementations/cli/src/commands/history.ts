@@ -171,6 +171,11 @@ function parseSince(raw: string | undefined, now: number): Since | undefined {
   throw usage(`--since takes a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence, not "${raw}"`);
 }
 
+/** The name a history row shows. A blank payload name is not a sender. */
+export function historySender(name: string, id: string): string {
+  return name.trim() ? name : id;
+}
+
 function itemOf(msg: CotalMessage, where: { seq?: number; channel?: string }): HistoryItem {
   return {
     seq: where.seq ?? null,
@@ -323,7 +328,8 @@ export async function history(args: ParsedArgs): Promise<void> {
       : undefined;
     const completeness = partial ? "partial" : "complete";
     if (v.dms) await ep.waitForPresenceSnapshot(ROSTER_MS);
-    const names = new Map([...ep.getRoster().map((p) => [p.card.id, p.card.name] as const), ...result.items.map((item) => [item.from.id, item.from.name] as const)]);
+    const names = new Map(ep.getRoster().filter((p) => p.card.name.trim()).map((p) => [p.card.id, p.card.name] as const));
+    for (const item of result.items) if (item.from.name.trim()) names.set(item.from.id, item.from.name);
     if (live && presentation === "json") {
       // A follow's snapshot is its first record, and the exit says what `writeResult` would have.
       writeStreamRecord(streamRecord("history", "snapshot", target, { ...result, completeness, warnings }));
@@ -438,7 +444,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     const held = await ep.chatRetention();
     chat = held.stream;
     lastSeq = held.lastSeq;
-    const names = new Map(read.map((item) => [item.from.id, item.from.name]));
+    const names = new Map(read.filter((item) => item.from.name.trim()).map((item) => [item.from.id, item.from.name]));
     retention = {
       perSender: held.perSender,
       maxAgeMs: held.maxAgeMs,
@@ -584,7 +590,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
           } else if (entry.item) {
             if (seen.has(entry.item.id) || !match(entry.item)) continue;
             remember(entry.item.id);
-            names.set(entry.item.from.id, entry.item.from.name);
+            if (entry.item.from.name.trim()) names.set(entry.item.from.id, entry.item.from.name);
             // The live feed is the broker's delivery, which carries no stream sequence, so an event has
             // no `seq`. The snapshot's items carry theirs.
             const { seq: _seq, ...event } = entry.item;
@@ -616,15 +622,16 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
 }
 
 /** A DM row shows its recipient's name when the roster or a message read so far from that principal
- *  carries it, else the principal. */
-function where(item: HistoryItem, names: ReadonlyMap<string, string>): string {
+ *  carries one that is not only whitespace, else the principal. */
+export function where(item: HistoryItem, names: ReadonlyMap<string, string>): string {
   if (item.channel !== null) return `#${item.channel}`;
-  return `DM to ${item.to === null ? "?" : names.get(item.to) ?? item.to}`;
+  const named = item.to === null ? undefined : names.get(item.to);
+  return `DM to ${named && named.trim() ? named : item.to ?? "?"}`;
 }
 
 /** A followed message, in the line `watch --plain` writes after its `[space]` prefix. */
-function followLine(item: HistoryItem): string {
-  return scriptLine(item.ts, item.from.name || item.from.id, item.channel !== null ? `#${item.channel}` : `DM to ${item.to ?? "not attributed"}`, item.text);
+export function followLine(item: HistoryItem): string {
+  return scriptLine(item.ts, historySender(item.from.name, item.from.id), item.channel !== null ? `#${item.channel}` : `DM to ${item.to ?? "not attributed"}`, item.text);
 }
 
 function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string, string>, since: Since | undefined, follow = false): Report {
@@ -667,7 +674,7 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
             ? [{
                 kind: "table" as const,
                 columns: [{ key: "ts", label: "TIME" }, { key: "where", label: "WHERE" }, { key: "from", label: "FROM" }, { key: "text", label: "MESSAGE" }],
-                rows: r.items.map((item) => ({ ts: shownTime(item.ts), where: where(item, names), from: item.from.name, text: rowText(item.text) })),
+                rows: r.items.map((item) => ({ ts: shownTime(item.ts), where: where(item, names), from: historySender(item.from.name, item.from.id), text: rowText(item.text) })),
               }]
             : []),
           { kind: "lines" as const, lines: notes },

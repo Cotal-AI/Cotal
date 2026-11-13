@@ -69,6 +69,16 @@ already-running feed logs the same repair and its view stays stale. Embedded pla
 `reconcileSpaceMemoryBuckets` after their broker restart or wake before treating these views as
 ready; standing membership credentials cannot create streams.
 
+## Clients older than 0.163.0 with no read channels
+
+0.163.0 stopped creating the delivery durable for an agent with no read channels, and stopped
+permitting that agent to ask whether the durable exists. A client from before 0.163.0 still asks
+during start. The broker's refusal stopped the start.
+
+A host from this release permits that one info read, on the agent's own durable name. The durable
+is still absent, so the older client hears that and starts. It does not gain a fetch or ack grant,
+and it still cannot read a channel.
+
 ## Explicit space selections apply in every folder
 
 `cotal use <space>` now wins over a project's running space until another selection or

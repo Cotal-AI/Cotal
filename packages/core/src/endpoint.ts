@@ -7286,7 +7286,8 @@ export class CotalEndpoint extends EventEmitter {
    *  delivery-daemon-written (DLV is delivery-write-only, broker-enforced) and is a CHANNEL message by contract
    *  (the backstop never carries DMs), so `kind=channel` is path-derived (SPEC §4) and the body is
    *  trusted (no spoof-guard). `durable:true` — real JetStream ack, coalesced with the core-sub live
-   *  copy by `MeshAgent.ingest`. No-op when the durable isn't present (open mode / not provisioned). */
+   *  copy by `MeshAgent.ingest`. No-op when the durable isn't present (open mode / not provisioned). A read
+   *  list declared on a credential that cannot fetch the durable refuses. */
   private async pumpDlv(): Promise<void> {
     if (!this.js) return;
     if (!this.ownLifecycleUid) return; // no lifecycle uid — never provisioned for Plane-3 (its durable is lifecycle-keyed)
@@ -7303,7 +7304,15 @@ export class CotalEndpoint extends EventEmitter {
     let consumer;
     try { consumer = await this.js.consumers.get(dlvStream(this.space), durable); }
     catch (e) {
-      if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) return;
+      if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) {
+        // A channel-less credential may ask about its durable but holds no fetch row for it. A read
+        // list declared on such a credential disagrees with the grant, so the start refuses.
+        const issued = this.nc && this.watchDeletePermissions.get(this.nc)?.();
+        if ((this.allowSubscribe?.length ?? 0) > 0 && issued
+          && !issuedPermitsSubject({ ...issued, deny: [] }, `$JS.API.CONSUMER.MSG.NEXT.${dlvStream(this.space)}.${durable}`))
+          throw new Error(`this connection declared a read list, but its credential cannot fetch delivery durable "${durable}" for space "${this.space}"; the read list and the credential disagree`);
+        return;
+      }
       throw e; // a denied bind is not evidence that the read ACL is empty or the durable is absent
     }
     const lease = await this.readDeliveryLease(0);
@@ -8582,7 +8591,7 @@ export class CotalEndpoint extends EventEmitter {
     }
     if (!isPresenceRow(p, e.key)) {
       this.presenceBindingDrops++;
-      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: not a usable presence row (a record with card.id equal to its KV key, a string card.name, a known status, a finite ts, string display fields and a condition with a string code)`));
+      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: not a usable presence row (a record with card.id equal to its KV key, a non-blank string card.name, a known status, a finite ts, string display fields and a condition with a string code)`));
       return undefined;
     }
     // isPresenceRow is the one gate: it refuses a row whose card.id disagrees with the KV key, so a

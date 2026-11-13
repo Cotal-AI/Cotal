@@ -1690,12 +1690,15 @@ export function permissionsFor(
     `$JS.ACK.${DM}.${dmD}.>`,
     // Plane-3 DELIVER consumer (SPEC §8): when this credential can read at least one channel, BIND
     // ONLY its own pre-created dlv_<id> — info/fetch/ack, never create. A channel-less credential has
-    // no DLV rows and no DLV durable. It gets NO grant on the INBOX (mixed pre-auth) stream either.
+    // no DLV durable and no fetch or ack row. It can still ask CONSUMER.INFO for its own durable
+    // name. A client older than 0.163.0 does that during start, and a permitted read answers that
+    // the consumer is absent, which that client treats as nothing to bind. A refused publish fails
+    // the start. It gets NO grant on the INBOX (mixed pre-auth) stream either.
     ...(allowSubscribe.length > 0 ? [
       `$JS.API.CONSUMER.INFO.${DLV}.${dlvD}`,
       `$JS.API.CONSUMER.MSG.NEXT.${DLV}.${dlvD}`,
       `$JS.ACK.${DLV}.${dlvD}.>`,
-    ] : []),
+    ] : [`$JS.API.CONSUMER.INFO.${DLV}.${dlvD}`]),
     // Presence: on-demand read + watch (read, public roster) + flow control + PUT OWN KEY ONLY.
     // The read is a batched Direct Get of the bucket (SPEC §6): a seat reads the roster when it acts
     // instead of receiving every member's heartbeat. Its reply subject is caller-chosen, the same

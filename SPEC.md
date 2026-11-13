@@ -392,7 +392,7 @@ Live clients MUST NOT heartbeat as `offline`. A graceful disconnect MAY publish 
 from KV delete/purge events. Offline peers MAY remain in local rosters for observability.
 An instance MUST write only its own presence key, and the key MUST equal `card.id`.
 Readers MUST drop a record whose `card.id` differs from its KV key, whose `card.name` is
-empty or does not have the type given above, whose `status` does not have the type given
+blank or does not have the type given above, whose `status` does not have the type given
 above, whose `ts` is not a finite number, whose
 `card.role`, `activity` or `attention` is present and not a string, or whose `condition` is present
 and is not an object with a string `code`, and SHOULD report the rejection on their recoverable
@@ -724,7 +724,9 @@ and delivers each authorized copy to the member over an **at-least-once** handof
 `dlv_<owner>-<actor>-<uid>` DELIVER consumer when that lifecycle's `allowSubscribe` is nonempty,
 carrying the same ack semantics, not a fire-and-forget publish). A lifecycle with an empty
 `allowSubscribe` has no authorized channel copy, so the reference MUST NOT provision that consumer
-or grant its bind rows. Raising the ACL from empty to nonempty provisions it with `DeliverPolicy.All`.
+or grant its fetch and ack rows. Its credential keeps the info row on its own consumer name, because
+a client older than 0.163.0 asks it during start and needs the answer that the consumer is absent.
+Raising the ACL from empty to nonempty provisions it with `DeliverPolicy.All`.
 The trusted reader MUST NOT ack or
 delete the backstop entry until the member has confirmed the copy was surfaced or handled (or it has
 been transferred to an equivalent per-member at-least-once mechanism with the same ack semantics); on a
@@ -7071,11 +7073,12 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.API.CONSUMER.INFO.<DM>.<dmD>`
 - `$JS.API.CONSUMER.MSG.NEXT.<DM>.<dmD>`
 - `$JS.ACK.<DM>.<dmD>.>` (DM inbox: BIND-ONLY its own pre-created `dmD`, never create)
-- when `allowSubscribe` is nonempty: `$JS.API.CONSUMER.INFO.<DLV>.<dlvD>`,
-  `$JS.API.CONSUMER.MSG.NEXT.<DLV>.<dlvD>`, and `$JS.ACK.<DLV>.<dlvD>.>`, the **durable
+- `$JS.API.CONSUMER.INFO.<DLV>.<dlvD>`, and when `allowSubscribe` is nonempty also
+  `$JS.API.CONSUMER.MSG.NEXT.<DLV>.<dlvD>` and `$JS.ACK.<DLV>.<dlvD>.>`, the **durable
   backstop**. It binds only its own pre-created per-member DELIVER consumer `dlvD`, which carries the
-  trusted reader's re-authorized handoff (§8). With an empty `allowSubscribe`, neither the consumer
-  nor these three grants exists. The agent holds no grant on the mixed pre-auth `INBOX` fan-out stream.
+  trusted reader's re-authorized handoff (§8). With an empty `allowSubscribe` the consumer does not
+  exist and only the info row is granted, so the read answers that the consumer is absent. The agent
+  holds no grant on the mixed pre-auth `INBOX` fan-out stream.
 - `$JS.API.DIRECT.GET.<KV>` (the on-demand presence read, §6)
 - `$JS.API.CONSUMER.CREATE.<KV>.>`
 - `$JS.API.CONSUMER.INFO.<KV>.>`
@@ -7400,6 +7403,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-13 | **An agent with no read channels keeps the info row on its delivery consumer (§8, Appendix B), additive.** The consumer is still not provisioned and the fetch and ack rows are still withheld. A client older than 0.163.0 asks `CONSUMER.INFO` during start and treats only an absent consumer as nothing to bind, so a refused read stopped its start. |
 | 2026-11-12 | **Tool payload rail (§13.19).** Separately authorized event payloads publish by default where mapped, with explicit withholding, registered Cotal-tool exclusions, bounded cut markers and durable sibling publication. The private consent path remains separate and its activation prerequisites are unchanged. |
 | 2026-11-12 | **Incarnation-scoped responder queues (§13.2), clarification.** Scatter and instance responders may use a queue group per incarnation to overlap serving connections during renewal. Distinct instances use distinct groups so scatter still reaches each instance. Credential grants are unchanged. |
 | 2026-11-10 | **A spawn-scoped `manager-caller` view lists its own agents (§9, §10), additive.** A person who may spawn on their own Manager could not list the agents they launched there. `ps` was not in the view unless the actor held `admin`, so `cotal ps` and `cotal status <agent>` were refused by the broker. A view whose actor holds `spawn` now carries `ps` on its one pinned instance, beside `status`, `models` and `resolve-cwd`. The Manager answers it with the caller's own owner's agents only, unless the caller holds `admin`. `slots` stays with `admin`, no class, scatter or other-instance row is added, and the standing `spawn` set is unchanged. |

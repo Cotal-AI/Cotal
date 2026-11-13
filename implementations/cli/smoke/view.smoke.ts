@@ -12,6 +12,7 @@ import { renderReport } from "@cotal-ai/workspace";
 import { MeshView } from "../../../packages/workspace/dist/view/index.js";
 import { runLog } from "../src/render.js";
 import { feedLine, observedText, watchReport, WATCH_TEXT_LIMIT } from "../src/watch-data.js";
+import { followLine, historySender, where, type HistoryItem } from "../src/commands/history.js";
 import {
   chatSubject,
   unicastSubject,
@@ -262,6 +263,27 @@ for (const [what, plain, locale] of [["--plain under a UTF-8 locale", true, "C.U
   const text = (await streamLines(false, "C.UTF-8")).join("\n");
   check("control: a pipe under a UTF-8 locale draws the status mark, the arrow and the count sign",
     /● working · progress unknown/.test(text) && /alice\/alice → #general: a → b/.test(text) && /\(3×\)/.test(text));
+}
+
+{
+  const blankSender = (name: string): HistoryItem => ({
+    seq: 1,
+    id: "m1",
+    ts: "2026-11-13T23:13:20.000Z",
+    channel: "general",
+    to: null,
+    from: { id: "local.blank", name },
+    text: "hello",
+  });
+  for (const name of [" ", "", "\n", " \n\t"]) {
+    const line = followLine(blankSender(name));
+    check(`history shows the id for a sender named ${JSON.stringify(name)}`, historySender(name, "local.blank") === "local.blank" && line.includes("local.blank") && !line.includes("\n") && !line.includes("\\u000a"));
+  }
+  check("history keeps a sender name", historySender("ada", "local.ada") === "ada" && followLine({ ...blankSender("ada"), from: { id: "local.ada", name: "ada" } }).includes("ada"));
+  const dm: HistoryItem = { ...blankSender("ada"), from: { id: "local.ada", name: "ada" }, channel: null, to: "local.peer" };
+  check("history shows the id for a DM recipient whose name is blank", where(dm, new Map([["local.peer", " "]])) === "DM to local.peer");
+  check("history shows a DM recipient name", where(dm, new Map([["local.peer", "ada"]])) === "DM to ada");
+  check("history leaves an unnamed DM recipient unknown", where({ ...dm, to: null }, new Map()) === "DM to ?");
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");

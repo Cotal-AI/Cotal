@@ -1,6 +1,7 @@
 // The roster as the dashboard shows it: rows, ordering, counts, and the one place that writes a
 // row's status text.
 import type { PresenceView, RosterEntry } from "../api/types.js";
+import { visibleName } from "./names.js";
 import type { StaleMark } from "./snapshot.js";
 
 export type Status = "working" | "waiting" | "idle" | "offline";
@@ -58,7 +59,7 @@ export function rosterRows(roster: RosterEntry[], opts: { includeOffline?: boole
     .sort((a, b) => rank(a.status) - rank(b.status) || a.card.name.localeCompare(b.card.name))
     .map((p): RosterRow => ({
       id: p.card.id,
-      name: p.card.name,
+      name: visibleName(p.card.name) ?? p.card.id,
       role: p.card.role,
       status: p.status,
       activity: p.activity,

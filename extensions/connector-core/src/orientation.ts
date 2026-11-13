@@ -21,6 +21,15 @@ export const ORIENTATION_BOOTSTRAP =
   "Start with cotal_orientation — it shows your identity, the recorded model pin if one was set, the channels you can read and post to, " +
   "your capabilities, the tools available to you, and who's present.";
 
+/** Tool guidance, folded in beside {@link ORIENTATION_BOOTSTRAP} for every connector. Tells agents
+ *  to use their cotal_* tools within their own grants rather than reaching for the cotal command line,
+ *  which runs with the operator's credentials. */
+export const TOOL_STEER =
+  "Use your cotal_* tools for work on the mesh. They act as you, within your own grants. " +
+  "Don't run the `cotal` command line unless the user says you may. It runs with the user's " +
+  "credentials, so it can see and do things you can't, and what it posts goes out under the " +
+  "user's name. If no tool gives you what you need, tell the user what's missing.";
+
 /** Mesh-first steer, folded in alongside {@link ORIENTATION_BOOTSTRAP} for every connector. Keeps
  *  multi-agent work on the mesh instead of inside the harness's own hidden subagents, so it stays
  *  visible to the user and addressable by peers. Unconditional (a read-only agent still delegates via
@@ -39,7 +48,7 @@ export const MESH_FIRST_STEER =
 export const WORKFLOW_STEER =
   "Coordination that must survive restarts (multi-step plans, human checkpoints, timed waits, " +
   "fan-out over agents) belongs in a durable workflow run: a cotal-lang program driven with " +
-  "`cotal run start`, resumable on any host from its step journal. Read the `workflows` page via " +
+  "`cotal_run`, resumable on any host from its step journal. Read the `workflows` page via " +
   "cotal_docs before improvising such a loop in your own context.";
 
 /** Where to talk, folded in beside {@link ORIENTATION_BOOTSTRAP} for every connector. Leads with
