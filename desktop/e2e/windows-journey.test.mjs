@@ -10,19 +10,32 @@ import { privateChildEnv, requestState, runController, transition, waitForResume
 
 const workflow = parseDocument(readFileSync(new URL('../../.github/workflows/desktop.yml', import.meta.url), 'utf8'));
 
-test('workflow has two 12-minute Windows phases and retains other platform checks', () => {
+test('workflow isolates two Windows diagnostic cells and retains original cleanup custody and other platform checks', () => {
   assert.deepEqual(workflow.errors, []);
   const job = workflow.toJS().jobs['native-build'];
   assert.equal(job['timeout-minutes'], 150, 'job includes the separately bounded PowerShell diagnostic');
   const steps = job.steps;
   const phases = steps.filter(step => /windows-journey.mjs (start|resume)/.test(step.run ?? ''));
-  assert.equal(phases.length, 2);
-  assert.equal(phases[0].env?.COTAL_DAEMON_SMOKE_TMP, '${{ runner.temp }}', 'private fixture scratch must avoid the longer profile temp prefix');
-  assert.deepEqual(phases.map(step => step['timeout-minutes']), [12, 12]);
-  assert.ok(phases.every(step => step.if === "runner.os == 'Windows'"));
-  assert.ok(phases.every(step => step.run.includes('desktop-windows-journey') && step.run.includes('desktop-e2e')));
+  assert.equal(phases.length, 4);
+  assert.deepEqual(phases.map(step => step['timeout-minutes']), [12, 12, 12, 12]);
+  assert.deepEqual(phases.map(step => step.if), [
+    "runner.os == 'Windows'", "runner.os == 'Windows'",
+    "runner.os == 'Windows' && steps.windows-before-finish.outcome == 'success'",
+    "runner.os == 'Windows' && steps.windows-after-start.outcome == 'success'",
+  ], 'a second fixture cannot start before the first cleanup owner has exited successfully');
+  for (const [index, cell, directory] of [[0, 'before-poll', 'before'], [2, 'after-poll', 'after']]) {
+    assert.equal(phases[index].env?.COTAL_DAEMON_SMOKE_TMP, '${{ runner.temp }}', 'private fixture scratch must avoid the longer profile temp prefix');
+    for (const [offset, action] of [[0, 'start'], [1, 'resume']]) {
+      assert.equal(phases[index + offset].run, `node desktop/e2e/windows-journey.mjs ${action} "\${{ runner.temp }}/desktop-windows-${directory}" "\${{ runner.temp }}/desktop-e2e/${cell}" ${cell}`);
+    }
+  }
   const cleanup = steps.find(step => step.run?.includes('windows-journey.mjs cancel'));
   assert.equal(cleanup.if, "always() && runner.os == 'Windows'");
+  assert.equal(cleanup['timeout-minutes'], 2);
+  assert.match(cleanup.run, /foreach \(\$cell in @\('before-poll', 'after-poll'\)\)/);
+  assert.match(cleanup.run, /Test-Path -LiteralPath \(Join-Path \$directory 'controller\.json'\)/);
+  assert.match(cleanup.run, /windows-journey\.mjs cancel \$directory "\$\{\{ runner\.temp \}\}\/desktop-e2e\/\$cell" \$cell/);
+  assert.match(cleanup.run, /if \(\$failed\) \{ throw/);
   const service = steps.find(step => step.name === 'Real-window onboarding, recovery and app-installed service lifecycle');
   assert.equal(service.if, "runner.os == 'Linux'");
   assert.equal(service['timeout-minutes'], 12);
@@ -60,10 +73,10 @@ test('short scratch parent survives private environments while the fixture still
 
 test('real firstRun pauses after kernel recovery and preserves all tail and cleanup assertions', () => {
   const source = readFileSync(new URL('./first-run.ts', import.meta.url), 'utf8');
-  assert.match(source, /import \{ windowsJourneyCheckpoint \} from ["']\.\/windows-journey\.mjs["']/);
+  assert.match(source, /import \{ windowsJourneyCheckpoint, windowsJourneyProgress \} from ["']\.\/windows-journey\.mjs["']/);
   const recovery = source.indexOf('await proveWindowsRestart(true)');
-  const checkpoint = source.indexOf("await windowsJourneyCheckpoint('service-recovery-complete')");
-  const doubleQuoted = source.indexOf('await windowsJourneyCheckpoint("service-recovery-complete")');
+  const checkpoint = source.indexOf("await windowsJourneyCheckpoint('service-recovery-complete')", recovery);
+  const doubleQuoted = source.indexOf('await windowsJourneyCheckpoint("service-recovery-complete")', recovery);
   const gate = checkpoint === -1 ? doubleQuoted : checkpoint;
   assert.ok(recovery > 0 && gate > recovery && gate < source.indexOf('await installApplication()', recovery));
   for (const retained of [
