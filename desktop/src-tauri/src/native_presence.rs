@@ -9,10 +9,19 @@ pub struct Presence(pub Mutex<Preferences>);
 #[cfg(all(feature = "e2e", debug_assertions))]
 pub fn login_receipt(stage: &'static str, source: &'static str, requested: Option<bool>, ok: Option<bool>, observed: Option<bool>) {
     use std::io::Write;
+    static RECEIPT_LOCK: Mutex<()> = Mutex::new(());
     let Some(home) = crate::e2e_trace_home() else { return; };
+    // DOM events and native command/readback threads share timestamp and append order.
+    let Ok(_guard) = RECEIPT_LOCK.lock() else { return; };
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis());
+    let Ok(mut record) = serde_json::to_vec(&serde_json::json!({ "stage": stage, "source": source, "pid": std::process::id(), "atUnixMs": at, "requested": requested, "ok": ok, "observed": observed })) else { return; };
+    record.push(b'\n');
     if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(home.join("login-preference-receipts.jsonl")) {
-        let _ = writeln!(file, "{}", serde_json::json!({ "stage": stage, "source": source, "pid": std::process::id(), "atUnixMs": at, "requested": requested, "ok": ok, "observed": observed }));
+        // One append contains the whole line. Never retry a short write as fragments.
+        match file.write(&record) {
+            Ok(written) if written == record.len() => {},
+            _ => return,
+        }
     }
 }
 
