@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
-import { peerLabel } from "@cotal-ai/core";
+import { consoleLabel } from "../label.js";
 import type { DmMessage, DmThread, DmPeer } from "@cotal-ai/workspace/view";
 import { agentColor, STATUS, fmtTime, wrapText, sidePaneSize } from "./theme.js";
 import type { FocusId } from "../mesh.js";
@@ -160,7 +160,7 @@ export function Dm({
           if (r.kind === "peer") {
             const p = dms[r.pi];
             const caret = r.pi === peerClamped ? "▾" : "▸";
-            const label = peerLabel(p);
+            const label = consoleLabel(p);
             if (sel)
               return (
                 <Text key={"p" + r.pi} inverse bold color="cyan" wrap="truncate-end">
@@ -177,7 +177,7 @@ export function Dm({
             );
           }
           const c = dms[r.pi].conversations[r.ci];
-          const label = peerLabel({ name: c.with, role: c.role });
+          const label = consoleLabel({ name: c.with, role: c.role });
           if (sel)
             return (
               <Text key={"c" + r.pi + "." + r.ci} inverse bold color="cyan" wrap="truncate-end">

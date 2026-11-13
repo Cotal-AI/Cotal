@@ -201,6 +201,12 @@ check(
     && s3Alice?.conversations.flatMap((c) => c.messages).filter((m) => m.text === "forged line").length === 1,
 );
 
+mock.emit("roster", [...roster, presence("local.blank", " \n\t", "agent", "idle"), presence("local.ada2", " ada", "agent", "idle")]);
+const named = view.snapshot();
+check("a blank roster name resolves to the id", named.nameOf("local.blank") === "local.blank" && !named.nameOf("local.blank").includes("\n"));
+check("a real roster name is kept, including surrounding spaces", named.nameOf("local.ada2") === " ada");
+check("an unknown id stays an eight-character prefix", named.nameOf("local.unknown12") === "local.un");
+
 await view.stop();
 
 // ---- stop after the connection is closed for good ----

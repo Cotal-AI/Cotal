@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Box, Text } from "ink";
-import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
+import { presenceText, type Presence } from "@cotal-ai/core";
+import { consoleLabel } from "../label.js";
 import { displayWidth } from "@cotal-ai/workspace";
 import type { FeedEntry } from "../mesh.js";
 import { activityAge, presenceFacts } from "../../ui.js";
@@ -48,7 +49,7 @@ function MessageDetail({ entry, width }: { entry: FeedEntry; width: number }) {
       </Field>
       <Field label="from">
         <Text>
-          <Text color={agentColor(entry.from.name)}>{peerLabel(entry.from)}</Text>
+          <Text color={agentColor(entry.from.name)}>{consoleLabel(entry.from)}</Text>
           <Text dimColor>{"  " + entry.from.id}</Text>
         </Text>
       </Field>
@@ -90,7 +91,7 @@ function AgentDetail({ agent, feed, width, managed }: { agent: Presence; feed: F
   return (
     <Box flexDirection="column">
       <Field label="name">
-        <Text color={card.kind === "agent" ? agentColor(card.name) : undefined}>{card.name}</Text>
+        <Text color={card.kind === "agent" ? agentColor(card.name) : undefined}>{consoleLabel(card)}</Text>
       </Field>
       {card.role ? (
         <Field label="role">
@@ -138,7 +139,7 @@ function AgentDetail({ agent, feed, width, managed }: { agent: Presence; feed: F
           </Field>
           {card.skills.map((sk, i) => (
             <Text key={i} wrap="truncate-end">
-              <Text>{" ".repeat(11) + (sk.name || sk.id)}</Text>
+              <Text>{" ".repeat(11) + (sk.name.trim() ? sk.name : sk.id)}</Text>
               {sk.description ? <Text dimColor>{"  " + sk.description}</Text> : null}
             </Text>
           ))}
