@@ -489,8 +489,10 @@ export async function fetchIdpJwt(idpUrl: string, sessionToken: string, signal?:
  *  operator must be able to read WHICH human signed in, but verification is the bridge/callout's
  *  job, server-side. */
 export async function establishIdpSession(
-  opts: DeviceLoginOpts & { dir: string },
+  opts: DeviceLoginOpts & { dir: string; discoveryPins?: { url: string; issuer: string; audience: string } },
 ): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
+  if (opts.discoveryPins && normalizeIdpUrl(opts.discoveryPins.url) !== normalizeIdpUrl(opts.idpUrl))
+    throw new Error("idp login: discovery auth URL does not match the selected provider; refusing to cache the session");
   // Refuse damaged local state before asking the person to approve a sign-in.
   readCatalogPreparationState(opts.dir);
   const previousSub = loadIdpSession(opts.dir, opts.idpUrl)?.sub;
@@ -504,6 +506,11 @@ export async function establishIdpSession(
     // fetchIdpJwt only guarantees a non-empty string; a hostile IdP returning /token 200 with a
     // non-JWT body would otherwise surface jose's raw "Invalid JWT" here.
     throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} returned a /token value that is not a decodable JWT - refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
+  }
+  if (opts.discoveryPins) {
+    const { issuer, audience } = opts.discoveryPins;
+    if (!issuer || !audience || claims.iss !== issuer || !(claims.aud === audience || (Array.isArray(claims.aud) && claims.aud.every(a => typeof a === "string") && claims.aud.includes(audience))))
+      throw new Error("idp login: user JWT issuer or audience does not match discovery; refusing to cache the session");
   }
   const sub = claims.sub;
   if (typeof sub !== "string" || !sub)
