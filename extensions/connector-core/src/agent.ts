@@ -21,6 +21,8 @@ import {
   EpEnvelopeError,
   isPublishPermissionDenied,
   unansweredRequest,
+  undeclaredArg,
+  undeclaredArgInstance,
   EP_UNANSWERED,
   controlReplyFrom,
   controlReplyFromThrown,
@@ -52,6 +54,7 @@ import {
   renderOnceTask,
 } from "@cotal-ai/core";
 import { eventPlaneArmed, type AgentConfig } from "./config.js";
+import { DOCS_VERSION } from "./docs.js";
 import { checkEventStartup, EventStateConflictError } from "./event-startup.js";
 import { TURN_PULL_RETRY_MS } from "./turn-poll.js";
 import { ONCE_HANDOFF_MS, claimOnceHandoff, confirmOnceHandoff, endOnceHandoff, exitOnceSeat, onOnceHandoffTimeout, onceHandoffState, sealOnceHandoff, stopOnceHandoffTimer } from "./once.js";
@@ -337,6 +340,13 @@ const MAX_SETTLED_TURNS = 32;
 function settledTurnError(goalId: string, t: { deadlineAt?: number; once?: unknown }): string {
   const deadline = t.deadlineAt !== undefined ? ` (deadline ${new Date(t.deadlineAt).toISOString()})` : "";
   return `turn "${goalId}" was already settled ${t.once !== undefined ? "by its manager" : "by the run"}${deadline}, so this yield was not recorded`;
+}
+
+/** Order two `x.y.z` releases by their numbers, ignoring a prerelease or build suffix. */
+function compareRelease(a: string, b: string): number {
+  const [x, y] = [a, b].map((v) => v.split(/[-+]/)[0]!.split(".").map(Number));
+  for (let i = 0; i < 3; i++) if (x![i] !== y![i]) return (x![i] ?? 0) - (y![i] ?? 0);
+  return 0;
 }
 
 /** One relayed run turn this seat has pulled and not yet yielded. `surfaced` flips when the
@@ -2931,6 +2941,9 @@ export class MeshAgent extends EventEmitter {
           outcome: "unknown",
           data: { goalId: submitted.requestId, submissionUnknown: true },
         };
+        const undeclared = undeclaredArg(e);
+        if (undeclared !== undefined && command !== "status")
+          return { ...controlReplyFromThrown(e, await this.undeclaredArgMessage(command, e, undeclared)), ...(e.outcome ? { outcome: e.outcome } : {}) };
         const unknownDefinition = command === "define-persona" && e.outcome !== "not-executed" &&
           e.code === "deadline-exceeded" && e.details?.some(d => d.kind === EP_UNANSWERED && d.command === command);
         const unknownYield = command === "turn-yield" && e.code === "deadline-exceeded" && e.outcome === "unknown" &&
@@ -2952,6 +2965,23 @@ export class MeshAgent extends EventEmitter {
       instanceId: r.responder?.instanceId,
       ...(r.reply.error?.outcome ? { outcome: r.reply.error.outcome } : {}),
     };
+  }
+
+  /** The refusal of an argument the manager's contract does not declare. This connector built the
+   *  args from its own release's schema, so the manager runs a different release. The version the
+   *  bound manager reports says which side to update; an unbound request names no manager to ask. */
+  private async undeclaredArgMessage(command: string, e: EpEnvelopeError, key: string): Promise<string> {
+    const head = `${e.code}: ${e.message}. The manager's ${command} does not take "${key}", which this connector at Cotal ${DOCS_VERSION} sends`;
+    const instanceId = undeclaredArgInstance(e);
+    const answer = instanceId === undefined ? undefined : await this.managerInvoke("status", undefined, { instanceId }).catch(() => undefined);
+    const reported = answer?.ok === true && answer.instanceId === instanceId ? (answer.data as { version?: unknown } | undefined)?.version : undefined;
+    const manager = typeof reported === "string" && /^\d+\.\d+\.\d+/.test(reported) ? reported : undefined;
+    const updateManager = `on the manager's host run \`cotal update --self\`, then \`cotal manager restart\`, or call again without "${key}"`;
+    if (manager === undefined) return `${head}, so the manager most likely runs an older Cotal: ${updateManager}`;
+    const order = compareRelease(DOCS_VERSION, manager);
+    if (order > 0) return `${head}. The manager runs Cotal ${manager}, the older side: ${updateManager}`;
+    if (order < 0) return `${head}. The manager runs Cotal ${manager}, so this connector is the older side: run \`cotal update --self\` here and start a new session`;
+    return `${head}. The manager also reports Cotal ${manager}, so one side is another build of that version: reinstall that side`;
   }
 
   /** Resolve a managed agent's CURRENT principal triple (owner-mode targets are (owner, actor,
