@@ -21,12 +21,33 @@ export function machinesUrl(provider: string, spaceId: string, instanceId: strin
 }
 
 export interface ComputerSpace { space: string; desired: boolean; observed: string; lastRefusal?: string }
+/** States that are not a connection still coming up. */
+const SETTLED_SPACE_STATE: Record<string, string> = {
+  refused: "Refused",
+  ended: "Ended by the space",
+  conflict: "Registration conflict",
+  "credential-expired": "Credential expired",
+  "credential-not-yet-valid": "Credential not yet valid",
+  disconnected: "Disconnected",
+  unavailable: "Unreachable",
+  "local-state-error": "Local records unusable",
+  "account-mismatch": "Account mismatch",
+  "not-signed-in": "Not signed in",
+  "not-registered": "Not registered on this computer",
+  unsupported: "Unsupported by this space",
+  "not-requested": "Not requested",
+  stopped: "Stopped",
+  stopping: "Stopping",
+};
+export function spaceAttention(observed: string): boolean {
+  return Object.hasOwn(SETTLED_SPACE_STATE, observed);
+}
 export function computerSpaceState(row: ComputerSpace, ready = false): string {
   if (row.lastRefusal) return row.lastRefusal;
   if (row.observed === "connected") return ready ? "Connected" : "Starting";
   if (row.observed === "approval-pending") return "Waiting for owner approval";
   if (row.observed === "removed on this computer") return "Removed on this computer";
-  return "Starting";
+  return SETTLED_SPACE_STATE[row.observed] ?? "Starting";
 }
 export function computerSpaces(account: { spaces: ComputerSpace[] }): ComputerSpace[] {
   return account.spaces.filter(row => row.desired || row.observed === "connected" || row.observed === "removed on this computer");

@@ -5,7 +5,7 @@ import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, in
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, spaceAttention, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -426,7 +426,7 @@ function showStage(next: Stage, focus = false): void {
   else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in to keep this computer connected"; description = "Approve this computer in your browser to keep managing its spaces."; }
   else if (finished && computerAccount?.hostSupport === "supported") {
     const rows = computerSpaces(computerAccount);
-    title = anyConnected ? connectionView("launch-ready").title : rows.some(row => row.observed === "refusal") ? "Connection needs attention" : rows.some(row => row.desired && row.observed !== "removed on this computer") ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
+    title = anyConnected ? connectionView("launch-ready").title : rows.some(row => row.observed === "refusal" || spaceAttention(row.observed)) ? "Connection needs attention" : rows.some(row => row.desired && row.observed !== "removed on this computer") ? "This computer is starting" : rows.length ? "No space is using this computer" : "This computer is connected to your account";
     description = rows.length ? connectionView("launch-ready").description : "Turn on the spaces that can use it in the dashboard.";
   }
   else if (finished && pending) { title = "Waiting for owner approval"; description = `The owner of ${accountSpaces.get(pending[0])?.label ?? pending[0]} needs to approve this computer. It connects by itself once they do.`; }
@@ -487,8 +487,9 @@ function showStage(next: Stage, focus = false): void {
   if (finished && computerAccount?.hostSupport === "supported") {
     const signInRequired = computerAccount.mode === "sign-in-required";
     el("spaces-heading").hidden = signInRequired || !anyConnected;
-    const starting = computerSpaces(computerAccount).some(row => row.desired && row.observed !== "removed on this computer");
-    const refused = computerSpaces(computerAccount).some(row => row.observed === "refusal");
+    const rows = computerSpaces(computerAccount);
+    const refused = rows.some(row => row.observed === "refusal" || spaceAttention(row.observed));
+    const starting = rows.some(row => row.desired && row.observed !== "removed on this computer" && !refused);
     text("tray-label", signInRequired ? "Sign in required" : anyConnected ? "Connected" : refused ? "Needs attention" : starting ? "Starting" : "Ready");
     el("tray-indicator").classList.toggle("connected", anyConnected || !starting && !signInRequired && !refused);
     el("tray-indicator").classList.toggle("error", signInRequired || refused);
