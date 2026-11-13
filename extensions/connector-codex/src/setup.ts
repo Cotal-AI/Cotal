@@ -90,9 +90,17 @@ export function materializeCodexPlugin(cotal: readonly string[]): string {
   return version;
 }
 
+/** `codex plugin list` prints one row per installed plugin. A listing of 2.4 MB is past spawnSync's
+ *  1 MiB default, which reports ENOBUFS and the status row says the command could not run. */
+const CODEX_OUTPUT_LIMIT = 64 * 1024 * 1024;
+
 function codex(...args: string[]): { status: number | null; output: string } {
-  const r = spawnSync("codex", args, { encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" });
-  if (r.error) throw new Error(`codex ${args.join(" ")} could not run: ${r.error.message}`);
+  const r = spawnSync("codex", args, { encoding: "utf8", maxBuffer: CODEX_OUTPUT_LIMIT, timeout: 60_000, killSignal: "SIGKILL" });
+  if (r.error) {
+    const code = (r.error as NodeJS.ErrnoException).code;
+    if (code === "ENOBUFS") throw new Error(`codex ${args.join(" ")} printed more than ${CODEX_OUTPUT_LIMIT} bytes`);
+    throw new Error(`codex ${args.join(" ")} could not run: ${r.error.message}`);
+  }
   return { status: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}`.split("\n").filter((l) => l && !/^WARNING: proceeding/.test(l)).join("\n") };
 }
 
