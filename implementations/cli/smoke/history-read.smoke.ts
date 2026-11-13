@@ -666,6 +666,30 @@ try {
     const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
   }
+
+  // The chat stream is gone. Purging a saved channel must still remove the entry.
+  {
+    const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
+    const { jetstreamManager } = await import("@nats-io/jetstream");
+    const { chatStream, idFromCreds } = await import("@cotal-ai/core");
+    const set = await run(["channel", "set", "ops", "--desc", "purge-gone", "--space", space, "--json"]);
+    const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try { await (await jetstreamManager(nc)).streams.delete(chatStream(space)); }
+    finally { await nc.close(); }
+    const removed = await run(["channel", "remove", "ops", "--purge", "--yes", "--space", space, "--json"]);
+    const show = await run(["channel", "show", "ops", "--space", space, "--json"]);
+    const channels = (show.envelope?.result as { registry?: { channels?: Record<string, unknown> } } | null)?.registry?.channels;
+    const receipt = removed.envelope?.result as { removed?: boolean; purged?: number } | null;
+    check("channel remove --purge removes the saved entry when the chat stream is already gone",
+      set.status === 0 && removed.status === 0 && removed.envelope?.outcome === "ok" && receipt?.removed === true && receipt.purged === 0 && channels?.ops === undefined,
+      { set: shown(set), removed: shown(removed), show: shown(show) });
+  }
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
