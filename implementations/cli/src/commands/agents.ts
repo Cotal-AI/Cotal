@@ -400,6 +400,11 @@ export function psSeatLabel(row: { name: string; id: string; role?: string }): s
   return peerLabel({ name: row.name.trim() ? row.name : row.id, ...(row.role ? { role: row.role } : {}) });
 }
 
+/** The Agent, Identity and Manager rows a join receipt shows. A blank name is the id, as `ps` shows it. */
+export function joinedAgentRows(agent: { name: string; id: string; managerInstanceId: string }): [string, string][] {
+  return [["Agent", psSeatLabel({ name: agent.name, id: agent.id })], ["Identity", agent.id], ["Manager", agent.managerInstanceId]];
+}
+
 /** The seats one manager answered with: a table, or with `--wide` one labeled record per seat. A
  *  failing bearer refresh is a detached seat's only window to the operator, so the provider's own
  *  sentence follows, verbatim (it already names the repair). A record's labels read as its facts'

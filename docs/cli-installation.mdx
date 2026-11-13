@@ -95,7 +95,7 @@ uses the registered manager's persona catalog; `--on` pins its manager instance
 through credential issuance and launch. It uploads no local persona file. Without detach,
 the terminal opens that allocated incarnation's native view. If it disappears before attachment,
 setup reports the confirmed join and an incomplete view, not a healthy attached terminal. Leaving
-the view sends no stop request.
+the view sends no stop request. The joined receipt shows the agent's id when that agent's name is missing or only whitespace.
 
 `result.startup` separates the requested self-hosted manager pin, native stack-command
 return, joined-agent receipt and any classified failure. A declined Start keeps the
