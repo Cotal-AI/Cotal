@@ -232,7 +232,9 @@ exits, the next connection on this computer retires what that server held. A plu
 `cotal setup` did not install has no record, and `cotal_connect` names that remedy.
 
 Personal native Code sessions can join a signed-in mesh whose authority offers connection approval.
-The plugin binds the real native session and transcript before requesting an identity. Each
+The plugin binds the real native session and transcript before requesting an identity. It does not
+change the connect call's arguments. When that call names no session, the server uses the one native
+session it has bound. Each
 conversation gets a separate actor. A new identity is issued only after a person approves it in the
 authority's signed-in web page. A model's tool arguments, a client flag or a native tool approval
 never approve it. The request first comes back pending with the page's address and its expiry.

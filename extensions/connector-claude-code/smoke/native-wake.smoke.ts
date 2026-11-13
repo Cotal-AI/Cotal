@@ -365,7 +365,7 @@ assert.match(unbound.deny ?? "", /native command hooks/);
 assert(![...lifecycle.hooks.keys()].some((name) => name.startsWith("classic.")), "the native module never intercepts protected classic hooks");
 lifecycle.bind({ session_id: "native-session", transcript_path: "/sessions/native-session.jsonl", hook_event_name: "UserPromptSubmit", prompt: "private human words" });
 const connect = await lifecycle.fire("tool.call", { tool: "mcp__plugin_cotal_cotal__cotal_connect", context: "inherited-parent" }) as Event;
-assert.equal(connect.context, "native-session", "native host replaces a copied connection context");
+assert.equal(connect.context, "inherited-parent", "a connect call's arguments are left unchanged");
 assert.equal(lifecycle.relayed.length, 1);
 assert(!JSON.stringify(lifecycle.relayed).includes("private human words"), "lifecycle transport never carries human prompts");
 lifecycle.bind({ session_id: "other-session", transcript_path: "/sessions/other-session.jsonl", hook_event_name: "UserPromptSubmit" });
@@ -375,7 +375,7 @@ await lifecycle.fire("tool.call", { tool: "mcp__plugin_cotal_cotal__cotal_connec
 assert.equal(lifecycle.relayed.length, 1, "foreign sessions and subagents cannot drive the main lifecycle");
 await lifecycle.fire("session.end", { reason: "resume" });
 assert(lifecycle.feed.ended, "clear/resume ends the prior conversation reader");
-console.log("  ✓ explicit native session binding, prompt privacy and fork-context replacement");
+console.log("  ✓ explicit native session binding, prompt privacy and an unchanged connect call");
 const inlineOffer = (receipt: string, session = "native-session") => ({
   id: "inline-connection", route: "/private/feed.sock", inline: {
     v: 1, receipt, session, count: 1, remaining: 0,
