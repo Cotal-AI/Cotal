@@ -1,5 +1,14 @@
 # @cotal-ai/auth
 
+## 0.164.5
+
+### Patch Changes
+
+- 250cff2: Expired migration approvals now name the migration command and the saved old auth URL to retry. Ordinary sign-in guidance is unchanged.
+- @cotal-ai/core@0.164.5
+  - @cotal-ai/lang@0.164.5
+  - @cotal-ai/workspace@0.164.5
+
 ## 0.164.4
 
 ### Patch Changes

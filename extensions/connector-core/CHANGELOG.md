@@ -1,5 +1,12 @@
 # @cotal-ai/connector-core
 
+## 0.164.5
+
+### Patch Changes
+
+- fab6162: A manager-op tool refused by a manager on an older release now explains why. Before, `cotal_persona` or `cotal_spawn` sent to an older manager returned only the raw schema error, `must NOT have additional properties`. The refusal now names the argument that manager does not take and this connector's version, and asks the bound manager for its version. When the manager is older, it names `cotal update --self` on the manager's host and then `cotal manager restart`, or, for an argument you set, calling again without it. When the connector is older, it names `cotal update --self` here and a new session.
+- 3ed7f12: A clearing `cotal_inbox` read now shows a current mention of you ahead of older channel posts. When older posts filled the receivable window, the read that followed a mention's wake returned those posts and held the mention back, with nothing in the reply saying so. Direct messages still come first. When they hold a mention back, the held note now counts it, for example `3 more messages held (2 direct, 1 mentioning you)`.
+
 ## 0.164.4
 
 ### Patch Changes
