@@ -13,6 +13,28 @@ if (!isAbsolute(traceHome)) throw new Error("E2E trace home must be absolute");
 const output = join(traceHome, "native-tool-timings.jsonl");
 // Eagerly create the upload artifact before importing any native entry point.
 appendFileSync(output, "");
+// Observe the original streams before the shipped native logger wraps them. Keep
+// its return value and callback ownership unchanged, including when trace I/O fails.
+const daemonOutput = join(traceHome, "daemon-native.log");
+let remaining = 64 * 1024;
+const capture = text => {
+  try {
+    const bytes = Buffer.from(text.replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>")).subarray(0, remaining);
+    appendFileSync(daemonOutput, bytes);
+    remaining -= bytes.length;
+  } catch { /* Debug output must not change the daemon outcome. */ }
+};
+capture(`daemon service launch ${new Date().toISOString()}\n`);
+for (const stream of [process.stdout, process.stderr]) {
+  const write = stream.write;
+  stream.write = function (chunk, ...args) {
+    if (remaining > 0) {
+      try { capture(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); }
+      catch { /* Preserve native validation and errors for unusual inputs. */ }
+    }
+    return Reflect.apply(write, this, [chunk, ...args]);
+  };
+}
 // Keep this self-contained so the focused test exercises the injected implementation.
 function tapOwnedServiceWorker(threads, monitor, record, workerOutput) {
   function preload(output, constructedAt) {
