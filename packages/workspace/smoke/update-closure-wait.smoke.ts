@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { emitSentinel } from "@cotal-ai/smoke-kit";
 
 const home = process.env.COTAL_CLOSURE_WAIT_HOME ?? mkdtempSync(join(tmpdir(), "cotal-closure-wait-"));
 process.env.COTAL_HOME = home;
@@ -60,6 +61,7 @@ try {
   assert.equal(long.stderr.includes("waiting for a Cotal update"), false, "a writer that is not an update is not called one");
   assert.deepEqual(JSON.parse(long.stdout), { waitedForUpdate: false });
   console.log("update-closure-wait.smoke: 3 waits passed (free, brief, announced)");
+  emitSentinel({ passed: 3, failed: 0 });
 } finally {
   rmSync(home, { recursive: true, force: true });
 }
