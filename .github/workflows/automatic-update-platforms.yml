@@ -106,6 +106,7 @@ jobs:
           if-no-files-found: error
   candidate-pack:
     needs: [workspace-native, seat-native]
+    if: always() && !cancelled() && needs.workspace-native.result == 'success' && needs.seat-native.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
