@@ -14,7 +14,7 @@ python3 -c 'import sys; sys.stdout.write("noise\\n"*700000); sys.stdout.write("c
 chmodSync(join(bin, "codex"), 0o755);
 process.env.PATH = `${bin}:${previous ?? ""}`;
 try {
-  const rows = codexSetupProvider.status!({ version: "0.164.0" });
+  const rows = codexSetupProvider.status!({ version: "0.164.0", skillsRemedy: "cotal setup --skills" });
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.label, "Codex plugin");
   assert.equal(rows[0]!.state, "ok", rows[0]!.text);
