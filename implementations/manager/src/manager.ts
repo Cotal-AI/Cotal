@@ -8019,7 +8019,7 @@ export class Manager {
               allowPublish,
               role,
               capabilities,
-              ...(endpoints.length ? { endpointCapabilities: endpoints } : {}),
+              endpointCapabilities: this.managedStaticEndpoints(capabilities, endpoints),
               lifecycleUid,
               expiresAt: exp,
               issued,
@@ -12581,6 +12581,14 @@ export class Manager {
     return renewal;
   }
 
+  /** Keep owner-addressed named reads usable without granting any sibling instance or write. */
+  private managedStaticEndpoints(capabilities: string[] | undefined, endpoints: EpCapability[]): EpCapability[] {
+    if (!capabilities?.some(cap => cap === "spawn" || cap === "run" || cap === "admin")) return endpoints;
+    return [...endpoints, ...["describe", "inspect"].map(command => ({
+      endpoint: MANAGER_ENDPOINT, command, instanceId: this.managerInstanceId, instanceOnly: true,
+    }))];
+  }
+
   private async driveManagedStaticCredRenewal(a: ManagedAgent): Promise<void> {
     // The SAME permission scope the spawn minted (recorded on the managed row): allowSubscribe/
     // allowPublish/role/capabilities are the JWT-shaping inputs; `subscribe` (the active read
@@ -12605,7 +12613,7 @@ export class Manager {
         allowPublish: a.launch.allowPublish,
         role: a.role,
         capabilities: a.launch.capabilities,
-        ...(a.launch.endpoints?.length ? { endpointCapabilities: lowerPersonaEndpoints(a.launch.endpoints) } : {}),
+        endpointCapabilities: this.managedStaticEndpoints(a.launch.capabilities, lowerPersonaEndpoints(a.launch.endpoints)),
         lifecycleUid: a.lifecycleUid,
         expiresAt: exp,
         issued,
