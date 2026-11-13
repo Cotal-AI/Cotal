@@ -12,11 +12,13 @@ on:
       - .github/workflows/automatic-update-platforms.yml
       - scripts/automatic-update-platform-baseline.mjs
       - docs/upgrade-matrix.md
+concurrency:
+  group: upgrade-matrix-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
   priority:
-    if: github.event_name == 'push'
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -68,11 +70,16 @@ jobs:
             ${{ runner.temp }}/upgrade-consent-evidence
           if-no-files-found: error
   workspace-native:
+    needs: priority
+    if: always() && (needs.priority.result == 'success' || needs.priority.result == 'failure' || needs.priority.result == 'skipped')
     uses: ./.github/workflows/workspace-native.yml
     with:
       darwin: true
   seat-native:
+    needs: workspace-native
+    if: always() && !cancelled() && needs.workspace-native.result == 'success'
     strategy:
+      max-parallel: 6
       fail-fast: false
       matrix:
         include:
@@ -150,6 +157,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
+      max-parallel: 6
       fail-fast: false
       matrix:
         source: ['0.155.0', '0.160.7', '0.162.0', '0.163.5', '0.164.0', latest]
@@ -176,7 +184,7 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   candidate-B-expanded:
-    needs: candidate-B
+    needs: candidate-A
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -220,7 +228,8 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   candidate-native:
-    needs: candidate-B
+    needs: candidate-B-expanded
+    if: always() && !cancelled() && (needs.candidate-B-expanded.result == 'success' || needs.candidate-B-expanded.result == 'failure')
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -291,10 +300,11 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   published:
-    if: github.event_name != 'push'
+    needs: candidate-native
+    if: always() && !cancelled() && github.event_name != 'push'
     strategy:
       fail-fast: false
-      max-parallel: 12
+      max-parallel: 6
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2022]
         source: ['0.155.0', '0.160.7', '0.162.0', '0.163.5', '0.164.0', latest]
@@ -335,7 +345,8 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   native:
-    if: github.event_name != 'push'
+    needs: published
+    if: always() && !cancelled() && github.event_name != 'push'
     strategy:
       fail-fast: false
       max-parallel: 6
