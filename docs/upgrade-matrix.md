@@ -38,7 +38,10 @@ outcomes are retained for runner teardown rather than retried blindly.
 For shell-only changes, keep the installed CLI and npm target published. Pass an inspected script
 with `--published-installer <path> --installer-source <commit> --installer-sha256 <sha256>` on an
 installer-layout rerun. The source must be a full commit ID and the script digest must match.
-The initial installation still uses the public installer. The result records the override separately.
+The initial installation uses the public installer unless `--installer-setup true` explicitly selects
+the same receipt-bound script for setup. For a genuine first install, combine that option with
+`--source latest --state fresh --first-install true`; assertions run after the first installation,
+without an installer rerun. The result records the override separately.
 This option refuses candidate tiers and does not change their source-matching checks.
 
 A paused-snapshot refusal control may add `--expect-recovery-refusal true`. It requires exit 1,
@@ -46,8 +49,8 @@ the reconciliation failure and repair command, `OPERATION_UNKNOWN`, and no final
 summary. The upgrade result stays `failed`; a separate `expectedRefusal.passed` field records the
 fail-closed check. Only that explicit control may exit zero for an expected failed upgrade.
 
-The narrow Mac installer job runs two stale-source cells and one expected-refusal control per
-admitted architecture. Its first step records runner admission before checkout or installation.
+The narrow Mac installer job runs one genuine fresh install and one installer-layout upgrade from
+0.164.0 with an operator extension per admitted architecture. Its first step records runner admission before checkout or installation.
 An arm64 runner arriving more than 15 minutes after workflow creation records `unrun` and skips
 all upgrade steps. A job that never acquires a runner is also unrun. Neither case is a product
 result, even when the infrastructure job itself finishes successfully or is cancelled. The summary

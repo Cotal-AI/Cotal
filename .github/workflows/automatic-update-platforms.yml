@@ -96,7 +96,7 @@ jobs:
         if: steps.admission.outputs.admitted == 'true'
         shell: bash
         run: |
-          source=237e81045f6546e9955ed85b20a073eaae284dd8
+          source=b4f30205f54cd468bf1914095b09974a5f17dee6
           curl -fsSL "https://raw.githubusercontent.com/Cotal-AI/Cotal/$source/install.sh" -o "$RUNNER_TEMP/fixed-installer.sh"
           node --input-type=module - "$RUNNER_TEMP/fixed-installer.sh" <<'NODE'
           import assert from 'node:assert/strict';
@@ -104,15 +104,13 @@ jobs:
           import { createHash } from 'node:crypto';
           assert.equal(createHash('sha256').update(readFileSync(process.argv[2])).digest('hex'), 'c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c');
           NODE
-      - name: Published stale-installer reruns and fail-closed recovery
+      - name: Fresh install and existing installer with an operator extension
         if: steps.admission.outputs.admitted == 'true'
         shell: bash
         run: |
           failed=0
-          for source in 0.164.0 0.160.7; do
-            node scripts/automatic-update-platform-baseline.mjs --source "$source" --layout installer --state stale-extensions --method installer --published-installer "$RUNNER_TEMP/fixed-installer.sh" --installer-source 237e81045f6546e9955ed85b20a073eaae284dd8 --installer-sha256 c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
-          done
-          node scripts/automatic-update-platform-baseline.mjs --source 0.164.0 --layout installer --state recovery --method installer --published-installer "$RUNNER_TEMP/fixed-installer.sh" --installer-source 237e81045f6546e9955ed85b20a073eaae284dd8 --installer-sha256 c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c --expect-recovery-refusal true --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+          node scripts/automatic-update-platform-baseline.mjs --source latest --layout installer --state fresh --method installer --first-install true --installer-setup true --published-installer "$RUNNER_TEMP/fixed-installer.sh" --installer-source b4f30205f54cd468bf1914095b09974a5f17dee6 --installer-sha256 c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+          node scripts/automatic-update-platform-baseline.mjs --source 0.164.0 --layout installer --state configured --method installer --installer-setup true --published-installer "$RUNNER_TEMP/fixed-installer.sh" --installer-source b4f30205f54cd468bf1914095b09974a5f17dee6 --installer-sha256 c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           exit "$failed"
       - uses: actions/upload-artifact@v4
         if: always()

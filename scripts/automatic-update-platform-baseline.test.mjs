@@ -82,9 +82,12 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
   assert.equal(installer.steps[0].uses, 'actions/github-script@v8');
   assert(installer.steps[0].with.script.includes('15 * 60 * 1000'));
   for (const step of installer.steps.slice(1).filter(step => !step.uses?.startsWith('actions/upload-artifact'))) assert.equal(step.if, "steps.admission.outputs.admitted == 'true'");
-  assert(installer.steps.some(step => step.run?.includes('237e81045f6546e9955ed85b20a073eaae284dd8') && step.run.includes('c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c')));
-  assert(installer.steps.some(step => step.run?.includes('for source in 0.164.0 0.160.7') && step.run.includes('--published-installer')));
-  assert(installer.steps.some(step => step.run?.includes('--expect-recovery-refusal true') && !step.run.includes("runner.os")));
+  assert(installer.steps.some(step => step.run?.includes('b4f30205f54cd468bf1914095b09974a5f17dee6') && step.run.includes('c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c')));
+  const actions = installer.steps.find(step => step.run?.includes('--first-install true')).run;
+  assert(actions.includes('--source latest --layout installer --state fresh'));
+  assert(actions.includes('--source 0.164.0 --layout installer --state configured'));
+  assert.equal((actions.match(/--installer-setup true/g) ?? []).length, 2);
+  assert(!actions.includes('--expect-recovery-refusal') && !actions.includes('--state stale-extensions'));
   const expanded = workflow.jobs['candidate-B-expanded'];
   assert(expanded.steps.some(step => step.run?.includes('for state in fresh configured stale-extensions recovery concurrent agent')));
   assert.deepEqual(workflow.jobs['candidate-native'].strategy.matrix.source, sources);

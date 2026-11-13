@@ -131,8 +131,9 @@ export async function matrixCell(options) {
   assert((sources.includes(source) || /^\d+\.\d+\.\d+$/.test(source)) && states.includes(state) && methods.includes(method) && ['npm', 'installer'].includes(layout), 'unknown matrix coordinate');
   const publishedInstaller = options['published-installer'] ? verifyPublishedInstaller({ ...options, layout, method }) : undefined;
   if (options['expect-recovery-refusal'] === 'true') assert(publishedInstaller && state === 'recovery', 'expected refusal requires a published installer override and recovery state');
+  if (options['first-install'] === 'true') assert(publishedInstaller && options['installer-setup'] === 'true' && state === 'fresh' && source === 'latest', 'first install requires latest fresh fixed-script setup');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
-  const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : ''].filter(Boolean).join('-');
+  const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', options['first-install'] === 'true' ? 'first-install' : ''].filter(Boolean).join('-');
   const id = `${options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}`;
   const report = { tier: options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString(), harnessSource: process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim(), harnessSha256: digest(readFileSync(import.meta.filename)) };
   const omit = exclusion({ layout, method, state });
@@ -201,7 +202,7 @@ export async function matrixCell(options) {
   function check(name, passed, observed) { report.assertions.push({ name, passed, observed }); }
   async function installer(version, candidateTarget = false) {
     let script, label = 'public installer';
-    if (candidateTarget && publishedInstaller) {
+    if (publishedInstaller && (candidateTarget || options['installer-setup'] === 'true')) {
       report.publishedInstaller = verifyPublishedInstaller({ ...options, layout, method });
       script = report.publishedInstaller.path;
       label = 'receipt-bound published installer';
@@ -236,7 +237,7 @@ export async function matrixCell(options) {
       // Native services read npm's normal per-account config, not the launching shell's registry env.
       writeFileSync(join(home, '.npmrc'), `registry=${overlay.url}\n`, { mode: 0o600 });
     }
-    ok(layout === 'installer' ? await installer(report.source) : await npmCall('install published source', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.source}`, '--no-audit', '--no-fund']), 'source install');
+    const sourceInstall = ok(layout === 'installer' ? await installer(report.source) : await npmCall('install published source', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.source}`, '--no-audit', '--no-fund']), 'source install');
     assert.equal(json(join(pkg, 'package.json')).version, report.source, 'source installed version');
     report.sourceManifestSha256 = digest(readFileSync(join(pkg, 'package.json')));
     if (process.platform === 'win32') {
@@ -348,7 +349,8 @@ export async function matrixCell(options) {
       report.versionChanging = report.source !== report.target;
     }
     let update;
-    if (method === 'self') update = await cotal('upgrade under test', ['update', '--self', ...(options['stop-agents'] === 'true' ? ['--stop-agents'] : [])]);
+    if (options['first-install'] === 'true') update = sourceInstall;
+    else if (method === 'self') update = await cotal('upgrade under test', ['update', '--self', ...(options['stop-agents'] === 'true' ? ['--stop-agents'] : [])]);
     else if (method === 'installer') update = await installer(report.target, true);
     else {
       assert.equal(report.daemonBefore.update.automatic, true, report.daemonBefore.update.lastResult);
