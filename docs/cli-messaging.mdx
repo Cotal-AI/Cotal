@@ -601,8 +601,10 @@ that is not on the calendar, or a sequence that cannot be represented without ro
 as `2026-10-23T09:00:00Z`, so `-5` and `10/23/2026` are refused. A date alone, or a date and time
 with no offset, is local time, so `--since 2026-10-23` starts at local midnight.
 The report shows each message's local time, with its date when it is not today; `result.items[].ts`
-is the ISO time. A DM row shows its recipient's name when the roster carries that principal or a
-message in the window came from it, and the principal otherwise. `--dms` reads the roster for those
+is the ISO time. A text or plain row shows a sender name that is not only whitespace, and the
+sender id otherwise. `--json` keeps `from.name` as it was sent. A DM row shows its recipient's
+name when the roster carries that principal or a message in the window came from it, and that
+name is not only whitespace, and the principal otherwise. `--dms` reads the roster for those
 names, waiting up to two seconds for it. `result.items[].to` is the principal.
 A line break or other control character in a message's text shows as its `\uXXXX` escape in the
 text and `--plain` reports, so a message cannot clear the screen or start a row of its own.
