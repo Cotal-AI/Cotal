@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, statfsSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { createServer } from 'node:http';
+import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -58,7 +60,7 @@ export async function matrixCell(options) {
   assert(sources.includes(source) && states.includes(state) && methods.includes(method) && ['npm', 'installer'].includes(layout), 'unknown matrix coordinate');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
   const id = `${process.platform}-${source}-${layout}-${state}-${method}`;
-  const report = { tier: 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString() };
+  const report = { tier: options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString() };
   const omit = exclusion({ layout, method, state });
   if (omit) {
     mkdirSync(output, { recursive: true, mode: 0o700 });
@@ -73,6 +75,7 @@ export async function matrixCell(options) {
   const prefix = layout === 'installer' ? join(home, '.local/share/cotal') : join(root, 'prefix');
   const project = join(root, 'project');
   for (const dir of [home, project, prefix]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  mkdirSync(join(project, '.cotal'), { mode: 0o700 });
   const env = { ...cleanEnvironment(), HOME: home, USERPROFILE: home, npm_config_prefix: prefix, npm_config_cache: join(root, 'cache') };
   if (!(hosted && state === 'daemon')) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, '.local/share'), XDG_CACHE_HOME: join(home, '.cache'), LOCALAPPDATA: join(home, 'AppData/Local'), APPDATA: join(home, 'AppData/Roaming') });
   const cotalHome = env.COTAL_HOME ?? (process.platform === 'win32' ? join(env.LOCALAPPDATA, 'Cotal') : join(home, '.cotal'));
@@ -83,7 +86,7 @@ export async function matrixCell(options) {
   const launcher = join(home, '.local/bin/cotal');
   env.PATH = [join(prefix, process.platform === 'win32' ? '' : 'bin'), join(home, '.local/bin'), env.PATH].join(delimiter);
   const [npm, npmPrefix] = npmCommand();
-  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder;
+  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay;
   const transcript = [];
   async function call(label, file, argv, timeout = 180000) {
     const startedAt = new Date().toISOString();
@@ -119,9 +122,23 @@ export async function matrixCell(options) {
     report.target = JSON.parse(target.stdout);
     report.source = source === 'latest' ? report.target : source;
     report.registry = ok(await npmCall('record npm registry', ['config', 'get', 'registry']), 'registry').stdout.trim();
+    if (options.candidate) {
+      overlay = await candidateRegistry(resolve(options.candidate), options.direction ?? 'B', report.registry);
+      report.candidate = overlay.identity;
+      env.npm_config_registry = overlay.url;
+      if ((options.direction ?? 'B') === 'B') report.target = overlay.identity.version;
+      else report.source = overlay.identity.version;
+      // Native services read npm's normal per-account config, not the launching shell's registry env.
+      writeFileSync(join(home, '.npmrc'), `registry=${overlay.url}\n`, { mode: 0o600 });
+    }
     ok(layout === 'installer' ? await installer(report.source) : await npmCall('install published source', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.source}`, '--no-audit', '--no-fund']), 'source install');
     assert.equal(json(join(pkg, 'package.json')).version, report.source, 'source installed version');
     report.sourceManifestSha256 = digest(readFileSync(join(pkg, 'package.json')));
+    if (state === 'daemon' && report.source === '0.155.0') {
+      report.result = 'unsupported';
+      report.refusal = "Published 0.155.0 has no automatic-update settings (--auto is unknown), so this state cannot be constructed through its CLI.";
+      return report;
+    }
     if (['configured', 'daemon', 'agent', 'concurrent'].includes(state)) {
       ok(await cotal('seed published connectors', ['ext', 'seed']), 'connector setup');
       ok(await cotal('install published runtime', ['ext', 'add', `@cotal-ai/tmux@${report.source}`]), 'runtime setup');
@@ -158,7 +175,7 @@ export async function matrixCell(options) {
         ok(await cotal('prepare local stand-in space', ['setup', '--destination', 'local', '--harness', 'upgrade-standin', '--project', project, '--space', 'upgrade-proof', '--no-input', '--configure-only']), 'local setup');
         stackStarted = true;
         ok(await cotal('start local space', ['up', '--detach', '--space', 'upgrade-proof']), 'local stack');
-        ok(await cotal('spawn real stand-in agent', ['spawn', '--type', 'upgrade-standin', '--name', 'upgrade-proof-worker', '--detach', '--space', 'upgrade-proof']), 'stand-in spawn');
+        ok(await cotal('spawn real stand-in agent', ['spawn', '--agent', 'upgrade-standin', '--name', 'upgrade-proof-worker', '--detach', '--space', 'upgrade-proof']), 'stand-in spawn');
         report.agentBefore = ok(await cotal('confirm native stand-in seat', ['ps', '--space', 'upgrade-proof', '--json']), 'stand-in ps').stdout;
       } else {
         env.MATRIX_HOLD = '1';
@@ -174,10 +191,11 @@ export async function matrixCell(options) {
       const planned = ok(await cotal('native install plan', ['daemon', 'install', '--dry-run', '--json']), 'native plan');
       plan = JSON.parse(planned.stdout).result;
       assert.equal(plan.state, 'would-install', 'native service must be absent before this cell');
+      report.daemonHome = plan.daemonHome ?? join(cotalHome, 'daemon');
       ok(await cotal('enable automatic updates', ['update', '--auto', 'on']), 'automatic settings');
       installedService = true;
       ok(await cotal('native install', ['daemon', 'install', '--json']), 'native installation');
-      receipt = json(join(plan.daemonHome, 'service-unit.json'));
+      receipt = json(join(report.daemonHome, 'service-unit.json'));
       assert.equal(receipt.unit, plan.unit);
       assert.equal(receipt.unitSha256, digest(readFileSync(plan.unitPath)));
       for (let i = 0; i < 60; i++) {
@@ -191,6 +209,10 @@ export async function matrixCell(options) {
       assert(report.daemonBefore, 'native daemon ready before update');
     }
     report.extensionsBefore = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
+    report.targetBeforeAction = report.target;
+    if (!options.candidate) {
+      report.target = JSON.parse(ok(await npmCall('resolve public latest immediately before action', ['view', 'cotal-ai@latest', 'version', '--json']), 'latest before action').stdout);
+    }
     let update;
     if (method === 'self') update = await cotal('upgrade under test', ['update', '--self']);
     else if (method === 'installer') update = await installer(report.target);
@@ -245,23 +267,25 @@ export async function matrixCell(options) {
       if (holderResult.exit !== 0) report.result = 'failed';
     }
     if (stackStarted && !uncertain) {
-      try { ok(await cotal('stop owned local stack', ['down', '--space', 'upgrade-proof']), 'local stack cleanup'); }
+      try { ok(await cotal('stop owned local stack', ['down']), 'local stack cleanup'); }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (installedService) {
       report.cleanup = 'retained for disposable runner teardown';
-      if (!uncertain && receipt && existsSync(join(plan.daemonHome, 'service-unit.json'))) {
+      if (!uncertain && receipt && existsSync(join(report.daemonHome, 'service-unit.json'))) {
         try {
-          const current = json(join(plan.daemonHome, 'service-unit.json'));
+          const current = json(join(report.daemonHome, 'service-unit.json'));
           assert.equal(current.unit, receipt.unit);
           assert.equal(current.unitPath, receipt.unitPath);
           assert.equal(digest(readFileSync(current.unitPath)), current.unitSha256);
           ok(await cotal('native uninstall', ['daemon', 'uninstall', '--yes', '--json']), 'native removal');
-          assert(!existsSync(join(plan.daemonHome, 'service-unit.json')) && !existsSync(plan.unitPath));
+          assert(!existsSync(join(report.daemonHome, 'service-unit.json')) && !existsSync(plan.unitPath));
           report.cleanup = 'receipt-guarded native removal confirmed';
         } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
       }
     }
+    if (overlay && !uncertain) await overlay.close();
+    if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
     report.root = root;
     report.finishedAt = new Date().toISOString();
     report.retentionOwner = hosted ? 'disposable runner teardown' : 'lane owner after process quiescence';
@@ -273,7 +297,101 @@ export async function matrixCell(options) {
   return report;
 }
 
+export async function packCandidate(output, version) {
+  assert(/^\d+\.\d+\.\d+$/.test(version), 'candidate bootstrap uses stable numeric semver for stock newerUpdate ordering');
+  const root = resolve(import.meta.dirname, '..');
+  const rows = JSON.parse(execFileSync('pnpm', ['list', '-r', '--depth', '-1', '--json'], { cwd: root, encoding: 'utf8' }));
+  const expected = json(join(root, '.changeset/config.json')).fixed.flat();
+  const manifests = rows.filter(row => expected.includes(row.name)).map(row => ({ path: join(row.path, 'package.json'), original: readFileSync(join(row.path, 'package.json'), 'utf8') }));
+  assert.equal(manifests.length, expected.length, 'complete fixed-group package set');
+  const changes = [];
+  try {
+    for (const row of manifests) {
+      const before = JSON.parse(row.original), after = structuredClone(before);
+      after.version = version;
+      for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) for (const name of Object.keys(after[field] ?? {})) {
+        if (expected.includes(name) && !after[field][name].startsWith('workspace:')) after[field][name] = version;
+      }
+      changes.push({ path: row.path, before, after });
+      save(row.path, after);
+    }
+    const { packColdCandidate } = await import('./pack-cold-candidate.mjs');
+    const manifest = packColdCandidate({ root, output });
+    save(join(resolve(output), 'bootstrap.json'), { source: manifest.source, version, label: 'candidate-only version metadata; no installed file edits; never publish', changes });
+    return manifest;
+  } finally {
+    for (const row of manifests) writeFileSync(row.path, row.original);
+  }
+}
+
+export async function candidateRegistry(directory, direction, upstream) {
+  assert(['A', 'B'].includes(direction), 'candidate direction must be A or B');
+  assert.equal(new URL(upstream).origin, 'https://registry.npmjs.org', 'overlay only proxies the public registry, never private registry credentials');
+  const manifest = json(join(directory, 'manifest.json'));
+  const { list } = await import('tar');
+  const entries = new Map(), archives = new Map(), requests = [];
+  for (const pkg of manifest.packages) {
+    assert(/^[^/\\]+\.tgz$/.test(pkg.archive), 'candidate archive path must be a basename');
+    const file = join(directory, pkg.archive), bytes = readFileSync(file);
+    assert.equal(digest(bytes), pkg.sha256, `candidate archive hash ${pkg.name}`);
+    let metadata;
+    await list({ file, strict: true, onReadEntry(entry) {
+      if (entry.path !== 'package/package.json') { entry.resume(); return; }
+      const chunks = [];
+      entry.on('data', chunk => chunks.push(chunk));
+      entry.on('end', () => { metadata = JSON.parse(Buffer.concat(chunks).toString('utf8')); });
+    } });
+    assert.equal(metadata?.name, pkg.name);
+    assert.equal(metadata.version, pkg.version);
+    entries.set(pkg.name, metadata);
+    archives.set(pkg.archive, bytes);
+  }
+  const expected = json(resolve(import.meta.dirname, '../.changeset/config.json')).fixed.flat().sort();
+  assert.deepEqual([...entries.keys()].sort(), expected, 'overlay must carry every first-party package from the packed head');
+  const versions = [...new Set(manifest.packages.map(pkg => pkg.version))];
+  assert.equal(versions.length, 1, 'candidate closure is lockstep');
+  const version = versions[0], cache = new Map();
+  let url;
+  const server = createServer(async (request, response) => {
+    try {
+      if (request.method !== 'GET') { response.writeHead(405).end('read-only candidate registry'); return; }
+      const path = decodeURIComponent(new URL(request.url, 'http://localhost').pathname).slice(1);
+      requests.push({ at: new Date().toISOString(), path });
+      if (path.startsWith('__candidate/')) {
+        const bytes = archives.get(path.slice('__candidate/'.length));
+        if (!bytes) { response.writeHead(404).end('unknown candidate archive'); return; }
+        response.writeHead(200, { 'content-type': 'application/octet-stream' }).end(bytes); return;
+      }
+      const name = path.startsWith('@') ? path.split('/').slice(0, 2).join('/') : path.split('/')[0];
+      const selector = path.slice(name.length + 1);
+      if (!cache.has(name)) {
+        const upstreamResponse = await fetch(`${upstream.replace(/\/$/, '')}/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(30000) });
+        if (!upstreamResponse.ok) { response.writeHead(upstreamResponse.status).end(await upstreamResponse.text()); return; }
+        cache.set(name, await upstreamResponse.json());
+      }
+      const packument = structuredClone(cache.get(name));
+      const local = entries.get(name);
+      if (local) {
+        const pkg = manifest.packages.find(pkg => pkg.name === name), bytes = archives.get(pkg.archive);
+        packument.versions[version] = { ...local, dist: { tarball: `${url}/__candidate/${pkg.archive}`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`, shasum: createHash('sha1').update(bytes).digest('hex') } };
+        if (direction === 'B') packument['dist-tags'].latest = version;
+      }
+      const body = selector ? packument.versions[packument['dist-tags'][selector] ?? selector] : packument;
+      response.writeHead(body ? 200 : 404, { 'content-type': 'application/json' }).end(JSON.stringify(body ?? { error: 'version not found' }));
+    } catch (error) { response.writeHead(502).end(JSON.stringify({ error: error.message })); }
+  });
+  await new Promise((resolveListen, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolveListen); });
+  url = `http://127.0.0.1:${server.address().port}`;
+  return { url, identity: { source: manifest.source, version, manifestSha256: digest(readFileSync(join(directory, 'manifest.json'))), direction, registry: 'synthetic candidate overlay', archives: manifest.packages.map(({ name, sha256 }) => ({ name, sha256 })) },
+    close: async () => { save(join(directory, `registry-requests-${process.pid}.json`), requests); await new Promise(done => server.close(done)); } };
+}
+
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const result = await matrixCell(args());
-  process.exitCode = ['passed', 'excluded'].includes(result.result) ? 0 : 1;
+  if (process.argv[2] === '--pack') {
+    const options = args();
+    await packCandidate(options.pack, options.version);
+  } else {
+    const result = await matrixCell(args());
+    process.exitCode = ['passed', 'excluded'].includes(result.result) ? 0 : 1;
+  }
 }

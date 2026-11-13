@@ -9,6 +9,139 @@ on:
 permissions:
   contents: read
 jobs:
+  workspace-native:
+    uses: ./.github/workflows/workspace-native.yml
+    with:
+      darwin: true
+  seat-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - run: pnpm --filter @cotal-ai/seat build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-seat-${{ matrix.arch }}
+          path: packages/seat/build/Release/linux-${{ matrix.arch }}/peercred.node
+          if-no-files-found: error
+  candidate-pack:
+    needs: [workspace-native, seat-native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - run: pnpm --workspace-concurrency 3 build
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/native-inputs
+      - name: Assemble the source-matched native closure
+        run: |
+          node scripts/seat-assemble-natives.mjs
+          node scripts/workspace-assemble-natives.mjs
+        env:
+          SEAT_NATIVE_X64: ${{ runner.temp }}/native-inputs/upgrade-seat-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/native-inputs/upgrade-seat-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/native-inputs/seat-native-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/native-inputs/seat-native-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/native-inputs/seat-native-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/native-inputs/seat-native-win32-arm64/peercred.node
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/native-inputs/workspace-native-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/native-inputs/workspace-native-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/native-inputs/workspace-native-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/native-inputs/workspace-native-darwin-arm64
+      - name: Pack candidate B and A bootstrap versions without publishing
+        run: |
+          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidate-B" --version 0.999.0
+          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidate-A" --version 0.13.1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upgrade-candidate-B
+          path: ${{ runner.temp }}/candidate-B
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upgrade-candidate-A
+          path: ${{ runner.temp }}/candidate-A
+          if-no-files-found: error
+  candidate-B:
+    needs: candidate-pack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        source: ['0.155.0', '0.160.7', '0.162.0', '0.163.5', '0.164.0', latest]
+        layout: [npm, installer]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - uses: actions/download-artifact@v4
+        with:
+          name: upgrade-candidate-B
+          path: ${{ runner.temp }}/candidate-B
+      - name: Candidate B synthetic registry, real native processes
+        run: node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate-B" --direction B --source '${{ matrix.source }}' --layout '${{ matrix.layout }}' --state fresh --method self --output "$RUNNER_TEMP/upgrade-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-B-${{ matrix.source }}-${{ matrix.layout }}
+          path: ${{ runner.temp }}/upgrade-evidence
+          if-no-files-found: error
+  candidate-A:
+    needs: candidate-B
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - uses: actions/download-artifact@v4
+        with:
+          name: upgrade-candidate-A
+          path: ${{ runner.temp }}/candidate-A
+      - name: Candidate A below-latest source, public target with installed-version overlay metadata
+        run: node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate-A" --direction A --source latest --layout npm --state fresh --method self --output "$RUNNER_TEMP/upgrade-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-A-linux
+          path: ${{ runner.temp }}/upgrade-evidence
+          if-no-files-found: error
   published:
     strategy:
       fail-fast: false
