@@ -579,7 +579,11 @@ Reads the newest retained messages in the selected space, newest last: one chann
 channel the identity may read. The channel may be written as `#general`, and a name holding `*` or
 `>` is refused with `name one concrete channel, without wildcards` before connecting. A channel with
 no retained messages and no saved entry warns `CHANNEL_NOT_FOUND`, names the channels that hold
-messages, and reports no replay policy for it. When the space's broker runs on this machine and logged
+messages, and reports no replay policy for it. `history --dms` still returns a direct message that
+is stored when the chat stream is gone. That report warns `CHAT_STREAM_ABSENT` and is partial,
+because channel history was not read, and it does not say to create the space's streams again. A
+read that did not ask for direct messages, and a `--dms` read that found none stored, still refuses
+`TARGET_UNAVAILABLE` when the chat stream is gone. When the space's broker runs on this machine and logged
 damage in a stored file since it started, `history` warns `STORE_DAMAGE_LOGGED` with the broker's
 words, because it serves only what it can still read. The read stays complete, as it read the stream
 the broker serves. A broker whose log is not on this machine is not checked. `--limit` bounds the read, and `--since`, `--from` and `--grep` then

@@ -453,8 +453,18 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     warnings.push({ code: "RETENTION_UNREAD", target: req.target, message: `the chat stream's retention could not be read, so gaps it left are unknown: ${(e as Error).message}` });
   }
 
-  // A missing chat stream means they were removed from a space whose streams `cotal up` created.
-  if (chat === false && spaceStreamsExpected(conn.space, conn.mode)) throw streamsAbsent(conn);
+  // A missing chat stream means channel history is gone. Direct messages are on their own stream.
+  // A --dms read that already holds one must keep it: refusing here discards that message and tells
+  // the operator to create every stream again, empty, which deletes the direct messages still stored.
+  if (chat === false && spaceStreamsExpected(conn.space, conn.mode)) {
+    const keptDirect = req.dms && read.some((item) => item.channel === null);
+    if (!keptDirect) throw streamsAbsent(conn);
+    warnings.push({
+      code: "CHAT_STREAM_ABSENT",
+      target: req.target,
+      message: `the chat stream of ${conn.space} is not on its broker, so channel history is not shown. Direct messages that are still stored are included`,
+    });
+  }
   // A bare number past the newest sequence names no message; it is most often a year.
   if (req.since?.kind === "seq" && lastSeq !== undefined && req.since.seq > lastSeq)
     throw new CommandFailure("refused", "USAGE_INVALID", `--since ${req.since.input} is past the chat stream's newest sequence, ${lastSeq}, so it names no message`, { target: req.target, remedy: `give a sequence up to ${lastSeq}, or write a date in full, such as ${yearShaped(req.since.input) ? req.since.input : new Date().getFullYear()}-01-01` });
