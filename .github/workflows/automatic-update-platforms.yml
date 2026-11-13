@@ -1,36 +1,98 @@
-name: Automatic update platforms
+name: Upgrade matrix
 on:
   workflow_dispatch:
   push:
-    branches: [fix/cross-platform-auto-update]
+    branches: [test/upgrade-matrix]
+    paths:
+      - .github/workflows/automatic-update-platforms.yml
+      - scripts/automatic-update-platform-baseline.mjs
 permissions:
   contents: read
 jobs:
-  baseline:
+  published:
     strategy:
       fail-fast: false
+      max-parallel: 12
       matrix:
-        os: [macos-15, windows-2022]
+        os: [ubuntu-24.04, macos-15, windows-2022]
+        source: ['0.155.0', '0.160.7', '0.162.0', '0.163.5', '0.164.0', latest]
+        layout: [npm, installer]
+        exclude:
+          - os: windows-2022
+            layout: installer
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    env:
-      DO_NOT_TRACK: '1'
-      COTAL_TEST_REAL_SERVICE: '1'
-      # Approved disposable GitHub-hosted account HOME, never a self-hosted account.
-      # Native service does not inherit the private npm/probe HOME.
-      COTAL_TEST_NATIVE_ACCOUNT_HOME: '1'
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
-      - name: Published 0.164.0 native baseline only
-        run: node scripts/automatic-update-platform-baseline.mjs
+          node-version: 24
+      - name: Published self-update states
+        shell: bash
+        run: |
+          failed=0
+          for state in fresh configured stale-extensions recovery concurrent agent; do
+            node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout '${{ matrix.layout }}' --state "$state" --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+          done
+          exit "$failed"
+      - name: Published installer rerun states
+        if: always() && matrix.layout == 'installer'
+        shell: bash
+        run: |
+          failed=0
+          for state in fresh configured stale-extensions recovery concurrent agent; do
+            node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout installer --state "$state" --method installer --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+          done
+          exit "$failed"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: automatic-update-baseline-${{ matrix.os }}
-          path: ${{ runner.temp }}/automatic-update-baseline-evidence
+          name: published-${{ matrix.os }}-${{ matrix.source }}-${{ matrix.layout }}
+          path: ${{ runner.temp }}/upgrade-evidence
+          if-no-files-found: error
+  native:
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+        source: ['0.155.0', '0.160.7', '0.162.0', '0.163.5', '0.164.0', latest]
+        layout: [npm, installer]
+        method: [self, scheduler, installer]
+        exclude:
+          - os: windows-2022
+            layout: installer
+          - layout: npm
+            method: installer
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Prepare disposable Linux user manager
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(id -u)" -ne 0
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          systemctl --user show-environment > /dev/null
+          printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+      - name: Published automatic daemon state
+        shell: bash
+        run: node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout '${{ matrix.layout }}' --state daemon --method '${{ matrix.method }}' --output "$RUNNER_TEMP/upgrade-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: published-native-${{ matrix.os }}-${{ matrix.source }}-${{ matrix.layout }}-${{ matrix.method }}
+          path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
