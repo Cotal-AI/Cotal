@@ -473,7 +473,8 @@ for retry, and the refusal names `--local`; a later cleanup failure is partial a
 confirmed server outcome. `logout --local` clears this machine's cached login and that account's
 discovered registry entries without contacting the provider, for a provider that is down or does
 not confirm sign-out. The provider session stays valid until it expires or is revoked at the
-provider, and the receipt says so.
+provider, and the receipt says so. `logout` does not seed or refresh connectors, so a connector
+install problem does not keep the cached login.
 
 Signing out leaves an already connected daemon connected on the computer's own service proof,
 not the human session. The sign-out receipt explains this in text and its JSON `daemonNotice`.

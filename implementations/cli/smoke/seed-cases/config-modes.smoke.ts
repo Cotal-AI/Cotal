@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, statSync, symlinkSync, writeFileSync, tmpdir, delimiter, join, REPO, HOST_ENV, check, cotal, freshCfg, readJson, track, finishScenario } from "./harness.js";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync, tmpdir, delimiter, join, REPO, HOST_ENV, check, cotal, freshCfg, readJson, track, finishScenario } from "./harness.js";
 
 // An earlier seed run under a umask of 0002 left Cotal's config folder and its extension tree
 // group-writable, and the web seed's protected-path check refused them, failing `cotal update`.
@@ -58,6 +58,19 @@ try {
     check("config modes: seed refusal keeps its permission code and readable next command",
       run.status === 1 && run.stderr.includes("PERMISSION_DENIED") && run.stderr.includes("\n  Next\n") && run.stderr.includes(`chmod g-w ${realpathSync(cfg)}`) && !run.stderr.includes("\\u000a"), run.stderr);
     check("config modes: seed refusal does not relax the unsafe ancestor", mode(cfg) === 0o775, mode(cfg));
+  }
+
+  {
+    const cfg = track(freshCfg());
+    chmodSync(cfg, 0o775);
+    const idp = "https://example.test/api/auth";
+    const sessions = join(HOST_ENV.COTAL_HOME!, "idp-sessions.json");
+    writeFileSync(sessions, JSON.stringify({ ver: 1, sessions: { [idp]: { token: "logout-seed-token", expiresAt: Date.now() + 3_600_000 } } }), { mode: 0o600 });
+    const run = cotal(cfg, ["logout", "--idp", idp, "--local", "--plain"], env);
+    const left = existsSync(sessions) ? readFileSync(sessions, "utf8") : "";
+    check("config modes: logout skips the seed and clears the cached login when the config ancestor is group-writable",
+      run.status === 0 && !left.includes("logout-seed-token") && !run.stderr.includes("failed to seed") && !run.stderr.includes("not protected against other local writers"),
+      { status: run.status, stderr: run.stderr.slice(0, 600), left: left.slice(0, 200) });
   }
 
   {
