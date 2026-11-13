@@ -382,8 +382,10 @@ whether the incoming reader is attached; attachment alone does not prove native 
 When native modules are unavailable or blocked, the conversation can listen with `cotal_wait`.
 
 Claude Desktop chat does not run a plugin's local server. On macOS and Windows, where Claude Desktop
-is installed, `cotal setup` adds a `cotal` server to Desktop's own config,
+is installed, `cotal setup` adds a `cotal-desktop` server to Desktop's own config,
 `claude_desktop_config.json` (Settings > Developer > Edit Config), and keeps every other entry there.
+An older entry of ours named `cotal` is renamed to `cotal-desktop`, and `cotal status` says when a
+server named `cotal` is still in that config, because that name is also the Claude Code plugin's.
 It runs the same server with `--desktop`, by the absolute paths of the node that runs the CLI and of
 the plugin copy under `~/.cotal/claude-plugin`. Quit and reopen Claude Desktop to load it. A repeat
 `cotal setup` and `cotal update` keep the entry current, `cotal status` reports it, and a config
