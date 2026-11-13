@@ -12,6 +12,18 @@ const repo = resolve(dirname(here), '../..');
 const checkpoint = 'service-recovery-complete';
 const phaseFlag = '--desktop-service-phase';
 const requestTimeout = 5_000;
+const validateCell = cell => assert.ok(cell === undefined || ['before-poll', 'after-poll'].includes(cell), 'unknown Windows recovery diagnostic cell');
+const label = value => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9-]{0,127}$/.test(value);
+const progressRow = row => row?.kind === 'progress' && label(row.phase) &&
+  ['start', 'complete'].includes(row.status) && (row.waitingOn === undefined || label(row.waitingOn)) &&
+  Object.keys(row).every(key => ['kind', 'phase', 'waitingOn', 'status'].includes(key));
+
+/** Passive IPC only. Never awaited and never controls fixture cleanup. */
+export function windowsJourneyProgress({ phase, waitingOn, status }) {
+  const row = { kind: 'progress', phase, status, ...(waitingOn === undefined ? {} : { waitingOn }) };
+  if (!progressRow(row) || !process.argv.includes(phaseFlag) || !process.connected || typeof process.send !== 'function') return;
+  try { process.send(row, () => {}); } catch { /* Observation cannot replace the fixture outcome. */ }
+}
 
 /** Keep the live authority, native driver and receipt owner in the same fixture process. */
 export async function windowsJourneyCheckpoint(phase) {
@@ -72,12 +84,16 @@ export function privateChildEnv(directory, inherited = process.env) {
     XDG_STATE_HOME: join(directory, 'state'), XDG_CACHE_HOME: join(directory, 'cache'), XDG_RUNTIME_DIR: join(directory, 'runtime') };
 }
 
-export async function runController(directory, output, { spawnFixture = spawn, retainMs = 10_000 } = {}) {
+export async function runController(directory, output, { spawnFixture = spawn, retainMs = 10_000, cell } = {}) {
+  validateCell(cell);
   const { mkSecretDir, writeSecretFileAtomic } = await import('@cotal-ai/core');
   mkSecretDir(directory);
   const token = randomBytes(32).toString('hex');
   let state = 'service-recovery', code = null, child, cancelled = false;
   let phaseStarted = Date.now();
+  const active = new Map();
+  let cleanupStarted = false, fixturePid = null, fixtureExited = false;
+  const ownership = () => ({ fixturePid, fixtureExited, cleanupStarted, waitingOn: [...active.values()] });
   const timings = join(output, 'windows-journey-phases.jsonl');
   const record = (kind, detail = {}) => appendFileSync(timings, `${JSON.stringify({ schema: 1, at: new Date().toISOString(), phase: state, elapsedMs: Date.now() - phaseStarted, kind, ...detail })}\n`);
   const move = action => { const next = transition(state, action); record('complete'); state = next; phaseStarted = Date.now(); record('start'); };
@@ -85,6 +101,7 @@ export async function runController(directory, output, { spawnFixture = spawn, r
     if (state === 'done' || cancelled) return;
     cancelled = true;
     move('cancel');
+    record('cancel-wait', ownership());
     if (child?.connected) child.send({ kind: 'cancel' });
     // Do not kill the fixture or a native service. Its original finally owns uninstall/PATH cleanup.
   };
@@ -102,7 +119,7 @@ export async function runController(directory, output, { spawnFixture = spawn, r
       } else if (req.url === '/cancel') cancel();
       else assert.equal(req.url, '/status');
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ schema: 1, state, code, cancelled }));
+      res.end(JSON.stringify({ schema: 1, state, code, cancelled, ownership: ownership() }));
     } catch {
       res.writeHead(409); res.end();
     }
@@ -117,22 +134,34 @@ export async function runController(directory, output, { spawnFixture = spawn, r
     child = spawnFixture(process.execPath, ['--import', 'tsx', 'bin/smoke/daemon-service-connect.smoke.ts', '--desktop-window', '--keep-fixture', ...flags], {
       cwd: repo, env, stdio: ['ignore', 'inherit', 'inherit', 'ipc'], windowsHide: true,
     });
+    active.clear(); cleanupStarted = false; fixtureExited = false;
+    fixturePid = Number.isSafeInteger(child.pid) ? child.pid : null;
+    record('fixture-owner', ownership());
     child.on('message', row => {
       try {
+        if (progressRow(row)) {
+          if (row.status === 'start') {
+            active.set(row.phase, { phase: row.phase, waitingOn: row.waitingOn ?? row.phase, startedAt: new Date().toISOString() });
+            if (row.phase.startsWith('cleanup-')) cleanupStarted = true;
+          } else active.delete(row.phase);
+          record('fixture-progress', { progress: row, ...ownership() });
+          return;
+        }
         assert.deepEqual(row, { kind: 'checkpoint', phase: checkpoint });
         if (cancelled) child.send({ kind: 'cancel' }); else move(checkpoint);
       } catch (error) { record('protocol-error', { error: String(error) }); cancel(); }
     });
     child.once('error', reject);
-    child.once('exit', (exitCode, signal) => resolve({ code: exitCode ?? 1, signal }));
+    child.once('exit', (exitCode, signal) => { fixtureExited = true; resolve({ code: exitCode ?? 1, signal }); });
   });
   record('start');
   try {
-    let result = await run([phaseFlag]);
+    let result = await run([phaseFlag, ...(cell ? [`--desktop-recovery-cell=${cell}`] : [])]);
     record('fixture-exit', result);
     assert.equal(result.code, 0, 'per-space fixture failed, account fixture not started');
     assert.equal(state, 'service-tail', 'per-space fixture exited without checkpoint continuation');
     assert.equal(cancelled, false, 'journey cancelled');
+    if (cell) { code = result.code; record('diagnostic-cell-complete', { cell }); return; }
     move('account');
     result = await run(['--desktop-account']);
     record('fixture-exit', result);
@@ -152,7 +181,8 @@ export async function runController(directory, output, { spawnFixture = spawn, r
   }
 }
 
-async function command(action, directory, output) {
+async function command(action, directory, output, cell) {
+  validateCell(cell);
   assert.equal(process.platform, 'win32', 'Windows journey controller requires Windows');
   assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted', 'requires disposable hosted runner');
   assert.ok(directory && output);
@@ -169,13 +199,13 @@ async function command(action, directory, output) {
   mkSecretDir(output);
   const stateFile = join(directory, 'controller.json');
   const resultFile = join(directory, 'result.json');
-  if (action === 'run') return runController(directory, output);
+  if (action === 'run') return runController(directory, output, { cell });
   assert.ok(['start', 'resume', 'cancel'].includes(action));
   if (action === 'start') {
     assert.ok(!existsSync(stateFile) && !existsSync(resultFile), 'refuse stale controller state');
     const log = openSync(join(output, 'suite.log'), 'ax', 0o600);
     try {
-      const controller = spawn(process.execPath, [here, 'run', directory, output], {
+      const controller = spawn(process.execPath, [here, 'run', directory, output, ...(cell ? [cell] : [])], {
         cwd: repo, detached: true, stdio: ['ignore', log, log], windowsHide: true,
       });
       await new Promise((resolve, reject) => { controller.once('spawn', resolve); controller.once('error', reject); });
@@ -183,6 +213,9 @@ async function command(action, directory, output) {
     } finally { closeSync(log); }
   }
   const deadline = Date.now() + (action === 'cancel' ? 85_000 : 600_000);
+  const observe = (kind, detail = {}) => appendFileSync(join(output, 'windows-journey-waits.jsonl'), `${JSON.stringify({ schema: 1, at: new Date().toISOString(), action, kind, ...detail })}\n`);
+  let lastStatus;
+  observe('wait-start');
   let activated = false;
   try {
     while (Date.now() < deadline) {
@@ -196,6 +229,8 @@ async function command(action, directory, output) {
       if (!existsSync(stateFile)) { await delay(250); continue; }
       const controller = JSON.parse(readFileSync(stateFile, 'utf8'));
       const row = await requestState(controller, !activated && action !== 'start' ? action : 'status');
+      lastStatus = row;
+      observe('controller-status', { controller: row });
       activated = true;
       if (action === 'start' && row.state === 'paused') return;
       if (row.state === 'done') {
@@ -205,16 +240,20 @@ async function command(action, directory, output) {
       }
       await delay(500);
     }
+    observe('wait-bound', { controller: lastStatus ?? null });
     throw new Error(`Windows journey ${action} exceeded its bounded wait, cleanup not yet proven`);
   } catch (error) {
     if (action !== 'cancel' && existsSync(stateFile)) {
       try {
         const state = JSON.parse(readFileSync(stateFile, 'utf8'));
-        await requestState(state, 'cancel');
+        lastStatus = await requestState(state, 'cancel');
+        observe('cancel-requested', { controller: lastStatus });
         const cleanupDeadline = Date.now() + 85_000;
         while (!existsSync(resultFile) && Date.now() < cleanupDeadline) await delay(500);
+        // Current progress continues directly in windows-journey-phases.jsonl while this wait runs.
+        observe(existsSync(resultFile) ? 'cancel-result-present' : 'cleanup-outstanding', { controller: lastStatus ?? null });
         console.error(existsSync(resultFile) ? 'Windows journey fixture exited after cancellation. Inspect cleanup assertions.' : 'Windows journey cleanup-outstanding: fixture owner remains live, cleanup not proven.');
-      } catch { console.error('Windows journey cleanup-outstanding: controller unreachable, cleanup not proven.'); }
+      } catch { observe('controller-unreachable', { controller: lastStatus ?? null }); console.error('Windows journey cleanup-outstanding: controller unreachable, cleanup not proven.'); }
     }
     throw error;
   }

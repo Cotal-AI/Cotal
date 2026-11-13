@@ -108,7 +108,7 @@ test('checkpoint waits, cancel/disconnect/watchdog reject through normal finally
   await windowsJourneyCheckpoint('service-recovery-complete'); // Unsplit Linux/macOS entrypoints stay unchanged.
 });
 
-async function controllerFixture(t, { cancel = false, failService = false, failAccount = false, cancelAccount = false } = {}) {
+async function controllerFixture(t, { cancel = false, failService = false, failAccount = false, cancelAccount = false, cell } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'journey-contract-'));
   const directory = join(root, 'private'), output = join(root, 'observations');
   mkdirSync(output);
@@ -125,9 +125,12 @@ async function controllerFixture(t, { cancel = false, failService = false, failA
     assert.equal(options.env.COTAL_DAEMON_SMOKE_TMP, process.env.COTAL_DAEMON_SMOKE_TMP);
     const channel = new EventEmitter();
     channel.connected = true;
+    channel.pid = 12345;
     channel.send = row => {
       events.push(row.kind);
+      channel.emit('message', { kind: 'progress', phase: 'cleanup-driver-close', status: 'start' });
       setImmediate(() => {
+        channel.emit('message', { kind: 'progress', phase: 'cleanup-driver-close', status: 'complete' });
         events.push('service-cleanup');
         channel.emit('exit', row.kind === 'cancel' || failService ? 1 : 0, null);
       });
@@ -137,10 +140,15 @@ async function controllerFixture(t, { cancel = false, failService = false, failA
       assert.ok(events.includes('service-cleanup'));
       if (!cancelAccount) channel.emit('exit', failAccount ? 1 : 0, null);
     });
-    else reachCheckpoint = () => channel.emit('message', { kind: 'checkpoint', phase: 'service-recovery-complete' });
+    else reachCheckpoint = () => {
+      channel.emit('message', { kind: 'progress', phase: 'recovery-settled', status: 'start' });
+      channel.emit('message', { kind: 'progress', phase: 'recovery-progress-read', status: 'start' });
+      channel.emit('message', { kind: 'progress', phase: 'recovery-progress-read', status: 'complete' });
+      channel.emit('message', { kind: 'checkpoint', phase: 'service-recovery-complete' });
+    };
     return channel;
   };
-  const running = runController(directory, output, { spawnFixture, retainMs: 5 });
+  const running = runController(directory, output, { spawnFixture, retainMs: 5, cell });
   const stateFile = join(directory, 'controller.json');
   let state;
   for (let n = 0; n < 100; n++) {
@@ -156,7 +164,13 @@ async function controllerFixture(t, { cancel = false, failService = false, failA
   await assert.rejects(requestState(state, 'unknown'));
   assert.equal((await requestState(state, 'status')).state, 'service-recovery');
   reachCheckpoint();
-  assert.equal((await requestState(state, 'status')).state, 'paused');
+  const paused = await requestState(state, 'status');
+  assert.equal(paused.state, 'paused');
+  assert.equal(paused.ownership.fixturePid, 12345);
+  assert.equal(paused.ownership.cleanupStarted, false);
+  assert.deepEqual(paused.ownership.waitingOn.map(row => row.phase), ['recovery-settled']);
+  const live = readFileSync(join(output, 'windows-journey-phases.jsonl'), 'utf8');
+  assert.match(live, /recovery-settled/, 'wait evidence is durable before fixture exit');
   await assert.rejects(requestState({ ...state, token: '0'.repeat(64) }, 'resume'), /refused/);
   await assert.rejects(requestState({ ...state, fixtureSecret: 'not accepted' }, 'resume'));
   await requestState(state, cancel ? 'cancel' : 'resume');
@@ -182,11 +196,31 @@ test('controller preserves live owner and waits for service cleanup before accou
   assert.deepEqual(proof.records.filter(row => row.kind === 'start').map(row => row.phase), ['service-recovery', 'paused', 'service-tail', 'account']);
 });
 
+for (const cell of ['before-poll', 'after-poll']) {
+  test(`diagnostic ${cell} only runs the service fixture and retains its receipt`, async t => {
+    const proof = await controllerFixture(t, { cell });
+    assert.equal(proof.result.code, 0);
+    assert.equal(proof.launches.length, 1);
+    assert.ok(proof.launches[0].includes(`--desktop-recovery-cell=${cell}`));
+    assert.ok(proof.records.some(row => row.kind === 'diagnostic-cell-complete' && row.cell === cell));
+  });
+}
+
+test('unknown diagnostic cell rejects before starting any fixture', async () => {
+  await assert.rejects(runController('unused', 'unused', { cell: 'unknown', spawnFixture: () => assert.fail('must not spawn') }), /unknown Windows recovery diagnostic cell/);
+});
+
 for (const failure of ['cancel', 'failService', 'failAccount', 'cancelAccount']) {
   test(`controller retains nonzero ${failure} and does not start account after cancelled/failed service`, async t => {
     const proof = await controllerFixture(t, { [failure]: true });
     assert.equal(proof.result.code, 1);
     assert.equal(proof.launches.length, ['failAccount', 'cancelAccount'].includes(failure) ? 2 : 1);
     assert.ok(proof.events.includes('service-cleanup'));
+    assert.ok(proof.records.some(row => row.kind === 'fixture-progress' && row.cleanupStarted));
+    if (failure === 'cancel') {
+      const receipt = proof.records.find(row => row.kind === 'cancel-wait');
+      assert.equal(receipt.cleanupStarted, false, 'cancel does not claim finally has started');
+      assert.deepEqual(receipt.waitingOn.map(row => row.phase), ['recovery-settled']);
+    }
   });
 }
