@@ -85,6 +85,12 @@ test("expired credentials and pending approval refusals map to their recovery ac
     action: "login",
     label: "Sign in again",
   });
+  assert.deepEqual(refusalView("NOT_RUNNING"), {
+    title: "The background service is not running",
+    description: "Start it again to continue. This is the same install step setup uses.",
+    action: "install",
+    label: "Start service",
+  });
   assert.deepEqual(refusalView("APPROVAL_PENDING"), {
     title: "Waiting for owner approval",
     description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.",

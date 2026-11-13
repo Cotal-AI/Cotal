@@ -88,7 +88,7 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
   win.eval(await bundle); await settle();
   const node = <T extends HTMLElement = HTMLElement>(id: string) => doc.getElementById(id) as T;
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };
-  return { dom, doc, node, click, calls, urls, options, emit: async (event: string) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload: null }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
+  return { dom, doc, node, click, calls, urls, options, arm: () => { installed = true; }, stop: () => { installed = false; }, emit: async (event: string) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload: null }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
 }
 
 test("computer name edits save, cancel and reject invalid input before request", async () => {
@@ -107,6 +107,33 @@ test("computer name edits save, cancel and reject invalid input before request",
     await a.click("edit-computer-name");
     a.node("computer-name-input").dispatchEvent(new a.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     assert.equal(a.node("computer-name-form").hidden, true);
+  } finally { a.dom.window.close(); }
+});
+
+test("a later status check clears a daemon-not-running error", async () => {
+  const a = await app({ installed: true });
+  try {
+    await a.click("login"); await a.login();
+    a.stop();
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, "The background service is not running");
+    a.arm();
+    await a.tick();
+    assert.notEqual(a.node("connection-title").textContent, "The background service is not running");
+  } finally { a.dom.window.close(); }
+});
+
+test("try again starts a stopped background service", async () => {
+  const a = await app({ installed: true });
+  try {
+    await a.click("login"); await a.login();
+    a.stop();
+    await a.tick();
+    assert.match(a.node("recover").textContent ?? "", /Start service/);
+    const before = a.calls.length;
+    await a.click("recover");
+    assert.ok(a.calls.slice(before).some(call => call.op === "install"));
+    assert.notEqual(a.node("connection-title").textContent, "This operation could not finish");
   } finally { a.dom.window.close(); }
 });
 
