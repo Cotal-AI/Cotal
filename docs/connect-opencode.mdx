@@ -72,6 +72,7 @@ Cold startup waits up to two minutes for the Cotal session, with five more secon
 On OpenCode 1.19.5, a model-catalog lookup on a fresh home can leave dependency-install locks that OpenCode recovers after about a minute.
 Each launch keeps its server boot output in `<workspace>/.cotal/opencode/<name>/boot.<token>.log`, including failed launches.
 If startup fails, read that log on the execution host, correct any setup error, then launch again.
+A refusal to continue a principal whose transcript this root does not have is that launch's last line: reuse the previous state root or launch with a new principal. Launching again under the same name does not clear it.
 
 ## Work in the session [#how-it-binds]
 

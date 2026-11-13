@@ -10,6 +10,7 @@
  *  1. Two launches started together: exactly one is refused as already running, and one serve runs.
  *  2. Once that launcher stops, the next launch of the name comes up: the claim was released.
  *  3. A claim left by a launcher that died does not refuse the next launch.
+ *  4. A serve that exits on the retained-transcript refusal leaves that sentence as the last line.
  *
  * Run: pnpm smoke:opencode-launch-claim   (POSIX; needs the connector built)
  */
@@ -39,6 +40,7 @@ case "$1" in
   serve)
     echo "first-run dependency preparation"
     if [ "$STUB_FAIL" = 1 ]; then echo "dependency install refused" >&2; exit 7; fi
+    if [ "$STUB_REFUSAL" = 1 ]; then echo "[cotal-connector] Cannot start events for owner.probe: this state root has no acknowledged transcript frontier, but the broker retains events for this principal. Reuse the previous state root or launch with a new principal. Refusing before work; the existing transcript and local logs are unchanged." >&2; exit 1; fi
     if [ -n "$STUB_DELAY" ]; then trap 'kill $! 2>/dev/null; exit 0' TERM; sleep "$STUB_DELAY" & wait; fi
     echo "[cotal-session] stub-session"; trap 'kill $! 2>/dev/null; exit 0' TERM; sleep 600 & wait ;;
   *) exit 2 ;;
@@ -91,6 +93,13 @@ try {
     expect(log.includes("first-run dependency preparation") && log.includes("dependency install refused"), { log });
     expect((statSync(join(agentHome, logs[0])).mode & 0o777) === 0o600, { mode: statSync(join(agentHome, logs[0])).mode });
     expect(failedBoot.out().includes("Check the retained boot log for setup errors, then launch again."), { out: failedBoot.out() });
+  });
+
+  await check("a retained-transcript refusal stays the launch's last line", async () => {
+    const refused = launch({ STUB_REFUSAL: "1" });
+    const code = await refused.exited;
+    const last = refused.out().split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? "";
+    expect(code === 1 && last.includes("launch with a new principal") && !refused.out().includes("Check the retained boot log for setup errors, then launch again."), { code, last, out: refused.out() });
   });
 
   await check("a first run exceeding the old 60-second abort still announces its session", async () => {
@@ -158,4 +167,5 @@ try {
 
 console.log(`\nopencode-launch-claim.smoke: ${passed} passed, ${failed} failed`);
 emitSentinel({ passed, failed });
+process.exit(failed === 0 ? 0 : 1);
 if (failed > 0 || passed !== 6) process.exitCode = 1;

@@ -129,6 +129,7 @@ It records stdout and stderr until the TUI attaches, plus a startup failure diag
 The file remains after exit and later launches use new files, so retrying does not overwrite the failed boot.
 The launcher prints the log's full path before boot output.
 Read it on the execution host when startup fails, correct any setup error, then launch again.
+A refusal to continue a principal whose transcript this root does not have is that launch's last line: reuse the previous state root or launch with a new principal. Launching again under the same name does not clear it.
 These logs can contain application configuration errors and should be shared with care.
 
 ## Model reporting

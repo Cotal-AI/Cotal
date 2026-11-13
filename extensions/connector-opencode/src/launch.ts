@@ -250,8 +250,12 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   let sessionId: string | undefined;
   let attached = false;
   let onSession: ((id: string) => void) | undefined;
+  // The serve's recent output. A retained-transcript refusal is one sentence, and it has to stay
+  // the last row: the manager shows that row as the launch failure.
+  let bootCarry = "";
   const scan = (d: Buffer): void => {
     if (!attached) bootOutput(d);
+    bootCarry = (bootCarry + d.toString()).slice(-4_000);
     if (!sessionId) {
       const m = d.toString().match(/\[cotal-session\] (\S+)/);
       if (m) {
@@ -267,7 +271,10 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   let bootFailed = false;
   serve.on("close", (code, signal) => {
     if (!attached) {
-      if (!bootFailed && !stopping) bootOutput(
+      // The plugin already printed why this root cannot continue the principal. Adding the generic
+      // line would make that the last row, and its advice to launch again cannot succeed.
+      const retainedTranscript = bootCarry.includes("Cannot start events") && bootCarry.includes("launch with a new principal");
+      if (!bootFailed && !stopping && !retainedTranscript) bootOutput(
         `[cotal-connector] OpenCode exited before its Cotal session was ready (code ${code ?? signal}). Check the retained boot log for setup errors, then launch again.\n`,
       );
       process.exit(bootFailed ? 1 : (code ?? (signal ? 1 : 0)));
