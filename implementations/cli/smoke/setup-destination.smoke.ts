@@ -582,26 +582,26 @@ if (process.platform !== "win32") {
     await t.answer(START_HOSTED, ENTER);
     check("and saving sets it up", (await t.exited()) && t.s.code === 0, { code: t.s.code, out: t.s.text().slice(-500) });
   }
-  {
-    const custody = project("cloud-custody");
+  for (const [cloudLabel, cloudIdp] of [["canonical", COTAL_CLOUD_IDP], ["legacy", "https://cloud.cotal.ai/api/auth"]] as const) {
+    const custody = project(`cloud-custody-${cloudLabel}`);
     const creds = join(custody, ".cotal", "auth", "spaces", "cloud-team", "user-auth", "sentinel.creds");
     mkdirSync(join(creds, ".."), { recursive: true });
     writeFileSync(creds, "fixture-sentinel", { mode: 0o600 });
     recordMesh({
       space: "cloud-team", server: "nats://127.0.0.1:4997", root: custody, catalogRoot: custody,
       mode: "user", origin: "catalog", catalogOwner: "cloud-fixture-account", catalogId: "cloud-space", catalogSlug: "cloud-team", catalogName: "Cloud team", catalogRole: "owner",
-      userAuth: { provider: "cotal", idp: { url: COTAL_CLOUD_IDP, issuer: "https://cloud.cotal.ai", audience: "cotal-mesh" }, endpoints: { url: "https://auth.example.test" }, remote: true, sentinelCredsPath: creds },
+      userAuth: { provider: "cotal", idp: { url: cloudIdp, issuer: "https://cloud.cotal.ai", audience: "cotal-mesh" }, endpoints: { url: "https://auth.example.test" }, remote: true, sentinelCredsPath: creds },
       ts: new Date(0).toISOString(),
     });
-    const dir = project("pty-cloud-space");
+    const dir = project(`pty-cloud-space-${cloudLabel}`);
     const t = terminal(dir);
     await t.at(DESTINATION);
     t.write(DOWN + DOWN);
     await wait(500);
     const frame = t.s.text().slice(t.s.text().lastIndexOf(DESTINATION));
-    check("with a Cloud space registered here the Cloud choice names the account's spaces", /● Cloud \(a space of your Cotal Cloud account\)/.test(frame.slice(frame.lastIndexOf("Local"))), frame.slice(-400));
+    check(`${cloudLabel}: with a Cloud space registered here the Cloud choice names the account's spaces`, /● Cloud \(a space of your Cotal Cloud account\)/.test(frame.slice(frame.lastIndexOf("Local"))), frame.slice(-400));
     await t.answer(DESTINATION, ENTER);
-    check("Cloud with one space asks for the project folder next, without a sign-in or a space question",
+    check(`${cloudLabel}: Cloud with one space asks for the project folder next, without a sign-in or a space question`,
       (await t.at("Project folder (your agents work in it)")) && !/Which Cloud space\?|Approve sign-in/.test(t.s.text()), t.s.text().slice(-600));
     await t.answer(PROJECT, ENTER);
     await t.answer(APPLICATION, ENTER);
@@ -613,7 +613,7 @@ if (process.platform !== "win32") {
     await t.answer(START_HOSTED, ENTER);
     check("saving binds the Cloud space to the project and leaves its credentials where the sign-in put them",
       (await t.exited()) && t.s.code === 0 && findMesh("cloud-team")?.root === dir && findMesh("cloud-team")?.catalogRoot === custody && existsSync(creds) && existsSync(join(dir, ".cotal", "agents", "default.md")), { code: t.s.code, entry: findMesh("cloud-team"), out: t.s.text().slice(-700) });
-    const again = terminal(project("pty-cloud-elsewhere"));
+    const again = terminal(project(`pty-cloud-elsewhere-${cloudLabel}`));
     await again.answer(DESTINATION, DOWN + DOWN + ENTER);
     await again.answer(APPLICATION, ENTER);
     await again.answer(RUNTIMES, ENTER);

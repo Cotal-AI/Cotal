@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { COTAL_CLOUD_IDP, cloudAuthUrl, loginRecoveryCommand, loginBrowserCommand } from "../src/cloud-login.js";
+import { COTAL_CLOUD_IDP, cloudAuthUrl, isCotalCloudIdp, loginRecoveryCommand, loginBrowserCommand } from "../src/cloud-login.js";
 
 assert.equal(COTAL_CLOUD_IDP, "https://cotal.cloud/api/auth");
+for (const host of ["cotal.cloud", "cloud.cotal.ai"]) {
+  for (const url of [`https://${host}/api/auth`, `https://${host}/api/auth/`, `https://${host.toUpperCase()}:443/api/auth`])
+    assert.equal(isCotalCloudIdp(url), true, url);
+  for (const url of [`https://${host}`, `https://${host}/other`, `https://${host}/api/auth/extra`, `http://${host}/api/auth`, `https://${host}:444/api/auth`, `https://user@${host}/api/auth`, `https://${host}/api/auth?x=1`, `https://${host}/api/auth#x`, `https://${host}.evil.example/api/auth`])
+    assert.equal(isCotalCloudIdp(url), false, url);
+}
+assert.equal(isCotalCloudIdp("not a URL"), false);
 assert.equal(cloudAuthUrl("https://cotal.cloud"), COTAL_CLOUD_IDP);
 assert.equal(cloudAuthUrl("https://cotal.cloud/"), COTAL_CLOUD_IDP);
 assert.equal(cloudAuthUrl("https://cloud.cotal.ai"), "https://cloud.cotal.ai/api/auth");

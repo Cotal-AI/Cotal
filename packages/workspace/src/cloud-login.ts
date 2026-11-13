@@ -9,6 +9,17 @@ export function cloudAuthUrl(url: string): string {
   return url === "https://cotal.cloud" || url === "https://cotal.cloud/" ? COTAL_CLOUD_IDP : url;
 }
 
+/** Recognize hosted Cloud auth bases without accepting other paths or providers. */
+export function isCotalCloudIdp(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && !parsed.username && !parsed.password
+      && !parsed.port && !parsed.search && !parsed.hash
+      && (parsed.hostname === "cotal.cloud" || parsed.hostname === "cloud.cotal.ai")
+      && (parsed.pathname === "/api/auth" || parsed.pathname === "/api/auth/");
+  } catch { return false; }
+}
+
 /** The recovery command for a refused sign-in, without deployment details for Cloud. */
 export function loginRecoveryCommand(idpUrl: string): string {
   return cloudAuthUrl(idpUrl.replace(/\/$/, "")) === COTAL_CLOUD_IDP ? "cotal login" : `cotal login --idp ${idpUrl}`;
