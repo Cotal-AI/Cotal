@@ -36,7 +36,6 @@ import {
 } from "./issued-authority.js";
 import { chatSubject, token } from "./subjects.js";
 import { isStreamNotFound } from "./jetstream-missing.js";
-import { spaceResourceCreationConfig } from "./space-resource-definitions.js";
 
 export function admissionBucket(space: string): string {
   return `cotal_admission_${token(space)}`;
@@ -363,8 +362,11 @@ export async function ensureAdmissionStore(jsm: JetStreamManager, _kvm: Kvm, spa
     if (!isStreamNotFound(error)) throw error;
     return undefined;
   });
-  if (existing === undefined)
+  if (existing === undefined) {
+    // Resource definitions collect admission inputs too; load them after module initialization.
+    const { spaceResourceCreationConfig } = await import("./space-resource-definitions.js");
     await jsm.streams.add(spaceResourceCreationConfig({ kind: "kv", stream, ...definition, verification: "admission" }));
+  }
   const cfg = (await jsm.streams.info(stream)).config;
   assertAdmissionStoreConfig(cfg, space);
 }
