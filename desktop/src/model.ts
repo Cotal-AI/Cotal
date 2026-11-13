@@ -77,6 +77,14 @@ export function canonicalProvider(value: string): string {
 }
 
 export interface ComputerAccount { idpUrl?: string; sub?: string; label?: string; mode: string; hostSupport: string; spaces: ComputerSpace[] }
+
+/** The name the settings account line shows beside the host. A missing or whitespace-only label is not
+ *  one, so the line uses the subject. Both blank leaves the host by itself. */
+export function shownAccountLabel(label: string | undefined, sub: string | undefined): string | undefined {
+  if (label && label.trim()) return label;
+  if (sub && sub.trim()) return sub;
+  return undefined;
+}
 export function activeComputerAccount(account: ComputerAccount & { accounts?: ComputerAccount[] } | undefined, provider?: string): ComputerAccount | undefined {
   if (!account?.accounts) return account;
   if (provider) return account.accounts.find(item => item.idpUrl !== undefined && canonicalProvider(item.idpUrl) === canonicalProvider(provider));
@@ -110,6 +118,16 @@ export function keptCredentialsNotice(result: Record<string, unknown>): string {
 }
 
 export interface AccountSpace { space: string; label: string; catalogId?: string; kind?: string; role?: string }
+
+/** The name a space row shows. A missing or whitespace-only label is not one, so the row uses the space id. */
+export function shownSpaceLabel(label: string | undefined, space: string): string {
+  return label && label.trim() ? label : space;
+}
+
+/** The kind chip beside a space. A missing or whitespace-only kind is not one, so the chip says Space. */
+export function shownSpaceKind(kind: string | undefined): string {
+  return kind && kind.trim() ? kind : "Space";
+}
 
 /** Discovery selects a target, but never grants consent to connect. */
 export function initialSpace(spaces: readonly AccountSpace[], requested?: string): string | undefined {
