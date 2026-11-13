@@ -53,6 +53,7 @@ jobs:
           failed=0
           if [ '${{ matrix.source }}' = '0.160.7' ]; then
             node scripts/automatic-update-platform-baseline.mjs --source 0.160.7 --layout npm --state fresh --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+            node scripts/automatic-update-platform-baseline.mjs --source 0.160.7 --layout npm --state fresh --prior-status true --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           fi
           node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state stale-extensions --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state concurrent --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
