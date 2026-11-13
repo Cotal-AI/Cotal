@@ -192,7 +192,7 @@ async function runNativeMigration(args: ParsedArgs, from: string): Promise<void>
   const idp = resolution.bundle.userAuth.idp.url;
   const presentation = presentationOf(args.values);
   const candidate = await stageIdpSession({
-    dir, idpUrl: idp, clientId: String(args.values["client-id"] ?? DEFAULT_CLIENT_ID),
+    dir, idpUrl: idp, migrationFrom: oldUrl, clientId: String(args.values["client-id"] ?? DEFAULT_CLIENT_ID),
     expectedPins: { idpUrl: idp, issuer: trusted.issuer, audience: trusted.audience, sub: oldAccount.sub },
     onPrompt: (p: DeviceLoginPrompt) => {
       console.error(renderReport({ sections: [{ title: "Approve native migration", blocks: [
