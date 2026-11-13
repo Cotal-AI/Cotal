@@ -1197,6 +1197,12 @@ main() {
   ok_line "Cotal $INSTALLED_VERSION"
 
   write_launcher
+  if [ -n "$PREVIOUS_VERSION" ]; then
+    if ! "$BIN_DIR/cotal" update --self; then
+      die "Cotal was installed, but reconciliation did not complete." \
+        "Run $(shquote "$BIN_DIR/cotal") update --self to finish this update."
+    fi
+  fi
   setup_path
   case "$PATH_STATE" in
     already) ok_line "$(tildify "$BIN_DIR") is on your PATH" ;;
