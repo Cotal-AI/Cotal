@@ -37,6 +37,8 @@ outcomes are retained for runner teardown rather than retried blindly.
 
 Build the workspace and assemble source-matched native artifacts as the workflow does. The same
 script calls the existing complete-closure packer, preserving its native release guards.
+During version-only bootstrap rewrites it uses pnpm's warning-only dependency precheck, preventing
+an automatic dependency reinstall. Prepublish, prepack and source-matched native checks still run.
 
 ```bash
 node scripts/automatic-update-platform-baseline.mjs --pack ./candidate-B --version B

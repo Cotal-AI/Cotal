@@ -188,6 +188,10 @@ export async function matrixCell(options) {
       const prepare = `const {mkSecretDir}=await import(${JSON.stringify(core)});for(const dir of ${JSON.stringify([root, ...(home.startsWith(root) ? [home] : []), project])})mkSecretDir(dir);`;
       ok(await call('harden native fixture directories', process.execPath, ['--input-type=module', '-e', prepare]), 'published private-directory preparation');
     }
+    if (options['prior-status'] === 'true') {
+      report.priorStatus = await cotal('prior real user command: status', ['status']);
+      report.configExistedAfterPriorStatus = existsSync(config);
+    }
     if (state === 'daemon' && report.source === '0.155.0') {
       report.result = 'unsupported';
       report.refusal = "Published 0.155.0 has no automatic-update settings (--auto is unknown), so this state cannot be constructed through its CLI.";
@@ -431,7 +435,11 @@ export async function packCandidate(output, version) {
       save(row.path, after);
     }
     const { packColdCandidate } = await import('./pack-cold-candidate.mjs');
-    const manifest = packColdCandidate({ root, output });
+    // Only release versions changed above. Do not let pnpm auto-reinstall/purge the
+    // already-built dependency graph, but retain every prepublish and native guard.
+    const exec = (file, argv, options) => execFileSync(file, argv, { ...options,
+      env: { ...process.env, PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: 'warn', PNPM_CONFIG_WORKSPACE_CONCURRENCY: '3' } });
+    const manifest = packColdCandidate({ root, output, exec });
     const installerFile = join(resolve(output), 'installer.sh');
     copyFileSync(join(root, 'install.sh'), installerFile);
     save(join(resolve(output), 'installer.json'), { source: manifest.source, sha256: digest(readFileSync(installerFile)) });
