@@ -18,9 +18,168 @@ concurrency:
 permissions:
   contents: read
   actions: read
+env:
+  PRODUCT_SOURCE: 252d3a03f3550a784c7784efc57155e70a7e5d83
 jobs:
+  transition-native:
+    if: "github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - { platform: linux, arch: x64, runner: ubuntu-24.04 }
+          - { platform: linux, arch: arm64, runner: ubuntu-24.04-arm }
+          - { platform: darwin, arch: x64, runner: macos-15-intel }
+          - { platform: darwin, arch: arm64, runner: macos-15 }
+          - { platform: win32, arch: x64, runner: windows-latest }
+          - { platform: win32, arch: arm64, runner: windows-11-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PRODUCT_SOURCE }}
+          path: product
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Compile Unix host primitives
+        if: matrix.platform != 'win32'
+        working-directory: product
+        shell: bash
+        run: |
+          node packages/seat/scripts/build-native.mjs --host
+          if [ '${{ matrix.platform }}' = darwin ]; then
+            node packages/workspace/scripts/build-native.mjs
+          fi
+      - name: Compile Windows host primitives and process identity
+        if: matrix.platform == 'win32'
+        working-directory: product
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 1
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }} -host_arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }}
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transition-seat-${{ matrix.platform }}-${{ matrix.arch }}
+          path: product/packages/seat/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform != 'linux'
+        with:
+          name: transition-workspace-${{ matrix.platform }}-${{ matrix.arch }}
+          path: product/packages/workspace/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+  transition-pack:
+    needs: transition-native
+    if: "github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PRODUCT_SOURCE }}
+          path: product
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+        working-directory: product
+      - run: pnpm --workspace-concurrency 3 build
+        working-directory: product
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: transition-*
+          path: ${{ runner.temp }}/transition-natives
+      - name: Assemble source-matched full native closure
+        working-directory: product
+        run: |
+          node scripts/seat-assemble-natives.mjs
+          node scripts/workspace-assemble-natives.mjs
+          node packages/seat/scripts/assert-shipped-natives.mjs
+          node packages/workspace/scripts/assert-shipped-natives.mjs
+        env:
+          NATIVE_SOURCE: ${{ env.PRODUCT_SOURCE }}
+          SEAT_NATIVE_X64: ${{ runner.temp }}/transition-natives/transition-seat-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/transition-natives/transition-seat-linux-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/transition-natives/transition-seat-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/transition-natives/transition-seat-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/transition-natives/transition-seat-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/transition-natives/transition-seat-win32-arm64/peercred.node
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/transition-natives/transition-workspace-win32-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/transition-natives/transition-workspace-win32-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/transition-natives/transition-workspace-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/transition-natives/transition-workspace-darwin-arm64
+      - name: Pack candidate A from product source
+        run: node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidate-A" --version A --source-root "$GITHUB_WORKSPACE/product"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transition-candidate-A
+          path: ${{ runner.temp }}/candidate-A
+          if-no-files-found: error
+  transition-mac-proof:
+    needs: transition-pack
+    if: "github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - uses: actions/download-artifact@v4
+        with:
+          name: transition-candidate-A
+          path: ${{ runner.temp }}/candidate-A
+      - name: Capture native launchd manuals before proof cells
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/upgrade-evidence"
+          mkdir -p "$evidence"
+          sw_vers > "$evidence/macos-version.txt"
+          uname -a > "$evidence/macos-uname.txt"
+          MANPAGER=cat PAGER=cat MANWIDTH=120 man 5 launchd.plist | col -bx > "$evidence/launchd.plist.5.txt"
+          MANPAGER=cat PAGER=cat MANWIDTH=120 man 1 launchctl | col -bx > "$evidence/launchctl.1.txt"
+          test -s "$evidence/launchd.plist.5.txt"
+          test -s "$evidence/launchctl.1.txt"
+          (cd "$evidence" && shasum -a 256 macos-version.txt macos-uname.txt launchd.plist.5.txt launchctl.1.txt > launchd-manuals.sha256)
+      - name: Prove launchd transition and disabled crash boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in transition off-before-tick killed-before-result; do
+            node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate-A" --direction A --source latest --layout installer --state daemon --method scheduler --launchd-proof "$mode" --output "$RUNNER_TEMP/upgrade-evidence"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transition-mac-proof
+          path: ${{ runner.temp }}/upgrade-evidence
+          if-no-files-found: error
   scheduler-proof:
-    if: "github.event_name == 'push' && contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    if: "!contains(github.event.head_commit.message, '[mac-transition-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -51,7 +210,7 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   installer-proof:
-    if: "github.event_name == 'push' && contains(github.event.head_commit.message, '[installer-only]') && !contains(github.event.head_commit.message, '[scheduler-only]')"
+    if: "!contains(github.event.head_commit.message, '[mac-transition-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[installer-only]') && !contains(github.event.head_commit.message, '[scheduler-only]')"
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -119,7 +278,7 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   priority:
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    if: "!contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -182,7 +341,7 @@ jobs:
           if-no-files-found: error
   desktop-beside-cli:
     needs: priority
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure')"
+    if: "!contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure')"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -220,13 +379,13 @@ jobs:
           if-no-files-found: error
   workspace-native:
     needs: desktop-beside-cli
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')"
+    if: "!contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')"
     uses: ./.github/workflows/workspace-native.yml
     with:
       darwin: true
   seat-native:
     needs: workspace-native
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.workspace-native.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.workspace-native.result == 'success'"
     strategy:
       max-parallel: 6
       fail-fast: false
@@ -255,7 +414,7 @@ jobs:
           if-no-files-found: error
   candidate-pack:
     needs: [workspace-native, seat-native]
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.workspace-native.result == 'success' && needs.seat-native.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.workspace-native.result == 'success' && needs.seat-native.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -304,7 +463,7 @@ jobs:
           if-no-files-found: error
   candidate-B:
     needs: candidate-pack
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-pack.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-pack.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -336,7 +495,7 @@ jobs:
           if-no-files-found: error
   candidate-B-expanded:
     needs: candidate-A
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-A.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-A.result == 'success'"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -381,7 +540,7 @@ jobs:
           if-no-files-found: error
   candidate-native:
     needs: candidate-B-expanded
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.candidate-B-expanded.result == 'success' || needs.candidate-B-expanded.result == 'failure')"
+    if: "!contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.candidate-B-expanded.result == 'success' || needs.candidate-B-expanded.result == 'failure')"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -446,7 +605,7 @@ jobs:
           if-no-files-found: error
   candidate-A:
     needs: candidate-B
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-B.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-B.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -472,7 +631,7 @@ jobs:
           if-no-files-found: error
   published:
     needs: candidate-native
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && github.event_name != 'push'"
+    if: "!contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && github.event_name != 'push'"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -517,7 +676,7 @@ jobs:
           if-no-files-found: error
   native:
     needs: published
-    if: "!contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && github.event_name != 'push'"
+    if: "!contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && github.event_name != 'push'"
     strategy:
       fail-fast: false
       max-parallel: 6

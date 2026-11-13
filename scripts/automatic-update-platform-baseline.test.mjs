@@ -1,6 +1,72 @@
 import assert from 'node:assert/strict';
 import { candidateRegistry, bootstrapVersion, selectedTargets, cliReportsVersion, verifyCandidateInstaller, completionAdvisory, nativeGenerationReady } from './automatic-update-platform-baseline.mjs';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import * as baseline from './automatic-update-platform-baseline.mjs';
+
+function productCheckout() {
+  const parent = '/var/tmp/upgrade-matrix';
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const root = mkdtempSync(join(parent, 'source-root-test-'));
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+  git('init', '--quiet');
+  writeFileSync(join(root, '.gitignore'), 'dist/\nnative-build/\n');
+  writeFileSync(join(root, 'package.json'), '{"name":"product","version":"1.0.0"}\n');
+  git('add', '.');
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--quiet', '-m', 'fixture');
+  return { root, git };
+}
+
+test('source-root defaults to the matrix tree only when omitted', () => {
+  assert.equal(baseline.resolveCandidateSourceRoot(), new URL('../', import.meta.url).pathname.replace(/\/$/, ''));
+  assert.throws(() => baseline.resolveCandidateSourceRoot(''), /explicit source root/);
+});
+
+test('source-root accepts a clean actual Git root and ignored build outputs without switching branches', () => {
+  const { root, git } = productCheckout();
+  const branch = git('symbolic-ref', 'HEAD');
+  for (const name of ['dist', 'native-build']) {
+    mkdirSync(join(root, name));
+    writeFileSync(join(root, name, 'generated'), 'generated');
+  }
+  assert.equal(baseline.resolveCandidateSourceRoot(root), root);
+  assert.equal(git('symbolic-ref', 'HEAD'), branch);
+  assert.equal(git('status', '--porcelain'), '');
+  assert.throws(() => baseline.resolveCandidateSourceRoot(join(root, 'dist')), /actual Git root/);
+});
+
+test('source-root refuses tracked staged or unstaged changes before version rewriting', () => {
+  for (const staged of [false, true]) {
+    const { root, git } = productCheckout();
+    writeFileSync(join(root, 'package.json'), '{"version":"dirty"}\n');
+    if (staged) git('add', 'package.json');
+    assert.throws(() => baseline.resolveCandidateSourceRoot(root), /tracked tree must be clean/);
+    assert.equal(readFileSync(join(root, 'package.json'), 'utf8'), '{"version":"dirty"}\n');
+  }
+});
+
+test('source-root CLI rejects a dirty product before invoking pack or rewriting manifests', () => {
+  const { root } = productCheckout();
+  const original = '{"version":"dirty"}\n';
+  writeFileSync(join(root, 'package.json'), original);
+  assert.throws(() => execFileSync(process.execPath, [
+    new URL('./automatic-update-platform-baseline.mjs', import.meta.url).pathname,
+    '--pack', join(root, 'candidate'), '--version', '1.0.1', '--source-root', root,
+  ], { encoding: 'utf8', stdio: 'pipe' }), error => {
+    assert.equal(error.status, 1);
+    assert.match(error.stderr, /tracked tree must be clean/);
+    return true;
+  });
+  assert.equal(readFileSync(join(root, 'package.json'), 'utf8'), original);
+});
+
+test('source-root refuses non-repositories and untracked product inputs', () => {
+  const { root } = productCheckout();
+  writeFileSync(join(root, 'untracked.mjs'), 'export {};');
+  assert.throws(() => baseline.resolveCandidateSourceRoot(root), /tree must be clean/);
+  const outside = mkdtempSync(join('/var/tmp/upgrade-matrix', 'not-git-'));
+  assert.throws(() => baseline.resolveCandidateSourceRoot(outside));
+});
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { create } from 'tar';
@@ -99,7 +165,7 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
     if (job.strategy) assert(job.strategy['max-parallel'] <= 6, `${name} is not bounded to six`);
-    if (!['priority', 'scheduler-proof', 'installer-proof'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
+    if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);
     visiting.delete(name);

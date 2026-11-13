@@ -9,6 +9,8 @@ import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { observeMacHandoff, handoffEvidence } from './mac-transition-observer.mjs';
+import { createPreResultKill } from './mac-pre-result-kill.mjs';
 
 export const sources = ['0.155.0', '0.160.7', '0.162.0', '0.163.5', '0.164.0', 'latest'];
 export const states = ['fresh', 'configured', 'daemon', 'agent', 'stale-extensions', 'recovery', 'concurrent'];
@@ -132,8 +134,10 @@ export async function matrixCell(options) {
   const publishedInstaller = options['published-installer'] ? verifyPublishedInstaller({ ...options, layout, method }) : undefined;
   if (options['expect-recovery-refusal'] === 'true') assert(publishedInstaller && state === 'recovery', 'expected refusal requires a published installer override and recovery state');
   if (options['first-install'] === 'true') assert(publishedInstaller && options['installer-setup'] === 'true' && state === 'fresh' && source === 'latest', 'first install requires latest fresh fixed-script setup');
+  const launchdProof = options['launchd-proof'];
+  if (launchdProof) assert(hosted && process.platform === 'darwin' && options.candidate && options.direction === 'A' && state === 'daemon' && method === 'scheduler' && ['transition', 'off-before-tick', 'killed-before-result'].includes(launchdProof), 'launchd proof requires hosted macOS candidate-A scheduler');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
-  const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', options['first-install'] === 'true' ? 'first-install' : ''].filter(Boolean).join('-');
+  const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', options['first-install'] === 'true' ? 'first-install' : '', launchdProof ?? ''].filter(Boolean).join('-');
   const id = `${options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}`;
   const report = { tier: options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString(), harnessSource: process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim(), harnessSha256: digest(readFileSync(import.meta.filename)) };
   const omit = exclusion({ layout, method, state });
@@ -147,7 +151,7 @@ export async function matrixCell(options) {
   assert(hosted || !['daemon', 'agent'].includes(state), 'REFUSED: native services and agent stacks require a disposable hosted runner');
   const root = safeRoot(output);
   const home = hosted && state === 'daemon' ? homedir() : join(root, 'home');
-  const prefix = layout === 'installer' ? join(home, '.local/share/cotal') : join(root, 'prefix');
+  const prefix = layout === 'installer' ? (launchdProof ? join(root, 'installer') : join(home, '.local/share/cotal')) : join(root, 'prefix');
   const project = join(root, 'project');
   for (const dir of [home, project, prefix]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   mkdirSync(join(project, '.cotal'), { mode: 0o700 });
@@ -166,10 +170,15 @@ export async function matrixCell(options) {
   const modules = join(prefix, ...(process.platform === 'win32' ? [] : ['lib']), 'node_modules');
   const pkg = join(modules, 'cotal-ai');
   const cli = join(pkg, 'dist/cotal.js');
-  const launcher = join(home, '.local/bin/cotal');
-  env.PATH = [join(prefix, process.platform === 'win32' ? '' : 'bin'), join(home, '.local/bin'), env.PATH].join(delimiter);
+  const launcher = launchdProof ? join(root, 'bin/cotal') : join(home, '.local/bin/cotal');
+  if (launchdProof) {
+    env.COTAL_INSTALL_DIR = prefix;
+    env.COTAL_BIN_DIR = join(root, 'bin');
+    report.environment.installerPrefix = 'per-cell custom prefix; native daemon uses normal runner HOME';
+  }
+  env.PATH = [dirname(launcher), join(prefix, process.platform === 'win32' ? '' : 'bin'), join(home, '.local/bin'), env.PATH].join(delimiter);
   const [npm, npmPrefix] = npmCommand();
-  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay;
+  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, launchdObserver, offInventory, killControl, finalDaemon;
   const transcript = [];
   async function call(label, file, argv, timeout = 180000) {
     if (/install|seed|upgrade under test/.test(label)) {
@@ -310,7 +319,7 @@ export async function matrixCell(options) {
       plan = JSON.parse(planned.stdout).result;
       assert.equal(plan.state, 'would-install', 'native service must be absent before this cell');
       report.daemonHome = plan.daemonHome ?? join(cotalHome, 'daemon');
-      ok(await cotal('enable automatic updates', ['update', '--auto', 'on']), 'automatic settings');
+      ok(await cotal('set automatic updates before native service', ['update', '--auto', launchdProof === 'off-before-tick' ? 'off' : 'on']), 'automatic settings');
       installedService = true;
       ok(await daemon('native install', ['daemon', 'install', '--json']), 'native installation');
       receipt = json(join(report.daemonHome, 'service-unit.json'));
@@ -348,12 +357,21 @@ export async function matrixCell(options) {
       report.target = JSON.parse(ok(await npmCall('resolve public latest immediately before action', ['view', 'cotal-ai@latest', 'version', '--json']), 'latest before action').stdout);
       report.versionChanging = report.source !== report.target;
     }
+    if (launchdProof) {
+      const native = await import(pathToFileURL(join(pkg, 'node_modules/@cotal-ai/seat/dist/index.js')).href);
+      if (launchdProof === 'killed-before-result') killControl = createPreResultKill({ home: cotalHome, native, output, id, daemonPid: report.daemonBefore.pid });
+      launchdObserver = observeMacHandoff({ home: cotalHome, daemonHome: report.daemonHome, output, id, native, control: killControl, intervalMs: killControl ? 20 : 100 });
+      await launchdObserver.sample();
+      report.launchdProof = { kind: launchdProof, publicTarget: report.target };
+      if (launchdProof === 'off-before-tick') offInventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(config, 'extensions/extensions.json')) ? digest(readFileSync(join(config, 'extensions/extensions.json'))) : undefined };
+    }
     let update;
     if (options['first-install'] === 'true') update = sourceInstall;
     else if (method === 'self') update = await cotal('upgrade under test', ['update', '--self', ...(options['stop-agents'] === 'true' ? ['--stop-agents'] : [])]);
     else if (method === 'installer') update = await installer(report.target, true);
     else {
-      assert.equal(report.daemonBefore.update.automatic, true, report.daemonBefore.update.lastResult);
+      if (launchdProof !== 'off-before-tick') assert.equal(report.daemonBefore.update.automatic, true, report.daemonBefore.update.lastResult);
+      else check('automatic updates disabled before first native tick', report.daemonBefore.update.automatic === false, report.daemonBefore.update);
       // Wait for the daemon's normal timer to populate the registry cache. Do not invoke an updater.
       for (let i = 0; i < 60 && !existsSync(join(cotalHome, 'update-check.json')); i++) await delay(1000);
       assert(existsSync(join(cotalHome, 'update-check.json')), 'daemon normal registry check created cache');
@@ -363,7 +381,16 @@ export async function matrixCell(options) {
         save(join(output, `${id}-${name}-clock.json`), { before, after });
         save(file, after);
       }
-      const deadline = Date.now() + 300000;
+      if (launchdProof === 'off-before-tick') {
+        await delay(70000);
+        await launchdObserver.sample();
+        const inventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(config, 'extensions/extensions.json')) ? digest(readFileSync(join(config, 'extensions/extensions.json'))) : undefined };
+        check('off control keeps installation inventory unchanged', JSON.stringify(inventory) === JSON.stringify(offInventory), { before: offInventory, after: inventory });
+        check('off control never hands off an updater job', !launchdObserver.observations.some(x => x.records?.['update-launchd.json'] || x.records?.['update-launchd-result.json']), launchdObserver.observations.length);
+        report.launchdProof.observationMs = 70000;
+        update = { exit: 0, stdout: 'Automatic updates disabled before native tick; no installation requested.\n', stderr: '' };
+      } else {
+      const deadline = Date.now() + (killControl ? 540000 : 300000);
       do {
         await delay(5000);
         // npm reify temporarily removes the old package directory. Absence mid-replacement
@@ -377,6 +404,8 @@ export async function matrixCell(options) {
         catch (error) { if (error.code === 'ENOENT') { report.schedulerReplacementObserved = true; continue; } throw error; }
         const status = await cotal('scheduler observation', ['daemon', 'status', '--json']);
         report.schedulerLastStatus = status;
+        if (launchdObserver?.status().failure) throw new Error(launchdObserver.status().failure);
+        if (killControl?.status().failure) throw new Error(killControl.status().failure);
         if (installedVersion === report.target && status.exit === 0 && nativeGenerationReady(JSON.parse(status.stdout).result, report.target)) {
           const attempt = json(join(cotalHome, 'update-attempt.json'));
           if (report.source === report.target ? attempt.result === 'up to date' : /^(?:repaired and )?updated to /i.test(attempt.result)) break;
@@ -391,23 +420,26 @@ export async function matrixCell(options) {
       update = { exit: 0, stdout: existsSync(join(cotalHome, 'update-attempt.log')) ? readFileSync(join(cotalHome, 'update-attempt.log'), 'utf8') : '', stderr: '' };
       save(join(output, `${id}-scheduler-after.json`), { check: json(join(cotalHome, 'update-check.json')), attempt: json(join(cotalHome, 'update-attempt.json')) });
       check('daemon scheduler performed a replacement or reported up to date', report.source === report.target || update.stdout.length > 0, update.stdout);
+      }
     }
+    const expectedVersion = launchdProof === 'off-before-tick' ? report.source : report.target;
+    report.expectedVersion = expectedVersion;
     report.update = update;
     const selectedVersions = selectedTargets(update.stdout + update.stderr);
     report.updaterSelectedVersions = selectedVersions;
     report.updaterSelectedVersion = selectedVersions[0];
     check('upgrade exits successfully', update.exit === 0, update);
-    check('CLI version is target', json(join(pkg, 'package.json')).version === report.target, json(join(pkg, 'package.json')).version);
+    check('CLI version is target', json(join(pkg, 'package.json')).version === expectedVersion, json(join(pkg, 'package.json')).version);
     const manifest = join(config, 'extensions/extensions.json');
     const extensions = existsSync(manifest) ? json(manifest).extensions : [];
     report.extensionsAfter = extensions;
     check('every prior extension remains recorded', report.extensionsBefore.every(before => extensions.some(after => after.pkg === before.pkg)), extensions.map(entry => entry.pkg));
-    check('every recorded extension is at target', extensions.every(entry => entry.version === report.target), extensions.map(({ pkg, version }) => ({ pkg, version })));
+    check('every recorded extension is at target', extensions.every(entry => entry.version === expectedVersion), extensions.map(({ pkg, version }) => ({ pkg, version })));
     const version = await cotal('selected CLI version assertion', ['--version']);
-    check('selected CLI reports target', version.exit === 0 && cliReportsVersion(version.stdout, report.target), version);
+    check('selected CLI reports target', version.exit === 0 && cliReportsVersion(version.stdout, expectedVersion), version);
     check('recorded extension package versions match target', extensions.every(entry => {
       const path = join(config, 'extensions/node_modules', entry.pkg, 'package.json');
-      return existsSync(path) && json(path).version === report.target;
+      return existsSync(path) && json(path).version === expectedVersion;
     }), extensions.map(entry => ({ pkg: entry.pkg, path: join(config, 'extensions/node_modules', entry.pkg, 'package.json') })));
     const status = await cotal('status assertion', ['status']);
     check('cotal status exits zero', status.exit === 0, status);
@@ -415,13 +447,14 @@ export async function matrixCell(options) {
     check('no paused recovery record', recovery === null, recovery);
     if (installedService) {
       let active = await daemon('native status after', ['daemon', 'status', '--json']);
-      const expectedDaemonVersion = desktopInventory?.version ?? report.target;
+      const expectedDaemonVersion = desktopInventory?.version ?? expectedVersion;
       for (let i = 0; i < 60; i++) {
         if (active.exit === 0 && nativeGenerationReady(JSON.parse(active.stdout).result, expectedDaemonVersion)) break;
         await delay(1000);
         active = await daemon('wait for target native generation', ['daemon', 'status', '--json']);
       }
       check('native daemon remains active at its expected generation', active.exit === 0 && nativeGenerationReady(JSON.parse(active.stdout).result, expectedDaemonVersion), active);
+      if (active.exit === 0) finalDaemon = JSON.parse(active.stdout).result;
       if (desktopRuntime) {
         const after = JSON.parse(active.stdout).result;
         check('CLI update preserves desktop daemon version and channel', after?.version === desktopInventory.version && after?.update?.channel === 'desktop' && after?.update?.automatic === false, after);
@@ -429,6 +462,27 @@ export async function matrixCell(options) {
         const current = json(join(report.daemonHome, 'service-unit.json'));
         check('CLI update preserves original desktop service source', current.unit === receipt.unit && current.unitPath === receipt.unitPath && current.unitSha256 === receipt.unitSha256, current);
       }
+    }
+    if (launchdObserver) {
+      if (launchdProof !== 'off-before-tick') {
+        const deadline = Date.now() + 90000;
+        do { await launchdObserver.sample(); if (handoffEvidence(launchdObserver.observations, killControl?.status().receipt?.label).retired) break; await delay(500); } while (Date.now() < deadline);
+        const evidence = handoffEvidence(launchdObserver.observations, killControl?.status().receipt?.label);
+        report.launchdProof.evidence = evidence;
+        if (killControl) {
+          report.launchdProof.failureControl = killControl.status();
+          check('killed runner recovered and a later scheduler retry completed', killControl.status().stage === 'retry-completed', killControl.status());
+        }
+        for (const [name, passed] of Object.entries(evidence)) check(`launchd ${name}`, passed, evidence);
+        if (!evidence.retired) uncertain = true;
+        const pids = new Set(launchdObserver.observations.filter(x => x.daemon?.verified && x.daemon.parent === 1).map(x => x.daemon.pid));
+        report.launchdProof.observedDaemonPids = [...pids];
+        check('launchd transition observed exactly one daemon restart', pids.size === 2 && pids.has(report.daemonBefore.pid) && pids.has(finalDaemon?.pid) && finalDaemon.pid !== report.daemonBefore.pid && finalDaemon.version === expectedVersion, { pids: [...pids], finalDaemon });
+      }
+      report.launchdProof.observer = await launchdObserver.close();
+      if (report.launchdProof.observer.failure) uncertain = true;
+      launchdObserver = undefined;
+      check('launchd observer remained readable', !report.launchdProof.observer.failure, report.launchdProof.observer);
     }
     const completion = completionAdvisory(update.stdout + update.stderr);
     report.advisory = completion.advisory;
@@ -442,6 +496,11 @@ export async function matrixCell(options) {
     }
     report.result = 'failed'; report.refusal = error.message;
   } finally {
+    if (launchdObserver) {
+      report.launchdProof ??= { kind: launchdProof };
+      report.launchdProof.observer = await launchdObserver.close();
+      if (report.launchdProof.observer.failure || (launchdProof !== 'off-before-tick' && !handoffEvidence(launchdObserver.observations, killControl?.status().receipt?.label).retired)) uncertain = true;
+    }
     if (releaseHolder) releaseHolder();
     if (holderPromise) {
       const holderResult = await holderPromise;
@@ -492,7 +551,19 @@ export function bootstrapVersion(latest, direction) {
   return `${major - 1}.0.0`;
 }
 
-export async function packCandidate(output, version) {
+export function resolveCandidateSourceRoot(sourceRoot) {
+  if (sourceRoot === undefined) return resolve(import.meta.dirname, '..');
+  assert(typeof sourceRoot === 'string' && sourceRoot.trim(), 'explicit source root must be a non-empty path');
+  const root = realpathSync(resolve(sourceRoot));
+  const git = argv => execFileSync('git', ['-C', root, ...argv], { encoding: 'utf8' }).trim();
+  assert.equal(realpathSync(git(['rev-parse', '--show-toplevel'])), root, 'source root must be the actual Git root');
+  assert.match(git(['rev-parse', '--verify', 'HEAD']), /^[a-f0-9]{40}$/, 'source root must have an immutable commit');
+  assert.equal(git(['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']), '', 'source root tracked tree must be clean, with no untracked product inputs');
+  return root;
+}
+
+export async function packCandidate(output, version, sourceRoot) {
+  const root = resolveCandidateSourceRoot(sourceRoot);
   if (['A', 'B'].includes(version)) {
     const [npm, prefix] = npmCommand();
     const env = cleanEnvironment();
@@ -500,23 +571,27 @@ export async function packCandidate(output, version) {
     version = bootstrapVersion(latest, version);
   }
   assert(/^\d+\.\d+\.\d+$/.test(version), 'candidate bootstrap uses stable numeric semver for stock newerUpdate ordering');
-  const root = resolve(import.meta.dirname, '..');
-  const rows = JSON.parse(execFileSync('pnpm', ['list', '-r', '--depth', '-1', '--json'], { cwd: root, encoding: 'utf8' }));
+  const rows = JSON.parse(execFileSync('pnpm', ['list', '-r', ...(sourceRoot === undefined ? [] : ['--include-workspace-root']), '--depth', '-1', '--json'], { cwd: root, encoding: 'utf8' }));
   const expected = json(join(root, '.changeset/config.json')).fixed.flat();
   const manifests = rows.filter(row => expected.includes(row.name)).map(row => ({ path: join(row.path, 'package.json'), original: readFileSync(join(row.path, 'package.json'), 'utf8') }));
-  assert.equal(manifests.length, expected.length, 'complete fixed-group package set');
+  assert.deepEqual(rows.filter(row => expected.includes(row.name)).map(row => row.name).sort(), [...expected].sort(), 'complete fixed-group package set');
+  // A separate product's private root may pin fixed-group dependencies too.
+  const rootManifest = join(root, 'package.json');
+  if (sourceRoot !== undefined && !manifests.some(row => row.path === rootManifest)) {
+    manifests.push({ path: rootManifest, original: readFileSync(rootManifest, 'utf8') });
+  }
   const changes = [];
   try {
     for (const row of manifests) {
       const before = JSON.parse(row.original), after = structuredClone(before);
-      after.version = version;
+      if (expected.includes(before.name)) after.version = version;
       for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) for (const name of Object.keys(after[field] ?? {})) {
         if (expected.includes(name) && !after[field][name].startsWith('workspace:')) after[field][name] = version;
       }
       changes.push({ path: row.path, before, after });
       save(row.path, after);
     }
-    const { packColdCandidate } = await import('./pack-cold-candidate.mjs');
+    const { packColdCandidate } = await import(pathToFileURL(join(root, 'scripts/pack-cold-candidate.mjs')).href);
     // Only release versions changed above. Do not let pnpm auto-reinstall/purge the
     // already-built dependency graph, but retain every prepublish and native guard.
     const exec = (file, argv, options) => execFileSync(file, argv, { ...options,
@@ -629,7 +704,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     process.exitCode = summary.counts.failed || summary.counts.unsupported ? 1 : 0;
   } else if (process.argv[2] === '--pack') {
     const options = args();
-    await packCandidate(options.pack, options.version);
+    await packCandidate(options.pack, options.version, options['source-root']);
   } else {
     const result = await matrixCell(args());
     process.exitCode = cellExitCode(result);

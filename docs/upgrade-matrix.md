@@ -83,6 +83,26 @@ version below public latest, then pass `--direction A`. The overlay supplies met
 for that installed candidate version while keeping npm's real latest target. This satisfies both
 the stock version comparison and the updater's installed-version metadata lookup.
 
+For a separate immutable product checkout, add `--source-root <checkout>` to `--pack`. The path
+must be that checkout's clean Git root. The harness imports its own pack helper and records its
+commit, rather than packing the matrix checkout. Ignored build and native outputs are allowed;
+tracked edits and untracked product inputs are refused. Manifest rewrites are restored in `finally`.
+
+## Observe a macOS scheduler transition
+
+A scoped native proof uses a below-latest candidate as the installed side with `--direction A`,
+`--layout installer --state daemon --method scheduler`. Add `--launchd-proof transition` for
+read-only snapshots of the updater receipt, plist bytes and digest, loaded job, runner birth and
+completion, daemon generation and final job/source removal. A successful terminal attempt alone
+does not satisfy active custody or cleanup assertions. Unknown custody retains the native service
+for disposable-runner teardown instead of removing the evidence.
+
+`--launchd-proof off-before-tick` sets automatic updates off through the CLI before installing the
+service, then observes at least two normal tick intervals with only the permitted clock edits. It
+requires the old installation to remain unchanged and no handoff receipt to appear. A failure-retry
+cell must establish its exact pre-result runner identity before any signal. It is not accepted as a
+transition when that observation is missing.
+
 ## Keep desktop custody separate
 
 The Linux desktop-beside-CLI job uses the existing v0.164.2 release workflow's desktop package,
