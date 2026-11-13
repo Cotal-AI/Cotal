@@ -77,6 +77,14 @@ export function canonicalProvider(value: string): string {
 }
 
 export interface ComputerAccount { idpUrl?: string; sub?: string; label?: string; mode: string; hostSupport: string; spaces: ComputerSpace[] }
+
+/** The name the settings account line shows beside the host. A missing or whitespace-only label is not
+ *  one, so the line uses the subject. Both blank leaves the host by itself. */
+export function shownAccountLabel(label: string | undefined, sub: string | undefined): string | undefined {
+  if (label && label.trim()) return label;
+  if (sub && sub.trim()) return sub;
+  return undefined;
+}
 export function activeComputerAccount(account: ComputerAccount & { accounts?: ComputerAccount[] } | undefined, provider?: string): ComputerAccount | undefined {
   if (!account?.accounts) return account;
   if (provider) return account.accounts.find(item => item.idpUrl !== undefined && canonicalProvider(item.idpUrl) === canonicalProvider(provider));
@@ -111,6 +119,16 @@ export function keptCredentialsNotice(result: Record<string, unknown>): string {
 
 export interface AccountSpace { space: string; label: string; catalogId?: string; kind?: string; role?: string }
 
+/** The name a space row shows. A missing or whitespace-only label is not one, so the row uses the space id. */
+export function shownSpaceLabel(label: string | undefined, space: string): string {
+  return label && label.trim() ? label : space;
+}
+
+/** The kind chip beside a space. A missing or whitespace-only kind is not one, so the chip says Space. */
+export function shownSpaceKind(kind: string | undefined): string {
+  return kind && kind.trim() ? kind : "Space";
+}
+
 /** Discovery selects a target, but never grants consent to connect. */
 export function initialSpace(spaces: readonly AccountSpace[], requested?: string): string | undefined {
   const linked = requested && spaces.find(item => item.space === requested || item.catalogId === requested);
@@ -131,7 +149,7 @@ export function connectionView(state: string): { title: string; description: str
   }
 }
 
-export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces"; label: string }
+export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install"; label: string }
 export function refusalView(code: string, applications: readonly string[] = []): RefusalView {
   switch (code) {
     case "NO_AVAILABLE_CONNECTOR": return { title: "No agent application found", description: `Install ${applications.length ? new Intl.ListFormat("en", { type: "disjunction" }).format(applications) : "a supported agent application"}. Make sure it opens in your login terminal, then check again.`, action: "connect", label: "Check again" };
@@ -139,6 +157,7 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "DENIED": return { title: "Sign-in was declined", description: "This computer was not approved in your browser. You can try again when you are ready.", action: "login", label: "Try sign-in again" };
     case "EXPIRED": return { title: "Your code has expired", description: "This code can no longer approve your sign-in. Get a new code to continue in your browser.", action: "login", label: "Get a new code" };
     case "CREDENTIAL_EXPIRED": return { title: "Sign in again", description: "Your saved sign-in has expired. Approve this computer in your browser to reconnect.", action: "login", label: "Sign in again" };
+    case "NOT_RUNNING": return { title: "The background service is not running", description: "Start it again to continue.", action: "install", label: "Start service" };
     case "NOT_ANSWERING": case "UNREACHABLE": return { title: "We cannot reach your connection", description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.", action: "refresh", label: "Try again" };
     case "NO_SPACES": return { title: "No spaces in this account", description: "Create a space in your Cotal host’s dashboard, or ask a space owner for access. Then refresh your spaces to continue.", action: "spaces", label: "Refresh spaces" };
     case "APPROVAL_PENDING": return { title: "Waiting for owner approval", description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.", action: "refresh", label: "Check approval" };

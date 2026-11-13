@@ -383,7 +383,14 @@ export function renderInbox(opts: {
     if (peek && i.mentionsMe && !i.historical) return -1;
     return i.kind !== "channel" ? 0 : i.historical ? 2 : 1;
   };
-  const ordered = [...opts.items].sort((a, b) => rank(a) - rank(b)); // stable: receive order within a rank
+  // A peek does not clear, so an older message that fills the window must not hide a newer one of
+  // the same kind. A reply that walks an ordered lane keeps receive order so its mark stays a prefix.
+  const orderedLane = opts.strictIds !== undefined && opts.items.some((item) => opts.strictIds?.has(item.recvKey));
+  const ordered = [...opts.items].sort((a, b) => {
+    const byRank = rank(a) - rank(b);
+    if (byRank !== 0 || !peek || orderedLane) return byRank;
+    return b.ts - a.ts;
+  });
 
   // WHY THIS AGREES WITH THE ASSEMBLED REPLY, and what would break the agreement. Deliverability is
   // decided here and delivery is decided by `assemble`, and the two can only agree because both
@@ -769,9 +776,9 @@ const NAMED_AHEAD = 3;
 /** Say that recall items were withheld because this session will not take responsibility for
  *  remembering them, and name who sent them, so a peer spending that bound is visible rather than
  *  silent. Not a drop: nothing was cleared and the stream still holds them. */
-function aheadNote(items: readonly InboxItem[]): string {
+export function aheadNote(items: readonly InboxItem[]): string {
   if (!items.length) return "";
-  const senders = [...new Set(items.map((i) => attributionSafe(i.fromName).slice(0, 40)))];
+  const senders = [...new Set(items.map((i) => attributionSafe((i.fromName.trim() ? i.fromName : i.fromId.trim() ? i.fromId : "(unnamed)")).slice(0, 40)))];
   const named = senders.slice(0, NAMED_AHEAD).join(", ");
   const rest = senders.length - Math.min(NAMED_AHEAD, senders.length);
   const one = items.length === 1;
@@ -1206,7 +1213,7 @@ export function cotalToolSpecs(
       name: "cotal_inbox",
       title: "Cotal: read incoming messages",
       description:
-        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. A peek shows a current mention of you before older direct messages that fill that window, and still clears nothing. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. If exclusion tracking makes a channel's focus recall unsafe, new non-historical mentions on that unmuted channel wake to pull their buffered bodies, never automatic injection, including on quiet channels. Ambient handling is unchanged, and the incomplete-recall warning still names unsafe channels. " +
+        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. A peek shows a current mention of you before older direct messages that fill that window, and still clears nothing. A peek shows a newer direct message or role request before an older one that fills that window, and still clears nothing. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. If exclusion tracking makes a channel's focus recall unsafe, new non-historical mentions on that unmuted channel wake to pull their buffered bodies, never automatic injection, including on quiet channels. Ambient handling is unchanged, and the incomplete-recall warning still names unsafe channels. " +
         "When the connection is not ready, the reply says so and still returns locally buffered messages; an empty local buffer does not prove no new mesh messages exist. Exhausted channel drop tracking is reported even with an empty inbox; non-historical mentions on unmuted channels wake to pull their buffered bodies while ambient traffic stays suppressed. " +
         "If your stored copies reached their limit, 1000 unless an operator set another, the reply says earlier channel posts may have been dropped and that channel history may still hold them. A peek keeps that line for the next read.",
       schema: {
@@ -2028,7 +2035,7 @@ export function cotalToolSpecs(
       name: "cotal_yield",
       title: "Cotal: yield a run turn",
       description:
-        "Report the outcome of a workflow turn assigned to you. Use this only when your context contains a pending run turn; it does not start a workflow or resolve a checkpoint/ask.\n\nUsually finish your session turn normally: that yields `done` automatically. If you cannot progress, call `{\"status\":\"blocked\",\"note\":\"<what prevents progress>\"}`. To hand the assigned turn to another agent, call `{\"status\":\"handoff\",\"to\":\"<agent-name>\",\"note\":\"<handoff context>\"}`.\n\nWhen you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest turn already shown to your session is selected. A turn that has not been shown cannot be yielded, and neither can one the run already settled, such as a turn whose deadline elapsed: that refusal names the turn and its deadline. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.",
+        "Report the outcome of a workflow turn assigned to you. Use this only when your context contains a pending run turn; it does not start a workflow or resolve a checkpoint/ask.\n\nUsually finish your session turn normally: that yields `done` automatically. If you cannot progress, call `{\"status\":\"blocked\",\"note\":\"<what prevents progress>\"}`. To hand the assigned turn to another agent, call `{\"status\":\"handoff\",\"to\":\"<agent-name>\",\"note\":\"<handoff context>\"}`.\n\nWhen you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest turn already shown to your session is selected. A turn that has not been shown cannot be yielded, and neither can one the run already settled, such as a turn whose deadline elapsed: that refusal names the turn and its deadline. A turn already yielded, including by the automatic `done` when your session turn ended, is refused the same way, and the refusal says how it was yielded. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.",
       schema: {
         status: z
           .enum(["done", "blocked", "handoff"])

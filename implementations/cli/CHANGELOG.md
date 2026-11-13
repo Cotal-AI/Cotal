@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.164.3
+
+### Patch Changes
+
+- f775e30: Setup draws its splash, questions and notes for 80 columns when the terminal reports 0, instead of failing with an unknown outcome or stacking each letter on its own line.
+- @cotal-ai/core@0.164.3
+  - @cotal-ai/workspace@0.164.3
+
 ## 0.164.2
 
 ### Patch Changes

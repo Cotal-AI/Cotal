@@ -3638,9 +3638,9 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
-      "anchor": "s.delete(t.goalId);\n    return r;\n  }\n\n  /** Drop an acti",
+      "anchor": "yielded: status });\n    return r;\n  }\n\n  /** Drop an acti",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "The run turn's yield status (done, blocked or handoff) the manager accepted, kept so a later yield is refused with it; it is not presence status."
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",

@@ -374,8 +374,8 @@
     {
       "name": "K34 the future-stamp note names senders as they name themselves",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "  const senders = [...new Set(items.map((i) => attributionSafe(i.fromName).slice(0, 40)))];",
-      "replace": "  const senders = [...new Set(items.map((i) => i.fromName.slice(0, 40)))];",
+      "find": "  const senders = [...new Set(items.map((i) => attributionSafe((i.fromName.trim() ? i.fromName : i.fromId.trim() ? i.fromId : \"(unnamed)\")).slice(0, 40)))];",
+      "replace": "  const senders = [...new Set(items.map((i) => (i.fromName.trim() ? i.fromName : i.fromId.trim() ? i.fromId : \"(unnamed)\").slice(0, 40)))];",
       "cell": "the note naming withheld senders cannot be split into a forged line by one of them",
       "expectRed": "the note naming withheld senders cannot be split into a forged line by one of them",
       "note": "Measured by the third lens: a withheld sender calling itself `Ada]` plus a newline split the warning in two and put a forged attribution at column zero. A note is not a lesser surface than a message line; it is the part of the reply a caller most reads as the tool speaking."

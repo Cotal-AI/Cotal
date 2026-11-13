@@ -3757,8 +3757,8 @@ export class Manager {
   /** Tear down every managed agent's footprint on an explicit destructive {@link stop}, or only the
    *  in-process seats a default stop cannot detach. A manager exit is
    *  a mass agent-exit, and without this its agents' footprints (creds files + `dm_`/`dlv_` durables + ACL
-   *  rows) would orphan exactly as the per-agent exit path prevents. Hard-stop each child (an exit has no
-   *  time for the graceful grace window) and AWAIT its deprovision — bounded per agent (`withTimeout`) and
+   *  rows) would orphan exactly as the per-agent exit path prevents. Stop each child gracefully, so its
+   *  own shutdown runs before the runtime escalates, and AWAIT its deprovision — bounded per agent (`withTimeout`) and
    *  best-effort (`allSettled` + a loud log), so one slow/failed teardown can neither hang nor abort exit.
    *  The creds file is dropped even if the broker teardown fails (see {@link deprovision}). Deliberately
    *  touches NEITHER the lease NOR the endpoints — the caller owns those. */
@@ -3766,12 +3766,15 @@ export class Manager {
     const failures: string[] = [];
     const stopped: ManagedAgent[] = [];
     for (const a of managed) {
-      // Free the slot + hard-stop each; `stopHandle` is best-effort (never throws — see it), so one bad
-      // stop can't strand the rest, and every snapshot entry is deprovisioned below regardless.
+      // Free the slot and stop each the way an operator stop does. `stopHandle` is best-effort (never
+      // throws — see it), so one bad stop can't strand the rest, and every snapshot entry is
+      // deprovisioned below regardless. A hard kill never runs the seat's shutdown, so a helper that
+      // has left the process group keeps running after `cotal down`. The runtime still escalates to
+      // SIGKILL after its grace.
       this.recordContinuityAtStop(a, "shutdown");
       this.agents.delete(a.name);
       this.dropSeatRecord(a);
-      const refused = this.stopHandle(a, false);
+      const refused = this.stopHandle(a, true);
       if (refused === undefined) stopped.push(a);
       else failures.push(`${a.name}: stop failed: ${refused}`);
     }

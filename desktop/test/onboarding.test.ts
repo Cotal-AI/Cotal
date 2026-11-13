@@ -13,7 +13,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { personal?: boolean; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { personal?: boolean; link?: string; installed?: boolean; connected?: boolean; count?: number; label?: string; kind?: string; account?: { label?: string; sub?: string }; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -53,9 +53,9 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
       if (r.op === "status") {
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
-        return ok({ state: "ready", version: options.mismatch ? "old" : "test", managers: connected ? [manager] : [] });
+        return ok({ state: "ready", version: options.mismatch ? "old" : "test", managers: connected ? [manager] : [], ...(options.account ? { account: { idpUrl: COTAL_CLOUD_IDP, sub: options.account.sub ?? "user-1", label: options.account.label, mode: "static", hostSupport: "none", spaces: [] } } : {}) });
       }
-      if (r.op === "spaces") return ok({ ...((options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon) && r.refresh ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: [options.ownProviderFailed ? COTAL_CLOUD_IDP : "https://hack.cotal.ai/api/auth"] }) } : {}), spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : "My team", kind: options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: COTAL_CLOUD_IDP })) });
+      if (r.op === "spaces") return ok({ ...((options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon) && r.refresh ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: [options.ownProviderFailed ? COTAL_CLOUD_IDP : "https://hack.cotal.ai/api/auth"] }) } : {}), spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : options.label ?? "My team", kind: !i && options.kind !== undefined ? options.kind : options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: COTAL_CLOUD_IDP })) });
       if (r.op === "name") return ok({ computer: r.name ?? "My computer" });
       if (r.op === "service-status") return ok({ state: options.serviceState ?? "disconnected" });
       if (r.op === "service-disconnect") { connected = false; return ok({ state: "disconnected" }); }
@@ -88,7 +88,7 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
   win.eval(await bundle); await settle();
   const node = <T extends HTMLElement = HTMLElement>(id: string) => doc.getElementById(id) as T;
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };
-  return { dom, doc, node, click, calls, urls, options, emit: async (event: string) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload: null }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
+  return { dom, doc, node, click, calls, urls, options, arm: () => { installed = true; }, stop: () => { installed = false; }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
 }
 
 test("computer name edits save, cancel and reject invalid input before request", async () => {
@@ -107,6 +107,60 @@ test("computer name edits save, cancel and reject invalid input before request",
     await a.click("edit-computer-name");
     a.node("computer-name-input").dispatchEvent(new a.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     assert.equal(a.node("computer-name-form").hidden, true);
+  } finally { a.dom.window.close(); }
+});
+
+test("a later status check clears a daemon-not-running error", async () => {
+  const a = await app({ installed: true });
+  try {
+    await a.click("login"); await a.login();
+    const before = a.node("connection-title").textContent;
+    a.stop();
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, "The background service is not running");
+    assert.equal(a.node("details").hidden, false);
+    a.arm();
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, before);
+    assert.equal(a.node("details").hidden, true);
+    assert.equal(a.node("refusal-detail").textContent, "");
+  } finally { a.dom.window.close(); }
+});
+
+test("a later status check keeps an error the status check did not raise", async () => {
+  const a = await app({ installed: true });
+  try {
+    await a.click("login"); await a.login();
+    a.stop();
+    await a.tick();
+    a.arm();
+    await a.emit("deep-link://new-url", ["cotal://one", "cotal://two"]);
+    assert.equal(a.node("connection-title").textContent, "This operation could not finish");
+    assert.equal(a.node("refusal-detail").textContent, "Open one computer-connection link at a time.");
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, "This operation could not finish");
+    assert.equal(a.node("refusal-detail").textContent, "Open one computer-connection link at a time.");
+  } finally { a.dom.window.close(); }
+});
+
+test("Start service starts a stopped background service and leaves no notice", async () => {
+  const a = await app({ installed: true });
+  try {
+    await a.click("login"); await a.login();
+    const before = a.node("connection-title").textContent;
+    a.stop();
+    await a.tick();
+    assert.equal(a.node("recover").textContent, "Start service");
+    assert.equal(a.node("connection-description").textContent, "Start it again to continue.");
+    assert.equal(a.node<HTMLButtonElement>("connect").disabled, true);
+    const from = a.calls.length;
+    await a.click("recover");
+    assert.deepEqual(a.calls.slice(from).map(call => call.op).filter(op => op === "install"), ["install"]);
+    assert.equal(a.node("connection-title").textContent, before);
+    assert.equal(a.node("notice").textContent, "");
+    assert.equal(a.node("notice").hidden, true);
+    assert.equal(a.node("details").hidden, true);
+    assert.equal(a.node<HTMLButtonElement>("connect").disabled, false);
   } finally { a.dom.window.close(); }
 });
 
@@ -241,6 +295,39 @@ test("unlinked accounts choose among spaces but skip a single space", async () =
       }
     } finally { a.dom.window.close(); }
   }
+});
+
+test("a blank space label shows the space id", async () => {
+  const a = await app({ installed: true, connected: true, label: " " });
+  try {
+    assert.equal(a.doc.querySelector('[data-testid="connected-space-row"] strong')?.textContent, "team");
+    assert.equal(a.doc.querySelector('#space option[value="team"]')?.textContent, "team");
+  } finally { a.dom.window.close(); }
+  const kept = await app({ installed: true, connected: true, label: " ada" });
+  try {
+    assert.equal(kept.doc.querySelector('[data-testid="connected-space-row"] strong')?.textContent, " ada");
+  } finally { kept.dom.window.close(); }
+  const chip = await app({ installed: true, connected: true, kind: " " });
+  try {
+    assert.equal(chip.doc.querySelector('[data-testid="connected-space-row"] .application-chip')?.textContent, "Space");
+  } finally { chip.dom.window.close(); }
+  const named = await app({ installed: true, connected: true, kind: " ada" });
+  try {
+    assert.equal(named.doc.querySelector('[data-testid="connected-space-row"] .application-chip')?.textContent, " ada");
+  } finally { named.dom.window.close(); }
+});
+
+test("a blank account label shows the subject", async () => {
+  const a = await app({ installed: true, connected: true, account: { label: " ", sub: "user-1" } });
+  try {
+    await a.click("open-settings");
+    assert.equal(a.node("settings-account").textContent, "Cotal Cloud, cloud.cotal.ai · user-1");
+  } finally { a.dom.window.close(); }
+  const kept = await app({ installed: true, connected: true, account: { label: " ada", sub: "user-1" } });
+  try {
+    await kept.click("open-settings");
+    assert.equal(kept.node("settings-account").textContent, "Cotal Cloud, cloud.cotal.ai ·  ada");
+  } finally { kept.dom.window.close(); }
 });
 
 test("later open shows connection and secondary controls, never sign-in or space forms", async () => {

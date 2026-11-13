@@ -500,8 +500,11 @@ Removal keeps retained history unless `--purge` is present. The confirmation nam
 space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
 is refused with `TARGET_NOT_FOUND` before the confirmation, listing the registered channels, or
 naming the registered spelling when only the case differs. Removing a channel that has retained
-messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`; `--purge`
-still deletes that channel's retained messages. In `--json`, `result.removed` says whether a saved entry was removed. Neither
+messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`. A missing
+channel registry bucket is no saved entry, so that remove is the same `no-op`. `--purge`
+still deletes that channel's retained messages. When the chat stream is not on the broker, that
+purge has nothing to delete. The saved entry is still removed, and the receipt says 0 messages
+were purged. In `--json`, `result.removed` says whether a saved entry was removed. Neither
 removal nor replay settings revoke grants or stop participants; future posts can create retained
 history again. A `set`, `defaults` or `remove` that the broker refuses for the credential's grant
 applied nothing, so it is refused with `PERMISSION_DENIED` (exit 2), naming the credential's profile,
@@ -587,7 +590,8 @@ messages, and reports no replay policy for it. `history --dms` still returns a d
 is stored when the chat stream is gone. That report warns `CHAT_STREAM_ABSENT` and is partial,
 because channel history was not read, and it does not say to create the space's streams again. A
 read that did not ask for direct messages, and a `--dms` read that found none stored, still refuses
-`TARGET_UNAVAILABLE` when the chat stream is gone. When the space's broker runs on this machine and logged
+`TARGET_UNAVAILABLE` when the chat stream is gone. `history --dms` warns `DM_STREAM_ABSENT` and is
+partial when the direct-message stream is not on the broker. Channel history is still shown. When the space's broker runs on this machine and logged
 damage in a stored file since it started, `history` warns `STORE_DAMAGE_LOGGED` with the broker's
 words, because it serves only what it can still read. The read stays complete, as it read the stream
 the broker serves. A broker whose log is not on this machine is not checked. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
@@ -780,8 +784,11 @@ On a user-auth mesh whose grant lacks scope `admin`, the purger view is not issu
 is `PERMISSION_DENIED` (exit 2). Its remedy is the identity provider's own sentence, which names
 the missing scope and the whole-row re-grant that adds it.
 
-JSON and plain receipts retain each native stream acknowledgement and message count. A later
-refusal after an acknowledged purge is partial. An unconfirmed submitted purge is unknown and is
+JSON and plain receipts retain each native stream acknowledgement and message count. A stream
+that is not on the broker holds no retained history. The clear purges the streams that are there
+and warns `HISTORY_STREAM_ABSENT` for the ones that are not. When every stream the clear asked
+for is absent, it refuses with `TARGET_NOT_FOUND` (exit 2): `the streams this clear asked for are not on the broker, so nothing was purged`.
+A later refusal after an acknowledged purge is partial. An unconfirmed submitted purge is unknown and is
 not retried. A confirmed clear interrupted by SIGINT, SIGTERM or SIGHUP exits 130, 143 or 129 and
 says which purges were acknowledged or submitted, or that none was submitted and no history was
 cleared. Clearing history does not stop agents, remove stream definitions or reset identity;

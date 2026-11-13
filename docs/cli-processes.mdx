@@ -115,7 +115,7 @@ gets `PERMISSION_DENIED` and the folder that hosts it, when this folder holds no
 
 For a stopped seat with a runtime custody reference, shutdown carries that reference into retirement so the runtime can reap its recorded work before footprint cleanup.
 
-Normal `SIGINT`/`SIGTERM` uses the sparing stop policy. The manager stops process-bound seats, releases seats the runtime can leave running, and applies retained-state policy to preserved seats. For a seat selected for stop, the runtime must prove exit before the manager releases its lease or service registration. A stop that
+Normal `SIGINT`/`SIGTERM` uses the sparing stop policy. The manager stops process-bound seats gracefully, so a seat can stop a helper that has left its process group before the runtime escalates to SIGKILL. It releases seats the runtime can leave running, and applies retained-state policy to preserved seats. For a seat selected for stop, the runtime must prove exit before the manager releases its lease or service registration. A stop that
 cannot prove exit fails loud and keeps manager authority instead of reporting a clean shutdown while
 an orphan still holds broker rails. When the runtime refuses the stop itself, the shutdown fails at
 once and its error names the refusal as `stop failed: <message>`. A manager that a controller stack

@@ -60,7 +60,7 @@ export function rosterRows(roster: RosterEntry[], opts: { includeOffline?: boole
     .map((p): RosterRow => ({
       id: p.card.id,
       name: visibleName(p.card.name) ?? p.card.id,
-      role: p.card.role,
+      role: visibleName(p.card.role),
       status: p.status,
       activity: p.activity,
       harness: metaText(p.card.meta, "connector"),

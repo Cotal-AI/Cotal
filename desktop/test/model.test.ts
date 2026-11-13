@@ -1,6 +1,31 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice } from "../src/model.ts";
+import { initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel } from "../src/model.ts";
+
+test("a blank space label is the space id and a label with a character stays", () => {
+  assert.equal(shownSpaceLabel(" ", "team"), "team");
+  assert.equal(shownSpaceLabel("", "team"), "team");
+  assert.equal(shownSpaceLabel("\n", "team"), "team");
+  assert.equal(shownSpaceLabel(undefined, "team"), "team");
+  assert.equal(shownSpaceLabel(" ada", "team"), " ada");
+  assert.equal(shownSpaceLabel("My team", "team"), "My team");
+  assert.equal(shownSpaceKind(" "), "Space");
+  assert.equal(shownSpaceKind(""), "Space");
+  assert.equal(shownSpaceKind("\n"), "Space");
+  assert.equal(shownSpaceKind(undefined), "Space");
+  assert.equal(shownSpaceKind(" ada"), " ada");
+  assert.equal(shownSpaceKind("team"), "team");
+});
+
+test("a blank account label is the subject and a label with a character stays", () => {
+  assert.equal(shownAccountLabel(" ", "user-1"), "user-1");
+  assert.equal(shownAccountLabel("", "user-1"), "user-1");
+  assert.equal(shownAccountLabel("\n", "user-1"), "user-1");
+  assert.equal(shownAccountLabel(undefined, "user-1"), "user-1");
+  assert.equal(shownAccountLabel(" ", " "), undefined);
+  assert.equal(shownAccountLabel(" ada", "user-1"), " ada");
+  assert.equal(shownAccountLabel("Ada", "user-1"), "Ada");
+});
 
 test("account targeting prefers the link, personal space, only space, then asks", () => {
   const personal = { space: "mine", catalogId: "sp_mine", label: "Mine", kind: "personal" };
@@ -84,6 +109,12 @@ test("expired credentials and pending approval refusals map to their recovery ac
     description: "Your saved sign-in has expired. Approve this computer in your browser to reconnect.",
     action: "login",
     label: "Sign in again",
+  });
+  assert.deepEqual(refusalView("NOT_RUNNING"), {
+    title: "The background service is not running",
+    description: "Start it again to continue.",
+    action: "install",
+    label: "Start service",
   });
   assert.deepEqual(refusalView("APPROVAL_PENDING"), {
     title: "Waiting for owner approval",
