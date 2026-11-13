@@ -34,9 +34,19 @@ const err = (text: string): ToolResult => ({ text, isError: true });
 /** How many holders a `cotal_anycast` result names before it counts the rest. */
 const NAMED_HOLDERS = 8;
 
-/** A holder by name and id. Both reach this from peers or the record, so neither may break a line. */
+/** A participant name safe for one line. A missing or whitespace-only name is the id. */
+function shownParticipant(name: string, id: string): string {
+  if (name.trim()) return attributionSafe(name);
+  const ident = attributionSafe(id);
+  return ident.trim() ? ident : "(unnamed)";
+}
+
+/** A holder by name and id. Both reach this from peers or the record, so neither may break a line.
+ *  A missing or whitespace-only name is the holder's id. */
 function holderLabel(h: { id: string; name: string }): string {
-  return `${attributionSafe(h.name)} (${attributionSafe(h.id)})`;
+  const ident = attributionSafe(h.id);
+  const shownId = ident.trim() ? ident : "(unnamed)";
+  return h.name.trim() ? `${attributionSafe(h.name)} (${shownId})` : shownId;
 }
 
 /** The holders of a role, by name and id, from one roster read; `when` says which read. */
@@ -52,7 +62,7 @@ const TAKEN_MEANS =
   "Taken means that holder's connector was about to show it to its agent, not that the agent read, ran or finished it.";
 
 function takenFollowUp(taker: { id: string; name: string }): string {
-  return `Ask ${attributionSafe(taker.name)} with cotal_dm about the work, or use cotal_run for work you need followed to the end.`;
+  return `Ask ${shownParticipant(taker.name, taker.id)} with cotal_dm about the work, or use cotal_run for work you need followed to the end.`;
 }
 
 const UNKNOWN_OUTCOME =
@@ -1447,15 +1457,16 @@ export function cotalToolSpecs(
         try {
           const { recipient, ack, recipientStatusAtSend } = await agent.dm(to, msg, { replyTo });
           const dup = ack.duplicate ? " duplicate publication." : "";
+          const who = recipient.name.trim() ? recipient.name : shownParticipant(recipient.name, recipient.id);
           const unrostered = recipientStatusAtSend === "unrostered"
-            ? ` ${recipient.name} has no roster row: it messaged you from a connection that never joined the roster or has left it, so the space's DM history keeps this DM under its id and it may never reach an inbox.`
+            ? ` ${who} has no roster row: it messaged you from a connection that never joined the roster or has left it, so the space's DM history keeps this DM under its id and it may never reach an inbox.`
             : "";
           // The DM durable belongs to the recipient's lifecycle (SPEC §8): the same session gets it on
           // reconnect, and a new spawn under that name starts after it.
           const offline = recipientStatusAtSend === "offline"
-            ? ` ${recipient.name} is offline: the DM is delivered when ${recipient.name} reconnects, and a new agent spawned as ${recipient.name} does not receive it.`
+            ? ` ${who} is offline: the DM is delivered when ${who} reconnects, and a new agent spawned as ${who} does not receive it.`
             : "";
-          return ok(`Sent to ${recipient.name}.${unrostered}${offline} Other agents can't read it. If others could use it, post it on the task's channel.${dup}`);
+          return ok(`Sent to ${who}.${unrostered}${offline} Other agents can't read it. If others could use it, post it on the task's channel.${dup}`);
         } catch (e) {
           if (e instanceof AmbiguousPeerError) {
             const who = e.candidates
