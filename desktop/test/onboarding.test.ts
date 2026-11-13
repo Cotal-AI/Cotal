@@ -375,12 +375,12 @@ test("a blank account label shows the subject", async () => {
   const a = await app({ installed: true, connected: true, account: { label: " ", sub: "user-1" } });
   try {
     await a.click("open-settings");
-    assert.equal(a.node("settings-account").textContent, "Cotal Cloud, cloud.cotal.ai · user-1");
+    assert.equal(a.node("settings-account").textContent, "Cotal Cloud, cotal.cloud · user-1");
   } finally { a.dom.window.close(); }
   const kept = await app({ installed: true, connected: true, account: { label: " ada", sub: "user-1" } });
   try {
     await kept.click("open-settings");
-    assert.equal(kept.node("settings-account").textContent, "Cotal Cloud, cloud.cotal.ai ·  ada");
+    assert.equal(kept.node("settings-account").textContent, "Cotal Cloud, cotal.cloud ·  ada");
   } finally { kept.dom.window.close(); }
 });
 
