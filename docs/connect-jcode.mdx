@@ -141,6 +141,7 @@ Text arrives after Jcode persists a block, rather than as live token updates.
 
 The event plane is enabled by default.
 `--no-events` opts out only on a space that allows it.
+The agent card's `meta["ai.cotal.events"]` retains that launch-time decision after the host removes Cotal settings from the private process environment.
 See [Event access](connect-claude.mdx#event-plane) for grants and [Jcode event behavior](jcode-connector-reference.mdx#event-plane) for persistence and recovery.
 
 ## Resolve a launch refusal [#model-limits]

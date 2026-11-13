@@ -17,7 +17,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, isReachable, mintLifecycleUid } from "@cotal-ai/core";
-import { MeshAgent } from "../src/agent.js";
+import { MeshAgent, type MeshAgentOptions } from "../src/agent.js";
+import { eventPlaneArmed } from "../src/config.js";
 import type { AgentConfig } from "../src/config.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
@@ -61,13 +62,19 @@ agent.on("error", () => {});
 
 // The card is built when the MeshAgent is constructed, so COTAL_EVENTS is set (or cleared) around
 // the construction only and `process.env` is restored right after it.
-function constructWithEvents(config: AgentConfig, events: boolean): MeshAgent {
+function constructWithEvents(config: AgentConfig, events: boolean, captured?: boolean, scrub = false): MeshAgent {
   const had = Object.prototype.hasOwnProperty.call(process.env, "COTAL_EVENTS");
   const before = process.env.COTAL_EVENTS;
   if (events) process.env.COTAL_EVENTS = "1";
   else delete process.env.COTAL_EVENTS;
   try {
-    const a = new MeshAgent(config);
+    const options: MeshAgentOptions & { eventsArmed?: boolean } = {};
+    if (captured !== undefined) options.eventsArmed = captured;
+    if (scrub) {
+      options.eventsArmed = eventPlaneArmed(config);
+      delete process.env.COTAL_EVENTS;
+    }
+    const a = new MeshAgent(config, { ...process.env, COTAL_WORKSPACE_ROOT: dir }, options);
     a.on("error", () => {});
     return a;
   } finally {
@@ -83,6 +90,17 @@ const spoofAgent = constructWithEvents(
   { ...cfg, name: "Spoof", id: "spoof_agent", meta: { "ai.cotal.events": "on" } },
   false,
 );
+
+const capturedAgent = constructWithEvents(
+  { ...cfg, name: "Captured", id: "captured_agent", meta: { "ai.cotal.events": "off" } }, true, undefined, true,
+);
+const capturedOffAgent = constructWithEvents(
+  { ...cfg, name: "CapturedOff", id: "captured_off", meta: { "ai.cotal.events": "on" } }, true, false,
+);
+const requiredAgent = constructWithEvents(
+  { ...cfg, name: "Required", id: "required_agent", eventsRequired: true }, false, false,
+);
+const extras = [armedAgent, unarmedAgent, spoofAgent, capturedAgent, capturedOffAgent, requiredAgent];
 
 // A separate endpoint, so every assertion below reads the card as it arrived OVER THE WIRE.
 const peer = new CotalEndpoint({
@@ -102,7 +120,7 @@ try {
   await agent.waitUntilConnected(10_000);
   check("agent connected", agent.connected === true);
 
-  for (const extra of [armedAgent, unarmedAgent, spoofAgent]) {
+  for (const extra of extras) {
     extra.start();
     await extra.waitUntilConnected(10_000);
   }
@@ -139,12 +157,15 @@ try {
     (await eventsOf("Spoof")) === "off",
   );
 
+  const capturedWire = await eventsOf("Captured");
+  check("captured-on before scrub stays advertised-on after scrub", capturedWire === "on", { captured: "on", advertised: capturedWire });
+  check("captured false overrides ambient on and spoofed metadata", (await eventsOf("CapturedOff")) === "off");
+  check("required events override captured false", (await eventsOf("Required")) === "on");
+
   console.log(`\n✓ card-host smoke passed (${pass} checks)`);
 } finally {
   await agent.stop?.();
-  await armedAgent.stop?.();
-  await unarmedAgent.stop?.();
-  await spoofAgent.stop?.();
+  for (const extra of extras) await extra.stop();
   await peer.stop?.();
   await killAndAwaitExit(srv);
   rmSync(dir, { recursive: true, force: true });

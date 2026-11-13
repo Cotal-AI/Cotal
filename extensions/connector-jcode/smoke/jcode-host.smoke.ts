@@ -288,6 +288,7 @@ try {
   let peerMeta: Record<string, unknown> | undefined;
   let noProviderMeta: Record<string, unknown> | undefined;
   let foldPeerId: string | undefined;
+  let foldPeerMeta: Record<string, unknown> | undefined;
   const foldStatuses: string[] = [];
   let busyPeerId: string | undefined;
   let busyActivity = "";
@@ -302,6 +303,7 @@ try {
     if (event.presence.card.name === "noproviderpeer") noProviderMeta = event.presence.card.meta;
     if (event.presence.card.name === "foldpeer") {
       foldPeerId = event.presence.card.id;
+      foldPeerMeta = event.presence.card.meta;
       foldStatuses.push(event.presence.status ?? "");
     }
     if (event.presence.card.name === "busypeer") {
@@ -426,6 +428,9 @@ try {
   let foldErr = "";
   fold.stderr?.on("data", (chunk: Buffer) => (foldErr += chunk.toString()));
   await waitFor("foldpeer mesh presence", () => foldPeerId);
+  check("events-armed Jcode host advertises on after scrubbing launch environment", foldPeerMeta?.["ai.cotal.events"] === "on", foldPeerMeta);
+  const foldArgv = readJsonLines<{ ev: string; env?: Record<string, string> }>(foldLog).find((entry) => entry.ev === "argv");
+  check("events-armed host still scrubs Cotal material before launching Jcode", !!foldArgv && Object.keys(foldArgv.env ?? {}).every((key) => !key.startsWith("COTAL_")), foldArgv);
   const foldPrincipal = parsePrincipalKey(foldPeerId!);
   assert.ok(foldPrincipal, `foldpeer presence has no principal id: ${foldPeerId}`);
   const foldEventsChannel = eventChannel(foldPrincipal);

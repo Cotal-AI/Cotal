@@ -469,7 +469,7 @@ export async function runJcodeHost(): Promise<void> {
   scrubLaunchMaterial();
   for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
-  const agent = new MeshAgent(config);
+  const agent = new MeshAgent(config, undefined, { eventsArmed });
   const relayServer = await startRelay(agent, config, relay);
   writeMcpConfig(home, relay, config);
 
