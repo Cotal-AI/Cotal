@@ -95,7 +95,7 @@ try {
   const success = await exchangeDesktopRequest({ paths }, request);
   secretFree(success);
   assert.ok(success.ok && "result" in success);
-  assert.deepEqual(success.result, { kind: "logout", serverRevoked: true, localLoginCleared: true, removedRegistrations: [] });
+  assert.deepEqual(success.result, { kind: "logout", serverRevoked: true, localLoginCleared: true, removedRegistrations: [], skippedServices: [] });
   assert.equal(signOuts, 1, "selected provider is revoked once");
   assert.deepEqual(requests, [{ method: "POST", url: "/api/auth/sign-out", authorization: `Bearer ${selected.token}`, body: "{}" }]);
   assert.equal(loadIdpSession(machineHome, idp), undefined, "selected machine login is removed");
