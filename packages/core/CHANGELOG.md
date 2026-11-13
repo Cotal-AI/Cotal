@@ -1,5 +1,13 @@
 # @cotal-ai/core
 
+## 0.163.4
+
+### Patch Changes
+
+- 9222e04: Reduce active broker resources for channel-less agents and derived membership. The membership feed is now Memory-backed with explicit privileged legacy conversion, while empty channel read ACLs omit the DLV durable and its bind grants without changing DM or File-backed lease state. Chat adapters pass the resolved read ACL, chat admission reads back only provisioned durables, and an unexpected denied bind still refuses startup.
+- 7ca7580: Presence readers drop a row whose display name is empty. The inventory no longer treats that row as a live participant it cannot name.
+- a8775ea: `cotal send` refuses when the stream that stores that destination is confirmed missing. A channel post checks the chat stream, a direct message the DM stream, and a role send the task stream. A direct message is still stored when only the chat stream is gone. A read that fails does not refuse.
+
 ## 0.163.3
 
 ### Patch Changes

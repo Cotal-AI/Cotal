@@ -1,5 +1,18 @@
 # @cotal-ai/manager
 
+## 0.163.4
+
+### Patch Changes
+
+- 6ee44bb: The console's empty state tells you to run `cotal spawn --detach --name …`. `cotal start` exits 1 because that command was merged into spawn.
+- Updated dependencies [9222e04]
+- Updated dependencies [6903567]
+- Updated dependencies [7ca7580]
+- Updated dependencies [a8775ea]
+  - @cotal-ai/core@0.163.4
+  - @cotal-ai/workspace@0.163.4
+  - @cotal-ai/seat@0.163.4
+
 ## 0.163.3
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @cotal-ai/connector-core
 
+## 0.163.4
+
+### Patch Changes
+
+- 9222e04: Reduce active broker resources for channel-less agents and derived membership. The membership feed is now Memory-backed with explicit privileged legacy conversion, while empty channel read ACLs omit the DLV durable and its bind grants without changing DM or File-backed lease state. Chat adapters pass the resolved read ACL, chat admission reads back only provisioned durables, and an unexpected denied bind still refuses startup.
+- 08befed: A `cotal_inbox` peek shows a current mention of you before older direct messages that fill the receivable window. A clearing read still delivers direct messages ahead of channel traffic.
+- d127034: A jcode seat that arms an optional event plane reports `ai.cotal.events: on` after it removes `COTAL_EVENTS` from the process environment. The card follows the decision the connector already made.
+
 ## 0.163.3
 
 No changes in this release.
