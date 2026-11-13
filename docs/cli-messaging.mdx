@@ -491,7 +491,8 @@ Removal keeps retained history unless `--purge` is present. The confirmation nam
 space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
 is refused with `TARGET_NOT_FOUND` before the confirmation, listing the registered channels, or
 naming the registered spelling when only the case differs. Removing a channel that has retained
-messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`; `--purge`
+messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`. A missing
+channel registry bucket is no saved entry, so that remove is the same `no-op`. `--purge`
 still deletes that channel's retained messages. In `--json`, `result.removed` says whether a saved entry was removed. Neither
 removal nor replay settings revoke grants or stop participants; future posts can create retained
 history again. A `set`, `defaults` or `remove` that the broker refuses for the credential's grant

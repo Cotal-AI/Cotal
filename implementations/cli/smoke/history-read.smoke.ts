@@ -19,6 +19,7 @@
  * Run: pnpm smoke:history-read
  */
 import { execFile, spawn } from "node:child_process";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,7 +27,9 @@ import { randomUUID } from "node:crypto";
 import {
   CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
+  channelBucket,
   createSpaceAuth,
+  dialerFor,
   isReachable,
   mintCreds,
   mintLifecycleUid,
@@ -35,6 +38,7 @@ import {
   seedChannelRegistry,
   serverConfig,
   setupSpaceStreams,
+  standaloneConnectOpts,
 } from "@cotal-ai/core";
 import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
@@ -665,6 +669,30 @@ try {
     check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
     const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
+  }
+
+  // The registry bucket is already gone. Retained chat still makes this a channel the space has,
+  // so remove used to report an unconfirmed change instead of the no-op a missing entry is.
+  {
+    const posted = await run(["send", "-c", "bucketgone", "kept", "--space", space]);
+    const teardown = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await dialerFor(servers)({ servers, ...standaloneConnectOpts({ creds: teardown, tls: false }), maxReconnectAttempts: 0 });
+    let deleted = false;
+    try {
+      const jsm = await jetstreamManager(nc);
+      const bucket = channelBucket(space);
+      for await (const name of jsm.streams.names()) {
+        if (!name.includes(bucket)) continue;
+        await jsm.streams.delete(name);
+        deleted = true;
+      }
+    } finally {
+      await nc.close();
+    }
+    const gone = await run(["channel", "remove", "bucketgone", "--yes", "--space", space, "--json"]);
+    const removed = (gone.envelope?.result as { removed?: boolean } | null | undefined)?.removed;
+    check("removing a channel whose registry bucket is gone is a no-op, not an unconfirmed change",
+      posted.status === 0 && deleted && gone.status === 0 && gone.envelope?.outcome === "no-op" && removed === false, { posted: shown(posted), gone: shown(gone), deleted });
   }
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
