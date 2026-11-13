@@ -40,12 +40,17 @@ export class NameTaken extends Error {
   }
 }
 
+const SPACE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
 /** An issuer is waiting for the person to review permissions. This is not a connection or an
- *  authorization; only the authority's authenticated approval page can record the decision. */
+ *  authorization; only the authority's authenticated approval page can record the decision.
+ *  `space`, when the host knows which mesh this approval would join, is named in the pending result. */
 export class ApprovalRequired extends Error {
-  constructor(readonly pending: ConversationPending) {
+  readonly space?: string;
+  constructor(readonly pending: ConversationPending, space?: string) {
     super("the person must approve this connection's permissions");
     this.name = "ApprovalRequired";
+    this.space = space !== undefined && SPACE_NAME.test(space) ? space : undefined;
   }
 }
 
@@ -73,7 +78,8 @@ export interface GatewayHost {
    *  succeeding, or two conversations end up sharing one name. Error messages reach the caller,
    *  so they must not carry secrets. `selection` is only a proposal, never the person's consent.
    *  Throw {@link ApprovalRequired} until the person approves through the authority's own UI; issue
-   *  only their approved selection within their current access. `approvalId` is an untrusted resume
+   *  only their approved selection within their current access. Pass that error the space this
+   *  connection is bound to when the caller cannot name it. `approvalId` is an untrusted resume
    *  handle, never proof of approval. Bind it to this account, name and unchanged request, and do not
    *  reuse an issued approval for another connection. `space`, when the native schema offers it, is
    *  the registered mesh the caller named. Omit it to keep the embedder's default resolution. A
@@ -539,13 +545,16 @@ export function registerCotalGatewayTools(
         } catch (e) {
           if (e instanceof ApprovalRequired) {
             const resume = options.approvalResume ? ` and approval_id ${JSON.stringify(e.pending.approval.id)}` : "";
+            const joined = e.space ?? space;
             const message = `Permission approval required. This conversation is not connected.\n` +
+              (joined ? `This connection would join space ${JSON.stringify(joined)}.\n` : "") +
               `The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.\n` +
               `Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.\n` +
               `After they approve, retry cotal_connect with name ${JSON.stringify(candidate)}${resume} and the same requested permissions. Do not poll or start another request while waiting.`;
             // Some native clients give the model only structuredContent, not the text blocks.
             const structuredContent = { v: 1, status: "pending", name: candidate,
-              requestId: e.pending.requestId, approval: e.pending.approval, proposed: e.pending.proposed, message };
+              requestId: e.pending.requestId, approval: e.pending.approval, proposed: e.pending.proposed, message,
+              ...(joined ? { space: joined } : {}) };
             return {
               content: [
                 { type: "text" as const, text: message },

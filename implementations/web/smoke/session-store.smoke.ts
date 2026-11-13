@@ -296,11 +296,11 @@ function sessionApi(read: (id: string, limit: number) => Promise<AgentEventsPage
   h.ctl.onHello("feed-1");
   h.ctl.openSession(A);
   await flush();
-  read = () => ({ refused: "Permissions Violation for Subscription to \"cotal.main.chat.local.abc.events.local.abc\"", grant: "cotal mint watcher --profile agent --allow-subscribe 'events.local.abc' --provision" });
+  read = () => ({ refused: "Permissions Violation for Subscription to \"cotal.main.chat.local.abc.events.local.abc\"", grant: "cotal auth mint watcher --profile agent --allow-subscribe 'events.local.abc' --provision" });
   await h.ctl.reloadSession(A);
   const s = h.store.get().sessions[A]!;
   ok("8.1 a refusal keeps the held frames and sets the broker's reason and the grant",
-    s.load === "refused" && s.frames.length === 1 && s.reason?.startsWith("Permissions Violation") === true && s.grant?.startsWith("cotal mint watcher") === true, s);
+    s.load === "refused" && s.frames.length === 1 && s.reason?.startsWith("Permissions Violation") === true && s.grant?.startsWith("cotal auth mint watcher") === true, s);
   read = () => { throw new Error("local.abc events refused with HTTP 503: local.abc events: the read failed: boom"); };
   await h.ctl.reloadSession(A);
   const f = h.store.get().sessions[A]!;

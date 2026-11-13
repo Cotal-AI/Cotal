@@ -1696,12 +1696,15 @@ export function permissionsFor(
     `$JS.ACK.${DM}.${dmD}.>`,
     // Plane-3 DELIVER consumer (SPEC §8): when this credential can read at least one channel, BIND
     // ONLY its own pre-created dlv_<id> — info/fetch/ack, never create. A channel-less credential has
-    // no DLV rows and no DLV durable. It gets NO grant on the INBOX (mixed pre-auth) stream either.
+    // no DLV durable and no fetch or ack row. It can still ask CONSUMER.INFO for its own durable
+    // name. A client older than 0.163.0 does that during start, and a permitted read answers that
+    // the consumer is absent, which that client treats as nothing to bind. A refused publish fails
+    // the start. It gets NO grant on the INBOX (mixed pre-auth) stream either.
     ...(allowSubscribe.length > 0 ? [
       `$JS.API.CONSUMER.INFO.${DLV}.${dlvD}`,
       `$JS.API.CONSUMER.MSG.NEXT.${DLV}.${dlvD}`,
       `$JS.ACK.${DLV}.${dlvD}.>`,
-    ] : []),
+    ] : [`$JS.API.CONSUMER.INFO.${DLV}.${dlvD}`]),
     // Presence: on-demand read + watch (read, public roster) + flow control + PUT OWN KEY ONLY.
     // The read is a batched Direct Get of the bucket (SPEC §6): a seat reads the roster when it acts
     // instead of receiving every member's heartbeat. Its reply subject is caller-chosen, the same
@@ -1951,6 +1954,8 @@ function supervisorPermissions(space: string, pr: MintPrincipal): Record<string,
     pub: {
       allow: [
         "$JS.API.INFO",
+        // Transcript startup checks read retained subject counts, never message bodies.
+        `$JS.API.STREAM.INFO.${chatStream(space)}`,
         // Per-instance manager liveness lease (managerBucket, pre-created at `cotal up`): OPEN-ONLY bind +
         // CAS this instance's own `lease.<instanceId>` key (acquire/renew/release) + read the subtree. The
         // lease is per instance, so the write grant spans `lease.*` (every instance of this space
@@ -2058,6 +2063,9 @@ function remoteManagerPermissions(
     pub: {
       allow: [
         "$JS.API.INFO",
+        // Only the supervisor allocates names against retained transcript counts. This metadata
+        // grant carries no consumer or message-body read, just like the agent CHAT info grant.
+        ...(isSupervisorActor ? [`$JS.API.STREAM.INFO.${chatStream(space)}`] : []),
         // Own manager-instance lease only. The local supervisor profile spans lease.* because one
         // host manages every local instance; a remote user grant must not.
         `$JS.API.STREAM.INFO.${MKV}`,

@@ -41,6 +41,18 @@ Reuse the previous state root or choose a new principal to publish again. Succes
 validation is retained across reconnects; the emitter's existing compare-and-set checks still detect
 concurrent writers.
 
+For managed user-auth launches with events enabled, the manager applies this same check before
+launching. Persona-derived names skip an incompatible retained transcript and take the next suffix.
+A pinned name or a failed state/count read refuses before launch. The spawn reply carries the
+name that was allocated.
+
+This manager check applies only when the manager launches on its own state root and knows the
+user owner. Delegated runtimes keep their existing destination-side startup check.
+On an older host that does not grant CHAT `STREAM.INFO`, the manager logs the missing permission
+and launches the selected name unchanged. It does not infer a free name from that denial.
+The agent still checks its own transcript state and can refuse as before. Other state or count
+read failures refuse the spawn.
+
 The endpoint's `transport` event reports state changes. It does not replay earlier
 events to a listener added later. A connector reads `transportConnected` for the
 current state and subscribes to the event for later changes.

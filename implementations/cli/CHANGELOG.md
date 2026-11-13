@@ -1,5 +1,30 @@
 # @cotal-ai/cli
 
+## 0.163.5
+
+### Patch Changes
+
+- 9f933ce: `cotal logout` signs out without seeding connectors. A connector install refusal no longer keeps the cached login.
+- Updated dependencies [a1cef07]
+- Updated dependencies [23e3171]
+- Updated dependencies [aa9d3c8]
+  - @cotal-ai/core@0.163.5
+  - @cotal-ai/workspace@0.163.5
+
+## 0.163.4
+
+### Patch Changes
+
+- 9222e04: Reduce active broker resources for channel-less agents and derived membership. The membership feed is now Memory-backed with explicit privileged legacy conversion, while empty channel read ACLs omit the DLV durable and its bind grants without changing DM or File-backed lease state. Chat adapters pass the resolved read ACL, chat admission reads back only provisioned durables, and an unexpected denied bind still refuses startup.
+- 4548c30: `cotal history --dms` returns a direct message that is still stored when the chat stream is gone, and warns that channel history is not shown. It no longer refuses with the message that says to create every stream again, empty.
+- a8775ea: `cotal send` refuses when the stream that stores that destination is confirmed missing. A channel post checks the chat stream, a direct message the DM stream, and a role send the task stream. A direct message is still stored when only the chat stream is gone. A read that fails does not refuse.
+- Updated dependencies [9222e04]
+- Updated dependencies [6903567]
+- Updated dependencies [7ca7580]
+- Updated dependencies [a8775ea]
+  - @cotal-ai/core@0.163.4
+  - @cotal-ai/workspace@0.163.4
+
 ## 0.163.3
 
 ### Patch Changes

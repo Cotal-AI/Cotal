@@ -29,6 +29,16 @@ const enc = (s: string) => new TextEncoder().encode(s);
 const space = "issuedcensus";
 let fixtures!: ProfileFixture[];
 await check("profile and view producers cover their declared sets", async () => { fixtures = await profileFixtures(space); });
+await check("transcript name checks grant CHAT metadata only to supervisor duties", async () => {
+  const grant = `$JS.API.STREAM.INFO.CHAT_${space}`;
+  for (const fixture of fixtures.filter((row) => row.profile === "supervisor" || row.profile === "remote-manager")) {
+    const permissions = fixture.permissions as { pub?: { allow?: string[] }; sub?: { allow?: string[] } };
+    const allowed = permissions.pub?.allow ?? [];
+    const supervisor = fixture.profile === "supervisor" || fixture.variant === "server";
+    assert.equal(allowed.includes(grant), supervisor, `${fixture.profile}:${fixture.variant}`);
+    assert(!allowed.some((row) => row.startsWith(`$JS.API.STREAM.MSG.GET.CHAT_${space}`) || row.startsWith(`$JS.API.CONSUMER.CREATE.CHAT_${space}`)), "the count grant must not add CHAT body reads");
+  }
+});
 const auth = await createSpaceAuth(space);
 const port = await pickFreePort(), server = `nats://127.0.0.1:${port}`;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));

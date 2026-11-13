@@ -28,29 +28,15 @@
  */
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readdir, rename, unlink } from "node:fs/promises";
-import type { Dirent } from "node:fs";
-import { dirname, join } from "node:path";
+import { lstat, open, rename, unlink } from "node:fs/promises";
+import { dirname } from "node:path";
+import {
+  EVENT_SUBJECT_RECORD_VERSION, SubjectFrontierCorruptError,
+  readEventSubjectRecord, recoverEventSubjectTip, recordedEventTip,
+  type EventSubjectRecord,
+} from "@cotal-ai/core";
+export { SubjectFrontierCorruptError } from "@cotal-ai/core";
 import { fsyncDir } from "./agui-wal-path.js";
-
-/** The document on disk. Versioned, because a shape change must be refused rather than misread. */
-const SUBJECT_FRONTIER_VERSION = 1;
-
-interface SubjectDoc {
-  v: number;
-  space: string;
-  principal: string;
-  /** The last sequence the broker assigned to a frame this principal published on its subject. */
-  tip: number;
-}
-
-/** Every refusal is one of these, so a caller never mistakes it for an I/O blip. */
-export class SubjectFrontierCorruptError extends Error {
-  constructor(readonly path: string, readonly invariant: string, detail: string) {
-    super(`subject frontier ${path}: expected ${invariant} — ${detail}`);
-    this.name = "SubjectFrontierCorruptError";
-  }
-}
 
 /**
  * The record on disk is not the one this view was opened from, so this writer's number is not the
@@ -100,49 +86,11 @@ const isFrontierTip = (n: unknown): n is number => isSafeNonNegInt(n) && n < Num
 export class FileSubjectFrontier implements SubjectFrontier {
   private constructor(
     private readonly path: string,
-    private doc: SubjectDoc,
+    private doc: EventSubjectRecord,
   ) {}
 
   get tip(): number {
     return this.doc.tip;
-  }
-
-  /**
-   * Read the record's bytes with no follow, or `undefined` when it is absent.
-   *
-   * SHARED BY `open` AND BY {@link readDiskTip} on purpose, the same reason {@link parse} is
-   * shared: the read side has exactly one policy about what a subject.json is allowed to be, and a
-   * second copy would drift. `lstat` first so a symlink is refused before any content is read
-   * (following it would hand a writer another file's tip through the record's own name); the open
-   * itself adds `O_NOFOLLOW` for the TOCTOU window between that `lstat` and the open. The portable
-   * `?? 0` shape follows {@link recoverTipFromThreadLogs}: Windows has no `O_NOFOLLOW` and a
-   * junction is not a symlink to `lstat`, so on that platform the `lstat` refusal alone is the
-   * coverage, exactly as it is for the scan.
-   */
-  private static async readRecord(path: string): Promise<Buffer | undefined> {
-    let st;
-    try {
-      st = await lstat(path);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw e;
-    }
-    if (st.isSymbolicLink())
-      throw new SubjectFrontierCorruptError(path, "a real subject record, never a symlink", "the writer never wrote a symlink");
-    try {
-      const fh = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      try {
-        return await fh.readFile();
-      } finally {
-        await fh.close();
-      }
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return undefined;
-      if (code === "ELOOP")
-        throw new SubjectFrontierCorruptError(path, "a real subject record, never a symlink", "the record became a symlink between the check and the open");
-      throw e;
-    }
   }
 
   /**
@@ -155,69 +103,22 @@ export class FileSubjectFrontier implements SubjectFrontier {
    * mechanism exists to remove.
    */
   static async open(path: string, opts: { space: string; principal: string }): Promise<FileSubjectFrontier> {
-    const bytes = await FileSubjectFrontier.readRecord(path);
-    if (bytes === undefined) {
+    const record = await readEventSubjectRecord(path, opts);
+    if (record === undefined) {
       // ABSENT, so this record has never existed. Before calling the principal virgin, look at the
-      // thread logs that already sit beside it. See {@link recoverTipFromThreadLogs}.
-      const recovered = await FileSubjectFrontier.recoverTipFromThreadLogs(dirname(path), opts.principal);
-      const fresh = new FileSubjectFrontier(path, { v: SUBJECT_FRONTIER_VERSION, space: opts.space, principal: opts.principal, tip: 0 });
+      // thread logs that already sit beside it. Recovery is persisted only by this writer.
+      const recovered = await recoverEventSubjectTip(dirname(path), opts.principal);
+      const fresh = new FileSubjectFrontier(path, { v: EVENT_SUBJECT_RECORD_VERSION, space: opts.space, principal: opts.principal, tip: 0 });
       if (recovered > 0) await fresh.write({ ...fresh.doc, tip: recovered });
       return fresh;
     }
 
-    return new FileSubjectFrontier(path, FileSubjectFrontier.parse(path, bytes, opts));
+    return new FileSubjectFrontier(path, record);
   }
 
   /** Inspect acknowledged state without writing a recovered record or taking the emitter's lock. */
   static async recordedTip(path: string, opts: { space: string; principal: string }): Promise<number> {
-    const bytes = await FileSubjectFrontier.readRecord(path);
-    return bytes === undefined
-      ? FileSubjectFrontier.recoverTipFromThreadLogs(dirname(path), opts.principal)
-      : FileSubjectFrontier.parse(path, bytes, opts).tip;
-  }
-
-  /**
-   * Bytes to a validated document, or a refusal.
-   *
-   * SHARED BY `open` AND BY THE RE-READ IN {@link advance} on purpose. A record that went corrupt
-   * underneath a live writer has to meet the same wall as one that was corrupt at boot; validating
-   * only on the way in would let a writer that opened a good file overwrite a bad one, which
-   * destroys the evidence of whatever produced it.
-   */
-  private static parse(path: string, bytes: Buffer, opts: { space: string; principal: string }): SubjectDoc {
-    let raw: string;
-    try {
-      // FATAL decode, never `readFile(path, "utf8")`: Node's default substitutes U+FFFD for invalid
-      // bytes, so a corrupted file arrives as a changed-but-parseable document. For a record whose
-      // whole posture is that an unreadable state fails loud, "quietly altered and accepted" is the
-      // one outcome it must not produce.
-      raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch {
-      throw new SubjectFrontierCorruptError(path, "valid UTF-8", "invalid UTF-8 bytes; refusing rather than substituting U+FFFD");
-    }
-    if (raw.length === 0)
-      throw new SubjectFrontierCorruptError(path, "a non-empty file", "the file is zero bytes — distinct from missing, and never treated as virgin");
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (e) {
-      throw new SubjectFrontierCorruptError(path, "parseable JSON", (e as Error).message);
-    }
-    const d = parsed as Partial<SubjectDoc>;
-    if (d?.v !== SUBJECT_FRONTIER_VERSION) throw new SubjectFrontierCorruptError(path, `v === ${SUBJECT_FRONTIER_VERSION}`, String(d?.v));
-    if (d.space !== opts.space) throw new SubjectFrontierCorruptError(path, "space matches", `file=${String(d.space)} caller=${opts.space}`);
-    // The principal is the whole key of this record: a file belonging to another identity would
-    // hand this writer another principal's tip, which is a fabricated frontier of exactly the kind
-    // the write-ahead log refuses for the same reason.
-    //
-    // A BYTE COMPARE, NOT A DECODED ONE: `assertValidOwnerToken` and `principalKey` fold nothing,
-    // and the principal directory is `h(principal)` over the exact bytes, so a decoded or
-    // case-folded compare here would accept a key that names a different directory on disk.
-    if (d.principal !== opts.principal)
-      throw new SubjectFrontierCorruptError(path, "principal matches", `file=${String(d.principal)} caller=${opts.principal}`);
-    if (!isFrontierTip(d.tip)) throw new SubjectFrontierCorruptError(path, "tip is a safe non-negative integer below Number.MAX_SAFE_INTEGER", String(d.tip));
-    return { v: d.v, space: d.space, principal: d.principal, tip: d.tip };
+    return recordedEventTip(path, opts);
   }
 
   async advance(seq: number): Promise<void> {
@@ -254,9 +155,7 @@ export class FileSubjectFrontier implements SubjectFrontier {
    * number, and a number taken from a document that failed its own shape checks is not evidence.
    */
   private async readDiskTip(): Promise<number | undefined> {
-    const bytes = await FileSubjectFrontier.readRecord(this.path);
-    if (bytes === undefined) return undefined;
-    return FileSubjectFrontier.parse(this.path, bytes, { space: this.doc.space, principal: this.doc.principal }).tip;
+    return (await readEventSubjectRecord(this.path, { space: this.doc.space, principal: this.doc.principal }))?.tip;
   }
 
   /**
@@ -278,141 +177,6 @@ export class FileSubjectFrontier implements SubjectFrontier {
     return next;
   }
 
-  /**
-   * Recover the tip from the THREAD LOGS beside this record, for an installation upgrading from a
-   * release where this record did not exist.
-   *
-   * **EVERY THREAD LOG OF THE PRINCIPAL IS SCANNED.** Upgrading restarts the seat, so the first
-   * session after the upgrade is a NEW thread with a virgin log, while the sequences the principal
-   * was assigned sit in the logs of its PREVIOUS threads. The recovered tip is the highest of them.
-   *
-   * **ONLY WHEN THE RECORD IS ABSENT, NEVER WHEN IT READS ZERO.** A record holding zero is what
-   * abandonment writes after a filtered purge, and re-seeding it from a thread log would silently
-   * undo the abandonment and restore an expectation the subject no longer has. Missing and zero are
-   * different states and this is the second place in this plane where conflating them is the bug.
-   *
-   * A sibling that cannot be read or does not parse is FATAL rather than skipped. Skipping it
-   * under-counts the tip, which produces a permanent halt later with a message about a moved tip,
-   * pointing at everything except the file that was quietly ignored here.
-   */
-  private static async recoverTipFromThreadLogs(principalDir: string, principal: string): Promise<number> {
-    let entries: Dirent[];
-    try {
-      entries = await readdir(principalDir, { withFileTypes: true });
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "ENOENT") return 0;
-      throw e;
-    }
-    let best = 0;
-    for (const ent of entries) {
-      // THE SCAN MAY NOT BE WALKED OUTSIDE THE PRINCIPAL DIRECTORY. The writer that creates these
-      // directories refuses a symlinked component (`ensureDirNoSymlink`), so a symlink here is a
-      // state it cannot produce, and following one would take a tip from a log belonging to some
-      // other tree. The create path and the recovery path have to agree about that or the guard is
-      // only on the half nobody attacks.
-      if (ent.isSymbolicLink())
-        throw new SubjectFrontierCorruptError(join(principalDir, ent.name), "a real directory beside the record, never a symlink", "following it would carry this scan outside the principal directory, and the writer that creates these directories refuses a symlinked component for the same reason");
-      if (!ent.isDirectory()) continue; // the record itself, the lock, anything else that is not a thread
-      const walPath = join(principalDir, ent.name, "wal.json");
-      // The entry check above clears the DIRECTORY and stops there, so a real thread directory
-      // holding a symlinked `wal.json` reaches the same foreign log by one more hop. Two layers,
-      // and they are not redundant:
-      //
-      //  - `lstat` is the GRADED guard and the portable one. It decides the refusal on every
-      //    platform, which matters because `O_NOFOLLOW` does not exist on Windows and a guard that
-      //    silently evaporates there is worse than one that was never claimed.
-      //  - `O_NOFOLLOW` narrows the window between the `lstat` and the `open`, where the file could
-      //    be replaced by a link. It applies to the FINAL COMPONENT ONLY, so a thread directory
-      //    swapped for a link in that same window is still followed; closing that would take an
-      //    `openat` walk per component, which this scan does not do. NO CELL CAN GRADE EITHER
-      //    WINDOW, and the mutation config says so rather than registering a mutant that would
-      //    survive and be explained away.
-      let st;
-      try {
-        st = await lstat(walPath);
-      } catch (e) {
-        const code = (e as NodeJS.ErrnoException).code;
-        if (code === "ENOENT" || code === "ENOTDIR") continue; // not a thread directory
-        throw e;
-      }
-      if (st.isSymbolicLink())
-        throw new SubjectFrontierCorruptError(walPath, "a real thread log, never a symlink", "following it would read a log this principal's writer never wrote");
-      // A HARD link is not a symlink and neither check above sees one, so a log hardlinked into
-      // this directory from elsewhere reads as an ordinary file and hands over its tip. The writer
-      // creates each log fresh, so more than one name for it is a state it cannot produce, which
-      // is the same reason the symlink is refused rather than resolved.
-      if (st.nlink > 1)
-        throw new SubjectFrontierCorruptError(walPath, "a thread log with exactly one name", `it has ${st.nlink}, so the same file is reachable from outside this principal's directory and its tip is not this principal's to read`);
-      let raw: Buffer;
-      try {
-        const fh = await open(walPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-        try {
-          raw = await fh.readFile();
-        } finally {
-          await fh.close();
-        }
-      } catch (e) {
-        const code = (e as NodeJS.ErrnoException).code;
-        if (code === "ENOENT" || code === "ENOTDIR") continue;
-        if (code === "ELOOP")
-          throw new SubjectFrontierCorruptError(walPath, "a real thread log, never a symlink", "the file became a symlink between the check and the open");
-        throw e;
-      }
-      let doc: { principal?: unknown; frontier?: { lastSubjectSeq?: unknown }; pending?: { state?: unknown; ackSeq?: unknown } | null };
-      try {
-        doc = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)) as typeof doc;
-      } catch (e) {
-        throw new SubjectFrontierCorruptError(walPath, "a readable thread log while recovering the subject tip", (e as Error).message);
-      }
-      // A log under another principal's directory is not ours to read a tip from. It cannot happen
-      // in the shipped layout, which is why it is checked: a recovery component must refuse the
-      // states its own writer cannot produce.
-      if (doc.principal !== principal)
-        throw new SubjectFrontierCorruptError(walPath, `a thread log for principal ${principal}`, `found ${String(doc.principal)}`);
-      const seq = doc.frontier?.lastSubjectSeq;
-      if (!isSafeNonNegInt(seq))
-        throw new SubjectFrontierCorruptError(walPath, "frontier.lastSubjectSeq is a safe non-negative integer", String(seq));
-      if (seq > best) best = seq;
-      // AN ACKED PENDING HOLDS A SEQUENCE THE BROKER ASSIGNED AND THE FRONTIER DOES NOT.
-      //
-      // A log that took an ack and died before folding keeps the assigned sequence in
-      // `pending.ackSeq`, which `EventWal` requires to be strictly AHEAD of
-      // `frontier.lastSubjectSeq` (that is the crash window the acked state exists to survive).
-      // Reading the frontier alone recovers the older number, persists it, and hands the next
-      // publish an expectation the subject passed some time ago. The session that could fold it
-      // will never run again, because upgrading forks the session id, so this log is the only
-      // place that sequence survives. Under-counting here is the same defect this file fixes,
-      // reintroduced at the one boundary the file exists for.
-      const pending = doc.pending;
-      if (pending && pending.state === "acked") {
-        const acked = pending.ackSeq;
-        if (!isSafeNonNegInt(acked))
-          throw new SubjectFrontierCorruptError(walPath, "an acked pending carries a safe non-negative ackSeq", String(acked));
-        if (!(acked > seq))
-          throw new SubjectFrontierCorruptError(walPath, "an acked pending is ahead of the frontier it will fold into", `ackSeq=${acked} frontier.lastSubjectSeq=${seq}`);
-        if (acked > best) best = acked;
-      }
-      // A `sent_unacked` PENDING IS PASSED OVER DELIBERATELY, AND NOT BECAUSE NOTHING WAS ASSIGNED.
-      //
-      // Whether the broker assigned a sequence to such a frame is the one thing the state does not
-      // know: the frame went out and the acknowledgement was never observed, so the subject may or
-      // may not have taken it. What is certain is structural and about the log rather than the
-      // broker: `sent_unacked` carries no `ackSeq` at all, and a document that pairs the two is
-      // refused as contradicting its own tag. There is therefore no sequence in it to fold, and
-      // inventing one, `frontier.lastSubjectSeq + 1` for instance, would assert an assignment
-      // nobody saw.
-      //
-      // The residue is real and is left standing on purpose. If the broker did assign a sequence to
-      // that frame, this scan recovers a number one short of the tip, and the next publish halts on
-      // a moved tip rather than publishing into a gap or overwriting anything. That is the safe
-      // direction of the two, it is the halt the emitter's `cas-loss` message explains, and its
-      // remedy is the one that message names. The owning session would have republished the frozen
-      // id and let the broker deduplicate, but that session is exactly what an upgrade forks away
-      // from, which is why the case reaches here at all.
-    }
-    return best;
-  }
-
   async reset(): Promise<void> {
     // UNCONDITIONAL, and deliberately not re-read. Abandonment is the one thing that legitimately
     // takes the tip backwards, so a record that moved under this writer is not an obstacle to it:
@@ -423,7 +187,7 @@ export class FileSubjectFrontier implements SubjectFrontier {
   }
 
   /** Atomic replace: sibling temp, fsync, rename, fsync the directory. */
-  private async write(next: SubjectDoc): Promise<void> {
+  private async write(next: EventSubjectRecord): Promise<void> {
     const tmp = `${this.path}.${randomUUID()}.tmp`;
     const fh = await open(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
     try {
@@ -436,7 +200,7 @@ export class FileSubjectFrontier implements SubjectFrontier {
       // A planted link at the record's name must never receive the rename: that would leave the
       // link's TARGET holding the stale document while this principal's own history moved on.
       // Absence is fine (creation stays legal); only a symlink is refused, the same class {@link
-      // readRecord} throws on the read side, so the create and read paths agree about links here too.
+      // readEventSubjectRecord} throws on the read side, so the create and read paths agree about links here too.
       let st;
       try {
         st = await lstat(this.path);

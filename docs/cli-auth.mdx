@@ -229,6 +229,11 @@ Account sign-in still completes, including space discovery and selection. The re
 lists skipped services and prints `journalctl --user -u <unit>` to find their sign-in
 command when the store cannot be proved. Skipped services do not change the command's successful exit status.
 Logout also clears the local account login even when a service must be skipped.
+Group-writable configuration ancestors are accepted only under the same
+[private-group proof](cli-selection.mdx) used for protected local paths, with no extended ACL.
+If that proof is unavailable, the skip report names a mode change. When `getfacl` is missing,
+it also offers installing the `acl` package. World-writable paths, foreign owners and
+unproved groups remain refused.
 Hand-made units are not updated automatically;
 their refusal names the selected sign-in store and a command such as
 `COTAL_HOME=<store> cotal login --idp <url>`.
@@ -473,7 +478,8 @@ for retry, and the refusal names `--local`; a later cleanup failure is partial a
 confirmed server outcome. `logout --local` clears this machine's cached login and that account's
 discovered registry entries without contacting the provider, for a provider that is down or does
 not confirm sign-out. The provider session stays valid until it expires or is revoked at the
-provider, and the receipt says so.
+provider, and the receipt says so. `logout` does not seed or refresh connectors, so a connector
+install problem does not keep the cached login.
 
 Signing out leaves an already connected daemon connected on the computer's own service proof,
 not the human session. The sign-out receipt explains this in text and its JSON `daemonNotice`.

@@ -176,7 +176,7 @@ const FEED = "f/1 2";
   ok("6.2 CONTROL: the encoding is not a no-op for this id, so 6.1 can tell it from none", encodeURIComponent(AGENT) !== AGENT);
 }
 {
-  const refused = { refused: "Permissions Violation for Subscription to \"cotal.main.chat.local.abc.events.local.abc\"", grant: "cotal mint watcher --profile agent --allow-subscribe 'events.local.abc' --provision" };
+  const refused = { refused: "Permissions Violation for Subscription to \"cotal.main.chat.local.abc.events.local.abc\"", grant: "cotal auth mint watcher --profile agent --allow-subscribe 'events.local.abc' --provision" };
   const { fetchImpl } = fake({ ok: true, status: 200, body: refused });
   const got = await settle(() => httpApi(fetchImpl).agentEvents("local.abc", 200));
   ok("6.3 a { refused } answer is passed through as data, with its grant", !got.rejected && JSON.stringify(got.value) === JSON.stringify(refused), messageOf(got));

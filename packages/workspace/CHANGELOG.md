@@ -1,5 +1,25 @@
 # @cotal-ai/workspace
 
+## 0.163.5
+
+### Patch Changes
+
+- 23e3171: Manager service sign-ins now accept configuration paths protected by a proven user private group. Discovery reuses the protected-path ownership and ACL checks on pinned physical entries. When proof is unavailable, the skipped-service report offers a mode change or installation of the ACL utility without changing the service store.
+- Updated dependencies [a1cef07]
+- Updated dependencies [aa9d3c8]
+  - @cotal-ai/core@0.163.5
+
+## 0.163.4
+
+### Patch Changes
+
+- 9222e04: Reduce active broker resources for channel-less agents and derived membership. The membership feed is now Memory-backed with explicit privileged legacy conversion, while empty channel read ACLs omit the DLV durable and its bind grants without changing DM or File-backed lease state. Chat adapters pass the resolved read ACL, chat admission reads back only provisioned durables, and an unexpected denied bind still refuses startup.
+- 6903567: Signing in refreshes matching Manager service sign-ins on the same machine with the same approval. Service stores are checked for ownership, provider and account before their private session is updated, and sign-in reports the services it refreshed. Services with local overrides or unprovable stores are skipped with recovery guidance without interrupting account sign-in or local logout.
+- Updated dependencies [9222e04]
+- Updated dependencies [7ca7580]
+- Updated dependencies [a8775ea]
+  - @cotal-ai/core@0.163.4
+
 ## 0.163.3
 
 ### Patch Changes

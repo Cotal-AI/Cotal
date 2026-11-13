@@ -9,7 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
-    "smoke:login-service-stores": "tsx packages/workspace/smoke/service-login-stores.smoke.ts && tsx implementations/auth/smoke/service-session-isolation.smoke.ts && tsx implementations/auth/smoke/logout-session-race.smoke.ts && tsx implementations/auth/smoke/login-service-stores.smoke.ts",
+    "smoke:login-service-stores": "tsx implementations/auth/smoke/login-private-group.smoke.ts && tsx packages/workspace/smoke/service-login-stores.smoke.ts && tsx implementations/auth/smoke/service-session-isolation.smoke.ts && tsx implementations/auth/smoke/logout-session-race.smoke.ts && tsx implementations/auth/smoke/login-service-stores.smoke.ts",
     "smoke:cloud-login": "tsx packages/workspace/smoke/cloud-login.smoke.ts && tsx implementations/auth/smoke/cloud-login.smoke.ts && tsx bin/smoke/fresh-cloud-guidance.smoke.ts",
     "smoke:daemon-desktop-account": "tsx bin/smoke/daemon-desktop-account.smoke.ts",
     "smoke:daemon-update-settings": "tsx bin/smoke/daemon-update-settings.smoke.ts && tsx bin/smoke/update-auto-service.smoke.ts",
@@ -784,6 +784,7 @@
     "smoke:manager-reconcile-startup": "tsx implementations/manager/smoke/manager-reconcile-startup.smoke.ts",
     "smoke:manager-reconcile-redrive": "tsx implementations/manager/smoke/manager-reconcile-redrive.smoke.ts",
     "smoke:manager-name-claim": "tsx implementations/manager/smoke/manager-name-claim.smoke.ts",
+    "smoke:cross-root-transcript-name": "tsx implementations/manager/smoke/cross-root-transcript-name.smoke.ts",
     "smoke:manager-on-route": "tsx implementations/manager/smoke/manager-on-route.smoke.ts",
     "smoke:manager-scatter": "tsx implementations/manager/smoke/manager-scatter.smoke.ts",
     "smoke:manager-multi-live": "tsx implementations/manager/smoke/manager-multi-live.smoke.ts",
@@ -871,6 +872,7 @@
     "smoke:lifecycle-registry:auth": "tsx implementations/auth/smoke/lifecycle-registry.smoke.ts",
     "smoke:credential-ledger:auth": "tsx implementations/auth/smoke/credential-ledger.smoke.ts",
     "smoke:admission-mediator:auth": "tsx implementations/auth/smoke/admission-mediator.smoke.ts",
+    "smoke:admission-store-atomic": "tsx implementations/auth/smoke/admission-store-atomic.smoke.ts",
     "smoke:retirement-barrier:auth": "tsx implementations/auth/smoke/retirement-barrier.smoke.ts",
     "smoke:mediator-confinement:auth": "tsx implementations/auth/smoke/mediator-confinement.smoke.ts",
     "smoke:deny-new:auth": "tsx implementations/auth/smoke/deny-new.smoke.ts",

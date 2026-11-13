@@ -1,5 +1,55 @@
 # cotal-ai
 
+## 0.163.5
+
+### Patch Changes
+
+- Updated dependencies [a1cef07]
+- Updated dependencies [5dcfb75]
+- Updated dependencies [9f933ce]
+- Updated dependencies [d8607d7]
+- Updated dependencies [0aa6f6a]
+- Updated dependencies [23e3171]
+- Updated dependencies [aa9d3c8]
+  - @cotal-ai/core@0.163.5
+  - @cotal-ai/connector-core@0.163.5
+  - @cotal-ai/cli@0.163.5
+  - @cotal-ai/manager@0.163.5
+  - @cotal-ai/delivery@0.163.5
+  - @cotal-ai/workspace@0.163.5
+  - @cotal-ai/auth@0.163.5
+  - @cotal-ai/registry@0.163.5
+  - @cotal-ai/runtime@0.163.5
+  - @cotal-ai/seat@0.163.5
+
+## 0.163.4
+
+### Patch Changes
+
+- 4f982d6: A sign-out whose discovered-space cleanup fails after the cached login was removed reports the login as cleared again. It had started to report that local cleanup was not confirmed. The daemon also declares the skipped Manager services list that its sign-out result already carries.
+- 035b4de: Desktop onboarding links work in WebViews that do not parse custom URL schemes as hierarchical URLs. Validate the route before parsing its public coordinates with a standard HTTPS URL parser, retaining strict refusals and explicit sign-in and connection consent.
+- 742e5b9: Windows background task checks import their PowerShell utility commands explicitly. Task lookup imports Microsoft.PowerShell.Utility alongside ScheduledTasks before using New-Object or ConvertTo-Json, retaining the existing ownership checks and 30-second native tool budget.
+- Updated dependencies [9222e04]
+- Updated dependencies [6ee44bb]
+- Updated dependencies [4f982d6]
+- Updated dependencies [4548c30]
+- Updated dependencies [08befed]
+- Updated dependencies [d127034]
+- Updated dependencies [6903567]
+- Updated dependencies [7ca7580]
+- Updated dependencies [a8775ea]
+- Updated dependencies [d9a44bd]
+  - @cotal-ai/core@0.163.4
+  - @cotal-ai/connector-core@0.163.4
+  - @cotal-ai/cli@0.163.4
+  - @cotal-ai/auth@0.163.4
+  - @cotal-ai/workspace@0.163.4
+  - @cotal-ai/manager@0.163.4
+  - @cotal-ai/delivery@0.163.4
+  - @cotal-ai/registry@0.163.4
+  - @cotal-ai/runtime@0.163.4
+  - @cotal-ai/seat@0.163.4
+
 ## 0.163.3
 
 ### Patch Changes

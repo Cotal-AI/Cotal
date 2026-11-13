@@ -396,7 +396,7 @@ Live clients MUST NOT heartbeat as `offline`. A graceful disconnect MAY publish 
 from KV delete/purge events. Offline peers MAY remain in local rosters for observability.
 An instance MUST write only its own presence key, and the key MUST equal `card.id`.
 Readers MUST drop a record whose `card.id` differs from its KV key, whose `card.name` is
-empty or does not have the type given above, whose `status` does not have the type given
+blank or does not have the type given above, whose `status` does not have the type given
 above, whose `ts` is not a finite number, whose
 `card.role`, `activity` or `attention` is present and not a string, or whose `condition` is present
 and is not an object with a string `code`, and SHOULD report the rejection on their recoverable
@@ -729,7 +729,9 @@ and delivers each authorized copy to the member over an **at-least-once** handof
 `dlv_<owner>-<actor>-<uid>` DELIVER consumer when that lifecycle's `allowSubscribe` is nonempty,
 carrying the same ack semantics, not a fire-and-forget publish). A lifecycle with an empty
 `allowSubscribe` has no authorized channel copy, so the reference MUST NOT provision that consumer
-or grant its bind rows. Raising the ACL from empty to nonempty provisions it with `DeliverPolicy.All`.
+or grant its fetch and ack rows. Its credential keeps the info row on its own consumer name, because
+a client older than 0.163.0 asks it during start and needs the answer that the consumer is absent.
+Raising the ACL from empty to nonempty provisions it with `DeliverPolicy.All`.
 The trusted reader MUST NOT ack or
 delete the backstop entry until the member has confirmed the copy was surfaced or handled (or it has
 been transferred to an equivalent per-member at-least-once mechanism with the same ack semantics); on a
@@ -7281,11 +7283,12 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.API.CONSUMER.INFO.<DM>.<dmD>`
 - `$JS.API.CONSUMER.MSG.NEXT.<DM>.<dmD>`
 - `$JS.ACK.<DM>.<dmD>.>` (DM inbox: BIND-ONLY its own pre-created `dmD`, never create)
-- when `allowSubscribe` is nonempty: `$JS.API.CONSUMER.INFO.<DLV>.<dlvD>`,
-  `$JS.API.CONSUMER.MSG.NEXT.<DLV>.<dlvD>`, and `$JS.ACK.<DLV>.<dlvD>.>`, the **durable
+- `$JS.API.CONSUMER.INFO.<DLV>.<dlvD>`, and when `allowSubscribe` is nonempty also
+  `$JS.API.CONSUMER.MSG.NEXT.<DLV>.<dlvD>` and `$JS.ACK.<DLV>.<dlvD>.>`, the **durable
   backstop**. It binds only its own pre-created per-member DELIVER consumer `dlvD`, which carries the
-  trusted reader's re-authorized handoff (§8). With an empty `allowSubscribe`, neither the consumer
-  nor these three grants exists. The agent holds no grant on the mixed pre-auth `INBOX` fan-out stream.
+  trusted reader's re-authorized handoff (§8). With an empty `allowSubscribe` the consumer does not
+  exist and only the info row is granted, so the read answers that the consumer is absent. The agent
+  holds no grant on the mixed pre-auth `INBOX` fan-out stream.
 - `$JS.API.DIRECT.GET.<KV>` (the on-demand presence read, §6)
 - `$JS.API.CONSUMER.CREATE.<KV>.>`
 - `$JS.API.CONSUMER.INFO.<KV>.>`
@@ -7459,7 +7462,10 @@ single-function profiles, each granting only the verbs its function needs and no
   joins and leaves of that lifecycle already running have finished.
 - `supervisor`: the always-on agent-lifecycle daemon (the manager process's own connection). It
   is the manager endpoint's serve credential (§13.9) and the ONLY holder of the capabilities for
-  the delivery endpoint's admin commands (below).
+  the delivery endpoint's admin commands (below). The local supervisor and a remote manager's
+  supervisor actor MAY read CHAT stream metadata (`STREAM.INFO`) to check retained event counts
+  before allocating a principal. This grants no message-body read or consumer creation. The remote
+  executor does not receive this metadata grant.
 - `delivery`: the server-side Plane-3 infra: fan-out, trusted-reader re-authorization, and the
   membership/ACL records the durable backstop authorizes against (§7). One process MAY hold this role
   for several spaces as one lane per space. Each lane presents only its own space's `delivery`
@@ -7622,7 +7628,8 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
-| 2026-11-12 | **A harness permission prompt reaches the agent's owner (§3, §6, §8, §8.2, §9, §13.7, Appendix B), additive.** In auth mode a connector MAY hold each permission prompt its harness raises while the agent's owner answers it from an interactive session. The harness's own dialog keeps working, and the first answer applies. The holder keeps one closed-schema record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates in its final shape and refuses when reshaped, and serves answers on the new request/reply rail `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>`, addressed to the one process its record names. A holder never replies for a prompt it does not hold, and an answerer waits longer than the holder's 10-second handoff bound. Every agent serves answers to its own prompts and writes only its own records, and no agent mint may create a consumer on the bucket. Only an interactive ledger row may answer its owner's agents, as itself, and read its owner's records, by binding its own lifecycle's `perm_` pull consumer, which the provisioner opens with capped pulls. The auth callout grants that right from the row's kind and never from a scope token, and a static mint refuses it. A native answer settles only prompts of its own harness scope, one run to one prompt. The `approval` presence condition gains an optional opaque `request` id. Every Manager `status.connectors` row requires `permissionRequests: boolean`, true only on a user-auth mesh, and the Manager cluster advances to revision 49. An open mesh holds no prompt. |
+| 2026-11-13 | **A harness permission prompt reaches the agent's owner (§3, §6, §8, §8.2, §9, §13.7, Appendix B), additive.** In auth mode a connector MAY hold each permission prompt its harness raises while the agent's owner answers it from an interactive session. The harness's own dialog keeps working, and the first answer applies. The holder keeps one closed-schema record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates in its final shape and refuses when reshaped, and serves answers on the new request/reply rail `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>`, addressed to the one process its record names. A holder never replies for a prompt it does not hold, and an answerer waits longer than the holder's 10-second handoff bound. Every agent serves answers to its own prompts and writes only its own records, and no agent mint may create a consumer on the bucket. Only an interactive ledger row may answer its owner's agents, as itself, and read its owner's records, by binding its own lifecycle's `perm_` pull consumer, which the provisioner opens with capped pulls. The auth callout grants that right from the row's kind and never from a scope token, and a static mint refuses it. A native answer settles only prompts of its own harness scope, one run to one prompt. The `approval` presence condition gains an optional opaque `request` id. Every Manager `status.connectors` row requires `permissionRequests: boolean`, true only on a user-auth mesh, and the Manager cluster advances to revision 49. An open mesh holds no prompt. |
+| 2026-11-13 | **An agent with no read channels keeps the info row on its delivery consumer (§8, Appendix B), additive.** The consumer is still not provisioned and the fetch and ack rows are still withheld. A client older than 0.163.0 asks `CONSUMER.INFO` during start and treats only an absent consumer as nothing to bind, so a refused read stopped its start. |
 | 2026-11-12 | **Incarnation-scoped responder queues (§13.2), clarification.** Scatter and instance responders may use a queue group per incarnation to overlap serving connections during renewal. Distinct instances use distinct groups so scatter still reaches each instance. Credential grants are unchanged. |
 | 2026-11-10 | **A spawn-scoped `manager-caller` view lists its own agents (§9, §10), additive.** A person who may spawn on their own Manager could not list the agents they launched there. `ps` was not in the view unless the actor held `admin`, so `cotal ps` and `cotal status <agent>` were refused by the broker. A view whose actor holds `spawn` now carries `ps` on its one pinned instance, beside `status`, `models` and `resolve-cwd`. The Manager answers it with the caller's own owner's agents only, unless the caller holds `admin`. `slots` stays with `admin`, no class, scatter or other-instance row is added, and the standing `spawn` set is unchanged. |
 | 2026-11-09 | **A spawner hands on endpoint commands it holds (§13.7, §13.15, §14.8).** A persona's `endpoints` list names `{ endpoint, commands, instanceId? }` entries on the inline `spawn` record, on `define-persona` and in a catalog file. On a static space each command lowers to an untargeted caller capability, on the class rail or, with `instanceId`, on that instance's rail alone plus that instance's `describe`; the delegation bound measures it against the spawner's issued evidence (a run's spawn against its admission's ceiling), and the helper's mint and renewals grant it. A static agent mint refuses a targeted or journaled endpoint capability, because the static terminal has no obligation drain, and a copied static credential's reach until expiry is named as a known gap. A single-label endpoint and a reserved command are refused. A user-auth manager refuses the field, `[]` included. Manager cluster revision 47. |

@@ -294,9 +294,9 @@ check(
 
 const partial = await spawnWith(new Error("timeout"));
 check(
-  "cotal_spawn reports it as a partial outcome naming the seat, its id, manager and runtime, and the next step",
+  "cotal_spawn reports it as a partial outcome naming the seat, its id, manager and runtime",
   partial.isError !== true && !/Couldn't spawn/.test(partial.text) && /it joined the mesh/.test(partial.text) && partial.text.includes("(id u_x.rev, manager " + MANAGER + ", runtime orca)")
-    && partial.text.includes(`model pin "${PIN}" could not be audited (timeout)`) && /Do not spawn it again/.test(partial.text) && partial.text.includes("Next: `cotal ps --on " + MANAGER + "`"),
+    && partial.text.includes(`model pin "${PIN}" could not be audited (timeout)`) && /Do not spawn it again/.test(partial.text) && !partial.text.includes("cotal ps"),
   partial,
 );
 const st = partial.structured;
@@ -304,7 +304,7 @@ check(
   "the partial's structured payload carries the same facts and the whole message",
   st?.status === "partial" && st.name === "rev" && st.id === "u_x.rev" && st.manager === MANAGER && st.runtime === "orca" && st.joined === true
     && st.model?.requested === PIN && st.model.audited === false && st.model.reported === true && st.model.error === "timeout"
-    && st.next === `cotal ps --on ${MANAGER}` && st.message === partial.text,
+    && (st as any).next === undefined && st.message === partial.text,
   st,
 );
 

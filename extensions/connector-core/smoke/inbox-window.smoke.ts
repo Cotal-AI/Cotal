@@ -204,6 +204,24 @@ try {
     check("...and it says what it is holding back", text.includes("held ("), text.slice(-160));
   }
 
+  // A window filled by older direct messages still shows a current mention on a peek. A clearing
+  // read keeps the direct message ahead of that mention.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    const filled = "x".repeat(46_000);
+    for (let n = 0; n < 3; n++) agent.ep.emit("message", dmMsg(`old-dm-${n}`, `${filled} old-dm-${n}`), noop(), dmMeta);
+    const mention = "PLEASE-READ-THIS-MENTION " + "y".repeat(3_000);
+    agent.ep.emit("message", {
+      id: "mention-now", ts: 50_000, space: cfg.space, from: { id: "lead", name: "Lead" }, channel: "general", mentions: ["otto"],
+      parts: [{ kind: "text", text: mention }],
+    }, noop(), { historical: false, kind: "channel" });
+    const peeked = textOf(await inboxSpec().run(agent, cfg, { peek: true }));
+    check("peek shows a current mention that an older direct message would otherwise fill the window past", peeked.includes("PLEASE-READ-THIS-MENTION") && agent.inboxCount() === 4, { chars: peeked.length, inbox: agent.inboxCount() });
+    const cleared = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("a clearing read still delivers the direct message ahead of that mention", cleared.includes("old-dm-0") && !cleared.includes("PLEASE-READ-THIS-MENTION"), { chars: cleared.length });
+  }
+
   // ── 6) FOCUS: the response carries two lanes, and only one of them is destructive ──────────────
   //
   // In focus mode the reply mixes the live buffer (DMs/anycast, clearable) with read-only channel

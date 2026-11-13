@@ -222,7 +222,7 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
     if (!reply.ok) {
       if (reply.pending) {
         startWatch(thread, { name, args, cwd: facts.cwd, approval: reply.approval });
-        throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed });
+        throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed }, space);
       }
       if (reply.refused || reply.retryable === false) stopWatch(thread);
       if (reply.taken) throw new NameTaken(name);
