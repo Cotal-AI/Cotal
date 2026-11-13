@@ -5,8 +5,6 @@ import { isAccountNkey, isUserNkey } from "./identity.js";
 import { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 import type { BrokerAuth } from "./provision.js";
 
-const WILDCARD_FENCE_RETENTION_SECONDS = 86_410;
-
 type AccountClaim = ClaimsData<Account>;
 
 function accountTemplate(
@@ -114,21 +112,15 @@ export async function hibernateAccountClaim(
 }
 
 /** Re-sign a saved active account template so nats-server reloads its JetStream account. The
- * template's identity, limits, signing keys and per-user revocations are retained. A temporary
- * wildcard migration fence is retained through its 24-hour grace period, then omitted. */
+ * template's identity, limits, signing keys and every revocation are retained. A wildcard
+ * migration fence cannot expire by age: supported static credentials may have no expiry. */
 export async function wakeAccountClaim(
   broker: BrokerAuth,
   activeTemplateJwt: string,
   iat: number,
 ): Promise<string> {
   const { claims, signer } = accountTemplate("wakeAccountClaim", broker, activeTemplateJwt, iat);
-  const revocations = { ...claims.nats.revocations };
-  const fence = revocations["*"];
-  if (fence !== undefined && iat > fence + WILDCARD_FENCE_RETENTION_SECONDS) delete revocations["*"];
-  return signAccountClaim("wakeAccountClaim", claims, signer, {
-    ...claims.nats,
-    ...(Object.keys(revocations).length === 0 ? { revocations: undefined } : { revocations }),
-  }, iat);
+  return signAccountClaim("wakeAccountClaim", claims, signer, claims.nats, iat);
 }
 
 /** Push one operator-signed account JWT over a system-account connection and wait until every

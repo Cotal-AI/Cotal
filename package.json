@@ -749,7 +749,7 @@
     "smoke:ep-request-origin": "tsx packages/core/smoke/endpoint-request-origin.smoke.ts",
     "smoke:broker-teardown": "tsx packages/core/smoke/broker-teardown.smoke.ts",
     "smoke:full-account-resolver": "tsx packages/core/smoke/full-account-resolver.smoke.ts",
-    "smoke:account-claim-hibernation": "tsx packages/core/smoke/account-claim-hibernation.smoke.ts && tsx implementations/auth/smoke/callout-store-transition.smoke.ts && tsx implementations/auth/smoke/account-claim-hibernation.smoke.ts",
+    "smoke:account-claim-hibernation": "tsx packages/core/smoke/account-claim-hibernation.smoke.ts && tsx packages/core/smoke/account-migration-fence.smoke.ts && tsx implementations/auth/smoke/callout-store-transition.smoke.ts && tsx implementations/auth/smoke/account-claim-hibernation.smoke.ts",
     "smoke:bind-fence": "tsx packages/core/smoke/bind-fence.smoke.ts",
     "smoke:unfenced-responder": "tsx packages/core/smoke/unfenced-responder.smoke.ts",
     "smoke:ep-serve-gate": "tsx packages/core/smoke/endpoint-serve-gate.smoke.ts && pnpm smoke:ep-family-scan",
