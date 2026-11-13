@@ -106,8 +106,12 @@ On macOS, the daemon bootstraps a separate one-shot launchd job in the signed-in
 domain before installation. The job runs the same guarded updater and is not kept alive after
 exit. Restarting or booting out the daemon job does not stop the updater job. After the updater
 exits, the daemon removes its recorded job and private plist only if their identities still match.
-An incomplete handoff or an unavailable launchd inspection refuses further installation and
-names `cotal update --self`. User logout and system shutdown can still interrupt the update.
+An unavailable launchd inspection keeps generation activation fenced and retries observation.
+If the runner exits without a result, the daemon confirms the job has stopped, removes its owned
+job, records one failed attempt, and retries within the normal failure budget after one hour.
+It never starts another updater while the native job or runner is present.
+A failed initial handoff reports its reason and `cotal update --self`; no detached child is substituted.
+User logout and system shutdown can still interrupt the update.
 A Mac on a version before this one needs one `cotal update --self`, and updates itself from then on.
 CLI-only users must install the background service with `cotal daemon install` to receive automatic
 installation. `cotal update --auto off` disables it.

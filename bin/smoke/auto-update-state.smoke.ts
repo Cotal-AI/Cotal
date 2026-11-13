@@ -34,7 +34,7 @@ try {
   process.env.COTAL_NO_UPDATE_CHECK = "1";
   assert.equal(updater.status().automatic, false, "macOS environment opt-out disables scheduling");
   delete process.env.COTAL_NO_UPDATE_CHECK;
-  const { renderUpdateLaunchAgent, startLaunchUpdate, readLaunchUpdateResult, cleanLaunchUpdate } = await import("../daemon/update-launchd.js");
+  const { renderUpdateLaunchAgent, startLaunchUpdate, readLaunchUpdateResult, cleanLaunchUpdate, launchUpdatePid, launchUpdateDisposition, launchUpdateFailureCount } = await import("../daemon/update-launchd.js");
   assert.equal(readLaunchUpdateResult(), undefined);
   writeFileSync(join(home, "update-launchd-result.json"), JSON.stringify({ pid: -1, start: "bad", done: true }), { mode: 0o600 });
   assert.throws(readLaunchUpdateResult, /result is invalid/);
@@ -49,7 +49,21 @@ try {
   assert.doesNotMatch(plist, /AbandonProcessGroup|never-copy|COTAL_TOKEN|StartInterval|StartCalendarInterval/);
   assert.throws(() => renderUpdateLaunchAgent("bad\nlabel", ["/node"], {}));
   Object.defineProperty(process, "platform", platform);
-  if (process.platform !== "darwin") assert.throws(startLaunchUpdate, /requires macOS/);
+  assert.equal(launchUpdatePid("PID\tStatus\tLabel\n123\t0\tai.cotal.update.test\n", "ai.cotal.update.test"), 123);
+  assert.equal(launchUpdatePid("PID\tStatus\tLabel\n-\t-9\tai.cotal.update.test\n", "ai.cotal.update.test"), 0);
+  assert.equal(launchUpdatePid("PID\tStatus\tLabel\n", "ai.cotal.update.test"), undefined);
+  assert.throws(() => launchUpdatePid("unknown format", "ai.cotal.update.test"));
+  assert.equal(launchUpdateDisposition(123, false, false), "pending");
+  assert.equal(launchUpdateDisposition(undefined, true, false), "pending");
+  assert.equal(launchUpdateDisposition(0, false, false), "failed");
+  assert.equal(launchUpdateDisposition(undefined, false, false), "failed");
+  assert.equal(launchUpdateDisposition(undefined, false, true), "completed");
+  assert.equal(launchUpdateFailureCount(0, 0), 1);
+  assert.equal(launchUpdateFailureCount(1, 0), 1, "recovery re-observation does not double count");
+  assert.equal(launchUpdateFailureCount(1, 1), 2);
+  assert.equal(launchUpdateFailureCount(2, 1), 2, "replacement already counted the attempt");
+  assert.throws(() => launchUpdateFailureCount(-1, 0));
+  if (process.platform !== "darwin") assert.throws(() => startLaunchUpdate(0), /requires macOS/);
   for (const value of ["win32", "freebsd"]) {
    Object.defineProperty(process, "platform", { value });
    assert.equal(updater.status().automatic, false, `${value} must not install automatically`);

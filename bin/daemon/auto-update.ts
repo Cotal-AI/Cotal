@@ -5,8 +5,7 @@ import { join } from "node:path";
 import { openPrivateAppend, writeSecretFileAtomic } from "@cotal-ai/core";
 import { checkForUpdate, homeCotalDir, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
 import type { DaemonUpdateStatus } from "./protocol.js";
-import { cleanLaunchUpdate, readLaunchUpdateResult, startLaunchUpdate } from "./update-launchd.js";
-import { processBirth } from "./lifetime.js";
+import { cleanLaunchUpdate, startLaunchUpdate } from "./update-launchd.js";
 
 interface Attempt { version?: string; failures: number; result: string; next: number; }
 interface UpdateHost {
@@ -29,7 +28,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") state = { ...state, result: "automatic updates paused: unreadable attempt record", next: Number.MAX_SAFE_INTEGER };
   }
-  let child: ChildProcess | undefined, busy: Promise<void> | undefined, closed = false, launchdPending = false;
+  let child: ChildProcess | undefined, busy: Promise<void> | undefined, closed = false, launchdPending = process.platform === "darwin" && (existsSync(join(homeCotalDir(), "update-launchd.json")) || existsSync(join(homeCotalDir(), "update-launchd-result.json")));
   const persist = () => writeSecretFileAtomic(file, `${JSON.stringify(state)}\n`);
   try { persist(); } catch (error) { host.report(`automatic updates paused: ${String(error)}`); state.next = Number.MAX_SAFE_INTEGER; }
   const status = (): DaemonUpdateStatus => {
@@ -56,14 +55,13 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     if (closed) return;
     if (process.platform === "darwin") {
       try {
-        const result = readLaunchUpdateResult();
-        if (result && processBirth(result.pid) === result.start) { launchdPending = true; return; }
+        launchdPending = true;
+        if (cleanLaunchUpdate() === "pending") return;
         launchdPending = false;
-        cleanLaunchUpdate();
         state = JSON.parse(readFileSync(file, "utf8")) as Attempt;
       } catch (error) {
-        launchdPending = false;
-        state = { ...state, result: `launchd automatic update handoff refused: ${error instanceof Error ? error.message : String(error)}. Run \`cotal update --self\``, next: Date.now() + UPDATE_HOUR_MS };
+        launchdPending = true;
+        state = { ...state, result: `launchd automatic update custody unresolved: ${error instanceof Error ? error.message : String(error)}; retrying observation automatically`, next: Date.now() + UPDATE_HOUR_MS };
         persist(); host.report(state.result);
         return;
       }
@@ -90,7 +88,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       state = { ...state, failures: state.failures, result: `updating to ${cached.latest}`, next: Date.now() + UPDATE_HOUR_MS };
       persist();
       if (process.platform === "darwin") {
-        try { startLaunchUpdate(); launchdPending = true; }
+        try { launchdPending = true; startLaunchUpdate(state.failures); }
         catch (error) {
           state = { ...state, result: `launchd automatic update handoff refused: ${error instanceof Error ? error.message : String(error)}. Run \`cotal update --self\``, next: Date.now() + UPDATE_HOUR_MS };
           persist(); host.report(state.result);
