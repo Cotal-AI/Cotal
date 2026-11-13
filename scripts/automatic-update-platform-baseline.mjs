@@ -202,7 +202,8 @@ export async function matrixCell(options) {
       ok(await cotal('install published runtime', ['ext', 'add', `@cotal-ai/tmux@${report.source}`]), 'runtime setup');
     }
     if (state === 'stale-extensions') {
-      const old = report.source === '0.155.0' ? '0.154.0' : '0.155.0';
+      const old = options['stale-version'] ?? (report.source === '0.155.0' ? '0.154.0' : '0.155.0');
+      assert(/^\d+\.\d+\.\d+$/.test(old), 'stale extension version must be an exact release');
       ok(await cotal('install older recorded extension', ['ext', 'add', `@cotal-ai/tmux@${old}`]), 'older runtime');
       report.staleVersion = old;
     }

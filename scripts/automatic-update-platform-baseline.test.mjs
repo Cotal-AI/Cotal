@@ -57,6 +57,7 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
     assert(workflow.jobs[name].if.includes('always()'), `${name} can be suppressed by expected-red priority ancestors`);
     assert(workflow.jobs[name].if.includes("== 'success'"), `${name} must verify its direct predecessor succeeded`);
   }
+  assert(workflow.jobs.priority.steps.some(step => step.run?.includes('--stale-version 0.161.1 --method self')));
   const expanded = workflow.jobs['candidate-B-expanded'];
   assert(expanded.steps.some(step => step.run?.includes('for state in fresh configured stale-extensions recovery concurrent agent')));
   assert.deepEqual(workflow.jobs['candidate-native'].strategy.matrix.source, sources);
