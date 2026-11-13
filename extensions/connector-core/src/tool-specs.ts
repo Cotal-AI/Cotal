@@ -1459,7 +1459,7 @@ export function cotalToolSpecs(
         } catch (e) {
           if (e instanceof AmbiguousPeerError) {
             const who = e.candidates
-              .map((c) => `  • ${peerLabel(c)} (${c.status}) — id: ${c.id}`)
+              .map((c) => `  • ${c.name.trim() ? peerLabel(c) : c.id} (${c.status}) — id: ${c.id}`)
               .join("\n");
             return err(
               `"${e.target}" is ambiguous — ${e.candidates.length} peers share that name. ` +

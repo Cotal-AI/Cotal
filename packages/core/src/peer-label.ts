@@ -13,6 +13,11 @@ export function peerLabel(card: { name: string; role?: string }): string {
   return (card.role ? `${card.name}/${card.role}` : card.name).replace(/[\p{Cc}\p{Zl}\p{Zp}[\]]+/gu, " ");
 }
 
+/** A participant name safe for one line of an error. A blank name is not one, so the line uses the id. */
+export function shownPeerName(name: string, id: string): string {
+  return name.trim() ? peerLabel({ name }) : id;
+}
+
 /**
  * Every code point a line splitter may honour, which is more than what JavaScript splits on.
  *

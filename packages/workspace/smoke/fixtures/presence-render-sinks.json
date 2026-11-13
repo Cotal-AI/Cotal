@@ -45,14 +45,14 @@
     {
       "path": "packages/core/src/resolve.ts",
       "kind": "derived-output",
-      "anchor": "`\"${target}\" is ambiguous - ${candidates.length} peers share that name: ` +\n        candidates.map((c) => `${c.name} (${c.id}, ${c.status})`).join(\"; \") +\n        `. Re-send to the exact instance id.`",
+      "anchor": "`\"${target}\" is ambiguous - ${candidates.length} peers share that name: ` +\n        candidates.map((c) => `${shownPeerName(c.name, c.id)} (${c.id}, ${c.status})`).join(\"; \") +\n        `. Re-send to the exact instance id.`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
       "path": "packages/core/src/resolve.ts",
       "kind": "derived-output",
-      "anchor": "`${c.name} (${c.id}, ${c.status})`",
+      "anchor": "`${shownPeerName(c.name, c.id)} (${c.id}, ${c.status})`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -216,7 +216,7 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`  • ${peerLabel(c)} (${c.status}) — id: ${c.id}`",
+      "anchor": "`  • ${c.name.trim() ? peerLabel(c) : c.id} (${c.status}) — id: ${c.id}`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
