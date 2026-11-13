@@ -42,7 +42,7 @@ import {
 import { freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 28;
+const EXPECTED = 29;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -278,6 +278,15 @@ try {
     partial.code === 4 && parse(partial)?.command === "deliver" && parse(partial)?.outcome === "partial" &&
       parse(partial)?.warnings?.some((warning: { code: string }) => warning.code === "CANDIDATE_UNREADABLE") &&
       JSON.stringify(parse(partial)?.result?.candidates) === JSON.stringify(expectedCandidates), partial);
+  const teardown = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+  const goneConn = await dialerFor(servers)({ servers, ...standaloneConnectOpts({ creds: teardown, tls: false }), maxReconnectAttempts: 0 });
+  const deleted = await (await jetstreamManager(goneConn)).streams.delete(dmStream(space));
+  await goneConn.close();
+  const gone = await run(["pending", "recipient", "--durable", durable, "--creds", adminCreds, "--space", space, "--server", servers, "--json"]);
+  const goneError = parse(gone)?.error as { code?: string; message?: string } | undefined;
+  check("a missing DM stream is TARGET_NOT_FOUND, not an unknown read",
+    deleted === true && gone.code === 2 && parse(gone)?.outcome === "refused" && goneError?.code === "TARGET_NOT_FOUND" && /has no DM stream, so .+ was not read/.test(goneError?.message ?? ""),
+    gone);
 } finally {
   await holder?.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
