@@ -338,7 +338,7 @@ The cut stops the delivery daemon before it takes the manager's inventory, so no
 leave can race it. A refusal after that point (the manager refuses to prepare, an endpoint the
 manager does not manage is live, or a seat cannot be checkpointed) starts the daemon again and
 leaves the mesh running and unfenced; a live unmanaged endpoint refuses `LIFECYCLE_BLOCKED`, exit 2,
-and names the endpoints. When the daemon cannot be started again, the refusal says so and names
+and names the endpoints. A name that is missing or only whitespace is shown as that endpoint's id. When the daemon cannot be started again, the refusal says so and names
 `cotal up`. An open mesh runs no delivery daemon, so a refusal there starts none, also when the cut
 stopped one that an earlier `up` left running.
 It also refuses `LIFECYCLE_BLOCKED`, exit 2, before it stops anything, while a saved service in the
@@ -396,6 +396,7 @@ membership cannot be read. Its output includes the read failure, rather than cal
 an absent feed. A user-auth teardown uses the signed-in user's control authority and an admin read
 view, plus the channel-writer view for deletion. Run it from the registered checkout as the owner
 who deployed the agents, with the admin scope needed to inspect membership and remove channels.
+Teardown lines show an agent's id when that agent's name is missing or only whitespace.
 It does not use the local static signer to stand in for that user's identity. If the issuer predates
 the membership snapshot read, upgrade it and obtain a new credential before retrying the retained
 run. See [membership snapshot reads](UPGRADING.md#membership-snapshot-reads-after-01154).

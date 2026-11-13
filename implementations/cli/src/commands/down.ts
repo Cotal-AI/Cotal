@@ -137,6 +137,11 @@ interface ManagerResumeAgentShape {
   };
 }
 
+/** How a live unmanaged endpoint is named in the preserve refusal. A missing or whitespace-only name is the id. */
+export function unmanagedEndpointLabel(name: string, id: string): string {
+  return name.trim() ? `${name} (${id})` : id;
+}
+
 /** Complete selective component names without importing installed packages. */
 export function downComplete(argv: string[]): CompletionResult {
   if (argv.some((word) => word === "-f" || word === "--file" || word === "--run"))
@@ -991,7 +996,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
         // unknown outcome (`OPERATION_UNKNOWN`) with no next step (#4510).
         if (unmanaged.length)
           throw new CommandFailure("refused", "LIFECYCLE_BLOCKED",
-            `cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(", ")} (manager lease holder: ${observed.managerId}); nothing was preserved`,
+            `cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => unmanagedEndpointLabel(presence.card.name, presence.card.id)).join(", ")} (manager lease holder: ${observed.managerId}); nothing was preserved`,
             { remedy: "stop those endpoints, or wait for their presence to expire, then run `cotal down --preserve-state` again" });
         // A seat that cannot be checkpointed is refused HERE, at prepare time, while every child is
         // still running. This reads only the prepared inventory, so it needs nothing that stopping

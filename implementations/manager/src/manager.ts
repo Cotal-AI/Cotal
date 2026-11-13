@@ -95,6 +95,7 @@ import {
   issuedSpawnerStanding,
   withIssuerSession,
   renderOnceTask,
+  shownSpawner,
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
@@ -6916,10 +6917,10 @@ export class Manager {
     return undefined;
   }
 
-  /** How a once task names who sent it: the spawner's roster name, else its principal. */
+  /** How a once task names who sent it: the spawner's roster name, or its principal when that name is missing or only whitespace. */
   private spawnerName(spawner: string | undefined): string {
     const id = spawner ?? this.ep.ref().id;
-    return this.ep.getRoster().find((p) => p.card.id === id)?.card.name ?? id;
+    return shownSpawner(this.ep.getRoster().find((p) => p.card.id === id)?.card.name, id);
   }
 
   /** The refusal for an event-plane choice the registration policy or the connector cannot meet.

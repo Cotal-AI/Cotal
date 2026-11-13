@@ -269,7 +269,7 @@ It requires the broker's mode to match the registration, and a static connection
 confirm its current account and user identity. It reports the known first-party
 streams and bucket backing streams as present or absent, the broker-observed
 transfer-stream targets under a second exact-name grant in static mode, and the
-entries in the presence bucket. Both static connections must confirm their own
+entries in the presence bucket. A presence name that is missing or only whitespace is shown as that participant's id. Both static connections must confirm their own
 identity and the same broker server ID. A failed or incomplete native read refuses
 instead of showing missing resources as absent. The snapshot is non-atomic and presence is not an
 authoritative liveness or membership check. User-auth deletion inventory and apply

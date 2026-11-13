@@ -400,6 +400,16 @@ export function psSeatLabel(row: { name: string; id: string; role?: string }): s
   return peerLabel({ name: row.name.trim() ? row.name : row.id, ...(row.role ? { role: row.role } : {}) });
 }
 
+/** The label an attach picker shows for one seat. A blank name is the id, as `ps` shows it. */
+export function attachChoiceLabel(item: { name: string; id: string; status: string }): string {
+  return oneLine(`${psSeatLabel({ name: item.name, id: item.id })} · ${item.status}`);
+}
+
+/** The Agent, Identity and Manager rows a join receipt shows. A blank name is the id, as `ps` shows it. */
+export function joinedAgentRows(agent: { name: string; id: string; managerInstanceId: string }): [string, string][] {
+  return [["Agent", psSeatLabel({ name: agent.name, id: agent.id })], ["Identity", agent.id], ["Manager", agent.managerInstanceId]];
+}
+
 /** The seats one manager answered with: a table, or with `--wide` one labeled record per seat. A
  *  failing bearer refresh is a detached seat's only window to the operator, so the provider's own
  *  sentence follows, verbatim (it already names the repair). A record's labels read as its facts'
@@ -683,7 +693,7 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
     return { sections: [
       { title: "Identity", blocks: [
         ...(census.partial ? [{ kind: "lines" as const, lines: [{ text: "Other managers did not answer. This is one known match, not a complete uniqueness check.", tone: "waiting" as const }] }] : []),
-        { kind: "fields", rows: [["Agent", identity.name], ["Space", census.target.space], ["Principal", row.id], ["Owner", identity.owner ?? "not established"], ["Actor", identity.actor ?? "not established"], ["Lifecycle", identity.lifecycleUid ?? "not reported"], ["Role", result.details.role ?? "not reported"]] },
+        { kind: "fields", rows: [["Agent", psSeatLabel({ name: identity.name, id: row.id })], ["Space", census.target.space], ["Principal", row.id], ["Owner", identity.owner ?? "not established"], ["Actor", identity.actor ?? "not established"], ["Lifecycle", identity.lifecycleUid ?? "not reported"], ["Role", result.details.role ?? "not reported"]] },
       ] },
       { title: "Execution", blocks: [
         { kind: "fields", rows: [["Process", processCell(row)], ["Application", execution.harness], ["Model", execution.model ? `${execution.model} · requested, not provider-confirmed` : "not reported"], ["Variant", result.details.variant ?? "not reported"], ["Reported provider", result.details.providerSource === "exact-principal-lifecycle" ? result.details.provider ?? "not reported" : "not established"], ["Name-matched provider", result.details.providerSource === "name-match-unverified" ? result.details.provider ?? "not reported" : "none"], ["Runtime", execution.runtime], ["PID", execution.pid === null ? "not reported" : String(execution.pid)], ["Host", execution.host ?? "not reported"], ["Folder", result.details.cwd ?? "not reported"], ["Manager", execution.managerInstanceId ?? "not reported"], ...credential] },
@@ -919,11 +929,11 @@ async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ nam
   if (!choices.length) throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy: "run `cotal ps`, or launch an agent with `cotal spawn`" });
   const choice = await prompts.select({
     message: `Return to an agent in ${oneLine(census.target.space)}`,
-    options: choices.map((item, index) => ({ value: index, label: oneLine(`${item.name} · ${item.status}`), hint: oneLine(`${item.expectedTarget.id} · manager ${item.on}`) })),
+    options: choices.map((item, index) => ({ value: index, label: attachChoiceLabel({ name: item.name, id: item.expectedTarget.id, status: item.status }), hint: oneLine(`${item.expectedTarget.id} · manager ${item.on}`) })),
   });
   if (prompts.isCancel(choice)) return undefined;
   const selected = choices[choice]!;
-  console.error(renderReport({ space: census.target.space, sections: [{ title: "Attaching", blocks: [{ kind: "fields", rows: [["Agent", selected.name], ["Identity", selected.expectedTarget.id], ["Manager", selected.on], ["Detach", `${detachKey().label} leaves the agent running`]] }] }] }, "rich", process.stderr));
+  console.error(renderReport({ space: census.target.space, sections: [{ title: "Attaching", blocks: [{ kind: "fields", rows: [["Agent", psSeatLabel({ name: selected.name, id: selected.expectedTarget.id })], ["Identity", selected.expectedTarget.id], ["Manager", selected.on], ["Detach", `${detachKey().label} leaves the agent running`]] }] }] }, "rich", process.stderr));
   return selected;
 }
 
