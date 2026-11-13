@@ -235,7 +235,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       if (reply.pending) {
         // A bound session can be told the decision, so the host follows the request for it.
         if (binding) startWatch(binding.session, name, args, reply.approval);
-        throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed });
+        throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed }, space);
       }
       if ((reply.refused || reply.retryable === false) && binding) stopWatch(binding.session);
       if (reply.taken) throw new NameTaken(name);

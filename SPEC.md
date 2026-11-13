@@ -7234,7 +7234,10 @@ single-function profiles, each granting only the verbs its function needs and no
   joins and leaves of that lifecycle already running have finished.
 - `supervisor`: the always-on agent-lifecycle daemon (the manager process's own connection). It
   is the manager endpoint's serve credential (§13.9) and the ONLY holder of the capabilities for
-  the delivery endpoint's admin commands (below).
+  the delivery endpoint's admin commands (below). The local supervisor and a remote manager's
+  supervisor actor MAY read CHAT stream metadata (`STREAM.INFO`) to check retained event counts
+  before allocating a principal. This grants no message-body read or consumer creation. The remote
+  executor does not receive this metadata grant.
 - `delivery`: the server-side Plane-3 infra: fan-out, trusted-reader re-authorization, and the
   membership/ACL records the durable backstop authorizes against (§7). One process MAY hold this role
   for several spaces as one lane per space. Each lane presents only its own space's `delivery`

@@ -175,6 +175,13 @@ account identity, signing key, xkey, or user identities.
 - **Switching resolvers is a restart.** nats-server refuses to change resolvers on a reload. `cotal up`
   keeps using MEMORY.
 
+## Run admission storage
+
+`ensureAdmissionStore` creates the admission bucket with its write-once, no-rollup, no-delete
+and no-purge policy in the initial native stream CREATE. Creation needs INFO and CREATE authority
+for that stream, but no UPDATE grant. An existing store is verified without changing its policy;
+a malformed store or a denied inspection refuses. This does not make workflow storage lazy.
+
 ## Issued-authority stores from before 0.111.0
 
 A space whose `KV_cotal_issued_<space>` and `KV_cotal_accepted_<space>` were created before

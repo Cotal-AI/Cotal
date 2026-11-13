@@ -112,7 +112,7 @@ const host: GatewayHost = {
         resumedApprovals.push(`${account}/${approvalId}`);
         throw new Error("the authority has not recorded the person's approval");
       }
-      throw new ApprovalRequired(pendingApproval);
+      throw new ApprovalRequired(pendingApproval, "team");
     }
     if (name === "approval_collision") throw new NameTaken(name);
     if (name === "quota_probe") throw new Error("quota exceeded");
@@ -333,7 +333,8 @@ try {
   check("pending approval returns the person's link and no usable connection", !pendingResult.isError &&
     approvalBody.status === "pending" && approvalBody.name === "approval_probe" &&
     approvalBody.requestId === pendingApproval.requestId && !("connection_id" in approvalBody) &&
-    approvalText.includes(pendingApproval.approval.url) && approvalText.includes("not connected") && live.size === beforeApproval);
+    approvalText.includes(pendingApproval.approval.url) && approvalText.includes("not connected") &&
+    approvalText.includes('This connection would join space "team".') && approvalBody.space === "team" && live.size === beforeApproval);
   check("structured-only clients receive the same person-only approval and retry instructions", typeof approvalBody.message === "string" &&
     approvalBody.message.includes("do not open the decision page or approve on their behalf") &&
     approvalBody.message.includes("retry cotal_connect") && approvalBody.message.includes("Do not poll") &&

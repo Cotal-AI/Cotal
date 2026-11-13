@@ -546,11 +546,17 @@ const SEAMS: Seam[] = [
   // recovery (21f573f44) adds two in endpoint-publish-denial; and named read owner resolution
   // (#6474, 03b2e195c) adds one in named-read-owner. All eighteen dial their suite's plaintext
   // loopback broker and state `tls: false`.
-  // 438/348 upstream conditional-delivery sites plus four event-payload smoke connections:
+  // 432/344 -> 438/348: #6554 adds two stream setup/conversion connections and four smoke
+  // connections in conditional-dlv-chat (1), conditional-dlv (1), and membership-store-no-reserve (2).
+  // Each states its transport decision explicitly. Bundled sidecars are counted separately below.
+  // 438/348 -> 439/349: admission-store-atomic adds one owned fixture connection with tls: false.
+  // 439/349 -> 440/350: the missing DM stream case adds one in delivery/smoke/deliver-pending-sender.
+  // It states `tls: false`.
+  // 440/350 -> 444/354: four event-payload smoke connections:
   // foreground-issuance-live adds an admin reader, managed-event-payloads adds an observer,
   // event-payload-legacy provisions a broker without the payload stream, and backup-event-payload
   // reads the fixture's native stream. Each explicitly states `tls: false` for its local broker.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 442, untypecheckedSites: 352 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 444, untypecheckedSites: 354 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

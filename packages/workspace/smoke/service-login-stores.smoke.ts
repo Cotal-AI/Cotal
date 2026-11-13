@@ -25,6 +25,11 @@ if (process.platform === "linux") {
     writeFileSync(unit, source, { mode: 0o600 });
     writeFileSync(join(customUnits, "arbitrary.service"), `[Service]\nExecStart=/usr/bin/cotal supervise\nEnvironment="COTAL_HOME=${custom}"\n`, { mode: 0o600 });
     const stores = serviceLoginStores(); assert.equal(stores.length, 1);
+    chmodSync(units, 0o777); assert.throws(serviceLoginStores); chmodSync(units, 0o700);
+    const config = join(process.env.HOME, ".config");
+    renameSync(config, `${config}.old`); symlinkSync(`${config}.old`, config);
+    assert.throws(serviceLoginStores, "a symlinked configuration ancestor cannot redirect discovery");
+    rmSync(config); renameSync(`${config}.old`, config);
     const legacy = stores.find((s) => s.directory === store)!;
     assert.equal(legacy.unitPath, unit); assertServiceLoginStore(legacy);
     assert.equal(serviceLoginRecovery("https://idp.test", store).includes(`cotal-manager@${spaceKey("fixture")}.service`), true);

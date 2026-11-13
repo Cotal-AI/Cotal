@@ -100,6 +100,9 @@
 /* copyable CLI command */
 .ui-cmd { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; font: 500 12px/1 var(--mono); color: var(--ink); background: var(--soft); border: 1px solid var(--card-line); border-radius: 7px; padding: 4px 4px 4px 9px; white-space: nowrap; }
 .ui-cmd code { background: none; padding: 0; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* Beside another control, the command gives up width. Otherwise that control is drawn past the row. */
+[data-align="block-end"] > .ui-cmd { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+[data-align="block-end"] > .ui-cmd code { flex: 1 1 auto; }
 
 /* ---------- right pane ---------- */
 /* Positioned, so it paints over a centre header too wide for a narrow window, as it did before the

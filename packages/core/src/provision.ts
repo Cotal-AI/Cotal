@@ -1938,6 +1938,8 @@ function supervisorPermissions(space: string, pr: MintPrincipal): Record<string,
     pub: {
       allow: [
         "$JS.API.INFO",
+        // Transcript startup checks read retained subject counts, never message bodies.
+        `$JS.API.STREAM.INFO.${chatStream(space)}`,
         // Per-instance manager liveness lease (managerBucket, pre-created at `cotal up`): OPEN-ONLY bind +
         // CAS this instance's own `lease.<instanceId>` key (acquire/renew/release) + read the subtree. The
         // lease is per instance, so the write grant spans `lease.*` (every instance of this space
@@ -2045,6 +2047,9 @@ function remoteManagerPermissions(
     pub: {
       allow: [
         "$JS.API.INFO",
+        // Only the supervisor allocates names against retained transcript counts. This metadata
+        // grant carries no consumer or message-body read, just like the agent CHAT info grant.
+        ...(isSupervisorActor ? [`$JS.API.STREAM.INFO.${chatStream(space)}`] : []),
         // Own manager-instance lease only. The local supervisor profile spans lease.* because one
         // host manages every local instance; a remote user grant must not.
         `$JS.API.STREAM.INFO.${MKV}`,
