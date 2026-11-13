@@ -13,7 +13,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { personal?: boolean; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { personal?: boolean; link?: string; installed?: boolean; connected?: boolean; count?: number; label?: string; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -55,7 +55,7 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
         return ok({ state: "ready", version: options.mismatch ? "old" : "test", managers: connected ? [manager] : [] });
       }
-      if (r.op === "spaces") return ok({ ...((options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon) && r.refresh ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: [options.ownProviderFailed ? COTAL_CLOUD_IDP : "https://hack.cotal.ai/api/auth"] }) } : {}), spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : "My team", kind: options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: COTAL_CLOUD_IDP })) });
+      if (r.op === "spaces") return ok({ ...((options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon) && r.refresh ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: [options.ownProviderFailed ? COTAL_CLOUD_IDP : "https://hack.cotal.ai/api/auth"] }) } : {}), spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : options.label ?? "My team", kind: options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: COTAL_CLOUD_IDP })) });
       if (r.op === "name") return ok({ computer: r.name ?? "My computer" });
       if (r.op === "service-status") return ok({ state: options.serviceState ?? "disconnected" });
       if (r.op === "service-disconnect") { connected = false; return ok({ state: "disconnected" }); }
@@ -241,6 +241,18 @@ test("unlinked accounts choose among spaces but skip a single space", async () =
       }
     } finally { a.dom.window.close(); }
   }
+});
+
+test("a blank space label shows the space id", async () => {
+  const a = await app({ installed: true, connected: true, label: " " });
+  try {
+    assert.equal(a.doc.querySelector('[data-testid="connected-space-row"] strong')?.textContent, "team");
+    assert.equal(a.doc.querySelector('#space option[value="team"]')?.textContent, "team");
+  } finally { a.dom.window.close(); }
+  const kept = await app({ installed: true, connected: true, label: " ada" });
+  try {
+    assert.equal(kept.doc.querySelector('[data-testid="connected-space-row"] strong')?.textContent, " ada");
+  } finally { kept.dom.window.close(); }
 });
 
 test("later open shows connection and secondary controls, never sign-in or space forms", async () => {

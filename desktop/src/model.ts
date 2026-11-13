@@ -111,6 +111,11 @@ export function keptCredentialsNotice(result: Record<string, unknown>): string {
 
 export interface AccountSpace { space: string; label: string; catalogId?: string; kind?: string; role?: string }
 
+/** The name a space row shows. A missing or whitespace-only label is not one, so the row uses the space id. */
+export function shownSpaceLabel(label: string | undefined, space: string): string {
+  return label && label.trim() ? label : space;
+}
+
 /** Discovery selects a target, but never grants consent to connect. */
 export function initialSpace(spaces: readonly AccountSpace[], requested?: string): string | undefined {
   const linked = requested && spaces.find(item => item.space === requested || item.catalogId === requested);
