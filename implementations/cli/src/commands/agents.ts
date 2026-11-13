@@ -395,6 +395,11 @@ export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "s
   return wideFields(r).map(([label, value]) => `${label} ${value}`);
 }
 
+/** The name a ps row shows. A blank seat or presence name is not a label, so the row uses the id. */
+export function psSeatLabel(row: { name: string; id: string; role?: string }): string {
+  return peerLabel({ name: row.name.trim() ? row.name : row.id, ...(row.role ? { role: row.role } : {}) });
+}
+
 /** The seats one manager answered with: a table, or with `--wide` one labeled record per seat. A
  *  failing bearer refresh is a detached seat's only window to the operator, so the provider's own
  *  sentence follows, verbatim (it already names the repair). A record's labels read as its facts'
@@ -402,7 +407,7 @@ export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "s
 function seatBlocks(rows: readonly AgentRow[], wide: boolean): Block[] {
   const auth = rows.some((r) => r.authHealth);
   const cells = (r: AgentRow): [string, Cell][] => [
-    ["NAME", peerLabel(r)],
+    ["NAME", psSeatLabel(r)],
     ["AGENT", { text: agentIdentity(r), tone: "hint" }],
     ["PROCESS", processCell(r)],
     ["MESH", meshCell(r)],
@@ -415,9 +420,9 @@ function seatBlocks(rows: readonly AgentRow[], wide: boolean): Block[] {
         columns: cells(rows[0]!).map(([label]) => ({ key: label, label })),
         rows: rows.map((r) => Object.fromEntries(cells(r))),
       }];
-  const reasons = rows.filter((r) => r.authHealth && r.authReason).map((r): Cell => ({ text: `${peerLabel(r)}: ${r.authReason}`, tone: authTone(r) }));
+  const reasons = rows.filter((r) => r.authHealth && r.authReason).map((r): Cell => ({ text: `${psSeatLabel(r)}: ${r.authReason}`, tone: authTone(r) }));
   if (reasons.length) blocks.push({ kind: "lines", lines: reasons });
-  const joins = rows.filter((r) => r.joinHealth).map((r): Cell => ({ text: `${peerLabel(r)}: ${r.joinHealth!.reason}`, tone: "failed" }));
+  const joins = rows.filter((r) => r.joinHealth).map((r): Cell => ({ text: `${psSeatLabel(r)}: ${r.joinHealth!.reason}`, tone: "failed" }));
   if (joins.length) blocks.push({ kind: "lines", lines: joins });
   return blocks;
 }
@@ -598,7 +603,7 @@ async function psFromPresence(v: FlagValues<typeof psFlags>, presentation: Retur
       { kind: "lines", lines: [{ text: "No manager answered, so these are your agents as presence shows them. Stopping or attaching one needs a manager.", tone: "waiting" }] },
       result.items.length
         ? { kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "status", label: "State" }, { key: "harness", label: "Application" }, { key: "host", label: "Host" }],
-            rows: result.items.map((row) => ({ name: row.name, status: row.status, harness: row.harness ?? "-", host: row.host ?? "-" })) }
+            rows: result.items.map((row) => ({ name: psSeatLabel(row), status: row.status, harness: row.harness ?? "-", host: row.host ?? "-" })) }
         : { kind: "lines", lines: [{ text: "No agents of yours are on the mesh.", tone: "hint" }] },
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [next] }] },
