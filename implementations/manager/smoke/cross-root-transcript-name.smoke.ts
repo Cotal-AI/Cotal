@@ -10,6 +10,8 @@ if (subcommand === "auth-service" || subcommand === "agent-bearer") {
   const command = registry.resolve<import("@cotal-ai/core").Command>("command", subcommand);
   await command.run(parseCommandArgs(command, process.argv.slice(3)));
 } else if (subcommand === "seat") {
+  // The Manager under test launched this process and chose its identity.
+  for (const [key, value] of Object.entries(childEnv)) if (key.startsWith("COTAL_")) process.env[key] = value;
   await seat();
 } else {
   await main();
