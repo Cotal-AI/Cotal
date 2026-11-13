@@ -1,5 +1,5 @@
 import {
-  CotalEndpoint, dialerFor, dmDurable, dmStream, HISTORY_READERS, historyReaderConsumer, idFromCreds, isConsumerAlreadyExists, isConsumerNotFound,
+  CotalEndpoint, dialerFor, dmDurable, dmStream, HISTORY_READERS, historyReaderConsumer, idFromCreds, isConsumerAlreadyExists, isConsumerNotFound, isStreamNotFound,
   parsePrincipalKey, parseSubject, standaloneConnectOpts, unicastSubject, type FlagSpec, type ParsedArgs, type Presence,
 } from "@cotal-ai/core";
 import { CommandFailure, connectOrThrow, isConnectRefusal, jsonFlag, plainFlag, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
@@ -74,9 +74,15 @@ export async function pendingView(args: ParsedArgs, command: "pending" | "delive
     try { info = await jsm.consumers.info(stream, durable); }
     catch (error) {
       if (isConsumerNotFound(error)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the exact selected DM durable is not present; pending zero was not inferred", { target: { space, durable } });
+      if (isStreamNotFound(error)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `space ${space} has no DM stream, so ${durable} was not read`, { target: { space, durable } });
       throw error;
     }
-    const streamInfo = await jsm.streams.info(stream);
+    let streamInfo: Awaited<ReturnType<typeof jsm.streams.info>>;
+    try { streamInfo = await jsm.streams.info(stream); }
+    catch (error) {
+      if (isStreamNotFound(error)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `space ${space} has no DM stream, so ${durable} was not read`, { target: { space, durable } });
+      throw error;
+    }
     result = { kind: "pending-dm-durable", durable, pending: info.num_pending, ackPending: info.num_ack_pending,
       delivered: info.delivered.stream_seq, ackFloor: info.ack_floor.stream_seq, created: info.created,
       frontier: Math.max(0, (info.config.opt_start_seq ?? 1) - 1), maxAge: streamInfo.config.max_age,

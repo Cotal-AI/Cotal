@@ -12,6 +12,7 @@ import {
   dmDurable,
   dmStream,
   isConsumerNotFound,
+  isStreamNotFound,
   parsePrincipalKey,
   parseSubject,
   peerLabel,
@@ -45,6 +46,11 @@ function notFound(name: string, space: string): never {
 
 function notFoundDurable(durable: string, space: string): never {
   console.error(`✗ not-found: no DM durable "${durable}" in space ${space}`);
+  process.exit(1);
+}
+
+function streamGone(space: string): never {
+  console.error(`✗ not-found: space ${space} has no DM stream, so nothing was read`);
   process.exit(1);
 }
 
@@ -126,9 +132,15 @@ export async function runPending(args: ParsedArgs): Promise<void> {
         if (values.durable) notFoundDurable(durable, space);
         notFound(name, space);
       }
+      if (isStreamNotFound(e)) streamGone(space);
       throw e;
     }
-    const streamInfo = await jsm.streams.info(stream);
+    let streamInfo: Awaited<ReturnType<typeof jsm.streams.info>>;
+    try { streamInfo = await jsm.streams.info(stream); }
+    catch (e) {
+      if (isStreamNotFound(e)) streamGone(space);
+      throw e;
+    }
     const frontier = Math.max(0, (info.config.opt_start_seq ?? 1) - 1);
     const facts = {
       durable,

@@ -734,7 +734,8 @@ IDs by default. JSON and plain output use the common one-document result. A
 name must match one observed roster entry; an exact principal ID wins over a
 display-name match, and an ambiguous display name refuses. `--durable` reads a
 previous lifecycle by its complete durable name without substituting a
-same-named current agent. An absent or unreadable durable is not `pending 0`.
+same-named current agent. An absent or unreadable durable is not `pending 0`. A missing DM stream is
+`TARGET_NOT_FOUND` as well: the durable was not read.
 The caller needs the native admin read authority; user-auth has no equivalent
 view here and refuses without a static or bare fallback. A failed read does
 not prune a locally saved mesh registration.

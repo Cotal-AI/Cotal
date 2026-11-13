@@ -66,7 +66,7 @@
   "implementations/cli/src/lib/team-additive-native.ts": 1,
   "implementations/cli/src/lib/team-channel-removal.ts": 2,
   "implementations/cli/src/lib/team-deploy-inspection.ts": 3,
-  "implementations/delivery/smoke/deliver-pending-sender.smoke.ts": 3,
+  "implementations/delivery/smoke/deliver-pending-sender.smoke.ts": 4,
   "implementations/delivery/smoke/delivery-starvation.smoke.ts": 9,
   "implementations/delivery/smoke/delivery-timer-writer.smoke.ts": 3,
   "implementations/delivery/smoke/fanout-load.smoke.ts": 1,
