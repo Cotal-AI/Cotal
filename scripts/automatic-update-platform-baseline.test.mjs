@@ -53,6 +53,10 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
   assert.equal(workflow.concurrency['cancel-in-progress'], true);
   assert(workflow.concurrency.group.includes('github.ref'));
   assert(workflow.jobs.priority);
+  for (const name of ['candidate-pack', 'candidate-B', 'candidate-A', 'candidate-B-expanded']) {
+    assert(workflow.jobs[name].if.includes('always()'), `${name} can be suppressed by expected-red priority ancestors`);
+    assert(workflow.jobs[name].if.includes("== 'success'"), `${name} must verify its direct predecessor succeeded`);
+  }
   const expanded = workflow.jobs['candidate-B-expanded'];
   assert(expanded.steps.some(step => step.run?.includes('for state in fresh configured stale-extensions recovery concurrent agent')));
   assert.deepEqual(workflow.jobs['candidate-native'].strategy.matrix.source, sources);

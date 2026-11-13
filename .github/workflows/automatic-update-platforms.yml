@@ -160,6 +160,7 @@ jobs:
           if-no-files-found: error
   candidate-B:
     needs: candidate-pack
+    if: always() && !cancelled() && needs.candidate-pack.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -191,6 +192,7 @@ jobs:
           if-no-files-found: error
   candidate-B-expanded:
     needs: candidate-A
+    if: always() && !cancelled() && needs.candidate-A.result == 'success'
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -300,6 +302,7 @@ jobs:
           if-no-files-found: error
   candidate-A:
     needs: candidate-B
+    if: always() && !cancelled() && needs.candidate-B.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
