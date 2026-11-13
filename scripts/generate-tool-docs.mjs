@@ -230,6 +230,10 @@ lines.push(
   "**Arguments are closed.** Every tool accepts only the arguments listed for it and REFUSES any other key, including tools that take no arguments at all. An unlisted key is an error. A call that supplies an identity (`owner`, `actor`, `caller`) is turned away before anything runs. The identity a tool acts under comes from the connector's own credential and can never be supplied as an argument. Every refusal names the offending keys, but its shape depends on who refuses: where the host validates the published schema (Claude Code, Codex, pi) you get that host's own schema error, and where it does not (OpenCode, Hermes) the connector refuses at its own dispatch and additionally lists the arguments the tool does accept, or says it takes none. In both cases the call did not run.",
 );
 lines.push("");
+lines.push(
+  "A manager on another Cotal release can refuse an argument its contract does not declare. A manager-op tool then names the argument and this connector's version, and asks the bound manager for its version. When the manager is older, it names `cotal update --self` on the manager's host and then `cotal manager restart`, or, for an argument you set, calling again without it. When this connector is older, it names `cotal update --self` here and a new session. A request no manager was bound for is treated as an older manager.",
+);
+lines.push("");
 lines.push("| Tool | Does | Side-effect |");
 lines.push("|---|---|---|");
 for (const s of specs) {
