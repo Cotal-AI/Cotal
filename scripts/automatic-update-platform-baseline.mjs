@@ -19,12 +19,19 @@ export const requiresManualStep = output => /run `cotal|run cotal|manual (?:step
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 const save = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
 
-export function exclusion({ layout, method, state }) {
-  if (layout === 'installer' && process.platform === 'win32') return 'No public Windows installer exists.';
+export function exclusion({ layout, method, state }, platform = process.platform) {
+  if (layout === 'installer' && platform === 'win32') return 'No public Windows installer exists.';
   if (method === 'installer' && layout !== 'installer') return 'Installer rerun would change the npm-global installation route.';
   if (method === 'scheduler' && state !== 'daemon') return 'Scheduler rows require the pre-existing automatic daemon state.';
   return undefined;
 }
+export function coordinates(platform = process.platform) {
+  return sources.flatMap(source => ['npm', 'installer'].flatMap(layout => states.flatMap(state => methods.map(method => {
+    const cell = { platform, source, layout, state, method };
+    return { ...cell, excluded: exclusion(cell, platform) };
+  }))));
+}
+
 function args() {
   const result = {};
   for (let i = 2; i < process.argv.length; i += 2) {
@@ -146,7 +153,7 @@ export async function matrixCell(options) {
     report.sourceManifestSha256 = digest(readFileSync(join(pkg, 'package.json')));
     if (process.platform === 'win32') {
       const core = pathToFileURL(join(pkg, 'node_modules/@cotal-ai/core/dist/index.js')).href;
-      const prepare = `const {mkSecretDir}=await import(${JSON.stringify(core)});for(const dir of ${JSON.stringify([root, home, project])})mkSecretDir(dir);`;
+      const prepare = `const {mkSecretDir}=await import(${JSON.stringify(core)});for(const dir of ${JSON.stringify([root, ...(home.startsWith(root) ? [home] : []), project])})mkSecretDir(dir);`;
       ok(await call('harden native fixture directories', process.execPath, ['--input-type=module', '-e', prepare]), 'published private-directory preparation');
     }
     if (state === 'daemon' && report.source === '0.155.0') {
@@ -464,7 +471,9 @@ export function summarize(directory) {
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  if (process.argv[2] === '--summary') {
+  if (process.argv[2] === '--list') {
+    console.log(JSON.stringify(coordinates(process.argv[3] ?? process.platform), null, 2));
+  } else if (process.argv[2] === '--summary') {
     const summary = summarize(resolve(process.argv[3]));
     process.exitCode = summary.counts.failed || summary.counts.unsupported ? 1 : 0;
   } else if (process.argv[2] === '--pack') {

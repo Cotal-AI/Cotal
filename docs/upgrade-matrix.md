@@ -20,6 +20,8 @@ Sources are `0.155.0`, `0.160.7`, `0.162.0`, `0.163.5`, `0.164.0` and `latest`.
 Layouts are `npm` and `installer`. States are `fresh`, `configured`, `daemon`, `agent`,
 `stale-extensions`, `recovery` and `concurrent`. Methods are `self`, `scheduler` and `installer`.
 Each published cell resolves npm's current latest release without a registry overlay.
+Print the full coordinate census and exclusion reasons with `node scripts/automatic-update-platform-baseline.mjs --list linux`.
+There are 138 applicable coordinates per POSIX platform and 48 on Windows, before historical-state support is checked.
 
 The Windows installer is excluded because none exists. Installer reruns apply only to installer
 layouts. Scheduler cells require the daemon state. Release 0.155.0 cannot prepare automatic-update

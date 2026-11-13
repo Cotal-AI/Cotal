@@ -4,6 +4,7 @@ on:
     types: [published]
   schedule:
     - cron: '23 5 * * 1'
+  workflow_call:
   workflow_dispatch:
   push:
     branches: [test/upgrade-matrix]
@@ -167,6 +168,50 @@ jobs:
         if: always()
         with:
           name: candidate-B-${{ matrix.source }}-${{ matrix.layout }}
+          path: ${{ runner.temp }}/upgrade-evidence
+          if-no-files-found: error
+  candidate-B-expanded:
+    needs: candidate-B
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+        source: ['0.155.0', '0.160.7', '0.162.0', '0.163.5', '0.164.0', latest]
+        layout: [npm, installer]
+        exclude:
+          - os: windows-2022
+            layout: installer
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - uses: actions/download-artifact@v4
+        with:
+          name: upgrade-candidate-B
+          path: ${{ runner.temp }}/candidate-B
+      - name: Candidate B native state coverage
+        shell: bash
+        run: |
+          failed=0
+          for state in configured stale-extensions recovery concurrent agent; do
+            node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate-B" --direction B --source '${{ matrix.source }}' --layout '${{ matrix.layout }}' --state "$state" --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+            if [ '${{ matrix.layout }}' = installer ]; then
+              node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate-B" --direction B --source '${{ matrix.source }}' --layout installer --state "$state" --method installer --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+            fi
+          done
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-B-expanded-${{ matrix.os }}-${{ matrix.source }}-${{ matrix.layout }}
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   candidate-A:
