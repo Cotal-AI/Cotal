@@ -481,18 +481,50 @@ export async function fetchIdpJwt(idpUrl: string, sessionToken: string, signal?:
   return (await fetchIdpJwtResponse(idpUrl, sessionToken, signal)).jwt;
 }
 
-/** The whole login operation, in the only safe order: device sign-in, then PROVE the session
- *  mints a user JWT, and only then persist it. A session that can't produce a JWT must never
- *  land on disk — it would pass {@link requireIdpSession}'s no-fallback gate as a dud and defer
- *  the failure to some later connect. Returns the session plus the JWT's `sub`, and a human
- *  `label` (email/name/preferred_username when the IdP mints one) — BOTH display-only: the
- *  operator must be able to read WHICH human signed in, but verification is the bridge/callout's
- *  job, server-side. */
-export async function establishIdpSession(
-  opts: DeviceLoginOpts & { dir: string },
-): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
+/** Optional expected identity claims checked before a staged login can be committed.
+ * Claims are decoded from the provider response. Signature verification remains server-side. */
+export interface IdpLoginPins {
+  idpUrl?: string;
+  issuer: string;
+  audience: string;
+  sub?: string;
+}
+
+/** An in-memory login proof. Its bearer and advertisement are private to this module. */
+export interface StagedIdpSession {
+  readonly sub: string;
+  readonly issuer?: string;
+  readonly audience?: string | readonly string[];
+}
+
+interface StagedLoginState {
+  opts: DeviceLoginOpts & { dir: string; expectedPins?: IdpLoginPins; migrationFrom?: string };
+  session: IdpSession;
+  claims: Record<string, unknown>;
+  link: string | null;
+  previousSub?: string;
+  baseline?: string;
+}
+const stagedLogins = new WeakMap<StagedIdpSession, StagedLoginState>();
+
+function assertLoginPins(claims: Record<string, unknown>, pins?: IdpLoginPins): void {
+  if (!pins) return;
+  const audiences = typeof claims.aud === "string" ? [claims.aud] : claims.aud;
+  if (claims.iss !== pins.issuer || !Array.isArray(audiences) || !audiences.every(a => typeof a === "string") || !audiences.includes(pins.audience) || (pins.sub !== undefined && claims.sub !== pins.sub))
+    throw new Error("idp login: the approved account does not match the expected issuer, audience or subject; nothing was saved");
+}
+
+/** Approve and prove a fresh login without writing any local state.
+ * `migrationFrom` fences the retained account used to validate a native migration. */
+export async function stageIdpSession(
+  opts: DeviceLoginOpts & { dir: string; expectedPins?: IdpLoginPins; migrationFrom?: string },
+): Promise<StagedIdpSession> {
   // Refuse damaged local state before asking the person to approve a sign-in.
-  readCatalogPreparationState(opts.dir);
+  const initial = readCatalogPreparationState(opts.dir);
+  const baseline = opts.migrationFrom === undefined ? undefined : migrationDependency(initial, opts.migrationFrom);
+  opts = { ...opts, ...(opts.expectedPins ? { expectedPins: { ...opts.expectedPins } } : {}) };
+  if (opts.expectedPins?.idpUrl !== undefined && normalizeIdpUrl(opts.idpUrl) !== normalizeIdpUrl(opts.expectedPins.idpUrl))
+    throw new Error("idp login: the provider URL does not match the expected login URL; nothing was saved");
   const previousSub = loadIdpSession(opts.dir, opts.idpUrl)?.sub;
   const session = await deviceLogin(opts);
   const tokenResult = await fetchIdpJwtResponse(opts.idpUrl, session.token, opts.signal);
@@ -508,6 +540,7 @@ export async function establishIdpSession(
   const sub = claims.sub;
   if (typeof sub !== "string" || !sub)
     throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} minted a user JWT without a sub - refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
+  assertLoginPins(claims, opts.expectedPins);
   session.sub = sub; // proven above — cached so owner derivation (spawn paths) stays offline
   const label = [claims.email, claims.name, claims.preferred_username].find(
     (c): c is string => typeof c === "string" && c.length > 0,
@@ -519,14 +552,64 @@ export async function establishIdpSession(
   );
   if (label) session.label = label;
   if (handle) session.name = handle;
+  throwIfCancelled(opts.signal);
+  const candidate: StagedIdpSession = Object.freeze({ sub,
+    ...(typeof claims.iss === "string" ? { issuer: claims.iss } : {}),
+    ...(typeof claims.aud === "string" ? { audience: claims.aud } : Array.isArray(claims.aud) && claims.aud.every(a => typeof a === "string") ? { audience: Object.freeze([...claims.aud]) } : {}),
+  });
+  stagedLogins.set(candidate, { opts, session, claims, previousSub, baseline, link: tokenResult.response.headers.get("link") });
+  return candidate;
+}
+
+function stagedState(candidate: StagedIdpSession): StagedLoginState {
+  const state = stagedLogins.get(candidate);
+  if (!state) throw new Error("idp login: unknown or already committed staged login");
+  return state;
+}
+
+/** Fetch a fresh candidate catalog without caching it or applying registrations. */
+export async function fetchStagedIdpSpaceCatalog(candidate: StagedIdpSession, validate: (snapshot: unknown, account: AuthSpaceCatalogAccount) => void): Promise<{ snapshot: unknown; account: AuthSpaceCatalogAccount }> {
+  const { opts, session, claims, link } = stagedState(candidate);
+  throwIfCancelled(opts.signal);
+  const idpUrl = normalizeIdpUrl(opts.idpUrl);
+  const catalogUrl = catalogUrlFromLink(idpUrl, link);
+  if (!catalogUrl) throw new Error("idp login: the approved provider did not advertise a same-origin catalog");
+  if (typeof claims.iss !== "string" || !claims.iss) throw new Error("idp login: the approved provider did not supply an issuer");
+  const account = { idpUrl, issuer: claims.iss, sub: candidate.sub, ownerKey: ownerKey(idpUrl, candidate.sub), catalogUrl };
+  const response = await idpFetch(catalogUrl, { headers: { authorization: `Bearer ${session.token}` }, redirect: "manual" }, opts.signal);
+  if (!response.ok) throw new Error(`idp login: candidate catalog failed (HTTP ${response.status})`);
+  const snapshot = await idpJson<unknown>(catalogUrl, response, opts.signal);
+  validate(snapshot, account);
+  throwIfCancelled(opts.signal);
+  return { snapshot, account };
+}
+
+/** Persist a staged proof after the caller has checked its migration pins. Not a multi-file transaction. */
+export function commitStagedIdpSession(candidate: StagedIdpSession): { session: IdpSession; sub: string; previousSub?: string; label?: string } {
+  const { opts, session, claims, previousSub, baseline, link } = stagedState(candidate);
   // The persistence fence: a cancel that lands after approval, while the proof was in flight,
   // must leave no session and no catalog entry on disk.
   throwIfCancelled(opts.signal);
+  assertLoginPins(claims, opts.expectedPins);
   // Approval can take minutes. Recheck before writing if another process changed the cache.
-  readCatalogPreparationState(opts.dir);
+  const current = readCatalogPreparationState(opts.dir);
+  if (opts.migrationFrom !== undefined && migrationDependency(current, opts.migrationFrom) !== baseline)
+    throw new Error("idp login: the old account sign-in or catalog state changed during approval; nothing was saved; retry `cotal login --migrate-from " + normalizeIdpUrl(opts.migrationFrom) + "`");
+  stagedLogins.delete(candidate);
   saveIdpSession(opts.dir, opts.idpUrl, session);
-  saveCatalogAdvertisement(opts.dir, opts.idpUrl, claims.iss, sub, tokenResult.response.headers.get("link"));
-  return { session, sub, ...(previousSub && previousSub !== sub ? { previousSub } : {}), ...(label ? { label } : {}) };
+  saveCatalogAdvertisement(opts.dir, opts.idpUrl, claims.iss, candidate.sub, link);
+  return { session, sub: candidate.sub, ...(previousSub && previousSub !== candidate.sub ? { previousSub } : {}), ...(session.label ? { label: session.label } : {}) };
+}
+
+/** The whole login operation, in the only safe order: device sign-in, then PROVE the session
+ *  mints a user JWT, and only then persist it. A session that can't produce a JWT must never
+ *  land on disk, because it would pass {@link requireIdpSession}'s no-fallback gate as a dud and
+ *  defer the failure to some later connect. Returns the session plus the JWT's `sub`, and a human
+ *  `label` (email/name/preferred_username when the IdP mints one). Both are display-only: the
+ *  operator must be able to read which human signed in, but verification is the bridge/callout's
+ *  job, server-side. */
+export async function establishIdpSession(opts: DeviceLoginOpts & { dir: string; expectedPins?: IdpLoginPins }): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
+  return commitStagedIdpSession(await stageIdpSession(opts));
 }
 
 function ownerKey(idpUrl: string, sub: string): string {
@@ -680,6 +763,16 @@ function readCatalogPreparationState(dir: string) {
     });
   }
   return { sessions, file };
+}
+
+/** Only the retained account supplies migration authority. Refresh timing is not authority. */
+function migrationDependency(state: ReturnType<typeof readCatalogPreparationState>, from: string): string {
+  const idpUrl = normalizeIdpUrl(from);
+  const session = state.sessions[idpUrl];
+  const account = session?.sub ? state.file.accounts[ownerKey(idpUrl, session.sub)] : undefined;
+  const catalog = account ? { ...account } : undefined;
+  if (catalog) delete catalog.fetchedAt;
+  return JSON.stringify({ session, catalog });
 }
 
 const catalogPreparations = new Map<string, Promise<AuthSpaceCatalogResult[]>>();

@@ -4,7 +4,6 @@ import { basename, dirname, join, resolve } from "node:path";
 import * as p from "../lib/prompts.js";
 import { parseCommandArgs, registry, token, writePrivateRecord, type Command, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
 import {
-  COTAL_CLOUD_IDP,
   CommandFailure,
   OFFICIAL_CONNECTORS,
   isCommandFailure,
@@ -12,7 +11,7 @@ import {
   assertPreferencesFolderProtected,
   canonicalRoot,
   checkUserBundle,
-  cloudAuthUrl,
+  isCotalCloudIdp,
   extensionPackageDir,
   findMesh,
   homeCotalDir,
@@ -373,7 +372,7 @@ async function askDestination(initial: Destination | "cloud" | undefined): Promi
 /** The Cotal Cloud spaces a sign-in registered here. */
 function cloudSpaces(): MeshEntry[] {
   return loadMeshes()
-    .filter((m) => m.origin === "catalog" && m.userAuth !== undefined && cloudAuthUrl(m.userAuth.idp.url.replace(/\/$/, "")) === COTAL_CLOUD_IDP)
+    .filter((m) => m.origin === "catalog" && m.userAuth !== undefined && isCotalCloudIdp(m.userAuth.idp.url))
     .sort((a, b) => a.space.localeCompare(b.space));
 }
 

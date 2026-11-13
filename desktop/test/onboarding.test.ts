@@ -13,7 +13,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { personal?: boolean; link?: string; installed?: boolean; connected?: boolean; count?: number; label?: string; kind?: string; account?: { label?: string; sub?: string }; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -53,9 +53,9 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
       if (r.op === "status") {
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
-        return ok({ state: "ready", version: options.mismatch ? "old" : "test", managers: connected ? [manager] : [], ...(options.account ? { account: { idpUrl: COTAL_CLOUD_IDP, sub: options.account.sub ?? "user-1", label: options.account.label, mode: "static", hostSupport: "none", spaces: [] } } : {}) });
+        return ok({ account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : "test", managers: connected ? [manager] : [] });
       }
-      if (r.op === "spaces") return ok({ ...((options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon) && r.refresh ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: [options.ownProviderFailed ? COTAL_CLOUD_IDP : "https://hack.cotal.ai/api/auth"] }) } : {}), spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : options.label ?? "My team", kind: !i && options.kind !== undefined ? options.kind : options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: COTAL_CLOUD_IDP })) });
+      if (r.op === "spaces") return ok({ ...((options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon) && r.refresh ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: [options.ownProviderFailed ? COTAL_CLOUD_IDP : "https://hack.cotal.ai/api/auth"] }) } : {}), spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : options.label ?? "My team", kind: !i && options.kind !== undefined ? options.kind : options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: options.provider ?? COTAL_CLOUD_IDP })) });
       if (r.op === "name") return ok({ computer: r.name ?? "My computer" });
       if (r.op === "service-status") return ok({ state: options.serviceState ?? "disconnected" });
       if (r.op === "service-disconnect") { connected = false; return ok({ state: "disconnected" }); }
@@ -202,7 +202,7 @@ for (const option of ["ownProviderFailed", "oldDaemon"] as const) test(`${option
   try {
     await a.click("login"); await a.login();
     assert.equal(a.node("connection-title").textContent, "This operation could not finish");
-    assert.match(a.node("refusal-detail").textContent ?? "", option === "ownProviderFailed" ? /cloud\.cotal\.ai/ : /Some space catalogs/);
+    assert.match(a.node("refusal-detail").textContent ?? "", option === "ownProviderFailed" ? /cotal\.cloud/ : /Some space catalogs/);
   } finally { a.dom.window.close(); }
 });
 
@@ -247,10 +247,64 @@ test("first open is a neutral Cloud-default welcome and sign-in is an explicit a
   } finally { a.dom.window.close(); }
 });
 
+test("legacy computer account without a selected space retains its provider on sign-in again", async () => {
+  const provider = "https://cloud.cotal.ai/api/auth";
+  const a = await app({ installed: true, count: 0, account: { idpUrl: provider, sub: "legacy-user", mode: "sign-in-required", hostSupport: "supported", spaces: [] } });
+  try {
+    await a.click("sign-in-again");
+    assert.equal(a.calls.find(r => r.op === "login")?.idp, provider);
+    assert.equal(a.node<HTMLInputElement>("provider").value, provider);
+    assert.equal(a.node("custom-host").hidden, true);
+    assert.match(a.node("settings-account").textContent ?? "", /Cotal Cloud, cloud\.cotal\.ai/);
+  } finally { a.dom.window.close(); }
+});
+
+for (const source of ["typed host", "onboarding link", "typed host with saved legacy account"] as const) {
+  test(`denied sign-in retry preserves ${source}`, async () => {
+    const provider = "https://example.com/api/auth";
+    const a = await app({
+      installed: true, count: 0, loginReason: "denied",
+      ...(source === "onboarding link" ? { link: `cotal://connect?idp=${encodeURIComponent(provider)}` } : {}),
+      ...(source === "typed host with saved legacy account" ? { account: { idpUrl: "https://cloud.cotal.ai/api/auth", sub: "legacy-user", mode: "sign-in-required", hostSupport: "supported", spaces: [] } } : {}),
+    });
+    try {
+      if (source === "typed host with saved legacy account") {
+        await a.click("sign-in-again"); await a.login();
+        await a.click("retry-login");
+      }
+      if (source !== "onboarding link") {
+        await a.click("other-host");
+        a.node<HTMLInputElement>("provider").value = provider;
+      }
+      await a.click("login"); await a.login();
+      assert.equal(a.node("recovery-panel").hidden, false);
+      assert.match(a.node("refusal-detail").textContent ?? "", /denied/);
+      const loginsBeforeRetry = a.calls.filter(r => r.op === "login").length;
+      await a.click("recover");
+      const logins = a.calls.filter(r => r.op === "login");
+      assert.equal(logins.length, loginsBeforeRetry + 1);
+      assert.deepEqual(logins.slice(-2).map(r => r.idp), [provider, provider]);
+      assert.equal(a.node<HTMLInputElement>("provider").value, provider);
+      await a.login();
+    } finally { a.dom.window.close(); }
+  });
+}
+
+for (const provider of [COTAL_CLOUD_IDP, "https://cloud.cotal.ai/api/auth"]) {
+  test(`Cloud retry sign-in keeps the custom host form hidden for ${provider}`, async () => {
+    const a = await app({ installed: true, provider });
+    try {
+      await a.click("retry-login");
+      assert.equal(a.node<HTMLInputElement>("provider").value, provider);
+      assert.equal(a.node("custom-host").hidden, true);
+    } finally { a.dom.window.close(); }
+  });
+}
+
 test("linked first run needs sign-in approval then connect, with one panel and structured progress", async () => {
   const a = await app({ link: `cotal://connect?idp=${encodeURIComponent(COTAL_CLOUD_IDP)}&space=sp_team`, count: 2 });
   try {
-    assert.match(a.node("link-context").textContent!, /your account at cloud\.cotal\.ai/);
+    assert.ok(a.node("link-context").textContent!.includes(`your account at ${new URL(COTAL_CLOUD_IDP).host}`));
     assert.equal(a.node("notice").hidden, true);
     await a.click("login");
     assert.equal(a.calls.filter(r => r.op === "install").length, 1);
@@ -274,7 +328,7 @@ test("linked first run needs sign-in approval then connect, with one panel and s
     assert.equal(a.node("connected-panel").hidden, false); assert.equal(a.node("sign-in-panel").hidden, true);
     assert.equal(a.node("space-panel").hidden, true); assert.equal(a.node("notice").hidden, true);
     assert.equal(a.node<HTMLButtonElement>("dashboard").disabled, false);
-    await a.click("dashboard"); assert.equal(a.urls.at(-1), "https://cloud.cotal.ai/machines?space=sp_team&machine=instance");
+    await a.click("dashboard"); assert.equal(a.urls.at(-1), new URL("/machines?space=sp_team&machine=instance", COTAL_CLOUD_IDP).href);
     assert.equal(a.calls.filter(r => r.op === "setup").length, 1);
     await a.click("another-space"); assert.equal(a.node("space-panel").hidden, false);
   } finally { a.dom.window.close(); }
@@ -321,12 +375,12 @@ test("a blank account label shows the subject", async () => {
   const a = await app({ installed: true, connected: true, account: { label: " ", sub: "user-1" } });
   try {
     await a.click("open-settings");
-    assert.equal(a.node("settings-account").textContent, "Cotal Cloud, cloud.cotal.ai · user-1");
+    assert.equal(a.node("settings-account").textContent, "Cotal Cloud, cotal.cloud · user-1");
   } finally { a.dom.window.close(); }
   const kept = await app({ installed: true, connected: true, account: { label: " ada", sub: "user-1" } });
   try {
     await kept.click("open-settings");
-    assert.equal(kept.node("settings-account").textContent, "Cotal Cloud, cloud.cotal.ai ·  ada");
+    assert.equal(kept.node("settings-account").textContent, "Cotal Cloud, cotal.cloud ·  ada");
   } finally { kept.dom.window.close(); }
 });
 

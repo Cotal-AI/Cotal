@@ -5,7 +5,7 @@ import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, in
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -897,9 +897,9 @@ el("open-approval").addEventListener("click", () => { if (approval) void invoke(
 function beginSignIn(): void {
   if (busy) return;
   editing = true;
-  const provider = providers.get(selectedSpace());
+  const provider = providers.get(selectedSpace()) ?? (!customHost && !linked ? computerAccount?.idpUrl : undefined);
   if (provider) el<HTMLInputElement>("provider").value = provider;
-  customHost = el<HTMLInputElement>("provider").value !== COTAL_CLOUD_IDP;
+  customHost = !isCotalCloudIdp(el<HTMLInputElement>("provider").value);
   notice(""); clearDetails(); progress = progressNames.map(() => "waiting"); showStage("sign-in", true);
 }
 el("choose-space").addEventListener("click", () => {

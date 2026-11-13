@@ -1,13 +1,23 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { COTAL_CLOUD_IDP, cloudAuthUrl, loginRecoveryCommand, loginBrowserCommand } from "../src/cloud-login.js";
+import { COTAL_CLOUD_IDP, cloudAuthUrl, isCotalCloudIdp, loginRecoveryCommand, loginBrowserCommand } from "../src/cloud-login.js";
 
-assert.equal(cloudAuthUrl("https://cloud.cotal.ai"), COTAL_CLOUD_IDP);
-assert.equal(cloudAuthUrl("https://cloud.cotal.ai/"), COTAL_CLOUD_IDP);
+assert.equal(COTAL_CLOUD_IDP, "https://cotal.cloud/api/auth");
+for (const host of ["cotal.cloud", "cloud.cotal.ai"]) {
+  for (const url of [`https://${host}/api/auth`, `https://${host}/api/auth/`, `https://${host.toUpperCase()}:443/api/auth`])
+    assert.equal(isCotalCloudIdp(url), true, url);
+  for (const url of [`https://${host}`, `https://${host}/other`, `https://${host}/api/auth/extra`, `http://${host}/api/auth`, `https://${host}:444/api/auth`, `https://user@${host}/api/auth`, `https://${host}/api/auth?x=1`, `https://${host}/api/auth#x`, `https://${host}.evil.example/api/auth`])
+    assert.equal(isCotalCloudIdp(url), false, url);
+}
+assert.equal(isCotalCloudIdp("not a URL"), false);
+assert.equal(cloudAuthUrl("https://cotal.cloud"), COTAL_CLOUD_IDP);
+assert.equal(cloudAuthUrl("https://cotal.cloud/"), COTAL_CLOUD_IDP);
+assert.equal(cloudAuthUrl("https://cloud.cotal.ai"), "https://cloud.cotal.ai/api/auth");
+assert.equal(cloudAuthUrl("https://cloud.cotal.ai/"), "https://cloud.cotal.ai/api/auth");
 assert.equal(cloudAuthUrl("https://other.example"), "https://other.example");
 assert.equal(cloudAuthUrl("https://cloud.cotal.ai.evil.example"), "https://cloud.cotal.ai.evil.example");
-for (const idp of [COTAL_CLOUD_IDP, `${COTAL_CLOUD_IDP}/`, 'https://cloud.cotal.ai']) assert.equal(loginRecoveryCommand(idp), 'cotal login');
-for (const idp of ['https://other.example/api/auth', 'http://127.0.0.1:12345/api/auth', 'https://cloud.cotal.ai.evil.example']) assert.equal(loginRecoveryCommand(idp), `cotal login --idp ${idp}`);
+for (const idp of [COTAL_CLOUD_IDP, `${COTAL_CLOUD_IDP}/`, 'https://cotal.cloud']) assert.equal(loginRecoveryCommand(idp), 'cotal login');
+for (const idp of ['https://cloud.cotal.ai/api/auth', 'https://other.example/api/auth', 'http://127.0.0.1:12345/api/auth', 'https://cloud.cotal.ai.evil.example']) assert.equal(loginRecoveryCommand(idp), `cotal login --idp ${idp}`);
 const desktop = readFileSync(new URL("../../../desktop/src/model.ts", import.meta.url), "utf8");
 assert.equal(desktop.match(/export const COTAL_CLOUD_IDP = "([^"]+)"/)?.[1], COTAL_CLOUD_IDP, "desktop and CLI Cloud addresses agree");
 const url = "https://cloud.cotal.ai/device?user_code=TEST";

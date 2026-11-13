@@ -1,6 +1,9 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Request = { op: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string };
-export const COTAL_CLOUD_IDP = "https://cloud.cotal.ai/api/auth";
+export const COTAL_CLOUD_IDP = "https://cotal.cloud/api/auth";
+export function isCotalCloudIdp(provider: string | undefined): boolean {
+  return provider === COTAL_CLOUD_IDP || provider === "https://cloud.cotal.ai/api/auth";
+}
 export interface SetupProgress { step: "install" | "sign-in" | "discover" | "manager" | "applications" | "register" | "connect"; outcome: string; detail: string; applications?: readonly string[] }
 export interface Frame { v: 1; event: "result" | "login-prompt" | "setup-progress"; progress?: SetupProgress; line?: string; ok?: boolean; result?: Record<string, unknown>; prompt?: Record<string, unknown>; error?: { code: string; message: string; remedy?: string; native?: { code: string } }; code?: string; message?: string }
 
