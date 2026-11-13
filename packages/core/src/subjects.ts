@@ -975,11 +975,12 @@ function presenceOptionalString(value: unknown): boolean {
 }
 
 /** The presence row shape every reader relies on (SPEC §6). A record whose `card.id` differs from
- *  its KV key, whose `card.name` or `status` has the wrong type, whose `ts` is not finite, whose
- *  printed display fields are present and not strings, or whose `condition` is present and is not
- *  an object with a string `code`, is not a row. `card.id` must be a non-empty string and equal the
- *  key it was read under: the key is the identity the write grant proves, and an empty id matches
- *  no key. */
+ *  its KV key, whose `card.name` is empty or has the wrong type, whose `status` has the wrong type,
+ *  whose `ts` is not finite, whose printed display fields are present and not strings, or whose
+ *  `condition` is present and is not an object with a string `code`, is not a row. `card.id` must be
+ *  a non-empty string and equal the key it was read under: the key is the identity the write grant
+ *  proves, and an empty id matches no key. `card.name` must be a non-empty string: an empty name
+ *  cannot identify the participant a refusal prints. */
 export function isPresenceRow(value: unknown, key: string): value is Presence {
   return presenceRowProblem(value, key) === undefined;
 }
@@ -989,7 +990,7 @@ function presenceRowProblem(value: unknown, key: string): string | undefined {
   if (!presenceRecord(value.card)) return "card";
   const card = value.card;
   if (typeof card.id !== "string" || card.id.length === 0 || card.id !== key) return "card.id";
-  if (typeof card.name !== "string") return "card.name";
+  if (typeof card.name !== "string" || card.name.length === 0) return "card.name";
   if (!presenceOptionalString(card.role)) return "card.role";
   if (typeof value.status !== "string" || !Object.hasOwn(PRESENCE_STATUSES, value.status)) return "status";
   if (typeof value.ts !== "number" || !Number.isFinite(value.ts)) return "ts";

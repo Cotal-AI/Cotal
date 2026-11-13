@@ -50,7 +50,7 @@ A missing observation means unknown. A change to runtime metadata notifies prese
 The endpoint rejects a presence row when any of these checks fails:
 
 - The row and `card` are objects, and `card.id` equals the KV key.
-- `card.name` is a string, and `status` is one of `idle`, `waiting`, `working`, or `offline`.
+- `card.name` is a non-empty string, and `status` is one of `idle`, `waiting`, `working`, or `offline`.
 - `ts` is a finite number.
 - Each present `card.role`, `activity`, and `attention` is a string.
 - A present `condition` is an object with a string `code`.
