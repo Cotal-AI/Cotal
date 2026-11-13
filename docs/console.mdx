@@ -83,7 +83,7 @@ Available controls include:
 
 | Action | Result |
 | --- | --- |
-| `D` on an agent | Confirm with `y` for graceful stop or `f` for force-kill. |
+| `D` on an agent | Confirm with `y` for graceful stop or `f` for force-kill. The confirmation and the stopping and stopped notices show the agent's id when its name is missing or only whitespace. |
 | `spawn <persona> [name]` | Launch an agent and wait for it to join, as `cotal spawn --detach` does. |
 | `status <agent>` | Inspect that agent's manager status. |
 | `ps` | Inspect managed agents. |
@@ -100,6 +100,7 @@ On static-auth and open meshes, `ps` combines their rows.
 A silent manager keeps its last-known rows and is named as silent.
 A manager that returns an error is named, and its old rows are withheld.
 `:spawn` and `purge` use the class queue, as their CLI commands do without `--on`.
+`ps` and the spawn notice show an agent's id when that agent's name is missing or only whitespace.
 
 ### Launch from the palette
 
@@ -107,7 +108,7 @@ Open Ctrl-P and choose **Spawn agent**. Search for `spawn` or `new agent` to fin
 Choose an application, persona, model, name, and optional first request, then choose **Launch agent**.
 Empty application, model, and name fields keep native CLI defaults.
 Events are off by default in the form; a space requiring events refuses that explicit opt-out.
-The form uses `spawn --detach` and reports its joined receipt or failure. Inspect an unconfirmed outcome before launching again.
+The form uses `spawn --detach` and reports its joined receipt or failure. A receipt name that is missing or only whitespace is shown as the agent's id. Inspect an unconfirmed outcome before launching again.
 Use the roster's attach action where supported. Esc returns to the palette.
 
 The modal palette replaces the `:` shortcut. Complete typed commands remain supported.

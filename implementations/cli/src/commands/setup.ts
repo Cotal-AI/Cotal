@@ -61,6 +61,7 @@ import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 import { addExtension, ExtensionAddInterrupted, exitOnInterruptedAdd } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { ManagedLaunchResult } from "@cotal-ai/workspace/launch";
+import { joinedAgentRows } from "./agents.js";
 import type { SetupStackStartResult } from "./setup-start.js";
 import { runtimeProviders } from "./runtimes.js";
 import { onInstanceId } from "../lib/control.js";
@@ -737,7 +738,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
           startup.joinedAt = new Date().toISOString();
           startup.state = "joined";
           warnings.push(...notices);
-          if (opts.interactive && !opts.detach) console.error(paintFor(process.stderr, () => renderReport({ space: inputs.space, sections: [{ title: "Agent joined", blocks: [{ kind: "fields", rows: [["Agent", agent.name], ["Identity", agent.id], ["Manager", agent.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Opening the allocated incarnation's terminal. Leaving the view sends no stop request.", tone: "hint" }] }] }] }, "rich")));
+          if (opts.interactive && !opts.detach) console.error(paintFor(process.stderr, () => renderReport({ space: inputs.space, sections: [{ title: "Agent joined", blocks: [{ kind: "fields", rows: joinedAgentRows(agent) }, { kind: "lines", lines: [{ text: "Opening the allocated incarnation's terminal. Leaving the view sends no stop request.", tone: "hint" }] }] }] }, "rich")));
         },
       });
       if (!startup.agent) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "setup received no native joined receipt; no readiness was inferred");

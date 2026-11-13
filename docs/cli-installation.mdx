@@ -100,7 +100,7 @@ uses the registered manager's persona catalog; `--on` pins its manager instance
 through credential issuance and launch. It uploads no local persona file. Without detach,
 the terminal opens that allocated incarnation's native view. If it disappears before attachment,
 setup reports the confirmed join and an incomplete view, not a healthy attached terminal. Leaving
-the view sends no stop request.
+the view sends no stop request. The joined receipt shows the agent's id when that agent's name is missing or only whitespace.
 
 `result.startup` separates the requested self-hosted manager pin, native stack-command
 return, joined-agent receipt and any classified failure. A declined Start keeps the
@@ -309,7 +309,7 @@ way, one registration at a time. A selector flag still reports
 one manager. A manager without a
 custody generation is reported as `legacy`: it cannot preserve its manager-owned PTYs, so the
 command says that this is not a hot update and prints `exact`, `fork`, `fresh`, or `drain-only`
-for every seat. This report sends no stop, preservation-commit, or replacement command.
+for every seat. A seat whose name is missing or only whitespace is listed by its id, or as `(unnamed)` when the inventory has no id. This report sends no stop, preservation-commit, or replacement command.
 It does not preserve a running PTY on a legacy manager. The built-in pty runtime spawns
 in-process on every platform and reports `legacy`. On Linux it still adopts seats that an earlier
 manager left under a detached custodian, but it starts no new custodian. An incompatible native

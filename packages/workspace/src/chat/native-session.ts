@@ -113,6 +113,11 @@ export function grantRefusal(grant: readonly string[], channel: string, use: "re
   return { outcome: "refused", code: "PERMISSION_DENIED", message };
 }
 
+/** A roster or heard name to show for a direct-message recipient. A missing or whitespace-only name is the principal. */
+function dmName(name: string | undefined, id: string): string {
+  return name !== undefined && name.trim() ? name : id;
+}
+
 /**
  * Resolve a DM target before any effect. A `{ principal }` target, or a typed string that parses as
  * a principal `<owner>.<actor>`, goes to that principal as is, whether or not it is present or was
@@ -133,7 +138,9 @@ export function resolveDmTarget(
     const principal = typeof to === "string" ? to : to.principal;
     if (!parsePrincipalKey(principal)) return refusedUsage(`"${principal}" is not a principal <owner>.<actor>`);
     if (principal === self.principal) return refusedUsage("a direct message needs a principal other than this session");
-    return { id: principal, name: roster.find((p) => p.card.id === principal)?.card.name ?? engine.senderName(principal) ?? principal };
+    const cardName = roster.find((p) => p.card.id === principal)?.card.name;
+    const heard = cardName === undefined ? engine.senderName(principal) : undefined;
+    return { id: principal, name: dmName(cardName ?? heard, principal) };
   }
   const peers = roster.filter((p) => p.card.id !== self.principal);
   let peer: Presence | undefined;
@@ -144,8 +151,8 @@ export function resolveDmTarget(
     return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: (e as Error).message };
   }
   const named = new Map<string, { id: string; name: string }>();
-  if (peer) named.set(peer.card.id, { id: peer.card.id, name: peer.card.name });
-  for (const sender of engine.sendersNamed(to)) if (!named.has(sender.id)) named.set(sender.id, sender);
+  if (peer) named.set(peer.card.id, { id: peer.card.id, name: dmName(peer.card.name, peer.card.id) });
+  for (const sender of engine.sendersNamed(to)) if (!named.has(sender.id)) named.set(sender.id, { id: sender.id, name: dmName(sender.name, sender.id) });
   if (named.size > 1) {
     const ids = [...named.keys()];
     // Each one-shot `cotal send` signs with its own principal and exits once it has sent, so a

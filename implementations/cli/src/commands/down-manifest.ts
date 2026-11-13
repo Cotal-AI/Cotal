@@ -38,6 +38,11 @@ import { connectProbe } from "../lib/manifest/live.js";
 import { readManifestSource } from "../lib/manifest/index.js";
 import { findLedgerByHash, findLedgerByRun, hashManifestSource, ownedCredPath, writeLedger, type MeshLedger } from "../lib/manifest/ledger.js";
 
+/** The name a teardown line shows. A missing or whitespace-only name is the id. */
+export function teardownName(name: string, id: string): string {
+  return name.trim() ? name : id;
+}
+
 export interface DownManifestFlags {
   run?: string;
   dryRun?: boolean;
@@ -84,7 +89,7 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
 
   if (flags.dryRun) {
     console.log(c.bold("\nWould remove (dry run):"));
-    for (const a of credPaths) console.log(`  ${c.red("-")} agent ${a.name} ${c.dim(`(id ${a.id.slice(0, 8)}, creds ${a.path}) - stopped only if name+id match live`)}`);
+    for (const a of credPaths) console.log(`  ${c.red("-")} agent ${teardownName(a.name, a.id)} ${c.dim(`(id ${a.id.slice(0, 8)}, creds ${a.path}) - stopped only if name+id match live`)}`);
     for (const ch of ledger.created.channels) console.log(`  ${c.red("-")} channel ${c.cyan("#" + ch)} ${c.dim("(auth mesh: only if no members remain · open mesh: metadata cleanup, no membership audit)")}`);
     console.log(`  ${c.red("-")} run dir ${runDir ?? "(none)"} + ledger ${ledgerPath} ${c.dim("(only if every owned resource is removed/proven gone; else the ledger is kept)")}`);
     console.log(c.dim("\nDry run - nothing was changed. The live membership check + actual disposition happen at apply."));
@@ -135,13 +140,13 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
           const l = liveById.get(a.id);
           if (!l) {
             const sameName = live.find((r) => r.name === a.name);
-            if (sameName) console.log(c.yellow(`  ~ ${a.name}: a different agent (id ${sameName.id.slice(0, 8)}) holds this name - NOT ours, left running`));
-            else console.log(c.dim(`  • ${a.name}: not running`));
+            if (sameName) console.log(c.yellow(`  ~ ${teardownName(a.name, a.id)}: a different agent (id ${sameName.id.slice(0, 8)}) holds this name - NOT ours, left running`));
+            else console.log(c.dim(`  • ${teardownName(a.name, a.id)}: not running`));
             continue;
           }
           // any-mode despawn: teardown stops agents it did not spawn (the admin instrument's
           // operator reach); the target is the agent's CURRENT principal triple (from the ps row).
-          if (!l.lifecycleUid) { console.log(c.yellow(`  ! ${l.name}: stop skipped - no lifecycle uid in the ps row (a pre-1c manager)`)); continue; }
+          if (!l.lifecycleUid) { console.log(c.yellow(`  ! ${teardownName(l.name, l.id)}: stop skipped - no lifecycle uid in the ps row (a pre-1c manager)`)); continue; }
           const [tOwner, tActor] = l.id.indexOf(".") > 0 ? [l.id.slice(0, l.id.indexOf(".")), l.id.slice(l.id.indexOf(".") + 1)] : [DEV_OWNER, l.id];
           const stopR = await ep.invokeService("manager", "despawn", undefined, {
             target: { mode: "any", owner: tOwner, actor: tActor, lifecycleUid: l.lifecycleUid },
@@ -149,9 +154,9 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
           });
           if (stopR.reply.ok === true) {
             stoppedIds.add(a.id);
-            console.log(c.green(`  ✓ stopped ${l.name}`));
+            console.log(c.green(`  ✓ stopped ${teardownName(l.name, l.id)}`));
           } else {
-            console.log(c.yellow(`  ! ${l.name}: stop failed - ${stopR.reply.error.message}`));
+            console.log(c.yellow(`  ! ${teardownName(l.name, l.id)}: stop failed - ${stopR.reply.error.message}`));
           }
         }
         // Channel removal: skip on ANY uncertainty (best-effort, racy — said so in output). The
@@ -258,19 +263,19 @@ export async function downManifest(file: string, flags: DownManifestFlags): Prom
     const raw = gate === "ok" ? await secrets.get(agentSecretKeyForFile(cp.path, ledger.space)) : undefined;
     const sub = gate === "suspect" || raw === undefined ? null : credSubject(raw);
     if (sub === null) {
-      console.error(c.yellow(`  ! ${cp.name} creds: unreadable/unverifiable - left in place (resolve by hand if it's a stale cred)`));
+      console.error(c.yellow(`  ! ${teardownName(cp.name, cp.id)} creds: unreadable/unverifiable - left in place (resolve by hand if it's a stale cred)`));
       continue;
     }
     if (sub !== cp.id) {
-      console.error(c.yellow(`  ~ ${cp.name} creds belong to a different agent (id ${sub.slice(0, 8)} ≠ ${cp.id.slice(0, 8)}) - ours is gone, left in place`));
+      console.error(c.yellow(`  ~ ${teardownName(cp.name, cp.id)} creds belong to a different agent (id ${sub.slice(0, 8)} ≠ ${cp.id.slice(0, 8)}) - ours is gone, left in place`));
       continue;
     }
     try {
       await secrets.delete(agentSecretKeyForFile(cp.path, ledger.space));
       unlinkFileNoFollow(cp.path); // clear the materialization (locally the delete above WAS it)
-      console.log(c.dim(`  • removed creds for ${cp.name}`));
+      console.log(c.dim(`  • removed creds for ${teardownName(cp.name, cp.id)}`));
     } catch (e) {
-      console.error(c.yellow(`  ! ${cp.name} creds: ${(e as Error).message} - retained for retry`));
+      console.error(c.yellow(`  ! ${teardownName(cp.name, cp.id)} creds: ${(e as Error).message} - retained for retry`));
       unresolvedCredIds.add(cp.id); // OUR id-verified cred, delete failed (recoverable) → keep the record
     }
   }
@@ -352,24 +357,24 @@ async function teardownUserModeAuthority(
       // deliberately — the entry is NOT retained (retaining would re-trigger every retry, the
       // permanently-undownable-ledger trap the static dispositions narrowed). With the row
       // revoked, nothing standing survives the ledger's deletion.
-      console.error(c.yellow(`  ! ${cp.name} user-mode secrets: unreadable/unverifiable - files left in place (resolve by hand); the grant row IS revoked, no standing authority remains`));
+      console.error(c.yellow(`  ! ${teardownName(cp.name, cp.id)} user-mode secrets: unreadable/unverifiable - files left in place (resolve by hand); the grant row IS revoked, no standing authority remains`));
       return;
     }
     const foreign = [...liveById.values()].some((r) => r.name === cp.name && r.id !== cp.id);
     if (foreign) {
-      console.log(c.yellow(`  ~ ${cp.name}: a different live agent holds this name - its secret files are left in place (our grant row is revoked)`));
+      console.log(c.yellow(`  ~ ${teardownName(cp.name, cp.id)}: a different live agent holds this name - its secret files are left in place (our grant row is revoked)`));
     } else if (tokenGate === "ok" || sentinelGate === "ok") {
       await secrets.delete(agentSecretKeyForFile(files.actorToken, space));
       await secrets.delete(agentSecretKeyForFile(files.sentinelCreds, space));
       unlinkFileNoFollow(files.actorToken); // the materializations (locally the deletes above WERE them)
       unlinkFileNoFollow(files.sentinelCreds);
       rmSync(files.health, { force: true });
-      console.log(c.dim(`  • removed user-mode authority for ${cp.name} (grant row + token + sentinel)`));
+      console.log(c.dim(`  • removed user-mode authority for ${teardownName(cp.name, cp.id)} (grant row + token + sentinel)`));
     } else {
-      console.log(c.dim(`  • ${cp.name}: user-mode secrets already gone; grant row revoked`));
+      console.log(c.dim(`  • ${teardownName(cp.name, cp.id)}: user-mode secrets already gone; grant row revoked`));
     }
   } catch (e) {
-    console.error(c.yellow(`  ! ${cp.name} user-mode teardown: ${(e as Error).message} - retained for retry`));
+    console.error(c.yellow(`  ! ${teardownName(cp.name, cp.id)} user-mode teardown: ${(e as Error).message} - retained for retry`));
     unresolvedCredIds.add(cp.id);
   }
 }
