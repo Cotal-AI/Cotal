@@ -261,6 +261,7 @@ async function openPipe(paths: DaemonPaths, timeoutMs: number): Promise<Socket> 
 export interface LoginOptions extends Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> {
   readonly idp: string;
   readonly clientId?: string;
+  readonly discoveryPins?: { url: string; issuer: string; audience: string };
   readonly onPrompt: (prompt: LoginPrompt) => void;
   /** Aborting sends login-cancel for this attempt and waits for the daemon's answer. */
   readonly signal?: AbortSignal;
@@ -306,7 +307,7 @@ export async function loginViaDaemon(opts: LoginOptions): Promise<LoginReply> {
       sock.once("error", (e) => finish(e));
       if (opts.signal?.aborted) return finish(abandoned);
       opts.signal?.addEventListener("abort", onAbort, { once: true });
-      sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "login-start", idp: opts.idp, ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}) }));
+      sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "login-start", idp: opts.idp, ...(opts.discoveryPins !== undefined ? { discoveryPins: opts.discoveryPins } : {}), ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}) }));
     });
   } finally {
     sock.destroy();
