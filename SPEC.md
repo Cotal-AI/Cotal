@@ -965,7 +965,10 @@ carry an optional top-level `discoveryNames` array of canonical lowercase DNS ho
 (without a scheme, port, path, IP literal or trailing dot). A client resolving a typed
 name MUST fetch its document over HTTPS without credentials or redirects, then fetch
 the root document at the declared `userAuth.idp.issuer` origin under the same rules.
-The documents MUST agree on `userAuth.idp.url`, `issuer` and `audience`. Unless the
+The documents MUST agree on `userAuth.idp.issuer` and `audience`. The typed root's
+`userAuth.idp.url` MUST be HTTPS on the typed name's origin or equal the issuer
+root's complete IdP URL. A different third-origin URL MUST be refused before device
+approval. The client MUST retain the typed root's IdP pins. Unless the
 typed name is the issuer's own hostname, the issuer's own root MUST list it in
 `discoveryNames`. An unlisted name MUST be refused before requesting device approval,
 with both the typed name and issuer origin identified. The approved account MUST

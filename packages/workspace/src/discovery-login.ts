@@ -78,12 +78,14 @@ export async function resolveDiscoveryLogin(name: string, options: { fetch?: typ
   const issuer = new URL(alias.issuer);
   const root = await document(`${issuer.origin}${WELL_KNOWN}`);
   const approved = pins(root);
-  if (alias.url !== approved.url || alias.issuer !== approved.issuer || alias.audience !== approved.audience)
+  if (alias.issuer !== approved.issuer || alias.audience !== approved.audience)
     throw new Error(`discovery name ${name} and issuer ${issuer.origin} have different IdP pins`);
   if (name !== issuer.hostname) {
     const names = object(root).discoveryNames;
     if (!Array.isArray(names) || !names.every((value) => typeof value === "string" && isDiscoveryName(value)) || !names.includes(name))
       throw new Error(`issuer ${issuer.origin} does not authorize discovery name ${name}`);
   }
-  return approved;
+  if (new URL(alias.url).origin !== `https://${name}` && alias.url !== approved.url)
+    throw new Error(`discovery name ${name} IdP URL must be on its own origin or match issuer ${issuer.origin} IdP URL`);
+  return alias;
 }
