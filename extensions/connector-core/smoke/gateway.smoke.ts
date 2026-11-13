@@ -98,6 +98,8 @@ const reserved = new Set<string>();
 const pendingApproval = { requestId: "approval-request-0123456789012345", proposed: null,
   approval: { id: "a".repeat(26), url: `https://authority.example/approve/${"a".repeat(26)}`, expiresAt: "2099-01-01T00:00:00.000Z" } };
 const resumedApprovals: string[] = [];
+let approvalRecorded = false;
+let approvalNow = 0;
 const host: GatewayHost = {
   account(auth: AuthInfo | undefined): string {
     const account = auth?.extra?.account;
@@ -108,11 +110,13 @@ const host: GatewayHost = {
     opened.push(`${account}/${name}`);
     selections.set(`${account}/${name}`, selection);
     if (name === "approval_probe") {
-      if (approvalId) {
-        resumedApprovals.push(`${account}/${approvalId}`);
-        throw new Error("the authority has not recorded the person's approval");
-      }
+      if (approvalId) resumedApprovals.push(`${account}/${approvalId}`);
+      if (approvalId && approvalRecorded) throw new Error("the authority has not recorded the person's approval");
       throw new ApprovalRequired(pendingApproval, "team");
+    }
+    if (name === "approval_now") {
+      approvalNow += 1;
+      if (approvalNow === 1) throw new ApprovalRequired(pendingApproval, "team");
     }
     if (name === "approval_collision") throw new NameTaken(name);
     if (name === "quota_probe") throw new Error("quota exceeded");
@@ -337,16 +341,20 @@ try {
     approvalText.includes('This connection would join space "team".') && approvalBody.space === "team" && live.size === beforeApproval);
   check("structured-only clients receive the same person-only approval and retry instructions", typeof approvalBody.message === "string" &&
     approvalBody.message.includes("do not open the decision page or approve on their behalf") &&
-    approvalBody.message.includes("retry cotal_connect") && approvalBody.message.includes("Do not poll") &&
+    approvalBody.message.includes("Call cotal_connect again") && approvalBody.message.includes("This call waited") &&
+    approvalBody.message.includes("does not start another request") &&
     approvalBody.message.includes(pendingApproval.approval.id));
-  check("pending approval never renames or issues", opened.filter((o) => o === "acct_a/approval_probe").length === 1 &&
-    !opened.includes("acct_a/approval_probe_2") && !reserved.has("acct_a/approval_probe"));
+  check("pending approval retries the same approval and never renames or issues", opened.filter((o) => o === "acct_a/approval_probe").length > 1 &&
+    !opened.includes("acct_a/approval_probe_2") && !reserved.has("acct_a/approval_probe") && resumedApprovals.length > 0);
+  approvalRecorded = true;
   const resume = await call(a, "cotal_connect", { name: "approval_probe", approval_id: pendingApproval.approval.id });
   check("approval_id reaches the host but cannot approve its request", resume.isError &&
     resume.text.includes("has not recorded") && resumedApprovals[0] === `acct_a/${pendingApproval.approval.id}` && live.size === beforeApproval);
   const changedName = await call(a, "cotal_connect", { name: "approval_collision", approval_id: pendingApproval.approval.id });
   check("an approval resume never renames on collision", changedName.isError && changedName.text.includes("new permission approval") &&
     !opened.includes("acct_a/approval_collision_2"));
+  const decided = await call(a, "cotal_connect", { name: "approval_now" });
+  check("a hosted connect returns connected when the person approves during the wait", !decided.isError && decided.text.startsWith("Connected as approval_now."), decided);
   const beforeSelfApproval = opened.length;
   const selfApproval = await call(a, "cotal_connect", { name: "approval_probe", approved: true }).catch(() => ({ isError: true, text: "schema refusal" }));
   const foreignFlag = await call(a, "cotal_connect", { name: "approval_probe", approval_id: "INVALID" }).catch(() => ({ isError: true, text: "schema refusal" }));

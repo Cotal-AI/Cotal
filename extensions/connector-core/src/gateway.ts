@@ -334,6 +334,15 @@ function wakeCount(agent: MeshAgent): number {
   return agent.inboxWake() + mentionsOf(agent).count;
 }
 
+/** Resolves true when `signal` aborts, false when `ms` elapses. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(true); }, { once: true });
+  });
+}
+
 /**
  * Resolve true once `agent` has something that should wake it, or false after `ms`, on abort, or
  * when the agent stops.
@@ -532,37 +541,68 @@ export function registerCotalGatewayTools(
         }
         try {
           const context = "context" in input && typeof input.context === "string" ? input.context : undefined;
-          const c = await host.open(account, candidate, context, selection, approvalId, space);
-          watch(c);
-          const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
-          const listening = wake ? `\n${wake.listening(c)}` : "";
-          // A conversation that joins here had no launch-time system prompt, so the connect result
-          // is where it is handed its bearings: the orientation card, then the shared briefing.
-          const card = await orientationCard(c.agent, c.config, source, undefined, toolsOf(c));
-          return toContent({
-            text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}\n\n${card}\n\n${briefing(c.config, "gateway")}`,
-          });
-        } catch (e) {
-          if (e instanceof ApprovalRequired) {
-            const resume = options.approvalResume ? ` and approval_id ${JSON.stringify(e.pending.approval.id)}` : "";
-            const joined = e.space ?? space;
-            const message = `Permission approval required. This conversation is not connected.\n` +
-              (joined ? `This connection would join space ${JSON.stringify(joined)}.\n` : "") +
-              `The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.\n` +
-              `Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.\n` +
-              `After they approve, retry cotal_connect with name ${JSON.stringify(candidate)}${resume} and the same requested permissions. Do not poll or start another request while waiting.`;
-            // Some native clients give the model only structuredContent, not the text blocks.
-            const structuredContent = { v: 1, status: "pending", name: candidate,
-              requestId: e.pending.requestId, approval: e.pending.approval, proposed: e.pending.proposed, message,
-              ...(joined ? { space: joined } : {}) };
-            return {
-              content: [
-                { type: "text" as const, text: message },
-                { type: "text" as const, text: JSON.stringify(structuredContent) },
-              ],
-              structuredContent,
-            };
+          // A hosted connect has no push, so this call holds and retries the same approval until the
+          // person decides or the wait bound ends. A local server with a wake path returns at once,
+          // and its notice continues the conversation.
+          const hold = Boolean(options.approvalResume && !wake);
+          let resumeId = approvalId;
+          const deadline = Date.now() + waitSeconds * 1000;
+          let waited = false;
+          for (;;) {
+            try {
+              const c = await host.open(account, candidate, context, selection, resumeId, space);
+              watch(c);
+              const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
+              const listening = wake ? `\n${wake.listening(c)}` : "";
+              // A conversation that joins here had no launch-time system prompt, so the connect result
+              // is where it is handed its bearings: the orientation card, then the shared briefing.
+              const card = await orientationCard(c.agent, c.config, source, undefined, toolsOf(c));
+              return toContent({
+                text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}\n\n${card}\n\n${briefing(c.config, "gateway")}`,
+              });
+            } catch (e) {
+              if (!(e instanceof ApprovalRequired)) throw e;
+              const resume = options.approvalResume ? ` and approval_id ${JSON.stringify(e.pending.approval.id)}` : "";
+              const joined = e.space ?? space;
+              const again = waited
+                ? `This call waited and the person has not decided. Call cotal_connect again with name ${JSON.stringify(candidate)}${resume} and the same requested permissions to keep waiting. That call does not start another request.`
+                : `After they approve, retry cotal_connect with name ${JSON.stringify(candidate)}${resume} and the same requested permissions. Do not poll or start another request while waiting.`;
+              const message = `Permission approval required. This conversation is not connected.\n` +
+                (joined ? `This connection would join space ${JSON.stringify(joined)}.\n` : "") +
+                `The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.\n` +
+                `Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.\n` +
+                again;
+              // Some native clients give the model only structuredContent, not the text blocks.
+              const structuredContent = { v: 1, status: "pending" as const, name: candidate,
+                requestId: e.pending.requestId, approval: e.pending.approval, proposed: e.pending.proposed, message,
+                ...(joined ? { space: joined } : {}) };
+              const pending = {
+                content: [
+                  { type: "text" as const, text: message },
+                  { type: "text" as const, text: JSON.stringify(structuredContent) },
+                ],
+                structuredContent,
+              };
+              if (!hold) return pending;
+              const remaining = deadline - Date.now();
+              if (remaining <= 0 || await pause(Math.min(250, remaining), extra.signal)) {
+                waited = true;
+                const late = `This call waited and the person has not decided. Call cotal_connect again with name ${JSON.stringify(candidate)}${resume} and the same requested permissions to keep waiting. That call does not start another request.`;
+                const lateMessage = message.slice(0, message.length - again.length) + late;
+                const lateStructured = { ...structuredContent, message: lateMessage };
+                return {
+                  content: [
+                    { type: "text" as const, text: lateMessage },
+                    { type: "text" as const, text: JSON.stringify(lateStructured) },
+                  ],
+                  structuredContent: lateStructured,
+                };
+              }
+              waited = true;
+              resumeId = e.pending.approval.id;
+            }
           }
+        } catch (e) {
           if (e instanceof NameTaken) {
             if (approvalId) return refuse("The approved name is no longer available. Nothing was connected; a different name requires a new permission approval.");
             continue;
