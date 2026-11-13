@@ -233,7 +233,7 @@ and any other caller's selection must be unique. Discovery and the command use t
 The caller gains no registry read or scatter permission. An absent, ambiguous or unauthorized
 selection refuses before sending the command. With several of your managers live, the refusal lists
 each one on its own row with its name, instance id, host, activity and the time its process started.
-A manager started without a name is listed as `<host>/<runtime>`. A manager started by a cotal
+A manager started without a name is listed as `<host>/<runtime>`. A name that is missing or only whitespace is listed the same way, and with no host or runtime the list uses the manager's id. A manager started by a cotal
 before 0.100.0 puts no host in its presence, so its host reads
 `not reported (started by an older cotal)` and it is listed by its runtime, such as `tmux`.
 Restarting it with the current cotal shows its host. Its Next gives your command again with `--on`
