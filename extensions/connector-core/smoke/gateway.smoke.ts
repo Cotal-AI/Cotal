@@ -168,7 +168,7 @@ const http = createServer(async (req, res) => {
   const auth: AuthInfo | undefined = account ? { token: token!, clientId: "smoke", scopes: [], extra: { account } } : undefined;
   // /mcp-selection is the same embedder with permission requests turned on, as Cotal Cloud serves it.
   const selection = req.url === "/mcp-selection";
-  await handleGatewayRequest(host, { req, res, body: req.method === "POST" ? await readBody(req) : undefined, waitSeconds: WAIT, approvalResume: true, selection, ...(auth ? { auth } : {}) });
+  await handleGatewayRequest(host, { req, res, body: req.method === "POST" ? await readBody(req) : undefined, waitSeconds: WAIT, approvalHoldSeconds: 3, approvalResume: true, selection, ...(auth ? { auth } : {}) });
 });
 const httpPort = await new Promise<number>((resolve) => http.listen(0, "127.0.0.1", () => resolve((http.address() as { port: number }).port)));
 const url = new URL(`http://127.0.0.1:${httpPort}/mcp`);
@@ -331,7 +331,11 @@ try {
 
   // ---- permission requests are not connections ----
   const beforeApproval = live.size;
+  const probesBefore = opened.filter((o) => o === "acct_a/approval_probe").length;
+  const heldFrom = Date.now();
   const pendingResult = await a.callTool({ name: "cotal_connect", arguments: { name: "approval_probe" } });
+  const heldMs = Date.now() - heldFrom;
+  const probes = opened.filter((o) => o === "acct_a/approval_probe").length - probesBefore;
   const approvalBody = pendingResult.structuredContent as Record<string, unknown>;
   const approvalText = (pendingResult.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("\n");
   check("pending approval returns the person's link and no usable connection", !pendingResult.isError &&
@@ -344,7 +348,8 @@ try {
     approvalBody.message.includes("Call cotal_connect again") && approvalBody.message.includes("This call waited") &&
     approvalBody.message.includes("does not start another request") &&
     approvalBody.message.includes(pendingApproval.approval.id));
-  check("pending approval retries the same approval and never renames or issues", opened.filter((o) => o === "acct_a/approval_probe").length > 1 &&
+  check("a held connect asks the host again every 2 seconds until its hold ends", probes === 3 && heldMs >= 3000 && heldMs < 6000, { probes, heldMs });
+  check("pending approval retries the same approval and never renames or issues", probes > 1 &&
     !opened.includes("acct_a/approval_probe_2") && !reserved.has("acct_a/approval_probe") && resumedApprovals.length > 0);
   approvalRecorded = true;
   const resume = await call(a, "cotal_connect", { name: "approval_probe", approval_id: pendingApproval.approval.id });
