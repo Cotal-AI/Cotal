@@ -12,6 +12,7 @@ import { renderReport } from "@cotal-ai/workspace";
 import { MeshView } from "../../../packages/workspace/dist/view/index.js";
 import { runLog } from "../src/render.js";
 import { feedLine, observedText, watchReport, WATCH_TEXT_LIMIT } from "../src/watch-data.js";
+import { whoLabel } from "../src/commands/who.js";
 import {
   chatSubject,
   unicastSubject,
@@ -263,6 +264,14 @@ for (const [what, plain, locale] of [["--plain under a UTF-8 locale", true, "C.U
   check("control: a pipe under a UTF-8 locale draws the status mark, the arrow and the count sign",
     /● working · progress unknown/.test(text) && /alice\/alice → #general: a → b/.test(text) && /\(3×\)/.test(text));
 }
+
+for (const name of [" ", "", "\n", " \n\t"]) {
+  const label = whoLabel(name, "local.blank");
+  check(`who shows the id for a name ${JSON.stringify(name)}`, label === "local.blank" && !label.includes("\n"));
+}
+check("who keeps a participant name", whoLabel("ada", "local.ada") === "ada");
+check("who keeps a name and its role", whoLabel("ada", "local.ada", "worker") === "ada/worker");
+check("who uses the id when a blank name has a role", whoLabel(" ", "local.blank", "worker") === "local.blank/worker");
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);
