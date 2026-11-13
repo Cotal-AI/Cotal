@@ -463,7 +463,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     server.on("error", error => { failure = String(error); });
     await until("native driver listening", () => driver.call("GET", "/status"), Boolean, 30_000);
     if (process.platform === "win32" && args.length === 1 && args[0].startsWith("cotal://")) {
-      await driver.openWindowsLink(binary, args[0], { env: guiEnv, cwd: home, receipts: join(daemonHome, "deep-link-receipts.jsonl") });
+      await driver.openWindowsLink(binary, args[0], { env: guiEnv, cwd: home, receipts: join(output, "deep-link-receipts.jsonl") });
     } else await driver.open(binary, args);
     if (!args.includes("--background")) await until("native app metadata", () => driver.text("version"), value => value.startsWith("v"));
     if (process.platform === "win32") await driver.call("POST", driver.path("execute/sync"), { script: `

@@ -122,3 +122,10 @@ test('scenario preserves deep-link context and no-approval assertions', () => {
   assert.match(scenario, /value.length===1&&value\[0\]===expected/);
   assert.match(scenario, /Windows deep-link plugin retains the intended public URL", exactLink === true/);
 });
+
+test('Windows plain-link admission reads the native trace output, not the daemon home', () => {
+  const scenario = readFileSync(new URL('./first-run.ts', import.meta.url), 'utf8');
+  assert.match(scenario, /traceHome: process.platform === "win32" \? output : daemonHome/);
+  assert.match(scenario, /driver.openWindowsLink\(binary, args\[0\], \{ env: guiEnv, cwd: home, receipts: join\(output, "deep-link-receipts.jsonl"\) \}\)/);
+  assert.doesNotMatch(scenario, /receipts: join\(daemonHome, "deep-link-receipts.jsonl"\)/);
+});
