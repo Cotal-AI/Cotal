@@ -12,7 +12,7 @@
  *    record of its key. An agent's watch is refused.
  *  - An answer reaches the one process its record names, with the sender the broker vouches for, and
  *    every holder reply maps to its outcome. A holder that does not hold a prompt stays silent. A
- *    closed holder reads `gone`, and a wait shorter than the handoff bound is refused.
+ *    closed holder reads `gone`, and a wait shorter than the answer timeout is refused.
  *  - An open mesh holds nothing.
  *
  * Run: pnpm smoke:permission-rail   (needs nats-server on PATH)
@@ -27,7 +27,7 @@ import { jetstream } from "@nats-io/jetstream";
 import { encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import {
-  CotalEndpoint, PERMISSION_HANDOFF_BOUND_MS, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity,
+  CotalEndpoint, PERMISSION_ANSWER_TIMEOUT_MS, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity,
   permissionAnswerSubject, permissionBucket, permissionsFor, principalId, serverConfig, setupSpaceStreams, type IncomingPermissionAnswer,
   type PermissionAnswerReply, type PermissionReaderOpener, type PermissionRecord,
 } from "../src/index.js";
@@ -210,8 +210,8 @@ try {
     { toFirst, toSecond, theirs: theirs.length, runtimes: [port.holder.runtimeId, port2.holder.runtimeId] });
   port2.close();
 
-  const shortWait = await web.ep.answerPermission(target, { decision: "approve" }, PERMISSION_HANDOFF_BOUND_MS).then(() => "sent", (e: Error) => e.message);
-  check("a wait that ends before the holder's handoff bound is refused", /handoff bound/.test(shortWait), shortWait);
+  const shortWait = await web.ep.answerPermission(target, { decision: "approve" }, PERMISSION_ANSWER_TIMEOUT_MS - 1).then(() => "sent", (e: Error) => e.message);
+  check("a wait shorter than the answer timeout is refused", /shorter than/.test(shortWait), shortWait);
 
   const before = answers.length;
   const refused = [

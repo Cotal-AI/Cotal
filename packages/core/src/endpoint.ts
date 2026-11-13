@@ -7049,12 +7049,12 @@ export class CotalEndpoint extends EventEmitter {
    * goes to the process the record names as holder, with its reply beneath the request's own
    * `.reply.` leaf and no muxed inbox, so a prompt no live process holds reads as the broker's
    * no-responders status: `gone`. The default wait outlasts the holder's handoff bound, so an
-   * undelivered verdict reads `answered`; a shorter one is refused. Throws only for an answer the
-   * rail cannot carry.
+   * undelivered verdict reads `answered`. Throws for a shorter wait and for an answer the rail cannot
+   * carry.
    */
   async answerPermission(target: PermissionTarget, answer: PermissionAnswer, timeoutMs = PERMISSION_ANSWER_TIMEOUT_MS): Promise<PermissionAnswerOutcome> {
-    if (!(timeoutMs > PERMISSION_HANDOFF_BOUND_MS))
-      throw new RangeError(`permission answer: a ${timeoutMs} ms wait ends before the holder's ${PERMISSION_HANDOFF_BOUND_MS} ms handoff bound, so an undelivered verdict could never read answered`);
+    if (!(timeoutMs >= PERMISSION_ANSWER_TIMEOUT_MS))
+      throw new RangeError(`permission answer: a ${timeoutMs} ms wait is shorter than ${PERMISSION_ANSWER_TIMEOUT_MS} ms, the holder's ${PERMISSION_HANDOFF_BOUND_MS} ms handoff bound plus a write and the round trip, so an undelivered verdict could read as a timeout`);
     const agent = parsePrincipalKey(target.agent);
     const note = answer.decision === "deny" && answer.note !== undefined ? { note: answer.note } : {};
     const body: PermissionAnswerBody = { v: 1, id: target.id, decision: answer.decision, ...note };
