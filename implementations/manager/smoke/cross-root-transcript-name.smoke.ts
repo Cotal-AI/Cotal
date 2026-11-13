@@ -1,6 +1,10 @@
 /** Live regression for #6612. Two remote Managers share an owner, but no event state. */
+const childEnv = { ...process.env };
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 const subcommand = process.argv[2];
 if (subcommand === "auth-service" || subcommand === "agent-bearer") {
+  // These subprocesses receive the fixture's explicitly selected private auth home.
+  process.env.COTAL_HOME = childEnv.COTAL_HOME;
   await import("@cotal-ai/auth");
   const { registry, parseCommandArgs } = await import("@cotal-ai/core");
   const command = registry.resolve<import("@cotal-ai/core").Command>("command", subcommand);
@@ -17,13 +21,13 @@ async function seat(): Promise<void> {
   const { randomUUID } = await import("node:crypto");
   const { MeshAgent, configFromEnv, eventWalLocation, EventWal, FileSubjectFrontier, AguiEmitter, JsonlFileSource, runStarted, runFinished } = await import("@cotal-ai/connector-core");
   const { principalKey } = await import("@cotal-ai/core");
-  const config = configFromEnv();
+  const config = configFromEnv(childEnv);
   const agent = new MeshAgent(config);
   try {
     await agent.start(50);
     const threadId = randomUUID();
     const principal = principalKey(config.userAuth!.owner, config.userAuth!.actor).key;
-    const loc = eventWalLocation({ workspaceRoot: process.env.COTAL_WORKSPACE_ROOT!, space: config.space, principal, threadId });
+    const loc = eventWalLocation({ workspaceRoot: childEnv.COTAL_WORKSPACE_ROOT!, space: config.space, principal, threadId });
     mkdirSync(loc.threadDir, { recursive: true });
     const source = join(loc.threadDir, "fixture.jsonl");
     writeFileSync(source, "");
@@ -66,7 +70,6 @@ async function main(): Promise<void> {
   const scratch = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}6612-`));
   const home = join(scratch, "h"), hostRoot = join(scratch, "host");
   for (const dir of [home, hostRoot]) mkdirSync(join(dir, ".cotal"), { recursive: true, mode: 0o700 });
-  for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
   process.env.COTAL_HOME = home;
   const space = `repro6612${process.pid}`, port = await freePort(), servers = `nats://127.0.0.1:${port}`;
   const hostDir = userAuthStateDir(hostRoot, space), hostStore = workspaceSecretStore(hostRoot);
