@@ -48,7 +48,7 @@ import { FileSubjectFrontier, type SubjectFrontier } from "./subject-frontier.js
 export interface EmitterEndpoint {
   readonly principal: { owner: string; actor: string };
   readonly actorIsEphemeral: boolean;
-  eventPayloadLimit?(): Promise<number>;
+  eventPayloadLimit?(): Promise<number | null>;
   publishEventPayload?(o: { parts: Part[]; id: string; expectedLastSubjectSeq: number }): Promise<{ ack: { seq: number; duplicate: boolean } }>;
   /** The broker's live `max_payload`. Throws when not connected — never guesses a default. */
   readonly maxPayload: number;
@@ -452,9 +452,19 @@ export class AguiEmitter<T> {
     if (em.withholdPayloads && wal.pending?.payload)
       throw new Error("payload withholding refuses a previously frozen sibling publication; settle it under the prior policy before changing policy");
     if (!em.withholdPayloads && endpoint.eventPayloadLimit && endpoint.publishEventPayload) {
-      em.payloadLimit = await endpoint.eventPayloadLimit();
-      em.payloadFrontier = await FileSubjectFrontier.open(join(dirname(dirname(wal.path)), "payload-subject.json"), { space: wal.space, principal: live });
+      const limit = await endpoint.eventPayloadLimit();
+      if (limit !== null) {
+        em.payloadLimit = limit;
+        // Structural endpoints may place several spaces or principals under one WAL parent.
+        // Scope the shared frontier by the subject tuple, never by thread or assumed layout.
+        const subjectKey = createHash("sha256").update(JSON.stringify([wal.space, live])).digest("hex");
+        em.payloadFrontier = await FileSubjectFrontier.open(join(dirname(dirname(wal.path)), `payload-subject-${subjectKey}.json`), { space: wal.space, principal: live });
+      }
     }
+    // Never fold even an acknowledged sibling away while its rail is unavailable. Keep the WAL
+    // intact so an operator can restore the rail and recover under the original policy.
+    if (wal.pending?.payload && !em.payloadFrontier)
+      throw new Error("previously frozen sibling payload requires an available event payload rail; upgrade the space and restart before recovery");
     await em.recover();
     // The run the wire has open once the pending frame is settled, which is the last turn the log
     // can name: a terminal reported before any record the first pump reads is that run's.
@@ -587,11 +597,10 @@ export class AguiEmitter<T> {
         if (event.type === AGUI_EVENT_TYPE.TOOL_CALL_START) payloadCalls[event.toolCallId] = !isCotalPayloadExcludedTool(event.toolCallName);
         if (event.type === AGUI_EVENT_TYPE.TOOL_CALL_ARGS || event.type === AGUI_EVENT_TYPE.TOOL_CALL_RESULT) {
           if (payloadCalls[event.toolCallId] === undefined) throw new Error(`tool payload ${event.toolCallId} has no persisted start classification`);
-          if (payloadCalls[event.toolCallId] && !this.withholdPayloads) payloadEvents.push(event);
+          if (payloadCalls[event.toolCallId] && this.payloadFrontier) payloadEvents.push(event);
           if (event.type === AGUI_EVENT_TYPE.TOOL_CALL_RESULT) delete payloadCalls[event.toolCallId];
         }
       }
-      if (payloadEvents.length && !this.payloadFrontier) throw new Error("tool payload publication requires a sibling event rail");
       const events = applyAguiEgressPolicy(raw);
       for (const e of m.events) if (e.type === AGUI_EVENT_TYPE.RUN_STARTED) turns.push(e.runId);
       if (events.length === 0) {

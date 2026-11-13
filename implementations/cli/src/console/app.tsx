@@ -498,7 +498,7 @@ export function App({
     (input, key) => {
       if (helpOpen) return setHelpOpen(false);
       if (detail) {
-        if (detail.kind === "agent" && !key.escape) return;
+        if (detail.kind === "agent" && !key.escape && !key.return) return;
         return setDetail(null);
       }
       if (search.active) return; // the Search line owns input while open

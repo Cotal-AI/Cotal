@@ -4,6 +4,7 @@
 // spawner. REPRO_READINESS_MS sets the stub connector's readiness timeout, and REPRO_JOIN_DELAY_ONCE
 // with REPRO_JOIN_DELAY_MS delays one seat's join (see _join-delay.mjs).
 import { dirname, join } from "node:path";
+import { appendFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Manager } from "../src/manager.js";
 import { childlessRuntime } from "./_childless-runtime.js";
@@ -25,7 +26,10 @@ const delay: { args: string[]; env: Record<string, string> } = delayOnce
 registry.register({
   kind: "connector", name: "supervise-crash-stub", requires: ["node"],
   ...(readinessTimeoutMs !== undefined ? { readinessTimeoutMs } : {}),
-  buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [...delay.args, stub, space], env: { ...envFor(o), ...delay.env } }),
+  buildLaunch: (o): LaunchSpec => {
+    appendFileSync(join(root, "payload-launches.jsonl"), `${JSON.stringify({ name: o.name, eventPayloads: o.eventPayloads })}\n`);
+    return { command: process.execPath, args: [...delay.args, stub, space], env: { ...envFor(o), ...delay.env } };
+  },
 } as Connector);
 const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: root, consolePort: 0 });
 // Only this fixed stub runs here. Its durable birth record is enough because it spawns no tools;

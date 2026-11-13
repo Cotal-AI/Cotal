@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1030,
+    "total": 1031,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 10,
-    "non-render/control": 811
+    "non-render/control": 812
   },
   "renderers": [
     {
@@ -538,14 +538,14 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "<Detail target={detail} feed={mesh.feed} width={size.cols} heigh",
+      "anchor": "ep={ep} target={detail} feed={mesh.feed} width={size.cols} heigh",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "il target={detail} feed={mesh.feed} width={size.cols} heigh",
+      "anchor": "p} target={detail} feed={mesh.feed} width={size.cols} heigh",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -3117,7 +3117,7 @@
     {
       "path": "implementations/web/client/src/ui/work/ToolLine.tsx",
       "kind": "derived-output",
-      "anchor": "return line;",
+      "anchor": "{state !== \"failed\" ? line : <FailedTip line={line} words={call.kind === \"command\" ? FAILED_COMMAND : FAILED_OTHER} />}",
       "class": "non-render/control",
       "rationale": "Not presence: `status` is the trace line's prop for the call's own state from its result marker; the line names a call, never the agent's status."
     },
@@ -3134,6 +3134,13 @@
       "anchor": "{line}",
       "class": "non-render/control",
       "rationale": "Not presence: the failed call's line and its tooltip; `line` carries the trace line's own `status` prop, set from the call's result marker, never the agent's status."
+    },
+    {
+      "path": "implementations/web/client/src/ui/work/ToolPayloads.tsx",
+      "kind": "derived-output",
+      "anchor": "{([['Input', call.input], ['Result', call.result]] as const).map(([label, value]) =>\n    <details key={label} className=\"ox-payload\">\n      <summary>{label}{value === undefined ? ` · ${missing}` : \"\"}</summary>\n      <pre>{value === undefined ? (payloadRead?.reason ?? \"No payload received. It may be withheld or outside the retained window.\") : payloadText(value)}</pre>\n    </details>\n  )}",
+      "class": "non-render/control",
+      "rationale": "Not presence: payloadRead.status describes an API payload read refusal or failure. These details show tool inputs and results or an explicit read error, never the agent's presence status."
     },
     {
       "path": "implementations/web/client/src/ui/work/Turn.tsx",
@@ -3480,7 +3487,7 @@
     {
       "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
       "kind": "derived-output",
-      "anchor": "= <WorkList work={work} row={row} condition={condition} h",
+      "anchor": "ayloadRead} work={work} row={row} condition={condition} h",
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
@@ -3491,7 +3498,7 @@
     {
       "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
       "kind": "derived-output",
-      "anchor": "orkList work={work} row={row} condition={condition} h",
+      "anchor": "adRead} work={work} row={row} condition={condition} h",
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {

@@ -21,6 +21,7 @@ import {
   dmStream,
   downloadStreamSnapshot,
   endpointPlaneStreamNames,
+  eventPayloadStream,
   fanoutDurableConfig,
   inboxReaderConfig,
   inboxStream,
@@ -41,7 +42,14 @@ const space = "backup_smoke";
 const connId = "UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const inventory = spaceBackupInventory(space);
 
-assert.equal(inventory.full.length, 11);
+assert.equal(inventory.full.length, 12);
+assert.ok(inventory.backedUp.some((stream) => stream.name === eventPayloadStream(space) && stream.class === "messages"));
+assert.ok(!inventory.registry.includes(eventPayloadStream(space)));
+assert.deepEqual(canonicalBackupStreamConfig(space, eventPayloadStream(space)), {
+  ...canonicalBackupStreamConfig(space, chatStream(space)),
+  name: eventPayloadStream(space),
+  subjects: [`cotal.${space}.evp.>`],
+});
 const endpointStreams = endpointPlaneStreamNames(space);
 assert.equal(endpointStreams.length, 15);
 assert.equal(new Set(endpointStreams).size, 15);

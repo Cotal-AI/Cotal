@@ -6,7 +6,8 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rea
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { hostname } from "node:os";
-import { createSpaceAuth, mintCreds, newIdentity, probeConnect, rotateSystemAccount, taskStream } from "@cotal-ai/core";
+import { createSpaceAuth, eventPayloadStream, mintCreds, newIdentity, probeConnect, rotateSystemAccount, taskStream } from "@cotal-ai/core";
+import type { BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
 import {
   acquireMaintenanceLock,
   authDir,
@@ -90,10 +91,14 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
   const must = (label: string, result: ReturnType<typeof run>) => {
     assert.equal(result.status, 0, `${mode} ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   };
+  const payload = (action: "seed" | "full" | "empty") => must(`payload ${action}`, spawnSync(tsx,
+    [join(worktree, "implementations/cli/smoke/backup-event-payload.ts"), root, server, space, action, mode],
+    { cwd: join(worktree, "implementations/cli"), env, encoding: "utf8", timeout: 30_000 }));
 
   try {
     must("up", run("up", "--detach", ...(mode === "open" ? ["--open"] : []), "--server", server, "--space", space));
     must("seed registry", run("channel", "set", "preserved", "--desc", "survives", "--space", space));
+    payload("seed");
     if (mode === "auth") {
       must("seed TASK durable", spawnSync(tsx, [taskSeedPath, root, server, space, "reviewer"], {
         cwd: join(worktree, "implementations", "cli"), env, encoding: "utf8", timeout: 30_000,
@@ -143,6 +148,11 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     must("full backup", run("backup", "create", artifact));
     must("registry backup", run("backup", "create", registryArtifact, "--only", "registry"));
     assert.ok(existsSync(join(artifact, "manifest.json")));
+    const fullManifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")) as BackupManifest;
+    assert.equal(fullManifest.format, "cotal-space-backup/v3");
+    assert.equal(fullManifest.streams.find((entry) => entry.stream === eventPayloadStream(space))?.state.messages, 1);
+    const registryManifest = JSON.parse(readFileSync(join(registryArtifact, "manifest.json"), "utf8")) as BackupManifest;
+    assert.ok(!registryManifest.streams.some((entry) => entry.stream === eventPayloadStream(space)));
     // A full artifact of an authenticated space restores only where its trust state survives, and says so.
     const trustBound = (dir: string) => (JSON.parse(run("backup", "inspect", dir, "--json").stdout) as { result: { trustBound: boolean } }).result.trustBound;
     assert.equal(trustBound(artifact), mode === "auth", `a full ${mode} artifact says whether it is bound to this root's trust state`);
@@ -320,8 +330,35 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       rmSync(join(store, "notes.txt"));
     }
     const restoreArtifact = mode === "open" ? registryArtifact : artifact;
+    // Adapt real CLI snapshots to the precise v2 inventory. This is not an old-producer artifact.
+    // A v3 with that missing stream must refuse; the same bytes declared as v2 must restore.
+    if (mode === "auth") {
+      const legacyArtifact = join(root, "legacy-v2-backup");
+      cpSync(artifact, legacyArtifact, { recursive: true });
+      const legacy = structuredClone(fullManifest);
+      const removed = legacy.streams.find((entry) => entry.stream === eventPayloadStream(space));
+      assert.ok(removed);
+      legacy.streams = legacy.streams.filter((entry) => entry !== removed);
+      legacy.files = legacy.files.filter((entry) => entry.path !== removed.snapshot);
+      rmSync(join(legacyArtifact, removed.snapshot));
+      writeFileSync(join(legacyArtifact, "manifest.json"), `${JSON.stringify(legacy, null, 2)}\n`);
+      const missingPayload = run("backup", "restore", legacyArtifact, "--json");
+      assert.notEqual(missingPayload.status, 0);
+      assert.match(missingPayload.stdout + missingPayload.stderr, /stream inventory does not match its selection/);
+      assert.equal(readMaintenanceJournal(root)?.state, "ready");
+      legacy.format = "cotal-space-backup/v2";
+      writeFileSync(join(legacyArtifact, "manifest.json"), `${JSON.stringify(legacy, null, 2)}\n`);
+      must("verify adapted v2 artifact", run("backup", "verify", legacyArtifact));
+      must("restore adapted v2 artifact", run("backup", "restore", legacyArtifact));
+      payload("empty");
+      const legacyJournal = readMaintenanceJournal(root);
+      assert.ok(legacyJournal?.state === "active");
+      must("retire adapted v2 restore", run("backup", "cleanup-fallback", legacyJournal.restore.attemptId, "--discard-history", "--yes"));
+      must("preserve after adapted v2 restore", run("down", "--preserve-state"));
+    }
     const restored = run("up", "--restore", restoreArtifact, "--detach", "--server", server, "--space", space);
     must("restore", restored);
+    payload(mode === "open" ? "empty" : "full");
     const listed = run("channel", "--space", space);
     must("list restored registry", listed);
     assert.match(listed.stdout, /#preserved/);

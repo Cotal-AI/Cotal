@@ -2779,10 +2779,20 @@ export class CotalEndpoint extends EventEmitter {
       .map(row => row.msg);
   }
 
-  /** Verify the sibling stream and learn its actual message ceiling before recording payloads. */
-  async eventPayloadLimit(): Promise<number> {
+  /** Verify the sibling stream and learn its actual message ceiling. A pre-upgrade space without
+   *  the stream returns null and emits a warning; authorization, transport and config errors throw. */
+  async eventPayloadLimit(): Promise<number | null> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
-    const { config } = await this.jsm.streams.info(eventPayloadStream(this.space));
+    const stream = eventPayloadStream(this.space);
+    const info = await this.jsm.streams.info(stream).catch((err: unknown) => {
+      if (!isJetStreamMissing(err, JetStreamApiCodes.StreamNotFound)) throw err;
+      this.emitRecoverable(new Error(
+        `event payloads unavailable: stream ${stream} is absent; publishing tool names and times only. Upgrade the space's broker setup and credentials to enable payloads`,
+      ));
+      return null;
+    });
+    if (info === null) return null;
+    const { config } = info;
     if (config.num_replicas !== 1) throw new Error("event payload stream requires one replica for serialized appends");
     const limits = [this.maxPayload, config.max_msg_size, config.max_bytes].filter((n): n is number => typeof n === "number" && n > 0);
     return Math.min(...limits);

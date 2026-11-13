@@ -104,6 +104,9 @@ const agent = z.strictObject({
     // required field here would refuse every inventory the previous version wrote, so an upgrade
     // that restarts the manager would lose the agents it was supposed to preserve.
     events: z.boolean().default(false),
+    // Older inventories and seat records carry no payload choice. Preserve that absence so the
+    // connector applies its publication default, while an explicit false survives a restart.
+    eventPayloads: z.boolean().optional(),
     // Start takes any declared server key as written, empty or long, so a bound per name here would
     // refuse to preserve an agent that launched. The args byte cap bounds the list.
     shareTools: z.array(z.string()).optional(),

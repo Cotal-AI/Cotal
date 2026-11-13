@@ -54,3 +54,57 @@ assert.deepEqual(calls.map(c=>c.rail),["public"]);
 assert.ok(!JSON.stringify(calls).includes("withheld-input"));
 assert.ok(!JSON.stringify(calls).includes("withheld-output"));
 console.log("PASS explicit withholding retains public status only");
+
+for (const mode of ["missing-api", "missing-stream", "error"] as const) {
+  const legacyRoot = await mkdtemp(join(tmpdir(), "payload-legacy-"));
+  await mkdir(join(legacyRoot, "thread"));
+  const legacySrc = join(legacyRoot, "source.jsonl");
+  await writeFile(legacySrc, "");
+  const legacyWal = await EventWal.open(join(legacyRoot, "thread", "wal.json"), { space: "payload", threadId: "native", principal: "local.seat", subjectMayExist: false });
+  const failure = new Error("authorization/network/config sentinel");
+  const legacyEp: EmitterEndpoint = { ...ep, eventPayloadLimit: mode === "missing-api" ? undefined : async () => { if (mode === "error") throw failure; return null; }, publishEventPayload: mode === "missing-api" ? undefined : ep.publishEventPayload };
+  calls.length = 0;
+  const start = () => AguiEmitter.start({ endpoint: legacyEp, wal: legacyWal, subjectFrontier: memorySubjectFrontier(), source: new JsonlFileSource(legacySrc), map: () => ({ runId: "run", events: [runStarted({ threadId: "native", runId: "run", timestamp: 1 }), toolCallStart({ toolCallId: "call", toolCallName: "bash", timestamp: 2 }), toolCallArgs({ toolCallId: "call", delta: "legacy-private-input", timestamp: 2 }), toolCallEnd({ toolCallId: "call", timestamp: 3 }), toolCallResult({ messageId: "result", toolCallId: "call", content: "legacy-private-output", timestamp: 3 })] }) });
+  if (mode === "error") {
+    await assert.rejects(start, error => error === failure);
+    assert.equal(calls.length, 0);
+    continue;
+  }
+  const legacy = await start();
+  await legacy.pump(); await writeFile(legacySrc, "{}\n"); await legacy.pump();
+  assert.deepEqual(calls.map(call => call.rail), ["public"]);
+  assert.ok(JSON.stringify(calls).includes("bash"));
+  assert.ok(!JSON.stringify(calls).includes("legacy-private"));
+  assert.deepEqual(legacyWal.payloadCalls, {});
+  // A missing rail must not fold a frozen sibling, even if both acknowledgements are durable.
+  for (const acked of [false, true]) {
+    const frozenWal = await EventWal.open(join(legacyRoot, "thread", `frozen-${acked}.json`), { space: "payload", threadId: "native", principal: "local.seat", subjectMayExist: false });
+    const frontier = memorySubjectFrontier();
+    await frozenWal.bindSubjectFrontier(frontier);
+    await frozenWal.beginSend({ id: `frozen${acked}`, E: 0, seq: 1, sourceCursor: "frozen-cursor", body: [{ kind: "text", text: "status" }], brackets: { run: undefined, text: [], reasoning: [], tools: [] }, payload: { id: `sibling${acked}`, E: 0, body: [{ kind: "text", text: "private" }] } });
+    if (acked) { await frozenWal.recordPayloadAck(1); await frozenWal.recordAck(3); }
+    const pending = JSON.stringify(frozenWal.pending);
+    await assert.rejects(() => AguiEmitter.start({ endpoint: legacyEp, wal: frozenWal, subjectFrontier: frontier, source: new JsonlFileSource(legacySrc), map: () => null }), /previously frozen sibling payload requires an available/);
+    assert.equal(JSON.stringify(frozenWal.pending), pending);
+  }
+}
+console.log("PASS legacy adapters and missing streams preserve metadata, failures propagate, frozen siblings refuse recovery");
+
+const sharedRoot = await mkdtemp(join(tmpdir(), "payload-shared-"));
+let payloadTip = 0;
+let publicTip = 0;
+const sharedFrontier = memorySubjectFrontier();
+const sharedEp: EmitterEndpoint = { ...ep,
+  publishEventPayload: async o => { assert.equal(o.expectedLastSubjectSeq, payloadTip); return { ack: { seq: ++payloadTip, duplicate: false } }; },
+  multicastExpecting: async o => { assert.equal(o.expectedLastSubjectSeq, publicTip); return { ack: { seq: ++publicTip, duplicate: false } }; },
+};
+for (const threadId of ["first", "second"]) {
+  await mkdir(join(sharedRoot, threadId));
+  const sourcePath = join(sharedRoot, threadId, "source.jsonl");
+  await writeFile(sourcePath, "");
+  const threadWal = await EventWal.open(join(sharedRoot, threadId, "wal.json"), { space: "payload", threadId, principal: "local.seat", subjectMayExist: false });
+  const threadEmitter = await AguiEmitter.start({ endpoint: sharedEp, wal: threadWal, subjectFrontier: sharedFrontier, source: new JsonlFileSource(sourcePath), map: () => ({ runId: "run", events: [runStarted({ threadId, runId: "run", timestamp: 1 }), toolCallStart({ toolCallId: "call", toolCallName: "bash", timestamp: 2 }), toolCallArgs({ toolCallId: "call", delta: "input", timestamp: 2 }), toolCallEnd({ toolCallId: "call", timestamp: 3 })] }) });
+  await threadEmitter.pump(); await writeFile(sourcePath, "{}\n"); await threadEmitter.pump();
+}
+assert.equal(payloadTip, 2);
+console.log("PASS same space/principal sibling threads share payload subject frontier");

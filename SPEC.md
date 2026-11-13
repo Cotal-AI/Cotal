@@ -6104,8 +6104,10 @@ does not fit, it replaces each whole payload value with a JSON cut marker contai
 `cotalPayloadCut: true`, `originalBytes` and a lowercase hexadecimal `sha256` digest of that value.
 It MUST NOT publish an opaque partial value. Metadata that still exceeds the limit fails loudly.
 The payload stream starts with the chat stream's canonical retention configuration, independently
-of any operator changes to chat retention. Combined channel history and backup coverage are not
-established by this revision.
+of any operator changes to chat retention. A full space backup includes the payload stream and
+restores its retained frames without changing their owner and actor subjects or read grants.
+A registry-only backup excludes payload frames and restores an empty payload stream. Combined
+channel history coverage is not established by this revision.
 
 The reference WAL v4 freezes the sibling payload body and its acknowledgement with the public
 transaction. Payload publication precedes public publication, and the source cursor advances only

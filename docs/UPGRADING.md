@@ -15,7 +15,14 @@ whole event plane where permitted. A registration may enforce
 are excluded by identity. Other tools are not scanned for secret-shaped text.
 
 Upgrade the broker setup and credentials with the clients: payloads use a separate `EVP_<space>`
-stream and broker rail. Ordinary-channel readers continue to see tool metadata only. WAL v4
+stream and broker rail. If a pre-upgrade space has no payload stream, the endpoint emits a
+`warning` event explaining that payloads are unavailable. Tool names, times and completion status
+continue on the public event channel without inputs or results. Upgrade the space's broker setup
+and credentials, then restart the seat to enable payload publication. Authorization, network and
+invalid stream configuration errors still fail startup rather than selecting this compatibility path.
+A previously frozen sibling publication refuses recovery while the payload rail is absent, even
+when its acknowledgement was recorded; restore the rail before restarting it.
+Ordinary-channel readers continue to see tool metadata only. WAL v4
 records sibling publication and its acknowledgement; older emitters refuse it. Older pending
 public frames migrate without invented payloads, and frozen public payload bodies still halt.
 Settle a pending sibling under its prior policy before enabling withholding. The live broker and
