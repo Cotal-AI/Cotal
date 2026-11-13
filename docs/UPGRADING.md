@@ -13,6 +13,8 @@ names, times and completion status without inputs or results. `--no-events` stil
 whole event plane where permitted. A registration may enforce
 `policy: { eventPayloads: "withheld" }`; a seat cannot weaken it. Registered Cotal tool payloads
 are excluded by identity. Other tools are not scanned for secret-shaped text.
+The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads`
+input. A revision-48 Manager's closed input schema rejects this field.
 
 Upgrade the broker setup and credentials with the clients: payloads use a separate `EVP_<space>`
 stream and broker rail. If a pre-upgrade space has no payload stream, the endpoint emits a
