@@ -561,6 +561,9 @@ stops agents or restarts a service.
 
 Refusals before replacement do not count as failed installations. A busy computer retries after
 60 seconds. Registry or extension-closure unavailability retries after one hour.
+If npm reports `ETARGET` for the `cotal-ai` version just selected as latest, the release is
+still arriving. No packages are replaced, the failure count is unchanged, and the next attempt
+retries after one hour. An `ETARGET` for another package or version remains a failed installation.
 An attempt that begins replacement and does not reach the target version counts as a failure
 and waits one hour before retry. Two such failures of one version stop installation
 attempts for that version until a newer release appears or a person repairs it manually.

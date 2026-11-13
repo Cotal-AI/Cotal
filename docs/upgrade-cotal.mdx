@@ -101,6 +101,11 @@ It installs and restarts nothing, so it does not replace this reconciliation ste
 Before replacing the global binary, it checks the release's first-party package archives through
 npm. If the release is still reaching the registry, it refuses with retry guidance without starting
 the global install or connector reconciliation.
+If npm's install reports `ETARGET` for the selected latest `cotal-ai` version, the command
+reports that the release is still arriving and exits 0 without replacing packages or rolling back.
+This is a deferred update, not confirmation that the new version was installed. The next automatic
+attempt retries after one hour without consuming the version's failure budget. You can also run
+`cotal update --self` again later. Other npm resolution errors remain failures.
 
 On Linux, a daemon-started automatic update moves its authenticated updater parent and reconcile
 child into a sibling systemd user scope before reconciliation. This requires cgroup v2,
