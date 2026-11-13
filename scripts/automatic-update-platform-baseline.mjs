@@ -16,6 +16,7 @@ export const methods = ['self', 'scheduler', 'installer'];
 const hosted = process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 export const requiresManualStep = output => /run `cotal|run cotal|manual (?:step|intervention)|interrupted update|OPERATION_UNKNOWN|Outcome unconfirmed|needs restoration|refused/i.test(output);
+export const selectedTargets = output => [...new Set([...output.matchAll(/(?:installing cotal-ai@|(?:repaired and )?updated to |updating to )(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/gi)].map(match => match[1]))];
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 const save = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
 
@@ -289,8 +290,8 @@ export async function matrixCell(options) {
       check('daemon scheduler performed a replacement or reported up to date', report.source === report.target || update.stdout.length > 0, update.stdout);
     }
     report.update = update;
-    const selectedVersions = [...(update.stdout + update.stderr).matchAll(/(?:installing cotal-ai@|updated to |cotal-ai@)(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/g)].map(match => match[1]);
-    report.updaterSelectedVersions = [...new Set(selectedVersions)];
+    const selectedVersions = selectedTargets(update.stdout + update.stderr);
+    report.updaterSelectedVersions = selectedVersions;
     report.updaterSelectedVersion = selectedVersions[0];
     check('upgrade exits successfully', update.exit === 0, update);
     check('CLI version is target', json(join(pkg, 'package.json')).version === report.target, json(join(pkg, 'package.json')).version);
