@@ -34,6 +34,7 @@ import { listChoices } from "../src/chat/picker.js";
 import { rosterLines, runSlash } from "../src/chat/controller.js";
 import { cliWords } from "../src/commands/chat.js";
 import { MAX_BUFFER, MAX_DRAFT, ParticipantEngine, grantRefusal, resolveDmTarget, type RosterView, type SessionIdentity, type SessionMessage } from "@cotal-ai/workspace/chat";
+import { offlineRecipientNotice } from "../../../packages/workspace/src/messaging.ts";
 import type { Presence } from "@cotal-ai/core";
 
 let pass = 0, fail = 0;
@@ -490,6 +491,17 @@ console.log("10. a session's inbox keeps the newest MAX_BUFFER replayed channel 
   const doc = (await readDocument(fileURLToPath(new URL("../../../docs/cli-messaging.mdx", import.meta.url)))).markdown.replace(/\s+/g, " ");
   check(`docs/cli-messaging.mdx states the inbox bound as MAX_BUFFER (${MAX_BUFFER})`,
     doc.includes(`The inbox keeps at most ${MAX_BUFFER} unread messages, so a channel that holds more replays only its newest ${MAX_BUFFER}`));
+}
+
+console.log("11. an offline notice does not print a blank name");
+{
+  const bob = "bob is offline. The message is stored, but delivery is not confirmed. Only the same lifecycle can receive it, while its inbox still exists. If the session ended or its inbox was removed, it cannot receive this message. A new session or agent named bob does not receive it.";
+  check("a real name keeps the offline notice", offlineRecipientNotice("bob") === bob);
+  for (const name of [" ", "", "\n", " \n\t"]) {
+    const text = offlineRecipientNotice(name);
+    check(`a name ${JSON.stringify(name)} does not break the offline notice`, text.startsWith("This participant is offline.") && !text.includes("\n") && !text.includes("named"));
+  }
+  check("a name with a newline in it stays one line", !offlineRecipientNotice("ada\nbob").includes("\n") && offlineRecipientNotice("ada\nbob").includes("ada bob"));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

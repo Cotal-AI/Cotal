@@ -69,6 +69,7 @@ The receipt names the destination and message identifier without repeating the b
 role sends include the broker's stored sequence. Storage does not confirm delivery, acceptance
 or completion. A direct send to an agent the roster shows offline also warns on stderr:
 `<agent> is offline. The message is stored, but delivery is not confirmed. Only the same lifecycle can receive it, while its inbox still exists. If the session ended or its inbox was removed, it cannot receive this message. A new session or agent named <agent> does not receive it.`
+A name that is only whitespace is not used. The warning then starts `This participant is offline.` and does not name a new session.
 An offline presence card can outlive a retired session's inbox. Opening another chat under the same
 name creates a new lifecycle and does not recover that message.
 `--json` lists it as the `RECIPIENT_OFFLINE` warning. Use `--json/-j` for the same receipt as one versioned envelope, `--plain` for a text report, or
