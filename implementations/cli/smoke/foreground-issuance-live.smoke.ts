@@ -14,6 +14,10 @@
  *   F. a persona's endpoint commands are minted on the seat's credential, and an instance-pinned
  *      entry is minted on that instance's rail alone, with that instance's describe.
  *
+ *   G. default payload publishing and foreground flag/persona withholding reach the credential,
+ *      sealed launch material, recorder config and a real emitter against the broker. Tool records
+ *      are synthetic, not output from a native connector session.
+ *
  * Needs `nats-server` on PATH. Run: pnpm smoke:foreground-issuance:live
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -26,13 +30,19 @@ if (process.argv[2] === "worker") {
   await import("../src/index.js");
   const { runCli } = await import("../src/command.js");
   const { registry, eventChannel } = await import("@cotal-ai/core");
+  const { materialEnv, configFromEnv } = await import("../../../extensions/connector-core/dist/index.js");
   registry.register({
     kind: "connector", name: "foreground-issuance-fixture", requires: [], eventChannel,
-    buildLaunch: (options: import("@cotal-ai/core").LaunchOpts) => ({
-      command: process.execPath,
-      args: ["-e", "console.log('FIXTURE_SEAT '+JSON.stringify({token:process.env.FIXTURE_TOKEN,creds:process.env.FIXTURE_CREDS,uid:process.env.FIXTURE_UID,id:process.env.FIXTURE_ID,endpoints:process.env.FIXTURE_ENDPOINTS}));process.stdin.on('data',()=>process.exit(0));process.stdin.resume();"],
-      env: { FIXTURE_TOKEN: options.acceptedToken ?? "", FIXTURE_CREDS: options.creds ?? "", FIXTURE_UID: options.lifecycleUid ?? "", FIXTURE_ID: options.id ?? "", FIXTURE_ENDPOINTS: JSON.stringify(options.endpoints ?? null) },
-    }),
+    buildLaunch: (options: import("@cotal-ai/core").LaunchOpts) => {
+      const artifacts: string[] = [];
+      const config = configFromEnv({ ...materialEnv(options, artifacts), COTAL_NAME: options.name, COTAL_SPACE: options.space, COTAL_LIFECYCLE_UID: options.lifecycleUid, COTAL_ACCEPTED_TOKEN: options.acceptedToken });
+      return {
+        command: process.execPath,
+        args: ["-e", "console.log('FIXTURE_SEAT '+JSON.stringify({token:process.env.FIXTURE_TOKEN,creds:process.env.FIXTURE_CREDS,uid:process.env.FIXTURE_UID,id:process.env.FIXTURE_ID,endpoints:process.env.FIXTURE_ENDPOINTS,withheld:process.env.FIXTURE_WITHHELD==='true'}));process.stdin.on('data',()=>process.exit(0));process.stdin.resume();"],
+        env: { FIXTURE_TOKEN: options.acceptedToken ?? "", FIXTURE_CREDS: options.creds ?? "", FIXTURE_UID: options.lifecycleUid ?? "", FIXTURE_ID: options.id ?? "", FIXTURE_ENDPOINTS: JSON.stringify(options.endpoints ?? null), FIXTURE_WITHHELD: String(config.eventPayloadsWithheld) },
+        artifacts,
+      };
+    },
   } as import("@cotal-ai/core").Connector);
   await runCli(registry, ["spawn", ...process.argv.slice(3)]);
   process.exit(process.exitCode ?? 0);
@@ -46,6 +56,10 @@ const { createSpaceAuth, credsClaims, dialerFor, epAuthBucket, issuedHorizon, is
 const { authDir, recordMesh, saveSpaceAuth, TERMINAL_SEAT_HORIZON_SEC } = await import("../../../packages/workspace/dist/index.js");
 const { bootBroker } = await import("../../manager/smoke/_boot-broker.js");
 const { validateSpawnArguments } = await import("../src/commands/spawn.js");
+const { CotalEndpoint, eventPayloadStream, eventChannel, principalKey } = await import("@cotal-ai/core");
+const { jetstreamManager } = await import("@nats-io/jetstream");
+const { memorySubjectFrontier } = await import("@cotal-ai/smoke-kit");
+const { AguiEmitter, EventWal, JsonlFileSource, runStarted, toolCallStart, toolCallArgs, toolCallEnd, toolCallResult } = await import("../../../extensions/connector-core/dist/index.js");
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -63,6 +77,7 @@ mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(root, ".cotal", "agents", "default.md"), "---\nname: issued\nagent: foreground-issuance-fixture\nallowSubscribe: [review]\nallowPublish: [review]\ncapabilities: [spawn]\n---\nFixture only.\n");
 writeFileSync(join(root, ".cotal", "agents", "ep.md"), "---\nname: ep\nagent: foreground-issuance-fixture\nsubscribe: []\nendpoints:\n  - endpoint: com.example.orders\n    commands: [list]\n---\nFixture only.\n");
 writeFileSync(join(root, ".cotal", "agents", "ep-pin.md"), "---\nname: eppin\nagent: foreground-issuance-fixture\nsubscribe: []\nendpoints:\n  - endpoint: com.example.orders\n    commands: [list]\n    instanceId: i0000000000000000000000000a\n---\nFixture only.\n");
+writeFileSync(join(root, ".cotal", "agents", "withheld.md"), "---\nname: withheld\nagent: foreground-issuance-fixture\neventPayloads: false\nallowSubscribe: [review]\nallowPublish: [review]\n---\nFixture only.\n");
 const env: NodeJS.ProcessEnv = {
   PATH: process.env.PATH, HOME: join(home, "home"), COTAL_HOME: home,
   XDG_CONFIG_HOME: join(home, "config"), XDG_CACHE_HOME: join(home, "cache"), XDG_DATA_HOME: join(home, "data"),
@@ -70,7 +85,7 @@ const env: NodeJS.ProcessEnv = {
 };
 for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"]) mkdirSync(env[key]!, { recursive: true });
 
-type Seat = { token: string; creds: string; uid: string; id: string; endpoints: string };
+type Seat = { token: string; creds: string; uid: string; id: string; endpoints: string; withheld: boolean };
 type Worker = { child: ChildProcessWithoutNullStreams; output: string; seat: Promise<Seat | undefined>; closed: Promise<number | null>; exited: boolean };
 const workers: Worker[] = [];
 function launch(extra: string[]): Worker {
@@ -108,6 +123,35 @@ const resolveRef = (ref: Awaited<ReturnType<typeof refOf>>) =>
 const outcome = async <T>(fn: () => Promise<T>): Promise<{ value?: T; error?: string }> => {
   try { return { value: await fn() }; } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
 };
+
+/** Synthetic native record, real emitter and broker using the credential the CLI minted.
+ * This is not a native connector session. It checks the launch-to-recorder boundary. */
+async function recordTool(seat: Seat): Promise<{ payloads: number; metadata: boolean }> {
+  const admin = await dialerFor(broker.servers)({ servers: broker.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "admin"), tls: false }), maxReconnectAttempts: 0 });
+  const ep = new CotalEndpoint({ space, servers: broker.servers, creds: readFileSync(seat.creds, "utf8"), lifecycleUid: seat.uid, acceptedToken: seat.token, card: { name: "fixture", kind: "agent", id: seat.id }, consume: false, registerPresence: true, watchPresence: false });
+  ep.on("error", () => {});
+  try {
+    const jsm = await jetstreamManager(admin);
+    const before = (await jsm.streams.info(eventPayloadStream(space))).state.messages;
+    const metadataSubject = `cotal.${space}.chat.${DEV_OWNER}.${seat.id}.${eventChannel({ owner: DEV_OWNER, actor: seat.id })}`;
+    const metadataFrames: string[] = [];
+    const sub = admin.subscribe(metadataSubject, { callback: (error, message) => { if (!error) metadataFrames.push(message.string()); } });
+    await admin.flush();
+    await ep.start();
+    const dir = mkdtempSync(join(root, "record-"));
+    const source = join(dir, "source.jsonl");
+    writeFileSync(source, "");
+    const wal = await EventWal.open(join(dir, "wal.json"), { space, threadId: "fixture", principal: principalKey(DEV_OWNER, seat.id).key, subjectMayExist: false });
+    const emitter = await AguiEmitter.start({ endpoint: ep, withholdPayloads: seat.withheld, wal, subjectFrontier: memorySubjectFrontier(), source: new JsonlFileSource(source), map: () => ({ runId: "run", events: [runStarted({ threadId: "fixture", runId: "run", timestamp: 1 }), toolCallStart({ toolCallId: "call", toolCallName: "bash", timestamp: 2 }), toolCallArgs({ toolCallId: "call", delta: '{"command":"payload-input-canary"}', timestamp: 2 }), toolCallEnd({ toolCallId: "call", timestamp: 3 }), toolCallResult({ messageId: "result", toolCallId: "call", content: "payload-output-canary", timestamp: 3 })] }) });
+    await emitter.pump();
+    writeFileSync(source, "{}\n");
+    await emitter.pump();
+    await admin.flush();
+    const metadata = metadataFrames.join("\n");
+    sub.unsubscribe();
+    return { payloads: (await jsm.streams.info(eventPayloadStream(space))).state.messages - before, metadata: metadata.includes("TOOL_CALL_START") && metadata.includes("bash") && metadata.includes("timestamp") && !metadata.includes("payload-input-canary") && !metadata.includes("payload-output-canary") };
+  } finally { await ep.stop(); await admin.close(); }
+}
 
 let ok = false;
 try {
@@ -169,6 +213,21 @@ try {
     pubP.some((r) => instRow("list").test(r)) && pubP.some((r) => instRow("describe").test(r)), pubP.filter((r) => r.includes("orders")));
   check("and no class row for that endpoint", !pubP.some((r) => r.includes(".one.com_example_orders.")), pubP.filter((r) => r.includes("orders")));
   await stop(wp);
+  console.log("G. foreground event payload withholding");
+  for (const cell of [{ name: "default", argv: [], withheld: false }, { name: "--no-event-payloads", argv: ["--no-event-payloads"], withheld: true }, { name: "persona eventPayloads:false", argv: ["withheld"], withheld: true }]) {
+    const worker = launch(cell.argv);
+    const seat = await worker.seat;
+    check(`${cell.name}: real CLI reaches fixture`, seat !== undefined, worker.output);
+    if (seat) {
+      const pub = (credsClaims(readFileSync(seat.creds, "utf8")) as { nats?: { pub?: { allow?: string[] } } }).nats?.pub?.allow ?? [];
+      check(`${cell.name}: EVP publish grant matches policy`, pub.some((subject) => subject.startsWith(`cotal.${space}.evp.`)) === !cell.withheld, pub);
+      check(`${cell.name}: production recorder config matches policy`, seat.withheld === cell.withheld, seat.withheld);
+      const recorded = await recordTool(seat);
+      check(`${cell.name}: tool record publishes only permitted payloads`, recorded.payloads === (cell.withheld ? 0 : 1), recorded);
+      check(`${cell.name}: names and times still publish`, recorded.metadata, recorded);
+    }
+    await stop(worker);
+  }
   ok = true;
 } finally {
   for (const worker of workers) await stop(worker);

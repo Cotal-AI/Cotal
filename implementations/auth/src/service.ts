@@ -443,6 +443,8 @@ async function supervisorGeneration(session: IssuerSession, space: string, owner
 /** Trusted composition policy for unpinned interactive manager-caller requests. No request or CLI
  *  flag sets it. The local-primary policy refuses an unavailable local Manager without substitution. */
 export interface AuthServiceRuntimeOptions {
+  /** Trusted space restriction applied to every native payload publish grant. */
+  eventPayloadsWithheld?: boolean;
   interactiveManagerSelection?: "local-primary";
   /** Process-lifetime cancellation custody quotas. No eviction or automatic restart on exhaustion. */
   runCancelLimits?: RunCancelLimits;
@@ -456,6 +458,8 @@ function runtimeSelection(options: AuthServiceRuntimeOptions): AuthServiceRuntim
   if (!options || typeof options !== "object" || Array.isArray(options))
     throw new Error("auth-service runtime options must be an object");
   const selection = options.interactiveManagerSelection;
+  if (options.eventPayloadsWithheld !== undefined && typeof options.eventPayloadsWithheld !== "boolean")
+    throw new Error("eventPayloadsWithheld must be a boolean when present");
   if (selection !== undefined && selection !== "local-primary")
     throw new Error('interactiveManagerSelection must be "local-primary" when present');
   return selection;
@@ -1777,6 +1781,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             scope: t.capabilities ?? [],
             allowSubscribe,
             allowPublish: t.allowPublish ?? [],
+            ...(t.eventPayloads === false || opts.eventPayloadsWithheld === true ? { eventPayloads: false as const } : {}),
             ...(t.role !== undefined ? { role: t.role } : {}),
             ...(t.label !== undefined ? { label: t.label } : {}),
             parent: spawner.parent,
@@ -2389,8 +2394,8 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
   const root = lifecycle?.root ?? findCotalRoot();
   // A replica never reads or writes the space's one discovery file: that file names the primary.
-  if (spaces !== undefined && calloutOnly) return runCalloutHost({ manifest: spaces, server, root, ...(limits !== undefined ? { limits } : {}) }, store);
-  if (calloutOnly) return runAuthCalloutReplica({ space, server, root, ...(limits !== undefined ? { limits } : {}) }, store);
+  if (spaces !== undefined && calloutOnly) return runCalloutHost({ manifest: spaces, server, root, eventPayloadsWithheld: options.eventPayloadsWithheld, ...(limits !== undefined ? { limits } : {}) }, store);
+  if (calloutOnly) return runAuthCalloutReplica({ space, server, root, eventPayloadsWithheld: options.eventPayloadsWithheld, ...(limits !== undefined ? { limits } : {}) }, store);
   if (spaces !== undefined) {
     if (lifecycle) throw new Error("auth-service: the auth-service service preset runs one space - run --spaces from the auth-service entry or an embedder's runAuthService call");
     return runAuthServiceHost({ manifest: spaces, server, root, runtime: options, ...(limits !== undefined ? { limits } : {}) }, store);
@@ -2432,6 +2437,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
     // The CLI composition's local manager is this workspace root's persisted instance, re-read per
     // selection exactly as before. A hosted context passes no local manager at all.
     localManager: () => loadManagerInstanceIdentity(root, space),
+    eventPayloadsWithheld: options.eventPayloadsWithheld,
     ...(interactiveManagerSelection !== undefined ? { interactiveManagerSelection } : {}),
     ...(options.runCancelLimits !== undefined ? { runCancelLimits: options.runCancelLimits } : {}),
     ...(registry !== undefined ? { registry } : {}),
@@ -2604,6 +2610,7 @@ async function openAuthServiceLane(o: {
     ...(o.publicFace !== null ? { publicFace: o.publicFace } : {}),
     ...(endpoints.option !== undefined ? { serviceEndpoints: endpoints.option } : {}),
     localManager: () => loadManagerInstanceIdentity(root, space),
+    eventPayloadsWithheld: o.runtime.eventPayloadsWithheld,
     ...(selection !== undefined ? { interactiveManagerSelection: selection } : {}),
     ...(o.runtime.runCancelLimits !== undefined ? { runCancelLimits: o.runtime.runCancelLimits } : {}),
     ...(registry !== undefined ? { registry, ...(o.runtime.registryCredentialTtlSeconds !== undefined ? { registryCredentialTtlSeconds: o.runtime.registryCredentialTtlSeconds } : {}) } : {}),
@@ -2936,6 +2943,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
     log,
     localManager: o.localManager,
+    eventPayloadsWithheld: o.eventPayloadsWithheld,
     ...(o.interactiveManagerSelection !== undefined ? { interactiveManagerSelection: o.interactiveManagerSelection } : {}),
     ...(o.runCancelLimits !== undefined ? { runCancelLimits: o.runCancelLimits } : {}),
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
@@ -2971,6 +2979,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     // fresh bearer too.
     const connectLimiter = new ConnectLimiter(o.connectLimits);
     serveCallout(nc as never, {
+      eventPayloadsWithheld: o.eventPayloadsWithheld,
       space,
       dir,
       callout,
@@ -3084,6 +3093,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
         server: face.advertisedServer ?? server,
         idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience },
         sentinelCreds: callout.sentinelCreds,
+        eventPayloadsWithheld: o.eventPayloadsWithheld,
         ...(face.agentProvisioningUrl ? { agentProvisioningUrl: face.agentProvisioningUrl } : {}),
       });
       const pub = createServer(makePublicHandler(ctx, makePublicPolicy(face.trustedProxy), bundle));
@@ -4509,6 +4519,7 @@ function checkPublicFace(face: PublicFaceInput): string | undefined {
  *  empty — the daemon finalizes it with {@link finalizeUserBundleEndpoint} after the public
  *  listener binds. */
 export function composeUserBundle(args: {
+  eventPayloadsWithheld?: boolean;
   space: string;
   server: string;
   idp: { url: string; issuer: string; audience: string };
@@ -4522,6 +4533,7 @@ export function composeUserBundle(args: {
     space: args.space,
     server: args.server,
     tlsRequired: true,
+    ...(args.eventPayloadsWithheld === true ? { policy: { eventPayloads: "withheld" } } : {}),
     userAuth: {
       // The same provider name the LOCAL arm records — one exported constant rather than a
       // literal repeated here and in provider.ts, so a remote entry cannot come to name a

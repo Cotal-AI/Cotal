@@ -401,7 +401,7 @@ export const claudeConnector: Connector = {
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
     // shells, builds and third-party CLIs this session runs no longer inherit live authority. Its
     // directory is the first artifact, so a later writeLaunchArtifact failure removes it too.
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
     // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
     // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude
     // expands it from the child env at launch — see the mcpKeys forwarding above), never the resolved

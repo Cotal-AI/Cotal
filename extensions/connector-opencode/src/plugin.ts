@@ -414,6 +414,7 @@ export const cotal: Plugin = async () => {
         mapper = createOpenCodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
         return AguiEmitter.start<OpenCodeRecord>({
           endpoint: agent.ep,
+          withholdPayloads: config.eventPayloadsWithheld,
           wal,
           subjectFrontier,
           source: bound,

@@ -345,7 +345,14 @@ or at connector launch as a backstop:
 ## Event plane
 
 A spawned seat publishes run boundaries, assistant text, reasoning,
-and tool starts and ends on `events.<owner>.<actor>`. Tool arguments and results are not published.
+and tool starts and ends on `events.<owner>.<actor>`. Mapped tool arguments and results publish by
+default on the separate `cotal.<space>.evp.<owner>.<actor>` payload rail. The ordinary channel
+remains metadata-only for tools. Pass `--no-event-payloads`, or set `eventPayloads: false` in the
+persona, to withhold payloads while retaining tool activity. Space policy can require withholding.
+Registered Cotal tool inputs and results are excluded by identity, without scanning other tools
+for secrets. Payload readers can see local content that their chat grants do not otherwise expose.
+See the [payload rules](claude-connector-reference.mdx#event-plane) for admission, cut markers,
+limits, recovery and the connector coverage still deferred.
 The channel and grant rules are the same as the other connectors; see
 [Connect Claude Code](connect-claude.mdx#event-plane) for how to grant and read one.
 

@@ -174,6 +174,10 @@ tightening the workspace over removing the sandbox.
 
 ## Event plane
 
+The shared launch and emitter carry payload-withholding safety controls. This release does not
+qualify Codex payload mapping or native payload acceptance. See the
+[payload rules](claude-connector-reference.mdx#event-plane) for the separate rail and current scope.
+
 A spawned seat publishes a structured account of what it did: run
 boundaries per turn, assistant text, reasoning, and the tool calls the model makes through Codex's
 function-call and custom-tool interfaces, each with its start and its end. Tool arguments and

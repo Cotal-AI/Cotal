@@ -200,6 +200,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
         return AguiEmitter.start<OpenCode2Record>({
           endpoint: agent.ep,
+          withholdPayloads: config.eventPayloadsWithheld,
           wal,
           subjectFrontier,
           source: bound,

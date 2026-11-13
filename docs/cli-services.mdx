@@ -546,6 +546,10 @@ the flags it replaces:
 ] }
 ```
 
+An embedder may set the trusted `AuthServiceRuntimeOptions.eventPayloadsWithheld` option to `true`
+to deny tool-payload publication in auth-service credential grants. The generated discovery bundle
+advertises the restriction so newly registering clients receive it.
+
 An entry takes `exchangePublicPort`, `exchangePublicUrl`, `exchangeTrustedProxy`, `advertisedServer`
 and `agentProvisioningUrl`, with the rules of the flags: the last four need `exchangePublicPort`.
 An entry without `exchangePublicPort` has no public face. `serviceEndpoints`, `true` or `false`, is

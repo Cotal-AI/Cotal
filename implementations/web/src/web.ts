@@ -716,11 +716,15 @@ export function classifyTap(subject: string, msg: CotalMessage | undefined):
   | { event: "message"; data: { mode: DeliveryMode; senderId?: string; channel?: string; msg: CotalMessage } }
   | { event: "agent-frame"; agent: string; data: { id: string; msg: CotalMessage } }
   | null {
+  const parsed = parseSubject(subject);
+  if (parsed?.kind === "evp") {
+    if (!msg || parsed.sender !== msg.from?.id) return null;
+    return { event: "agent-frame", agent: parsed.sender, data: { id: parsed.sender, msg } };
+  }
   const mode = deliveryOf(subject);
   if (!mode || !msg) return null;
   // senderId is the subject's sender token, the *verified* publisher (the server policed who could
   // publish it), vs the advisory `from` in the payload.
-  const parsed = parseSubject(subject);
   const senderId = parsed?.sender;
   // The channel the broker actually POLICED, taken from the subject rather than the payload: a
   // publish grant is per-channel (`chat.<owner>.<actor>.<ch>`), so this token is covered by the
@@ -900,6 +904,12 @@ export class SessionWatchers<F> {
  *  (an answer) and from any other failure (a 503 with the reason). */
 export class AgentEventsLate extends Error {}
 
+/** A payload-only read failure leaves the independently read metadata available. */
+export interface PayloadReadFailure {
+  status: "timeout" | "refused" | "failed";
+  reason: string;
+}
+
 /** One agent's newest frames within the deadline. Reads `limit + 1` from `events.<owner>.<actor>`
  *  with `channelHistory` and answers the newest `limit`, oldest first, with `more` when one more
  *  existed. A permission denial (`isPermissionDenied` from core) is an answer, `{ refused }` with the
@@ -920,22 +930,44 @@ export class AgentEventsLate extends Error {}
  *  no cursor, and this is the same credential the channel history route already reads with. */
 export async function agentEventsPage(
   source: {
+    eventPayloadHistory?(owner: string, actor: string, opts: { limit: number; signal: AbortSignal }): Promise<CotalMessage[]>;
     channelHistory(channel: string, opts: { limit: number; signal: AbortSignal; publisher: { owner: string; actor: string } }): Promise<CotalMessage[]>;
   },
   agent: { owner: string; actor: string },
   limit: number,
   grantFor: (channel: string, owner: string) => string | undefined,
   deadlineMs: number = AGGREGATION_DEADLINE_MS,
-): Promise<{ frames: CotalMessage[]; more: boolean } | { refused: string; grant?: string }> {
+): Promise<{ frames: CotalMessage[]; more: boolean; payloadRead?: PayloadReadFailure } | { refused: string; grant?: string }> {
   const channel = eventChannel(agent);
   const clock = deadline(deadlineMs);
   try {
     const publisher = { owner: agent.owner, actor: agent.actor };
     const page = await within(source.channelHistory(channel, { limit: limit + 1, signal: clock.signal, publisher }), clock.until);
     if (page === LATE) throw new AgentEventsLate(`${channel}: the read did not finish within ${deadlineMs}ms`);
-    const more = page.length > limit;
-    // Not `slice(-limit)`: at a limit of 0 that is `slice(-0)`, the whole page.
-    return { frames: more ? page.slice(page.length - limit) : page, more };
+    let payloads: CotalMessage[] = [];
+    let payloadRead: PayloadReadFailure | undefined;
+    if (source.eventPayloadHistory) {
+      try {
+        const result = await within(source.eventPayloadHistory(agent.owner, agent.actor, { limit: limit + 1, signal: clock.signal }), clock.until);
+        if (result !== LATE) payloads = result;
+        else payloadRead = { status: "timeout", reason: "Tool payload read timed out. Try again." };
+      } catch (e) {
+        payloadRead = clock.signal.aborted
+          ? { status: "timeout", reason: "Tool payload read timed out. Try again." }
+          : isPermissionDenied(e)
+            ? { status: "refused", reason: "Tool payload read refused. Ask the mesh owner to check payload access." }
+            : { status: "failed", reason: "Tool payload read failed. Try again." };
+      }
+    }
+    const seen = new Set<string>();
+    const tail = (rows: CotalMessage[]) => limit === 0 ? [] : rows.slice(-limit);
+    const merged = [...tail(page), ...tail(payloads)].filter(msg => {
+      if (seen.has(msg.id)) return false;
+      seen.add(msg.id);
+      return true;
+    }).sort((a, b) => a.ts - b.ts);
+    const more = page.length > limit || payloads.length > limit;
+    return { frames: merged, more, ...(payloadRead === undefined ? {} : { payloadRead }) };
   } catch (e) {
     if (e instanceof AgentEventsLate) throw e;
     if (isPermissionDenied(e)) {
@@ -1482,6 +1514,12 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   };
   for (const plane of ["chat", "inst", "svc"])
     ep.tap(onTap, { subject: `${spacePrefix(space)}.${plane}.>` });
+  // A supplied observer credential can read only its owner's payload rail.
+  const payloadPrefix = `${spacePrefix(space)}.evp.`;
+  const payloadSubjects = conn.creds
+    ? (credsClaims(conn.creds).nats?.sub?.allow ?? []).filter(subject => subject.startsWith(payloadPrefix))
+    : [`${payloadPrefix}>`];
+  for (const subject of payloadSubjects) ep.tap(onTap, { subject });
 
   // The client build sits beside the compiled server in `dist/web`. Run from source, as the smokes
   // run it, the server lives in `src`, so the page is read from the package's `dist/web` instead.

@@ -122,6 +122,9 @@ on a live message from an agent on the roster (the page opens on Work at that me
 `#/agent/<id>/work/<message id>`), or by opening the channel `events.<owner>.<actor>` by name. A
 message read from history gets no View work.
 
+Work keeps tool names and times when a tool payload read times out, is refused, or fails.
+It identifies that read failure separately from payloads that were not received, and keeps any inputs or results already shown.
+
 Work shows what the agent publishes on its [event plane](claude-connector-reference.mdx#event-plane):
 its turns with how long each took, its tool calls grouped when no text sits between them, its text,
 and its own posts and direct messages, placed by time with a link back to where they were sent. When

@@ -1,6 +1,7 @@
-import { Fragment } from "react";
-import { Box, Text } from "ink";
-import { presenceText, type Presence } from "@cotal-ai/core";
+import { Fragment, useState } from "react";
+import { Box, Text, useInput } from "ink";
+import { ToolCalls } from "./ToolCalls.js";
+import { presenceText, type Presence, type CotalEndpoint } from "@cotal-ai/core";
 import { consoleLabel } from "../label.js";
 import { displayWidth } from "@cotal-ai/workspace";
 import type { FeedEntry } from "../mesh.js";
@@ -187,14 +188,18 @@ export function Detail({
   width,
   height,
   managed,
+  ep,
 }: {
   target: DetailTarget;
+  ep?: CotalEndpoint;
   feed: FeedEntry[];
   width: number;
   height: number;
   /** id → managed-state, for the agent view's `runs` field (absent on unmanaged meshes). */
   managed?: Map<string, ManagedInfo>;
 }) {
+  const [tools, setTools] = useState(false);
+  useInput((input) => { if (input === "t") setTools((v) => !v); }, { isActive: ep !== undefined && target.kind === "agent" });
   const title = target.kind === "message" ? "message detail" : "agent detail";
   return (
     <Box
@@ -218,11 +223,12 @@ export function Detail({
           {target.kind === "message" ? (
             <MessageDetail entry={target.entry} width={width - 4} />
           ) : (
+            tools && ep && target.agent.card.owner && target.agent.card.actor ? <ToolCalls ep={ep} owner={target.agent.card.owner} actor={target.agent.card.actor} width={width - 4} height={height} /> :
             <AgentDetail agent={target.agent} feed={feed} width={width - 4} managed={managed?.get(target.agent.card.id)} />
           )}
         </Box>
         <Box marginTop={1}>
-          <Text dimColor>press any key to close</Text>
+          <Text dimColor>{target.kind === "agent" && ep ? "t toggles tool calls · Esc closes" : "press any key to close"}</Text>
         </Box>
       </Box>
     </Box>

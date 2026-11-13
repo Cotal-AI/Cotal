@@ -21,11 +21,11 @@ export { parseSpaceManifest, type SpaceManifest } from "@cotal-ai/workspace";
 /** Run one multi-space callout host until a signal ends it. At startup it answers for every space it
  *  can, names each one it cannot with the reason, and retries those, so one space's refusal, such as
  *  open service-endpoint admission, keeps no other space's connects unanswered. */
-export async function runCalloutHost(args: { manifest: string; server: string; root: string; limits?: AuthCalloutLimits }, store?: SecretStore): Promise<void> {
+export async function runCalloutHost(args: { manifest: string; server: string; root: string; eventPayloadsWithheld?: boolean; limits?: AuthCalloutLimits }, store?: SecretStore): Promise<void> {
   const { server, root } = args;
   const log = (l: string) => console.error(l);
   const secrets = store ?? workspaceSecretStore(root);
-  const laneOptions = { server, root, secrets, log, ...(args.limits !== undefined ? { limits: args.limits } : {}) };
+  const laneOptions = { server, root, secrets, log, eventPayloadsWithheld: args.eventPayloadsWithheld, ...(args.limits !== undefined ? { limits: args.limits } : {}) };
   const host = await runSpaceHost({
     manifest: args.manifest,
     open: (space) => openCalloutLane({ ...laneOptions, space }),
