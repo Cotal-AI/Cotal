@@ -400,6 +400,11 @@ export function psSeatLabel(row: { name: string; id: string; role?: string }): s
   return peerLabel({ name: row.name.trim() ? row.name : row.id, ...(row.role ? { role: row.role } : {}) });
 }
 
+/** The label an attach picker shows for one seat. A blank name is the id, as `ps` shows it. */
+export function attachChoiceLabel(item: { name: string; id: string; status: string }): string {
+  return oneLine(`${psSeatLabel({ name: item.name, id: item.id })} · ${item.status}`);
+}
+
 /** The seats one manager answered with: a table, or with `--wide` one labeled record per seat. A
  *  failing bearer refresh is a detached seat's only window to the operator, so the provider's own
  *  sentence follows, verbatim (it already names the repair). A record's labels read as its facts'
@@ -919,11 +924,11 @@ async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ nam
   if (!choices.length) throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy: "run `cotal ps`, or launch an agent with `cotal spawn`" });
   const choice = await prompts.select({
     message: `Return to an agent in ${oneLine(census.target.space)}`,
-    options: choices.map((item, index) => ({ value: index, label: oneLine(`${item.name} · ${item.status}`), hint: oneLine(`${item.expectedTarget.id} · manager ${item.on}`) })),
+    options: choices.map((item, index) => ({ value: index, label: attachChoiceLabel({ name: item.name, id: item.expectedTarget.id, status: item.status }), hint: oneLine(`${item.expectedTarget.id} · manager ${item.on}`) })),
   });
   if (prompts.isCancel(choice)) return undefined;
   const selected = choices[choice]!;
-  console.error(renderReport({ space: census.target.space, sections: [{ title: "Attaching", blocks: [{ kind: "fields", rows: [["Agent", selected.name], ["Identity", selected.expectedTarget.id], ["Manager", selected.on], ["Detach", `${detachKey().label} leaves the agent running`]] }] }] }, "rich", process.stderr));
+  console.error(renderReport({ space: census.target.space, sections: [{ title: "Attaching", blocks: [{ kind: "fields", rows: [["Agent", psSeatLabel({ name: selected.name, id: selected.expectedTarget.id })], ["Identity", selected.expectedTarget.id], ["Manager", selected.on], ["Detach", `${detachKey().label} leaves the agent running`]] }] }] }, "rich", process.stderr));
   return selected;
 }
 
