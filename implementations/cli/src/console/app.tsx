@@ -18,7 +18,7 @@ import { StatusBar } from "./ui/StatusBar.js";
 import { Help } from "./ui/Help.js";
 import { Search } from "./ui/Search.js";
 import { CommandPalette } from "./ui/CommandPalette.js";
-import { Confirm, type ConfirmTarget } from "./ui/Confirm.js";
+import { Confirm, shownKillName, type ConfirmTarget } from "./ui/Confirm.js";
 import { Prompt } from "./ui/Prompt.js";
 import { Detail, type DetailTarget } from "./ui/Detail.js";
 import { runCommand, type CommandCtx } from "./commands.js";
@@ -474,9 +474,10 @@ export function App({
     setConfirm(null);
     if (c?.kind === "kill") {
       const graceful = !opts?.force;
-      setNotice(`${graceful ? "stopping" : "force-killing"} ${c.name}…`);
+      const shown = shownKillName(c.name, c.id);
+      setNotice(`${graceful ? "stopping" : "force-killing"} ${shown}…`);
       void ctl("stop", { name: c.name, graceful }).then((r) =>
-        setNotice(r.ok ? `${graceful ? "stopped" : "force-killed"} ${c.name}` : `stop: ${r.error ?? "failed"}`),
+        setNotice(r.ok ? `${graceful ? "stopped" : "force-killed"} ${shown}` : `stop: ${r.error ?? "failed"}`),
       );
     } else if (c?.kind === "purge") {
       setNotice(`purging ${c.space}…`);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { PassThrough, Writable } from "node:stream";
 import React from "react";
 import { render } from "ink";
-import { Confirm } from "../src/console/ui/Confirm.js";
+import { Confirm, shownKillName } from "../src/console/ui/Confirm.js";
 import { NewAgent } from "../src/console/ui/NewAgent.js";
 import { replyFromSpawnOutput, type AgentLaunchReply } from "../src/console/launch.js";
 
@@ -53,6 +53,9 @@ const named = await kill("ada", "local.blank");
 ok(named.includes("ada") && !named.includes("local.blank"), "a stop name stays", named);
 const unnamed = await kill(" ", " ");
 ok(unnamed.includes("(unnamed)") && unnamed.includes("via the manager"), "a blank stop name and id is unnamed", unnamed);
+ok(shownKillName(" ", "local.blank") === "local.blank", "the stop status line uses the id for a blank name");
+ok(`stopping ${shownKillName("\n", "local.blank")}…` === "stopping local.blank…", "a newline stop status stays on one line");
+ok(`stopped ${shownKillName(" ada", "local.blank")}` === "stopped  ada", "a stop status keeps a leading space");
 
 function receipt(name: string, id?: string): string {
   return JSON.stringify({
