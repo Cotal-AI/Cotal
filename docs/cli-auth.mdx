@@ -33,7 +33,8 @@ the same issuer, subject, audience and catalog space identities before saving th
 new login and replacing registrations. It does not send the old bearer to the new
 origin. Existing service sessions and native retirement or renewal records remain
 on their saved authority. Cancellation or failed identity checks do not replace
-registrations. Session and registry persistence are separate writes.
+registrations. If the approval code expires, retry `cotal login --migrate-from <old auth URL>`.
+Session and registry persistence are separate writes.
 
 Static minting requires local signing authority. Account sign-in and actor grants are separate, and diagnostic reports state which local claims they checked.
 
